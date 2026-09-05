@@ -13,7 +13,7 @@ import {
   resolveArtifactIdentity,
 } from "../provider-artifacts.js";
 import type { ArtifactRecord, WorkUnit } from "../types.js";
-import { mapWorkUnitRow, type WorkUnitLiveness } from "../work-unit-utils.js";
+import { computeWorkUnitLiveness, mapWorkUnitRow, type WorkUnitLiveness } from "../work-unit-utils.js";
 import { parseAuthoredReferences } from "./authored-references.js";
 import { LedgerStore } from "./store.js";
 import type {
@@ -1344,30 +1344,6 @@ function getIssueSummary(db: Db, issueId: string): LedgerIssueSummaryRef | null 
     kind: row.kind,
     priority: row.priority,
     labels,
-  };
-}
-
-function computeWorkUnitLiveness(db: Db, workUnit: WorkUnit): WorkUnitLiveness {
-  const empty: WorkUnitLiveness = {
-    has_live_agent: false,
-    agent_session_id: null,
-    agent_status: null,
-    is_processing: false,
-    last_activity: null,
-  };
-  if (!workUnit.assigned_session_id || !tableExists(db, "sessions")) return empty;
-  const row = db.prepare(
-    "SELECT status, updated_at, last_active FROM sessions WHERE id = ?",
-  ).get(workUnit.assigned_session_id) as { status?: string; updated_at?: string; last_active?: string | null } | undefined;
-  if (!row) return empty;
-  const status = row.status ?? "unknown";
-  const lastActive = row.last_active || row.updated_at || null;
-  return {
-    has_live_agent: status === "active" || status === "idle",
-    agent_session_id: workUnit.assigned_session_id,
-    agent_status: status,
-    is_processing: status === "active",
-    last_activity: lastActive ? Date.parse(lastActive) : null,
   };
 }
 

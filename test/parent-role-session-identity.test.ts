@@ -17,7 +17,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listCompletedWorkerThreadArchiveCandidates } from "../src/codex-thread-archive.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { addProject } from "../src/ledger/project-registry.js";
+import { SessionRegistry } from "../src/registry.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
+import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { Router } from "../src/server.js";
 import { isSessionAliasLive, resolveSessionAlias } from "../src/session-liveness.js";
 import type { AuthRequest } from "../src/types.js";
@@ -32,6 +34,7 @@ const fakeScanner = {
 const MANDIBLE_SESSION = "sess-coordinator";
 const CONSOLE_SESSION = "console-coordinator";
 const PROVIDER_THREAD = "01a04e24-a731-7362-bce3-ff7a63a845e2";
+const DESKTOP_TASK = "01a072f2-0e05-7a91-abcd-df4dc6a64e62";
 
 let db: Db;
 let router: Router;
@@ -61,6 +64,22 @@ function seedConsoleSession(options: {
     options.status,
     options.mandibleSessionId ?? null,
     options.providerSessionId ?? null,
+  );
+}
+
+function seedCodexConversation(sessionId = DESKTOP_TASK): void {
+  db.prepare(`
+    INSERT INTO conversations (
+      id, source, source_path, source_hash, source_mtime, title,
+      started_at, session_id, cwd, branch, updated_at
+    ) VALUES (?, 'codex', ?, 'sha', 1, 'Desktop task', ?, ?, '/repo/mandible',
+              'feature/d25dc46-codex-task-liveness', ?)
+  `).run(
+    `conversation-${sessionId}`,
+    `/tmp/.codex/sessions/2026/09/05/rollout-${sessionId}.jsonl`,
+    "2026-09-05T19:00:00Z",
+    sessionId,
+    "2026-09-05T19:01:00Z",
   );
 }
 
@@ -95,7 +114,13 @@ beforeEach(async () => {
   setDb(db);
   addProject(db, { project_key: "mandible", display_name: "Mandible" });
   router = new Router();
-  registerIssueRoutes(router, fakeScanner);
+  const sessionAliasResolver = (database: Db, id: string) => resolveSessionAlias(database, id, {
+    readCodexTaskLiveness: (_sourcePath, taskId) => ({
+      status: taskId === DESKTOP_TASK ? "live" : "not_live",
+    }),
+  });
+  registerIssueRoutes(router, fakeScanner, { sessionAliasResolver });
+  registerSessionRoutes(router, new SessionRegistry(db), undefined, fakeScanner);
 
   const created = await router.invoke({
     method: "POST",
@@ -186,6 +211,73 @@ describe("parent-role assume accepts every registered alias form", () => {
       resolved_session_id: MANDIBLE_SESSION,
       provider_session_id: PROVIDER_THREAD,
       provider: "codex",
+    });
+  });
+});
+
+describe("Codex Desktop provider tasks", () => {
+  it("accepts an ingested live task without copying provider task status", async () => {
+    seedCodexConversation();
+
+    const response = await assume(DESKTOP_TASK);
+    expect(response.status).toBe(200);
+    expect(holderPayload(response.body)).toMatchObject({
+      session_id: DESKTOP_TASK,
+      resolved_session_id: null,
+      provider: "codex",
+      provider_session_id: DESKTOP_TASK,
+    });
+    const status = await parentRoleStatus();
+    expect(status.live_holder).not.toBeNull();
+    expect(status.holder?.liveness).toMatchObject({
+      has_live_agent: true,
+      agent_status: "active",
+      provider: "codex",
+      provider_session_id: DESKTOP_TASK,
+    });
+    expect(db.prepare("SELECT id FROM sessions WHERE conversation_id = ?").get(DESKTOP_TASK))
+      .toBeUndefined();
+  });
+
+  it("materializes the ingested provider identity when session-link needs its foreign key", async () => {
+    seedCodexConversation();
+
+    const response = await router.invoke({
+      method: "POST",
+      url: `/api/sessions/${DESKTOP_TASK}/issues`,
+      body: { issue_id: umbrellaId, repo_id: "mandible" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      session_id: `codex-${DESKTOP_TASK}`,
+      issue_id: umbrellaId,
+      ledger_issue_id: umbrellaId,
+    });
+    expect(db.prepare(
+      "SELECT app, status, agent_type, conversation_id FROM sessions WHERE id = ?",
+    ).get(`codex-${DESKTOP_TASK}`)).toEqual({
+      app: "codex",
+      status: "active",
+      agent_type: "provider-session",
+      conversation_id: DESKTOP_TASK,
+    });
+  });
+
+  it("returns a typed retryable result before provider ingestion arrives", async () => {
+    const notIngested = "01a09999-1111-7222-8333-444455556666";
+    const response = await router.invoke({
+      method: "POST",
+      url: `/api/sessions/${notIngested}/issues`,
+      body: { issue_id: umbrellaId, repo_id: "mandible" },
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      code: "provider_session_not_ingested",
+      status: "not_yet_ingested",
+      provider_session_id: notIngested,
+      retryable: true,
     });
   });
 });

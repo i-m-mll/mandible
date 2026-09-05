@@ -20,11 +20,16 @@
  * that path decides whether a Codex thread may be archived, and a false
  * negative there archives a live thread. Its queries are unchanged.
  *
- * This module deliberately imports nothing but the database handle type and
- * table introspection, so every consumer can import it without a cycle.
+ * Provider-native task activity is read through a leaf adapter, so every
+ * consumer shares the same answer without depending on route or UI state.
  */
 import type { Db } from "./db.js";
-import { tableExists } from "./db-introspection.js";
+import { columnExists, tableExists } from "./db-introspection.js";
+import { readCodexTaskLiveness } from "./codex-task-liveness.js";
+import {
+  resolveProviderSessionIngestion,
+  type ProviderSessionIngestion,
+} from "./provider-session-ingestion.js";
 
 /**
  * The statuses that mean "an agent is still behind this session". `running` is
@@ -59,6 +64,9 @@ interface SessionRow {
   id: string;
   app?: string | null;
   status?: string | null;
+  pid?: number | null;
+  agent_type?: string | null;
+  conversation_id?: string | null;
   updated_at?: string | null;
   last_active?: string | null;
 }
@@ -72,6 +80,15 @@ interface ConsoleRow {
   updated_at?: number | null;
 }
 
+export type ProviderTaskLivenessReader = (
+  sourcePath: string,
+  providerSessionId: string,
+) => { status: "live" | "not_live" | "unavailable" };
+
+export interface SessionLivenessOptions {
+  readCodexTaskLiveness?: ProviderTaskLivenessReader;
+}
+
 /**
  * Resolve any known alias for a session to its full identity, or `null` when
  * Mandible has no record of it.
@@ -81,13 +98,18 @@ interface ConsoleRow {
  * session whose agent has stopped, while `null` means nothing in this Mandible
  * instance has ever claimed that string.
  */
-export function resolveSessionAlias(db: Db, suppliedId: string): SessionAliasResolution | null {
+export function resolveSessionAlias(
+  db: Db,
+  suppliedId: string,
+  options: SessionLivenessOptions = {},
+): SessionAliasResolution | null {
   const id = suppliedId.trim();
   if (!id) return null;
 
-  const directSession = lookupSession(db, id);
+  const directSession = lookupSession(db, id) ?? lookupSessionByConversationId(db, id);
   const consoleRow = pickConsoleRow(db, consoleRowsForAlias(db, id));
-  if (!directSession && !consoleRow) return null;
+  const providerIngestion = providerSessionIngestion(db, id);
+  if (!directSession && !consoleRow && !providerIngestion) return null;
 
   // A console row that names a Mandible session carries the richer identity:
   // status and last activity live on `sessions`, not on `console_sessions`.
@@ -98,12 +120,21 @@ export function resolveSessionAlias(db: Db, suppliedId: string): SessionAliasRes
     supplied_id: id,
     mandible_session_id: linkedSession?.id ?? null,
     console_session_id: consoleRow?.id ?? null,
-    provider_session_id: consoleRow?.provider_session_id?.trim() || null,
-    provider: linkedSession?.app?.trim() || consoleRow?.command?.trim() || null,
+    provider_session_id: consoleRow?.provider_session_id?.trim()
+      || linkedSession?.conversation_id?.trim()
+      || providerIngestion?.provider_session_id
+      || null,
+    provider: linkedSession?.app?.trim()
+      || consoleRow?.command?.trim()
+      || providerIngestion?.provider
+      || null,
     mandible_status: linkedSession?.status ?? null,
     console_status: consoleRow?.status ?? null,
-    last_activity: linkedSession?.last_active ?? linkedSession?.updated_at ?? null,
-    has_live_agent: isSessionAliasLive(db, id),
+    last_activity: linkedSession?.last_active
+      ?? linkedSession?.updated_at
+      ?? providerIngestion?.updated_at
+      ?? null,
+    has_live_agent: isSessionAliasLive(db, id, options),
   };
 }
 
@@ -116,12 +147,25 @@ export function resolveSessionAlias(db: Db, suppliedId: string): SessionAliasRes
  * running behind this id" is the conservative question the archive path must
  * ask: one live row anywhere is enough to leave the thread alone.
  */
-export function isSessionAliasLive(db: Db, suppliedId: string): boolean {
-  if (isMandibleSessionLive(db, suppliedId)) return true;
-  if (!tableExists(db, "console_sessions")) return false;
+export function isSessionAliasLive(
+  db: Db,
+  suppliedId: string,
+  options: SessionLivenessOptions = {},
+): boolean {
+  const sessionRows = sessionRowsForAlias(db, suppliedId);
+  for (const row of sessionRows) {
+    if (isProviderProjectionSession(row)) {
+      if (isCodexProviderTaskLive(db, row.conversation_id!, options)) return true;
+      continue;
+    }
+    if (isLiveSessionStatus(row.status)) return true;
+  }
+  if (!tableExists(db, "console_sessions")) {
+    return isCodexProviderTaskLive(db, suppliedId, options);
+  }
   const rows = tableExists(db, "sessions")
     ? db.prepare(
-      `SELECT cs.status AS console_status, s.status AS mandible_status
+      `SELECT cs.status AS console_status, s.id AS mandible_session_id
        FROM console_sessions cs
        LEFT JOIN sessions s ON s.id = COALESCE(cs.mandible_session_id, ?)
        WHERE cs.id = ?
@@ -132,9 +176,9 @@ export function isSessionAliasLive(db: Db, suppliedId: string): boolean {
       suppliedId,
       suppliedId,
       suppliedId,
-    ) as Array<{ console_status?: string | null; mandible_status?: string | null }>
+    ) as Array<{ console_status?: string | null; mandible_session_id?: string | null }>
     : db.prepare(
-      `SELECT cs.status AS console_status, NULL AS mandible_status
+      `SELECT cs.status AS console_status, NULL AS mandible_session_id
        FROM console_sessions cs
        WHERE cs.id = ?
           OR cs.mandible_session_id = ?
@@ -143,10 +187,19 @@ export function isSessionAliasLive(db: Db, suppliedId: string): boolean {
       suppliedId,
       suppliedId,
       suppliedId,
-    ) as Array<{ console_status?: string | null; mandible_status?: string | null }>;
-  return rows.some((row) =>
-    isLiveSessionStatus(row.console_status) || isLiveSessionStatus(row.mandible_status)
-  );
+    ) as Array<{ console_status?: string | null; mandible_session_id?: string | null }>;
+  for (const row of rows) {
+    if (isLiveSessionStatus(row.console_status)) return true;
+    if (!row.mandible_session_id) continue;
+    const session = lookupSession(db, row.mandible_session_id);
+    if (!session) continue;
+    if (isProviderProjectionSession(session)) {
+      if (isCodexProviderTaskLive(db, session.conversation_id!, options)) return true;
+    } else if (isLiveSessionStatus(session.status)) {
+      return true;
+    }
+  }
+  return isCodexProviderTaskLive(db, suppliedId, options);
 }
 
 /**
@@ -175,6 +228,57 @@ function lookupSession(db: Db, sessionId: string): SessionRow | null {
   const row = db.prepare("SELECT * FROM sessions WHERE id = ?")
     .get(sessionId) as SessionRow | undefined;
   return row ?? null;
+}
+
+function lookupSessionByConversationId(db: Db, providerSessionId: string): SessionRow | null {
+  if (!tableExists(db, "sessions") || !columnExists(db, "sessions", "conversation_id")) return null;
+  const row = db.prepare(
+    `SELECT * FROM sessions
+     WHERE conversation_id = ?
+     ORDER BY CASE WHEN id = 'codex-' || ? THEN 0 ELSE 1 END, updated_at DESC, id ASC
+     LIMIT 1`,
+  ).get(providerSessionId, providerSessionId) as SessionRow | undefined;
+  return row ?? null;
+}
+
+function sessionRowsForAlias(db: Db, suppliedId: string): SessionRow[] {
+  if (!tableExists(db, "sessions")) return [];
+  if (!columnExists(db, "sessions", "conversation_id")) {
+    const row = lookupSession(db, suppliedId);
+    return row ? [row] : [];
+  }
+  return db.prepare(
+    "SELECT * FROM sessions WHERE id = ? OR conversation_id = ? ORDER BY updated_at DESC, id ASC",
+  ).all(suppliedId, suppliedId) as SessionRow[];
+}
+
+function isProviderProjectionSession(row: SessionRow): boolean {
+  const providerSessionId = row.conversation_id?.trim();
+  if (!providerSessionId || row.app !== "codex") return false;
+  return row.agent_type === "provider-session"
+    || (row.pid == null && row.id === `codex-${providerSessionId}`);
+}
+
+function providerSessionIngestion(db: Db, providerSessionId: string):
+  Extract<ProviderSessionIngestion, { status: "ingested" }> | null {
+  if (!tableExists(db, "conversations")) return null;
+  try {
+    const ingestion = resolveProviderSessionIngestion(db, providerSessionId);
+    return ingestion.status === "ingested" ? ingestion : null;
+  } catch {
+    return null;
+  }
+}
+
+function isCodexProviderTaskLive(
+  db: Db,
+  providerSessionId: string,
+  options: SessionLivenessOptions,
+): boolean {
+  const ingestion = providerSessionIngestion(db, providerSessionId);
+  if (!ingestion || ingestion.provider !== "codex") return false;
+  const read = options.readCodexTaskLiveness ?? readCodexTaskLiveness;
+  return read(ingestion.source_path, ingestion.provider_session_id).status === "live";
 }
 
 function consoleRowsForAlias(db: Db, suppliedId: string): ConsoleRow[] {

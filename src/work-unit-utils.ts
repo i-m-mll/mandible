@@ -2,10 +2,14 @@
 // Canonical mapWorkUnitRow, computeLiveness, and enrichWithLiveness used by
 // both routes/work-units.ts and routes/inbox.ts (and routes/issues.ts).
 
-import { getDb } from "./db.js";
+import { getDb, type Db } from "./db.js";
 import { getChannelRegistry } from "./channel-registry.js";
 import type { SessionRegistry } from "./registry.js";
 import type { SessionManager } from "./session-manager.js";
+import {
+  resolveSessionAlias,
+  type SessionAliasResolution,
+} from "./session-liveness.js";
 import type { WorkUnit } from "./types.js";
 
 // Bug: 8a281b3 — liveness data derived at query time, not stored
@@ -20,6 +24,8 @@ export interface WorkUnitLiveness {
 export interface WorkUnitWithLiveness extends WorkUnit {
   liveness: WorkUnitLiveness;
 }
+
+export type WorkUnitSessionResolver = (db: Db, id: string) => SessionAliasResolution | null;
 
 export function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
   return {
@@ -63,8 +69,19 @@ export function computeLiveness(
   workUnit: WorkUnit,
   _sessionRegistry: SessionRegistry,
   sessionManager: SessionManager,
+  sessionResolver: WorkUnitSessionResolver = resolveSessionAlias,
 ): WorkUnitLiveness {
   const db = getDb();
+  return computeWorkUnitLiveness(db, workUnit, sessionManager, sessionResolver);
+}
+
+/** One identity-first liveness rule shared by work-unit routes and issue detail. */
+export function computeWorkUnitLiveness(
+  db: Db,
+  workUnit: WorkUnit,
+  sessionManager?: SessionManager,
+  sessionResolver: WorkUnitSessionResolver = resolveSessionAlias,
+): WorkUnitLiveness {
   const noLiveness: WorkUnitLiveness = {
     has_live_agent: false,
     agent_session_id: null,
@@ -73,7 +90,46 @@ export function computeLiveness(
     last_activity: null,
   };
 
-  if (!workUnit.branch) {
+  const identityCandidates = Array.from(new Set([
+    workUnit.assigned_session_id,
+    workUnit.worker_provider_session_id,
+    workUnit.provider_session_id,
+  ].filter((value): value is string => Boolean(value))));
+  let resolvedButStopped: { id: string; resolution: SessionAliasResolution } | null = null;
+  for (const id of identityCandidates) {
+    const resolution = sessionResolver(db, id);
+    if (!resolution) continue;
+    if (workUnit.provider && resolution.provider && resolution.provider !== workUnit.provider) continue;
+    if (!resolution.has_live_agent) {
+      resolvedButStopped ??= { id, resolution };
+      continue;
+    }
+    const status = resolution.mandible_status ?? resolution.console_status ?? "active";
+    const lastActivity = resolution.last_activity ? Date.parse(resolution.last_activity) : null;
+    return {
+      has_live_agent: true,
+      agent_session_id: resolution.mandible_session_id ?? id,
+      agent_status: status,
+      is_processing: resolution.console_status === "running"
+        || (resolution.mandible_status === "active" && Boolean(resolution.console_session_id)),
+      last_activity: lastActivity !== null && Number.isFinite(lastActivity) ? lastActivity : null,
+    };
+  }
+  if (resolvedButStopped) {
+    const { id, resolution } = resolvedButStopped;
+    const lastActivity = resolution.last_activity ? Date.parse(resolution.last_activity) : null;
+    return {
+      has_live_agent: false,
+      agent_session_id: resolution.mandible_session_id ?? id,
+      agent_status: resolution.mandible_status ?? resolution.console_status ?? "stopped",
+      is_processing: false,
+      last_activity: lastActivity !== null && Number.isFinite(lastActivity) ? lastActivity : null,
+    };
+  }
+
+  // An explicit provider identity is authoritative. Falling back to a session
+  // that merely shares the branch would silently substitute another agent.
+  if (identityCandidates.length > 0 || !workUnit.branch) {
     return noLiveness;
   }
 
@@ -132,7 +188,7 @@ export function computeLiveness(
     .get(sessionRow.id) as { id: string } | undefined;
 
   if (consoleRow) {
-    const backend = sessionManager.get(consoleRow.id);
+    const backend = sessionManager?.get(consoleRow.id);
     if (backend && "isProcessing" in backend && typeof backend.isProcessing === "boolean") {
       isProcessing = backend.isProcessing;
     }
