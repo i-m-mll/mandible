@@ -87,6 +87,7 @@ export interface AgenticBackend extends EventEmitter {
   getStreamEvents(): ConsoleStreamEvent[];
   ingestStructuredEvent(event: ConsoleStreamEvent): void;
   ingestText(data: string): void;
+  prepare?(signal?: AbortSignal): Promise<void>;
   getStartupProvenance?(): ProviderStartupProvenance;
 }
 

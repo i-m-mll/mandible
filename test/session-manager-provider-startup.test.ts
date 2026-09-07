@@ -15,8 +15,19 @@ const provenance: ProviderStartupProvenance = {
     launcher: "/exact/gemini",
   },
 };
+const claudeProvenance: ProviderStartupProvenance = {
+  backend_type: "sdk",
+  provider: "claude_code",
+  implementation: {
+    kind: "package",
+    name: "@anthropic-ai/claude-agent-sdk",
+    version: "0.3.259",
+    entrypoint: "/exact/claude",
+    launcher: "/exact/node",
+  },
+};
 
-function harness(sendPrompt: (backend: AgenticBackend) => void = () => undefined) {
+function harness(onStart: (backend: AgenticBackend) => void = () => undefined) {
   const manager = new SessionManager(null, vi.fn());
   const backend = Object.assign(new EventEmitter(), {
     id: "session-1",
@@ -28,11 +39,14 @@ function harness(sendPrompt: (backend: AgenticBackend) => void = () => undefined
       status: "stopped",
     },
     getStartupProvenance: () => provenance,
-    start() { this.meta.status = "running"; },
+    start() {
+      this.meta.status = "running";
+      queueMicrotask(() => onStart(this as unknown as AgenticBackend));
+    },
     stop: vi.fn(),
     destroy: vi.fn(),
     clear: vi.fn(),
-    sendPrompt() { sendPrompt(this as unknown as AgenticBackend); },
+    sendPrompt: vi.fn(),
     write: vi.fn(),
     resize: vi.fn(),
     addWsClient: vi.fn(),
@@ -47,28 +61,48 @@ function harness(sendPrompt: (backend: AgenticBackend) => void = () => undefined
 }
 
 describe("conversation provider startup", () => {
+  it("accepts a warm Claude transport without inventing a provider session or prompt", async () => {
+    const { manager, backend } = harness();
+    backend.prepare = vi.fn(async () => undefined);
+    await expect(manager.startConversation("session-1", { timeoutMs: 20, provenance: claudeProvenance }))
+      .resolves.toEqual({ provider_session_id: null, provenance: claudeProvenance });
+    expect(backend.prepare).toHaveBeenCalledOnce();
+    expect(backend.sendPrompt).not.toHaveBeenCalled();
+  });
+
   it("times out readiness and removes every temporary listener", async () => {
     const { manager, backend } = harness();
-    await expect(manager.startConversation("session-1", "hello", { timeoutMs: 5, provenance }))
+    await expect(manager.startConversation("session-1", { timeoutMs: 5, provenance }))
       .rejects.toMatchObject({ code: "provider_startup_timeout", phase: "readiness" });
     expect(backend.listenerCount("meta_update")).toBe(0);
     expect(backend.listenerCount("status")).toBe(0);
     expect(backend.listenerCount("startup_error")).toBe(0);
   });
 
-  it("accepts provider proof that arrives while the prompt is queued", async () => {
+  it("accepts Codex provider proof without sending a synthetic prompt", async () => {
     const { manager } = harness((backend) => {
       backend.meta.provider_session_id = "provider-1";
+      backend.emit("meta_update", { provider_session_id: "provider-1" });
     });
-    await expect(manager.startConversation("session-1", "hello", { timeoutMs: 20, provenance }))
+    await expect(manager.startConversation("session-1", { timeoutMs: 20, provenance }))
       .resolves.toEqual({ provider_session_id: "provider-1", provenance });
+  });
+
+  it("cancels armed readiness listeners when initial configuration fails", async () => {
+    const { manager, backend } = harness();
+    vi.spyOn(manager, "waitForInitialRunOptions").mockRejectedValue(new Error("invalid startup option"));
+    await expect(manager.startConversation("session-1", { timeoutMs: 20, provenance }))
+      .rejects.toMatchObject({ code: "provider_startup_failed", phase: "configuration" });
+    expect(backend.listenerCount("meta_update")).toBe(0);
+    expect(backend.listenerCount("status")).toBe(0);
+    expect(backend.listenerCount("startup_error")).toBe(0);
   });
 
   it("maps arbitrary startup exceptions to the typed public boundary", async () => {
     const { manager, backend } = harness((current) => {
       queueMicrotask(() => current.emit("startup_error", new Error("raw provider secret")));
     });
-    const failure = await manager.startConversation("session-1", "hello", { timeoutMs: 20, provenance })
+    const failure = await manager.startConversation("session-1", { timeoutMs: 20, provenance })
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(ProviderStartupError);
     expect(failure).toMatchObject({

@@ -392,7 +392,6 @@ export type {
   ConversationSpawnReceipt,
   ConversationSpawnRequest,
   ConversationSpawnState,
-  ConversationSpawnTopology,
 } from "./conversation-spawn/types.js";
 
 

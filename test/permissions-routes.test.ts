@@ -121,8 +121,8 @@ describe("restricted project route enforcement", () => {
     };
     let providerSessionId: string | null = null;
     const manager = {
-      create: vi.fn(() => ({ id: "console-1" })),
-      get: vi.fn(() => ({ meta: { id: "console-1", provider_session_id: providerSessionId } })),
+      create: vi.fn((input: { id: string }) => ({ id: input.id })),
+      get: vi.fn((id: string) => ({ meta: { id, provider_session_id: providerSessionId } })),
       getStartupProvenance: vi.fn(() => provenance),
       startConversation: vi.fn(async () => {
         providerSessionId = "provider-1";
@@ -136,20 +136,10 @@ describe("restricted project route enforcement", () => {
       method: "POST",
       url: "/api/conversation-spawns",
       body: {
-        schema: "mandible-conversation-spawn-request@1",
-        idempotency_key: "permission-route-spawn",
+        schema: "mandible-conversation-spawn-request@2",
+        idempotency_key: "10000000-0000-4000-8000-000000000001",
         provider: "codex",
-        label: "Agent",
-        initial_message: "Perform the bounded task.",
         placement: { project_id: project.id, checkout_id: "spawn-checkout" },
-        topology: { kind: "top-level" },
-        command: {
-          name: "codex",
-          backend_type: "acp",
-          transport_lane: "acp",
-          channel_enabled: false,
-          run_options: {},
-        },
       },
       credential: token,
       transport: "http" as const,
@@ -171,17 +161,52 @@ describe("restricted project route enforcement", () => {
       },
     });
     expect(manager.create).toHaveBeenCalledOnce();
-    expect(manager.startConversation).toHaveBeenCalledWith("console-1", "Perform the bounded task.", {
+    expect(manager.create).toHaveBeenCalledWith(expect.objectContaining({
+      id: "10000000-0000-4000-8000-000000000001",
+      command: "codex",
+      backend_type: "acp",
+      transport_lane: "acp",
+      runOptions: { model: "gpt-5.6-sol", mode: "agent-full-access" },
+    }));
+    expect(manager.startConversation).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000001", {
       timeoutMs: 30_000,
       signal: undefined,
       provenance,
+    });
+
+    const claudeProvenance = {
+      backend_type: "sdk" as const,
+      provider: "claude_code",
+      implementation: { kind: "package" as const, name: "@anthropic-ai/claude-agent-sdk", version: "0.3.259", entrypoint: "/exact/claude", launcher: "/exact/node" },
+    };
+    manager.getStartupProvenance.mockReturnValueOnce(claudeProvenance);
+    manager.startConversation.mockResolvedValueOnce({ provider_session_id: null, provenance: claudeProvenance });
+    const claude = await router.invoke({
+      ...input,
+      body: {
+        ...input.body,
+        idempotency_key: "10000000-0000-4000-8000-000000000004",
+        provider: "claude_code",
+      },
+    });
+    expect(claude.status).toBe(201);
+    expect(manager.create).toHaveBeenLastCalledWith(expect.objectContaining({
+      id: "10000000-0000-4000-8000-000000000004",
+      command: "claude",
+      backend_type: "sdk",
+      transport_lane: "sdk",
+      runOptions: { model: "opus", permission_mode: "bypassPermissions" },
+    }));
+    expect(claude.body).toMatchObject({
+      spawn: { state: "ready", provider_session_id: null },
+      session: { canonical_project_id: project.id, canonical_checkout_id: "spawn-checkout" },
     });
 
     providerSessionId = null;
     manager.startConversation.mockRejectedValueOnce(new Error("raw SDK path and secret provider error"));
     const failed = await router.invoke({
       ...input,
-      body: { ...input.body, idempotency_key: "permission-route-spawn-failed" },
+      body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000002" },
     });
     expect(failed.status).toBe(502);
     expect(failed.body).toMatchObject({
@@ -194,11 +219,11 @@ describe("restricted project route enforcement", () => {
       spawn: { state: "failed", native_session_id: null },
     });
     expect(JSON.stringify(failed.body)).not.toContain("secret provider error");
-    expect(manager.stop).toHaveBeenCalledWith("console-1", "SIGTERM");
-    expect(manager.delete).toHaveBeenCalledWith("console-1");
+    expect(manager.stop).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000002", "SIGTERM");
+    expect(manager.delete).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000002");
 
     const controller = new AbortController();
-    manager.startConversation.mockImplementationOnce(async (_id, _prompt, options) => {
+    manager.startConversation.mockImplementationOnce(async (_id, options) => {
       await new Promise<void>((_resolve, reject) => {
         options.signal?.addEventListener("abort", () => reject(new ProviderStartupError(
           "client_aborted",
@@ -210,14 +235,14 @@ describe("restricted project route enforcement", () => {
     });
     const abortedResponse = router.invoke({
       ...input,
-      body: { ...input.body, idempotency_key: "permission-route-spawn-aborted" },
+      body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000003" },
       signal: controller.signal,
     });
     controller.abort();
     await abortedResponse;
     const abortedRow = db.prepare(
       "SELECT state, native_session_id, error_json FROM conversation_spawn_requests WHERE idempotency_key = ?",
-    ).get("permission-route-spawn-aborted") as { state: string; native_session_id: string | null; error_json: string };
+    ).get("10000000-0000-4000-8000-000000000003") as { state: string; native_session_id: string | null; error_json: string };
     expect(abortedRow.state).toBe("failed");
     expect(abortedRow.native_session_id).toBeNull();
     expect(JSON.parse(abortedRow.error_json)).toMatchObject({ code: "client_aborted", retryable: true });

@@ -10,6 +10,7 @@ import { readConversationSpawnPlacementBatch } from "../src/routes/console.js";
 let root = "";
 let db: Db;
 let clock = 100;
+const ID = "10000000-0000-4000-8000-000000000001";
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-spawn-"));
@@ -30,142 +31,72 @@ afterEach(() => {
 function request(overrides: Partial<ConversationSpawnRequest> = {}): ConversationSpawnRequest {
   return {
     schema: CONVERSATION_SPAWN_REQUEST_SCHEMA,
-    idempotency_key: "request-1",
+    idempotency_key: ID,
     provider: "codex",
-    label: "Investigate",
-    initial_message: "Find the exact cause.",
     placement: { project_id: "project-a", checkout_id: "checkout-a" },
-    topology: { kind: "top-level" },
-    command: { name: "codex", backend_type: "acp", transport_lane: "acp", channel_enabled: false, run_options: {} },
     ...overrides,
   };
 }
 
-describe("Mandible conversation spawn authority", () => {
-  it("reserves one canonical request and replays the same receipt idempotently", () => {
+describe("provider-first conversation spawn authority", () => {
+  it("uses one UUID for idempotency, reservation, placement projection, and replay", () => {
     const service = new ConversationSpawnService(db, () => clock++);
     const first = service.reserve(request());
     const replay = service.reserve(request());
-    expect(first.ok && replay.ok && replay.value.reservation_id).toBe(first.ok ? first.value.reservation_id : "");
-    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_spawn_requests").get()).toEqual({ count: 1 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM conversations").get()).toEqual({ count: 0 });
-  });
-
-  it("projects canonical placement only from exact spawn reservation identities", () => {
-    const service = new ConversationSpawnService(db);
-    const scoped = service.reserve(request());
-    const unscoped = service.reserve(request({
-      idempotency_key: "request-unscoped",
-      placement: { project_id: null, checkout_id: null },
-    }));
-    if (!scoped.ok || !unscoped.ok) throw new Error("reservation failed");
-
-    const placements = readConversationSpawnPlacementBatch(db, [
-      scoped.value.reservation_id,
-      unscoped.value.reservation_id,
-      "cwd-lookalike-without-reservation",
-    ]);
-
-    expect(placements.get(scoped.value.reservation_id)).toEqual({
+    expect(first).toMatchObject({ ok: true, value: { reservation_id: ID, state: "reserved" } });
+    expect(replay).toEqual(first);
+    expect(readConversationSpawnPlacementBatch(db, [ID]).get(ID)).toEqual({
       canonical_project_id: "project-a",
       canonical_checkout_id: "checkout-a",
     });
-    expect(placements.get(unscoped.value.reservation_id)).toEqual({
-      canonical_project_id: null,
-      canonical_checkout_id: null,
-    });
-    expect(placements.has("cwd-lookalike-without-reservation")).toBe(false);
   });
 
-  it("fails closed when an idempotency key is reused for different intent", () => {
+  it("rejects version 1, unsupported providers, and client launch controls before persistence", () => {
     const service = new ConversationSpawnService(db);
+    expect(service.reserve({ ...request(), schema: "mandible-conversation-spawn-request@1" } as never))
+      .toMatchObject({ ok: false, error: { kind: "invalid-request", field: "schema" } });
+    expect(service.reserve({ ...request(), provider: "gemini" } as never))
+      .toMatchObject({ ok: false, error: { kind: "invalid-request", field: "provider" } });
+    expect(service.reserve({ ...request(), command: { name: "codex" } } as never))
+      .toMatchObject({ ok: false, error: { kind: "invalid-request", field: "command" } });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_spawn_requests").get()).toEqual({ count: 0 });
+  });
+
+  it("keeps provider immutable across retry and terminalizes interrupted startup", () => {
+    const service = new ConversationSpawnService(db, () => clock++);
     expect(service.reserve(request()).ok).toBe(true);
-    expect(service.reserve(request({ initial_message: "Do something else." }))).toEqual({
-      ok: false, error: { kind: "idempotency-conflict", idempotency_key: "request-1" },
-    });
-  });
-
-  it("retries delivery against the recorded native session without authorizing another creation", () => {
-    const service = new ConversationSpawnService(db, () => clock++);
-    const reserved = service.reserve(request());
-    if (!reserved.ok) throw new Error("reservation failed");
-    expect(service.begin(reserved.value.reservation_id).ok).toBe(true);
-    expect(service.recordProviderReceipt(reserved.value.reservation_id, "native-1", "provider-1", { request_id: "provider-request-1" }).ok).toBe(true);
-    const failed = service.failed(reserved.value.reservation_id, { code: "transport", message: "connection closed", retryable: true });
-    expect(failed.ok && failed.value.native_session_id).toBe("native-1");
-    const retry = service.begin(reserved.value.reservation_id);
-    expect(retry.ok && retry.value).toMatchObject({ state: "delivering", attempt_count: 2, native_session_id: "native-1" });
-    expect(service.recordProviderReceipt(reserved.value.reservation_id, "native-2", "provider-2", {})).toMatchObject({
-      ok: false, error: { kind: "idempotency-conflict" },
-    });
-  });
-
-  it("requires native provider proof before delivery and resets a failed pre-proof allocation", () => {
-    const service = new ConversationSpawnService(db, () => clock++);
-    const reserved = service.reserve(request());
-    if (!reserved.ok) throw new Error("reservation failed");
-    const id = reserved.value.reservation_id;
-    expect(service.begin(id).ok).toBe(true);
-    expect(service.recordNativeSession(id, "native-1").ok).toBe(true);
-    expect(service.delivered(id)).toEqual({
+    expect(service.reserve(request({ provider: "claude_code" }))).toEqual({
       ok: false,
-      error: { kind: "provider-proof-required", reservation_id: id },
+      error: { kind: "idempotency-conflict", idempotency_key: ID },
     });
-    const failed = service.failed(id, {
-      code: "provider_startup_timeout",
-      message: "Provider startup timed out.",
-      retryable: true,
-      phase: "readiness",
-    }, { resetNativeSession: true });
-    expect(failed.ok && failed.value).toMatchObject({
-      state: "failed",
-      native_session_id: null,
-      provider_session_id: null,
-      initial_message_state: "failed",
-    });
-    const retry = service.begin(id);
-    expect(retry.ok && retry.value).toMatchObject({ state: "creating", attempt_count: 2 });
-  });
-
-  it("terminalizes an interrupted create when the durable service restarts", () => {
-    const service = new ConversationSpawnService(db, () => clock++);
-    const reserved = service.reserve(request());
-    if (!reserved.ok) throw new Error("reservation failed");
-    const id = reserved.value.reservation_id;
-    service.begin(id);
-    service.recordNativeSession(id, "native-1");
-
+    expect(service.begin(ID)).toMatchObject({ ok: true, value: { state: "starting", attempt_count: 1 } });
     const restarted = new ConversationSpawnService(db, () => clock++);
-    expect(restarted.get(id)).toMatchObject({
+    expect(restarted.get(ID)).toMatchObject({
       ok: true,
-      value: {
-        state: "failed",
-        native_session_id: "native-1",
-        error: { code: "provider_startup_interrupted", retryable: true },
-      },
+      value: { state: "failed", error: { code: "provider_startup_interrupted", retryable: true } },
     });
-    expect(db.prepare("SELECT event_kind FROM conversation_spawn_events WHERE spawn_id = ? ORDER BY ordinal DESC LIMIT 1")
-      .get(id)).toEqual({ event_kind: "failed" });
+    expect(restarted.begin(ID)).toMatchObject({ ok: true, value: { state: "starting", attempt_count: 2 } });
   });
 
-  it("accepts lineage only from an exact existing conversation or reservation identity", () => {
-    const service = new ConversationSpawnService(db);
-    expect(service.reserve(request({ topology: { kind: "child", parent_conversation_id: "guessed-parent" } }))).toEqual({
-      ok: false, error: { kind: "topology-target-not-found", conversation_id: "guessed-parent" },
-    });
-    const parent = service.reserve(request());
-    if (!parent.ok) throw new Error("parent reservation failed");
-    const child = service.reserve(request({ idempotency_key: "request-2", topology: { kind: "child", parent_conversation_id: parent.value.reservation_id } }));
-    expect(child.ok && child.value.request.topology).toEqual({ kind: "child", parent_conversation_id: parent.value.reservation_id });
-  });
-
-  it("rejects a checkout that does not belong to the named canonical project", () => {
-    db.prepare(`INSERT INTO ledger_projects
-      (id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at, project_key)
-      VALUES ('project-b', 'Project B', '', '', 'local', 1, 1, 'project-b')`).run();
-    const service = new ConversationSpawnService(db);
-    expect(service.reserve(request({ placement: { project_id: "project-b", checkout_id: "checkout-a" } }))).toEqual({
-      ok: false, error: { kind: "checkout-project-mismatch", project_id: "project-b", checkout_id: "checkout-a" },
+  it("reads historical version-1 receipts without accepting their creation path", () => {
+    const historical = {
+      schema: "mandible-conversation-spawn-request@1",
+      idempotency_key: "historical",
+      provider: "gemini",
+      label: "Old",
+      initial_message: "Old prompt",
+      placement: { project_id: null, checkout_id: null },
+      topology: { kind: "top-level" },
+      command: { name: "gemini", backend_type: "acp", transport_lane: "acp", channel_enabled: false, run_options: {} },
+    };
+    db.prepare(`INSERT INTO conversation_spawn_requests
+      (id, schema_version, idempotency_key, request_digest, request_json, provider, project_id, checkout_id,
+       topology_kind, state, initial_message_state, created_at, updated_at)
+      VALUES ('historical', ?, 'historical', ?, ?, 'gemini', NULL, NULL, 'top-level', 'delivered', 'delivered', 1, 1)`)
+      .run(historical.schema, "0".repeat(64), JSON.stringify(historical));
+    expect(new ConversationSpawnService(db).get("historical")).toMatchObject({
+      ok: true,
+      value: { schema: "mandible-conversation-spawn-receipt@1", state: "delivered", request: historical },
     });
   });
 });
