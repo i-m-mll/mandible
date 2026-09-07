@@ -45,7 +45,7 @@ function RunOption({ label, value }: { label: string; value: string }): JSX.Elem
 function NativeComposer({ layoutKey }: { layoutKey: string }): JSX.Element {
   const geometry = useIntrinsicOverflowGroup(true, `Agent\u0000gpt-5.6-sol\u0000Medium\u0000${layoutKey}`);
   return (
-    <div className="conv-compose">
+    <div className="conv-compose" data-detail-pane-overlay-visual>
       <div className="conv-compose__controls">
         <div ref={geometry.containerRef} className={`conv-compose__runtime${geometry.overflowed ? ' conv-compose__runtime--run-options-overflow' : ''}`}>
           <div ref={geometry.contentRef} className="conv-compose__run-options-inline" aria-label="Run options" aria-hidden={geometry.overflowed ? 'true' : undefined} inert={geometry.overflowed || undefined}>
@@ -58,6 +58,19 @@ function NativeComposer({ layoutKey }: { layoutKey: string }): JSX.Element {
             <span className="context-usage">42%</span>
             <button type="button" className="conv-compose__send">Send</button>
           </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NativeTranscript(): JSX.Element {
+  return (
+    <div className="conv-transcript">
+      <div className="stream-renderer">
+        <div className="stream-renderer__scroll">
+          <div style={{ height: 900 }} />
+          <div data-transcript-final-content style={{ height: 24 }}>Final transcript line</div>
         </div>
       </div>
     </div>
@@ -85,7 +98,7 @@ function ChatMain({ descriptor, toggleRef, setOpen }: {
       )}
       overlayControl={<NativeComposer layoutKey={`${descriptor.open}\u0000${descriptor.width}`} />}
     >
-      <div className="conv-transcript">{Array.from({ length: 30 }, (_, index) => <p key={index}>Transcript row {index}</p>)}</div>
+      <NativeTranscript />
     </ChatDetailFrame>
   );
 }

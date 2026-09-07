@@ -692,20 +692,28 @@
 }
 
 .conv-transcript {
-  flex: none;
+  flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 18px;
   max-height: none;
-  overflow: visible;
-  padding: 0 18px 20px;
+  overflow: hidden;
+  padding: 0 18px;
 }
 
-/* The transcript owns the same outer inset as the composer. Avoid adding a
- * second inner gutter in the shared stream renderer. */
+/* Chat's nested stream is the scroll owner. Do not also append the shell's
+ * generic outer-body spacer; the measured end space belongs after transcript
+ * content on the element whose scrollTop reaches the tail. */
+.chat-detail-frame.detail-pane-shell--overlay-control .detail-pane-shell__body::after {
+  display: none;
+}
+
+/* The transcript owns the same outer inline inset as the composer. Its bottom
+ * padding is the measured composer height plus twice the composer bottom gap. */
 .conv-transcript .stream-renderer__scroll {
   padding-inline: 0;
+  padding-bottom: var(--detail-pane-overlay-control-scroll-space, var(--space-4));
 }
 
 /* Conversation prose and its tool disclosures share one readable body size;
