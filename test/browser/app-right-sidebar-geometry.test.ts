@@ -87,7 +87,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
           top:overlayRect.top+parseFloat(maskStyle.top),bottom:overlayRect.bottom-parseFloat(maskStyle.bottom),background:maskStyle.backgroundColor,zIndex:maskStyle.zIndex}:null;
         const inline=document.querySelector('.conv-compose__run-options-inline'); const trigger=document.querySelector('.conv-compose__run-options-trigger');
         const selectRects=Array.from(inline?.querySelectorAll('select')||[],rect);
-        const runOptions=composer?{containerWidth:composer.clientWidth,inlineDisplay:getComputedStyle(inline).display,triggerDisplay:getComputedStyle(trigger).display,
+        const runOptions=composer?{containerWidth:composer.clientWidth,inlineDisplay:getComputedStyle(inline).display,inlineVisibility:getComputedStyle(inline).visibility,triggerDisplay:getComputedStyle(trigger).display,
           triggerText:trigger.textContent.trim(),triggerHasSvg:Boolean(trigger.querySelector('svg')),selectRects,composer:composerRect}:null;
         const titleErrors=document.querySelector('[data-title-errors]');
         document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,
@@ -147,17 +147,20 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(geometry.mask.right).toBeCloseTo(geometry.overlayControl.right, 0);
         expect(Math.abs(geometry.mask.top - (geometry.composer.top + ((geometry.composer.bottom - geometry.composer.top) / 2)))).toBeLessThanOrEqual(1);
         expect(geometry.mask.bottom).toBeCloseTo(geometry.overlayControl.bottom, 0);
-        const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number } };
+        const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; inlineVisibility: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number } };
         expect(runOptions.triggerText).toBe('');
         expect(runOptions.triggerHasSvg).toBe(true);
-        if (runOptions.containerWidth <= 700) {
-          expect(runOptions.inlineDisplay).toBe('none');
+        expect(runOptions.inlineDisplay).toBe('flex');
+        expect(runOptions.selectRects).toHaveLength(3);
+        expect(new Set(runOptions.selectRects.map((select) => select.right - select.left)).size).toBeGreaterThan(1);
+        if (runOptions.inlineVisibility === 'hidden') {
           expect(runOptions.triggerDisplay).toBe('flex');
         } else {
-          expect(runOptions.inlineDisplay).toBe('flex');
           expect(runOptions.triggerDisplay).toBe('none');
-          expect(runOptions.selectRects).toHaveLength(3);
-          expect(runOptions.selectRects.every((select) => select.left >= runOptions.composer.left && select.right <= runOptions.composer.right)).toBe(true);
+          expect(
+            runOptions.selectRects.every((select) => select.left >= runOptions.composer.left && select.right <= runOptions.composer.right),
+            `${result.surface}/${result.width}/${result.theme} run options ${JSON.stringify(runOptions)}`,
+          ).toBe(true);
         }
         expect((geometry.mask as unknown as { background: string }).background).toBe((geometry as unknown as { mainBackground: string }).mainBackground);
         expect(result).toMatchObject({ deterministicRetry: 'false', transientRetry: 'true' });
