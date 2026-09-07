@@ -41,6 +41,12 @@ import {
   type SessionRunOptionsUpdateResult,
 } from "../session-run-options.js";
 import { extractModel } from "./cli-args.js";
+import {
+  codexAcpProvenance,
+  executableProvenance,
+  resolveExecutable,
+} from "../provider-provenance.js";
+import type { ProviderStartupProvenance } from "../provider-startup.js";
 
 const EVENT_LOG_LIMIT = 2000;
 export const ACP_USAGE_LOG_LIMIT = EVENT_LOG_LIMIT;
@@ -52,10 +58,6 @@ const POLLUTED_ENV_KEYS_EXACT = new Set([
   "CLAUDECODE",
   "GIT_CONFIG_COUNT",
 ]);
-// Keep in sync with the "@agentclientprotocol/codex-acp" pin in package.json:
-// that entry is the declared pin, and this string is what npx resolves at spawn.
-const CODEX_ACP_VERSION = "1.0.2";
-
 interface PendingPermission {
   request: PermissionRequest;
   responseId: JsonRpcId;
@@ -64,8 +66,6 @@ interface PendingPermission {
 }
 
 interface AcpAgentDefinition {
-  command: string;
-  args: string[];
   probeFlag?: boolean;
   fallbackAuthMethodId?: string;
   selectAuthMethod(authMethods: AcpAuthMethod[], env: Record<string, string>): string | null;
@@ -143,8 +143,6 @@ interface AcpAuthMethod {
 
 const ACP_AGENT_REGISTRY: Record<string, AcpAgentDefinition> = {
   gemini: {
-    command: "gemini",
-    args: [],
     probeFlag: true,
     fallbackAuthMethodId: "oauth-personal",
     selectAuthMethod(authMethods) {
@@ -153,8 +151,6 @@ const ACP_AGENT_REGISTRY: Record<string, AcpAgentDefinition> = {
     runOptions: [],
   },
   codex: {
-    command: "npx",
-    args: ["-y", `@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}`],
     // Observed in @agentclientprotocol/codex-acp@1.0.2: api-key, chat-gpt, gateway.
     // ChatGPT is omitted by the adapter when NO_BROWSER is set; gateway is only
     // advertised when the client opts into the gateway auth capability.
@@ -193,6 +189,7 @@ implements
   meta: ConsoleSession;
 
   private childProc: ChildProcess | null = null;
+  private stopEscalation: NodeJS.Timeout | null = null;
   private wsClients: Set<WebSocket> = new Set();
   private eventLog: ConsoleStreamEvent[] = [];
   private usageLog: Record<string, unknown>[] = [];
@@ -212,6 +209,7 @@ implements
   private authMethods: AcpAuthMethod[] = [];
   private agentCapabilities: Record<string, unknown> | null = null;
   private readonly mandibleTokenSource: string | (() => string | null) | null;
+  private readonly startupProvenanceOverride: (() => ProviderStartupProvenance) | null;
   readonly runOptionDeclaration: BackendRunOptionDeclaration;
   private runOptionsSnapshot: SessionRunOptionsSnapshot;
   private providerOptions: ProviderRunOption[] | null = null;
@@ -226,16 +224,26 @@ implements
     return this.processing;
   }
 
+  getStartupProvenance(): ProviderStartupProvenance {
+    if (this.startupProvenanceOverride) return this.startupProvenanceOverride();
+    if (this.meta.command === "codex") return codexAcpProvenance();
+    const env = this.buildCleanEnv(this.meta.env);
+    const entrypoint = resolveExecutable(this.meta.command, env);
+    return executableProvenance(this.meta.command, entrypoint);
+  }
+
   constructor(
     meta: ConsoleSession,
     logger: Logger,
     mandibleToken: string | (() => string | null) | null = null,
+    startupProvenanceOverride: (() => ProviderStartupProvenance) | null = null,
   ) {
     super();
     this.id = meta.id;
     this.meta = meta;
     this.logger = logger;
     this.mandibleTokenSource = mandibleToken;
+    this.startupProvenanceOverride = startupProvenanceOverride;
     this.autoAllowedTools = new Set(meta.allowed_tools ?? []);
     this.runOptionDeclaration = getAcpRunOptionDeclaration(meta.command);
     this.runOptionsSnapshot = declaredRunOptionsSnapshot(this.runOptionDeclaration, "discovering");
@@ -254,9 +262,11 @@ implements
     }
 
     this.starting = true;
-    void this.launch().finally(() => {
-      this.starting = false;
-    });
+    void this.launch()
+      .catch((error) => this.markCrashed(String(error)))
+      .finally(() => {
+        this.starting = false;
+      });
   }
 
   stop(_signal?: string): void {
@@ -266,11 +276,20 @@ implements
     this.stopping = true;
 
     if (this.childProc) {
+      const child = this.childProc;
       try {
-        this.childProc.kill("SIGTERM");
+        child.kill("SIGTERM");
       } catch {
         // Process may already be gone.
       }
+      if (this.stopEscalation) clearTimeout(this.stopEscalation);
+      this.stopEscalation = setTimeout(() => {
+        this.stopEscalation = null;
+        if (child.exitCode === null) {
+          try { child.kill("SIGKILL"); } catch { /* Process already exited. */ }
+        }
+      }, 5_000);
+      this.stopEscalation.unref();
       this.childProc = null;
     }
 
@@ -479,6 +498,7 @@ implements
   }
 
   private async launch(): Promise<void> {
+    this.stopping = false;
     const agent = ACP_AGENT_REGISTRY[this.meta.command];
     if (!agent) {
       this.markCrashed(`Unsupported ACP command: ${this.meta.command}`);
@@ -486,16 +506,21 @@ implements
     }
 
     const env = this.buildCleanEnv(this.meta.env);
-    let launchCommand = agent.command;
-    let launchArgs = [...agent.args];
+    const provenance = this.getStartupProvenance();
+    let launchCommand = provenance.implementation.launcher;
+    let launchArgs: string[] = [];
+
+    if (this.meta.command === "codex" && provenance.implementation.kind === "package") {
+      launchArgs = [provenance.implementation.entrypoint];
+    }
 
     if (agent.probeFlag) {
-      const flag = await probeGeminiAcpFlag(this.meta.command, env);
+      const flag = await probeGeminiAcpFlag(provenance.implementation.entrypoint, env);
       if (!flag) {
         this.markCrashed("Gemini CLI does not advertise --acp or --experimental-acp");
         return;
       }
-      launchCommand = this.meta.command;
+      launchCommand = provenance.implementation.entrypoint;
       launchArgs = this.buildGeminiLaunchArgs(flag);
     }
 
@@ -728,7 +753,15 @@ implements
     const record = asRecord(result);
     if (!record) return;
     const sessionId = typeof record.sessionId === "string" ? record.sessionId : null;
-    if (sessionId) this.mapper.sessionId = sessionId;
+    if (sessionId) {
+      this.mapper.sessionId = sessionId;
+      if (sessionId !== this.id && sessionId !== this.meta.provider_session_id) {
+        const updatedAt = Date.now();
+        this.meta = { ...this.meta, provider_session_id: sessionId, updated_at: updatedAt };
+        suppressAcpIngestForSession(this.meta.command, sessionId);
+        this.emitMetaUpdate({ provider_session_id: sessionId, updated_at: updatedAt });
+      }
+    }
     this.installProviderInventory(record.configOptions);
   }
 
@@ -1011,6 +1044,10 @@ implements
   }
 
   private handleClose(code: number | null, signal: NodeJS.Signals | null): void {
+    if (this.stopEscalation) {
+      clearTimeout(this.stopEscalation);
+      this.stopEscalation = null;
+    }
     this.ready = false;
     this.childProc = null;
     this.resolveAllPendingPermissions("deny");

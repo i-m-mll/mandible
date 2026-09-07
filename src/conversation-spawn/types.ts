@@ -39,7 +39,13 @@ export interface ConversationSpawnReceipt {
   provider_session_id: string | null;
   provider_receipt: Record<string, unknown> | null;
   initial_message_state: "queued" | "delivering" | "delivered" | "failed";
-  error: { code: string; message: string; retryable: boolean } | null;
+  error: {
+    code: string;
+    message: string;
+    retryable: boolean;
+    phase?: "configuration" | "readiness";
+    provenance?: import("../provider-startup.js").ProviderStartupProvenance;
+  } | null;
   created_at: number;
   updated_at: number;
 }
@@ -52,6 +58,7 @@ export type ConversationSpawnError =
   | { kind: "checkout-project-mismatch"; project_id: string; checkout_id: string }
   | { kind: "topology-target-not-found"; conversation_id: string }
   | { kind: "spawn-in-progress"; reservation_id: string }
+  | { kind: "provider-proof-required"; reservation_id: string }
   | { kind: "not-found"; reservation_id: string };
 
 export type Result<T, E = ConversationSpawnError> = { ok: true; value: T } | { ok: false; error: E };
