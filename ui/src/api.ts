@@ -58,6 +58,7 @@ import type {
   ConversationControlOperation as ContractConversationControlOperation,
   ConversationRuntimeOptions as ContractConversationRuntimeOptions,
   ConversationControlSnapshot as ContractConversationControlSnapshot,
+  ConversationSpawnReceipt as ContractConversationSpawnReceipt,
   ProviderAdapterEvent as ContractProviderAdapterEvent,
   ProviderLiveProjection as ContractProviderLiveProjection,
   OperationalIncidentAcknowledgementResponse as ContractOperationalIncidentAcknowledgement,
@@ -292,6 +293,22 @@ export class ApiError extends Error {
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+  }
+}
+
+export type ConversationSpawnFailure = NonNullable<ContractConversationSpawnReceipt['error']>;
+
+export class ConversationSpawnApiError extends Error {
+  readonly status: number;
+  readonly failure: ConversationSpawnFailure;
+  readonly spawn: ContractConversationSpawnReceipt;
+
+  constructor(status: number, failure: ConversationSpawnFailure, spawn: ContractConversationSpawnReceipt) {
+    super(failure.message);
+    this.name = 'ConversationSpawnApiError';
+    this.status = status;
+    this.failure = failure;
+    this.spawn = spawn;
   }
 }
 
@@ -2117,25 +2134,56 @@ export async function createConsoleSession(
     .find((candidate) => candidate.checkout.root === options?.cwd);
   if (options?.cwd && !checkout) throw new Error('The selected checkout is not registered with Mandible.');
   const provider = backend === 'claude' ? 'claude_code' : backend;
-  const response = await apiPost('/api/conversation-spawns', {
-    schema: 'mandible-conversation-spawn-request@1',
-    idempotency_key: options?.idempotency_key ?? crypto.randomUUID(),
-    provider,
-    label,
-    initial_message: options?.initial_message ?? label,
-    placement: checkout
-      ? { project_id: checkout.project.id, checkout_id: checkout.checkout.id }
-      : { project_id: null, checkout_id: null },
-    topology: { kind: 'top-level' },
-    command: {
-      name: body.command,
-      backend_type: body.backend_type,
-      transport_lane: body.transport_lane,
-      channel_enabled: body.channel_enabled === true,
-      run_options: body.runOptions ?? {},
+  const response = await fetch('/api/conversation-spawns', {
+    method: 'POST',
+    headers: {
+      ...DEFAULT_HEADERS,
+      'Content-Type': 'application/json',
     },
+    body: JSON.stringify({
+      schema: 'mandible-conversation-spawn-request@1',
+      idempotency_key: options?.idempotency_key ?? crypto.randomUUID(),
+      provider,
+      label,
+      initial_message: options?.initial_message ?? label,
+      placement: checkout
+        ? { project_id: checkout.project.id, checkout_id: checkout.checkout.id }
+        : { project_id: null, checkout_id: null },
+      topology: { kind: 'top-level' },
+      command: {
+        name: body.command,
+        backend_type: body.backend_type,
+        transport_lane: body.transport_lane,
+        channel_enabled: body.channel_enabled === true,
+        run_options: body.runOptions ?? {},
+      },
+    }),
   });
-  const json = await parseMaybeJson(response);
+  const json = await parseMaybeJson(response) as {
+    ok?: boolean;
+    error?: unknown;
+    spawn?: ContractConversationSpawnReceipt;
+    session?: unknown;
+    message?: string;
+  };
+  if (!response.ok) {
+    const failure = json.error;
+    if (failure && typeof failure === 'object'
+        && typeof (failure as ConversationSpawnFailure).code === 'string'
+        && typeof (failure as ConversationSpawnFailure).message === 'string'
+        && typeof (failure as ConversationSpawnFailure).retryable === 'boolean'
+        && json.spawn) {
+      throw new ConversationSpawnApiError(response.status, failure as ConversationSpawnFailure, json.spawn);
+    }
+    const fallback = failure && typeof failure === 'object'
+      ? (failure as { kind?: unknown }).kind
+      : failure;
+    throw new ApiError(
+      json.message ?? (typeof fallback === 'string' ? fallback : `POST /api/conversation-spawns failed: ${response.status}`),
+      response.status,
+      typeof fallback === 'string' ? fallback : null,
+    );
+  }
   return json as {
     session: {
       id: string;
