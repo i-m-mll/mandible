@@ -30,6 +30,7 @@ Provisioning: a Chromium at one of the absolute paths each file probes, or
 | `auth-detail-responsive.test.ts` | Auth action panels stack by detail-pane width, split at the container threshold, and never reserve a single-layout right column | — |
 | `briefing-detail-shell-transition.test.ts` | Briefing detail shell keeps the outer pane non-scrollable with the document body as scroll owner across a route transition | — |
 | `briefing-sidebar-ownership-depth.test.tsx` | Briefings sidebar renders group ownership legibly: a group-owned subgroup indents past an ungrouped bundle, and the group's drawn extent excludes it | — |
+| `provider-picker-marks.test.ts` | New chat provider marks remain unboxed at rest and expose a darker mark, local surface, and visible keyboard focus treatment | — |
 
 These assert real browser layout and paint that jsdom cannot compute, so they
 were moved rather than deleted. This directory settles only *where* they run;
