@@ -120,6 +120,34 @@ tr:last-child td {
   color: var(--text-muted);
 }
 
+.overlay-close-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.overlay-close-button:is(:hover, :focus-visible) {
+  background: var(--neutral-alpha-08);
+  color: var(--chrome-icon-hover-direct);
+}
+
+.overlay-close-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
 :root[data-theme='light'] .channel-events-pane__card-json,
 :root[data-theme='light'] pre {

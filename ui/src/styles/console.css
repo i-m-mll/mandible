@@ -783,21 +783,6 @@
   line-height: 1.2;
 }
 
-.usage-modal__close {
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border-muted);
-  border-radius: 6px;
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.usage-modal__close:is(:hover, :focus-visible) {
-  background: var(--surface-hover);
-  color: var(--chrome-icon-hover-direct);
-}
-
 .usage-modal__section {
   display: grid;
   gap: var(--space-2);

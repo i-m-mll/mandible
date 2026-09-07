@@ -1,4 +1,5 @@
 import type { JSX } from 'preact/jsx-runtime';
+import { OverlayCloseButton } from '../components/shared/OverlayCloseButton';
 import type { ChatUsageSummary } from './contextUsage';
 import { getContextSeverity } from './contextUsage';
 
@@ -15,9 +16,7 @@ export function UsageModal({
     <div className="usage-modal">
       <div className="usage-modal__header">
         <h2 id={titleId}>Usage</h2>
-        <button type="button" className="usage-modal__close" aria-label="Close usage" onClick={onClose}>
-          x
-        </button>
+        <OverlayCloseButton label="Close usage" onClick={onClose} />
       </div>
 
       {usage?.context && (

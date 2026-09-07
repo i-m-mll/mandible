@@ -234,7 +234,7 @@ function accountingFromNormalized(telemetry: NormalizedUsageTelemetry): TokenUsa
 
 function accountingSummary(accounting: TokenAccounting): TokenUsageTotals {
   const label = accounting.scope === 'task_total' ? 'Task total'
-    : accounting.scope === 'latest_usage' ? 'Latest usage'
+    : accounting.scope === 'latest_usage' ? 'Latest reported usage'
       : accounting.scope === 'statusline_total' ? 'Statusline totals'
       : 'Message usage';
   return {

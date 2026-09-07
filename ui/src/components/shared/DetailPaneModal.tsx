@@ -2,6 +2,7 @@ import type { ComponentChildren } from 'preact';
 import { createPortal } from 'preact/compat';
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { DetailPaneOverlayContext } from './DetailPaneShell';
+import { OverlayCloseButton } from './OverlayCloseButton';
 
 export type DetailPaneModalEmbeddedFallback = {
   scrollOwnerRef?: { current: HTMLElement | null };
@@ -161,14 +162,7 @@ export function DetailPaneModal({
       <div className={`detail-pane-modal__panel${panelClassName ? ` ${panelClassName}` : ''}`} ref={panelRef}>
         <div className="detail-pane-modal__header">
           <h3 id={titleId}>{title}</h3>
-          <button
-            type="button"
-            className="detail-pane-modal__close"
-            aria-label={closeLabel}
-            onClick={onClose}
-          >
-            <CloseIcon />
-          </button>
+          <OverlayCloseButton label={closeLabel} onClick={onClose} />
         </div>
         {children}
       </div>
@@ -183,13 +177,4 @@ function findScrollOwner(excluded: HTMLElement, selectors: string | string[]): H
     if (owner) return owner;
   }
   return null;
-}
-
-function CloseIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="m18 6-12 12" />
-      <path d="m6 6 12 12" />
-    </svg>
-  );
 }

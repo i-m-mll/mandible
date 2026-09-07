@@ -5,6 +5,7 @@ const interactiveStylesheet = [
   'ui/src/styles/tokens.css',
   'ui/src/styles/base.css',
   'ui/src/styles/timeline.css',
+  'ui/src/styles/shared.css',
   'ui/src/styles/contextual-action.css',
   'ui/src/styles/sidebar-search-filter.css',
   'ui/src/styles/sidebar-item-row.css',
@@ -110,7 +111,7 @@ describe('shared chrome icon cascade', () => {
         <button class="ledger-issue-actions-menu__trigger ledger-issue-actions-menu__trigger--active test-hover">L</button>
         <button class="tab-overflow__btn tab-overflow__btn--active test-focus-visible">O</button>
         <button class="daemon-toast__dismiss test-hover">D</button>
-        <button class="usage-modal__close test-hover">U</button>
+        <button class="overlay-close-button test-focus-visible">U</button>
         <button class="repo-card__gear repo-card__gear--active test-hover">G</button>
         <button class="work-settings-modal__close test-focus-visible">W</button>
         <button class="space-canvas__icon-btn test-focus-visible">V</button>
@@ -127,7 +128,7 @@ describe('shared chrome icon cascade', () => {
       '.ledger-issue-actions-menu__trigger',
       '.tab-overflow__btn',
       '.daemon-toast__dismiss',
-      '.usage-modal__close',
+      '.overlay-close-button',
       '.repo-card__gear',
       '.work-settings-modal__close',
       '.space-canvas__icon-btn',
