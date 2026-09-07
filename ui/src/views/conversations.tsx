@@ -110,6 +110,7 @@ import {
 } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
+import { useIntrinsicOverflowGroup } from '../hooks/useIntrinsicOverflowGroup';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
 import { mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
@@ -1792,6 +1793,11 @@ function ConversationDetail({
     || canShowSessionControls,
   );
 
+  const runOptionsGeometry = useIntrinsicOverflowGroup(
+    hasRunOptions,
+    `${composerPermission}\u0000${composerModel}\u0000${composerEffort}\u0000${sessionRunOptions?.revision ?? ''}`,
+  );
+
   useEffect(() => {
     setComposerModel(currentModel === 'default' ? '' : currentModel);
   }, [conversationId, currentModel]);
@@ -2148,18 +2154,28 @@ function ConversationDetail({
           </div>
         )}
         <div className="conv-compose__controls">
-          <div className="conv-compose__runtime">
+          <div
+            ref={runOptionsGeometry.containerRef}
+            className={`conv-compose__runtime${runOptionsGeometry.overflowed ? ' conv-compose__runtime--run-options-overflow' : ''}`}
+          >
             {hasRunOptions ? (
-              <div className="conv-compose__run-options-inline" aria-label="Run options">
+              <div
+                ref={runOptionsGeometry.contentRef}
+                className="conv-compose__run-options-inline"
+                aria-label="Run options"
+                aria-hidden={runOptionsGeometry.overflowed ? 'true' : undefined}
+                inert={runOptionsGeometry.overflowed || undefined}
+              >
                 {renderRunOptionFields()}
               </div>
             ) : null}
-            <span className="conv-compose__runtime-actions">
+            <span ref={runOptionsGeometry.fixedRef} className="conv-compose__runtime-actions">
               {hasRunOptions ? (
                 <button
                   ref={runOptionsTriggerRef}
                   type="button"
                   className="btn btn--ghost btn--sm conv-compose__run-options-trigger"
+                  data-overflow-trigger
                   aria-haspopup="dialog"
                   aria-expanded={composerControlsOpen}
                   aria-label="Run options"

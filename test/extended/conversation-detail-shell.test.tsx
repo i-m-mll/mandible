@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useRef, useState } from 'preact/hooks';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../ui/src/api.js';
@@ -744,10 +744,11 @@ describe('compact detail pane shell', () => {
     expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control\s*\{[^}]*isolation:\s*isolate;[^}]*background:\s*transparent;/s);
     expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control::before\s*\{[^}]*z-index:\s*0;[^}]*top:\s*calc\(50% - 8px\);[^}]*right:\s*0;[^}]*bottom:\s*0;[^}]*left:\s*0;[^}]*background:\s*var\(--surface-app\);/s);
-    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
-    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*1 1 0;[^}]*min-width:\s*0;[^}]*max-width:\s*180px;/s);
+    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;/s);
+    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*0 0 auto;[^}]*max-width:\s*min\(240px, 100%\);/s);
+    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__select\s*\{[^}]*width:\s*auto;[^}]*min-width:\s*44px;[^}]*field-sizing:\s*content;/s);
     expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);
-    expect(conversationCss).toMatch(/@container \(max-width:\s*700px\)\s*\{[^}]*\.conv-compose__run-options-inline\s*\{[^}]*display:\s*none;/s);
+    expect(conversationCss).not.toContain('@container (max-width: 700px)');
     expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     fireEvent.click(runOptions);
@@ -768,6 +769,25 @@ describe('compact detail pane shell', () => {
   });
 
   it('puts every provider-neutral run option in the canonical composer popover', async () => {
+    const resizeCallbacks: ResizeObserverCallback[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(callback); }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    });
+    let modelWidth = 100;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
+      if (this.classList.contains('conv-compose__runtime')) return domRect(0, 0, 380, 30);
+      if (this.classList.contains('session-controls__field')) {
+        const label = this.querySelector('select')?.getAttribute('aria-label');
+        return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Mode' ? 70 : 90, 30);
+      }
+      if (this.classList.contains('context-usage') || this.classList.contains('conv-compose__send')) {
+        return domRect(0, 0, 30, 30);
+      }
+      return domRect(0, 0, 0, 0);
+    });
     const linkedSession: ConsoleSession = {
       id: 'console-codex-1',
       label: 'Codex session',
@@ -825,6 +845,15 @@ describe('compact detail pane shell', () => {
     const inlineRunOptions = runtime?.querySelector('.conv-compose__run-options-inline');
     const actions = runtime?.querySelector('.conv-compose__runtime-actions');
     await waitFor(() => expect(inlineRunOptions?.querySelectorAll('select')).toHaveLength(3));
+    expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false);
+    expect(inlineRunOptions?.getAttribute('aria-hidden')).toBeNull();
+    modelWidth = 220;
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    expect(inlineRunOptions?.getAttribute('aria-hidden')).toBe('true');
+    modelWidth = 100;
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     expect(actions?.children[0]).toBe(trigger);
     expect(actions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(actions?.children[2]?.classList.contains('conv-compose__send')).toBe(true);

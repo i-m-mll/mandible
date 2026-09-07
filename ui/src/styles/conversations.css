@@ -545,12 +545,14 @@
   border-top: 1px solid var(--neutral-alpha-06);
   color: var(--text-muted);
   font-size: 12px;
+  min-width: 0;
 }
 
 .conv-compose__runtime {
   justify-content: flex-end;
   min-width: 0;
   width: 100%;
+  position: relative;
 }
 
 .conv-compose__run-options-inline {
@@ -560,14 +562,13 @@
   justify-content: flex-end;
   gap: 8px;
   min-width: 0;
-  overflow: hidden;
 }
 
 .conv-compose__run-options-inline .session-controls__field {
-  flex: 1 1 0;
+  flex: 0 0 auto;
   gap: 0;
   min-width: 0;
-  max-width: 180px;
+  max-width: min(240px, 100%);
 }
 
 .conv-compose__run-options-inline .session-controls__label {
@@ -583,10 +584,18 @@
 }
 
 .conv-compose__run-options-inline .session-controls__select {
-  width: 100%;
-  min-width: 0;
+  width: auto;
+  min-width: 44px;
   min-height: 30px;
   max-width: 100%;
+  field-sizing: content;
+}
+
+.conv-compose__runtime--run-options-overflow .conv-compose__run-options-inline {
+  position: absolute;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .conv-compose__run-options-trigger {
@@ -602,6 +611,10 @@
   width: 17px;
   height: 17px;
   fill: currentColor;
+}
+
+.conv-compose__runtime--run-options-overflow .conv-compose__run-options-trigger {
+  display: inline-flex;
 }
 
 .conv-compose__runtime-actions {
@@ -629,16 +642,6 @@
 .conv-compose__run-options > .session-controls__field + .session-controls__field,
 .conv-compose__run-options > .session-controls {
   margin-top: 12px;
-}
-
-@container (max-width: 700px) {
-  .conv-compose__run-options-inline {
-    display: none;
-  }
-
-  .conv-compose__run-options-trigger {
-    display: inline-flex;
-  }
 }
 
 /* Filter bar in detail view */

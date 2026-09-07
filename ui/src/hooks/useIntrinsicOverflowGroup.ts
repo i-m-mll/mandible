@@ -1,0 +1,53 @@
+import { useLayoutEffect, useRef, useState } from 'preact/hooks';
+
+export function useIntrinsicOverflowGroup(enabled: boolean, measurementKey: string) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const fixedRef = useRef<HTMLSpanElement>(null);
+  const [overflowed, setOverflowed] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!enabled) {
+      setOverflowed(false);
+      return undefined;
+    }
+
+    const container = containerRef.current;
+    const content = contentRef.current;
+    const fixed = fixedRef.current;
+    if (!container || !content || !fixed) return undefined;
+
+    const gap = (element: Element) => {
+      const styles = getComputedStyle(element);
+      return Number.parseFloat(styles.columnGap || styles.gap) || 0;
+    };
+    const sumWidths = (elements: Element[], itemGap: number) => elements.reduce(
+      (width, element) => width + element.getBoundingClientRect().width,
+      Math.max(0, elements.length - 1) * itemGap,
+    );
+    const measure = () => {
+      const contentWidth = Math.max(
+        content.scrollWidth,
+        sumWidths(Array.from(content.children), gap(content)),
+      );
+      const fixedChildren = Array.from(fixed.children).filter((child) => !child.hasAttribute('data-overflow-trigger'));
+      const requiredWidth = contentWidth + sumWidths(fixedChildren, gap(fixed)) + gap(container);
+      setOverflowed(requiredWidth > container.getBoundingClientRect().width + 0.5);
+    };
+
+    measure();
+    const frame = requestAnimationFrame(measure);
+    if (typeof ResizeObserver === 'undefined') return () => cancelAnimationFrame(frame);
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    observer.observe(content);
+    Array.from(content.children).forEach((element) => observer.observe(element));
+    Array.from(fixed.children).forEach((element) => observer.observe(element));
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [enabled, measurementKey]);
+
+  return { containerRef, contentRef, fixedRef, overflowed };
+}
