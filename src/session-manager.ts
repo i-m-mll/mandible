@@ -671,22 +671,45 @@ export class SessionManager {
 
   async startConversation(
     id: string,
-    prompt: string,
     options: { timeoutMs: number; signal?: AbortSignal; provenance?: ProviderStartupProvenance },
-  ): Promise<{ provider_session_id: string; provenance: ProviderStartupProvenance }> {
+  ): Promise<{ provider_session_id: string | null; provenance: ProviderStartupProvenance }> {
     const provenance = options.provenance ?? this.getStartupProvenance(id);
 
     const deadline = Date.now() + options.timeoutMs;
-    this.start(id);
-    await this.awaitStartupStep(
-      this.waitForInitialRunOptions(id),
-      deadline,
-      options.signal,
-      "configuration",
-    );
-    this.sendPrompt(id, prompt);
-    const providerSessionId = await this.waitForProviderSession(id, deadline, options.signal);
-    return { provider_session_id: providerSessionId, provenance };
+    const backend = this.requireSession(id);
+    const readinessController = new AbortController();
+    const abortReadiness = () => readinessController.abort();
+    options.signal?.addEventListener("abort", abortReadiness, { once: true });
+    if (options.signal?.aborted) abortReadiness();
+    const providerSession = backend.prepare
+      ? null
+      : this.waitForProviderSession(id, deadline, readinessController.signal);
+    try {
+      this.start(id);
+      await this.awaitStartupStep(
+        this.waitForInitialRunOptions(id),
+        deadline,
+        readinessController.signal,
+        "configuration",
+      );
+      if (backend.prepare) {
+        await this.awaitStartupStep(
+          backend.prepare(readinessController.signal),
+          deadline,
+          readinessController.signal,
+          "readiness",
+        );
+        return { provider_session_id: null, provenance };
+      }
+      const providerSessionId = await providerSession!;
+      return { provider_session_id: providerSessionId, provenance };
+    } catch (error) {
+      readinessController.abort();
+      if (providerSession) await providerSession.catch(() => undefined);
+      throw error;
+    } finally {
+      options.signal?.removeEventListener("abort", abortReadiness);
+    }
   }
 
   getStartupProvenance(id: string): ProviderStartupProvenance {

@@ -12,6 +12,9 @@ export {
   chatSpawnFailureNotice,
 } from './ChatFailureNotice';
 export type { ChatFailureNoticeModel } from './ChatFailureNotice';
+export { NewChatProviderPicker } from './NewChatProviderPicker';
+export { reduceNewChatDraft } from './newChatDraft';
+export type { NewChatDraft, NewChatPlacement, NewChatProvider } from './newChatDraft';
 export { ContextUsageRing } from './ContextUsageRing';
 export { UsageModal } from './UsageModal';
 export { useStatuslineTelemetry } from './useStatuslineTelemetry';

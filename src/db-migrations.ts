@@ -6,7 +6,10 @@ import {
 import type { Db } from "./db.js";
 import { createHash } from "node:crypto";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL } from "./conversation-control/schema.js";
-import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
+import {
+  CONVERSATION_SPAWN_SCHEMA_SQL,
+  CONVERSATION_SPAWN_SCHEMA_V1_SQL,
+} from "./conversation-spawn/schema.js";
 import {
   BRIEFING_COMPOSER_SCHEMA_SQL,
   BRIEFING_COMPOSER_SCHEMA_V165_SQL,
@@ -595,7 +598,7 @@ export const MIGRATIONS: readonly Migration[] = [
   {
     version: 169,
     name: "mandible_conversation_spawn_authority",
-    statements: [...CONVERSATION_SPAWN_SCHEMA_SQL],
+    statements: [...CONVERSATION_SPAWN_SCHEMA_V1_SQL],
   },
   {
     version: 170,
@@ -910,6 +913,34 @@ export const MIGRATIONS: readonly Migration[] = [
              WHERE parent.artifact_id = child.artifact_id
                AND parent.version_no = child.version_no - 1
           )`,
+    ],
+  },
+  {
+    version: 175,
+    name: "provider_first_conversation_spawn",
+    statements: [
+      "DROP TRIGGER conversation_spawn_events_immutable_update",
+      "DROP TRIGGER conversation_spawn_events_immutable_delete",
+      "DROP INDEX idx_conversation_spawn_requests_state",
+      "ALTER TABLE conversation_spawn_events RENAME TO conversation_spawn_events_v174",
+      "ALTER TABLE conversation_spawn_requests RENAME TO conversation_spawn_requests_v174",
+      ...CONVERSATION_SPAWN_SCHEMA_SQL,
+      `INSERT INTO conversation_spawn_requests (
+         id, schema_version, idempotency_key, request_digest, request_json, provider,
+         project_id, checkout_id, topology_kind, topology_target_conversation_id,
+         state, attempt_count, native_session_id, provider_session_id, provider_receipt_json,
+         initial_message_state, error_json, created_at, updated_at)
+       SELECT id, schema_version, idempotency_key, request_digest, request_json, provider,
+         project_id, checkout_id, topology_kind, topology_target_conversation_id,
+         state, attempt_count, native_session_id, provider_session_id, provider_receipt_json,
+         initial_message_state, error_json, created_at, updated_at
+       FROM conversation_spawn_requests_v174`,
+      `INSERT INTO conversation_spawn_events
+         (id, spawn_id, ordinal, event_kind, event_json, created_at)
+       SELECT id, spawn_id, ordinal, event_kind, event_json, created_at
+       FROM conversation_spawn_events_v174`,
+      "DROP TABLE conversation_spawn_events_v174",
+      "DROP TABLE conversation_spawn_requests_v174",
     ],
   },
 ];

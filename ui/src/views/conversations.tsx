@@ -67,12 +67,12 @@ import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
-import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
   ChatOverlay,
   ChatFailureNotice,
+  NewChatProviderPicker,
   ChatActivity,
   ChatPreview,
   ChatSessionOverview,
@@ -87,10 +87,12 @@ import {
   serializeConversationToMarkdown,
   useStatuslineTelemetry,
   chatControlFailureNotice,
-  chatSpawnFailureNotice,
+  reduceNewChatDraft,
   type ChatPreviewTarget,
   type ChatActivityItem,
   type ChatFailureNoticeModel,
+  type NewChatDraft,
+  type NewChatProvider,
 } from '../chat';
 import {
   applyConversationAppendPayload,
@@ -124,7 +126,7 @@ import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding
 
 type ToastState = { message: string; type: 'info' | 'error' } | null;
 
-type ChatDetailState = 'loading' | 'error' | 'not-found' | 'conversation' | 'live-session' | 'no-selection';
+type ChatDetailState = 'loading' | 'error' | 'not-found' | 'conversation' | 'live-session' | 'draft' | 'no-selection';
 
 export type ConversationLoadFailure = {
   code: string | null;
@@ -445,6 +447,7 @@ type ViewMode = 'terminal' | 'rich' | 'events';
 type ChatSelection =
   | { type: 'conversation'; id: string }
   | { type: 'session'; id: string }
+  | { type: 'draft'; id: string }
   | null;
 type ChatEntry = {
   key: string;
@@ -557,15 +560,8 @@ export function conversationTurnSelectionHref(
 
 export type NewChatInput = {
   idempotency_key: string;
-  label: string;
-  initial_message: string;
-  backend: string;
-  kind: string;
-  backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
-  transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
-  channel_enabled?: boolean;
-  runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
-  cwd?: string;
+  provider: NewChatProvider;
+  placement: { project_id: string; checkout_id: string };
 };
 
 export type ConversationsViewProps = {
@@ -577,7 +573,7 @@ export type ConversationsViewProps = {
   chatEntityLinkAction?: ChatEntityClickAction;
   instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
-  onNewSession: (input: NewChatInput) => Promise<void>;
+  onNewSession: (input: NewChatInput) => Promise<string>;
 };
 
 function HorizontalDotsIcon(): JSX.Element {
@@ -2685,8 +2681,6 @@ export function ConversationsView({
     if (window.location.hash !== nextHash) window.location.hash = nextHash;
   }, []);
   const detailPortalRef = useRef<HTMLDivElement>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [newSessionCwd, setNewSessionCwd] = useState<string | undefined>(undefined);
   const [projectChooserOpen, setProjectChooserOpen] = useState(false);
   const [projectChooserSelection, setProjectChooserSelection] = useState('');
   const [search, setSearch] = useState('');
@@ -2710,9 +2704,7 @@ export function ConversationsView({
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
-  const [spawnFailure, setSpawnFailure] = useState<ChatFailureNoticeModel | null>(null);
-  const [failedSpawnInput, setFailedSpawnInput] = useState<NewChatInput | null>(null);
-  const [retryingSpawn, setRetryingSpawn] = useState(false);
+  const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
   const searchTimer = useRef<number | null>(null);
   const fetchGenerationRef = useRef(0);
   const groupsRef = useRef(serverGroups);
@@ -2781,6 +2773,11 @@ export function ConversationsView({
 
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
+  useEffect(() => {
+    if (!newChatDraft || (newChatDraft.state !== 'choosing' && newChatDraft.state !== 'failed')) return;
+    if (selection?.type === 'draft' && selection.id === newChatDraft.id) return;
+    setNewChatDraft(reduceNewChatDraft(newChatDraft, { type: 'abandon' }));
+  }, [newChatDraft, selection]);
   const previewMutationsRejected = instance?.operational_mutations === 'reject';
   const isConversationPinned = useCallback((conversation: Conversation): boolean => {
     if (!previewMutationsRejected) return conversation.starred;
@@ -3417,43 +3414,81 @@ export function ConversationsView({
     }
   };
 
-  const handleNewSession = async (input: NewChatInput) => {
-    setSpawnFailure(null);
+  const discardDraft = useCallback(() => {
+    setNewChatDraft((draft) => draft ? reduceNewChatDraft(draft, { type: 'abandon' }) : null);
+    setSelection((current) => current?.type === 'draft' ? null : current);
+  }, []);
+
+  const startDraft = useCallback(async (provider: NewChatProvider, retry = false) => {
+    const draft = newChatDraft;
+    if (!draft || (retry ? draft.state !== 'failed' : draft.state !== 'choosing')) return;
+    const starting = retry
+      ? reduceNewChatDraft(draft, { type: 'retry' })
+      : reduceNewChatDraft(draft, { type: 'choose', provider });
+    if (starting.state !== 'starting') return;
+    setNewChatDraft(starting);
     try {
-      await onNewSession(input);
-      setFailedSpawnInput(null);
-      setDialogOpen(false);
-      setNewSessionCwd(undefined);
+      const sessionId = await onNewSession({
+        idempotency_key: starting.id,
+        provider: starting.provider,
+        placement: {
+          project_id: starting.placement.projectId,
+          checkout_id: starting.placement.checkoutId,
+        },
+      });
+      setNewChatDraft((current) => current?.id === starting.id
+        ? reduceNewChatDraft(starting, { type: 'ready', sessionId })
+        : current);
+      setSelection({ type: 'session', id: sessionId });
+      const nextHash = hashWithAgentSession(
+        `#/console?session=${encodeURIComponent(sessionId)}`,
+        getAgentPageBinding(),
+      );
+      if (window.location.hash !== nextHash) window.location.hash = nextHash;
+      onSelectSession(sessionId);
     } catch (error) {
-      if (error instanceof ConversationSpawnApiError) {
-        setSpawnFailure(chatSpawnFailureNotice(error.failure));
-        setFailedSpawnInput(input);
-      }
-      throw error;
+      const failure = error instanceof ConversationSpawnApiError
+        ? error.failure
+        : {
+            code: error instanceof ApiError ? error.code ?? 'spawn_request_failed' : 'spawn_request_failed',
+            message: error instanceof Error ? error.message : 'The provider could not start.',
+            retryable: false,
+          };
+      setNewChatDraft((current) => current?.id === starting.id
+        ? reduceNewChatDraft(starting, { type: 'fail', failure })
+        : current);
     }
-  };
-
-  const retrySpawn = () => {
-    if (!failedSpawnInput) return;
-    setRetryingSpawn(true);
-    void handleNewSession(failedSpawnInput)
-      .catch(() => undefined)
-      .finally(() => setRetryingSpawn(false));
-  };
-
-  const spawnFailureNotice = spawnFailure ? (
-    <ChatFailureNotice
-      failure={spawnFailure}
-      busy={retryingSpawn}
-      onRetry={spawnFailure.retryable ? retrySpawn : undefined}
-    />
-  ) : undefined;
+  }, [newChatDraft, onNewSession, onSelectSession]);
 
   const openNewSession = (cwd?: string) => {
-    setSpawnFailure(null);
-    setFailedSpawnInput(null);
-    setNewSessionCwd(cwd);
-    setDialogOpen(true);
+    const selectedProjectId = selectedConversationSummary
+      ? getCanonicalConversationProjectId(selectedConversationSummary)
+      : null;
+    const requested = cwd
+      ? registeredProjects.find((project) => project.root === cwd)
+      : registeredProjects.find((project) => project.id === selectedProjectId)
+        ?? shownProjects.flatMap((shown) => registeredProjects.filter((project) => (
+          project.id === shown.projectId && project.checkoutId === shown.checkoutId
+        )))[0]
+        ?? registeredProjects[0];
+    if (!requested) {
+      setSidebarToast({ message: 'Register a project checkout before starting a chat.', type: 'error' });
+      return;
+    }
+    const id = crypto.randomUUID();
+    setNewChatDraft({
+      id,
+      state: 'choosing',
+      placement: {
+        projectId: requested.id,
+        checkoutId: requested.checkoutId,
+        projectLabel: requested.label,
+      },
+    });
+    setShownProjects((current) => current.some((shown) => (
+      shown.projectId === requested.id && shown.checkoutId === requested.checkoutId
+    )) ? current : [...current, { projectId: requested.id, checkoutId: requested.checkoutId }]);
+    setSelection({ type: 'draft', id });
   };
 
   const openProjectChooser = () => {
@@ -3521,6 +3556,7 @@ export function ConversationsView({
         ? () => { void handleOpenExternally(entry); }
         : undefined}
       onClick={() => {
+        discardDraft();
         if (entry.kind === 'conversation' && entry.conversation) {
           handleNavigateConversation(entry.conversation.id);
           return;
@@ -3733,6 +3769,24 @@ export function ConversationsView({
                     loadingMore={loadingMoreKeys.has(group.key)}
                     onShowMore={() => { void showMore(group); }}
                   >
+                    {newChatDraft
+                      && newChatDraft.state !== 'abandoned'
+                      && newChatDraft.state !== 'ready'
+                      && newChatDraft.placement.projectId === group.canonicalProjectId ? (
+                        <SidebarItemRow
+                          label="New chat"
+                          selectionLabel="Open new chat draft"
+                          selected={selection?.type === 'draft' && selection.id === newChatDraft.id}
+                          ariaCurrent={selection?.type === 'draft' && selection.id === newChatDraft.id ? 'true' : undefined}
+                          provider={newChatDraft.state === 'choosing'
+                            ? undefined
+                            : {
+                                label: newChatDraft.provider === 'codex' ? 'Codex' : 'Claude',
+                                tone: newChatDraft.provider === 'codex' ? 'codex' : 'claude',
+                              }}
+                          onSelect={() => setSelection({ type: 'draft', id: newChatDraft.id })}
+                        />
+                      ) : null}
                     {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
                   </SidebarGroupNode>
                 );
@@ -3770,7 +3824,24 @@ export function ConversationsView({
 
       {/* Detail pane */}
       <div ref={detailPortalRef} className="chat-history-detail">
-        {selection?.type === 'conversation' ? (
+        {selection?.type === 'draft' && newChatDraft?.id === selection.id ? (
+          <ChatDetailFrame
+            state="draft"
+            header={<DetailPaneHeader variant="compact" title="New chat" metadata={<span>{newChatDraft.placement.projectLabel}</span>} />}
+            overlays={(
+              <NewChatProviderPicker
+                draft={newChatDraft}
+                onChoose={(provider) => { void startDraft(provider); }}
+                onRetry={() => {
+                  if (newChatDraft.state === 'failed') void startDraft(newChatDraft.provider, true);
+                }}
+                onDiscard={discardDraft}
+              />
+            )}
+          >
+            <div className="chat-history-detail__empty" aria-hidden="true" />
+          </ChatDetailFrame>
+        ) : selection?.type === 'conversation' ? (
           <ConversationDetail
             conversationId={selection.id}
             initialConversation={selectedConversationSummary}
@@ -3779,19 +3850,16 @@ export function ConversationsView({
             consoleSessions={consoleSessions}
             sidebarCollapsed={false}
             chatEntityLinkAction={chatEntityLinkAction}
-            externalNotice={spawnFailureNotice}
           />
         ) : selection?.type === 'session' && selectedLiveSession ? (
           <LiveSessionDetail
             key={selectedLiveSession.id}
             session={selectedLiveSession}
-            notice={spawnFailureNotice}
           />
         ) : (
           <ChatDetailFrame
             state="no-selection"
             header={<DetailPaneHeader variant="compact" title="Chat" />}
-            notice={spawnFailureNotice}
           >
             <div className="chat-history-detail__empty">
               Select a conversation to view it
@@ -3799,13 +3867,6 @@ export function ConversationsView({
           </ChatDetailFrame>
         )}
       </div>
-      <NewSessionDialog
-        open={dialogOpen}
-        cwd={newSessionCwd}
-        portalTarget={detailPortalRef.current}
-        onClose={() => { setDialogOpen(false); setNewSessionCwd(undefined); }}
-        onSubmit={handleNewSession}
-      />
     </div>
   );
 }

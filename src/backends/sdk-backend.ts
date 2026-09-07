@@ -21,6 +21,7 @@ import type {
   SDKToolProgressMessage,
   SDKToolUseSummaryMessage,
   SDKUserMessage,
+  WarmQuery as ClaudeWarmQuery,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { WebSocket } from "ws";
 import type {
@@ -198,6 +199,8 @@ implements
   private processing = false;
   private activeQuery: ClaudeQuery | null = null;
   private abortController: AbortController | null = null;
+  private warmQuery: ClaudeWarmQuery | null = null;
+  private warmAbortController: AbortController | null = null;
   private destroyed = false;
   /** Issue 8aadf70 — log the API-key/subscription posture once per backend. */
   private billingPostureLogged = false;
@@ -267,9 +270,40 @@ implements
     });
   }
 
+  async prepare(signal?: AbortSignal): Promise<void> {
+    if (this.destroyed) throw new ProviderStartupError(
+      "provider_startup_failed",
+      "Claude startup was discarded before it became ready.",
+      "readiness",
+    );
+    if (this.warmQuery) return;
+    this.start();
+    const abortController = new AbortController();
+    const abort = () => abortController.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    this.warmAbortController = abortController;
+    try {
+      const sdk = await import("@anthropic-ai/claude-agent-sdk");
+      const warmQuery = await sdk.startup({ options: this.buildQueryOptions(abortController) });
+      if (this.destroyed || abortController.signal.aborted) {
+        warmQuery.close();
+        throw new ProviderStartupError(
+          "client_aborted",
+          "The client disconnected during provider startup.",
+          "readiness",
+        );
+      }
+      this.warmQuery = warmQuery;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      if (!this.warmQuery) this.warmAbortController = null;
+    }
+  }
+
   stop(_signal?: string): void {
     this.promptQueue = [];
     this.resolveAllPendingPermissions("deny");
+    this.discardWarmQuery();
     void this.cancelActiveQuery();
 
     if (this.meta.status !== "running") {
@@ -303,6 +337,7 @@ implements
     }
     this.destroyed = true;
     this.promptQueue = [];
+    this.discardWarmQuery();
 
     // Reject all pending permission promises immediately so callers don't
     // hang for up to PERMISSION_TIMEOUT_MS after the session is gone.
@@ -583,16 +618,16 @@ implements
   }
 
   private async runPrompt(prompt: string): Promise<void> {
-    const abortController = new AbortController();
+    const warmQuery = this.warmQuery;
+    const abortController = this.warmAbortController ?? new AbortController();
+    this.warmQuery = null;
+    this.warmAbortController = null;
     let query: ClaudeQuery | null = null;
 
     try {
       const sdk = await import("@anthropic-ai/claude-agent-sdk");
       const queryOptions = this.buildQueryOptions(abortController);
-      query = sdk.query({
-        prompt,
-        options: queryOptions,
-      });
+      query = warmQuery ? warmQuery.query(prompt) : sdk.query({ prompt, options: queryOptions });
 
       this.abortController = abortController;
       this.activeQuery = query;
@@ -664,6 +699,14 @@ implements
         }
       }
     }
+  }
+
+  private discardWarmQuery(): void {
+    this.warmAbortController?.abort();
+    this.warmAbortController = null;
+    if (!this.warmQuery) return;
+    this.warmQuery.close();
+    this.warmQuery = null;
   }
 
   private async refreshSupportedModels(query: ClaudeQuery, selectedModel?: string): Promise<void> {
