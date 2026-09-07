@@ -50,7 +50,7 @@ interface CodexResponsePayload {
   content?: CodexContentBlock[];
   // function_call fields
   name?: string;
-  call_id?: string;
+  call_id?: string | null;
   arguments?: string;
   // custom_tool_call input is an opaque provider payload. It is display-only
   // and must not be parsed or normalized.
@@ -132,6 +132,24 @@ function parseToolArguments(argumentsText: string | undefined): unknown {
   } catch {
     return argumentsText;
   }
+}
+
+type CodexFunctionCallOutputClassification =
+  | "provider_transport"
+  | "transcript_tool_result";
+
+/**
+ * Codex Desktop records control-plane operation output as a
+ * function_call_output without transcript call identity. Only outputs carrying
+ * a real call_id belong to the transcript tool-call graph; whether that call
+ * can be paired is a separate diagnostic concern.
+ */
+function classifyFunctionCallOutput(
+  payload: CodexResponsePayload,
+): CodexFunctionCallOutputClassification {
+  return typeof payload.call_id === "string" && payload.call_id.length > 0
+    ? "transcript_tool_result"
+    : "provider_transport";
 }
 
 export const CODEX_SESSIONS_DIR_NAME = "sessions";
@@ -515,6 +533,9 @@ export class CodexParser implements ConversationParser {
               },
             });
         } else if (payload.type === "function_call_output") {
+          if (classifyFunctionCallOutput(payload) === "provider_transport") {
+            continue;
+          }
           const parentPos = payload.call_id ? callMap.get(payload.call_id) : undefined;
           blocks.push({
             type: "tool_result",
