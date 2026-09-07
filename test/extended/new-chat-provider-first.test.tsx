@@ -36,6 +36,11 @@ describe('provider-first new chat', () => {
       'Start with Codex (OpenAI)',
       'Start with Claude',
     ]);
+    expect(choices.map((button) => button.querySelector('svg')?.getAttribute('viewBox'))).toEqual([
+      '0 0 721 721',
+      '0 0 92 64',
+    ]);
+    expect(document.activeElement).toBe(choices[0]);
     expect(screen.queryByText(/Gemini|Antigravity/i)).toBeNull();
     fireEvent.click(choices[1]);
     expect(onChoose).toHaveBeenCalledWith('claude_code');
