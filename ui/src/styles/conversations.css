@@ -401,7 +401,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin: 0 18px 16px;
+  margin: 0 var(--conversation-composer-inline-margin, 18px) 16px;
   padding: 10px;
   border: 1px solid var(--neutral-alpha-10);
   border-radius: var(--radius-chat-surface);
@@ -413,6 +413,7 @@
  * composer. Paint the lower mask on the overlay host, behind the complete
  * composer box, so it cannot cover any edge of the composer's own border. */
 .detail-pane-shell--overlay-control .detail-pane-shell__overlay-control {
+  --conversation-composer-inline-margin: 18px;
   isolation: isolate;
   background: transparent;
 }
@@ -422,7 +423,7 @@
   position: absolute;
   z-index: 0;
   top: calc(50% - 8px);
-  right: 0;
+  right: var(--conversation-composer-inline-margin);
   bottom: 0;
   left: 0;
   background: var(--surface-app);

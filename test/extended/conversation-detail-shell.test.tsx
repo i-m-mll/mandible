@@ -742,8 +742,6 @@ describe('compact detail pane shell', () => {
     const messageBlocksCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/message-blocks.css'), 'utf8');
     expect(tokensCss).toContain('--radius-chat-surface: 18px;');
     expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
-    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control\s*\{[^}]*isolation:\s*isolate;[^}]*background:\s*transparent;/s);
-    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control::before\s*\{[^}]*z-index:\s*0;[^}]*top:\s*calc\(50% - 8px\);[^}]*right:\s*0;[^}]*bottom:\s*0;[^}]*left:\s*0;[^}]*background:\s*var\(--surface-app\);/s);
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;/s);
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*0 0 auto;[^}]*max-width:\s*min\(240px, 100%\);/s);
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__select\s*\{[^}]*width:\s*auto;[^}]*min-width:\s*44px;[^}]*field-sizing:\s*content;/s);
@@ -766,6 +764,16 @@ describe('compact detail pane shell', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Message filters' }));
     expect(body?.querySelector('.conv-filter-bar')).toBeTruthy();
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
+  });
+
+  it('ends the composer mask before the transcript scrollbar gutter', () => {
+    const shellCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
+    const conversationCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
+
+    expect(shellCss).toMatch(/\.detail-pane-shell__overlay-control\s*\{[^}]*inset:\s*auto var\(--detail-pane-scrollbar-width, 0px\) 0 0;/s);
+    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control\s*\{[^}]*--conversation-composer-inline-margin:\s*18px;/s);
+    expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*margin:\s*0 var\(--conversation-composer-inline-margin, 18px\) 16px;/s);
+    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control::before\s*\{[^}]*top:\s*calc\(50% - 8px\);[^}]*right:\s*var\(--conversation-composer-inline-margin\);[^}]*bottom:\s*0;[^}]*left:\s*0;[^}]*pointer-events:\s*none;/s);
   });
 
   it('puts every provider-neutral run option in the canonical composer popover', async () => {
