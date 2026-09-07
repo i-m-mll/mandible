@@ -418,6 +418,15 @@
   background: transparent;
 }
 
+.chat-detail-frame.detail-pane-shell--overlay-control .detail-pane-shell__overlay-control {
+  right: 0;
+  pointer-events: none;
+}
+
+.chat-detail-frame.detail-pane-shell--overlay-control .conv-compose {
+  pointer-events: auto;
+}
+
 .detail-pane-shell--overlay-control .detail-pane-shell__overlay-control::before {
   content: '';
   position: absolute;
@@ -699,7 +708,7 @@
   gap: 18px;
   max-height: none;
   overflow: hidden;
-  padding: 0 18px;
+  padding: 0;
 }
 
 .conv-transcript > .chat-entity-link-boundary {
@@ -716,10 +725,11 @@
   display: none;
 }
 
-/* The transcript owns the same outer inline inset as the composer. Its bottom
- * padding is the measured composer height plus twice the composer bottom gap. */
+/* Keep the scroll box full-width so its scrollbar stays on the detail-pane
+ * edge. Padding aligns transcript content with the inset composer without
+ * changing the scroll element's containing block. */
 .conv-transcript .stream-renderer__scroll {
-  padding-inline: 0;
+  padding-inline: 18px;
   padding-bottom: var(--detail-pane-overlay-control-scroll-space, var(--space-4));
 }
 
