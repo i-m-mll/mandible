@@ -50,6 +50,21 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
     const measure = `
       const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       const rect = node => { const r=node.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}; };
+      const waitForRunOptions = async () => {
+        for (let attempt=0; attempt<50; attempt+=1) {
+          const composer=document.querySelector('.conv-compose');
+          if (!composer) return;
+          const bounds=rect(composer); const inline=document.querySelector('.conv-compose__run-options-inline'); const trigger=document.querySelector('.conv-compose__run-options-trigger');
+          const selects=Array.from(inline.querySelectorAll('select'),rect);
+          const collapsed=getComputedStyle(inline).visibility==='hidden' && getComputedStyle(trigger).display==='flex';
+          const contained=selects.every(select=>select.left>=bounds.left && select.right<=bounds.right);
+          if (collapsed || contained) return;
+          await wait();
+        }
+        const composer=document.querySelector('.conv-compose'); const inline=document.querySelector('.conv-compose__run-options-inline'); const trigger=document.querySelector('.conv-compose__run-options-trigger');
+        const actions=document.querySelector('.conv-compose__runtime-actions');
+        throw new Error('Run options did not reconcile: '+JSON.stringify({composer:rect(composer),runtime:rect(inline.parentElement),inline:rect(inline),scrollWidth:inline.scrollWidth,visibility:getComputedStyle(inline).visibility,trigger:getComputedStyle(trigger).display,selects:Array.from(inline.querySelectorAll('select'),rect),actions:rect(actions),actionChildren:Array.from(actions.children,rect)}));
+      };
       (async () => {
         await wait();
         const root=document.querySelector('.native-fixture');
@@ -78,7 +93,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const closed={count:toggles().length,pressed:closedToggle.getAttribute('aria-pressed'),focused:document.activeElement===closedToggle,
           inHeader:Boolean(closedHeader),rightmost:closedHeader?closedHeader.querySelector('.detail-pane-header__main')?.lastElementChild?.contains(closedToggle):false,
           header:closedHeader?rect(closedHeader):null,toggle:rect(closedToggle),mainInert:document.querySelector('main').hasAttribute('inert')};
-        toggles()[0].click(); await wait(); await wait();
+        toggles()[0].click(); await wait(); await wait(); await waitForRunOptions();
         const reopened={count:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),focused:document.activeElement===toggles()[0]};
         const chat=document.querySelector('.chat-detail-frame'); const composer=document.querySelector('.conv-compose'); const transcript=document.querySelector('.conv-transcript');
         const overlayControl=document.querySelector('.detail-pane-shell__overlay-control');

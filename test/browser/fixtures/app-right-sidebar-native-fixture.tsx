@@ -42,8 +42,8 @@ function RunOption({ label, value }: { label: string; value: string }): JSX.Elem
   );
 }
 
-function NativeComposer(): JSX.Element {
-  const geometry = useIntrinsicOverflowGroup(true, 'Agent\u0000gpt-5.6-sol\u0000Medium');
+function NativeComposer({ layoutKey }: { layoutKey: string }): JSX.Element {
+  const geometry = useIntrinsicOverflowGroup(true, `Agent\u0000gpt-5.6-sol\u0000Medium\u0000${layoutKey}`);
   return (
     <div className="conv-compose">
       <div className="conv-compose__controls">
@@ -83,7 +83,7 @@ function ChatMain({ descriptor, toggleRef, setOpen }: {
           actionsLabel="Chat sidebar"
         />
       )}
-      overlayControl={<NativeComposer />}
+      overlayControl={<NativeComposer layoutKey={`${descriptor.open}\u0000${descriptor.width}`} />}
     >
       <div className="conv-transcript">{Array.from({ length: 30 }, (_, index) => <p key={index}>Transcript row {index}</p>)}</div>
     </ChatDetailFrame>
