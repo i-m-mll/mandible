@@ -106,6 +106,11 @@ describe("restricted project route enforcement", () => {
   });
 
   it("denies agent conversation spawn until spawn_console is granted", async () => {
+    const project = addProject(db, { project_key: "spawn-project", display_name: "Spawn Project" });
+    db.prepare(`INSERT INTO ledger_project_checkouts
+      (id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at)
+      VALUES ('spawn-checkout', ?, 'spawn-project', '/work/spawn-project', 'Spawn Project', 'main', '', 1, 1)`)
+      .run(project.id);
     const agent = createUser(db, { slug: "console-agent", kind: "agent", display_name: "Console Agent" });
     const { token } = authenticator.mintApiToken(agent.id);
     const manager = {
@@ -131,7 +136,7 @@ describe("restricted project route enforcement", () => {
         provider: "codex",
         label: "Agent",
         initial_message: "Perform the bounded task.",
-        placement: { project_id: null, checkout_id: null },
+        placement: { project_id: project.id, checkout_id: "spawn-checkout" },
         topology: { kind: "top-level" },
         command: {
           name: "codex",
@@ -152,7 +157,14 @@ describe("restricted project route enforcement", () => {
       resource_type: "global",
       permission: "spawn_console",
     });
-    expect((await router.invoke(input)).status).toBe(201);
+    const allowed = await router.invoke(input);
+    expect(allowed.status).toBe(201);
+    expect(allowed.body).toMatchObject({
+      session: {
+        canonical_project_id: project.id,
+        canonical_checkout_id: "spawn-checkout",
+      },
+    });
     expect(manager.create).toHaveBeenCalledOnce();
     expect(manager.waitForInitialRunOptions).toHaveBeenCalledWith("console-1");
     expect(manager.sendPrompt).toHaveBeenCalledWith("console-1", "Perform the bounded task.");

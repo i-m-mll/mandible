@@ -1,6 +1,6 @@
 import type { Db } from "../db.js";
 import type { SessionManager } from "../session-manager.js";
-import type { ConsoleSessionInput } from "../types.js";
+import type { ConsoleSession, ConsoleSessionInput } from "../types.js";
 import { ConversationSpawnService } from "../conversation-spawn/service.js";
 import type { ConversationSpawnError, ConversationSpawnRequest } from "../conversation-spawn/types.js";
 import type { RouteRegistrar } from "../server.js";
@@ -21,6 +21,20 @@ function cwdFor(db: Db, request: ConversationSpawnRequest): string {
   return row.root;
 }
 
+function sessionWithPlacement(
+  session: ConsoleSession | null,
+  request: ConversationSpawnRequest,
+): (ConsoleSession & {
+  canonical_project_id: string | null;
+  canonical_checkout_id: string | null;
+}) | null {
+  return session ? {
+    ...session,
+    canonical_project_id: request.placement.project_id,
+    canonical_checkout_id: request.placement.checkout_id,
+  } : null;
+}
+
 export function registerConversationSpawnRoutes(server: RouteRegistrar, db: Db, manager: SessionManager): void {
   const spawns = new ConversationSpawnService(db);
 
@@ -38,7 +52,14 @@ export function registerConversationSpawnRoutes(server: RouteRegistrar, db: Db, 
     }
     const canonicalRequest = reserved.value.request;
     if (reserved.value.state === "delivered") {
-      sendJson(res, 200, { ok: true, spawn: reserved.value, session: reserved.value.native_session_id ? manager.get(reserved.value.native_session_id)?.meta ?? null : null });
+      const session = reserved.value.native_session_id
+        ? manager.get(reserved.value.native_session_id)?.meta ?? null
+        : null;
+      sendJson(res, 200, {
+        ok: true,
+        spawn: reserved.value,
+        session: sessionWithPlacement(session, canonicalRequest),
+      });
       return;
     }
     const begun = spawns.begin(reserved.value.reservation_id);
@@ -75,15 +96,24 @@ export function registerConversationSpawnRoutes(server: RouteRegistrar, db: Db, 
       manager.sendPrompt(nativeSessionId, canonicalRequest.initial_message);
       const session = manager.get(nativeSessionId)?.meta ?? null;
       const delivered = spawns.delivered(reserved.value.reservation_id, session?.provider_session_id ?? null);
-      sendJson(res, 201, delivered.ok ? { ok: true, spawn: delivered.value, session } : delivered);
+      sendJson(res, 201, delivered.ok ? {
+        ok: true,
+        spawn: delivered.value,
+        session: sessionWithPlacement(session, canonicalRequest),
+      } : delivered);
     } catch (error) {
       const failed = spawns.failed(reserved.value.reservation_id, {
         code: "provider_spawn_failed",
         message: error instanceof Error ? error.message : String(error),
         retryable: true,
       });
-      sendJson(res, 502, failed.ok ? { ok: false, error: failed.value.error, spawn: failed.value,
-        session: nativeSessionId ? manager.get(nativeSessionId)?.meta ?? null : null } : failed);
+      const session = nativeSessionId ? manager.get(nativeSessionId)?.meta ?? null : null;
+      sendJson(res, 502, failed.ok ? {
+        ok: false,
+        error: failed.value.error,
+        spawn: failed.value,
+        session: sessionWithPlacement(session, canonicalRequest),
+      } : failed);
     }
   }, { authenticated: true }), { fileRpc: "allow" });
 }

@@ -2040,6 +2040,8 @@ export async function createConsoleSession(
   status: 'running' | 'stopped' | 'crashed';
   is_operator: boolean;
   provider_session_id: string | null;
+  canonical_project_id?: string | null;
+  canonical_checkout_id?: string | null;
   unread_count?: number;
   created_at: number;
   started_at: number | null;
@@ -2144,6 +2146,8 @@ export async function createConsoleSession(
       status: 'running' | 'stopped' | 'crashed';
       is_operator: boolean;
       provider_session_id: string | null;
+      canonical_project_id?: string | null;
+      canonical_checkout_id?: string | null;
       unread_count: number;
       created_at: number;
       started_at: number | null;

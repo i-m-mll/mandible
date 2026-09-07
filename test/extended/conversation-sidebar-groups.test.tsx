@@ -601,4 +601,71 @@ describe('conversation sidebar groups', () => {
     await screen.findByRole('button', { name: 'Open session Local live chat' });
     expect(getSidebar).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps reservation-backed provisional rows in their canonical group through indexed reconciliation', async () => {
+    FakeEventSource.instances = [];
+    __resetSharedSseForTests(FakeEventSource as unknown as typeof EventSource);
+    vi.stubGlobal('EventSource', FakeEventSource);
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
+      shownProjects: [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
+    }));
+    let indexed = false;
+    const indexedConversation = {
+      ...conversation('indexed-reserved', 'Reserved chat'),
+      session_id: 'provider-reserved',
+      canonical_project_id: 'prj-mandible',
+      canonical_project_key: 'mandible',
+    };
+    vi.spyOn(api, 'getConversationSidebar').mockImplementation(async () => ({
+      limit: 5,
+      groups: [
+        group({
+          key: 'opaque:project:mandible', kind: 'project', label: 'Mandible',
+          project_id: 'prj-mandible', project_key: 'mandible',
+          total: indexed ? 1 : 0,
+          conversations: indexed ? [indexedConversation] : [],
+        }),
+        group({ key: 'opaque:chats', kind: 'chats', label: 'Chats' }),
+      ],
+    }));
+    const sessions: ConsoleSession[] = [
+      {
+        id: 'reservation-scoped', label: 'Reserved chat', agent_type: 'codex', interaction_mode: 'direct',
+        pinned: false, status: 'running', is_operator: false, provider_session_id: 'provider-reserved',
+        canonical_project_id: 'prj-mandible', canonical_checkout_id: 'checkout-mandible',
+        unread_count: 0, created_at: 10, started_at: 10, stopped_at: null,
+        backend_type: 'acp', transport_lane: 'acp',
+      },
+      {
+        id: 'reservation-unscoped', label: 'Unscoped chat', agent_type: 'codex', interaction_mode: 'direct',
+        pinned: false, status: 'running', is_operator: false, provider_session_id: null,
+        canonical_project_id: null, canonical_checkout_id: null,
+        unread_count: 0, created_at: 9, started_at: 9, stopped_at: null,
+        backend_type: 'acp', transport_lane: 'acp',
+      },
+    ];
+    renderView(sessions, vi.fn(), null, 5);
+
+    const projectSection = (await screen.findByRole('button', { name: /^Mandible/ })).closest('section') as HTMLElement;
+    const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('section') as HTMLElement;
+    const provisionalRow = within(projectSection).getByRole('button', { name: 'Open session Reserved chat' });
+    expect(within(chatsSection).getByRole('button', { name: 'Open session Unscoped chat' })).toBeTruthy();
+    expect(within(chatsSection).queryByText('Reserved chat')).toBeNull();
+    await waitFor(() => expect(provisionalRow.getAttribute('aria-current')).toBe('true'));
+
+    indexed = true;
+    FakeEventSource.instances[0].emit({ type: 'conversation:new', data: { id: indexedConversation.id } });
+
+    const indexedRow = await within(projectSection).findByRole(
+      'button',
+      { name: 'Open conversation Reserved chat' },
+      { timeout: 1600 },
+    );
+    expect(indexedRow).toBe(provisionalRow);
+    expect(indexedRow.getAttribute('aria-current')).toBe('true');
+    expect(screen.getAllByRole('button', { name: 'Open conversation Reserved chat' })).toHaveLength(1);
+    await waitFor(() => expect(window.location.hash).toContain('conversation=indexed-reserved'));
+    expect(within(chatsSection).getByRole('button', { name: 'Open session Unscoped chat' })).toBeTruthy();
+  });
 });
