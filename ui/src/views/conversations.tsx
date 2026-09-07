@@ -1791,7 +1791,7 @@ function ConversationDetail({
 
   const runOptionsGeometry = useIntrinsicOverflowGroup(
     hasRunOptions,
-    `${composerPermission}\u0000${composerModel}\u0000${composerEffort}\u0000${sessionRunOptions?.revision ?? ''}`,
+    `${composerPermission}\u0000${composerModel}\u0000${composerEffort}\u0000${sessionRunOptions?.revision ?? ''}\u0000${rightSidebarState.open}\u0000${rightSidebarState.width}`,
   );
 
   useEffect(() => {
