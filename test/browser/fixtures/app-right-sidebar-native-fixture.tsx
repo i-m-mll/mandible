@@ -67,10 +67,12 @@ function NativeComposer({ layoutKey }: { layoutKey: string }): JSX.Element {
 function NativeTranscript(): JSX.Element {
   return (
     <div className="conv-transcript">
-      <div className="stream-renderer">
-        <div className="stream-renderer__scroll">
-          <div style={{ height: 900 }} />
-          <div data-transcript-final-content style={{ height: 24 }}>Final transcript line</div>
+      <div className="chat-entity-link-boundary">
+        <div className="stream-renderer">
+          <div className="stream-renderer__scroll">
+            <div style={{ height: 900 }} />
+            <div data-transcript-final-content style={{ height: 24 }}>Final transcript line</div>
+          </div>
         </div>
       </div>
     </div>
