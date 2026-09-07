@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../src/db.js";
 import { ConversationSpawnService } from "../src/conversation-spawn/service.js";
 import { CONVERSATION_SPAWN_REQUEST_SCHEMA, type ConversationSpawnRequest } from "../src/conversation-spawn/types.js";
+import { readConversationSpawnPlacementBatch } from "../src/routes/console.js";
 
 let root = "";
 let db: Db;
@@ -48,6 +49,32 @@ describe("Mandible conversation spawn authority", () => {
     expect(first.ok && replay.ok && replay.value.reservation_id).toBe(first.ok ? first.value.reservation_id : "");
     expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_spawn_requests").get()).toEqual({ count: 1 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM conversations").get()).toEqual({ count: 0 });
+  });
+
+  it("projects canonical placement only from exact spawn reservation identities", () => {
+    const service = new ConversationSpawnService(db);
+    const scoped = service.reserve(request());
+    const unscoped = service.reserve(request({
+      idempotency_key: "request-unscoped",
+      placement: { project_id: null, checkout_id: null },
+    }));
+    if (!scoped.ok || !unscoped.ok) throw new Error("reservation failed");
+
+    const placements = readConversationSpawnPlacementBatch(db, [
+      scoped.value.reservation_id,
+      unscoped.value.reservation_id,
+      "cwd-lookalike-without-reservation",
+    ]);
+
+    expect(placements.get(scoped.value.reservation_id)).toEqual({
+      canonical_project_id: "project-a",
+      canonical_checkout_id: "checkout-a",
+    });
+    expect(placements.get(unscoped.value.reservation_id)).toEqual({
+      canonical_project_id: null,
+      canonical_checkout_id: null,
+    });
+    expect(placements.has("cwd-lookalike-without-reservation")).toBe(false);
   });
 
   it("fails closed when an idempotency key is reused for different intent", () => {

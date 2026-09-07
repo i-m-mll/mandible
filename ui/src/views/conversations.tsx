@@ -3104,7 +3104,9 @@ export function ConversationsView({
           target.total += 1;
         }
         target.entries.push({
-          key: `conversation:${conversation.id}`,
+          key: liveByProviderSession.has(conversation.session_id)
+            ? `session:${liveByProviderSession.get(conversation.session_id)!.id}`
+            : `conversation:${conversation.id}`,
           time: getConversationTime(conversation),
           kind: 'conversation',
           conversation,
@@ -3122,10 +3124,15 @@ export function ConversationsView({
       if (session.provider_session_id && conversationProviderIds.has(session.provider_session_id)) {
         continue;
       }
-      const kind = session.pinned ? 'pinned' : 'chats';
-      const group = kind === 'pinned'
+      const canonicalProjectGroup = session.canonical_project_id
+        && selectedProjectIds.includes(session.canonical_project_id)
+        ? groups.find((group) => (
+          group.kind === 'project' && group.canonicalProjectId === session.canonical_project_id
+        ))
+        : undefined;
+      const group = session.pinned
         ? ensureKindGroup('pinned', 'Pinned')
-        : ensureKindGroup('chats', 'Chats');
+        : canonicalProjectGroup ?? ensureKindGroup('chats', 'Chats');
       group.total += 1;
       group.entries.push({
         key: `session:${session.id}`,
@@ -3170,6 +3177,16 @@ export function ConversationsView({
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
   }, [chatViewState.pinnedConversationIds, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
+
+  useEffect(() => {
+    if (selection?.type !== 'session') return;
+    const liveSession = liveSessions.find((session) => session.id === selection.id);
+    if (!liveSession?.provider_session_id) return;
+    const indexed = displayedConversations
+      .flatMap((group) => group.conversations)
+      .find((conversation) => conversation.session_id === liveSession.provider_session_id);
+    if (indexed) handleNavigateConversation(indexed.id);
+  }, [displayedConversations, handleNavigateConversation, liveSessions, selection]);
 
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
@@ -3443,6 +3460,7 @@ export function ConversationsView({
       entry={entry}
       isSelected={entry.kind === 'conversation'
         ? selectedConversationId === entry.conversation?.id
+          || (selectedSessionId !== null && selectedSessionId === entry.liveSession?.id)
         : selectedSessionId === entry.session?.id}
       pinned={entry.conversation ? isConversationPinned(entry.conversation) : undefined}
       onTogglePin={entry.conversation ? () => { void handleToggleEntryPin(entry); } : undefined}

@@ -3,7 +3,7 @@
  * Bug: e980dd8
  */
 
-import { getDb } from "../db.js";
+import { getDb, type Db } from "../db.js";
 import { AttributionReadResolver } from "../identity/read-projection.js";
 import { readSessionIdentityMismatchBatch } from "../identity/session-mismatch.js";
 import type { BackendType, PermissionDecision } from "../agentic-backend.js";
@@ -214,6 +214,39 @@ function isOperatorRequest(req: RequestLike): boolean {
   }
 }
 
+type ConversationSpawnPlacement = {
+  canonical_project_id: string | null;
+  canonical_checkout_id: string | null;
+};
+
+export function readConversationSpawnPlacementBatch(
+  db: Db,
+  sessionIds: readonly string[],
+): Map<string, ConversationSpawnPlacement> {
+  const ids = [...new Set(sessionIds.filter(Boolean))];
+  const placements = new Map<string, ConversationSpawnPlacement>();
+  for (let offset = 0; offset < ids.length; offset += 400) {
+    const batch = ids.slice(offset, offset + 400);
+    const placeholders = batch.map(() => "?").join(",");
+    const rows = db.prepare(
+      `SELECT id, project_id, checkout_id
+         FROM conversation_spawn_requests
+        WHERE id IN (${placeholders})`,
+    ).all(...batch) as Array<{
+      id: string;
+      project_id: string | null;
+      checkout_id: string | null;
+    }>;
+    for (const row of rows) {
+      placements.set(row.id, {
+        canonical_project_id: row.project_id,
+        canonical_checkout_id: row.checkout_id,
+      });
+    }
+  }
+  return placements;
+}
+
 export function registerConsoleRoutes(
   server: RouteRegistrar,
   manager: SessionManager
@@ -240,8 +273,17 @@ export function registerConsoleRoutes(
         .map((session) => session.mandible_session_id)
         .filter((id): id is string => Boolean(id)),
     );
+    // Conversation creation uses the reservation id as the console-session id.
+    // Keep this projection tied to that exact authority instead of inferring a
+    // canonical project from cwd, which may be shared or later relocated.
+    const spawnPlacements = readConversationSpawnPlacementBatch(
+      db,
+      visible.map((session) => session.id),
+    );
     const sessions = visible.map((session) => ({
       ...session,
+      canonical_project_id: spawnPlacements.get(session.id)?.canonical_project_id ?? null,
+      canonical_checkout_id: spawnPlacements.get(session.id)?.canonical_checkout_id ?? null,
       owner: session.owner ?? attributionResolver.user(session.owner_user_id),
       identity_mismatch: session.mandible_session_id
         ? identityMismatches.get(session.mandible_session_id) ?? null
