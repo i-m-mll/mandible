@@ -36,6 +36,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     notes: [
       "Tool uses come from function_call/custom_tool_call response items.",
       "Tool names are stored in metadata.tool_name.",
+      "Function call outputs without call identity are provider transport records and remain only in the source rollout; identified but unpaired outputs remain transcript diagnostics.",
       "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
       "Hidden token_count event blocks are persisted bookkeeping and may carry exact metadata.context_usage from total_token_usage and model_context_window.",
       "Unknown system/event kinds remain transcript-visible even if marked default_hidden, so provider drift fails visibly.",

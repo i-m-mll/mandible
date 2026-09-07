@@ -174,6 +174,50 @@ describe("CodexParser", () => {
     });
   });
 
+  it("keeps provider transport output out of the transcript while preserving genuine orphans", async () => {
+    const parser = new CodexParser();
+    const result = await parser.parseIncremental?.({
+      filePath: "/tmp/provider-output.jsonl",
+      raw: [
+        {
+          type: "response_item",
+          timestamp: "2026-05-16T00:00:06.000Z",
+          payload: {
+            type: "function_call_output",
+            call_id: null,
+            output: "provider delegation receipt",
+          },
+        },
+        {
+          type: "response_item",
+          timestamp: "2026-05-16T00:00:07.000Z",
+          payload: {
+            type: "function_call_output",
+            call_id: "orphan-call",
+            output: "orphan tool output",
+          },
+        },
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n",
+      baseBlockCount: 0,
+      baseRecordCount: 40,
+      sourceHash: "append:provider-output",
+      sourceMtime: 42,
+    });
+
+    expect(result?.blocks).toHaveLength(1);
+    expect(result?.blocks[0]).toMatchObject({
+      type: "tool_result",
+      content: "orphan tool output",
+      parent_id: null,
+      metadata: {
+        tool_id: "orphan-call",
+        tool_kind: "function_call_output",
+        source_record_ordinal: 41,
+        source_sub_block_ordinal: 0,
+      },
+    });
+  });
+
   it("preserves opaque custom tool input byte-for-byte", async () => {
     const parser = new CodexParser();
     const rawInput = '{"path":"a\\nb","literal":"  x  ","shell":"$(never-run)"}';
