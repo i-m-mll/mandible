@@ -176,7 +176,7 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(geometry.transcriptBottomInset).toBeCloseTo(composerHeight + (2 * composerBottomGap), 5);
         expect(geometry.finalContent.bottom).toBeLessThanOrEqual(geometry.composer.top - composerBottomGap + 0.5);
         expect(geometry.mask.left).toBeCloseTo(geometry.body.left, 0);
-        expect(geometry.mask.right).toBeCloseTo(geometry.overlayControl.right, 0);
+        expect(geometry.mask.right).toBeCloseTo(geometry.composer.right, 0);
         expect(Math.abs(geometry.mask.top - (geometry.composer.top + ((geometry.composer.bottom - geometry.composer.top) / 2)))).toBeLessThanOrEqual(1);
         expect(geometry.mask.bottom).toBeCloseTo(geometry.overlayControl.bottom, 0);
         const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; inlineVisibility: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number } };

@@ -40,7 +40,7 @@ function renderProviderMarkState(): ProviderMarkState {
         borderWidth: beforeButton.borderTopWidth,
         markOpacity: beforeMark.opacity,
       };
-      button.focus();
+      button.focus({ focusVisible: true });
       const focusedButton = getComputedStyle(button);
       const focusedMark = getComputedStyle(mark);
       document.title = btoa(JSON.stringify({
