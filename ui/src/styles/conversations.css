@@ -1,5 +1,25 @@
 /* Conversations and conversation detail surface */
 
+.chat-failure-notice__diagnostics {
+  margin-top: 0.25rem;
+}
+
+.chat-failure-notice__diagnostics summary {
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.chat-failure-notice__diagnostics pre {
+  max-width: min(72ch, 70vw);
+  max-height: 10rem;
+  margin: 0.35rem 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
 /* Dense conversation lists remain scannable without spending a full control
  * row on each title. This is intentionally scoped to Chat's sidebar. */
 .chat-history-sidebar .sidebar-item-row,

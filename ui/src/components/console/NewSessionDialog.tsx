@@ -4,6 +4,7 @@ import { createPortal } from 'preact/compat';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { SessionRunOptionsSnapshot, SessionRunOptionState, SessionRunOptionValue } from '../../api';
 import {
+  ConversationSpawnApiError,
   getConsoleRunOptions,
   getConsoleLanePolicy,
   getSettings,
@@ -327,6 +328,10 @@ export function NewSessionDialog({
       setAdvancedOpen(false);
       onClose();
     } catch (error) {
+      if (error instanceof ConversationSpawnApiError) {
+        setSubmitError(null);
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       setSubmitError(message === 'instance_mutation_forbidden'
         ? 'This preview cannot create chats. Open the main Mandible instance to start one.'

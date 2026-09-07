@@ -48,6 +48,7 @@ import {
   listWorkflows,
   listCanonicalProjects,
   ApiError,
+  ConversationSpawnApiError,
   isApiErrorStatus,
   openConversationExternally,
   submitConversationControl,
@@ -71,6 +72,7 @@ import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
   ChatOverlay,
+  ChatFailureNotice,
   ChatActivity,
   ChatPreview,
   ChatSessionOverview,
@@ -84,8 +86,11 @@ import {
   deriveChatUsageSummary,
   serializeConversationToMarkdown,
   useStatuslineTelemetry,
+  chatControlFailureNotice,
+  chatSpawnFailureNotice,
   type ChatPreviewTarget,
   type ChatActivityItem,
+  type ChatFailureNoticeModel,
 } from '../chat';
 import {
   applyConversationAppendPayload,
@@ -225,18 +230,6 @@ export function ChatDetailFrame({
       {children}
     </DetailPaneShell>
   );
-}
-
-function formatControlApiError(err: unknown): { message: string; details: string | null; snapshot: ConversationControlSnapshot | null } {
-  if (err instanceof Error) {
-    const apiError = err as Partial<ConversationControlApiError>;
-    return {
-      message: apiError.controlError?.kind ?? apiError.message ?? 'Conversation control failed',
-      details: apiError.controlError ? JSON.stringify(apiError.controlError, null, 2) : null,
-      snapshot: apiError.snapshot ?? null,
-    };
-  }
-  return { message: String(err), details: null, snapshot: null };
 }
 
 function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }): JSX.Element | null {
@@ -561,6 +554,19 @@ export function conversationTurnSelectionHref(
 
 // ── Props ──
 
+export type NewChatInput = {
+  idempotency_key: string;
+  label: string;
+  initial_message: string;
+  backend: string;
+  kind: string;
+  backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
+  transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+  channel_enabled?: boolean;
+  runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
+  cwd?: string;
+};
+
 export type ConversationsViewProps = {
   consoleSessions: ConsoleSession[];
   initialConversationId: string | null;
@@ -570,18 +576,7 @@ export type ConversationsViewProps = {
   chatEntityLinkAction?: ChatEntityClickAction;
   instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
-  onNewSession: (input: {
-    idempotency_key: string;
-    label: string;
-    initial_message: string;
-    backend: string;
-    kind: string;
-    backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
-    transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
-    channel_enabled?: boolean;
-    runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
-    cwd?: string;
-  }) => Promise<void>;
+  onNewSession: (input: NewChatInput) => Promise<void>;
 };
 
 function HorizontalDotsIcon(): JSX.Element {
@@ -1074,6 +1069,7 @@ function ConversationDetail({
   consoleSessions,
   sidebarCollapsed,
   chatEntityLinkAction,
+  externalNotice,
 }: {
   conversationId: string;
   initialConversation?: Conversation | null;
@@ -1082,6 +1078,7 @@ function ConversationDetail({
   consoleSessions: ConsoleSession[];
   sidebarCollapsed: boolean;
   chatEntityLinkAction: ChatEntityClickAction;
+  externalNotice?: ComponentChildren;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
     initialConversation ? conversationShell(initialConversation) : null,
@@ -1142,7 +1139,7 @@ function ConversationDetail({
   const [continueDraft, setContinueDraft] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
-  const [resumeErrorDetails, setResumeErrorDetails] = useState<string | null>(null);
+  const [controlFailure, setControlFailure] = useState<ChatFailureNoticeModel | null>(null);
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
   const anchorKey = effectiveAnchor ? JSON.stringify(effectiveAnchor) : 'initial';
@@ -1817,7 +1814,7 @@ function ConversationDetail({
     }
     setContinueBusy(true);
     setContinueError(null);
-    setResumeErrorDetails(null);
+    setControlFailure(null);
     try {
       if (!control) return;
       const messageAnchor = control.capability.kind === 'message-anchor-resume'
@@ -1831,14 +1828,18 @@ function ConversationDetail({
       const result = await submitConversationControl(control, prompt, messageAnchor, runtimeOptions);
       setControl(result.snapshot);
       setContinueDraft('');
+      setControlFailure(null);
       setToast({ message: 'Message sent.', type: 'info' });
     } catch (err) {
-      const formatted = formatControlApiError(err);
-      if (formatted.snapshot) {
-        setControl(formatted.snapshot);
+      const apiError = err as Partial<ConversationControlApiError>;
+      if (apiError.snapshot) {
+        setControl(apiError.snapshot);
       }
-      setContinueError(formatted.message);
-      setResumeErrorDetails(formatted.details);
+      if (apiError.controlError) {
+        setControlFailure(chatControlFailureNotice(apiError.controlError));
+      } else {
+        setContinueError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setContinueBusy(false);
     }
@@ -2204,14 +2205,19 @@ function ConversationDetail({
             {continueError ?? continueDisabledReason}
           </div>
         )}
-        {resumeErrorDetails && (
-          <details className="conv-compose__details">
-            <summary>Details</summary>
-            <pre>{resumeErrorDetails}</pre>
-          </details>
-        )}
       </div>
       ) : null;
+
+  const controlFailureNotice = controlFailure ? (
+    <ChatFailureNotice
+      failure={controlFailure}
+      busy={continueBusy}
+      onRetry={controlFailure.retryable ? () => {
+        const form = document.getElementById(`conversation-compose-${conversation.id}`) as HTMLFormElement | null;
+        form?.requestSubmit();
+      } : undefined}
+    />
+  ) : null;
 
   const detailOverlays = (
     <>
@@ -2258,7 +2264,7 @@ function ConversationDetail({
       overlayControl={composerOverlay}
       overlays={detailOverlays}
       ariaBusy={loading}
-      notice={loadErrorNotice}
+      notice={controlFailureNotice ?? externalNotice ?? loadErrorNotice}
     >
       {showMessageFilters && (
         <div className="conv-filter-bar">
@@ -2515,8 +2521,10 @@ function ChatEntryItem({
 
 function LiveSessionDetail({
   session,
+  notice,
 }: {
   session: ConsoleSession;
+  notice?: ComponentChildren;
 }): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>('rich');
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
@@ -2609,6 +2617,7 @@ function LiveSessionDetail({
       className="chat-live-detail"
       bodyClassName="chat-live-detail__pane"
       header={detailHeader}
+      notice={notice}
     >
       <TerminalPane
         sessionId={session.id}
@@ -2685,6 +2694,9 @@ export function ConversationsView({
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
+  const [spawnFailure, setSpawnFailure] = useState<ChatFailureNoticeModel | null>(null);
+  const [failedSpawnInput, setFailedSpawnInput] = useState<NewChatInput | null>(null);
+  const [retryingSpawn, setRetryingSpawn] = useState(false);
   const searchTimer = useRef<number | null>(null);
   const fetchGenerationRef = useRef(0);
   const groupsRef = useRef(serverGroups);
@@ -3389,24 +3401,41 @@ export function ConversationsView({
     }
   };
 
-  const handleNewSession = async (input: {
-    idempotency_key: string;
-    label: string;
-    initial_message: string;
-    backend: string;
-    kind: string;
-    backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
-    transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
-    channel_enabled?: boolean;
-    runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
-    cwd?: string;
-  }) => {
-    await onNewSession(input);
-    setDialogOpen(false);
-    setNewSessionCwd(undefined);
+  const handleNewSession = async (input: NewChatInput) => {
+    setSpawnFailure(null);
+    try {
+      await onNewSession(input);
+      setFailedSpawnInput(null);
+      setDialogOpen(false);
+      setNewSessionCwd(undefined);
+    } catch (error) {
+      if (error instanceof ConversationSpawnApiError) {
+        setSpawnFailure(chatSpawnFailureNotice(error.failure));
+        setFailedSpawnInput(input);
+      }
+      throw error;
+    }
   };
 
+  const retrySpawn = () => {
+    if (!failedSpawnInput) return;
+    setRetryingSpawn(true);
+    void handleNewSession(failedSpawnInput)
+      .catch(() => undefined)
+      .finally(() => setRetryingSpawn(false));
+  };
+
+  const spawnFailureNotice = spawnFailure ? (
+    <ChatFailureNotice
+      failure={spawnFailure}
+      busy={retryingSpawn}
+      onRetry={spawnFailure.retryable ? retrySpawn : undefined}
+    />
+  ) : undefined;
+
   const openNewSession = (cwd?: string) => {
+    setSpawnFailure(null);
+    setFailedSpawnInput(null);
     setNewSessionCwd(cwd);
     setDialogOpen(true);
   };
@@ -3734,16 +3763,19 @@ export function ConversationsView({
             consoleSessions={consoleSessions}
             sidebarCollapsed={false}
             chatEntityLinkAction={chatEntityLinkAction}
+            externalNotice={spawnFailureNotice}
           />
         ) : selection?.type === 'session' && selectedLiveSession ? (
           <LiveSessionDetail
             key={selectedLiveSession.id}
             session={selectedLiveSession}
+            notice={spawnFailureNotice}
           />
         ) : (
           <ChatDetailFrame
             state="no-selection"
             header={<DetailPaneHeader variant="compact" title="Chat" />}
+            notice={spawnFailureNotice}
           >
             <div className="chat-history-detail__empty">
               Select a conversation to view it

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createConsoleSession, invalidateApiGetCache, listCanonicalProjects } from '../../ui/src/api';
+import { ConversationSpawnApiError, createConsoleSession, invalidateApiGetCache, listCanonicalProjects } from '../../ui/src/api';
 
 afterEach(() => {
   invalidateApiGetCache();
@@ -28,6 +28,48 @@ describe('console session creation payload', () => {
       command: { name: 'codex', backend_type: 'acp', transport_lane: 'acp' },
     });
     expect(unscopedBody).toMatchObject({ label: 'Unscoped', placement: { project_id: null, checkout_id: null } });
+  });
+
+  it('preserves typed provider startup failure data from the spawn boundary', async () => {
+    const failure = {
+      code: 'provider_startup_timeout',
+      message: 'The provider did not become ready in time.',
+      retryable: true,
+      phase: 'readiness' as const,
+      provenance: {
+        backend_type: 'acp' as const,
+        provider: 'codex',
+        implementation: {
+          kind: 'package' as const,
+          name: '@agentclientprotocol/codex-acp',
+          version: '1.0.2',
+          entrypoint: 'dist/index.js',
+          launcher: 'node',
+        },
+      },
+    };
+    const spawn = {
+      schema: 'mandible-conversation-spawn-receipt@1' as const,
+      reservation_id: 'reservation-1',
+      request: {},
+      state: 'failed' as const,
+      attempt_count: 1,
+      native_session_id: null,
+      provider_session_id: null,
+      provider_receipt: null,
+      initial_message_state: 'failed' as const,
+      error: failure,
+      created_at: 1,
+      updated_at: 2,
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: false, error: failure, spawn }), {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    const result = createConsoleSession('Timed out', 'codex', 'agent', 'acp');
+    await expect(result).rejects.toBeInstanceOf(ConversationSpawnApiError);
+    await expect(result).rejects.toMatchObject({ status: 502, failure, spawn });
   });
 });
 

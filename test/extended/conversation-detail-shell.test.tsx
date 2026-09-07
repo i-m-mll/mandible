@@ -879,6 +879,61 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
   });
 
+  it('anchors typed control failures outside the transcript and retries only retryable failures', async () => {
+    const ownedControl: ConversationControlSnapshot = {
+      ...defaultControl,
+      ownership: {
+        kind: 'mandible', generation: 1, controller_instance_id: 'controller-1', adapter_id: 'codex',
+        provider_session_id: conversation.session_id, last_authoritative_signal: 2,
+      },
+      capability: { kind: 'live-send', revision: 1, generation: 1 },
+    };
+    const accepted = {
+      kind: 'accepted' as const,
+      delivery_id: 'delivery-2',
+      turn_id: 'turn-2',
+      snapshot: ownedControl,
+    };
+    vi.spyOn(api, 'submitConversationControl')
+      .mockRejectedValueOnce(Object.assign(new Error('adapter-failure'), {
+        controlError: {
+          kind: 'adapter-failure' as const,
+          adapter_id: 'codex',
+          code: 'startup-failed',
+          message: 'The provider process exited before accepting the message.',
+          retryable: true,
+        },
+        snapshot: ownedControl,
+      }))
+      .mockResolvedValueOnce(accepted);
+    const scopedConversation = mockConversationDetail(ownedControl);
+    const { container } = render(
+      <ConversationsView
+        conversations={[scopedConversation]}
+        consoleSessions={[]}
+        initialConversationId={scopedConversation.id}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    const composer = await screen.findByPlaceholderText('Message...');
+    fireEvent.input(composer, { target: { value: 'Keep this draft for retry.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('The provider could not complete this action.');
+    expect(alert.closest('[data-detail-pane-slot="notice"]')).toBeTruthy();
+    expect(container.querySelector('.stream-renderer__scroll')?.contains(alert)).toBe(false);
+    expect(screen.getByText('Provider diagnostics').closest('details')?.open).toBe(false);
+    expect((composer as HTMLTextAreaElement).value).toBe('Keep this draft for retry.');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(api.submitConversationControl).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+
   it.each([
     {
       label: 'live',
