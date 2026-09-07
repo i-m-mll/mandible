@@ -702,6 +702,13 @@
   padding: 0 18px;
 }
 
+.conv-transcript > .chat-entity-link-boundary {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 /* Chat's nested stream is the scroll owner. Do not also append the shell's
  * generic outer-body spacer; the measured end space belongs after transcript
  * content on the element whose scrollTop reaches the tail. */

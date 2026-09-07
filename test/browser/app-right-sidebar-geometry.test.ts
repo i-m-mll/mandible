@@ -98,6 +98,8 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const chat=document.querySelector('.chat-detail-frame'); const composer=document.querySelector('.conv-compose'); const transcript=document.querySelector('.conv-transcript');
         const transcriptScroll=document.querySelector('.stream-renderer__scroll'); const finalContent=document.querySelector('[data-transcript-final-content]');
         if(transcriptScroll) transcriptScroll.scrollTop=transcriptScroll.scrollHeight;
+        const transcriptScrollState=transcriptScroll?{clientHeight:transcriptScroll.clientHeight,scrollHeight:transcriptScroll.scrollHeight,scrollTop:transcriptScroll.scrollTop}:null;
+        const transcriptOuterState=transcript?{clientHeight:transcript.clientHeight,scrollHeight:transcript.scrollHeight,scrollTop:transcript.scrollTop}:null;
         const overlayControl=document.querySelector('.detail-pane-shell__overlay-control');
         const maskStyle=overlayControl?getComputedStyle(overlayControl,'::before'):null; const overlayRect=overlayControl?rect(overlayControl):null; const composerRect=composer?rect(composer):null;
         const mask=maskStyle&&overlayRect?{left:overlayRect.left+parseFloat(maskStyle.left),right:overlayRect.right-parseFloat(maskStyle.right),
@@ -109,13 +111,13 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const titleErrors=document.querySelector('[data-title-errors]');
         document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
-          chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),composer:composerRect,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
+          chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),composer:composerRect,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
           runOptions,
           stored:localStorage.getItem('mandible_app_right_sidebar:native-${surface}:v1'),
           deterministicRetry:titleErrors?.dataset.deterministicRetry,transientRetry:titleErrors?.dataset.transientRetry,titleCopy:titleErrors?.textContent}));
       })().catch(error=>document.title='fixture-error:'+btoa(String(error?.stack||error)));
     `;
-    const html = `<!doctype html><html data-theme="${theme}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell,.app-layout{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{grid-column:2;grid-row:1;min-width:0}.native-fixture .app-rail{grid-column:1;grid-row:1}.native-fixture .conv-detail{height:100%}.native-fixture .conv-transcript{flex:1;height:100%;padding-bottom:0}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
+    const html = `<!doctype html><html data-theme="${theme}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell,.app-layout{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{grid-column:2;grid-row:1;min-width:0}.native-fixture .app-rail{grid-column:1;grid-row:1}.native-fixture .conv-detail{height:100%}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
     const path = join(directory, 'fixture.html');
     writeFileSync(path, html);
     const rendered = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-sandbox', '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--window-size=${width},600`, `file://${path}?surface=${surface}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
@@ -160,6 +162,8 @@ describe('production app right sidebar geometry and interaction', () => {
           composer: Rect;
           transcriptViewport: Rect;
           transcriptBottomInset: number;
+          transcriptScrollState: { clientHeight: number; scrollHeight: number; scrollTop: number };
+          transcriptOuterState: { clientHeight: number; scrollHeight: number; scrollTop: number };
           finalContent: Rect;
           mask: Rect & { background: string };
           mainBackground: string;
@@ -173,7 +177,12 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.overlayControl.bottom);
         const composerHeight = geometry.composer.bottom - geometry.composer.top;
         const composerBottomGap = geometry.transcriptViewport.bottom - geometry.composer.bottom;
+        const transcriptMaxScroll = geometry.transcriptScrollState.scrollHeight - geometry.transcriptScrollState.clientHeight;
         expect(geometry.transcriptBottomInset).toBeCloseTo(composerHeight + (2 * composerBottomGap), 5);
+        expect(transcriptMaxScroll).toBeGreaterThan(0);
+        expect(geometry.transcriptScrollState.scrollTop).toBeCloseTo(transcriptMaxScroll, 5);
+        expect(geometry.transcriptOuterState.scrollHeight).toBe(geometry.transcriptOuterState.clientHeight);
+        expect(geometry.transcriptOuterState.scrollTop).toBe(0);
         expect(geometry.finalContent.bottom).toBeLessThanOrEqual(geometry.composer.top - composerBottomGap + 0.5);
         expect(geometry.mask.left).toBeCloseTo(geometry.body.left, 0);
         expect(geometry.mask.right).toBeCloseTo(geometry.composer.right, 0);
