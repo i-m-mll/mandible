@@ -62,7 +62,7 @@ describe("chat context usage", () => {
     });
 
     expect(normalized).toMatchObject({
-      currentContext: { availability: "unavailable" },
+      currentContext: { availability: "unavailable", reason: "Not reported by Codex" },
       modelWindowTokens: 258_400,
       accounting: [
         { scope: "task_total", totalTokens: 54_908_924 },
@@ -91,7 +91,7 @@ describe("chat context usage", () => {
     });
     expect(summary?.accounting.map(({ label, totalTokens }) => ({ label, totalTokens }))).toEqual([
       { label: "Task total", totalTokens: 105_000 },
-      { label: "Latest usage", totalTokens: 2_100 },
+      { label: "Latest reported usage", totalTokens: 2_100 },
     ]);
   });
 
@@ -202,7 +202,12 @@ describe("chat context usage", () => {
 
     expect(screen.getByText("Unavailable")).toBeTruthy();
     expect(screen.getByText("Occupancy unknown")).toBeTruthy();
+    expect(screen.getByText("Not reported by Codex")).toBeTruthy();
     expect(screen.queryByText("100%")).toBeNull();
+    const close = screen.getByRole("button", { name: "Close usage" });
+    expect(close.className).toBe("overlay-close-button");
+    expect(close.querySelector("svg[aria-hidden='true']")).toBeTruthy();
+    expect(close.textContent).toBe("");
 
     view.rerender(h(UsageModal, {
       usage: deriveChatUsageSummary({

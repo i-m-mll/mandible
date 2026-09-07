@@ -38,8 +38,7 @@ export type NormalizedUsageTelemetry = {
   currentUsage?: TokenAccounting;
 };
 
-const CODEX_OCCUPANCY_UNAVAILABLE =
-  "Codex token_count reports cumulative accounting and model capacity, not resident context occupancy.";
+const CODEX_OCCUPANCY_UNAVAILABLE = "Not reported by Codex";
 const CLAUDE_TRANSCRIPT_OCCUPANCY_UNAVAILABLE =
   "Claude transcript usage is message accounting; current context requires statusline telemetry.";
 

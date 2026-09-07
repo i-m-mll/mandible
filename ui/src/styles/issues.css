@@ -357,8 +357,7 @@
   line-height: 1.3;
 }
 
-.artifact-detail__modal-close,
-.detail-pane-modal__close {
+.artifact-detail__modal-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -371,14 +370,12 @@
   cursor: pointer;
 }
 
-.artifact-detail__modal-close:hover,
-.detail-pane-modal__close:hover {
+.artifact-detail__modal-close:hover {
   background: var(--neutral-alpha-08);
   color: var(--text-primary);
 }
 
-.artifact-detail__modal-close svg,
-.detail-pane-modal__close svg {
+.artifact-detail__modal-close svg {
   width: 18px;
   height: 18px;
   fill: none;
