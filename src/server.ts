@@ -65,6 +65,8 @@ export interface RequestLike {
   // is unauthenticated. Downstream attribution wiring consumes this; the gate
   // itself performs authentication only, not authorization.
   client_identity?: ResolvedClientIdentity | null;
+  /** Aborts when the underlying HTTP client disconnects before a response completes. */
+  signal?: AbortSignal;
 }
 
 // --- Client authentication gate (issue 708dc4c) ---
@@ -178,6 +180,7 @@ export interface RouterInvokeRequest {
   // file-RPC invocation, and the transport used to present it.
   credential?: string | null;
   transport?: "http" | "file-rpc" | "in-process";
+  signal?: AbortSignal;
 }
 
 export interface RouterInvokeResponse {
@@ -392,6 +395,7 @@ export class Router implements RouteRegistrar {
       input.ambient_identity,
       input.credential,
       input.transport ?? "file-rpc",
+      input.signal,
     );
     if (!handled) {
       return { status: 404, body: { error: "not_found" } };
@@ -403,6 +407,13 @@ export class Router implements RouteRegistrar {
   }
 
   async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
+    const abortController = new AbortController();
+    const abort = () => abortController.abort();
+    const abortOnClose = () => {
+      if (!res.writableEnded) abort();
+    };
+    req.once("aborted", abort);
+    res.once("close", abortOnClose);
     const method = req.method ?? "GET";
     let body: unknown = undefined;
     if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
@@ -411,15 +422,21 @@ export class Router implements RouteRegistrar {
         try { body = JSON.parse(rawBody); } catch { body = rawBody; }
       }
     }
-    return this.dispatch(
-      method,
-      req.url ?? "/",
-      body,
-      new HttpResponse(res),
-      ambientIdentityFromHeaders(req.headers),
-      bearerFromHeaders(req.headers),
-      "http",
-    );
+    try {
+      return await this.dispatch(
+        method,
+        req.url ?? "/",
+        body,
+        new HttpResponse(res),
+        ambientIdentityFromHeaders(req.headers),
+        bearerFromHeaders(req.headers),
+        "http",
+        abortController.signal,
+      );
+    } finally {
+      req.removeListener("aborted", abort);
+      res.removeListener("close", abortOnClose);
+    }
   }
 
   private async dispatch(
@@ -430,6 +447,7 @@ export class Router implements RouteRegistrar {
     ambientIdentity?: unknown,
     credential?: string | null,
     transport: "http" | "file-rpc" | "in-process" = "in-process",
+    signal?: AbortSignal,
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
     const url = new URL(requestUrl, "http://localhost");
@@ -494,6 +512,7 @@ export class Router implements RouteRegistrar {
         body,
         ambient_identity: requestAmbientIdentity,
         client_identity: clientIdentity,
+        signal,
       };
 
       try {

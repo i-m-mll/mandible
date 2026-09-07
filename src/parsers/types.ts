@@ -1,5 +1,7 @@
 // Chat log ingestion: normalized types for conversations from all sources.
 
+import type { NormalizedUsageTelemetry } from "./context-usage.js";
+
 export type BlockType =
   | "user_message"
   | "assistant_message"
@@ -22,15 +24,7 @@ export interface BlockMetadata {
   tool_output?: unknown;
   model?: string;
   token_usage?: { input: number; output: number; cache_read?: number };
-  context_usage?: {
-    source: "statusline" | "mirror_exact" | "mirror_approx";
-    used_tokens?: number;
-    total_tokens?: number;
-    window_tokens?: number;
-    percent?: number;
-    approximate?: boolean;
-    model?: string;
-  };
+  usage_telemetry?: NormalizedUsageTelemetry;
   source_event_type?: string;
   visibility?: "default_hidden" | "default_visible";
   truncated?: boolean;

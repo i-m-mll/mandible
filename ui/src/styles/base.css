@@ -1206,7 +1206,6 @@ a {
 }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
-:root[data-theme='light'] .new-session-dialog-overlay,
 :root[data-theme='light'] .settings-view__confirm-overlay,
 :root[data-theme='light'] .modal-backdrop,
 :root[data-theme='light'] .dialog-backdrop {

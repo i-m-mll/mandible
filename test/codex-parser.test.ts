@@ -174,6 +174,50 @@ describe("CodexParser", () => {
     });
   });
 
+  it("keeps provider transport output out of the transcript while preserving genuine orphans", async () => {
+    const parser = new CodexParser();
+    const result = await parser.parseIncremental?.({
+      filePath: "/tmp/provider-output.jsonl",
+      raw: [
+        {
+          type: "response_item",
+          timestamp: "2026-05-16T00:00:06.000Z",
+          payload: {
+            type: "function_call_output",
+            call_id: null,
+            output: "provider delegation receipt",
+          },
+        },
+        {
+          type: "response_item",
+          timestamp: "2026-05-16T00:00:07.000Z",
+          payload: {
+            type: "function_call_output",
+            call_id: "orphan-call",
+            output: "orphan tool output",
+          },
+        },
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n",
+      baseBlockCount: 0,
+      baseRecordCount: 40,
+      sourceHash: "append:provider-output",
+      sourceMtime: 42,
+    });
+
+    expect(result?.blocks).toHaveLength(1);
+    expect(result?.blocks[0]).toMatchObject({
+      type: "tool_result",
+      content: "orphan tool output",
+      parent_id: null,
+      metadata: {
+        tool_id: "orphan-call",
+        tool_kind: "function_call_output",
+        source_record_ordinal: 41,
+        source_sub_block_ordinal: 0,
+      },
+    });
+  });
+
   it("preserves opaque custom tool input byte-for-byte", async () => {
     const parser = new CodexParser();
     const rawInput = '{"path":"a\\nb","literal":"  x  ","shell":"$(never-run)"}';
@@ -249,7 +293,7 @@ describe("CodexParser", () => {
     });
   });
 
-  it("surfaces exact context metadata from token_count events", async () => {
+  it("preserves Codex accounting and capacity without inferring current context", async () => {
     const parser = new CodexParser();
     const sessionPath = await makeCodexSession("session-context");
 
@@ -265,13 +309,18 @@ describe("CodexParser", () => {
         visibility: "default_hidden",
       },
     });
-    expect(tokenCount?.metadata.context_usage).toMatchObject({
-      source: "mirror_exact",
-      used_tokens: 2000,
-      total_tokens: 2000,
-      window_tokens: 10_000,
-      percent: 20,
-      approximate: false,
+    expect(tokenCount?.metadata.usage_telemetry).toMatchObject({
+      provider: "codex",
+      provenance: "codex_token_count",
+      currentContext: { availability: "unavailable" },
+      modelWindowTokens: 10_000,
+      accounting: [{
+        scope: "task_total",
+        inputTokens: 1200,
+        cachedInputTokens: 300,
+        outputTokens: 500,
+        totalTokens: 1700,
+      }],
     });
   });
 

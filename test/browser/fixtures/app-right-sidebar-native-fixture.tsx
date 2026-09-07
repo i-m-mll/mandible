@@ -11,6 +11,7 @@ import { ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRight
 import { MessageInfoPanel } from '../../../ui/src/components/console/MessageInfoPanel';
 import { SessionControls } from '../../../ui/src/components/console/SessionControls';
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
+import { useIntrinsicOverflowGroup } from '../../../ui/src/hooks/useIntrinsicOverflowGroup';
 import { useAppRightSidebarState } from '../../../ui/src/right-sidebar-state';
 import { ChatDetailFrame, conversationLoadFailure } from '../../../ui/src/views/conversations';
 import { GraphDetailPane } from '../../../ui/src/views/graph';
@@ -41,21 +42,37 @@ function RunOption({ label, value }: { label: string; value: string }): JSX.Elem
   );
 }
 
-function NativeComposer(): JSX.Element {
+function NativeComposer({ layoutKey }: { layoutKey: string }): JSX.Element {
+  const geometry = useIntrinsicOverflowGroup(true, `Agent\u0000gpt-5.6-sol\u0000Medium\u0000${layoutKey}`);
   return (
-    <div className="conv-compose">
+    <div className="conv-compose" data-detail-pane-overlay-visual>
       <div className="conv-compose__controls">
-        <div className="conv-compose__runtime">
-          <div className="conv-compose__run-options-inline" aria-label="Run options">
+        <div ref={geometry.containerRef} className={`conv-compose__runtime${geometry.overflowed ? ' conv-compose__runtime--run-options-overflow' : ''}`}>
+          <div ref={geometry.contentRef} className="conv-compose__run-options-inline" aria-label="Run options" aria-hidden={geometry.overflowed ? 'true' : undefined} inert={geometry.overflowed || undefined}>
             <RunOption label="Mode" value="Agent" />
             <RunOption label="Model" value="gpt-5.6-sol" />
             <RunOption label="Reasoning effort" value="Medium" />
           </div>
-          <span className="conv-compose__runtime-actions">
-            <button type="button" className="btn btn--ghost btn--sm conv-compose__run-options-trigger" aria-label="Run options" title="Run options"><DotsIcon /></button>
+          <span ref={geometry.fixedRef} className="conv-compose__runtime-actions">
+            <button type="button" className="btn btn--ghost btn--sm conv-compose__run-options-trigger" data-overflow-trigger aria-label="Run options" title="Run options"><DotsIcon /></button>
             <span className="context-usage">42%</span>
             <button type="button" className="conv-compose__send">Send</button>
           </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NativeTranscript(): JSX.Element {
+  return (
+    <div className="conv-transcript">
+      <div className="chat-entity-link-boundary">
+        <div className="stream-renderer">
+          <div className="stream-renderer__scroll">
+            <div style={{ height: 900 }} />
+            <div data-transcript-final-content style={{ height: 24 }}>Final transcript line</div>
+          </div>
         </div>
       </div>
     </div>
@@ -81,9 +98,9 @@ function ChatMain({ descriptor, toggleRef, setOpen }: {
           actionsLabel="Chat sidebar"
         />
       )}
-      overlayControl={<NativeComposer />}
+      overlayControl={<NativeComposer layoutKey={`${descriptor.open}\u0000${descriptor.width}`} />}
     >
-      <div className="conv-transcript">{Array.from({ length: 30 }, (_, index) => <p key={index}>Transcript row {index}</p>)}</div>
+      <NativeTranscript />
     </ChatDetailFrame>
   );
 }

@@ -236,7 +236,7 @@ describe("chat render orchestration", () => {
         { id: "tu1", type: "tool_use", content: "{}", timestamp: "2026-01-01T00:00:02Z", metadata_json: JSON.stringify({ tool_id: "tool-1", tool_name: "Bash", tool_input: { command: "false" } }) },
         { id: "tr1", type: "tool_result", content: "exit 1", timestamp: "2026-01-01T00:00:03Z", metadata_json: JSON.stringify({ tool_id: "tool-1", is_error: true }) },
         { id: "e1", type: "event", content: "provider stopped", timestamp: "2026-01-01T00:00:04Z", metadata_json: JSON.stringify({ event_type: "stop", level: "error" }) },
-        { id: "tr2", type: "tool_result", content: "orphan output", timestamp: "2026-01-01T00:00:05Z", metadata_json: JSON.stringify({ tool_id: "missing" }) },
+        { id: "tr2", type: "tool_result", content: "orphan output", timestamp: "2026-01-01T00:00:05Z", metadata_json: JSON.stringify({ tool_id: "missing", tool_kind: "function_call_output", source_record_ordinal: 41 }) },
       ]);
       const state = buildStreamState(events);
       const system = state.nodes.find((node) => node.kind === "semantic_event" && node.event.semantic_kind === "system");
@@ -247,7 +247,11 @@ describe("chat render orchestration", () => {
       expect(system?.event.source).toMatchObject({ blockId: "s1", timestamp: "2026-01-01T00:00:00Z" });
       expect(errorEvent?.event).toMatchObject({ content: "provider stopped", label: "stop", is_error: true });
       expect(turn?.turn.toolResults.get("tool-1")).toMatchObject({ content: "exit 1", is_error: true });
-      expect(unmatched?.result).toMatchObject({ tool_use_id: "missing", content: "orphan output" });
+      expect(unmatched?.result).toMatchObject({
+        tool_use_id: "missing",
+        content: "orphan output",
+        source: { blockId: "tr2", timestamp: "2026-01-01T00:00:05Z" },
+      });
     },
   );
 

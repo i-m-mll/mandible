@@ -30,6 +30,9 @@ type ConsoleSession = {
   status: 'running' | 'stopped' | 'crashed';
   is_operator: boolean;
   provider_session_id: string | null;
+  /** Reservation-backed canonical placement; never inferred from cwd. */
+  canonical_project_id?: string | null;
+  canonical_checkout_id?: string | null;
   owner_user_id?: string | null;
   owner?: {
     id: string;

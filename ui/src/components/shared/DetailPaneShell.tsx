@@ -48,6 +48,16 @@ export type DetailPaneOverlayContextValue = {
 
 export const DetailPaneOverlayContext = createContext<DetailPaneOverlayContextValue | null>(null);
 
+type VerticalRect = Pick<DOMRect, 'bottom' | 'height'>;
+
+function overlayControlScrollSpace(
+  controlRect: VerticalRect,
+  viewportRect: Pick<DOMRect, 'bottom'>,
+): number {
+  const bottomGap = Math.max(0, viewportRect.bottom - controlRect.bottom);
+  return Math.max(0, controlRect.height) + (2 * bottomGap);
+}
+
 function classNames(...values: Array<string | undefined>): string {
   return values.filter(Boolean).join(' ');
 }
@@ -106,17 +116,36 @@ export function DetailPaneShell({
   }, [footer?.mode, scrollOwner]);
 
   useLayoutEffect(() => {
-    if (!overlayControl || !shellRef.current || !overlayControlRef.current || !scrollOwner) return undefined;
+    if (!overlayControl || !shellRef.current || !overlayControlRef.current || !scrollOwner) {
+      shellRef.current?.style.removeProperty('--detail-pane-overlay-control-scroll-space');
+      return undefined;
+    }
     const updateGeometry = () => {
       if (!shellRef.current || !overlayControlRef.current) return;
+      const visualControl = overlayControlRef.current.querySelector<HTMLElement>('[data-detail-pane-overlay-visual]');
       shellRef.current.style.setProperty('--detail-pane-overlay-control-height', `${overlayControlRef.current.offsetHeight}px`);
       shellRef.current.style.setProperty('--detail-pane-scrollbar-width', `${Math.max(0, scrollOwner.offsetWidth - scrollOwner.clientWidth)}px`);
+      if (visualControl) {
+        const scrollSpace = overlayControlScrollSpace(
+          visualControl.getBoundingClientRect(),
+          scrollOwner.getBoundingClientRect(),
+        );
+        shellRef.current.style.setProperty('--detail-pane-overlay-control-scroll-space', `${scrollSpace}px`);
+      } else {
+        shellRef.current.style.removeProperty('--detail-pane-overlay-control-scroll-space');
+      }
     };
     updateGeometry();
     const observer = new ResizeObserver(updateGeometry);
     observer.observe(overlayControlRef.current);
     observer.observe(scrollOwner);
-    return () => observer.disconnect();
+    const visualControl = overlayControlRef.current.querySelector<HTMLElement>('[data-detail-pane-overlay-visual]');
+    if (visualControl) observer.observe(visualControl);
+    window.addEventListener('resize', updateGeometry);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateGeometry);
+    };
   }, [overlayControl, scrollOwner]);
 
   return (

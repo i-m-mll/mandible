@@ -6,7 +6,7 @@ import {
   acknowledgeInboxItem,
   ackAllInbox,
   approveAuthRequest,
-  createConsoleSession,
+  startProviderChat,
   getAuthHistory,
   getAuthQueue,
   getConsoleSessions,
@@ -1910,43 +1910,21 @@ function App(): JSX.Element {
 
   const handleConsoleNewSession = async ({
     idempotency_key,
-    label,
-    initial_message,
-    backend,
-    kind,
-    backend_type,
-    transport_lane,
-    channel_enabled,
-    runOptions,
-    cwd,
+    provider,
+    placement,
   }: {
     idempotency_key: string;
-    label: string;
-    initial_message: string;
-    backend: string;
-    kind: string;
-    backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
-    transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
-    channel_enabled?: boolean;
-    runOptions?: Record<string, import('./api').SessionRunOptionValue>;
-    cwd?: string;
+    provider: 'codex' | 'claude_code';
+    placement: { project_id: string; checkout_id: string };
   }) => {
-    try {
-      const result = await createConsoleSession(label, backend, kind, backend_type, {
-        idempotency_key,
-        initial_message,
-        channel_enabled,
-        transport_lane,
-        runOptions,
-        cwd,
-      });
+      const result = await startProviderChat(idempotency_key, provider, placement);
       const session = {
         pinned: false,
         unread_count: 0,
-        channel_enabled: channel_enabled ?? false,
+        channel_enabled: false,
         transport_badge: result.session.transport_badge,
         ...result.session,
-        agent_type: (kind === 'operator' ? 'operator' : backend) as ConsoleSession['agent_type'],
+        agent_type: (provider === 'claude_code' ? 'claude' : 'codex') as ConsoleSession['agent_type'],
       } as ConsoleSession;
       const id = session.id;
       if (!id) throw new Error('The server created a chat without a session ID.');
@@ -1959,12 +1937,7 @@ function App(): JSX.Element {
         session,
       });
       dispatch({ type: 'setConsoleActiveSessionId', sessionId: id });
-
-      // Instruction selections are sent with the create request so SDK sessions
-      // can configure immediately and PTY/Channel sessions can apply launch-time prompts.
-    } catch (error) {
-      throw error;
-    }
+      return id;
   };
 
   const handleAckAll = async () => {

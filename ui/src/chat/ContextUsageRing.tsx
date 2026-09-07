@@ -11,7 +11,7 @@ type ContextUsageRingProps = {
 export function ContextUsageRing({ usage, size = 'md', onClick }: ContextUsageRingProps): JSX.Element | null {
   const context = usage?.context;
   if (!context) return null;
-  const severity = getContextSeverity(context.percent);
+  const severity = context.percent === undefined ? 'info' : getContextSeverity(context.percent);
   const label = ringLabel(context);
   const title = tooltipText(context, usage);
   return (
@@ -28,15 +28,17 @@ export function ContextUsageRing({ usage, size = 'md', onClick }: ContextUsageRi
 }
 
 function ringLabel(context: ContextUsage): string {
+  if (context.availability === 'unavailable' || context.percent === undefined) return '—';
   const percent = Math.round(context.percent);
-  return context.approximate ? `~${percent}%` : `${percent}%`;
+  return context.precision === 'approximate' ? `~${percent}%` : `${percent}%`;
 }
 
 function tooltipText(context: ContextUsage, usage: ChatUsageSummary): string {
   const parts = [
-    `${ringLabel(context)} context`,
+    context.availability === 'available' ? `${ringLabel(context)} current context` : 'Current context unavailable',
     context.usedTokens !== undefined ? `${context.usedTokens.toLocaleString()} used` : null,
     context.windowTokens !== undefined ? `${context.windowTokens.toLocaleString()} window` : null,
+    context.reason ?? null,
     usage.sourceLabel,
     usage.updatedAt ? `updated ${formatAge(usage.updatedAt)}` : null,
   ].filter(Boolean);

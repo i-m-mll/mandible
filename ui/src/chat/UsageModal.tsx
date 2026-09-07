@@ -1,4 +1,5 @@
 import type { JSX } from 'preact/jsx-runtime';
+import { OverlayCloseButton } from '../components/shared/OverlayCloseButton';
 import type { ChatUsageSummary } from './contextUsage';
 import { getContextSeverity } from './contextUsage';
 
@@ -15,28 +16,33 @@ export function UsageModal({
     <div className="usage-modal">
       <div className="usage-modal__header">
         <h2 id={titleId}>Usage</h2>
-        <button type="button" className="usage-modal__close" aria-label="Close usage" onClick={onClose}>
-          x
-        </button>
+        <OverlayCloseButton label="Close usage" onClick={onClose} />
       </div>
 
       {usage?.context && (
         <section className="usage-modal__section">
           <div className="usage-modal__section-head">
-            <span>Context</span>
-            <strong>{usage.context.approximate ? '~' : ''}{Math.round(usage.context.percent)}%</strong>
+            <span>Current context</span>
+            <strong>{usage.context.percent === undefined
+              ? 'Unavailable'
+              : `${usage.context.precision === 'approximate' ? '~' : ''}${Math.round(usage.context.percent)}%`}</strong>
           </div>
-          <div
-            className={`usage-modal__bar usage-modal__bar--${getContextSeverity(usage.context.percent)}`}
-            aria-hidden="true"
-          >
-            <span style={{ width: `${Math.round(usage.context.percent)}%` }} />
-          </div>
+          {usage.context.percent !== undefined && (
+            <div
+              className={`usage-modal__bar usage-modal__bar--${getContextSeverity(usage.context.percent)}`}
+              aria-hidden="true"
+            >
+              <span style={{ width: `${Math.round(usage.context.percent)}%` }} />
+            </div>
+          )}
           <div className="usage-modal__facts">
             {usage.context.usedTokens !== undefined && <span>{usage.context.usedTokens.toLocaleString()} used</span>}
             {usage.context.windowTokens !== undefined && <span>{usage.context.windowTokens.toLocaleString()} window</span>}
-            <span>{usage.context.approximate ? 'Approximate' : 'Exact'}</span>
+            <span>{usage.context.precision === 'unavailable'
+              ? 'Occupancy unknown'
+              : usage.context.precision === 'approximate' ? 'Approximate' : 'Exact'}</span>
           </div>
+          {usage.context.reason && <div className="usage-modal__reset">{usage.context.reason}</div>}
         </section>
       )}
 
@@ -65,26 +71,28 @@ export function UsageModal({
         </section>
       ) : null}
 
-      {usage?.tokenTotals && (
-        <section className="usage-modal__section">
+      {usage?.accounting.map((accounting) => (
+        <section className="usage-modal__section" key={`${accounting.scope}:${accounting.label}`}>
           <div className="usage-modal__section-head">
-            <span>Session tokens</span>
+            <span>{accounting.label}</span>
           </div>
           <div className="usage-modal__grid">
-            <Metric label="Input" value={usage.tokenTotals.inputTokens} />
-            <Metric label="Output" value={usage.tokenTotals.outputTokens} />
-            <Metric label="Cache read" value={usage.tokenTotals.cacheReadTokens} />
-            <Metric label="Cache write" value={usage.tokenTotals.cacheCreationTokens} />
-            <Metric label="Total" value={usage.tokenTotals.totalTokens} />
-            {usage.tokenTotals.costUsd !== undefined && (
+            <Metric label="Input" value={accounting.inputTokens} />
+            <Metric label="Output" value={accounting.outputTokens} />
+            <Metric label="Cached input" value={accounting.cachedInputTokens} />
+            <Metric label="Reasoning output" value={accounting.reasoningOutputTokens} />
+            <Metric label="Cache read" value={accounting.cacheReadTokens} />
+            <Metric label="Cache write" value={accounting.cacheCreationTokens} />
+            <Metric label="Total" value={accounting.totalTokens} />
+            {accounting.costUsd !== undefined && (
               <div className="usage-modal__metric">
                 <span>Cost</span>
-                <strong>${usage.tokenTotals.costUsd.toFixed(4)}</strong>
+                <strong>${accounting.costUsd.toFixed(4)}</strong>
               </div>
             )}
           </div>
         </section>
-      )}
+      ))}
 
       <div className="usage-modal__footer">
         <span>{usage?.sourceLabel ?? 'No usage data'}</span>

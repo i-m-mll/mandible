@@ -1,5 +1,25 @@
 /* Conversations and conversation detail surface */
 
+.chat-failure-notice__diagnostics {
+  margin-top: 0.25rem;
+}
+
+.chat-failure-notice__diagnostics summary {
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.chat-failure-notice__diagnostics pre {
+  max-width: min(72ch, 70vw);
+  max-height: 10rem;
+  margin: 0.35rem 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
 /* Dense conversation lists remain scannable without spending a full control
  * row on each title. This is intentionally scoped to Chat's sidebar. */
 .chat-history-sidebar .sidebar-item-row,
@@ -381,7 +401,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin: 0 18px 16px;
+  margin: 0 var(--conversation-composer-inline-margin, 18px) 16px;
   padding: 10px;
   border: 1px solid var(--neutral-alpha-10);
   border-radius: var(--radius-chat-surface);
@@ -393,8 +413,18 @@
  * composer. Paint the lower mask on the overlay host, behind the complete
  * composer box, so it cannot cover any edge of the composer's own border. */
 .detail-pane-shell--overlay-control .detail-pane-shell__overlay-control {
+  --conversation-composer-inline-margin: 18px;
   isolation: isolate;
   background: transparent;
+}
+
+.chat-detail-frame.detail-pane-shell--overlay-control .detail-pane-shell__overlay-control {
+  right: 0;
+  pointer-events: none;
+}
+
+.chat-detail-frame.detail-pane-shell--overlay-control .conv-compose {
+  pointer-events: auto;
 }
 
 .detail-pane-shell--overlay-control .detail-pane-shell__overlay-control::before {
@@ -402,7 +432,7 @@
   position: absolute;
   z-index: 0;
   top: calc(50% - 8px);
-  right: 0;
+  right: var(--conversation-composer-inline-margin);
   bottom: 0;
   left: 0;
   background: var(--surface-app);
@@ -525,12 +555,14 @@
   border-top: 1px solid var(--neutral-alpha-06);
   color: var(--text-muted);
   font-size: 12px;
+  min-width: 0;
 }
 
 .conv-compose__runtime {
   justify-content: flex-end;
   min-width: 0;
   width: 100%;
+  position: relative;
 }
 
 .conv-compose__run-options-inline {
@@ -540,14 +572,13 @@
   justify-content: flex-end;
   gap: 8px;
   min-width: 0;
-  overflow: hidden;
 }
 
 .conv-compose__run-options-inline .session-controls__field {
-  flex: 1 1 0;
+  flex: 0 0 auto;
   gap: 0;
   min-width: 0;
-  max-width: 180px;
+  max-width: min(240px, 100%);
 }
 
 .conv-compose__run-options-inline .session-controls__label {
@@ -563,10 +594,18 @@
 }
 
 .conv-compose__run-options-inline .session-controls__select {
-  width: 100%;
-  min-width: 0;
+  width: auto;
+  min-width: 44px;
   min-height: 30px;
   max-width: 100%;
+  field-sizing: content;
+}
+
+.conv-compose__runtime--run-options-overflow .conv-compose__run-options-inline {
+  position: absolute;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .conv-compose__run-options-trigger {
@@ -582,6 +621,10 @@
   width: 17px;
   height: 17px;
   fill: currentColor;
+}
+
+.conv-compose__runtime--run-options-overflow .conv-compose__run-options-trigger {
+  display: inline-flex;
 }
 
 .conv-compose__runtime-actions {
@@ -609,16 +652,6 @@
 .conv-compose__run-options > .session-controls__field + .session-controls__field,
 .conv-compose__run-options > .session-controls {
   margin-top: 12px;
-}
-
-@container (max-width: 700px) {
-  .conv-compose__run-options-inline {
-    display: none;
-  }
-
-  .conv-compose__run-options-trigger {
-    display: inline-flex;
-  }
 }
 
 /* Filter bar in detail view */
@@ -668,20 +701,36 @@
 }
 
 .conv-transcript {
-  flex: none;
+  flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 18px;
   max-height: none;
-  overflow: visible;
-  padding: 0 18px 20px;
+  overflow: hidden;
+  padding: 0;
 }
 
-/* The transcript owns the same outer inset as the composer. Avoid adding a
- * second inner gutter in the shared stream renderer. */
+.conv-transcript > .chat-entity-link-boundary {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Chat's nested stream is the scroll owner. Do not also append the shell's
+ * generic outer-body spacer; the measured end space belongs after transcript
+ * content on the element whose scrollTop reaches the tail. */
+.chat-detail-frame.detail-pane-shell--overlay-control .detail-pane-shell__body::after {
+  display: none;
+}
+
+/* Keep the scroll box full-width so its scrollbar stays on the detail-pane
+ * edge. Padding aligns transcript content with the inset composer without
+ * changing the scroll element's containing block. */
 .conv-transcript .stream-renderer__scroll {
-  padding-inline: 0;
+  padding-inline: 18px;
+  padding-bottom: var(--detail-pane-overlay-control-scroll-space, var(--space-4));
 }
 
 /* Conversation prose and its tool disclosures share one readable body size;
@@ -1369,4 +1418,90 @@
 
 .chat-right-sidebar__preview {
   min-height: 100%;
+}
+
+.new-chat-provider-picker {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
+  backdrop-filter: blur(2px);
+  pointer-events: auto;
+}
+
+.new-chat-provider-picker__panel {
+  display: grid;
+  gap: 18px;
+  min-width: 220px;
+  padding: 24px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: var(--bg-secondary);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 28%);
+}
+
+.new-chat-provider-picker__choices {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+}
+
+.new-chat-provider-picker__provider {
+  width: 68px;
+  height: 68px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.new-chat-provider-picker__provider:hover,
+.new-chat-provider-picker__provider:focus {
+  background: var(--surface-hover);
+}
+
+.new-chat-provider-picker__provider:focus {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.new-chat-provider-picker__provider:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.new-chat-provider-picker__mark {
+  width: 38px;
+  height: 38px;
+  opacity: .58;
+  transition: opacity 120ms ease;
+}
+
+.new-chat-provider-picker__provider:hover .new-chat-provider-picker__mark,
+.new-chat-provider-picker__provider:focus .new-chat-provider-picker__mark {
+  opacity: .92;
+}
+
+:root:not([data-theme='light']) .new-chat-provider-picker__mark {
+  filter: invert(1);
+  opacity: .68;
+}
+
+:root:not([data-theme='light']) .new-chat-provider-picker__provider:hover .new-chat-provider-picker__mark,
+:root:not([data-theme='light']) .new-chat-provider-picker__provider:focus .new-chat-provider-picker__mark {
+  opacity: 1;
+}
+
+.new-chat-provider-picker__status {
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.new-chat-provider-picker__failure {
+  display: grid;
+  gap: 10px;
 }

@@ -55,7 +55,7 @@ export function DetailPaneNotice({
         {title !== undefined && title !== null ? (
           <strong className="detail-pane-notice__title">{title}</strong>
         ) : null}
-        <span className="detail-pane-notice__body">{children}</span>
+        <div className="detail-pane-notice__body">{children}</div>
       </div>
       {actions !== undefined && actions !== null ? (
         <div className="detail-pane-notice__actions">{actions}</div>

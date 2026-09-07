@@ -6,12 +6,20 @@ export type { ChatActivityItem, ChatActivityItemStatus } from './ChatRightSideba
 export { ChatEntityLinkBoundary } from './ChatEntityLinkBoundary';
 export type { ChatPreviewTarget } from './ChatEntityLinkBoundary';
 export type { ChatOverlayProps } from './ChatOverlay';
+export {
+  ChatFailureNotice,
+  chatControlFailureNotice,
+  chatSpawnFailureNotice,
+} from './ChatFailureNotice';
+export type { ChatFailureNoticeModel } from './ChatFailureNotice';
+export { NewChatProviderPicker } from './NewChatProviderPicker';
+export { reduceNewChatDraft } from './newChatDraft';
+export type { NewChatDraft, NewChatPlacement, NewChatProvider } from './newChatDraft';
 export { ContextUsageRing } from './ContextUsageRing';
 export { UsageModal } from './UsageModal';
 export { useStatuslineTelemetry } from './useStatuslineTelemetry';
 export {
   deriveChatUsageSummary,
-  effectiveClaudeInputTokens,
   getContextSeverity,
   selectContextUsage,
 } from './contextUsage';

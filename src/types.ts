@@ -780,6 +780,9 @@ export interface ConsoleSession {
   command: string;
   args: string[];
   provider_session_id: string | null;
+  /** Canonical placement projected from the exact conversation-spawn reservation. */
+  canonical_project_id?: string | null;
+  canonical_checkout_id?: string | null;
   cwd: string | null;
   env: Record<string, string>;
   cols: number;

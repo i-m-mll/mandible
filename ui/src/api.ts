@@ -58,6 +58,7 @@ import type {
   ConversationControlOperation as ContractConversationControlOperation,
   ConversationRuntimeOptions as ContractConversationRuntimeOptions,
   ConversationControlSnapshot as ContractConversationControlSnapshot,
+  ConversationSpawnReceipt as ContractConversationSpawnReceipt,
   ProviderAdapterEvent as ContractProviderAdapterEvent,
   ProviderLiveProjection as ContractProviderLiveProjection,
   OperationalIncidentAcknowledgementResponse as ContractOperationalIncidentAcknowledgement,
@@ -292,6 +293,22 @@ export class ApiError extends Error {
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+  }
+}
+
+export type ConversationSpawnFailure = NonNullable<ContractConversationSpawnReceipt['error']>;
+
+export class ConversationSpawnApiError extends Error {
+  readonly status: number;
+  readonly failure: ConversationSpawnFailure;
+  readonly spawn: ContractConversationSpawnReceipt;
+
+  constructor(status: number, failure: ConversationSpawnFailure, spawn: ContractConversationSpawnReceipt) {
+    super(failure.message);
+    this.name = 'ConversationSpawnApiError';
+    this.status = status;
+    this.failure = failure;
+    this.spawn = spawn;
   }
 }
 
@@ -2025,12 +2042,10 @@ export type ConsoleSessionOptions = {
   maxCostUsd?: number;
 };
 
-export async function createConsoleSession(
-  label: string,
-  backend: string,
-  kind: string,
-  backendType?: ConsoleBackendType,
-  options?: { idempotency_key?: string; initial_message?: string; channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; runOptions?: Record<string, SessionRunOptionValue>; cwd?: string },
+export async function startProviderChat(
+  idempotencyKey: string,
+  provider: 'codex' | 'claude_code',
+  placement: { project_id: string; checkout_id: string },
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -2040,6 +2055,8 @@ export async function createConsoleSession(
   status: 'running' | 'stopped' | 'crashed';
   is_operator: boolean;
   provider_session_id: string | null;
+  canonical_project_id?: string | null;
+  canonical_checkout_id?: string | null;
   unread_count?: number;
   created_at: number;
   started_at: number | null;
@@ -2055,85 +2072,95 @@ export async function createConsoleSession(
   allowed_tools: string[] | null;
   mandible_session_id: string | null;
 } }> {
-  // Bug: b949700 — translate agent_type to command+args as required by backend
-  type SessionBody = {
-    label: string;
-    command: string;
-    args: string[];
-    cwd?: string;
-    auto_restart?: boolean;
-    is_operator?: boolean;
-    backend_type?: ConsoleBackendType;
-    channel_enabled?: boolean;
-    transport_lane?: ConsoleTransportLane;
-    runOptions?: Record<string, SessionRunOptionValue>;
-  };
-  const body: SessionBody = { label, command: '', args: [] };
-  if (options?.cwd) {
-    body.cwd = options.cwd;
-  }
-  if (options?.channel_enabled) {
-    body.channel_enabled = true;
-  }
-  if (options?.transport_lane) {
-    body.transport_lane = options.transport_lane;
-  }
-  if (!body.transport_lane) {
-    body.transport_lane = backendType === 'sdk' ? 'sdk'
-      : backendType === 'pty' ? 'pty'
-        : backendType === 'spawn' ? 'spawn'
-          : 'acp';
-  }
-  if (options?.runOptions) body.runOptions = options.runOptions;
-  // Issue 8aadf70 — Claude sessions default to the sanctioned Agent SDK lane,
-  // which gates tools through canUseTool and Mandible's permission cards.
-  // `--dangerously-skip-permissions` is never sent for the default lane; it
-  // stays only on the local-only, explicitly gated Claude PTY lane.
-  if (kind === 'operator') {
-    body.command = 'claude';
-    body.backend_type = backendType ?? 'sdk';
-    body.args = body.backend_type === 'pty' ? ['--dangerously-skip-permissions'] : [];
-    body.auto_restart = true;
-    body.is_operator = true;
-  } else if (backend === 'claude') {
-    body.command = 'claude';
-    body.backend_type = backendType ?? 'sdk';
-    body.args = body.backend_type === 'pty' ? ['--dangerously-skip-permissions'] : [];
-  } else if (backend === 'codex') {
-    body.command = 'codex';
-    body.args = [];
-    body.backend_type = backendType ?? 'acp';
-  } else if (backend === 'gemini') {
-    body.command = 'gemini';
-    body.args = [];
-    body.backend_type = backendType ?? 'acp';
-  } else {
-    throw new Error(`Unsupported backend: ${backend}`);
-  }
-  const projects = options?.cwd ? await listCanonicalProjects() : [];
-  const checkout = projects.flatMap((project) => project.checkouts.map((candidate) => ({ project, checkout: candidate })))
-    .find((candidate) => candidate.checkout.root === options?.cwd);
-  if (options?.cwd && !checkout) throw new Error('The selected checkout is not registered with Mandible.');
-  const provider = backend === 'claude' ? 'claude_code' : backend;
-  const response = await apiPost('/api/conversation-spawns', {
-    schema: 'mandible-conversation-spawn-request@1',
-    idempotency_key: options?.idempotency_key ?? crypto.randomUUID(),
-    provider,
-    label,
-    initial_message: options?.initial_message ?? label,
-    placement: checkout
-      ? { project_id: checkout.project.id, checkout_id: checkout.checkout.id }
-      : { project_id: null, checkout_id: null },
-    topology: { kind: 'top-level' },
-    command: {
-      name: body.command,
-      backend_type: body.backend_type,
-      transport_lane: body.transport_lane,
-      channel_enabled: body.channel_enabled === true,
-      run_options: body.runOptions ?? {},
+  const controller = new AbortController();
+  const post = fetch('/api/conversation-spawns', {
+    method: 'POST',
+    headers: {
+      ...DEFAULT_HEADERS,
+      'Content-Type': 'application/json',
     },
+    body: JSON.stringify({
+      schema: 'mandible-conversation-spawn-request@2',
+      idempotency_key: idempotencyKey,
+      provider,
+      placement,
+    }),
+    signal: controller.signal,
   });
-  const json = await parseMaybeJson(response);
+  type SpawnResponse = {
+    ok?: boolean;
+    error?: unknown;
+    spawn?: ContractConversationSpawnReceipt;
+    session?: unknown;
+    message?: string;
+  };
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
+  const reconciled = new Promise<{ response: Response; json: SpawnResponse }>((resolve, reject) => {
+    watchdog = setTimeout(() => {
+      void fetch(`/api/conversation-spawns/${encodeURIComponent(idempotencyKey)}`, {
+        headers: DEFAULT_HEADERS,
+      }).then(async (statusResponse) => {
+        const status = await parseMaybeJson(statusResponse) as {
+          ok?: boolean;
+          value?: ContractConversationSpawnReceipt;
+          error?: unknown;
+        };
+        const spawn = status.value;
+        if (!statusResponse.ok || !status.ok || !spawn) {
+          throw new ApiError('Provider startup status could not be reconciled.', statusResponse.status, 'spawn_status_unavailable');
+        }
+        controller.abort();
+        if (spawn.state === 'ready' && spawn.native_session_id) {
+          const sessionResponse = await fetch(`/api/console/sessions/${encodeURIComponent(spawn.native_session_id)}`, {
+            headers: DEFAULT_HEADERS,
+          });
+          const sessionPayload = await parseMaybeJson(sessionResponse) as { session?: unknown };
+          if (!sessionResponse.ok || !sessionPayload.session) {
+            throw new ApiError('The provider is ready but its chat session could not be loaded.', sessionResponse.status, 'spawn_session_unavailable');
+          }
+          resolve({ response: new Response(null, { status: 200 }), json: { ok: true, spawn, session: sessionPayload.session } });
+          return;
+        }
+        const failure = spawn.error ?? {
+          code: 'provider_startup_timeout',
+          message: 'The provider did not become ready before the client watchdog expired.',
+          retryable: true,
+          phase: 'readiness' as const,
+        };
+        reject(new ConversationSpawnApiError(504, failure, spawn));
+      }).catch(reject);
+    }, 31_000);
+  });
+  let response: Response;
+  let json: SpawnResponse;
+  try {
+    const outcome = await Promise.race([
+      post.then(async (postResponse) => ({ response: postResponse, json: await parseMaybeJson(postResponse) as SpawnResponse })),
+      reconciled,
+    ]);
+    response = outcome.response;
+    json = outcome.json;
+  } finally {
+    if (watchdog) clearTimeout(watchdog);
+  }
+  if (!response.ok) {
+    const failure = json.error;
+    if (failure && typeof failure === 'object'
+        && typeof (failure as ConversationSpawnFailure).code === 'string'
+        && typeof (failure as ConversationSpawnFailure).message === 'string'
+        && typeof (failure as ConversationSpawnFailure).retryable === 'boolean'
+        && json.spawn) {
+      throw new ConversationSpawnApiError(response.status, failure as ConversationSpawnFailure, json.spawn);
+    }
+    const fallback = failure && typeof failure === 'object'
+      ? (failure as { kind?: unknown }).kind
+      : failure;
+    throw new ApiError(
+      json.message ?? (typeof fallback === 'string' ? fallback : `POST /api/conversation-spawns failed: ${response.status}`),
+      response.status,
+      typeof fallback === 'string' ? fallback : null,
+    );
+  }
   return json as {
     session: {
       id: string;
@@ -2144,6 +2171,8 @@ export async function createConsoleSession(
       status: 'running' | 'stopped' | 'crashed';
       is_operator: boolean;
       provider_session_id: string | null;
+      canonical_project_id?: string | null;
+      canonical_checkout_id?: string | null;
       unread_count: number;
       created_at: number;
       started_at: number | null;

@@ -413,47 +413,6 @@ function SelectInput(props: {
   );
 }
 
-function TextSettingInput(props: {
-  label: string;
-  desc: string;
-  settingKey: string;
-  placeholder: string;
-  settings: Record<string, string>;
-  onSave: (key: string, value: string) => Promise<void>;
-}) {
-  const [value, setValue] = useState(props.settings[props.settingKey] ?? '');
-  const [saving, setSaving] = useState(false);
-  useEffect(() => setValue(props.settings[props.settingKey] ?? ''), [props.settingKey, props.settings]);
-  const save = async () => {
-    setSaving(true);
-    try { await props.onSave(props.settingKey, value.trim()); } catch { /* parent surfaces save errors */ }
-    finally { setSaving(false); }
-  };
-  return (
-    <div className="settings-view__text-row">
-      <div className="settings-view__text-info">
-        <label className="settings-view__text-label" htmlFor={`settings-${props.settingKey}`}>{props.label}</label>
-        <span className="settings-view__text-desc">{props.desc}</span>
-      </div>
-      <div className="settings-view__text-controls">
-        <input
-          id={`settings-${props.settingKey}`}
-          className="settings-view__input settings-view__input--wide"
-          value={value}
-          placeholder={props.placeholder}
-          onInput={(event) => setValue(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') { event.preventDefault(); void save(); }
-          }}
-        />
-        <button type="button" className="btn btn--active btn--sm" disabled={saving} onClick={() => void save()}>
-          {saving ? '…' : 'Save'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function InstructionsDeliverySection(props: {
   section: SettingsSectionDefinition;
   settings: Record<string, string>;
@@ -1937,21 +1896,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             onSave={onSave}
             options={['preview', 'open']}
           />
-          {([
-            ['claude', 'Claude default model'],
-            ['codex', 'Codex default model'],
-            ['gemini', 'Gemini default model'],
-          ] as const).map(([provider, label]) => (
-            <TextSettingInput
-              key={provider}
-              label={label}
-              desc="Used for new chats until that provider publishes its live model inventory."
-              settingKey={`conversations.default_model.${provider}`}
-              placeholder="Provider default"
-              settings={settings}
-              onSave={onSave}
-            />
-          ))}
         </div>
       </SettingsSectionShell>
 

@@ -50,6 +50,21 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
     const measure = `
       const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       const rect = node => { const r=node.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}; };
+      const waitForRunOptions = async () => {
+        for (let attempt=0; attempt<50; attempt+=1) {
+          const composer=document.querySelector('.conv-compose');
+          if (!composer) return;
+          const bounds=rect(composer); const inline=document.querySelector('.conv-compose__run-options-inline'); const trigger=document.querySelector('.conv-compose__run-options-trigger');
+          const selects=Array.from(inline.querySelectorAll('select'),rect);
+          const collapsed=getComputedStyle(inline).visibility==='hidden' && getComputedStyle(trigger).display==='flex';
+          const contained=selects.every(select=>select.left>=bounds.left && select.right<=bounds.right);
+          if (collapsed || contained) return;
+          await wait();
+        }
+        const composer=document.querySelector('.conv-compose'); const inline=document.querySelector('.conv-compose__run-options-inline'); const trigger=document.querySelector('.conv-compose__run-options-trigger');
+        const actions=document.querySelector('.conv-compose__runtime-actions');
+        throw new Error('Run options did not reconcile: '+JSON.stringify({composer:rect(composer),runtime:rect(inline.parentElement),inline:rect(inline),scrollWidth:inline.scrollWidth,visibility:getComputedStyle(inline).visibility,trigger:getComputedStyle(trigger).display,selects:Array.from(inline.querySelectorAll('select'),rect),actions:rect(actions),actionChildren:Array.from(actions.children,rect)}));
+      };
       (async () => {
         await wait();
         const root=document.querySelector('.native-fixture');
@@ -78,21 +93,25 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const closed={count:toggles().length,pressed:closedToggle.getAttribute('aria-pressed'),focused:document.activeElement===closedToggle,
           inHeader:Boolean(closedHeader),rightmost:closedHeader?closedHeader.querySelector('.detail-pane-header__main')?.lastElementChild?.contains(closedToggle):false,
           header:closedHeader?rect(closedHeader):null,toggle:rect(closedToggle),mainInert:document.querySelector('main').hasAttribute('inert')};
-        toggles()[0].click(); await wait(); await wait();
+        toggles()[0].click(); await wait(); await wait(); await waitForRunOptions();
         const reopened={count:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),focused:document.activeElement===toggles()[0]};
         const chat=document.querySelector('.chat-detail-frame'); const composer=document.querySelector('.conv-compose'); const transcript=document.querySelector('.conv-transcript');
+        const transcriptScroll=document.querySelector('.stream-renderer__scroll'); const finalContent=document.querySelector('[data-transcript-final-content]');
+        if(transcriptScroll) transcriptScroll.scrollTop=transcriptScroll.scrollHeight;
+        const transcriptScrollState=transcriptScroll?{clientHeight:transcriptScroll.clientHeight,scrollHeight:transcriptScroll.scrollHeight,scrollTop:transcriptScroll.scrollTop}:null;
+        const transcriptOuterState=transcript?{clientHeight:transcript.clientHeight,scrollHeight:transcript.scrollHeight,scrollTop:transcript.scrollTop}:null;
         const overlayControl=document.querySelector('.detail-pane-shell__overlay-control');
         const maskStyle=overlayControl?getComputedStyle(overlayControl,'::before'):null; const overlayRect=overlayControl?rect(overlayControl):null; const composerRect=composer?rect(composer):null;
         const mask=maskStyle&&overlayRect?{left:overlayRect.left+parseFloat(maskStyle.left),right:overlayRect.right-parseFloat(maskStyle.right),
           top:overlayRect.top+parseFloat(maskStyle.top),bottom:overlayRect.bottom-parseFloat(maskStyle.bottom),background:maskStyle.backgroundColor,zIndex:maskStyle.zIndex}:null;
         const inline=document.querySelector('.conv-compose__run-options-inline'); const trigger=document.querySelector('.conv-compose__run-options-trigger');
         const selectRects=Array.from(inline?.querySelectorAll('select')||[],rect);
-        const runOptions=composer?{containerWidth:composer.clientWidth,inlineDisplay:getComputedStyle(inline).display,triggerDisplay:getComputedStyle(trigger).display,
+        const runOptions=composer?{containerWidth:composer.clientWidth,inlineDisplay:getComputedStyle(inline).display,inlineVisibility:getComputedStyle(inline).visibility,triggerDisplay:getComputedStyle(trigger).display,
           triggerText:trigger.textContent.trim(),triggerHasSvg:Boolean(trigger.querySelector('svg')),selectRects,composer:composerRect}:null;
         const titleErrors=document.querySelector('[data-title-errors]');
         document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
-          chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),composer:composerRect,transcript:rect(transcript),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
+          chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),overlayPointerEvents:getComputedStyle(overlayControl).pointerEvents,composer:composerRect,composerPointerEvents:getComputedStyle(composer).pointerEvents,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
           runOptions,
           stored:localStorage.getItem('mandible_app_right_sidebar:native-${surface}:v1'),
           deterministicRetry:titleErrors?.dataset.deterministicRetry,transientRetry:titleErrors?.dataset.transientRetry,titleCopy:titleErrors?.textContent}));
@@ -135,31 +154,69 @@ describe('production app right sidebar geometry and interaction', () => {
       }
       if (result.surface === 'console') expect(result.afterStream).toBe(result.beforeStream);
       if (result.surface === 'chat') {
-        const geometry = result.chatGeometry as Record<string, { top: number; bottom: number; left: number; right: number }>;
+        type Rect = { top: number; bottom: number; left: number; right: number };
+        const geometry = result.chatGeometry as {
+          header: Rect;
+          body: Rect;
+          overlayControl: Rect;
+          overlayPointerEvents: string;
+          composer: Rect;
+          composerPointerEvents: string;
+          transcriptViewport: Rect;
+          transcriptBottomInset: number;
+          transcriptScrollState: { clientHeight: number; scrollHeight: number; scrollTop: number };
+          transcriptOuterState: { clientHeight: number; scrollHeight: number; scrollTop: number };
+          finalContent: Rect;
+          mask: Rect & { background: string };
+          mainBackground: string;
+        };
         expect(result.closed).toMatchObject({ inHeader: true, rightmost: true });
         expect(geometry.header.bottom).toBe(geometry.body.top);
         expect(geometry.body.bottom).toBe(geometry.overlayControl.bottom);
         expect(geometry.overlayControl.top).toBeLessThan(geometry.body.bottom);
-        expect(geometry.overlayControl.right).toBeLessThanOrEqual(geometry.body.right);
+        expect(geometry.overlayControl.left).toBeCloseTo(geometry.body.left, 0);
+        expect(geometry.overlayControl.right).toBeCloseTo(geometry.body.right, 0);
+        expect(geometry.overlayPointerEvents).toBe('none');
         expect(geometry.composer.top).toBeGreaterThanOrEqual(geometry.overlayControl.top);
         expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.overlayControl.bottom);
+        expect(geometry.composerPointerEvents).toBe('auto');
+        expect(geometry.composer.left).toBeGreaterThan(geometry.transcriptViewport.left);
+        expect(geometry.composer.right).toBeLessThan(geometry.transcriptViewport.right);
+        expect(geometry.transcriptViewport.left).toBeCloseTo(geometry.body.left, 0);
+        expect(geometry.transcriptViewport.right).toBeCloseTo(geometry.body.right, 0);
+        expect(geometry.transcriptViewport.top).toBeCloseTo(geometry.body.top, 0);
+        expect(geometry.transcriptViewport.bottom).toBeCloseTo(geometry.body.bottom, 0);
+        const composerHeight = geometry.composer.bottom - geometry.composer.top;
+        const composerBottomGap = geometry.transcriptViewport.bottom - geometry.composer.bottom;
+        const transcriptMaxScroll = geometry.transcriptScrollState.scrollHeight - geometry.transcriptScrollState.clientHeight;
+        expect(geometry.transcriptBottomInset).toBeCloseTo(composerHeight + (2 * composerBottomGap), 5);
+        expect(transcriptMaxScroll).toBeGreaterThan(0);
+        expect(geometry.transcriptScrollState.scrollTop).toBeCloseTo(transcriptMaxScroll, 5);
+        expect(geometry.transcriptOuterState.scrollHeight).toBe(geometry.transcriptOuterState.clientHeight);
+        expect(geometry.transcriptOuterState.scrollTop).toBe(0);
+        expect(geometry.finalContent.left).toBeCloseTo(geometry.composer.left, 0);
+        expect(geometry.finalContent.right).toBeCloseTo(geometry.composer.right, 0);
+        expect(geometry.finalContent.bottom).toBeLessThanOrEqual(geometry.composer.top - composerBottomGap + 0.5);
         expect(geometry.mask.left).toBeCloseTo(geometry.body.left, 0);
-        expect(geometry.mask.right).toBeCloseTo(geometry.overlayControl.right, 0);
+        expect(geometry.mask.right).toBeCloseTo(geometry.composer.right, 0);
         expect(Math.abs(geometry.mask.top - (geometry.composer.top + ((geometry.composer.bottom - geometry.composer.top) / 2)))).toBeLessThanOrEqual(1);
         expect(geometry.mask.bottom).toBeCloseTo(geometry.overlayControl.bottom, 0);
-        const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number } };
+        const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; inlineVisibility: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number } };
         expect(runOptions.triggerText).toBe('');
         expect(runOptions.triggerHasSvg).toBe(true);
-        if (runOptions.containerWidth <= 700) {
-          expect(runOptions.inlineDisplay).toBe('none');
+        expect(runOptions.inlineDisplay).toBe('flex');
+        expect(runOptions.selectRects).toHaveLength(3);
+        expect(new Set(runOptions.selectRects.map((select) => select.right - select.left)).size).toBeGreaterThan(1);
+        if (runOptions.inlineVisibility === 'hidden') {
           expect(runOptions.triggerDisplay).toBe('flex');
         } else {
-          expect(runOptions.inlineDisplay).toBe('flex');
           expect(runOptions.triggerDisplay).toBe('none');
-          expect(runOptions.selectRects).toHaveLength(3);
-          expect(runOptions.selectRects.every((select) => select.left >= runOptions.composer.left && select.right <= runOptions.composer.right)).toBe(true);
+          expect(
+            runOptions.selectRects.every((select) => select.left >= runOptions.composer.left && select.right <= runOptions.composer.right),
+            `${result.surface}/${result.width}/${result.theme} run options ${JSON.stringify(runOptions)}`,
+          ).toBe(true);
         }
-        expect((geometry.mask as unknown as { background: string }).background).toBe((geometry as unknown as { mainBackground: string }).mainBackground);
+        expect(geometry.mask.background).toBe(geometry.mainBackground);
         expect(result).toMatchObject({ deterministicRetry: 'false', transientRetry: 'true' });
         expect(String(result.titleCopy)).not.toContain('provider_metadata_missing');
       }

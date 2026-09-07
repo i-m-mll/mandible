@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useRef, useState } from 'preact/hooks';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../ui/src/api.js';
@@ -443,7 +443,7 @@ describe('compact detail pane shell', () => {
   it('routes every Chat detail state through one typed frame construction', () => {
     const source = readFileSync(resolve(process.cwd(), 'ui/src/views/conversations.tsx'), 'utf8');
     const states = Array.from(source.matchAll(/<ChatDetailFrame\s+[\s\S]*?state="([^"]+)"/g), (match) => match[1]).sort();
-    expect(states).toEqual(['conversation', 'error', 'live-session', 'loading', 'no-selection', 'not-found']);
+    expect(states).toEqual(['conversation', 'draft', 'error', 'live-session', 'loading', 'no-selection', 'not-found']);
     expect(source).not.toContain('<div className="chat-live-detail">');
     expect(source).not.toContain('return <LoadingSkeleton variant="detail"');
 
@@ -742,12 +742,11 @@ describe('compact detail pane shell', () => {
     const messageBlocksCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/message-blocks.css'), 'utf8');
     expect(tokensCss).toContain('--radius-chat-surface: 18px;');
     expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
-    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control\s*\{[^}]*isolation:\s*isolate;[^}]*background:\s*transparent;/s);
-    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control::before\s*\{[^}]*z-index:\s*0;[^}]*top:\s*calc\(50% - 8px\);[^}]*right:\s*0;[^}]*bottom:\s*0;[^}]*left:\s*0;[^}]*background:\s*var\(--surface-app\);/s);
-    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
-    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*1 1 0;[^}]*min-width:\s*0;[^}]*max-width:\s*180px;/s);
+    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;/s);
+    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*0 0 auto;[^}]*max-width:\s*min\(240px, 100%\);/s);
+    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__select\s*\{[^}]*width:\s*auto;[^}]*min-width:\s*44px;[^}]*field-sizing:\s*content;/s);
     expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);
-    expect(conversationCss).toMatch(/@container \(max-width:\s*700px\)\s*\{[^}]*\.conv-compose__run-options-inline\s*\{[^}]*display:\s*none;/s);
+    expect(conversationCss).not.toContain('@container (max-width: 700px)');
     expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     fireEvent.click(runOptions);
@@ -767,7 +766,36 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
   });
 
+  it('ends the composer mask before the transcript scrollbar gutter', () => {
+    const shellCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
+    const conversationCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
+
+    expect(shellCss).toMatch(/\.detail-pane-shell__overlay-control\s*\{[^}]*inset:\s*auto var\(--detail-pane-scrollbar-width, 0px\) 0 0;/s);
+    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control\s*\{[^}]*--conversation-composer-inline-margin:\s*18px;/s);
+    expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*margin:\s*0 var\(--conversation-composer-inline-margin, 18px\) 16px;/s);
+    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control::before\s*\{[^}]*top:\s*calc\(50% - 8px\);[^}]*right:\s*var\(--conversation-composer-inline-margin\);[^}]*bottom:\s*0;[^}]*left:\s*0;[^}]*pointer-events:\s*none;/s);
+  });
+
   it('puts every provider-neutral run option in the canonical composer popover', async () => {
+    const resizeCallbacks: ResizeObserverCallback[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(callback); }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    });
+    let modelWidth = 100;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
+      if (this.classList.contains('conv-compose__runtime')) return domRect(0, 0, 380, 30);
+      if (this.classList.contains('session-controls__field')) {
+        const label = this.querySelector('select')?.getAttribute('aria-label');
+        return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Mode' ? 70 : 90, 30);
+      }
+      if (this.classList.contains('context-usage') || this.classList.contains('conv-compose__send')) {
+        return domRect(0, 0, 30, 30);
+      }
+      return domRect(0, 0, 0, 0);
+    });
     const linkedSession: ConsoleSession = {
       id: 'console-codex-1',
       label: 'Codex session',
@@ -825,6 +853,15 @@ describe('compact detail pane shell', () => {
     const inlineRunOptions = runtime?.querySelector('.conv-compose__run-options-inline');
     const actions = runtime?.querySelector('.conv-compose__runtime-actions');
     await waitFor(() => expect(inlineRunOptions?.querySelectorAll('select')).toHaveLength(3));
+    expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false);
+    expect(inlineRunOptions?.getAttribute('aria-hidden')).toBeNull();
+    modelWidth = 220;
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    expect(inlineRunOptions?.getAttribute('aria-hidden')).toBe('true');
+    modelWidth = 100;
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     expect(actions?.children[0]).toBe(trigger);
     expect(actions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(actions?.children[2]?.classList.contains('conv-compose__send')).toBe(true);
@@ -877,6 +914,61 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByRole('menu')).toBeTruthy();
     composer.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+
+  it('anchors typed control failures outside the transcript and retries only retryable failures', async () => {
+    const ownedControl: ConversationControlSnapshot = {
+      ...defaultControl,
+      ownership: {
+        kind: 'mandible', generation: 1, controller_instance_id: 'controller-1', adapter_id: 'codex',
+        provider_session_id: conversation.session_id, last_authoritative_signal: 2,
+      },
+      capability: { kind: 'live-send', revision: 1, generation: 1 },
+    };
+    const accepted = {
+      kind: 'accepted' as const,
+      delivery_id: 'delivery-2',
+      turn_id: 'turn-2',
+      snapshot: ownedControl,
+    };
+    vi.spyOn(api, 'submitConversationControl')
+      .mockRejectedValueOnce(Object.assign(new Error('adapter-failure'), {
+        controlError: {
+          kind: 'adapter-failure' as const,
+          adapter_id: 'codex',
+          code: 'startup-failed',
+          message: 'The provider process exited before accepting the message.',
+          retryable: true,
+        },
+        snapshot: ownedControl,
+      }))
+      .mockResolvedValueOnce(accepted);
+    const scopedConversation = mockConversationDetail(ownedControl);
+    const { container } = render(
+      <ConversationsView
+        conversations={[scopedConversation]}
+        consoleSessions={[]}
+        initialConversationId={scopedConversation.id}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={() => undefined}
+      />,
+    );
+
+    const composer = await screen.findByPlaceholderText('Message...');
+    fireEvent.input(composer, { target: { value: 'Keep this draft for retry.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('The provider could not complete this action.');
+    expect(alert.closest('[data-detail-pane-slot="notice"]')).toBeTruthy();
+    expect(container.querySelector('.stream-renderer__scroll')?.contains(alert)).toBe(false);
+    expect(screen.getByText('Provider diagnostics').closest('details')?.open).toBe(false);
+    expect((composer as HTMLTextAreaElement).value).toBe('Keep this draft for retry.');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(api.submitConversationControl).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
 
   it.each([

@@ -48,6 +48,7 @@ import {
   listWorkflows,
   listCanonicalProjects,
   ApiError,
+  ConversationSpawnApiError,
   isApiErrorStatus,
   openConversationExternally,
   submitConversationControl,
@@ -66,11 +67,12 @@ import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
-import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
   ChatOverlay,
+  ChatFailureNotice,
+  NewChatProviderPicker,
   ChatActivity,
   ChatPreview,
   ChatSessionOverview,
@@ -84,8 +86,13 @@ import {
   deriveChatUsageSummary,
   serializeConversationToMarkdown,
   useStatuslineTelemetry,
+  chatControlFailureNotice,
+  reduceNewChatDraft,
   type ChatPreviewTarget,
   type ChatActivityItem,
+  type ChatFailureNoticeModel,
+  type NewChatDraft,
+  type NewChatProvider,
 } from '../chat';
 import {
   applyConversationAppendPayload,
@@ -105,6 +112,7 @@ import {
 } from './conversation-view-state';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
+import { useIntrinsicOverflowGroup } from '../hooks/useIntrinsicOverflowGroup';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
 import { mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
@@ -118,7 +126,7 @@ import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding
 
 type ToastState = { message: string; type: 'info' | 'error' } | null;
 
-type ChatDetailState = 'loading' | 'error' | 'not-found' | 'conversation' | 'live-session' | 'no-selection';
+type ChatDetailState = 'loading' | 'error' | 'not-found' | 'conversation' | 'live-session' | 'draft' | 'no-selection';
 
 export type ConversationLoadFailure = {
   code: string | null;
@@ -225,18 +233,6 @@ export function ChatDetailFrame({
       {children}
     </DetailPaneShell>
   );
-}
-
-function formatControlApiError(err: unknown): { message: string; details: string | null; snapshot: ConversationControlSnapshot | null } {
-  if (err instanceof Error) {
-    const apiError = err as Partial<ConversationControlApiError>;
-    return {
-      message: apiError.controlError?.kind ?? apiError.message ?? 'Conversation control failed',
-      details: apiError.controlError ? JSON.stringify(apiError.controlError, null, 2) : null,
-      snapshot: apiError.snapshot ?? null,
-    };
-  }
-  return { message: String(err), details: null, snapshot: null };
 }
 
 function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }): JSX.Element | null {
@@ -451,6 +447,7 @@ type ViewMode = 'terminal' | 'rich' | 'events';
 type ChatSelection =
   | { type: 'conversation'; id: string }
   | { type: 'session'; id: string }
+  | { type: 'draft'; id: string }
   | null;
 type ChatEntry = {
   key: string;
@@ -561,6 +558,12 @@ export function conversationTurnSelectionHref(
 
 // ── Props ──
 
+export type NewChatInput = {
+  idempotency_key: string;
+  provider: NewChatProvider;
+  placement: { project_id: string; checkout_id: string };
+};
+
 export type ConversationsViewProps = {
   consoleSessions: ConsoleSession[];
   initialConversationId: string | null;
@@ -570,18 +573,7 @@ export type ConversationsViewProps = {
   chatEntityLinkAction?: ChatEntityClickAction;
   instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
-  onNewSession: (input: {
-    idempotency_key: string;
-    label: string;
-    initial_message: string;
-    backend: string;
-    kind: string;
-    backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
-    transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
-    channel_enabled?: boolean;
-    runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
-    cwd?: string;
-  }) => Promise<void>;
+  onNewSession: (input: NewChatInput) => Promise<string>;
 };
 
 function HorizontalDotsIcon(): JSX.Element {
@@ -1074,6 +1066,7 @@ function ConversationDetail({
   consoleSessions,
   sidebarCollapsed,
   chatEntityLinkAction,
+  externalNotice,
 }: {
   conversationId: string;
   initialConversation?: Conversation | null;
@@ -1082,6 +1075,7 @@ function ConversationDetail({
   consoleSessions: ConsoleSession[];
   sidebarCollapsed: boolean;
   chatEntityLinkAction: ChatEntityClickAction;
+  externalNotice?: ComponentChildren;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
     initialConversation ? conversationShell(initialConversation) : null,
@@ -1142,7 +1136,7 @@ function ConversationDetail({
   const [continueDraft, setContinueDraft] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
-  const [resumeErrorDetails, setResumeErrorDetails] = useState<string | null>(null);
+  const [controlFailure, setControlFailure] = useState<ChatFailureNoticeModel | null>(null);
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
   const anchorKey = effectiveAnchor ? JSON.stringify(effectiveAnchor) : 'initial';
@@ -1795,6 +1789,11 @@ function ConversationDetail({
     || canShowSessionControls,
   );
 
+  const runOptionsGeometry = useIntrinsicOverflowGroup(
+    hasRunOptions,
+    `${composerPermission}\u0000${composerModel}\u0000${composerEffort}\u0000${sessionRunOptions?.revision ?? ''}\u0000${rightSidebarState.open}\u0000${rightSidebarState.width}`,
+  );
+
   useEffect(() => {
     setComposerModel(currentModel === 'default' ? '' : currentModel);
   }, [conversationId, currentModel]);
@@ -1817,7 +1816,7 @@ function ConversationDetail({
     }
     setContinueBusy(true);
     setContinueError(null);
-    setResumeErrorDetails(null);
+    setControlFailure(null);
     try {
       if (!control) return;
       const messageAnchor = control.capability.kind === 'message-anchor-resume'
@@ -1831,14 +1830,18 @@ function ConversationDetail({
       const result = await submitConversationControl(control, prompt, messageAnchor, runtimeOptions);
       setControl(result.snapshot);
       setContinueDraft('');
+      setControlFailure(null);
       setToast({ message: 'Message sent.', type: 'info' });
     } catch (err) {
-      const formatted = formatControlApiError(err);
-      if (formatted.snapshot) {
-        setControl(formatted.snapshot);
+      const apiError = err as Partial<ConversationControlApiError>;
+      if (apiError.snapshot) {
+        setControl(apiError.snapshot);
       }
-      setContinueError(formatted.message);
-      setResumeErrorDetails(formatted.details);
+      if (apiError.controlError) {
+        setControlFailure(chatControlFailureNotice(apiError.controlError));
+      } else {
+        setContinueError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setContinueBusy(false);
     }
@@ -2116,11 +2119,11 @@ function ConversationDetail({
   );
 
   const composerOverlay = isReadOnlyChild ? (
-        <div className="conv-compose conv-compose--readonly">
+        <div className="conv-compose conv-compose--readonly" data-detail-pane-overlay-visual>
           <span>Read-only subagent transcript</span>
         </div>
       ) : controlPresentation && controlPresentation.composer !== 'hidden' ? (
-      <div className="conv-compose">
+      <div className="conv-compose" data-detail-pane-overlay-visual>
         <form id={`conversation-compose-${conversation.id}`} className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
             className="conv-compose__input"
@@ -2147,18 +2150,28 @@ function ConversationDetail({
           </div>
         )}
         <div className="conv-compose__controls">
-          <div className="conv-compose__runtime">
+          <div
+            ref={runOptionsGeometry.containerRef}
+            className={`conv-compose__runtime${runOptionsGeometry.overflowed ? ' conv-compose__runtime--run-options-overflow' : ''}`}
+          >
             {hasRunOptions ? (
-              <div className="conv-compose__run-options-inline" aria-label="Run options">
+              <div
+                ref={runOptionsGeometry.contentRef}
+                className="conv-compose__run-options-inline"
+                aria-label="Run options"
+                aria-hidden={runOptionsGeometry.overflowed ? 'true' : undefined}
+                inert={runOptionsGeometry.overflowed || undefined}
+              >
                 {renderRunOptionFields()}
               </div>
             ) : null}
-            <span className="conv-compose__runtime-actions">
+            <span ref={runOptionsGeometry.fixedRef} className="conv-compose__runtime-actions">
               {hasRunOptions ? (
                 <button
                   ref={runOptionsTriggerRef}
                   type="button"
                   className="btn btn--ghost btn--sm conv-compose__run-options-trigger"
+                  data-overflow-trigger
                   aria-haspopup="dialog"
                   aria-expanded={composerControlsOpen}
                   aria-label="Run options"
@@ -2204,14 +2217,19 @@ function ConversationDetail({
             {continueError ?? continueDisabledReason}
           </div>
         )}
-        {resumeErrorDetails && (
-          <details className="conv-compose__details">
-            <summary>Details</summary>
-            <pre>{resumeErrorDetails}</pre>
-          </details>
-        )}
       </div>
       ) : null;
+
+  const controlFailureNotice = controlFailure ? (
+    <ChatFailureNotice
+      failure={controlFailure}
+      busy={continueBusy}
+      onRetry={controlFailure.retryable ? () => {
+        const form = document.getElementById(`conversation-compose-${conversation.id}`) as HTMLFormElement | null;
+        form?.requestSubmit();
+      } : undefined}
+    />
+  ) : null;
 
   const detailOverlays = (
     <>
@@ -2258,7 +2276,7 @@ function ConversationDetail({
       overlayControl={composerOverlay}
       overlays={detailOverlays}
       ariaBusy={loading}
-      notice={loadErrorNotice}
+      notice={controlFailureNotice ?? externalNotice ?? loadErrorNotice}
     >
       {showMessageFilters && (
         <div className="conv-filter-bar">
@@ -2515,8 +2533,10 @@ function ChatEntryItem({
 
 function LiveSessionDetail({
   session,
+  notice,
 }: {
   session: ConsoleSession;
+  notice?: ComponentChildren;
 }): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>('rich');
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
@@ -2609,6 +2629,7 @@ function LiveSessionDetail({
       className="chat-live-detail"
       bodyClassName="chat-live-detail__pane"
       header={detailHeader}
+      notice={notice}
     >
       <TerminalPane
         sessionId={session.id}
@@ -2660,8 +2681,6 @@ export function ConversationsView({
     if (window.location.hash !== nextHash) window.location.hash = nextHash;
   }, []);
   const detailPortalRef = useRef<HTMLDivElement>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [newSessionCwd, setNewSessionCwd] = useState<string | undefined>(undefined);
   const [projectChooserOpen, setProjectChooserOpen] = useState(false);
   const [projectChooserSelection, setProjectChooserSelection] = useState('');
   const [search, setSearch] = useState('');
@@ -2685,6 +2704,7 @@ export function ConversationsView({
   const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
+  const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
   const searchTimer = useRef<number | null>(null);
   const fetchGenerationRef = useRef(0);
   const groupsRef = useRef(serverGroups);
@@ -2753,6 +2773,11 @@ export function ConversationsView({
 
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
+  useEffect(() => {
+    if (!newChatDraft || (newChatDraft.state !== 'choosing' && newChatDraft.state !== 'failed')) return;
+    if (selection?.type === 'draft' && selection.id === newChatDraft.id) return;
+    setNewChatDraft(reduceNewChatDraft(newChatDraft, { type: 'abandon' }));
+  }, [newChatDraft, selection]);
   const previewMutationsRejected = instance?.operational_mutations === 'reject';
   const isConversationPinned = useCallback((conversation: Conversation): boolean => {
     if (!previewMutationsRejected) return conversation.starred;
@@ -3104,7 +3129,9 @@ export function ConversationsView({
           target.total += 1;
         }
         target.entries.push({
-          key: `conversation:${conversation.id}`,
+          key: liveByProviderSession.has(conversation.session_id)
+            ? `session:${liveByProviderSession.get(conversation.session_id)!.id}`
+            : `conversation:${conversation.id}`,
           time: getConversationTime(conversation),
           kind: 'conversation',
           conversation,
@@ -3122,10 +3149,15 @@ export function ConversationsView({
       if (session.provider_session_id && conversationProviderIds.has(session.provider_session_id)) {
         continue;
       }
-      const kind = session.pinned ? 'pinned' : 'chats';
-      const group = kind === 'pinned'
+      const canonicalProjectGroup = session.canonical_project_id
+        && selectedProjectIds.includes(session.canonical_project_id)
+        ? groups.find((group) => (
+          group.kind === 'project' && group.canonicalProjectId === session.canonical_project_id
+        ))
+        : undefined;
+      const group = session.pinned
         ? ensureKindGroup('pinned', 'Pinned')
-        : ensureKindGroup('chats', 'Chats');
+        : canonicalProjectGroup ?? ensureKindGroup('chats', 'Chats');
       group.total += 1;
       group.entries.push({
         key: `session:${session.id}`,
@@ -3170,6 +3202,16 @@ export function ConversationsView({
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
   }, [chatViewState.pinnedConversationIds, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
+
+  useEffect(() => {
+    if (selection?.type !== 'session') return;
+    const liveSession = liveSessions.find((session) => session.id === selection.id);
+    if (!liveSession?.provider_session_id) return;
+    const indexed = displayedConversations
+      .flatMap((group) => group.conversations)
+      .find((conversation) => conversation.session_id === liveSession.provider_session_id);
+    if (indexed) handleNavigateConversation(indexed.id);
+  }, [displayedConversations, handleNavigateConversation, liveSessions, selection]);
 
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
@@ -3372,26 +3414,81 @@ export function ConversationsView({
     }
   };
 
-  const handleNewSession = async (input: {
-    idempotency_key: string;
-    label: string;
-    initial_message: string;
-    backend: string;
-    kind: string;
-    backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
-    transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
-    channel_enabled?: boolean;
-    runOptions?: Record<string, import('../api.js').SessionRunOptionValue>;
-    cwd?: string;
-  }) => {
-    await onNewSession(input);
-    setDialogOpen(false);
-    setNewSessionCwd(undefined);
-  };
+  const discardDraft = useCallback(() => {
+    setNewChatDraft((draft) => draft ? reduceNewChatDraft(draft, { type: 'abandon' }) : null);
+    setSelection((current) => current?.type === 'draft' ? null : current);
+  }, []);
+
+  const startDraft = useCallback(async (provider: NewChatProvider, retry = false) => {
+    const draft = newChatDraft;
+    if (!draft || (retry ? draft.state !== 'failed' : draft.state !== 'choosing')) return;
+    const starting = retry
+      ? reduceNewChatDraft(draft, { type: 'retry' })
+      : reduceNewChatDraft(draft, { type: 'choose', provider });
+    if (starting.state !== 'starting') return;
+    setNewChatDraft(starting);
+    try {
+      const sessionId = await onNewSession({
+        idempotency_key: starting.id,
+        provider: starting.provider,
+        placement: {
+          project_id: starting.placement.projectId,
+          checkout_id: starting.placement.checkoutId,
+        },
+      });
+      setNewChatDraft((current) => current?.id === starting.id
+        ? reduceNewChatDraft(starting, { type: 'ready', sessionId })
+        : current);
+      setSelection({ type: 'session', id: sessionId });
+      const nextHash = hashWithAgentSession(
+        `#/console?session=${encodeURIComponent(sessionId)}`,
+        getAgentPageBinding(),
+      );
+      if (window.location.hash !== nextHash) window.location.hash = nextHash;
+      onSelectSession(sessionId);
+    } catch (error) {
+      const failure = error instanceof ConversationSpawnApiError
+        ? error.failure
+        : {
+            code: error instanceof ApiError ? error.code ?? 'spawn_request_failed' : 'spawn_request_failed',
+            message: error instanceof Error ? error.message : 'The provider could not start.',
+            retryable: false,
+          };
+      setNewChatDraft((current) => current?.id === starting.id
+        ? reduceNewChatDraft(starting, { type: 'fail', failure })
+        : current);
+    }
+  }, [newChatDraft, onNewSession, onSelectSession]);
 
   const openNewSession = (cwd?: string) => {
-    setNewSessionCwd(cwd);
-    setDialogOpen(true);
+    const selectedProjectId = selectedConversationSummary
+      ? getCanonicalConversationProjectId(selectedConversationSummary)
+      : null;
+    const requested = cwd
+      ? registeredProjects.find((project) => project.root === cwd)
+      : registeredProjects.find((project) => project.id === selectedProjectId)
+        ?? shownProjects.flatMap((shown) => registeredProjects.filter((project) => (
+          project.id === shown.projectId && project.checkoutId === shown.checkoutId
+        )))[0]
+        ?? registeredProjects[0];
+    if (!requested) {
+      setSidebarToast({ message: 'Register a project checkout before starting a chat.', type: 'error' });
+      return;
+    }
+    const id = crypto.randomUUID();
+    setNewChatDraft({
+      id,
+      state: 'choosing',
+      placement: {
+        projectId: requested.id,
+        checkoutId: requested.checkoutId,
+        projectLabel: requested.label,
+      },
+    });
+    setShownProjects((current) => current.some((shown) => (
+      shown.projectId === requested.id && shown.checkoutId === requested.checkoutId
+    )) ? current : [...current, { projectId: requested.id, checkoutId: requested.checkoutId }]);
+    setSelection({ type: 'draft', id });
   };
 
   const openProjectChooser = () => {
@@ -3443,6 +3540,7 @@ export function ConversationsView({
       entry={entry}
       isSelected={entry.kind === 'conversation'
         ? selectedConversationId === entry.conversation?.id
+          || (selectedSessionId !== null && selectedSessionId === entry.liveSession?.id)
         : selectedSessionId === entry.session?.id}
       pinned={entry.conversation ? isConversationPinned(entry.conversation) : undefined}
       onTogglePin={entry.conversation ? () => { void handleToggleEntryPin(entry); } : undefined}
@@ -3458,6 +3556,7 @@ export function ConversationsView({
         ? () => { void handleOpenExternally(entry); }
         : undefined}
       onClick={() => {
+        discardDraft();
         if (entry.kind === 'conversation' && entry.conversation) {
           handleNavigateConversation(entry.conversation.id);
           return;
@@ -3670,6 +3769,24 @@ export function ConversationsView({
                     loadingMore={loadingMoreKeys.has(group.key)}
                     onShowMore={() => { void showMore(group); }}
                   >
+                    {newChatDraft
+                      && newChatDraft.state !== 'abandoned'
+                      && newChatDraft.state !== 'ready'
+                      && newChatDraft.placement.projectId === group.canonicalProjectId ? (
+                        <SidebarItemRow
+                          label="New chat"
+                          selectionLabel="Open new chat draft"
+                          selected={selection?.type === 'draft' && selection.id === newChatDraft.id}
+                          ariaCurrent={selection?.type === 'draft' && selection.id === newChatDraft.id ? 'true' : undefined}
+                          provider={newChatDraft.state === 'choosing'
+                            ? undefined
+                            : {
+                                label: newChatDraft.provider === 'codex' ? 'Codex' : 'Claude',
+                                tone: newChatDraft.provider === 'codex' ? 'codex' : 'claude',
+                              }}
+                          onSelect={() => setSelection({ type: 'draft', id: newChatDraft.id })}
+                        />
+                      ) : null}
                     {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
                   </SidebarGroupNode>
                 );
@@ -3707,7 +3824,24 @@ export function ConversationsView({
 
       {/* Detail pane */}
       <div ref={detailPortalRef} className="chat-history-detail">
-        {selection?.type === 'conversation' ? (
+        {selection?.type === 'draft' && newChatDraft?.id === selection.id ? (
+          <ChatDetailFrame
+            state="draft"
+            header={<DetailPaneHeader variant="compact" title="New chat" metadata={<span>{newChatDraft.placement.projectLabel}</span>} />}
+            overlays={(
+              <NewChatProviderPicker
+                draft={newChatDraft}
+                onChoose={(provider) => { void startDraft(provider); }}
+                onRetry={() => {
+                  if (newChatDraft.state === 'failed') void startDraft(newChatDraft.provider, true);
+                }}
+                onDiscard={discardDraft}
+              />
+            )}
+          >
+            <div className="chat-history-detail__empty" aria-hidden="true" />
+          </ChatDetailFrame>
+        ) : selection?.type === 'conversation' ? (
           <ConversationDetail
             conversationId={selection.id}
             initialConversation={selectedConversationSummary}
@@ -3733,13 +3867,6 @@ export function ConversationsView({
           </ChatDetailFrame>
         )}
       </div>
-      <NewSessionDialog
-        open={dialogOpen}
-        cwd={newSessionCwd}
-        portalTarget={detailPortalRef.current}
-        onClose={() => { setDialogOpen(false); setNewSessionCwd(undefined); }}
-        onSubmit={handleNewSession}
-      />
     </div>
   );
 }
