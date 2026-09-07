@@ -17,7 +17,7 @@ import type {
   IncrementalParseInput,
   ParseResult,
 } from "./types.js";
-import { extractCodexTokenCountContextUsage } from "./context-usage.js";
+import { normalizeCodexTokenCount } from "./context-usage.js";
 import { findJsonlRecord, parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
 
 // --- Raw record shapes ---
@@ -591,8 +591,8 @@ export class CodexParser implements ConversationParser {
       } else if (rec.type === "event_msg") {
         const evt = rec.payload as CodexEventMsg;
         if (evt.type === "token_count") {
-          const contextUsage = extractCodexTokenCountContextUsage(evt);
-          if (contextUsage) {
+          const usageTelemetry = normalizeCodexTokenCount(evt);
+          if (usageTelemetry) {
             blocks.push({
               type: "event",
               role: "system",
@@ -603,7 +603,7 @@ export class CodexParser implements ConversationParser {
               metadata: {
                 source_event_type: "token_count",
                 visibility: "default_hidden",
-                context_usage: contextUsage,
+                usage_telemetry: usageTelemetry,
               },
             });
           }

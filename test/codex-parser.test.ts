@@ -293,7 +293,7 @@ describe("CodexParser", () => {
     });
   });
 
-  it("surfaces exact context metadata from token_count events", async () => {
+  it("preserves Codex accounting and capacity without inferring current context", async () => {
     const parser = new CodexParser();
     const sessionPath = await makeCodexSession("session-context");
 
@@ -309,13 +309,18 @@ describe("CodexParser", () => {
         visibility: "default_hidden",
       },
     });
-    expect(tokenCount?.metadata.context_usage).toMatchObject({
-      source: "mirror_exact",
-      used_tokens: 2000,
-      total_tokens: 2000,
-      window_tokens: 10_000,
-      percent: 20,
-      approximate: false,
+    expect(tokenCount?.metadata.usage_telemetry).toMatchObject({
+      provider: "codex",
+      provenance: "codex_token_count",
+      currentContext: { availability: "unavailable" },
+      modelWindowTokens: 10_000,
+      accounting: [{
+        scope: "task_total",
+        inputTokens: 1200,
+        cachedInputTokens: 300,
+        outputTokens: 500,
+        totalTokens: 1700,
+      }],
     });
   });
 
