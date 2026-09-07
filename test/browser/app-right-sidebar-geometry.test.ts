@@ -96,6 +96,8 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         toggles()[0].click(); await wait(); await wait(); await waitForRunOptions();
         const reopened={count:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),focused:document.activeElement===toggles()[0]};
         const chat=document.querySelector('.chat-detail-frame'); const composer=document.querySelector('.conv-compose'); const transcript=document.querySelector('.conv-transcript');
+        const transcriptScroll=document.querySelector('.stream-renderer__scroll'); const finalContent=document.querySelector('[data-transcript-final-content]');
+        if(transcriptScroll) transcriptScroll.scrollTop=transcriptScroll.scrollHeight;
         const overlayControl=document.querySelector('.detail-pane-shell__overlay-control');
         const maskStyle=overlayControl?getComputedStyle(overlayControl,'::before'):null; const overlayRect=overlayControl?rect(overlayControl):null; const composerRect=composer?rect(composer):null;
         const mask=maskStyle&&overlayRect?{left:overlayRect.left+parseFloat(maskStyle.left),right:overlayRect.right-parseFloat(maskStyle.right),
@@ -107,13 +109,13 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const titleErrors=document.querySelector('[data-title-errors]');
         document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
-          chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),composer:composerRect,transcript:rect(transcript),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
+          chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),composer:composerRect,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
           runOptions,
           stored:localStorage.getItem('mandible_app_right_sidebar:native-${surface}:v1'),
           deterministicRetry:titleErrors?.dataset.deterministicRetry,transientRetry:titleErrors?.dataset.transientRetry,titleCopy:titleErrors?.textContent}));
       })().catch(error=>document.title='fixture-error:'+btoa(String(error?.stack||error)));
     `;
-    const html = `<!doctype html><html data-theme="${theme}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell,.app-layout{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{grid-column:2;grid-row:1;min-width:0}.native-fixture .app-rail{grid-column:1;grid-row:1}.native-fixture .conv-detail{height:100%}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
+    const html = `<!doctype html><html data-theme="${theme}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell,.app-layout{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{grid-column:2;grid-row:1;min-width:0}.native-fixture .app-rail{grid-column:1;grid-row:1}.native-fixture .conv-detail{height:100%}.native-fixture .conv-transcript{flex:1;height:100%;padding-bottom:0}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
     const path = join(directory, 'fixture.html');
     writeFileSync(path, html);
     const rendered = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-sandbox', '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--window-size=${width},600`, `file://${path}?surface=${surface}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
@@ -150,7 +152,18 @@ describe('production app right sidebar geometry and interaction', () => {
       }
       if (result.surface === 'console') expect(result.afterStream).toBe(result.beforeStream);
       if (result.surface === 'chat') {
-        const geometry = result.chatGeometry as Record<string, { top: number; bottom: number; left: number; right: number }>;
+        type Rect = { top: number; bottom: number; left: number; right: number };
+        const geometry = result.chatGeometry as {
+          header: Rect;
+          body: Rect;
+          overlayControl: Rect;
+          composer: Rect;
+          transcriptViewport: Rect;
+          transcriptBottomInset: number;
+          finalContent: Rect;
+          mask: Rect & { background: string };
+          mainBackground: string;
+        };
         expect(result.closed).toMatchObject({ inHeader: true, rightmost: true });
         expect(geometry.header.bottom).toBe(geometry.body.top);
         expect(geometry.body.bottom).toBe(geometry.overlayControl.bottom);
@@ -158,6 +171,10 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(geometry.overlayControl.right).toBeLessThanOrEqual(geometry.body.right);
         expect(geometry.composer.top).toBeGreaterThanOrEqual(geometry.overlayControl.top);
         expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.overlayControl.bottom);
+        const composerHeight = geometry.composer.bottom - geometry.composer.top;
+        const composerBottomGap = geometry.transcriptViewport.bottom - geometry.composer.bottom;
+        expect(geometry.transcriptBottomInset).toBeCloseTo(composerHeight + (2 * composerBottomGap), 5);
+        expect(geometry.finalContent.bottom).toBeLessThanOrEqual(geometry.composer.top - composerBottomGap + 0.5);
         expect(geometry.mask.left).toBeCloseTo(geometry.body.left, 0);
         expect(geometry.mask.right).toBeCloseTo(geometry.overlayControl.right, 0);
         expect(Math.abs(geometry.mask.top - (geometry.composer.top + ((geometry.composer.bottom - geometry.composer.top) / 2)))).toBeLessThanOrEqual(1);
@@ -177,7 +194,7 @@ describe('production app right sidebar geometry and interaction', () => {
             `${result.surface}/${result.width}/${result.theme} run options ${JSON.stringify(runOptions)}`,
           ).toBe(true);
         }
-        expect((geometry.mask as unknown as { background: string }).background).toBe((geometry as unknown as { mainBackground: string }).mainBackground);
+        expect(geometry.mask.background).toBe(geometry.mainBackground);
         expect(result).toMatchObject({ deterministicRetry: 'false', transientRetry: 'true' });
         expect(String(result.titleCopy)).not.toContain('provider_metadata_missing');
       }

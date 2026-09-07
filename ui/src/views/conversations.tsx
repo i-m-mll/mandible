@@ -2119,11 +2119,11 @@ function ConversationDetail({
   );
 
   const composerOverlay = isReadOnlyChild ? (
-        <div className="conv-compose conv-compose--readonly">
+        <div className="conv-compose conv-compose--readonly" data-detail-pane-overlay-visual>
           <span>Read-only subagent transcript</span>
         </div>
       ) : controlPresentation && controlPresentation.composer !== 'hidden' ? (
-      <div className="conv-compose">
+      <div className="conv-compose" data-detail-pane-overlay-visual>
         <form id={`conversation-compose-${conversation.id}`} className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
             className="conv-compose__input"
