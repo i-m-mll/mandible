@@ -155,10 +155,16 @@ describe("Claude hook routes", () => {
         transcript_path: transcriptPath,
         model: { id: "claude-sonnet-4-5", display_name: "Sonnet 4.5" },
         context_window: {
+          total_input_tokens: 72_000,
+          total_output_tokens: 8_000,
           used_percentage: 37.5,
           context_window_size: 200000,
-          input_tokens: 1000,
-          output_tokens: 250,
+          current_usage: {
+            input_tokens: 1000,
+            output_tokens: 250,
+            cache_creation_input_tokens: 300,
+            cache_read_input_tokens: 400,
+          },
         },
         rate_limits: {
           five_hour: { used_percentage: 12, resets_at: "2026-07-02T18:00:00Z" },
@@ -175,8 +181,16 @@ describe("Claude hook routes", () => {
         provider_session_id: "claude-provider-telemetry",
         model: "Sonnet 4.5",
         context_window: {
+          total_input_tokens: 72_000,
+          total_output_tokens: 8_000,
           used_percentage: 37.5,
           context_window_size: 200000,
+          current_usage: {
+            input_tokens: 1000,
+            output_tokens: 250,
+            cache_creation_input_tokens: 300,
+            cache_read_input_tokens: 400,
+          },
         },
       },
       ingest: {
@@ -186,6 +200,8 @@ describe("Claude hook routes", () => {
     });
     expect(db.prepare(`
       SELECT console_session_id, provider_session_id, model, context_used_percentage,
+             context_input_tokens, context_output_tokens,
+             context_cache_creation_input_tokens, context_cache_read_input_tokens,
              rate_limit_five_hour_used_percentage, rate_limit_seven_day_used_percentage
       FROM console_session_telemetry
       WHERE telemetry_key = 'console:console-telemetry'
@@ -194,8 +210,31 @@ describe("Claude hook routes", () => {
       provider_session_id: "claude-provider-telemetry",
       model: "Sonnet 4.5",
       context_used_percentage: 37.5,
+      context_input_tokens: 72_000,
+      context_output_tokens: 8_000,
+      context_cache_creation_input_tokens: 300,
+      context_cache_read_input_tokens: 400,
       rate_limit_five_hour_used_percentage: 12,
       rate_limit_seven_day_used_percentage: null,
+    });
+
+    const roundTrip = await router.invoke({
+      method: "GET",
+      url: "/api/hooks/statusline?sessionRef=claude-provider-telemetry",
+    });
+    expect(roundTrip.body).toMatchObject({
+      telemetry: {
+        context_window: {
+          total_input_tokens: 72_000,
+          total_output_tokens: 8_000,
+          current_usage: {
+            input_tokens: 1000,
+            output_tokens: 250,
+            cache_creation_input_tokens: 300,
+            cache_read_input_tokens: 400,
+          },
+        },
+      },
     });
   });
 

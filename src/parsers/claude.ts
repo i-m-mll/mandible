@@ -10,7 +10,7 @@ import type {
   IncrementalParseInput,
   ParseResult,
 } from "./types.js";
-import { buildClaudeApproxContextUsage } from "./context-usage.js";
+import { normalizeClaudeTranscriptUsage } from "./context-usage.js";
 import { parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
 
 // --- Raw JSONL record shapes ---
@@ -505,7 +505,7 @@ function buildAssistantMetadata(rec: ClaudeRecord): BlockMetadata {
       output: u.output_tokens ?? 0,
       cache_read: u.cache_read_input_tokens,
     };
-    meta.context_usage = buildClaudeApproxContextUsage(u, rec.message.model);
+    meta.usage_telemetry = normalizeClaudeTranscriptUsage(u, rec.message.model);
   }
   return meta;
 }

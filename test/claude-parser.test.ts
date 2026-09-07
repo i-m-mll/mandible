@@ -238,21 +238,26 @@ describe("ClaudeParser", () => {
     expect(renamed?.providerTitleSource).toBe("custom-title");
   });
 
-  it("computes approximate context from Claude effective input tokens", async () => {
+  it("preserves Claude message accounting without inferring current context", async () => {
     const parser = new ClaudeParser();
     const sessionPath = await makeClaudeSession();
 
     const result = await parser.parse(sessionPath);
     const assistant = result?.blocks.find((block) => block.type === "assistant_message");
 
-    expect(assistant?.metadata.context_usage).toMatchObject({
-      source: "mirror_approx",
-      used_tokens: 2000,
-      total_tokens: 2100,
-      window_tokens: 200_000,
-      percent: 1,
-      approximate: true,
+    expect(assistant?.metadata.usage_telemetry).toMatchObject({
+      provider: "claude",
+      provenance: "claude_transcript",
+      currentContext: { availability: "unavailable" },
       model: "claude-opus",
+      accounting: [{
+        scope: "message",
+        inputTokens: 1000,
+        cacheReadInputTokens: 250,
+        cacheCreationInputTokens: 750,
+        outputTokens: 100,
+        totalTokens: 2100,
+      }],
     });
   });
 

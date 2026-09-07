@@ -17,7 +17,6 @@ export { UsageModal } from './UsageModal';
 export { useStatuslineTelemetry } from './useStatuslineTelemetry';
 export {
   deriveChatUsageSummary,
-  effectiveClaudeInputTokens,
   getContextSeverity,
   selectContextUsage,
 } from './contextUsage';

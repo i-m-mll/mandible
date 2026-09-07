@@ -3,6 +3,7 @@ import { getDb } from "../db.js";
 import { triggerTargetedIngest } from "../ingestion.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
 import { broadcastConsoleTelemetry } from "../sse.js";
+import { normalizeClaudeStatusline } from "../parsers/context-usage.js";
 import { readBody, sendJson } from "./http.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -30,10 +31,10 @@ interface StatuslineTelemetry {
   model: string | null;
   contextUsedPercentage: number | null;
   contextWindowSize: number | null;
-  contextInputTokens: number | null;
-  contextOutputTokens: number | null;
-  contextCacheCreationInputTokens: number | null;
-  contextCacheReadInputTokens: number | null;
+  contextTotalInputTokens: number | null;
+  contextTotalOutputTokens: number | null;
+  currentCacheCreationInputTokens: number | null;
+  currentCacheReadInputTokens: number | null;
   rateLimitFiveHourUsedPercentage: number | null;
   rateLimitFiveHourResetsAt: string | null;
   rateLimitSevenDayUsedPercentage: number | null;
@@ -154,7 +155,9 @@ function persistStatuslineTelemetry(input: {
       : providerSessionId ? `provider:${providerSessionId}`
         : input.transcriptPath ? `transcript:${input.transcriptPath}`
           : `anonymous:${Date.now()}`;
-  const context = isRecord(input.payload.context_window) ? input.payload.context_window : {};
+  const normalizedUsage = normalizeClaudeStatusline(input.payload);
+  const contextTotal = normalizedUsage?.accounting.find((entry) => entry.scope === "statusline_total");
+  const currentUsage = normalizedUsage?.currentUsage;
   const rateLimits = isRecord(input.payload.rate_limits) ? input.payload.rate_limits : {};
   const fiveHour = isRecord(rateLimits.five_hour) ? rateLimits.five_hour : {};
   const sevenDay = isRecord(rateLimits.seven_day) ? rateLimits.seven_day : {};
@@ -164,12 +167,13 @@ function persistStatuslineTelemetry(input: {
     providerSessionId,
     transcriptPath: input.transcriptPath,
     model: modelName(input.payload.model),
-    contextUsedPercentage: numberOrNull(context.used_percentage),
-    contextWindowSize: integerOrNull(context.context_window_size),
-    contextInputTokens: integerOrNull(context.input_tokens),
-    contextOutputTokens: integerOrNull(context.output_tokens),
-    contextCacheCreationInputTokens: integerOrNull(context.cache_creation_input_tokens),
-    contextCacheReadInputTokens: integerOrNull(context.cache_read_input_tokens),
+    contextUsedPercentage: normalizedUsage?.currentContext.availability === "available"
+      ? normalizedUsage.currentContext.percent : null,
+    contextWindowSize: normalizedUsage?.modelWindowTokens ?? null,
+    contextTotalInputTokens: contextTotal?.inputTokens ?? null,
+    contextTotalOutputTokens: contextTotal?.outputTokens ?? null,
+    currentCacheCreationInputTokens: currentUsage?.cacheCreationInputTokens ?? null,
+    currentCacheReadInputTokens: currentUsage?.cacheReadInputTokens ?? null,
     rateLimitFiveHourUsedPercentage: numberOrNull(fiveHour.used_percentage),
     rateLimitFiveHourResetsAt: normalizeText(fiveHour.resets_at),
     rateLimitSevenDayUsedPercentage: numberOrNull(sevenDay.used_percentage),
@@ -187,9 +191,9 @@ function persistStatuslineTelemetry(input: {
       rate_limit_seven_day_resets_at, raw_payload_json, received_at
     ) VALUES (
       @telemetryKey, @consoleSessionId, @providerSessionId, @transcriptPath,
-      @model, @contextUsedPercentage, @contextWindowSize, @contextInputTokens,
-      @contextOutputTokens, @contextCacheCreationInputTokens,
-      @contextCacheReadInputTokens, @rateLimitFiveHourUsedPercentage,
+      @model, @contextUsedPercentage, @contextWindowSize, @contextTotalInputTokens,
+      @contextTotalOutputTokens, @currentCacheCreationInputTokens,
+      @currentCacheReadInputTokens, @rateLimitFiveHourUsedPercentage,
       @rateLimitFiveHourResetsAt, @rateLimitSevenDayUsedPercentage,
       @rateLimitSevenDayResetsAt, @rawPayloadJson, @receivedAt
     )
@@ -263,10 +267,10 @@ function telemetryFromRow(row: Record<string, unknown>): StatuslineTelemetry {
     model: normalizeText(row.model),
     contextUsedPercentage: numberOrNull(row.context_used_percentage),
     contextWindowSize: integerOrNull(row.context_window_size),
-    contextInputTokens: integerOrNull(row.context_input_tokens),
-    contextOutputTokens: integerOrNull(row.context_output_tokens),
-    contextCacheCreationInputTokens: integerOrNull(row.context_cache_creation_input_tokens),
-    contextCacheReadInputTokens: integerOrNull(row.context_cache_read_input_tokens),
+    contextTotalInputTokens: integerOrNull(row.context_input_tokens),
+    contextTotalOutputTokens: integerOrNull(row.context_output_tokens),
+    currentCacheCreationInputTokens: integerOrNull(row.context_cache_creation_input_tokens),
+    currentCacheReadInputTokens: integerOrNull(row.context_cache_read_input_tokens),
     rateLimitFiveHourUsedPercentage: numberOrNull(row.rate_limit_five_hour_used_percentage),
     rateLimitFiveHourResetsAt: normalizeText(row.rate_limit_five_hour_resets_at),
     rateLimitSevenDayUsedPercentage: numberOrNull(row.rate_limit_seven_day_used_percentage),
@@ -336,6 +340,10 @@ function resolveHookSession(sessionRef: string | null, transcriptPath: string | 
 }
 
 function serializeTelemetry(telemetry: StatuslineTelemetry): Record<string, unknown> {
+  const rawPayload = parseRawPayload(telemetry.rawPayloadJson);
+  const normalizedUsage = normalizeClaudeStatusline(rawPayload);
+  const totals = normalizedUsage?.accounting.find((entry) => entry.scope === "statusline_total");
+  const currentUsage = normalizedUsage?.currentUsage;
   return {
     telemetry_key: telemetry.telemetryKey,
     console_session_id: telemetry.consoleSessionId,
@@ -343,12 +351,17 @@ function serializeTelemetry(telemetry: StatuslineTelemetry): Record<string, unkn
     transcript_path: telemetry.transcriptPath,
     model: telemetry.model,
     context_window: {
-      used_percentage: telemetry.contextUsedPercentage,
-      context_window_size: telemetry.contextWindowSize,
-      input_tokens: telemetry.contextInputTokens,
-      output_tokens: telemetry.contextOutputTokens,
-      cache_creation_input_tokens: telemetry.contextCacheCreationInputTokens,
-      cache_read_input_tokens: telemetry.contextCacheReadInputTokens,
+      total_input_tokens: totals?.inputTokens ?? telemetry.contextTotalInputTokens,
+      total_output_tokens: totals?.outputTokens ?? telemetry.contextTotalOutputTokens,
+      used_percentage: normalizedUsage?.currentContext.availability === "available"
+        ? normalizedUsage.currentContext.percent : telemetry.contextUsedPercentage,
+      context_window_size: normalizedUsage?.modelWindowTokens ?? telemetry.contextWindowSize,
+      current_usage: currentUsage ? {
+        input_tokens: currentUsage.inputTokens ?? null,
+        output_tokens: currentUsage.outputTokens ?? null,
+        cache_creation_input_tokens: currentUsage.cacheCreationInputTokens ?? null,
+        cache_read_input_tokens: currentUsage.cacheReadInputTokens ?? null,
+      } : null,
     },
     rate_limits: {
       five_hour: {
@@ -362,6 +375,15 @@ function serializeTelemetry(telemetry: StatuslineTelemetry): Record<string, unkn
     },
     received_at: telemetry.receivedAt,
   };
+}
+
+function parseRawPayload(raw: string): JsonRecord {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return isRecord(value) ? value : {};
+  } catch {
+    return {};
+  }
 }
 
 function normalizePayloadObject(body: unknown): JsonRecord {
