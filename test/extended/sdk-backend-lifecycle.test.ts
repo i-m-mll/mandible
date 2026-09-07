@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildMandibleChannelEnvironment, SDKBackend } from "../../src/backends/sdk-backend.js";
 import type { ConsoleSession, Logger } from "../../src/types.js";
+import { ProviderStartupError } from "../../src/provider-startup.js";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   return {
@@ -68,6 +69,8 @@ describe("SDKBackend lifecycle", () => {
 
   it("turns SDK setup failures into structured error results", async () => {
     const backend = new SDKBackend(makeMeta(), makeLogger());
+    const startupError = vi.fn();
+    backend.on("startup_error", startupError);
 
     backend.sendPrompt("hello");
 
@@ -77,11 +80,13 @@ describe("SDKBackend lifecycle", () => {
           type: "result",
           subtype: "error_during_execution",
           is_error: true,
-          errors: ["Error: sdk unavailable"],
+          errors: ["Claude failed before its native conversation was ready."],
         }),
       ]);
     });
 
     expect(backend.isProcessing).toBe(false);
+    expect(startupError).toHaveBeenCalledWith(expect.any(ProviderStartupError));
+    expect(startupError.mock.calls[0][0]).toMatchObject({ code: "provider_startup_failed", phase: "readiness" });
   });
 });

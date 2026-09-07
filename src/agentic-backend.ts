@@ -7,6 +7,7 @@ import type {
   SessionRunOptionsSnapshot,
   SessionRunOptionsUpdateResult,
 } from "./session-run-options.js";
+import type { ProviderStartupProvenance } from "./provider-startup.js";
 
 export type BackendType = "pty" | "sdk" | "spawn" | "acp";
 export type PermissionDecision =
@@ -86,6 +87,7 @@ export interface AgenticBackend extends EventEmitter {
   getStreamEvents(): ConsoleStreamEvent[];
   ingestStructuredEvent(event: ConsoleStreamEvent): void;
   ingestText(data: string): void;
+  getStartupProvenance?(): ProviderStartupProvenance;
 }
 
 export interface PermissionAwareBackend {

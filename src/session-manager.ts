@@ -56,6 +56,11 @@ import {
   type SessionRunOptionValue,
   type SessionRunOptionsSnapshot,
 } from "./session-run-options.js";
+import {
+  ProviderStartupError,
+  normalizeProviderStartupError,
+  type ProviderStartupProvenance,
+} from "./provider-startup.js";
 
 interface ConsoleSessionRow {
   id: string;
@@ -662,6 +667,139 @@ export class SessionManager {
     const pending = this.initialRunOptionApplications.get(id);
     if (pending) return pending;
     return this.getRunOptions(id);
+  }
+
+  async startConversation(
+    id: string,
+    prompt: string,
+    options: { timeoutMs: number; signal?: AbortSignal; provenance?: ProviderStartupProvenance },
+  ): Promise<{ provider_session_id: string; provenance: ProviderStartupProvenance }> {
+    const provenance = options.provenance ?? this.getStartupProvenance(id);
+
+    const deadline = Date.now() + options.timeoutMs;
+    this.start(id);
+    await this.awaitStartupStep(
+      this.waitForInitialRunOptions(id),
+      deadline,
+      options.signal,
+      "configuration",
+    );
+    this.sendPrompt(id, prompt);
+    const providerSessionId = await this.waitForProviderSession(id, deadline, options.signal);
+    return { provider_session_id: providerSessionId, provenance };
+  }
+
+  getStartupProvenance(id: string): ProviderStartupProvenance {
+    const backend = this.get(id);
+    if (!backend) {
+      throw new ProviderStartupError(
+        "provider_startup_failed",
+        "The reserved provider session is no longer available.",
+        "configuration",
+      );
+    }
+    try {
+      if (!backend.getStartupProvenance) {
+        throw new Error(`Backend ${backend.meta.backend_type} does not declare startup provenance`);
+      }
+      return backend.getStartupProvenance();
+    } catch (error) {
+      this.logger("error", "provider_startup_provenance_failed", { id, error: String(error) });
+      throw new ProviderStartupError(
+        "provider_startup_failed",
+        "The selected provider implementation could not be resolved.",
+        "configuration",
+      );
+    }
+  }
+
+  private awaitStartupStep<T>(
+    operation: Promise<T>,
+    deadline: number,
+    signal: AbortSignal | undefined,
+    phase: "configuration" | "readiness",
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new ProviderStartupError("client_aborted", "The client disconnected during provider startup.", phase));
+        return;
+      }
+      const remaining = Math.max(0, deadline - Date.now());
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new ProviderStartupError(
+          "provider_startup_timeout",
+          "The provider did not become ready before the startup deadline.",
+          phase,
+        ));
+      }, remaining);
+      const onAbort = () => {
+        cleanup();
+        reject(new ProviderStartupError("client_aborted", "The client disconnected during provider startup.", phase));
+      };
+      const cleanup = () => {
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      operation.then(
+        (value) => { cleanup(); resolve(value); },
+        (error) => { cleanup(); reject(normalizeProviderStartupError(error, phase)); },
+      );
+    });
+  }
+
+  private waitForProviderSession(
+    id: string,
+    deadline: number,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const backend = this.requireSession(id);
+    return new Promise<string>((resolve, reject) => {
+      const remaining = Math.max(0, deadline - Date.now());
+      const timeout = setTimeout(() => settleError(new ProviderStartupError(
+        "provider_startup_timeout",
+        "The provider did not become ready before the startup deadline.",
+        "readiness",
+      )), remaining);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", onAbort);
+        backend.removeListener("meta_update", onMetaUpdate);
+        backend.removeListener("status", onStatus);
+        backend.removeListener("startup_error", onStartupError);
+      };
+      const settleValue = (value: string) => { cleanup(); resolve(value); };
+      const settleError = (error: ProviderStartupError) => { cleanup(); reject(error); };
+      const onMetaUpdate = (fields: BackendMetaUpdate) => {
+        const providerSessionId = fields.provider_session_id?.trim()
+          || backend.meta.provider_session_id?.trim();
+        if (!providerSessionId) return;
+        settleValue(providerSessionId);
+      };
+      const onStatus = (event: BackendStatusEvent) => {
+        if (event.status !== "crashed" && event.status !== "stopped") return;
+        settleError(new ProviderStartupError(
+          "provider_exited_before_ready",
+          "The provider exited before its native conversation was ready.",
+          "readiness",
+        ));
+      };
+      const onStartupError = (error: unknown) => {
+        settleError(normalizeProviderStartupError(error));
+      };
+      const onAbort = () => settleError(new ProviderStartupError(
+        "client_aborted",
+        "The client disconnected during provider startup.",
+        "readiness",
+      ));
+      backend.on("meta_update", onMetaUpdate);
+      backend.on("status", onStatus);
+      backend.on("startup_error", onStartupError);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+      else onMetaUpdate({});
+    });
   }
 
   describeRunOptions(backendType: BackendType, command: string): SessionRunOptionsSnapshot {

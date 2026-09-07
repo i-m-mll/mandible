@@ -63,6 +63,8 @@ import {
   CLAUDE_CODE_BOOTSTRAP_MODELS,
 } from "../provider-run-option-catalog.js";
 import { extractModel } from "./cli-args.js";
+import { claudeSdkProvenance } from "../provider-provenance.js";
+import { ProviderStartupError } from "../provider-startup.js";
 
 const EVENT_LOG_LIMIT = 2000;
 export const SDK_USAGE_LOG_LIMIT = EVENT_LOG_LIMIT;
@@ -208,6 +210,10 @@ implements
   /** Bug: 81c9d85 — expose processing state for is_processing on ConsoleSession */
   get isProcessing(): boolean {
     return this.processing;
+  }
+
+  getStartupProvenance() {
+    return claudeSdkProvenance();
   }
 
   constructor(
@@ -617,6 +623,17 @@ implements
       }
     } catch (error) {
       if (!abortController.signal.aborted) {
+        const startupFailure = this.meta.provider_session_id === null
+          ? new ProviderStartupError(
+            "provider_startup_failed",
+            "Claude failed before its native conversation was ready.",
+            "readiness",
+          )
+          : null;
+        if (startupFailure) {
+          this.logger("error", "sdk_provider_startup_failed", { id: this.id, error: String(error) });
+          this.emit("startup_error", startupFailure);
+        }
         this.storeAndBroadcast({
           type: "result",
           subtype: "error_during_execution",
@@ -625,7 +642,7 @@ implements
           num_turns: 0,
           total_cost_usd: 0,
           is_error: true,
-          errors: [String(error)],
+          errors: [startupFailure?.message ?? String(error)],
         });
       }
     } finally {
@@ -721,8 +738,10 @@ implements
     // Complementary to SDK hooks which provide outside-in control.
     const mcpServers = this.buildChannelMcpServers();
 
+    const provenance = this.getStartupProvenance();
     return {
       abortController,
+      pathToClaudeCodeExecutable: provenance.implementation.entrypoint,
       cwd,
       env: this.buildClientEnv(),
       model: this.options.model ?? extractModel(this.meta.args) ?? undefined,

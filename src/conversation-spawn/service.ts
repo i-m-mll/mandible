@@ -35,7 +35,9 @@ function target(request: ConversationSpawnRequest): string | null {
 }
 
 export class ConversationSpawnService {
-  constructor(private readonly db: Db, private readonly now: () => number = Date.now) {}
+  constructor(private readonly db: Db, private readonly now: () => number = Date.now) {
+    this.terminalizeInterrupted();
+  }
 
   reserve(input: ConversationSpawnRequest): Result<ConversationSpawnReceipt> {
     const validated = this.validate(input);
@@ -82,7 +84,21 @@ export class ConversationSpawnService {
     return this.get(reservationId);
   }
 
-  recordProviderReceipt(reservationId: string, nativeSessionId: string, providerSessionId: string | null, providerReceipt: Record<string, unknown>): Result<ConversationSpawnReceipt> {
+  recordNativeSession(reservationId: string, nativeSessionId: string): Result<ConversationSpawnReceipt> {
+    const row = this.row(reservationId);
+    if (!row) return { ok: false, error: { kind: "not-found", reservation_id: reservationId } };
+    if (row.native_session_id && row.native_session_id !== nativeSessionId) {
+      return { ok: false, error: { kind: "idempotency-conflict", idempotency_key: JSON.parse(row.request_json).idempotency_key } };
+    }
+    const at = this.now();
+    this.db.transaction(() => {
+      this.db.prepare(`UPDATE conversation_spawn_requests SET native_session_id = ?, updated_at = ? WHERE id = ?`)
+        .run(nativeSessionId, at, reservationId);
+    })();
+    return this.get(reservationId);
+  }
+
+  recordProviderReceipt(reservationId: string, nativeSessionId: string, providerSessionId: string, providerReceipt: Record<string, unknown>): Result<ConversationSpawnReceipt> {
     const row = this.row(reservationId);
     if (!row) return { ok: false, error: { kind: "not-found", reservation_id: reservationId } };
     if (row.native_session_id && row.native_session_id !== nativeSessionId) {
@@ -101,7 +117,11 @@ export class ConversationSpawnService {
   }
 
   delivered(reservationId: string, providerSessionId: string | null = null): Result<ConversationSpawnReceipt> {
-    if (!this.row(reservationId)) return { ok: false, error: { kind: "not-found", reservation_id: reservationId } };
+    const row = this.row(reservationId);
+    if (!row) return { ok: false, error: { kind: "not-found", reservation_id: reservationId } };
+    if (!(providerSessionId?.trim() || row.provider_session_id?.trim())) {
+      return { ok: false, error: { kind: "provider-proof-required", reservation_id: reservationId } };
+    }
     const at = this.now();
     this.db.transaction(() => {
       this.db.prepare(`UPDATE conversation_spawn_requests SET state = 'delivered', initial_message_state = 'delivered',
@@ -112,12 +132,27 @@ export class ConversationSpawnService {
     return this.get(reservationId);
   }
 
-  failed(reservationId: string, error: { code: string; message: string; retryable: boolean }): Result<ConversationSpawnReceipt> {
+  failed(
+    reservationId: string,
+    error: {
+      code: string;
+      message: string;
+      retryable: boolean;
+      phase?: "configuration" | "readiness";
+      provenance?: import("../provider-startup.js").ProviderStartupProvenance;
+    },
+    options: { resetNativeSession?: boolean } = {},
+  ): Result<ConversationSpawnReceipt> {
     if (!this.row(reservationId)) return { ok: false, error: { kind: "not-found", reservation_id: reservationId } };
     const at = this.now();
     this.db.transaction(() => {
-      this.db.prepare(`UPDATE conversation_spawn_requests SET state = 'failed', initial_message_state = 'failed', error_json = ?, updated_at = ? WHERE id = ?`)
-        .run(stable(error), at, reservationId);
+      this.db.prepare(`UPDATE conversation_spawn_requests SET state = 'failed', initial_message_state = 'failed',
+        native_session_id = CASE WHEN ? THEN NULL ELSE native_session_id END,
+        provider_session_id = CASE WHEN ? THEN NULL ELSE provider_session_id END,
+        provider_receipt_json = CASE WHEN ? THEN NULL ELSE provider_receipt_json END,
+        error_json = ?, updated_at = ? WHERE id = ?`)
+        .run(options.resetNativeSession ? 1 : 0, options.resetNativeSession ? 1 : 0,
+          options.resetNativeSession ? 1 : 0, stable(error), at, reservationId);
       this.event(reservationId, "failed", error, at);
     })();
     return this.get(reservationId);
@@ -155,6 +190,27 @@ export class ConversationSpawnService {
   }
 
   private invalid(field: string, message: string): Result<never> { return { ok: false, error: { kind: "invalid-request", field, message } }; }
+  private terminalizeInterrupted(): void {
+    const rows = this.db.prepare(
+      "SELECT id FROM conversation_spawn_requests WHERE state IN ('creating', 'delivering') ORDER BY created_at, id",
+    ).all() as Array<{ id: string }>;
+    if (rows.length === 0) return;
+    const at = this.now();
+    const error = {
+      code: "provider_startup_interrupted",
+      message: "Provider startup was interrupted before delivery completed.",
+      retryable: true,
+      phase: "readiness" as const,
+    };
+    this.db.transaction(() => {
+      for (const row of rows) {
+        this.db.prepare(`UPDATE conversation_spawn_requests
+          SET state = 'failed', initial_message_state = 'failed', error_json = ?, updated_at = ?
+          WHERE id = ?`).run(stable(error), at, row.id);
+        this.event(row.id, "failed", error, at);
+      }
+    })();
+  }
   private row(id: string): SpawnRow | undefined { return this.db.prepare("SELECT * FROM conversation_spawn_requests WHERE id = ?").get(id) as SpawnRow | undefined; }
   private event(spawnId: string, kind: string, body: Record<string, unknown>, at: number): void {
     const ordinal = ((this.db.prepare("SELECT MAX(ordinal) AS ordinal FROM conversation_spawn_events WHERE spawn_id = ?").get(spawnId) as { ordinal: number | null }).ordinal ?? 0) + 1;

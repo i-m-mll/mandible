@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AcpBackend, probeGeminiAcpFlag } from "../../src/backends/acp-backend.js";
+import { executableProvenance } from "../../src/provider-provenance.js";
 import type { ConsoleSession, ConsoleStreamEvent, Logger } from "../../src/types.js";
 
 const tempRoots: string[] = [];
@@ -49,13 +50,13 @@ async function makeHelpScript(helpText: string): Promise<string> {
   return script;
 }
 
-async function makeNpxAcpScript(
+async function makeAcpScript(
   sessionId: string,
   setOptionBehavior: "accept" | "reject" | "disagree" | "missing" | "timeout" = "accept",
-): Promise<{ root: string; env: Record<string, string>; logPath: string }> {
+): Promise<{ root: string; env: Record<string, string>; logPath: string; script: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mandible-codex-acp-"));
   tempRoots.push(root);
-  const script = path.join(root, "npx");
+  const script = path.join(root, "codex-acp");
   const logPath = path.join(root, "requests.jsonl");
   await fs.writeFile(script, `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -140,6 +141,7 @@ rl.on("line", (line) => {
       CODEX_API_KEY: "test-key",
     },
     logPath,
+    script,
   };
 }
 
@@ -172,10 +174,10 @@ afterEach(async () => {
 
 describe("AcpBackend", () => {
   it("applies initial Codex model, reasoning_effort, and mode before first prompt", async () => {
-    const fake = await makeNpxAcpScript("codex-options");
+    const fake = await makeAcpScript("codex-options");
     const backend = new AcpBackend(makeMeta({
       command: "codex", agent_type: "codex", env: fake.env, cwd: fake.root,
-    }), vi.fn());
+    }), vi.fn(), null, () => executableProvenance("codex", fake.script));
     const pending = backend.applyRunOptions({ values: {
       model: "gpt-5.6-sol", reasoning_effort: "high", mode: "read-only",
     } }, { phase: "initial" });
@@ -202,10 +204,10 @@ describe("AcpBackend", () => {
     ["provider disagreement", "disagree", "provider_disagreement"],
     ["a missing response option", "missing", "provider_disagreement"],
   ] as const)("blocks the first prompt after %s", async (_label, behavior, code) => {
-    const fake = await makeNpxAcpScript(`codex-${behavior}`, behavior);
+    const fake = await makeAcpScript(`codex-${behavior}`, behavior);
     const backend = new AcpBackend(makeMeta({
       command: "codex", agent_type: "codex", env: fake.env, cwd: fake.root,
-    }), vi.fn());
+    }), vi.fn(), null, () => executableProvenance("codex", fake.script));
     const pending = backend.applyRunOptions({ values: { model: "gpt-5.6-sol" } }, { phase: "initial" });
     backend.sendPrompt("must remain gated");
     await expect(pending).rejects.toMatchObject({ code, optionId: "model" });
@@ -216,10 +218,10 @@ describe("AcpBackend", () => {
   });
 
   it("marks a timed-out option indeterminate and blocks subsequent prompts", async () => {
-    const fake = await makeNpxAcpScript("codex-timeout", "timeout");
+    const fake = await makeAcpScript("codex-timeout", "timeout");
     const backend = new AcpBackend(makeMeta({
       command: "codex", agent_type: "codex", env: fake.env, cwd: fake.root,
-    }), vi.fn());
+    }), vi.fn(), null, () => executableProvenance("codex", fake.script));
     backend.start();
     await waitFor(() => backend.getRunOptions().phase === "ready");
 
@@ -265,14 +267,14 @@ describe("AcpBackend", () => {
   });
 
   it("launches Codex through the pinned ACP adapter and surfaces auth/config metadata", async () => {
-    const fake = await makeNpxAcpScript("codex-thread-1");
+    const fake = await makeAcpScript("codex-thread-1");
     const logger: Logger = vi.fn();
     const backend = new AcpBackend(makeMeta({
       command: "codex",
       agent_type: "codex",
       env: fake.env,
       cwd: fake.root,
-    }), logger);
+    }), logger, null, () => executableProvenance("codex", fake.script));
     const events: ConsoleStreamEvent[] = [];
     backend.on("stream_event", (event: ConsoleStreamEvent) => events.push(event));
 
@@ -283,7 +285,7 @@ describe("AcpBackend", () => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as { argv?: string[]; method?: string; params?: Record<string, unknown> });
-    expect(lines[0].argv).toEqual(["-y", "@agentclientprotocol/codex-acp@1.0.2"]);
+    expect(lines[0].argv).toEqual([]);
     expect(lines.find((line) => line.method === "authenticate")?.params)
       .toMatchObject({ methodId: "api-key" });
     expect(lines.some((line) => line.method === "session/new")).toBe(true);
@@ -303,14 +305,14 @@ describe("AcpBackend", () => {
   });
 
   it("uses Codex ACP session/load when resume is advertised", async () => {
-    const fake = await makeNpxAcpScript("codex-existing");
+    const fake = await makeAcpScript("codex-existing");
     const backend = new AcpBackend(makeMeta({
       command: "codex",
       agent_type: "codex",
       provider_session_id: "codex-existing",
       env: fake.env,
       cwd: fake.root,
-    }), vi.fn());
+    }), vi.fn(), null, () => executableProvenance("codex", fake.script));
 
     backend.start();
     const pending = backend.applyRunOptions({ values: { reasoning_effort: "high" } }, { phase: "initial" });
@@ -322,29 +324,5 @@ describe("AcpBackend", () => {
       .toContain('"configId":"reasoning_effort"');
 
     backend.destroy();
-  });
-});
-
-describe("codex-acp dependency pin", () => {
-  it("spawns the exact version declared in package.json", async () => {
-    // @agentclientprotocol/codex-acp is never imported: it is a runtime binary
-    // spawned as `npx -y @agentclientprotocol/codex-acp@<version>`. Declaring it
-    // installs node_modules/.bin/codex-acp so npx resolves locally instead of
-    // fetching at session start. That makes the package.json entry the pin and
-    // acp-backend's CODEX_ACP_VERSION the spawned version; they must not drift.
-    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-    const pkg = JSON.parse(
-      await fs.readFile(path.join(repoRoot, "package.json"), "utf8"),
-    ) as { dependencies?: Record<string, string> };
-    const declared = pkg.dependencies?.["@agentclientprotocol/codex-acp"];
-
-    expect(declared).toBeDefined();
-    const source = await fs.readFile(
-      path.join(repoRoot, "src/backends/acp-backend.ts"),
-      "utf8",
-    );
-    const spawned = /const CODEX_ACP_VERSION = "([^"]+)"/.exec(source)?.[1];
-
-    expect(spawned).toBe(declared);
   });
 });

@@ -68,9 +68,57 @@ describe("Mandible conversation spawn authority", () => {
     expect(failed.ok && failed.value.native_session_id).toBe("native-1");
     const retry = service.begin(reserved.value.reservation_id);
     expect(retry.ok && retry.value).toMatchObject({ state: "delivering", attempt_count: 2, native_session_id: "native-1" });
-    expect(service.recordProviderReceipt(reserved.value.reservation_id, "native-2", null, {})).toMatchObject({
+    expect(service.recordProviderReceipt(reserved.value.reservation_id, "native-2", "provider-2", {})).toMatchObject({
       ok: false, error: { kind: "idempotency-conflict" },
     });
+  });
+
+  it("requires native provider proof before delivery and resets a failed pre-proof allocation", () => {
+    const service = new ConversationSpawnService(db, () => clock++);
+    const reserved = service.reserve(request());
+    if (!reserved.ok) throw new Error("reservation failed");
+    const id = reserved.value.reservation_id;
+    expect(service.begin(id).ok).toBe(true);
+    expect(service.recordNativeSession(id, "native-1").ok).toBe(true);
+    expect(service.delivered(id)).toEqual({
+      ok: false,
+      error: { kind: "provider-proof-required", reservation_id: id },
+    });
+    const failed = service.failed(id, {
+      code: "provider_startup_timeout",
+      message: "Provider startup timed out.",
+      retryable: true,
+      phase: "readiness",
+    }, { resetNativeSession: true });
+    expect(failed.ok && failed.value).toMatchObject({
+      state: "failed",
+      native_session_id: null,
+      provider_session_id: null,
+      initial_message_state: "failed",
+    });
+    const retry = service.begin(id);
+    expect(retry.ok && retry.value).toMatchObject({ state: "creating", attempt_count: 2 });
+  });
+
+  it("terminalizes an interrupted create when the durable service restarts", () => {
+    const service = new ConversationSpawnService(db, () => clock++);
+    const reserved = service.reserve(request());
+    if (!reserved.ok) throw new Error("reservation failed");
+    const id = reserved.value.reservation_id;
+    service.begin(id);
+    service.recordNativeSession(id, "native-1");
+
+    const restarted = new ConversationSpawnService(db, () => clock++);
+    expect(restarted.get(id)).toMatchObject({
+      ok: true,
+      value: {
+        state: "failed",
+        native_session_id: "native-1",
+        error: { code: "provider_startup_interrupted", retryable: true },
+      },
+    });
+    expect(db.prepare("SELECT event_kind FROM conversation_spawn_events WHERE spawn_id = ? ORDER BY ordinal DESC LIMIT 1")
+      .get(id)).toEqual({ event_kind: "failed" });
   });
 
   it("accepts lineage only from an exact existing conversation or reservation identity", () => {
