@@ -111,7 +111,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const titleErrors=document.querySelector('[data-title-errors]');
         document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
-          chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),composer:composerRect,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
+          chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),overlayPointerEvents:getComputedStyle(overlayControl).pointerEvents,composer:composerRect,composerPointerEvents:getComputedStyle(composer).pointerEvents,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
           runOptions,
           stored:localStorage.getItem('mandible_app_right_sidebar:native-${surface}:v1'),
           deterministicRetry:titleErrors?.dataset.deterministicRetry,transientRetry:titleErrors?.dataset.transientRetry,titleCopy:titleErrors?.textContent}));
@@ -159,7 +159,9 @@ describe('production app right sidebar geometry and interaction', () => {
           header: Rect;
           body: Rect;
           overlayControl: Rect;
+          overlayPointerEvents: string;
           composer: Rect;
+          composerPointerEvents: string;
           transcriptViewport: Rect;
           transcriptBottomInset: number;
           transcriptScrollState: { clientHeight: number; scrollHeight: number; scrollTop: number };
@@ -172,9 +174,18 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(geometry.header.bottom).toBe(geometry.body.top);
         expect(geometry.body.bottom).toBe(geometry.overlayControl.bottom);
         expect(geometry.overlayControl.top).toBeLessThan(geometry.body.bottom);
-        expect(geometry.overlayControl.right).toBeLessThanOrEqual(geometry.body.right);
+        expect(geometry.overlayControl.left).toBeCloseTo(geometry.body.left, 0);
+        expect(geometry.overlayControl.right).toBeCloseTo(geometry.body.right, 0);
+        expect(geometry.overlayPointerEvents).toBe('none');
         expect(geometry.composer.top).toBeGreaterThanOrEqual(geometry.overlayControl.top);
         expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.overlayControl.bottom);
+        expect(geometry.composerPointerEvents).toBe('auto');
+        expect(geometry.composer.left).toBeGreaterThan(geometry.transcriptViewport.left);
+        expect(geometry.composer.right).toBeLessThan(geometry.transcriptViewport.right);
+        expect(geometry.transcriptViewport.left).toBeCloseTo(geometry.body.left, 0);
+        expect(geometry.transcriptViewport.right).toBeCloseTo(geometry.body.right, 0);
+        expect(geometry.transcriptViewport.top).toBeCloseTo(geometry.body.top, 0);
+        expect(geometry.transcriptViewport.bottom).toBeCloseTo(geometry.body.bottom, 0);
         const composerHeight = geometry.composer.bottom - geometry.composer.top;
         const composerBottomGap = geometry.transcriptViewport.bottom - geometry.composer.bottom;
         const transcriptMaxScroll = geometry.transcriptScrollState.scrollHeight - geometry.transcriptScrollState.clientHeight;
@@ -183,6 +194,8 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(geometry.transcriptScrollState.scrollTop).toBeCloseTo(transcriptMaxScroll, 5);
         expect(geometry.transcriptOuterState.scrollHeight).toBe(geometry.transcriptOuterState.clientHeight);
         expect(geometry.transcriptOuterState.scrollTop).toBe(0);
+        expect(geometry.finalContent.left).toBeCloseTo(geometry.composer.left, 0);
+        expect(geometry.finalContent.right).toBeCloseTo(geometry.composer.right, 0);
         expect(geometry.finalContent.bottom).toBeLessThanOrEqual(geometry.composer.top - composerBottomGap + 0.5);
         expect(geometry.mask.left).toBeCloseTo(geometry.body.left, 0);
         expect(geometry.mask.right).toBeCloseTo(geometry.composer.right, 0);
