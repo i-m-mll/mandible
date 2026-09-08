@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConversationSpawnApiError, invalidateApiGetCache, listCanonicalProjects, startProviderChat } from '../../ui/src/api';
 
 afterEach(() => {
-  vi.useRealTimers();
   invalidateApiGetCache();
   vi.unstubAllGlobals();
 });
@@ -75,47 +74,22 @@ describe('console session creation payload', () => {
     await expect(result).rejects.toMatchObject({ status: 502, failure, spawn });
   });
 
-  it('performs one authoritative reservation read when the POST response is lost', async () => {
-    vi.useFakeTimers();
-    const failure = {
-      code: 'provider_startup_timeout',
-      message: 'The provider did not become ready.',
-      retryable: true,
-      phase: 'readiness' as const,
-    };
-    const spawn = {
-      schema: 'mandible-conversation-spawn-receipt@2' as const,
-      reservation_id: '10000000-0000-4000-8000-000000000001',
-      request: {},
-      state: 'failed' as const,
-      attempt_count: 1,
-      native_session_id: null,
-      provider_session_id: null,
-      provider_receipt: null,
-      error: failure,
-      created_at: 1,
-      updated_at: 2,
-    };
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
-      if (String(input) === '/api/conversation-spawns') return new Promise<Response>(() => undefined);
-      return Promise.resolve(new Response(JSON.stringify({ ok: true, value: spawn }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }));
-    });
+  it('forwards caller cancellation without adding a second browser deadline', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+    }));
     vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
     const result = startProviderChat(
-      spawn.reservation_id,
+      '10000000-0000-4000-8000-000000000001',
       'codex',
       { project_id: 'project-1', checkout_id: 'checkout-1' },
+      { signal: controller.signal },
     );
-    const rejected = expect(result).rejects.toMatchObject({ failure, spawn });
-    await vi.advanceTimersByTimeAsync(31_000);
-    await rejected;
-    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
-      '/api/conversation-spawns',
-      `/api/conversation-spawns/${spawn.reservation_id}`,
-    ]);
+    controller.abort(new DOMException('abandoned', 'AbortError'));
+    await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal);
   });
 });
 

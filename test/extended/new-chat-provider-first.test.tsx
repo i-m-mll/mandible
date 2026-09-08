@@ -10,10 +10,11 @@ const draft: NewChatDraft = {
 };
 
 describe('provider-first new chat', () => {
-  it('makes provider immutable and permits only same-provider retry or discard after failure', () => {
+  it('makes provider immutable and permits cancellation while starting or after failure', () => {
     const starting = reduceNewChatDraft(draft, { type: 'choose', provider: 'codex' });
     expect(starting).toMatchObject({ state: 'starting', provider: 'codex' });
     expect(reduceNewChatDraft(starting, { type: 'choose', provider: 'claude_code' })).toEqual(starting);
+    expect(reduceNewChatDraft(starting, { type: 'abandon' })).toMatchObject({ state: 'abandoned', provider: 'codex' });
     const failed = reduceNewChatDraft(starting, {
       type: 'fail',
       failure: { code: 'provider_startup_timeout', message: 'Timed out', retryable: true },

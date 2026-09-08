@@ -219,8 +219,25 @@ describe("restricted project route enforcement", () => {
       spawn: { state: "failed", native_session_id: null },
     });
     expect(JSON.stringify(failed.body)).not.toContain("secret provider error");
-    expect(manager.stop).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000002", "SIGTERM");
+    expect(manager.stop).not.toHaveBeenCalled();
     expect(manager.delete).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000002");
+
+    manager.startConversation.mockRejectedValueOnce(new Error("provider failed"));
+    manager.delete.mockImplementationOnce(() => { throw new Error("cleanup failed"); });
+    const cleanupFailed = await router.invoke({
+      ...input,
+      body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000005" },
+    });
+    expect(cleanupFailed.status).toBe(502);
+    expect(cleanupFailed.body).toMatchObject({
+      ok: false,
+      error: {
+        code: "provider_startup_failed",
+        message: "Provider startup failed and its temporary session cleanup did not complete.",
+        retryable: false,
+      },
+      spawn: { state: "failed", native_session_id: null },
+    });
 
     const controller = new AbortController();
     manager.startConversation.mockImplementationOnce(async (_id, options) => {

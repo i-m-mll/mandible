@@ -557,7 +557,7 @@ export type ConversationsViewProps = {
   chatEntityLinkAction?: ChatEntityClickAction;
   instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
-  onNewSession: (input: NewChatInput) => Promise<string>;
+  onNewSession: (input: NewChatInput, signal?: AbortSignal) => Promise<string>;
 };
 
 function HorizontalDotsIcon(): JSX.Element {
@@ -2732,11 +2732,6 @@ export function ConversationsView({
 
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
-  useEffect(() => {
-    if (!newChatDraft || (newChatDraft.state !== 'choosing' && newChatDraft.state !== 'failed')) return;
-    if (selection?.type === 'draft' && selection.id === newChatDraft.id) return;
-    setNewChatDraft(reduceNewChatDraft(newChatDraft, { type: 'abandon' }));
-  }, [newChatDraft, selection]);
   const previewMutationsRejected = instance?.operational_mutations === 'reject';
   const isConversationPinned = useCallback((conversation: Conversation): boolean => {
     if (!previewMutationsRejected) return conversation.starred;
@@ -3373,10 +3368,21 @@ export function ConversationsView({
     }
   };
 
+  const draftStartupController = useRef<AbortController | null>(null);
   const discardDraft = useCallback(() => {
+    draftStartupController.current?.abort();
+    draftStartupController.current = null;
     setNewChatDraft((draft) => draft ? reduceNewChatDraft(draft, { type: 'abandon' }) : null);
     setSelection((current) => current?.type === 'draft' ? null : current);
   }, []);
+
+  useEffect(() => {
+    if (!newChatDraft || newChatDraft.state === 'ready' || newChatDraft.state === 'abandoned') return;
+    if (selection?.type === 'draft' && selection.id === newChatDraft.id) return;
+    discardDraft();
+  }, [discardDraft, newChatDraft, selection]);
+
+  useEffect(() => () => draftStartupController.current?.abort(), []);
 
   const startDraft = useCallback(async (provider: NewChatProvider, retry = false) => {
     const draft = newChatDraft;
@@ -3385,6 +3391,9 @@ export function ConversationsView({
       ? reduceNewChatDraft(draft, { type: 'retry' })
       : reduceNewChatDraft(draft, { type: 'choose', provider });
     if (starting.state !== 'starting') return;
+    draftStartupController.current?.abort();
+    const startupController = new AbortController();
+    draftStartupController.current = startupController;
     setNewChatDraft(starting);
     try {
       const sessionId = await onNewSession({
@@ -3394,7 +3403,8 @@ export function ConversationsView({
           project_id: starting.placement.projectId,
           checkout_id: starting.placement.checkoutId,
         },
-      });
+      }, startupController.signal);
+      if (startupController.signal.aborted) return;
       setNewChatDraft((current) => current?.id === starting.id
         ? reduceNewChatDraft(starting, { type: 'ready', sessionId })
         : current);
@@ -3406,6 +3416,7 @@ export function ConversationsView({
       if (window.location.hash !== nextHash) window.location.hash = nextHash;
       onSelectSession(sessionId);
     } catch (error) {
+      if (startupController.signal.aborted) return;
       const failure = error instanceof ConversationSpawnApiError
         ? error.failure
         : {
@@ -3416,6 +3427,8 @@ export function ConversationsView({
       setNewChatDraft((current) => current?.id === starting.id
         ? reduceNewChatDraft(starting, { type: 'fail', failure })
         : current);
+    } finally {
+      if (draftStartupController.current === startupController) draftStartupController.current = null;
     }
   }, [newChatDraft, onNewSession, onSelectSession]);
 
