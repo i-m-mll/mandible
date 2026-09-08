@@ -274,22 +274,10 @@ const SOURCE_LABELS: Record<ConversationSource, string> = {
   gemini: 'Gemini',
 };
 
-const DETAIL_HEADER_PROVIDER_LABELS: Record<ConversationSource, string> = {
+const SIDEBAR_PROVIDER_LABELS: Record<ConversationSource, string> = {
   claude_code: 'Claude',
   codex: 'Codex',
   gemini: 'agy',
-};
-
-export function getConversationHeaderProviderLabel(source: ConversationSource): string {
-  return DETAIL_HEADER_PROVIDER_LABELS[source];
-}
-
-const AGENT_LABELS: Record<string, string> = {
-  operator: 'Operator',
-  claude: 'Claude',
-  codex: 'Codex',
-  gemini: 'Gemini',
-  shell: 'Shell',
 };
 
 // ── Helpers ──
@@ -342,10 +330,6 @@ export function applyConversationSearchParams(
 
 function isLiveConsoleSession(session: ConsoleSession): boolean {
   return session.status !== 'stopped' && session.status !== 'crashed';
-}
-
-function getAgentLabel(agentType: string): string {
-  return AGENT_LABELS[agentType] ?? agentType;
 }
 
 function sourceFromSession(session: ConsoleSession): ConversationSource | null {
@@ -582,6 +566,15 @@ function HorizontalDotsIcon(): JSX.Element {
       <circle cx="5" cy="12" r="1.5" />
       <circle cx="12" cy="12" r="1.5" />
       <circle cx="19" cy="12" r="1.5" />
+    </svg>
+  );
+}
+
+export function ChatComposerSubmitIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="m6 12 6-6 6 6" />
+      <path d="M12 6v12" />
     </svg>
   );
 }
@@ -2059,21 +2052,6 @@ function ConversationDetail({
           )}
         </div>
       )}
-      metadata={(
-        <span className="conv-detail__status">
-          <span className="conv-detail__provider">
-            {getConversationHeaderProviderLabel(conversation.source)}
-          </span>
-          {controlPresentation && control && (
-            <span
-              className={`conv-attach-badge conv-attach-badge--${control.capability.kind}`}
-              title={controlPresentation.title}
-            >
-              {controlPresentation.status}
-            </span>
-          )}
-        </span>
-      )}
       actionsLabel="Chat sidebar"
     />
   );
@@ -2190,12 +2168,7 @@ function ConversationDetail({
                 title={controlPresentation?.submitLabel ?? 'Send'}
                 aria-label={controlPresentation?.submitLabel ?? 'Send'}
               >
-                {continueBusy ? '…' : (
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="m6 12 6-6 6 6" />
-                    <path d="M12 6v12" />
-                  </svg>
-                )}
+                {continueBusy ? <span aria-hidden="true">…</span> : <ChatComposerSubmitIcon />}
               </button>
             </span>
           </div>
@@ -2447,7 +2420,7 @@ function ChatEntryItem({
   const session = entry.session;
   const isSubAgent = !!conversation?.parent_conversation_id;
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
-  const providerLabel = source ? DETAIL_HEADER_PROVIDER_LABELS[source] : null;
+  const providerLabel = source ? SIDEBAR_PROVIDER_LABELS[source] : null;
   const title = conversation ? getConversationTitle(conversation) : getConsoleSessionTitle(session);
   const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession || onOpenExternally);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
@@ -2593,33 +2566,19 @@ function LiveSessionDetail({
     return () => { offControlUpdated(); client.close(); };
   }, [control?.conversation_id]);
 
-  const controlPresentation = control ? conversationControlPresentation(control) : null;
   const detailHeader = (
     <DetailPaneHeader
       variant="compact"
       title={session.label || 'Untitled session'}
       titleTooltip={session.label || 'Untitled session'}
-      metadata={(
-        <div className="chat-live-detail__meta">
-          <span className={`chat-live-session__status chat-live-session__status--${controlPresentation?.status.toLowerCase() ?? 'unavailable'}`} />
-          <span>{getAgentLabel(session.agent_type)}</span>
-          {session.owner && (
-            <span>{session.owner.display_name} · {session.owner.kind}</span>
-          )}
-          <span title={controlPresentation?.title}>{controlPresentation?.status ?? 'Unavailable'}</span>
-          <span title={session.transport_badge?.title}>
-            {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
-          </span>
-          {session.identity_mismatch && (
-            <span
-              className="chat-live-detail__identity-warning"
-              title={session.identity_mismatch.message}
-            >
-              ⚠ identity mismatch
-            </span>
-          )}
-        </div>
-      )}
+      metadata={session.identity_mismatch ? (
+        <span
+          className="chat-live-detail__identity-warning"
+          title={session.identity_mismatch.message}
+        >
+          ⚠ identity mismatch
+        </span>
+      ) : undefined}
     />
   );
 
