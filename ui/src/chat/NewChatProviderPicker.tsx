@@ -36,12 +36,12 @@ export function NewChatProviderPicker({
   onDiscard(): void;
 }): JSX.Element | null {
   const overlay = useContext(DetailPaneOverlayContext);
-  const firstButton = useRef<HTMLButtonElement>(null);
+  const dialog = useRef<HTMLDivElement>(null);
   const closeable = draft.state === 'choosing' || draft.state === 'failed';
 
   useEffect(() => {
     if (!closeable) return undefined;
-    firstButton.current?.focus();
+    dialog.current?.focus();
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onDiscard();
     };
@@ -53,10 +53,12 @@ export function NewChatProviderPicker({
   const busy = draft.state === 'starting';
   return createPortal(
     <div
+      ref={dialog}
       className="new-chat-provider-picker"
       role="dialog"
       aria-modal="true"
       aria-label="Choose a provider for the new chat"
+      tabIndex={-1}
       onPointerDown={(event) => {
         if (event.target === event.currentTarget && closeable) onDiscard();
       }}
@@ -64,10 +66,9 @@ export function NewChatProviderPicker({
       <div className="new-chat-provider-picker__panel">
         <span className="sr-only">Choose a provider</span>
         <div className="new-chat-provider-picker__choices">
-          {(['codex', 'claude_code'] as const).map((provider, index) => (
+          {(['codex', 'claude_code'] as const).map((provider) => (
             <button
               key={provider}
-              ref={index === 0 ? firstButton : undefined}
               type="button"
               className={`new-chat-provider-picker__provider new-chat-provider-picker__provider--${provider}`}
               aria-label={provider === 'codex' ? 'Start with Codex (OpenAI)' : 'Start with Claude'}

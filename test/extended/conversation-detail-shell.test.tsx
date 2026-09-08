@@ -16,7 +16,6 @@ import {
   conversationAnchorHref,
   conversationLoadFailure,
   conversationTurnSelectionHref,
-  getConversationHeaderProviderLabel,
   scopeConversationRightSidebar,
 } from '../../ui/src/views/conversations.js';
 
@@ -507,6 +506,8 @@ describe('compact detail pane shell', () => {
     expect(shell?.classList.contains('chat-detail-frame--live-session')).toBe(true);
     expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
       .toBeTruthy();
+    expect(shell?.querySelector('.detail-pane-header__compact-metadata')).toBeNull();
+    expect(shell?.querySelector(':scope > .detail-pane-shell__header')?.textContent).toBe(session.label);
     expect(shell?.querySelector(':scope > .detail-pane-shell__body.chat-live-detail__pane'))
       .toBeTruthy();
   });
@@ -570,12 +571,6 @@ describe('compact detail pane shell', () => {
     expect(conversationAnchorHref('conv 1', { block: 'block/42' })).toBe('#/console?conversation=conv+1&block=block%2F42');
     expect(conversationTurnSelectionHref('conv 1', 'turn-9', 'turn-9')).toBe('#/console?conversation=conv+1');
     expect(conversationTurnSelectionHref('conv 1', null, 'turn-9')).toBe('#/console?conversation=conv+1&turn=turn-9');
-  });
-
-  it('uses the compact-header provider presentation contract', () => {
-    expect(getConversationHeaderProviderLabel('claude_code')).toBe('Claude');
-    expect(getConversationHeaderProviderLabel('codex')).toBe('Codex');
-    expect(getConversationHeaderProviderLabel('gemini')).toBe('agy');
   });
 
   it('keeps the compact header and optional footer outside the scrolling body', () => {
@@ -689,21 +684,18 @@ describe('compact detail pane shell', () => {
     expect(canonicalHeader?.textContent).not.toContain(conversation.id);
     expect(canonicalHeader?.querySelector('.detail-pane-header__identity')).toBeNull();
     expect(canonicalHeader?.querySelector('.ledger-copy-ref-button')).toBeNull();
-    const status = canonicalHeader?.querySelector('.conv-detail__status');
-    expect(status?.querySelector('.conv-detail__provider')?.textContent).toBe('Codex');
-    expect(status?.textContent).not.toContain('Resumable');
+    expect(canonicalHeader?.querySelector('.conv-detail__status')).toBeNull();
+    expect(canonicalHeader?.textContent).not.toContain('Codex');
+    expect(canonicalHeader?.textContent).not.toContain('Stopped');
     const titleRow = canonicalHeader?.querySelector('.detail-pane-header__title-row');
     const compactMenu = canonicalHeader?.querySelector('.detail-pane-header__menu');
-    const metadata = canonicalHeader?.querySelector('.detail-pane-header__compact-metadata');
     const main = canonicalHeader?.querySelector(':scope > .detail-pane-header__main');
     expect(titleRow?.querySelector('.detail-pane-header__title')?.nextElementSibling).toBe(compactMenu);
-    expect(titleRow?.nextElementSibling).toBe(metadata);
-    expect(metadata?.contains(status ?? null)).toBe(true);
+    expect(titleRow?.nextElementSibling).toBeNull();
     expect(getComputedStyle(canonicalHeader!).height).toBe('48px');
     expect(getComputedStyle(main!).height).toBe('100%');
     expect(getComputedStyle(main!).flexDirection).toBe('row');
     expect(getComputedStyle(main!).alignItems).toBe('center');
-    expect(getComputedStyle(metadata!).marginLeft).toBe('auto');
     expect(canonicalHeader?.querySelector('.detail-pane-header__title')?.getAttribute('title')).toBe(conversation.title);
     expect(compactMenu?.getAttribute('aria-label')).toBe('Conversation detail actions');
     expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
@@ -720,7 +712,15 @@ describe('compact detail pane shell', () => {
     expect(runtimeActions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(runtimeActions?.lastElementChild?.classList.contains('conv-compose__send')).toBe(true);
     expect(overlayControl?.querySelector('.conv-compose__hint')).toBeNull();
-    expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
+    const composerInput = screen.getByPlaceholderText('Message...') as HTMLTextAreaElement;
+    const submit = screen.getByRole('button', { name: 'Resume' }) as HTMLButtonElement;
+    const submitIcon = submit.querySelector('svg');
+    expect(composerInput).toBeTruthy();
+    expect(submit.disabled).toBe(true);
+    expect(submitIcon?.getAttribute('viewBox')).toBe('0 0 24 24');
+    expect(submitIcon?.getAttribute('stroke-width')).toBe('2.25');
+    fireEvent.input(composerInput, { target: { value: 'Resume this chat.' } });
+    expect(submit.disabled).toBe(false);
     expect(overlayControl?.textContent).not.toContain('Sending will resume this session.');
 
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
@@ -746,6 +746,9 @@ describe('compact detail pane shell', () => {
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*0 0 auto;[^}]*max-width:\s*min\(240px, 100%\);/s);
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__select\s*\{[^}]*width:\s*auto;[^}]*min-width:\s*44px;[^}]*field-sizing:\s*content;/s);
     expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);
+    expect(conversationCss).toMatch(/\.conv-compose__send\s*\{[^}]*--conv-compose-send-hit-size:\s*34px;[^}]*--conv-compose-send-visual-size:\s*25\.5px;[^}]*--conv-compose-send-icon-size:\s*25\.5px;/s);
+    expect(conversationCss).toMatch(/\.conv-compose__send::before\s*\{[^}]*width:\s*var\(--conv-compose-send-visual-size\);[^}]*height:\s*var\(--conv-compose-send-visual-size\);/s);
+    expect(conversationCss).toMatch(/\.conv-compose__send > svg\s*\{[^}]*width:\s*var\(--conv-compose-send-icon-size\);[^}]*height:\s*var\(--conv-compose-send-icon-size\);/s);
     expect(conversationCss).not.toContain('@container (max-width: 700px)');
     expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
@@ -982,7 +985,6 @@ describe('compact detail pane shell', () => {
         turn: { kind: 'running', turn_id: 'turn-1', since: 2 },
         capability: { kind: 'live-steer', revision: 2, generation: 1 },
       } satisfies ConversationControlSnapshot,
-      badge: 'Running',
       hasComposer: true,
     },
     {
@@ -995,13 +997,11 @@ describe('compact detail pane shell', () => {
         turn: { kind: 'unknown', turn_id: null, since: 2, reason: 'probe-ambiguous' },
         capability: { kind: 'blocked-external', revision: 2, evidence_kind: 'registered-process' },
       } satisfies ConversationControlSnapshot,
-      badge: 'External',
       hasComposer: true,
     },
     {
       label: 'stopped',
       control: defaultControl,
-      badge: 'Stopped',
       hasComposer: true,
     },
     {
@@ -1012,18 +1012,19 @@ describe('compact detail pane shell', () => {
         ownership: { kind: 'none', generation: 0 },
         capability: { kind: 'unavailable', revision: 0, reason: 'no-provider-session' },
       } satisfies ConversationControlSnapshot,
-      badge: 'Unavailable',
       hasComposer: false,
     },
-  ])('keeps the simplified header and composer contract in $label state', async ({ control, badge, hasComposer }) => {
+  ])('keeps the provider-neutral header and composer contract in $label state', async ({ control, hasComposer }) => {
     const scopedConversation = mockConversationDetail(control);
     renderConversationDetail(scopedConversation);
 
     await screen.findByRole('heading', { name: conversation.title! });
     const header = document.querySelector('.detail-pane-header--compact') as HTMLElement;
-    const status = header.querySelector('.conv-detail__status');
-    expect(status?.textContent).toContain(badge);
-    expect(status?.parentElement?.classList.contains('detail-pane-header__compact-metadata')).toBe(true);
+    expect(header.querySelector('.conv-detail__status')).toBeNull();
+    expect(header.querySelector('.detail-pane-header__compact-metadata')).toBeNull();
+    for (const forbidden of ['Codex', 'Running', 'External', 'Stopped', 'Unavailable']) {
+      expect(header.textContent).not.toContain(forbidden);
+    }
     expect(header.querySelector('.detail-pane-header__title')?.nextElementSibling?.classList.contains('detail-pane-header__menu')).toBe(true);
     expect(header.querySelector('.detail-pane-header__topline')).toBeNull();
     expect(header.querySelector('.detail-pane-header__identity')).toBeNull();

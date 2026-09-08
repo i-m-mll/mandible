@@ -23,6 +23,7 @@ describe('provider-first new chat', () => {
   });
 
   it('renders exactly Codex and Claude as accessible icon choices and abandons on Escape', async () => {
+    expect('provider' in draft).toBe(false);
     const onChoose = vi.fn();
     const onDiscard = vi.fn();
     render(
@@ -40,7 +41,10 @@ describe('provider-first new chat', () => {
       '0 0 721 721',
       '0 0 92 64',
     ]);
-    expect(document.activeElement).toBe(choices[0]);
+    const picker = screen.getByRole('dialog', { name: 'Choose a provider for the new chat' });
+    expect(document.activeElement).toBe(picker);
+    expect(choices).not.toContain(document.activeElement);
+    expect(choices.every((button) => button.getAttribute('aria-pressed') === null)).toBe(true);
     expect(screen.queryByText(/Gemini|Antigravity/i)).toBeNull();
     fireEvent.click(choices[1]);
     expect(onChoose).toHaveBeenCalledWith('claude_code');

@@ -106,8 +106,10 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
           top:overlayRect.top+parseFloat(maskStyle.top),bottom:overlayRect.bottom-parseFloat(maskStyle.bottom),background:maskStyle.backgroundColor,zIndex:maskStyle.zIndex}:null;
         const inline=document.querySelector('.conv-compose__run-options-inline'); const trigger=document.querySelector('.conv-compose__run-options-trigger');
         const selectRects=Array.from(inline?.querySelectorAll('select')||[],rect);
+        const submit=document.querySelector('.conv-compose__send'); const submitVisual=submit?getComputedStyle(submit,'::before'):null; const submitIcon=submit?.querySelector('svg');
         const runOptions=composer?{containerWidth:composer.clientWidth,inlineDisplay:getComputedStyle(inline).display,inlineVisibility:getComputedStyle(inline).visibility,triggerDisplay:getComputedStyle(trigger).display,
-          triggerText:trigger.textContent.trim(),triggerHasSvg:Boolean(trigger.querySelector('svg')),selectRects,composer:composerRect}:null;
+          triggerText:trigger.textContent.trim(),triggerHasSvg:Boolean(trigger.querySelector('svg')),selectRects,composer:composerRect,
+          submit:rect(submit),submitVisual:{width:parseFloat(submitVisual.width),height:parseFloat(submitVisual.height)},submitIcon:rect(submitIcon),submitLabel:submit.getAttribute('aria-label')}:null;
         const titleErrors=document.querySelector('[data-title-errors]');
         document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
@@ -201,9 +203,13 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(geometry.mask.right).toBeCloseTo(geometry.composer.right, 0);
         expect(Math.abs(geometry.mask.top - (geometry.composer.top + ((geometry.composer.bottom - geometry.composer.top) / 2)))).toBeLessThanOrEqual(1);
         expect(geometry.mask.bottom).toBeCloseTo(geometry.overlayControl.bottom, 0);
-        const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; inlineVisibility: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number } };
+        const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; inlineVisibility: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number }; submit: Rect; submitVisual: { width: number; height: number }; submitIcon: Rect; submitLabel: string };
         expect(runOptions.triggerText).toBe('');
         expect(runOptions.triggerHasSvg).toBe(true);
+        expect(runOptions.submit).toMatchObject({ width: 34, height: 34 });
+        expect(runOptions.submitVisual).toEqual({ width: 25.5, height: 25.5 });
+        expect(runOptions.submitIcon).toMatchObject({ width: 25.5, height: 25.5 });
+        expect(runOptions.submitLabel).toBe('Send');
         expect(runOptions.inlineDisplay).toBe('flex');
         expect(runOptions.selectRects).toHaveLength(3);
         expect(new Set(runOptions.selectRects.map((select) => select.right - select.left)).size).toBeGreaterThan(1);

@@ -13,7 +13,7 @@ import { SessionControls } from '../../../ui/src/components/console/SessionContr
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
 import { useIntrinsicOverflowGroup } from '../../../ui/src/hooks/useIntrinsicOverflowGroup';
 import { useAppRightSidebarState } from '../../../ui/src/right-sidebar-state';
-import { ChatDetailFrame, conversationLoadFailure } from '../../../ui/src/views/conversations';
+import { ChatComposerSubmitIcon, ChatDetailFrame, conversationLoadFailure } from '../../../ui/src/views/conversations';
 import { GraphDetailPane } from '../../../ui/src/views/graph';
 import { TimelineInspectorFrame } from '../../../ui/src/views/timeline';
 
@@ -56,7 +56,7 @@ function NativeComposer({ layoutKey }: { layoutKey: string }): JSX.Element {
           <span ref={geometry.fixedRef} className="conv-compose__runtime-actions">
             <button type="button" className="btn btn--ghost btn--sm conv-compose__run-options-trigger" data-overflow-trigger aria-label="Run options" title="Run options"><DotsIcon /></button>
             <span className="context-usage">42%</span>
-            <button type="button" className="conv-compose__send">Send</button>
+            <button type="button" className="conv-compose__send" aria-label="Send"><ChatComposerSubmitIcon /></button>
           </span>
         </div>
       </div>
@@ -91,7 +91,6 @@ function ChatMain({ descriptor, toggleRef, setOpen }: {
         <DetailPaneHeader
           variant="compact"
           title="Native Chat"
-          metadata={<span>Codex <span className="conv-attach-badge">Stopped</span></span>}
           actions={!descriptor.open ? (
             <AppRightSidebarToggleButton descriptor={descriptor} buttonRef={toggleRef} open={false} onOpenChange={setOpen} />
           ) : undefined}
