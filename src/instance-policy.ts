@@ -76,6 +76,7 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
 
 const ACTOR_SCOPED_BRIEFING_RESPONSE_ROUTE =
   /^\/api\/briefings\/[^/]+\/rounds\/[^/]+\/(?:answers|annotations|submit)$/;
+const PREVIEW_CONVERSATION_SPAWN_ROUTE = "/api/conversation-spawns";
 
 export function resolveInstanceInfo(options: {
   env?: NodeJS.ProcessEnv;
@@ -153,6 +154,9 @@ export function evaluateInstanceMutation(
   ) {
     return { allowed: true };
   }
+  if (isIsolatedPreviewConversationSpawnMutation(instance, method, pathname)) {
+    return { allowed: true };
+  }
 
   return {
     allowed: false,
@@ -173,6 +177,20 @@ export function allowsOperationalMutations(instance: InstanceInfo): boolean {
 
 export function isActorScopedBriefingResponseMutation(method: string, pathname: string): boolean {
   return method.toUpperCase() === "POST" && ACTOR_SCOPED_BRIEFING_RESPONSE_ROUTE.test(pathname);
+}
+
+export function isIsolatedPreviewConversationSpawnMutation(
+  instance: InstanceInfo,
+  method: string,
+  pathname: string,
+): boolean {
+  return method.toUpperCase() === "POST"
+    && pathname === PREVIEW_CONVERSATION_SPAWN_ROUTE
+    && instance.role === "preview"
+    && instance.operational_mutations === "reject"
+    && instance.db_path_source === "iab-preview-copy"
+    && hasIsolatedDatabaseCopy(instance.db_path, instance.source_db_path ?? null)
+    && isPathWithinRoot(instance.db_path, instance.preview_root ?? null);
 }
 
 function hasIsolatedDatabaseCopy(dbPath: string | null, sourceDbPath: string | null): boolean {

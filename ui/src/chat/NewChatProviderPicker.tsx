@@ -37,7 +37,7 @@ export function NewChatProviderPicker({
 }): JSX.Element | null {
   const overlay = useContext(DetailPaneOverlayContext);
   const firstButton = useRef<HTMLButtonElement>(null);
-  const closeable = draft.state === 'choosing' || draft.state === 'failed';
+  const closeable = draft.state !== 'ready' && draft.state !== 'abandoned';
 
   useEffect(() => {
     if (!closeable) return undefined;

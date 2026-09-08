@@ -70,10 +70,42 @@ describe("conversation provider startup", () => {
     expect(backend.sendPrompt).not.toHaveBeenCalled();
   });
 
+  it("propagates client cancellation into Claude preparation", async () => {
+    const { manager, backend } = harness();
+    let startupSignal: AbortSignal | undefined;
+    backend.prepare = vi.fn((signal?: AbortSignal) => {
+      startupSignal = signal;
+      return new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    const controller = new AbortController();
+    const starting = manager.startConversation("session-1", {
+      timeoutMs: 1_000,
+      signal: controller.signal,
+      provenance: claudeProvenance,
+    });
+    await vi.waitFor(() => expect(backend.prepare).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(starting).rejects.toMatchObject({ code: "client_aborted", phase: "readiness" });
+    expect(startupSignal?.aborted).toBe(true);
+  });
+
   it("times out readiness and removes every temporary listener", async () => {
     const { manager, backend } = harness();
     await expect(manager.startConversation("session-1", { timeoutMs: 5, provenance }))
       .rejects.toMatchObject({ code: "provider_startup_timeout", phase: "readiness" });
+    expect(backend.listenerCount("meta_update")).toBe(0);
+    expect(backend.listenerCount("status")).toBe(0);
+    expect(backend.listenerCount("startup_error")).toBe(0);
+  });
+
+  it("handles a readiness timeout while initial configuration is still pending", async () => {
+    const { manager, backend } = harness();
+    vi.spyOn(manager, "waitForInitialRunOptions").mockReturnValue(new Promise(() => undefined));
+    await expect(manager.startConversation("session-1", { timeoutMs: 5, provenance }))
+      .rejects.toMatchObject({ code: "provider_startup_timeout", phase: "configuration" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(backend.listenerCount("meta_update")).toBe(0);
     expect(backend.listenerCount("status")).toBe(0);
     expect(backend.listenerCount("startup_error")).toBe(0);

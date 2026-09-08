@@ -1916,8 +1916,8 @@ function App(): JSX.Element {
     idempotency_key: string;
     provider: 'codex' | 'claude_code';
     placement: { project_id: string; checkout_id: string };
-  }) => {
-      const result = await startProviderChat(idempotency_key, provider, placement);
+  }, signal?: AbortSignal) => {
+      const result = await startProviderChat(idempotency_key, provider, placement, { signal });
       const session = {
         pinned: false,
         unread_count: 0,

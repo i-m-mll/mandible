@@ -6,7 +6,7 @@ import type { ConversationSpawnError, ConversationSpawnRequest } from "../conver
 import type { RouteRegistrar } from "../server.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import { sendJson } from "./http.js";
-import { normalizeProviderStartupError, type ProviderStartupProvenance } from "../provider-startup.js";
+import { ProviderStartupError, normalizeProviderStartupError, type ProviderStartupProvenance } from "../provider-startup.js";
 
 export const CONVERSATION_PROVIDER_STARTUP_TIMEOUT_MS = 30_000;
 
@@ -135,10 +135,18 @@ export function registerConversationSpawnRoutes(
         session: sessionWithPlacement(session, canonicalRequest),
       });
     } catch (error) {
-      const typed = normalizeProviderStartupError(error);
+      let typed = normalizeProviderStartupError(error);
       if (nativeSessionId) {
-        try { manager.stop(nativeSessionId, "SIGTERM"); } catch { /* already terminal */ }
-        try { manager.delete(nativeSessionId); } catch { /* allocation may have failed before registration */ }
+        try {
+          manager.delete(nativeSessionId);
+        } catch {
+          typed = new ProviderStartupError(
+            "provider_startup_failed",
+            "Provider startup failed and its temporary session cleanup did not complete.",
+            typed.phase,
+            false,
+          );
+        }
       }
       const failed = spawns.failed(reserved.value.reservation_id, {
         code: typed.code,

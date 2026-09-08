@@ -2046,6 +2046,7 @@ export async function startProviderChat(
   idempotencyKey: string,
   provider: 'codex' | 'claude_code',
   placement: { project_id: string; checkout_id: string },
+  options: { signal?: AbortSignal } = {},
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -2072,8 +2073,7 @@ export async function startProviderChat(
   allowed_tools: string[] | null;
   mandible_session_id: string | null;
 } }> {
-  const controller = new AbortController();
-  const post = fetch('/api/conversation-spawns', {
+  const response = await fetch('/api/conversation-spawns', {
     method: 'POST',
     headers: {
       ...DEFAULT_HEADERS,
@@ -2085,7 +2085,7 @@ export async function startProviderChat(
       provider,
       placement,
     }),
-    signal: controller.signal,
+    signal: options.signal,
   });
   type SpawnResponse = {
     ok?: boolean;
@@ -2094,55 +2094,7 @@ export async function startProviderChat(
     session?: unknown;
     message?: string;
   };
-  let watchdog: ReturnType<typeof setTimeout> | null = null;
-  const reconciled = new Promise<{ response: Response; json: SpawnResponse }>((resolve, reject) => {
-    watchdog = setTimeout(() => {
-      void fetch(`/api/conversation-spawns/${encodeURIComponent(idempotencyKey)}`, {
-        headers: DEFAULT_HEADERS,
-      }).then(async (statusResponse) => {
-        const status = await parseMaybeJson(statusResponse) as {
-          ok?: boolean;
-          value?: ContractConversationSpawnReceipt;
-          error?: unknown;
-        };
-        const spawn = status.value;
-        if (!statusResponse.ok || !status.ok || !spawn) {
-          throw new ApiError('Provider startup status could not be reconciled.', statusResponse.status, 'spawn_status_unavailable');
-        }
-        controller.abort();
-        if (spawn.state === 'ready' && spawn.native_session_id) {
-          const sessionResponse = await fetch(`/api/console/sessions/${encodeURIComponent(spawn.native_session_id)}`, {
-            headers: DEFAULT_HEADERS,
-          });
-          const sessionPayload = await parseMaybeJson(sessionResponse) as { session?: unknown };
-          if (!sessionResponse.ok || !sessionPayload.session) {
-            throw new ApiError('The provider is ready but its chat session could not be loaded.', sessionResponse.status, 'spawn_session_unavailable');
-          }
-          resolve({ response: new Response(null, { status: 200 }), json: { ok: true, spawn, session: sessionPayload.session } });
-          return;
-        }
-        const failure = spawn.error ?? {
-          code: 'provider_startup_timeout',
-          message: 'The provider did not become ready before the client watchdog expired.',
-          retryable: true,
-          phase: 'readiness' as const,
-        };
-        reject(new ConversationSpawnApiError(504, failure, spawn));
-      }).catch(reject);
-    }, 31_000);
-  });
-  let response: Response;
-  let json: SpawnResponse;
-  try {
-    const outcome = await Promise.race([
-      post.then(async (postResponse) => ({ response: postResponse, json: await parseMaybeJson(postResponse) as SpawnResponse })),
-      reconciled,
-    ]);
-    response = outcome.response;
-    json = outcome.json;
-  } finally {
-    if (watchdog) clearTimeout(watchdog);
-  }
+  const json = await parseMaybeJson(response) as SpawnResponse;
   if (!response.ok) {
     const failure = json.error;
     if (failure && typeof failure === 'object'

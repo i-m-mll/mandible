@@ -33,6 +33,6 @@ export function reduceNewChatDraft(draft: NewChatDraft, action: NewChatDraftActi
     case 'ready':
       return draft.state === 'starting' ? { ...draft, state: 'ready', sessionId: action.sessionId } : draft;
     case 'abandon':
-      return draft.state === 'choosing' || draft.state === 'failed' ? { ...draft, state: 'abandoned' } : draft;
+      return draft.state === 'ready' ? draft : { ...draft, state: 'abandoned' };
   }
 }
