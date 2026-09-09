@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,8 @@ import {
 const GIT_TIMEOUT_MS = 15_000;
 const GIT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 const MAX_REPORT_FILES = 10_000;
+const MAX_DIFF_PREVIEW_BYTES = 102_400;
+const MAX_DIFF_PREVIEW_READ_BYTES = MAX_DIFF_PREVIEW_BYTES + 1;
 const RENAME_SIMILARITY_PERCENT = 50 as const;
 const RENAME_LIMIT = 10_000;
 const ZERO_OID = /^0+$/;
@@ -43,30 +45,82 @@ type IsolatedGit = {
   gitDir: string;
 };
 
-export class AuthChangeReportCollectionError extends Error {
-  constructor(message: string) {
-    super(message);
+export type AuthMergeReviewCollection = {
+  report?: AuthChangeReport;
+  diffSummary?: string;
+};
+
+export type AuthMergeReviewCollectionResult =
+  | { ok: true; value: AuthMergeReviewCollection }
+  | { ok: false; error: AuthMergeReviewCollectionError };
+
+export type AuthMergeReviewCollectionError =
+  | { kind: "git_failed"; operation: string; message: string }
+  | { kind: "invalid_git_output"; message: string }
+  | { kind: "limit_exceeded"; files: number; limit: number; message: string }
+  | { kind: "environment_failed"; message: string };
+
+export type AuthMergeReviewCollectionOptions = {
+  report?: boolean;
+  diffSummary?: boolean;
+};
+
+class AuthChangeReportCollectionError extends Error {
+  readonly result: AuthMergeReviewCollectionError;
+
+  constructor(result: AuthMergeReviewCollectionError | string) {
+    const normalized = typeof result === "string"
+      ? { kind: "invalid_git_output" as const, message: result }
+      : result;
+    super(normalized.message);
     this.name = "AuthChangeReportCollectionError";
+    this.result = normalized;
   }
 }
 
-export function collectAuthChangeReport(
+export async function collectAuthMergeReview(
   repoRoot: string,
   comparison: AuthChangeReport["comparison"],
-): AuthChangeReport {
-  const git = createIsolatedGit(repoRoot);
+  options: AuthMergeReviewCollectionOptions = { report: true, diffSummary: true },
+): Promise<AuthMergeReviewCollectionResult> {
+  let gitDir: string | null = null;
+  let value: AuthMergeReviewCollection | null = null;
+  let failure: unknown = null;
   try {
-    return collectFromGit(git, comparison);
-  } finally {
-    fs.rmSync(git.gitDir, { recursive: true, force: true });
+    gitDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-report-git-"));
+    const git = createIsolatedGit(repoRoot, gitDir);
+    const diffArgs = pinnedDiffArgs(comparison);
+    value = {};
+    if (options.report !== false) value.report = collectReportFromGit(git, comparison, diffArgs);
+    if (options.diffSummary !== false) {
+      value.diffSummary = await readBoundedDiffPreview(git, comparison.head_sha, diffArgs);
+    }
+  } catch (error) {
+    failure = error;
   }
+  if (gitDir) {
+    try {
+      fs.rmSync(gitDir, { recursive: true, force: true });
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  if (failure) {
+    return {
+      ok: false,
+      error: failure instanceof AuthChangeReportCollectionError
+        ? failure.result
+        : {
+          kind: "environment_failed",
+          message: `Unable to capture auth merge review: ${failure instanceof Error ? failure.message : String(failure)}`,
+        },
+    };
+  }
+  return { ok: true, value: value ?? {} };
 }
 
-function collectFromGit(
-  git: IsolatedGit,
-  comparison: AuthChangeReport["comparison"],
-): AuthChangeReport {
-  const diffArgs = [
+function pinnedDiffArgs(comparison: AuthChangeReport["comparison"]): string[] {
+  return [
     "--no-ext-diff",
     "--no-textconv",
     "--diff-algorithm=myers",
@@ -78,12 +132,22 @@ function collectFromGit(
     comparison.head_sha,
     "--",
   ];
+}
+
+function collectReportFromGit(
+  git: IsolatedGit,
+  comparison: AuthChangeReport["comparison"],
+  diffArgs: string[],
+): AuthChangeReport {
   const gitPrefix = [`--attr-source=${comparison.head_sha}`];
   const raw = parseRawChanges(runGit(git, [...gitPrefix, "diff", "--raw", "--no-abbrev", "-z", ...diffArgs]));
   if (raw.length > MAX_REPORT_FILES) {
-    throw new AuthChangeReportCollectionError(
-      `Auth change report has ${raw.length} files; the v1 limit is ${MAX_REPORT_FILES}. Split the candidate before submission.`,
-    );
+    throw new AuthChangeReportCollectionError({
+      kind: "limit_exceeded",
+      files: raw.length,
+      limit: MAX_REPORT_FILES,
+      message: `Auth change report has ${raw.length} files; the v1 limit is ${MAX_REPORT_FILES}. Split the candidate before submission.`,
+    });
   }
   const numstats = parseNumstats(runGit(git, [...gitPrefix, "diff", "--numstat", "-z", ...diffArgs]));
   const statsByPath = new Map(numstats.map((stat) => [pathPairKey(stat.oldPath, stat.newPath), stat]));
@@ -168,56 +232,65 @@ function collectFromGit(
   };
 }
 
-function createIsolatedGit(repoRoot: string): IsolatedGit {
+function createIsolatedGit(repoRoot: string, gitDir: string): IsolatedGit {
+  const environmentRoot = path.join(gitDir, "environment");
+  const probeEnv = isolatedGitEnvironment(environmentRoot);
   const probe = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "objects"], {
     cwd: repoRoot,
-    env: {
-      ...process.env,
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_SYSTEM: "/dev/null",
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_OPTIONAL_LOCKS: "0",
-    },
+    env: probeEnv,
     encoding: "utf8",
     timeout: GIT_TIMEOUT_MS,
   });
   const objectDirectory = probe.status === 0 ? probe.stdout.trim() : "";
   if (!objectDirectory || probe.error) {
-    throw new AuthChangeReportCollectionError(
-      `Unable to locate the repository object store: ${probe.error?.message ?? (probe.stderr.trim() || "git returned no path")}`,
-    );
+    throw new AuthChangeReportCollectionError({
+      kind: "git_failed",
+      operation: "rev-parse object store",
+      message: `Unable to locate the repository object store: ${probe.error?.message ?? (probe.stderr.trim() || "git returned no path")}`,
+    });
   }
-  const gitDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-report-git-"));
-  try {
-    if (objectDirectory.includes("\n")) {
-      throw new AuthChangeReportCollectionError("Repository object-store path contains a newline.");
-    }
-    fs.mkdirSync(path.join(gitDir, "objects", "info"), { recursive: true });
-    fs.mkdirSync(path.join(gitDir, "refs", "heads"), { recursive: true });
-    fs.writeFileSync(path.join(gitDir, "objects", "info", "alternates"), `${objectDirectory}\n`, "utf8");
-    fs.writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/unborn\n", "utf8");
-    fs.writeFileSync(
-      path.join(gitDir, "config"),
-      "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
-      "utf8",
-    );
-    return {
-      cwd: repoRoot,
-      gitDir,
-      env: {
-        ...process.env,
-        GIT_DIR: gitDir,
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_SYSTEM: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_ATTR_NOSYSTEM: "1",
-        GIT_OPTIONAL_LOCKS: "0",
-      },
-    };
-  } catch (error) {
-    fs.rmSync(gitDir, { recursive: true, force: true });
-    throw error;
+  if (objectDirectory.includes("\n")) {
+    throw new AuthChangeReportCollectionError("Repository object-store path contains a newline.");
   }
+  fs.mkdirSync(path.join(gitDir, "objects", "info"), { recursive: true });
+  fs.mkdirSync(path.join(gitDir, "refs", "heads"), { recursive: true });
+  fs.writeFileSync(path.join(gitDir, "objects", "info", "alternates"), `${objectDirectory}\n`, "utf8");
+  fs.writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/unborn\n", "utf8");
+  fs.writeFileSync(
+    path.join(gitDir, "config"),
+    "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+    "utf8",
+  );
+  return {
+    cwd: repoRoot,
+    gitDir,
+    env: { ...probeEnv, GIT_DIR: gitDir },
+  };
+}
+
+function isolatedGitEnvironment(environmentRoot: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ["PATH", "TMPDIR", "TMP", "TEMP", "SYSTEMROOT", "WINDIR", "PATHEXT", "COMSPEC"]) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  const home = path.join(environmentRoot, "home");
+  const xdg = path.join(environmentRoot, "xdg");
+  const emptyConfig = path.join(environmentRoot, "empty.gitconfig");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(xdg, { recursive: true });
+  fs.writeFileSync(emptyConfig, "", "utf8");
+  return {
+    ...env,
+    HOME: home,
+    XDG_CONFIG_HOME: xdg,
+    LANG: "C",
+    LC_ALL: "C",
+    GIT_CONFIG_GLOBAL: emptyConfig,
+    GIT_CONFIG_SYSTEM: emptyConfig,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_OPTIONAL_LOCKS: "0",
+  };
 }
 
 function runGit(git: IsolatedGit, args: string[], input?: Buffer): Buffer {
@@ -232,11 +305,81 @@ function runGit(git: IsolatedGit, args: string[], input?: Buffer): Buffer {
   const stderr = Buffer.isBuffer(result.stderr) ? result.stderr.toString("utf8").trim() : "";
   if (result.error || result.status !== 0 || stderr) {
     const detail = result.error?.message ?? (stderr || `exit status ${result.status ?? "unknown"}`);
-    throw new AuthChangeReportCollectionError(
-      `Unable to capture auth change report (${args.slice(0, 2).join(" ")}): ${detail}`,
-    );
+    throw new AuthChangeReportCollectionError({
+      kind: "git_failed",
+      operation: args.slice(0, 2).join(" "),
+      message: `Unable to capture auth change report (${args.slice(0, 2).join(" ")}): ${detail}`,
+    });
   }
   return Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.alloc(0);
+}
+
+function readBoundedDiffPreview(git: IsolatedGit, attributeSource: string, diffArgs: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let bytesRead = 0;
+    let truncated = false;
+    let timedOut = false;
+    const child = spawn(
+      "git",
+      [`--attr-source=${attributeSource}`, "diff", "--patch", ...diffArgs],
+      { cwd: git.cwd, env: git.env, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, GIT_TIMEOUT_MS);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (truncated) return;
+      const remaining = MAX_DIFF_PREVIEW_READ_BYTES - bytesRead;
+      if (chunk.length > remaining) {
+        chunks.push(chunk.subarray(0, Math.max(remaining, 0)));
+        bytesRead += remaining;
+        truncated = true;
+        child.kill("SIGTERM");
+        return;
+      }
+      chunks.push(chunk);
+      bytesRead += chunk.length;
+      if (bytesRead >= MAX_DIFF_PREVIEW_READ_BYTES) {
+        truncated = true;
+        child.kill("SIGTERM");
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (Buffer.concat(stderrChunks).length < 4096) stderrChunks.push(chunk);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new AuthChangeReportCollectionError({
+          kind: "git_failed",
+          operation: "diff preview",
+          message: "Timed out while collecting auth merge diff preview.",
+        }));
+        return;
+      }
+      if (code !== 0 && !truncated) {
+        const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
+        reject(new AuthChangeReportCollectionError({
+          kind: "git_failed",
+          operation: "diff preview",
+          message: stderr ? `Unable to collect auth merge diff preview: ${stderr}` : "Unable to collect auth merge diff preview.",
+        }));
+        return;
+      }
+      const preview = Buffer.concat(chunks).subarray(0, MAX_DIFF_PREVIEW_BYTES).toString("utf8");
+      resolve(truncated
+        ? `${preview}\n... [truncated: diff preview exceeded ${MAX_DIFF_PREVIEW_BYTES} bytes]`
+        : preview);
+    });
+  });
 }
 
 function nulFields(value: Buffer): Buffer[] {

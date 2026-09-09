@@ -4,6 +4,7 @@ import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import { AuthClearanceError, AuthClearanceManager } from "../auth-clearance.js";
 import { DelegatedSigningResource } from "../delegated-signing-resource.js";
 import {
+  authGitEnv,
   classifyGitFailure,
   computeAuthMergeReviewMetadata,
   describeGitFailure,
@@ -116,7 +117,6 @@ export function registerAuthRoutes(
         if (normalizedCommand) {
           payload.command = normalizedCommand;
         }
-        const needsDiffSummary = payload.diff_summary == null;
         // Issue 7d64d8f — review metadata no longer includes a synthesized
         // commit message. A request either carries an agent-authored canonical
         // change message or carries none, in which case the merge keeps git's
@@ -127,7 +127,7 @@ export function registerAuthRoutes(
           resolved.headSha,
           {
             counts: true,
-            diffSummary: needsDiffSummary,
+            diffSummary: true,
           }
         );
         if (!metadata.changeReport) {
@@ -137,9 +137,7 @@ export function registerAuthRoutes(
         payload.files_changed = metadata.changeReport.totals.files;
         payload.additions = metadata.changeReport.totals.additions;
         payload.deletions = metadata.changeReport.totals.deletions;
-        if (payload.diff_summary == null) {
-          payload.diff_summary = metadata.diffSummary;
-        }
+        payload.diff_summary = metadata.diffSummary;
       } catch (error) {
         res.status(400).json({
           error: error instanceof Error ? error.message : "Invalid auth merge execution context."
@@ -1339,7 +1337,7 @@ export function verifyMandibleIssueReferences(
     const output = execFileSync(
       "git",
       ["log", "--no-merges", "--format=%H", `${base_branch}..${head_branch}`],
-      { cwd, encoding: "utf-8", timeout: 10000 }
+      { cwd, encoding: "utf-8", timeout: 10000, env: authGitEnv() }
     ).trim();
 
     if (!output) {
@@ -1358,6 +1356,7 @@ export function verifyMandibleIssueReferences(
         cwd,
         encoding: "utf-8",
         timeout: 5000,
+        env: authGitEnv(),
       }).trim();
 
       if (!body.split("\n").some((line: string) => line.startsWith("Mandible-Issue:"))) {
@@ -1365,6 +1364,7 @@ export function verifyMandibleIssueReferences(
           cwd,
           encoding: "utf-8",
           timeout: 5000,
+          env: authGitEnv(),
         }).trim();
         missing.push(oneline);
       }

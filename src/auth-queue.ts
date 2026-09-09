@@ -31,6 +31,7 @@ import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.
 import type { AuthClearanceManager, ClearanceConsumption } from "./auth-clearance.js";
 import {
   AuthExecutionContextError,
+  authGitEnv,
   authReviewDiffRange,
   canonicalAuthMergeCommands,
   classifyGitFailure,
@@ -3629,7 +3630,8 @@ export class AuthQueue {
       const git = (args: string[]): string => execFileSync("git", args, {
         cwd: request.cwd!,
         encoding: "utf8",
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+        timeout: 5_000,
+        env: authGitEnv(),
       }).trim();
       return (
         git(["cat-file", "-t", request.merge_candidate_pin_sha]) === "commit" &&
@@ -3695,7 +3697,8 @@ export class AuthQueue {
         ["update-ref", this.mergeCandidateRef(request.id), pinSha, ""],
         {
           cwd: request.cwd,
-          env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+          timeout: 5_000,
+          env: authGitEnv(),
           stdio: "ignore",
         },
       );
@@ -3717,10 +3720,11 @@ export class AuthQueue {
       !request.merge_preflight_base_sha ||
       !request.merge_head_sha
     ) throw new Error("merge candidate pin inputs are incomplete");
-    const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+    const env = authGitEnv();
     execFileSync("git", ["cat-file", "-e", `${request.merge_candidate_tree_sha}^{tree}`], {
       cwd: request.cwd,
       env,
+      timeout: 5_000,
       stdio: "ignore",
     });
     const pinSha = execFileSync(
@@ -3747,6 +3751,7 @@ export class AuthQueue {
           GIT_COMMITTER_DATE: "1970-01-01T00:00:00 +0000",
         },
         encoding: "utf8",
+        timeout: 5_000,
       },
     ).trim();
     if (!GIT_OID_RE.test(pinSha)) throw new Error("git commit-tree did not return a pin commit");
@@ -3762,7 +3767,8 @@ export class AuthQueue {
           ["update-ref", "-d", this.mergeCandidateRef(request.id), request.merge_candidate_pin_sha],
           {
             cwd: request.cwd,
-            env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+            timeout: 5_000,
+            env: authGitEnv(),
             stdio: "ignore",
           },
         );
@@ -5794,7 +5800,8 @@ export class AuthQueue {
         cwd,
         encoding: "utf8",
         maxBuffer: 10 * 1024 * 1024,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+        timeout: 10_000,
+        env: authGitEnv(),
       }).trim();
       const tree = stdout.split(/\s+/)[0] ?? "";
       if (!tree) {
@@ -5834,6 +5841,8 @@ export class AuthQueue {
       const gitDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], {
         cwd,
         encoding: "utf8",
+        timeout: 5_000,
+        env: authGitEnv(),
       }).trim();
       if (gitDir && existsSync(join(gitDir, "MERGE_HEAD"))) {
         return {
@@ -5846,6 +5855,8 @@ export class AuthQueue {
         cwd,
         encoding: "utf8",
         maxBuffer: 1024 * 1024,
+        timeout: 10_000,
+        env: authGitEnv(),
       }).replace(/\r?\n$/, "");
       if (!status.trim()) {
         return { status: "clean" };
@@ -5879,8 +5890,9 @@ export class AuthQueue {
       {
         cwd,
         encoding: "utf8",
+        timeout: 10_000,
         env: {
-          ...process.env,
+          ...authGitEnv(),
           GIT_AUTHOR_NAME: "Mandible",
           GIT_AUTHOR_EMAIL: "mandible@localhost",
           GIT_COMMITTER_NAME: "Mandible",
@@ -7454,6 +7466,8 @@ function conflictFilesFromMergeTreeOutput(
       const diff = execFileSync("git", ["diff", "--name-only", authReviewDiffRange(base, head)], {
         cwd,
         encoding: "utf8",
+        timeout: 10_000,
+        env: authGitEnv(),
       });
       for (const line of diff.split("\n")) {
         const file = line.trim();
