@@ -1,10 +1,10 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import type { Db } from "./db.js";
-import { collectAuthChangeReport } from "./auth-change-report.js";
+import { collectAuthMergeReview } from "./auth-change-report.js";
 import type { AuthChangeReport } from "./contracts.js";
 
 export interface AuthMergeContextInput {
@@ -53,9 +53,6 @@ export class AuthExecutionContextError extends Error {
 }
 
 const SAFE_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
-const MAX_DIFF_BYTES = 102400;
-const MAX_DIFF_PREVIEW_BYTES = MAX_DIFF_BYTES;
-const MAX_DIFF_PREVIEW_READ_BYTES = MAX_DIFF_PREVIEW_BYTES + 1;
 const GIT_REF_TIMEOUT_MS = 5000;
 
 /**
@@ -65,7 +62,22 @@ const GIT_REF_TIMEOUT_MS = 5000;
  * used to be reported as "branch does not exist".
  */
 export function authGitEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("GIT_")) delete env[key];
+  }
+  return {
+    ...env,
+    HOME: "/dev/null",
+    XDG_CONFIG_HOME: "/dev/null",
+    LANG: "C",
+    LC_ALL: "C",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_OPTIONAL_LOCKS: "0",
+  };
 }
 
 /**
@@ -392,24 +404,22 @@ export async function computeAuthMergeReviewMetadata(
   const baseSha = resolveCommitSha(repoRoot, baseRef);
   const headSha = resolveCommitSha(repoRoot, headRef);
   const mergeBaseSha = resolveMergeBaseSha(repoRoot, baseSha, headSha);
-  const range = `${mergeBaseSha}..${headSha}`;
   const metadata: AuthMergeReviewMetadata = {};
+  const collected = await collectAuthMergeReview(
+    repoRoot,
+    { base_sha: baseSha, head_sha: headSha, merge_base_sha: mergeBaseSha },
+    { report: options.counts !== false, diffSummary: options.diffSummary !== false },
+  );
+  if (!collected.ok) throw new AuthExecutionContextError(collected.error.message);
 
-  if (options.counts !== false) {
-    const report = collectAuthChangeReport(repoRoot, {
-      base_sha: baseSha,
-      head_sha: headSha,
-      merge_base_sha: mergeBaseSha,
-    });
+  if (collected.value.report) {
+    const report = collected.value.report;
     metadata.changeReport = report;
     metadata.filesChanged = report.totals.files;
     metadata.additions = report.totals.additions;
     metadata.deletions = report.totals.deletions;
   }
-
-  if (options.diffSummary !== false) {
-    metadata.diffSummary = await readBoundedDiffPreview(repoRoot, range);
-  }
+  if (collected.value.diffSummary !== undefined) metadata.diffSummary = collected.value.diffSummary;
 
   return metadata;
 }
@@ -448,80 +458,6 @@ function resolveMergeBaseSha(repoRoot: string, baseSha: string, headSha: string)
     );
   }
   throw new AuthExecutionContextError("Unable to resolve auth review merge base: git returned an empty value.");
-}
-
-async function readBoundedDiffPreview(repoRoot: string, range: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    let bytesRead = 0;
-    let truncated = false;
-    let timedOut = false;
-
-    const child = spawn("git", ["diff", range], {
-      cwd: repoRoot,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: authGitEnv(),
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, 10000);
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      if (truncated) {
-        return;
-      }
-      const remaining = MAX_DIFF_PREVIEW_READ_BYTES - bytesRead;
-      if (chunk.length > remaining) {
-        chunks.push(chunk.subarray(0, Math.max(remaining, 0)));
-        bytesRead += remaining;
-        truncated = true;
-        child.kill("SIGTERM");
-        return;
-      }
-      chunks.push(chunk);
-      bytesRead += chunk.length;
-      if (bytesRead >= MAX_DIFF_PREVIEW_READ_BYTES) {
-        truncated = true;
-        child.kill("SIGTERM");
-      }
-    });
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      if (Buffer.concat(stderrChunks).length < 4096) {
-        stderrChunks.push(chunk);
-      }
-    });
-
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (timedOut) {
-        reject(new AuthExecutionContextError("Timed out while collecting auth merge diff preview."));
-        return;
-      }
-      if (code !== 0 && !truncated) {
-        const stderr = Buffer.concat(stderrChunks).toString("utf-8").trim();
-        reject(new AuthExecutionContextError(
-          stderr ? `Unable to collect auth merge diff preview: ${stderr}` : "Unable to collect auth merge diff preview."
-        ));
-        return;
-      }
-
-      const previewBytes = Buffer.concat(chunks).subarray(0, MAX_DIFF_PREVIEW_BYTES);
-      const preview = previewBytes.toString("utf-8");
-      resolve(
-        truncated
-          ? `${preview}\n... [truncated: diff preview exceeded ${MAX_DIFF_PREVIEW_BYTES} bytes]`
-          : preview
-      );
-    });
-  });
 }
 
 function requireValidBranch(field: "base_branch" | "head_branch", value: string | null): string {

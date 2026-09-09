@@ -6,7 +6,9 @@ import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { collectAuthChangeReport } from "../src/auth-change-report.js";
+import {
+  collectAuthMergeReview,
+} from "../src/auth-change-report.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { setDb } from "../src/db.js";
@@ -102,34 +104,89 @@ afterEach(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
-function report() {
+async function report() {
   const baseSha = git(["rev-parse", "main"]);
   const headSha = git(["rev-parse", "feature/report"]);
   const mergeBaseSha = git(["merge-base", baseSha, headSha]);
-  return collectAuthChangeReport(repo, {
+  const result = await collectAuthMergeReview(repo, {
     base_sha: baseSha,
     head_sha: headSha,
     merge_base_sha: mergeBaseSha,
   });
+  if (!result.ok) throw result.error;
+  if (!result.value.report) throw new Error("Expected a report.");
+  return result.value;
+}
+
+function ambientGitOverrides(): Record<string, string> {
+  const globalAttributes = path.join(tempRoot, "ambient.attributes");
+  const globalConfig = path.join(tempRoot, "ambient.gitconfig");
+  const xdg = path.join(tempRoot, "xdg");
+  fs.mkdirSync(path.join(xdg, "git"), { recursive: true });
+  fs.writeFileSync(globalAttributes, "assets/image.bin diff\nsrc/app.ts -diff\n");
+  fs.writeFileSync(globalConfig, `[core]\n\tattributesFile = ${globalAttributes}\n[diff]\n\trenames = false\n\talgorithm = patience\n`);
+  fs.writeFileSync(path.join(xdg, "git", "attributes"), "*.ts -diff linguist-language=AmbientOverride\n");
+  return {
+    XDG_CONFIG_HOME: xdg,
+    GIT_CONFIG_GLOBAL: globalConfig,
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: "diff.renames",
+    GIT_CONFIG_VALUE_0: "false",
+    GIT_CONFIG_KEY_1: "diff.algorithm",
+    GIT_CONFIG_VALUE_1: "histogram",
+    GIT_CONFIG_PARAMETERS: "'diff.renames=false' 'diff.algorithm=patience'",
+    GIT_DIR: path.join(tempRoot, "ambient-git-dir"),
+    GIT_COMMON_DIR: path.join(tempRoot, "ambient-common-dir"),
+    GIT_OBJECT_DIRECTORY: path.join(tempRoot, "ambient-objects"),
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(tempRoot, "ambient-alternates"),
+    GIT_WORK_TREE: path.join(tempRoot, "ambient-work-tree"),
+    GIT_INDEX_FILE: path.join(tempRoot, "ambient-index"),
+  };
+}
+
+async function withEnvironment<T>(overrides: Record<string, string>, task: () => Promise<T>): Promise<T> {
+  const prior = new Map(Object.keys(overrides).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, overrides);
+  try {
+    return await task();
+  } finally {
+    for (const [key, value] of prior) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 describe("auth change reports", () => {
-  it("captures one deterministic, pinned inventory across file kinds and classifications", () => {
-    const globalAttributes = path.join(tempRoot, "ambient.attributes");
-    const globalConfig = path.join(tempRoot, "ambient.gitconfig");
-    fs.writeFileSync(globalAttributes, "assets/image.bin diff\nsrc/app.ts -diff\n");
-    fs.writeFileSync(globalConfig, `[core]\n\tattributesFile = ${globalAttributes}\n[diff]\n\trenames = false\n\talgorithm = patience\n`);
-    const priorGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
-    process.env.GIT_CONFIG_GLOBAL = globalConfig;
-    let captured: ReturnType<typeof report>;
-    try {
-      captured = report();
-      expect(JSON.stringify(collectAuthChangeReport(repo, captured.comparison)))
-        .toBe(JSON.stringify(captured));
-    } finally {
-      if (priorGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
-      else process.env.GIT_CONFIG_GLOBAL = priorGlobalConfig;
-    }
+  it("returns a typed collection failure instead of leaking a foreign exception", async () => {
+    const captured = (await report()).report!;
+    const result = await withEnvironment(
+      { PATH: path.join(tempRoot, "no-executables") },
+      () => collectAuthMergeReview(repo, captured.comparison),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected collection failure.");
+    expect(result.error.kind).toBe("git_failed");
+    expect(result.error.message).toMatch(/Unable to locate the repository object store/);
+  });
+
+  it("captures one deterministic pinned review despite every ambient Git override", async () => {
+    git(["checkout", "feature/report"]);
+    write("zzz-large.txt", "x\n".repeat(60_000));
+    git(["add", "zzz-large.txt"]);
+    git(["commit", "-m", "add large review fixture\n\nMandible-Issue: d5edbb9"]);
+    git(["checkout", "main"]);
+    const baseline = await report();
+    const captured = baseline.report!;
+    const hostile = await withEnvironment(
+      ambientGitOverrides(),
+      () => collectAuthMergeReview(repo, captured.comparison),
+    );
+    if (!hostile.ok) throw hostile.error;
+    expect(JSON.stringify(hostile.value)).toBe(JSON.stringify(baseline));
+    expect(hostile.value.diffSummary).toContain("+export const generated = false;");
+    expect(hostile.value.diffSummary).not.toContain("AmbientOverride");
+    expect(hostile.value.diffSummary).toContain("[truncated: diff preview exceeded 102400 bytes]");
     expect(captured.files.map((file) => file.new_path ?? file.old_path)).not.toContain("unrelated-after-branch.txt");
     expect(captured.totals.files).toBe(captured.files.length);
     expect(captured.totals.additions).toBe(
@@ -185,8 +242,8 @@ describe("auth change reports", () => {
     });
   });
 
-  it("keeps captured reports and their headline counts immutable while prose remains editable", () => {
-    const captured = report();
+  it("keeps captured reports and their headline counts immutable while prose remains editable", async () => {
+    const captured = (await report()).report!;
     const db = createMigratedDb();
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
@@ -243,7 +300,7 @@ describe("auth change reports", () => {
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
 
     try {
-      const response = await router.invoke({
+      const response = await withEnvironment(ambientGitOverrides(), () => router.invoke({
         method: "POST",
         url: "/api/auth/request",
         body: {
@@ -255,17 +312,20 @@ describe("auth change reports", () => {
           base_branch: "main",
           head_branch: "feature/report",
           issue_references: ["d5edbb9"],
+          diff_summary: "caller supplied content that must never be stored",
           files_changed: 999,
           additions: 999,
           deletions: 999,
         },
         credential: token,
         transport: "http",
-      });
+      }));
       expect(response.status, JSON.stringify(response.body)).toBe(201);
       const body = response.body as { request_id: string; files_changed: number; additions: number; deletions: number };
       expect(body.files_changed).not.toBe(999);
       const request = queue.getRequest(body.request_id);
+      expect(request?.diff_summary).not.toContain("caller supplied content");
+      expect(request?.diff_summary).toContain("diff --git a/src/app.ts b/src/app.ts");
       expect(request?.change_report?.totals).toMatchObject({
         files: body.files_changed,
         additions: body.additions,
