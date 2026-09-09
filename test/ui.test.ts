@@ -2546,7 +2546,7 @@ describe('AuthQueueView', () => {
       merge_base_sha: 'c'.repeat(40),
     },
     rename_similarity_percent: 50,
-    totals: { files: 4, additions: 15, deletions: 3, text_files: 3, binary_files: 1 },
+    totals: { files: 5, additions: 15, deletions: 3, text_files: 3, binary_files: 1 },
     files: [
       {
         old_path: 'src/auth.ts', new_path: 'src/auth.ts', change_kind: 'modified',
@@ -2570,6 +2570,12 @@ describe('AuthQueueView', () => {
         old_path: 'assets/logo.bin', new_path: 'assets/logo.bin', change_kind: 'modified',
         file_type_before: 'blob', file_type_after: 'blob', additions: null, deletions: null,
         bytes_before: 1024, bytes_after: 2048, language: 'Unknown', file_role: 'other',
+        generated: false, vendor: true,
+      },
+      {
+        old_path: 'deps/old-module', new_path: 'deps/old-module', change_kind: 'type_changed',
+        file_type_before: 'gitlink', file_type_after: 'blob', additions: null, deletions: null,
+        bytes_before: null, bytes_after: null, language: 'Unknown', file_role: 'other',
         generated: false, vendor: true,
       },
     ],
@@ -2782,7 +2788,7 @@ describe('AuthQueueView', () => {
     expect(Array.from(leftColumn.querySelectorAll(':scope > .collapsible-panel')).map(
       (panel) => panel.querySelector('.collapsible-panel__toggle')?.textContent?.trim(),
     )).toEqual(['Commit message', 'Specification', 'Change breakdown']);
-    expect(within(leftColumn).getByText('4 files · +15 −3')).toBeTruthy();
+    expect(within(leftColumn).getByText('5 files · +15 −3')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
     expect(screen.getByText('src/auth.ts')).toBeTruthy();
@@ -2794,11 +2800,18 @@ describe('AuthQueueView', () => {
     fireEvent.click(screen.getByRole('button', { name: /Vendor/ }));
     expect(screen.getByText('assets/logo.bin')).toBeTruthy();
     expect(screen.getByText('1.0 KiB → 2.0 KiB')).toBeTruthy();
+    const gitlinkRow = screen.getByText('deps/old-module').closest('.auth-change-file') as HTMLElement;
+    expect(within(gitlinkRow).getByText('gitlink')).toBeTruthy();
+    expect(within(gitlinkRow).getByText('submodule reference changed')).toBeTruthy();
+    expect(within(gitlinkRow).queryByText('binary')).toBeNull();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Directory' }));
-    fireEvent.click(screen.getByRole('button', { name: /src\/.*2 files/ }));
+    const srcDirectory = screen.getByRole('button', { name: /src\/.*2.*\+13.*−2.*83%/ });
+    fireEvent.click(srcDirectory);
     expect(screen.getByRole('navigation', { name: 'Change report directory' }).textContent).toContain('root/src');
-    expect(screen.getByText('src/generated schema.json')).toBeTruthy();
+    const generatedFile = screen.getByText('src/generated schema.json').closest('.auth-change-file') as HTMLElement;
+    expect(within(generatedFile).getByText('+3')).toBeTruthy();
+    expect(within(generatedFile).getByText('−0')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Largest files' }));
     const largestPaths = Array.from(document.querySelectorAll(
@@ -2809,6 +2822,7 @@ describe('AuthQueueView', () => {
       'src/generated schema.json',
       'test/old auth.test.ts → test/auth flow.test.ts',
       'assets/logo.bin',
+      'deps/old-module',
     ]);
 
     fireEvent.click(screen.getByRole('tab', { name: 'File role' }));
@@ -2898,7 +2912,7 @@ describe('AuthQueueView', () => {
       onReject: () => undefined,
     }));
 
-    await waitFor(() => expect(screen.getByText('4 files · +15 −3')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('5 files · +15 −3')).toBeTruthy());
     expect(screen.queryByText('Unavailable')).toBeNull();
   });
 

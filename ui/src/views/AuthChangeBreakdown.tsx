@@ -17,6 +17,8 @@ type ChangeGroup = {
   id: string;
   label: string;
   files: AuthChangeFile[];
+  additions: number;
+  deletions: number;
 };
 
 const VIEW_LABELS: Record<AuthChangeBreakdownView, string> = {
@@ -54,18 +56,18 @@ function compareFiles(left: AuthChangeFile, right: AuthChangeFile): number {
   return lineDifference || displayPath(left).localeCompare(displayPath(right));
 }
 
-function groupFiles(
-  files: AuthChangeFile[],
-  groupFor: (file: AuthChangeFile) => { id: string; label: string },
-): ChangeGroup[] {
-  const groups = new Map<string, ChangeGroup>();
-  for (const file of files) {
-    const group = groupFor(file);
-    const existing = groups.get(group.id);
-    if (existing) existing.files.push(file);
-    else groups.set(group.id, { ...group, files: [file] });
-  }
-  return Array.from(groups.values())
+function newChangeGroup(id: string, label: string): ChangeGroup {
+  return { id, label, files: [], additions: 0, deletions: 0 };
+}
+
+function addFileToGroup(group: ChangeGroup, file: AuthChangeFile): void {
+  group.files.push(file);
+  group.additions += file.additions ?? 0;
+  group.deletions += file.deletions ?? 0;
+}
+
+function finishGroups(groups: Iterable<ChangeGroup>): ChangeGroup[] {
+  return Array.from(groups)
     .map((group) => ({ ...group, files: group.files.sort(compareFiles) }))
     .sort((left, right) => {
       const changedDifference = groupChangedLines(right) - groupChangedLines(left);
@@ -73,16 +75,22 @@ function groupFiles(
     });
 }
 
-function groupAdditions(group: ChangeGroup): number {
-  return group.files.reduce((total, file) => total + (file.additions ?? 0), 0);
-}
-
-function groupDeletions(group: ChangeGroup): number {
-  return group.files.reduce((total, file) => total + (file.deletions ?? 0), 0);
+function groupFiles(
+  files: AuthChangeFile[],
+  groupFor: (file: AuthChangeFile) => { id: string; label: string },
+): ChangeGroup[] {
+  const groups = new Map<string, ChangeGroup>();
+  for (const file of files) {
+    const identity = groupFor(file);
+    const group = groups.get(identity.id) ?? newChangeGroup(identity.id, identity.label);
+    addFileToGroup(group, file);
+    groups.set(identity.id, group);
+  }
+  return finishGroups(groups.values());
 }
 
 function groupChangedLines(group: ChangeGroup): number {
-  return groupAdditions(group) + groupDeletions(group);
+  return group.additions + group.deletions;
 }
 
 function formatShare(lines: number, totalLines: number): string {
@@ -105,11 +113,16 @@ function formatBytes(value: number | null): string {
   return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${unit}`;
 }
 
+function isGitlinkChange(file: AuthChangeFile): boolean {
+  return file.file_type_before === 'gitlink' || file.file_type_after === 'gitlink';
+}
+
 function fileKindLabels(file: AuthChangeFile): string[] {
-  const type = file.file_type_after === 'absent' ? file.file_type_before : file.file_type_after;
   const labels: string[] = [];
-  if (file.additions === null || file.deletions === null) labels.push('binary');
-  if (type === 'symlink' || type === 'gitlink') labels.push(type);
+  if ((file.additions === null || file.deletions === null) && !isGitlinkChange(file)) labels.push('binary');
+  for (const type of [file.file_type_before, file.file_type_after]) {
+    if ((type === 'symlink' || type === 'gitlink') && !labels.includes(type)) labels.push(type);
+  }
   return labels;
 }
 
@@ -126,6 +139,9 @@ function FilePath({ file }: { file: AuthChangeFile }): JSX.Element {
 function FileMetrics({ file, totalLines }: { file: AuthChangeFile; totalLines: number }): JSX.Element {
   const lines = changedLines(file);
   if (lines === null) {
+    if (isGitlinkChange(file)) {
+      return <span className="auth-change-file__special-change">submodule reference changed</span>;
+    }
     return (
       <span className="auth-change-file__binary-size">
         {formatBytes(file.bytes_before)} → {formatBytes(file.bytes_after)}
@@ -134,15 +150,33 @@ function FileMetrics({ file, totalLines }: { file: AuthChangeFile; totalLines: n
   }
   return (
     <>
-      <span title="Additions">{formatCount(file.additions ?? 0)}</span>
-      <span title="Deletions">{formatCount(file.deletions ?? 0)}</span>
+      <span className="auth-change-file__added" title="Additions">+{formatCount(file.additions ?? 0)}</span>
+      <span className="auth-change-file__deleted" title="Deletions">−{formatCount(file.deletions ?? 0)}</span>
       <span title="Share of changed text lines">{formatShare(lines, totalLines)}</span>
+    </>
+  );
+}
+
+function ChangeGroupMetrics({
+  group,
+  totalLines,
+}: {
+  group: ChangeGroup;
+  totalLines: number;
+}): JSX.Element {
+  return (
+    <>
+      <span>{formatCount(group.files.length)}</span>
+      <span>+{formatCount(group.additions)}</span>
+      <span>−{formatCount(group.deletions)}</span>
+      <span>{formatShare(groupChangedLines(group), totalLines)}</span>
     </>
   );
 }
 
 function ChangeFileRow({ file, totalLines }: { file: AuthChangeFile; totalLines: number }): JSX.Element {
   const kinds = fileKindLabels(file);
+  const nullLineLabel = isGitlinkChange(file) ? 'Submodule reference change' : 'Binary byte sizes';
   return (
     <li className="auth-change-file">
       <div className="auth-change-file__identity">
@@ -155,8 +189,8 @@ function ChangeFileRow({ file, totalLines }: { file: AuthChangeFile; totalLines:
         </span>
       </div>
       <div
-        className={`auth-change-file__metrics${changedLines(file) === null ? ' auth-change-file__metrics--binary' : ''}`}
-        aria-label={changedLines(file) === null ? 'Binary byte sizes' : 'Additions, deletions, and share'}
+        className={`auth-change-file__metrics${changedLines(file) === null ? ' auth-change-file__metrics--non-text' : ''}`}
+        aria-label={changedLines(file) === null ? nullLineLabel : 'Additions, deletions, and share'}
       >
         <FileMetrics file={file} totalLines={totalLines} />
       </div>
@@ -207,10 +241,7 @@ function ChangeGroupRows({
                 <DisclosureChevronIcon expanded={expanded} size={13} />
                 <span>{group.label}</span>
               </span>
-              <span>{formatCount(group.files.length)}</span>
-              <span>{formatCount(groupAdditions(group))}</span>
-              <span>{formatCount(groupDeletions(group))}</span>
-              <span>{formatShare(groupChangedLines(group), totalLines)}</span>
+              <ChangeGroupMetrics group={group} totalLines={totalLines} />
             </button>
             {expanded && (
               <ul id={bodyId} className="auth-change-files">
@@ -241,19 +272,20 @@ function DirectoryBreakdown({
     const parts = displayPath(file).split('/');
     return directory.every((part, index) => parts[index] === part);
   });
-  const nested = new Map<string, AuthChangeFile[]>();
+  const nested = new Map<string, ChangeGroup>();
   const direct: AuthChangeFile[] = [];
   for (const file of matching) {
     const parts = displayPath(file).split('/');
     const next = parts[directory.length];
     if (!next || parts.length === directory.length + 1) direct.push(file);
-    else nested.set(next, [...(nested.get(next) ?? []), file]);
+    else {
+      const id = `directory:${[...directory, next].join('/')}`;
+      const group = nested.get(next) ?? newChangeGroup(id, next);
+      addFileToGroup(group, file);
+      nested.set(next, group);
+    }
   }
-  const groups = Array.from(nested, ([name, files]) => ({
-    id: `directory:${[...directory, name].join('/')}`,
-    label: name,
-    files: files.sort(compareFiles),
-  })).sort((left, right) => left.label.localeCompare(right.label));
+  const groups = finishGroups(nested.values());
 
   return (
     <div className="auth-change-directory">
@@ -272,20 +304,22 @@ function DirectoryBreakdown({
         ))}
       </nav>
       {groups.length > 0 && (
-        <div className="auth-change-directory__groups">
+        <div className="auth-change-groups auth-change-directory__groups">
+          <div className="auth-change-groups__header" aria-hidden="true">
+            <span>Directory</span><span>Files</span><span>+</span><span>−</span><span>Share</span>
+          </div>
           {groups.map((group) => (
             <button
               type="button"
-              className="auth-change-directory__entry"
+              className="auth-change-group__row auth-change-directory__entry"
               key={group.id}
               onClick={() => setState({
                 ...state,
                 directoryPath: [...directory, group.label],
               })}
             >
-              <span className="auth-change-directory__name">{group.label}/</span>
-              <span>{formatCount(group.files.length)} files</span>
-              <span>{formatShare(groupChangedLines(group), totalLines)}</span>
+              <span className="auth-change-group__name auth-change-directory__name">{group.label}/</span>
+              <ChangeGroupMetrics group={group} totalLines={totalLines} />
             </button>
           ))}
         </div>
@@ -321,15 +355,12 @@ function BreakdownContent({
       case 'role':
         return groupFiles(report.files, (file) => ({ id: `role:${file.file_role}`, label: ROLE_LABELS[file.file_role] }));
       case 'flags':
-        return [
-          { id: 'flag:generated', label: 'Generated', files: report.files.filter((file) => file.generated) },
-          { id: 'flag:not-generated', label: 'Not generated', files: report.files.filter((file) => !file.generated) },
-          { id: 'flag:vendor', label: 'Vendor', files: report.files.filter((file) => file.vendor) },
-          { id: 'flag:not-vendor', label: 'Not vendor', files: report.files.filter((file) => !file.vendor) },
-        ].filter((group) => group.files.length > 0).map((group) => ({
-          ...group,
-          files: group.files.sort(compareFiles),
-        }));
+        return groupFiles(report.files, (file) => file.generated
+          ? { id: 'flag:generated', label: 'Generated' }
+          : { id: 'flag:not-generated', label: 'Not generated' })
+          .concat(groupFiles(report.files, (file) => file.vendor
+            ? { id: 'flag:vendor', label: 'Vendor' }
+            : { id: 'flag:not-vendor', label: 'Not vendor' }));
       default:
         return [];
     }
