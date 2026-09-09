@@ -41,7 +41,12 @@ import {
   type ReadUserIdentity,
 } from '../api';
 import { exhausted } from '../../../src/exhaustive';
-import { isAuthDependencyReady, type AuthDependencyProjection } from '../../../src/contracts';
+import {
+  isAuthDependencyReady,
+  type AuthChangeReport,
+  type AuthDependencyProjection,
+} from '../../../src/contracts';
+import { AuthChangeBreakdown } from './AuthChangeBreakdown';
 
 const RETAINED_FINALIZED_AUTH_KEY = 'mandible.auth.retained-finalized-selection';
 
@@ -67,6 +72,7 @@ export type AuthRequest = {
   head_branch?: string;
   merge_preflight_base_sha?: string | null;
   merge_preflight_queue_fingerprint?: string | null;
+  change_report?: AuthChangeReport | null;
   status?: string;
   state?: string;
   exit_code?: number | null;
@@ -1281,6 +1287,12 @@ function AuthRequestDetail({
                     </div>
                   )}
               </CollapsiblePanel>
+              {authType === 'merge' && (
+                <AuthChangeBreakdown
+                  requestId={fullId}
+                  report={request.change_report ?? null}
+                />
+              )}
             </div>
             {hasActionBundle && (
               <div className="auth-detail__right-col">
@@ -1710,7 +1722,12 @@ export function AuthQueueView({
   // detail body is fetched from the detail route when a request is selected and
   // cached here so the detail pane can render the full spec/diff/console.
   // (commit_message stays in the list projection, so it is not re-fetched.)
-  type AuthRequestBody = { diff_summary: string; spec_content: string; output: string };
+  type AuthRequestBody = {
+    diff_summary: string;
+    spec_content: string;
+    output: string;
+    change_report: AuthChangeReport | null;
+  };
   const [hydratedBodies, setHydratedBodies] = useState<Record<string, AuthRequestBody>>({});
 
   // Bug: 2cddba2 — the deep-linked selection propagates through a state update
@@ -2444,12 +2461,14 @@ export function AuthQueueView({
     getAuthRequestDetail(selectedId)
       .then((detail) => {
         if (!active || !detail) return;
+        const hydrated = detail as AuthRequest;
         setHydratedBodies((prev) => ({
           ...prev,
           [selectedId]: {
-            diff_summary: typeof detail.diff_summary === 'string' ? detail.diff_summary : '',
-            spec_content: typeof detail.spec_content === 'string' ? detail.spec_content : '',
-            output: typeof detail.output === 'string' ? detail.output : '',
+            diff_summary: typeof hydrated.diff_summary === 'string' ? hydrated.diff_summary : '',
+            spec_content: typeof hydrated.spec_content === 'string' ? hydrated.spec_content : '',
+            output: typeof hydrated.output === 'string' ? hydrated.output : '',
+            change_report: hydrated.change_report ?? null,
           },
         }));
       })
