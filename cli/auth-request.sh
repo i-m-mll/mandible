@@ -813,33 +813,6 @@ append_dirty_action_to_spec "$protected_root_dirty_action_json"
 # merge executor. It deliberately does not call user dotfiles policy scripts.
 mandible_auth_merge_preflight "$target_cwd" "$branch" "$base_branch" "$repo"
 
-# --- Auto-detect diff stats ---
-
-# Issue 1512471 — the reviewer-facing range is three-dot, and is spelled once.
-# `base...branch` is the change from the merge base, which is what the merge
-# applies. `base..branch` is tip-to-tip, so anything that landed on the base
-# after this branch was cut shows up inverted: another lane's merged work is
-# rendered as this branch deleting it. That error is silent and grows as the
-# base advances. The daemon's own derivation is `authReviewDiffRange` in
-# src/auth-context.ts; test/auth-review-diff-range.test.ts pins the two to the
-# same numbers so this copy cannot drift away from it again.
-review_range="${base_branch}...${branch}"
-
-shortstat=$(git diff --shortstat "$review_range" 2>/dev/null || echo "")
-files_changed=0
-additions=0
-deletions=0
-if [[ -n "$shortstat" ]]; then
-  files_changed=$(echo "$shortstat" | grep -oE '[0-9]+ file' | grep -oE '[0-9]+' || echo 0)
-  additions=$(echo "$shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
-  deletions=$(echo "$shortstat" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo 0)
-fi
-
-# Ensure these are valid integers (default to 0 if empty or non-numeric)
-[[ "$files_changed" =~ ^[0-9]+$ ]] || files_changed=0
-[[ "$additions" =~ ^[0-9]+$ ]] || additions=0
-[[ "$deletions" =~ ^[0-9]+$ ]] || deletions=0
-
 # --- Auto-detect diff summary ---
 # Bug: c8dd9c8 — use unified diff format so the UI's per-file tab viewer works.
 # The --diff-summary CLI flag still works but should contain unified diff format.
@@ -847,6 +820,7 @@ fi
 MAX_DIFF_BYTES=102400  # 100KB truncation limit
 
 if [[ -z "$diff_summary" ]]; then
+  review_range="${base_branch}...${branch}"
   full_diff=$(git diff "$review_range" 2>/dev/null) || full_diff=""
   diff_bytes=${#full_diff}
   if [[ "$diff_bytes" -gt "$MAX_DIFF_BYTES" ]]; then
@@ -985,9 +959,6 @@ payload=$(jq -nc \
   --arg repo "$repo" \
   --arg base_branch "$base_branch" \
   --arg head_branch "$head_branch" \
-  --argjson files_changed "$files_changed" \
-  --argjson additions "$additions" \
-  --argjson deletions "$deletions" \
   --arg diff_summary "$diff_summary" \
   --arg commit_message "$commit_message" \
   --argjson canonical_message "$canonical_message" \
@@ -1016,9 +987,6 @@ payload=$(jq -nc \
     repo: $repo,
     base_branch: $base_branch,
     head_branch: $head_branch,
-    files_changed: $files_changed,
-    additions: $additions,
-    deletions: $deletions,
     diff_summary: $diff_summary,
     commit_message: (if $commit_message == "" then null else $commit_message end),
     canonical_message: $canonical_message,
@@ -1120,12 +1088,8 @@ if [[ "$http_status" == "409" ]]; then
     echo ""
     echo "If that request is the same work, update it:"
     echo "  PUT /api/auth/request/$(api_short_id "$existing_id")"
-    # Issue 1512471 — the stored diff stats are NOT recomputed on update, so a
-    # prose-only PUT leaves whatever numbers the request was born with in front
-    # of the approver. They are accepted in the update payload; name them, with
-    # this run's freshly computed values, so the correction is one copy away.
-    echo "  Include the diff stats or the approver keeps the old ones:"
-    echo "    {\"files_changed\": ${files_changed}, \"additions\": ${additions}, \"deletions\": ${deletions}}"
+    echo "  Candidate bytes cannot be revised in place; use guarded supersession"
+    echo "  so the daemon captures a new immutable change report."
     echo "If it is different work that merely shares a branch name, rename this"
     echo "branch or resolve the existing request first, then resubmit."
   } >&2
@@ -1145,7 +1109,14 @@ else
   echo "Auth request submitted: $(api_short_id "$request_id")"
   echo "Title: ${title}"
   echo "Branch: ${head_branch} -> ${base_branch}"
-  echo "Files: ${files_changed} changed, +${additions} -${deletions}"
+  files_changed=$(printf '%s' "$response" | jq -r '.files_changed // empty' 2>/dev/null || echo "")
+  additions=$(printf '%s' "$response" | jq -r '.additions // empty' 2>/dev/null || echo "")
+  deletions=$(printf '%s' "$response" | jq -r '.deletions // empty' 2>/dev/null || echo "")
+  if [[ "$files_changed" =~ ^[0-9]+$ && "$additions" =~ ^[0-9]+$ && "$deletions" =~ ^[0-9]+$ ]]; then
+    echo "Files: ${files_changed} changed, +${additions} -${deletions} (server-captured)"
+  else
+    echo "Files: server-captured (this daemon did not return headline counts)"
+  fi
 fi
 
 # --- Watch for resolution via SSE (unless --no-watch) ---

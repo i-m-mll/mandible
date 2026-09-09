@@ -102,7 +102,7 @@ export function registerAuthRoutes(
           });
           return;
         }
-        payload.merge_head_sha = payload.merge_head_sha ?? resolved.headSha;
+        payload.merge_head_sha = resolved.headSha;
         // Issue 08a5f04 — submission-time (never approval-time) normalization
         // of the legacy single-source command shape: the reviewed row must
         // already carry the canonical `mandible auth merge <head> --into
@@ -116,10 +116,6 @@ export function registerAuthRoutes(
         if (normalizedCommand) {
           payload.command = normalizedCommand;
         }
-        const needsCounts =
-          payload.files_changed === undefined ||
-          payload.additions === undefined ||
-          payload.deletions === undefined;
         const needsDiffSummary = payload.diff_summary == null;
         // Issue 7d64d8f — review metadata no longer includes a synthesized
         // commit message. A request either carries an agent-authored canonical
@@ -127,16 +123,20 @@ export function registerAuthRoutes(
         // own `fmt-merge-msg` default.
         const metadata = await computeAuthMergeReviewMetadata(
           resolved.targetRepoRoot,
-          resolved.baseBranch,
-          resolved.headBranch,
+          resolved.baseSha,
+          resolved.headSha,
           {
-            counts: needsCounts,
+            counts: true,
             diffSummary: needsDiffSummary,
           }
         );
-        payload.files_changed = payload.files_changed ?? metadata.filesChanged;
-        payload.additions = payload.additions ?? metadata.additions;
-        payload.deletions = payload.deletions ?? metadata.deletions;
+        if (!metadata.changeReport) {
+          throw new Error("Auth change report collection returned no report.");
+        }
+        payload.change_report = metadata.changeReport;
+        payload.files_changed = metadata.changeReport.totals.files;
+        payload.additions = metadata.changeReport.totals.additions;
+        payload.deletions = metadata.changeReport.totals.deletions;
         if (payload.diff_summary == null) {
           payload.diff_summary = metadata.diffSummary;
         }
@@ -229,7 +229,12 @@ export function registerAuthRoutes(
       payload.requester_credential_id = requester.credentialId;
       payload.require_delivery_custody = isAuthMerge;
       const request = authQueue.submit(payload, requester.userId);
-      res.status(201).json({ request_id: request.id });
+      res.status(201).json({
+        request_id: request.id,
+        files_changed: request.files_changed,
+        additions: request.additions,
+        deletions: request.deletions,
+      });
     } catch (error) {
       handleQueueError(error, res);
     }

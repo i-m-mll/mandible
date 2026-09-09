@@ -1612,6 +1612,12 @@ export class AuthQueue {
   }
 
   submit(payload: AuthRequestInput, requestedByUserId?: string): AuthRequest {
+    if (payload.change_report && (payload.type ?? "merge") !== "merge") {
+      throw new AuthQueueError(
+        "invalid_command",
+        "Auth change reports belong only to merge requests.",
+      );
+    }
     const requesterUserId = this.resolveRequesterUserId(payload, requestedByUserId);
     const actor: AuthLifecycleActor = {
       user_id: requesterUserId,
@@ -1648,6 +1654,30 @@ export class AuthQueue {
       );
     }
 
+    if (payload.change_report) {
+      payload.files_changed = payload.change_report.totals.files;
+      payload.additions = payload.change_report.totals.additions;
+      payload.deletions = payload.change_report.totals.deletions;
+      if ((payload.type ?? "merge") === "merge") {
+        const currentHead = payload.cwd && payload.head_branch
+          ? this.resolveBranchHeadForCheck(payload.cwd, payload.head_branch)
+          : null;
+        if (
+          payload.merge_head_sha !== payload.change_report.comparison.head_sha ||
+          currentHead !== payload.change_report.comparison.head_sha ||
+          mergeCheck.status !== "clean" ||
+          mergeCheck.target_head_sha !== payload.change_report.comparison.base_sha
+        ) {
+          throw new AuthQueueError(
+            "merge_check_failed",
+            "The base or head branch moved while its auth change report was being captured; retry submission to review one exact candidate.",
+            undefined,
+            mergeCheck,
+          );
+        }
+      }
+    }
+
     let candidateTreeSha: string | null = null;
     if (
       mergeCheck.status === "clean" && payload.cwd && payload.merge_head_sha &&
@@ -1655,6 +1685,23 @@ export class AuthQueue {
     ) {
       const candidate = this.mergeTree(payload.cwd, mergeCheck.target_head_sha, payload.merge_head_sha);
       if (candidate.status === "clean") candidateTreeSha = candidate.tree;
+    }
+    if (payload.change_report && (payload.type ?? "merge") === "merge") {
+      const baseAfter = payload.cwd && payload.base_branch
+        ? this.resolveBranchHeadForCheck(payload.cwd, payload.base_branch)
+        : null;
+      const headAfter = payload.cwd && payload.head_branch
+        ? this.resolveBranchHeadForCheck(payload.cwd, payload.head_branch)
+        : null;
+      if (
+        baseAfter !== payload.change_report.comparison.base_sha ||
+        headAfter !== payload.change_report.comparison.head_sha
+      ) {
+        throw new AuthQueueError(
+          "merge_check_failed",
+          "The base or head branch moved during auth submission; retry to capture a current immutable report.",
+        );
+      }
     }
 
     const now = this.now();
@@ -1698,6 +1745,7 @@ export class AuthQueue {
       merge_preflight_base_sha: mergeCheck.status === "clean" ? mergeCheck.target_head_sha ?? null : null,
       merge_preflight_queue_fingerprint: mergeCheck.status === "clean" ? mergeCheck.queue_fingerprint ?? null : null,
       merge_finalized_at: null,
+      change_report: payload.change_report ?? null,
       files_changed: payload.files_changed ?? 0,
       additions: payload.additions ?? 0,
       deletions: payload.deletions ?? 0,
@@ -1762,6 +1810,7 @@ export class AuthQueue {
         merge_preflight_base_sha,
         merge_preflight_queue_fingerprint,
         merge_finalized_at,
+        change_report_json,
         files_changed,
         additions,
         deletions,
@@ -1820,6 +1869,7 @@ export class AuthQueue {
         @merge_preflight_base_sha,
         @merge_preflight_queue_fingerprint,
         @merge_finalized_at,
+        @change_report_json,
         @files_changed,
         @additions,
         @deletions,
@@ -1884,6 +1934,7 @@ export class AuthQueue {
         merge_preflight_base_sha: request.merge_preflight_base_sha ?? null,
         merge_preflight_queue_fingerprint: request.merge_preflight_queue_fingerprint ?? null,
         merge_finalized_at: request.merge_finalized_at,
+        change_report_json: request.change_report ? JSON.stringify(request.change_report) : null,
         post_merge_handoff: request.post_merge_handoff ?? null,
         issue_references: request.issue_references ? JSON.stringify(request.issue_references) : null,
         issue_closures: request.issue_closures ? JSON.stringify(request.issue_closures) : null,
@@ -2639,6 +2690,17 @@ export class AuthQueue {
         message: "Only pending requests can be revised; submit an explicit replacement for new reviewed bytes."
       };
     }
+    const immutableCandidateFields = [
+      "type", "command", "cwd", "diff_summary", "repo", "base_branch", "head_branch",
+      "merge_head_sha", "files_changed", "additions", "deletions",
+    ];
+    if (request.change_report && immutableCandidateFields.some((field) => field in fields)) {
+      throw {
+        status: 409,
+        message:
+          "The captured merge candidate and its change report are immutable; submit a guarded supersession for changed candidate bytes.",
+      };
+    }
     const priorSnapshot = authRequestSnapshot(this.db, request.id);
     const custody = actor
       ? this.requireRequestCustody(request, actor, expectedRevision, expectedGeneration)
@@ -2881,10 +2943,11 @@ export class AuthQueue {
       const mapped = mapRow(row);
       // Omit the blob keys entirely so the client can distinguish "not loaded"
       // (undefined) from a genuinely empty body (null from the detail route).
-      const { diff_summary, spec_content, output, ...summary } = mapped;
+      const { diff_summary, spec_content, output, change_report, ...summary } = mapped;
       void diff_summary;
       void spec_content;
       void output;
+      void change_report;
       return { ...summary, action_count: counts.get(String(row.id)) ?? 0 };
     });
   }
@@ -7501,6 +7564,7 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     // Issue 75f52ac — durable per-step finalizer state (raw JSON string); detail
     // views and crash recovery read it. Kept as a string to match the column.
     merge_finalizer_state: row.merge_finalizer_state == null ? null : String(row.merge_finalizer_state),
+    change_report: parseChangeReport(row.change_report_json),
     files_changed: row.files_changed == null ? undefined : Number(row.files_changed),
     additions: row.additions == null ? undefined : Number(row.additions),
     deletions: row.deletions == null ? undefined : Number(row.deletions),
@@ -7539,4 +7603,22 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     superseded_by_request_id: row.superseded_by_request_id == null ? null : String(row.superseded_by_request_id),
     custody_work_unit_id: row.custody_work_unit_id == null ? null : String(row.custody_work_unit_id),
   };
+}
+
+function parseChangeReport(value: unknown): AuthRequest["change_report"] {
+  if (value == null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(String(value));
+  } catch {
+    throw new Error("Stored auth change report is not valid JSON.");
+  }
+  if (
+    typeof parsed !== "object" || parsed === null ||
+    (parsed as { schema?: unknown }).schema !== "mandible-auth-change-report@1" ||
+    !Array.isArray((parsed as { files?: unknown }).files)
+  ) {
+    throw new Error("Stored auth change report does not match mandible-auth-change-report@1.");
+  }
+  return parsed as NonNullable<AuthRequest["change_report"]>;
 }
