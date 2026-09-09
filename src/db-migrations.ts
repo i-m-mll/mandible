@@ -943,6 +943,39 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP TABLE conversation_spawn_requests_v174",
     ],
   },
+  {
+    version: 176,
+    name: "immutable_auth_change_reports",
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN change_report_json TEXT
+         CHECK(change_report_json IS NULL OR (
+           json_valid(change_report_json)
+           AND json_extract(change_report_json, '$.schema') = 'mandible-auth-change-report@1'
+           AND json_type(change_report_json, '$.files') = 'array'
+           AND json_extract(change_report_json, '$.totals.files') = json_array_length(json_extract(change_report_json, '$.files'))
+         ))`,
+      `CREATE TRIGGER auth_change_report_insert_consistent
+         BEFORE INSERT ON auth_requests
+         WHEN NEW.change_report_json IS NOT NULL AND (
+           NEW.files_changed IS NOT json_extract(NEW.change_report_json, '$.totals.files')
+           OR NEW.additions IS NOT json_extract(NEW.change_report_json, '$.totals.additions')
+           OR NEW.deletions IS NOT json_extract(NEW.change_report_json, '$.totals.deletions')
+         )
+         BEGIN SELECT RAISE(ABORT, 'auth change report totals must own headline counts'); END`,
+      `CREATE TRIGGER auth_change_report_immutable_update
+         BEFORE UPDATE OF change_report_json ON auth_requests
+         WHEN OLD.change_report_json IS NOT NEW.change_report_json
+         BEGIN SELECT RAISE(ABORT, 'auth change reports are immutable'); END`,
+      `CREATE TRIGGER auth_change_report_counts_immutable_update
+         BEFORE UPDATE OF files_changed, additions, deletions ON auth_requests
+         WHEN OLD.change_report_json IS NOT NULL AND (
+           OLD.files_changed IS NOT NEW.files_changed
+           OR OLD.additions IS NOT NEW.additions
+           OR OLD.deletions IS NOT NEW.deletions
+         )
+         BEGIN SELECT RAISE(ABORT, 'captured auth headline counts are immutable'); END`,
+    ],
+  },
 ];
 
 /**

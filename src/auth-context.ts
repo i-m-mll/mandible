@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 
 import type { Db } from "./db.js";
+import { collectAuthChangeReport } from "./auth-change-report.js";
+import type { AuthChangeReport } from "./contracts.js";
 
 export interface AuthMergeContextInput {
   type?: string | null;
@@ -21,7 +23,9 @@ export interface AuthMergeExecutionContext {
   repoName: string | null;
   baseBranch: string;
   headBranch: string;
+  baseSha: string;
   headSha: string;
+  mergeBaseSha: string;
 }
 
 export interface AuthMergeReviewMetadata {
@@ -29,6 +33,7 @@ export interface AuthMergeReviewMetadata {
   additions?: number;
   deletions?: number;
   diffSummary?: string;
+  changeReport?: AuthChangeReport;
 }
 
 // Issue 7d64d8f — there is deliberately no `commitMessage` here any more. The
@@ -308,7 +313,9 @@ export function resolveAuthMergeExecutionContext(
   verifyLocalBranch(repo.root, "base_branch", baseBranch);
   verifyLocalBranch(repo.root, "head_branch", headBranch);
   verifyHeadAheadOfBase(repo.root, baseBranch, headBranch);
+  const baseSha = resolveBranchHeadSha(repo.root, baseBranch);
   const headSha = resolveBranchHeadSha(repo.root, headBranch);
+  const mergeBaseSha = resolveMergeBaseSha(repo.root, baseSha, headSha);
 
   const executionCwd = resolveBaseBranchWorktree(repo.root, baseBranch);
   return {
@@ -317,7 +324,9 @@ export function resolveAuthMergeExecutionContext(
     repoName: repo.name,
     baseBranch,
     headBranch,
+    baseSha,
     headSha,
+    mergeBaseSha,
   };
 }
 
@@ -373,30 +382,29 @@ export function authReviewDiffRange(baseRef: string, headRef: string): string {
 
 export async function computeAuthMergeReviewMetadata(
   repoRoot: string,
-  baseBranch: string,
-  headBranch: string,
+  baseRef: string,
+  headRef: string,
   options: AuthMergeReviewMetadataOptions = {
     counts: true,
     diffSummary: true,
   }
 ): Promise<AuthMergeReviewMetadata> {
-  const range = authReviewDiffRange(
-    `refs/heads/${baseBranch}`,
-    `refs/heads/${headBranch}`
-  );
+  const baseSha = resolveCommitSha(repoRoot, baseRef);
+  const headSha = resolveCommitSha(repoRoot, headRef);
+  const mergeBaseSha = resolveMergeBaseSha(repoRoot, baseSha, headSha);
+  const range = `${mergeBaseSha}..${headSha}`;
   const metadata: AuthMergeReviewMetadata = {};
 
   if (options.counts !== false) {
-    const shortstat = execFileSync("git", ["diff", "--shortstat", range], {
-      cwd: repoRoot,
-      encoding: "utf-8",
-      timeout: 10000,
-      env: authGitEnv(),
-    }).trim();
-    const { filesChanged, additions, deletions } = parseGitShortstat(shortstat);
-    metadata.filesChanged = filesChanged;
-    metadata.additions = additions;
-    metadata.deletions = deletions;
+    const report = collectAuthChangeReport(repoRoot, {
+      base_sha: baseSha,
+      head_sha: headSha,
+      merge_base_sha: mergeBaseSha,
+    });
+    metadata.changeReport = report;
+    metadata.filesChanged = report.totals.files;
+    metadata.additions = report.totals.additions;
+    metadata.deletions = report.totals.deletions;
   }
 
   if (options.diffSummary !== false) {
@@ -404,6 +412,42 @@ export async function computeAuthMergeReviewMetadata(
   }
 
   return metadata;
+}
+
+function resolveCommitSha(repoRoot: string, ref: string): string {
+  try {
+    const sha = execFileSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: GIT_REF_TIMEOUT_MS,
+      env: authGitEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (sha) return sha;
+  } catch (error) {
+    throw new AuthExecutionContextError(
+      `Unable to resolve auth review commit ${ref}: ${describeGitFailure(classifyGitFailure(error, GIT_REF_TIMEOUT_MS))}`,
+    );
+  }
+  throw new AuthExecutionContextError(`Unable to resolve auth review commit ${ref}: git returned an empty value.`);
+}
+
+function resolveMergeBaseSha(repoRoot: string, baseSha: string, headSha: string): string {
+  try {
+    const sha = execFileSync("git", ["merge-base", baseSha, headSha], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: GIT_REF_TIMEOUT_MS,
+      env: authGitEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (sha) return sha;
+  } catch (error) {
+    throw new AuthExecutionContextError(
+      `Unable to resolve auth review merge base: ${describeGitFailure(classifyGitFailure(error, GIT_REF_TIMEOUT_MS))}`,
+    );
+  }
+  throw new AuthExecutionContextError("Unable to resolve auth review merge base: git returned an empty value.");
 }
 
 async function readBoundedDiffPreview(repoRoot: string, range: string): Promise<string> {
@@ -478,21 +522,6 @@ async function readBoundedDiffPreview(repoRoot: string, range: string): Promise<
       );
     });
   });
-}
-
-function parseGitShortstat(shortstat: string): {
-  filesChanged: number;
-  additions: number;
-  deletions: number;
-} {
-  const filesChanged = Number(shortstat.match(/(\d+) files? changed/)?.[1] ?? 0);
-  const additions = Number(shortstat.match(/(\d+) insertions?\(\+\)/)?.[1] ?? 0);
-  const deletions = Number(shortstat.match(/(\d+) deletions?\(-\)/)?.[1] ?? 0);
-  return {
-    filesChanged: Number.isFinite(filesChanged) ? filesChanged : 0,
-    additions: Number.isFinite(additions) ? additions : 0,
-    deletions: Number.isFinite(deletions) ? deletions : 0,
-  };
 }
 
 function requireValidBranch(field: "base_branch" | "head_branch", value: string | null): string {
