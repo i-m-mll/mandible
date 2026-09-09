@@ -25,7 +25,6 @@ export interface AuthMergeExecutionContext {
   headBranch: string;
   baseSha: string;
   headSha: string;
-  mergeBaseSha: string;
 }
 
 export interface AuthMergeReviewMetadata {
@@ -327,7 +326,6 @@ export function resolveAuthMergeExecutionContext(
   verifyHeadAheadOfBase(repo.root, baseBranch, headBranch);
   const baseSha = resolveBranchHeadSha(repo.root, baseBranch);
   const headSha = resolveBranchHeadSha(repo.root, headBranch);
-  const mergeBaseSha = resolveMergeBaseSha(repo.root, baseSha, headSha);
 
   const executionCwd = resolveBaseBranchWorktree(repo.root, baseBranch);
   return {
@@ -338,7 +336,6 @@ export function resolveAuthMergeExecutionContext(
     headBranch,
     baseSha,
     headSha,
-    mergeBaseSha,
   };
 }
 
