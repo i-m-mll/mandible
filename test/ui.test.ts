@@ -55,6 +55,7 @@ import {
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { AuthQueueView } from '../ui/src/views/auth';
+import type { AuthChangeReport } from '../src/contracts';
 import { GraphView } from '../ui/src/views/graph';
 import { SettingsView } from '../ui/src/views/settings';
 import { WorkOverviewView } from '../ui/src/views/work';
@@ -2535,6 +2536,45 @@ describe('SettingsView', () => {
 });
 
 describe('AuthQueueView', () => {
+  const changeReport: AuthChangeReport = {
+    schema: 'mandible-auth-change-report@1',
+    classifier_version: 'mandible-auth-change-classifier@1',
+    rules_version: 'mandible-auth-change-rules@1',
+    comparison: {
+      base_sha: 'a'.repeat(40),
+      head_sha: 'b'.repeat(40),
+      merge_base_sha: 'c'.repeat(40),
+    },
+    rename_similarity_percent: 50,
+    totals: { files: 4, additions: 15, deletions: 3, text_files: 3, binary_files: 1 },
+    files: [
+      {
+        old_path: 'src/auth.ts', new_path: 'src/auth.ts', change_kind: 'modified',
+        file_type_before: 'blob', file_type_after: 'blob', additions: 10, deletions: 2,
+        bytes_before: 800, bytes_after: 940, language: 'TypeScript', file_role: 'implementation',
+        generated: false, vendor: false,
+      },
+      {
+        old_path: null, new_path: 'src/generated schema.json', change_kind: 'added',
+        file_type_before: 'absent', file_type_after: 'blob', additions: 3, deletions: 0,
+        bytes_before: null, bytes_after: 180, language: 'JSON', file_role: 'configuration',
+        generated: true, vendor: false,
+      },
+      {
+        old_path: 'test/old auth.test.ts', new_path: 'test/auth flow.test.ts', change_kind: 'renamed',
+        file_type_before: 'blob', file_type_after: 'blob', additions: 2, deletions: 1,
+        bytes_before: 200, bytes_after: 220, language: 'TypeScript', file_role: 'tests',
+        generated: false, vendor: false,
+      },
+      {
+        old_path: 'assets/logo.bin', new_path: 'assets/logo.bin', change_kind: 'modified',
+        file_type_before: 'blob', file_type_after: 'blob', additions: null, deletions: null,
+        bytes_before: 1024, bytes_after: 2048, language: 'Unknown', file_role: 'other',
+        generated: false, vendor: true,
+      },
+    ],
+  };
+
   it('renders creator-attributed entity times and branch code without a vague session link', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-02T16:00:00Z'));
@@ -2718,6 +2758,148 @@ describe('AuthQueueView', () => {
     expect(tabs.map((tab) => tab.getAttribute('aria-label'))).toEqual(['Info', 'Console', 'Diff']);
     expect(tabs.map((tab) => tab.getAttribute('title'))).toEqual(['Info', 'Console', 'Diff']);
     expect(tabs[0]?.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('renders and persists the canonical change inventory views beneath Specification', async () => {
+    installMemoryLocalStorage();
+    const first = {
+      id: 'req-change-report-first', title: 'Captured breakdown', type: 'merge' as const,
+      repo: 'mandible', status: 'pending', diff_summary: '', spec_content: '', output: '',
+      change_report: changeReport,
+    };
+    const second = {
+      ...first,
+      id: 'req-change-report-second',
+      title: 'Second captured breakdown',
+    };
+    const storageKey = 'mandible:auth:change-breakdown:v1:req-change-report-first';
+    const view = render(h(AuthQueueView, {
+      queue: [first, second], outputs: {}, selectedAuthId: first.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+
+    const leftColumn = document.querySelector('.auth-detail__left-col') as HTMLElement;
+    expect(Array.from(leftColumn.querySelectorAll(':scope > .collapsible-panel')).map(
+      (panel) => panel.querySelector('.collapsible-panel__toggle')?.textContent?.trim(),
+    )).toEqual(['Commit message', 'Specification', 'Change breakdown']);
+    expect(within(leftColumn).getByText('4 files · +15 −3')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
+    expect(screen.getByText('src/auth.ts')).toBeTruthy();
+    expect(screen.getByText('test/old auth.test.ts')).toBeTruthy();
+    expect(screen.getByText('test/auth flow.test.ts')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Generated / vendor' }));
+    expect(screen.getByText(/independent flags/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Vendor/ }));
+    expect(screen.getByText('assets/logo.bin')).toBeTruthy();
+    expect(screen.getByText('1.0 KiB → 2.0 KiB')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Directory' }));
+    fireEvent.click(screen.getByRole('button', { name: /src\/.*2 files/ }));
+    expect(screen.getByRole('navigation', { name: 'Change report directory' }).textContent).toContain('root/src');
+    expect(screen.getByText('src/generated schema.json')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Largest files' }));
+    const largestPaths = Array.from(document.querySelectorAll(
+      '.auth-change-files--largest .auth-change-file__path',
+    )).map((node) => node.textContent);
+    expect(largestPaths).toEqual([
+      'src/auth.ts',
+      'src/generated schema.json',
+      'test/old auth.test.ts → test/auth flow.test.ts',
+      'assets/logo.bin',
+    ]);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'File role' }));
+    const breakdownPanel = screen.getByText('Change breakdown').closest('.collapsible-panel') as HTMLElement;
+    fireEvent.click(within(breakdownPanel).getByRole('button', { name: 'Change breakdown' }));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(storageKey) ?? '{}')).toMatchObject({
+      expanded: false,
+      view: 'role',
+      directoryPath: ['src'],
+    }));
+
+    view.rerender(h(AuthQueueView, {
+      queue: [first, second], outputs: {}, selectedAuthId: second.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    view.rerender(h(AuthQueueView, {
+      queue: [first, second], outputs: {}, selectedAuthId: first.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    const restored = screen.getByText('Change breakdown').closest('.collapsible-panel') as HTMLElement;
+    expect(within(restored).getByRole('button', { name: 'Change breakdown' }).getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(within(restored).getByRole('button', { name: 'Change breakdown' }));
+    expect(screen.getByRole('tab', { name: 'File role' }).getAttribute('aria-selected')).toBe('true');
+
+    cleanup();
+    render(h(AuthQueueView, {
+      queue: [first], outputs: {}, selectedAuthId: first.id,
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    expect(screen.getByRole('tab', { name: 'File role' }).getAttribute('aria-selected')).toBe('true');
+    window.localStorage.removeItem(storageKey);
+  });
+
+  it('renders legacy merge absence honestly and omits breakdowns for non-merge actions', () => {
+    const view = render(h(AuthQueueView, {
+      queue: [{
+        id: 'req-legacy-breakdown', title: 'Legacy merge', type: 'merge', repo: 'mandible',
+        status: 'completed', diff_summary: '', spec_content: '', output: '', change_report: null,
+      }],
+      outputs: {}, selectedAuthId: 'req-legacy-breakdown',
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    expect(screen.getByText('Unavailable')).toBeTruthy();
+    expect(screen.getByText(/Older requests are not recomputed/)).toBeTruthy();
+
+    view.rerender(h(AuthQueueView, {
+      queue: [{
+        id: 'req-data-delete-breakdown', title: 'Delete data', type: 'data-delete', repo: 'mandible',
+        status: 'pending', diff_summary: '', spec_content: '', output: '', change_report: null,
+      }],
+      outputs: {}, selectedAuthId: 'req-data-delete-breakdown',
+      onApprove: () => undefined, onReject: () => undefined,
+    }));
+    expect(screen.queryByText('Change breakdown')).toBeNull();
+  });
+
+  it('hydrates the frozen change report when a history summary is selected', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/auth/request/req-history-breakdown') {
+        return Promise.resolve(new Response(JSON.stringify({
+          id: 'req-history-breakdown',
+          title: 'Historical breakdown',
+          type: 'merge',
+          repo: 'mandible',
+          status: 'completed',
+          diff_summary: '',
+          spec_content: '',
+          output: '',
+          change_report: changeReport,
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    }));
+
+    render(h(AuthQueueView, {
+      queue: [],
+      historyQueue: [{
+        id: 'req-history-breakdown', title: 'Historical breakdown', type: 'merge',
+        repo: 'mandible', status: 'completed',
+      }],
+      outputs: {},
+      selectedAuthId: 'req-history-breakdown',
+      onApprove: () => undefined,
+      onReject: () => undefined,
+    }));
+
+    await waitFor(() => expect(screen.getByText('4 files · +15 −3')).toBeTruthy());
+    expect(screen.queryByText('Unavailable')).toBeNull();
   });
 
   it('retains a finalized active-filter selection until another request is selected', async () => {
