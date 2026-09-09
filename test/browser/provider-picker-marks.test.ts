@@ -1,10 +1,14 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
+import { connectCdp, type CdpClient, waitFor } from './chromium-cdp';
 
 type ProviderMarkState = {
   activeLabel: string | null;
+  documentFocused: boolean;
+  matchesFocus: boolean;
   before: { background: string; borderWidth: string; markOpacity: string };
   focused: { background: string; outlineStyle: string; outlineWidth: string; markOpacity: string };
 };
@@ -17,7 +21,7 @@ const CHROME_CANDIDATES = [
   '/usr/bin/chromium',
 ].filter((candidate): candidate is string => Boolean(candidate));
 
-function renderProviderMarkState(): ProviderMarkState {
+async function renderProviderMarkState(): Promise<ProviderMarkState> {
   const chrome = CHROME_CANDIDATES.find(existsSync);
   if (!chrome) throw new Error('A Chromium browser is required for the provider mark interaction regression.');
 
@@ -30,7 +34,64 @@ function renderProviderMarkState(): ProviderMarkState {
     <button class="new-chat-provider-picker__provider" aria-label="Start with Codex (OpenAI)">
       <svg class="new-chat-provider-picker__mark" viewBox="0 0 721 721" aria-hidden="true"><path d="M0 0h721v721H0z" /></svg>
     </button>
-    <script>
+  </body></html>`;
+  const fixtureUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+  const directory = mkdtempSync(join(tmpdir(), 'mandible-provider-mark-'));
+  const profile = join(directory, 'profile');
+  const browser = spawn(chrome, [
+    '--headless=new',
+    '--disable-gpu',
+    '--no-sandbox',
+    '--disable-background-networking',
+    '--disable-default-apps',
+    '--disable-extensions',
+    '--no-first-run',
+    '--remote-debugging-port=0',
+    `--user-data-dir=${profile}`,
+    '--window-size=320,240',
+    fixtureUrl,
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let browserStderr = '';
+  browser.stderr?.on('data', (chunk) => {
+    browserStderr = `${browserStderr}${String(chunk)}`.slice(-4_000);
+  });
+  const requireRunning = () => {
+    if (browser.exitCode !== null) {
+      throw new Error(`Chromium exited during provider mark setup (${browser.exitCode}): ${browserStderr}`);
+    }
+  };
+
+  let client: CdpClient | null = null;
+  try {
+    const port = await waitFor('Chromium provider mark DevTools port', () => {
+      requireRunning();
+      const path = join(profile, 'DevToolsActivePort');
+      if (!existsSync(path)) return null;
+      const rawPort = readFileSync(path, 'utf8').split('\n')[0]?.trim() ?? '';
+      if (!/^\d+$/.test(rawPort)) return null;
+      const value = Number(rawPort);
+      return value > 0 ? value : null;
+    });
+    const page = await waitFor('Chromium provider mark fixture page target', () => {
+      requireRunning();
+      return fetch(`http://127.0.0.1:${port}/json/list`)
+        .then((response) => response.json())
+        .then((entries: Array<{ type: string; url: string; webSocketDebuggerUrl: string }>) =>
+          entries.find((entry) => entry.type === 'page' && entry.url.startsWith('data:text/html')) ?? null)
+        .catch(() => null);
+    });
+    client = await connectCdp(page.webSocketDebuggerUrl, 'Chromium provider mark');
+    const evaluate = async (expression: string): Promise<any> => {
+      const response = await client!.call('Runtime.evaluate', { expression, returnByValue: true });
+      if (response.exceptionDetails) throw new Error(`Chromium provider mark evaluation failed: ${JSON.stringify(response.exceptionDetails)}`);
+      return response.result?.value;
+    };
+    await waitFor('Chromium provider mark fixture readiness', async () => {
+      requireRunning();
+      return (await evaluate("document.readyState === 'complete'")) ? true : null;
+    });
+    await client.call('Emulation.setFocusEmulationEnabled', { enabled: true });
+    return await evaluate(`(() => {
       const button = document.querySelector('button');
       const mark = document.querySelector('svg');
       const beforeButton = getComputedStyle(button);
@@ -43,8 +104,10 @@ function renderProviderMarkState(): ProviderMarkState {
       button.focus();
       const focusedButton = getComputedStyle(button);
       const focusedMark = getComputedStyle(mark);
-      document.title = btoa(JSON.stringify({
+      return {
         activeLabel: document.activeElement?.getAttribute('aria-label') ?? null,
+        documentFocused: document.hasFocus(),
+        matchesFocus: button.matches(':focus'),
         before,
         focused: {
           background: focusedButton.backgroundColor,
@@ -52,29 +115,30 @@ function renderProviderMarkState(): ProviderMarkState {
           outlineWidth: focusedButton.outlineWidth,
           markOpacity: focusedMark.opacity,
         },
-      }));
-    </script>
-  </body></html>`;
-
-  const rendered = spawnSync(chrome, [
-    '--headless=new',
-    '--disable-gpu',
-    '--no-sandbox',
-    '--dump-dom',
-    '--window-size=320,240',
-    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
-  ], { encoding: 'utf8', maxBuffer: 10_000_000 });
-  if (rendered.status !== 0) throw new Error(`Chromium provider mark fixture failed: ${rendered.stderr}`);
-  const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
-  if (!encoded) throw new Error('Chromium provider mark fixture did not return computed styles.');
-  return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as ProviderMarkState;
+      };
+    })()`);
+  } finally {
+    client?.close();
+    if (browser.exitCode === null) {
+      const exited = new Promise<boolean>((resolveExit) => browser.once('exit', () => resolveExit(true)));
+      browser.kill('SIGTERM');
+      const stopped = await Promise.race([
+        exited,
+        new Promise<boolean>((resolveExit) => setTimeout(() => resolveExit(false), 1_000)),
+      ]);
+      if (!stopped && browser.exitCode === null) browser.kill('SIGKILL');
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 describe('New chat provider marks', () => {
-  it('keeps the default hit target unboxed and reveals the darker focus treatment', () => {
-    const state = renderProviderMarkState();
+  it('keeps the default hit target unboxed and reveals the darker focus treatment', async () => {
+    const state = await renderProviderMarkState();
 
     expect(state.activeLabel).toBe('Start with Codex (OpenAI)');
+    expect(state.documentFocused).toBe(true);
+    expect(state.matchesFocus).toBe(true);
     expect(state.before.background).toBe('rgba(0, 0, 0, 0)');
     expect(state.before.borderWidth).toBe('0px');
     expect(Number(state.focused.markOpacity)).toBeGreaterThan(Number(state.before.markOpacity));

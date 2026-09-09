@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import WebSocket from 'ws';
+import { connectCdp, type CdpClient, waitFor } from './chromium-cdp';
 
 type Rect = Pick<DOMRect, 'left' | 'right' | 'width'>;
 type Mode = 'open' | 'work' | 'hidden' | 'collapsed' | 'timeline';
@@ -108,58 +108,6 @@ function pixelsAt(screenshot: string, left: number, top: number, width: number):
   }));
 }
 
-type CdpClient = {
-  call: (method: string, params?: Record<string, unknown>) => Promise<Record<string, any>>;
-  close: () => void;
-};
-
-async function connectCdp(url: string): Promise<CdpClient> {
-  const socket = new WebSocket(url);
-  await new Promise<void>((resolveOpen, rejectOpen) => {
-    const timer = setTimeout(() => {
-      socket.close();
-      rejectOpen(new Error('Timed out opening the Chromium DevTools websocket.'));
-    }, 5_000);
-    socket.addEventListener('open', () => {
-      clearTimeout(timer);
-      resolveOpen();
-    }, { once: true });
-    socket.addEventListener('error', () => {
-      clearTimeout(timer);
-      rejectOpen(new Error('Chromium DevTools websocket failed to open.'));
-    }, { once: true });
-  });
-  let nextId = 1;
-  const pending = new Map<number, { resolve: (value: Record<string, any>) => void; reject: (reason: Error) => void }>();
-  socket.addEventListener('message', (event) => {
-    const message = JSON.parse(String(event.data)) as { id?: number; error?: { message: string }; result?: Record<string, any> };
-    if (message.id === undefined) return;
-    const waiter = pending.get(message.id);
-    if (!waiter) return;
-    pending.delete(message.id);
-    if (message.error) waiter.reject(new Error(message.error.message));
-    else waiter.resolve(message.result ?? {});
-  });
-  return {
-    call: (method, params = {}) => new Promise((resolveCall, rejectCall) => {
-      const id = nextId++;
-      pending.set(id, { resolve: resolveCall, reject: rejectCall });
-      socket.send(JSON.stringify({ id, method, params }));
-    }),
-    close: () => socket.close(),
-  };
-}
-
-async function waitFor<T>(stage: string, read: () => T | null | Promise<T | null>, timeoutMs = 10_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = await read();
-    if (value !== null) return value;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
-  }
-  throw new Error(`Timed out waiting for native Chromium ${stage} after ${timeoutMs}ms.`);
-}
-
 async function renderNativePointerDrag(): Promise<{
   boundary: number;
   shadowHits: string[];
@@ -198,7 +146,7 @@ async function renderNativePointerDrag(): Promise<{
   };
   let client: CdpClient | null = null;
   try {
-    const port = await waitFor('DevToolsActivePort', () => {
+    const port = await waitFor('native Chromium DevToolsActivePort', () => {
       requireRunning();
       const path = join(profile, 'DevToolsActivePort');
       if (!existsSync(path)) return null;
@@ -207,7 +155,7 @@ async function renderNativePointerDrag(): Promise<{
       const value = Number(rawPort);
       return value > 0 ? value : null;
     });
-    const page = await waitFor('fixture page target', () => {
+    const page = await waitFor('native Chromium fixture page target', () => {
       requireRunning();
       return fetch(`http://127.0.0.1:${port}/json/list`)
         .then((response) => response.json())
@@ -215,12 +163,12 @@ async function renderNativePointerDrag(): Promise<{
           entries.find((entry) => entry.type === 'page' && entry.url.startsWith('data:text/html')) ?? null)
         .catch(() => null);
     });
-    client = await connectCdp(page.webSocketDebuggerUrl);
+    client = await connectCdp(page.webSocketDebuggerUrl, 'native Chromium');
     const evaluate = async (expression: string): Promise<any> => {
       const response = await client!.call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
       return response.result?.value;
     };
-    await waitFor('fixture readiness', async () => {
+    await waitFor('native Chromium fixture readiness', async () => {
       requireRunning();
       return (await evaluate("document.readyState==='complete' && window.__nativeResizeReady===true")) ? true : null;
     });
