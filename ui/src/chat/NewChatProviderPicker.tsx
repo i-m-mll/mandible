@@ -37,7 +37,7 @@ export function NewChatProviderPicker({
 }): JSX.Element | null {
   const overlay = useContext(DetailPaneOverlayContext);
   const dialog = useRef<HTMLDivElement>(null);
-  const closeable = draft.state !== 'ready' && draft.state !== 'abandoned';
+  const closeable = draft.state !== 'accepted' && draft.state !== 'abandoned';
 
   useEffect(() => {
     if (!closeable) return undefined;
@@ -49,7 +49,7 @@ export function NewChatProviderPicker({
     return () => document.removeEventListener('keydown', closeOnEscape);
   }, [closeable, onDiscard, overlay?.host]);
 
-  if (!overlay?.host || draft.state === 'abandoned' || draft.state === 'ready') return null;
+  if (!overlay?.host || draft.state === 'abandoned' || draft.state === 'accepted') return null;
   const busy = draft.state === 'starting';
   return createPortal(
     <div

@@ -92,6 +92,25 @@ export class ConversationControlService {
     return this.store.snapshot(conversationId, adapter?.capabilities ?? null, adapter?.id ?? null);
   }
 
+  async ownsController(conversationId: string, generation: number): Promise<boolean> {
+    const snapshot = this.getSnapshot(conversationId);
+    if (!snapshot.ok || snapshot.value.ownership.kind !== "mandible"
+        || snapshot.value.ownership.generation !== generation) return false;
+    const ownership = snapshot.value.ownership;
+    const adapter = this.adapters.byAdapterId(ownership.adapter_id);
+    if (!adapter) return false;
+    const probed = await trapAdapterCall(adapter.id, () => adapter.probe({
+      conversation_id: conversationId,
+      provider_session_id: ownership.provider_session_id,
+      controller_instance_id: ownership.controller_instance_id,
+      generation,
+    }));
+    return probed.ok
+      && probed.value.kind === "owned"
+      && probed.value.provider_session_id === ownership.provider_session_id
+      && probed.value.controller_instance_id === ownership.controller_instance_id;
+  }
+
   async acquireNew(
     request: NewConversationControllerRequest,
     commit: (lease: NewConversationControllerLease) => void,

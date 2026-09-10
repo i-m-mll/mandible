@@ -297,6 +297,7 @@ export class ApiError extends Error {
 }
 
 export type ConversationSpawnFailure = NonNullable<ContractConversationSpawnReceipt['error']>;
+export type ConversationSpawnReceipt = ContractConversationSpawnReceipt;
 
 export class ConversationSpawnApiError extends Error {
   readonly status: number;
@@ -2091,6 +2092,15 @@ export async function startProviderChat(
   return json as { conversation_id: string; spawn: ContractConversationSpawnReceipt };
 }
 
+export async function getProviderChat(id: string): Promise<ContractConversationSpawnReceipt> {
+  const response = await apiGet(`/api/conversation-spawns/${encodeURIComponent(id)}`);
+  const result = await parseMaybeJson(response) as
+    | { ok: true; value: ContractConversationSpawnReceipt }
+    | { ok: false; error: unknown };
+  if (!result.ok) throw new Error('Conversation creation receipt is unavailable.');
+  return result.value;
+}
+
 export async function closeConsoleSession(sessionId: string): Promise<void> {
   await apiDelete(`/api/console/sessions/${encodeURIComponent(sessionId)}`);
 }
@@ -2563,19 +2573,37 @@ export async function submitConversationControl(
       idempotency_key: crypto.randomUUID(),
     }),
   });
-  const payload = await parseMaybeJson(response) as
-    | { ok: true; value: AcceptedConversationSubmission }
-    | { ok: false; error: ConversationControlError; snapshot?: ConversationControlSnapshot | null };
+  const payload = await parseMaybeJson(response) as unknown;
   if (!response.ok) {
-    const failed = payload as Extract<typeof payload, { ok: false }>;
-    const error = new Error(failed.error.kind) as ConversationControlApiError;
-    error.status = response.status;
-    error.controlError = failed.error;
-    error.snapshot = failed.snapshot ?? null;
-    throw error;
+    const failed = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
+    const candidate = failed?.error;
+    if (failed?.ok === false && candidate && typeof candidate === 'object'
+        && typeof (candidate as { kind?: unknown }).kind === 'string') {
+      const error = new Error((candidate as ConversationControlError).kind) as ConversationControlApiError;
+      error.status = response.status;
+      error.controlError = candidate as ConversationControlError;
+      error.snapshot = failed.snapshot && typeof failed.snapshot === 'object'
+        ? failed.snapshot as ConversationControlSnapshot
+        : null;
+      throw error;
+    }
+    const message = typeof failed?.message === 'string'
+      ? failed.message
+      : typeof candidate === 'string'
+        ? candidate
+        : `POST ${path} failed: ${response.status}`;
+    const code = typeof failed?.code === 'string'
+      ? failed.code
+      : typeof candidate === 'string'
+        ? candidate
+        : null;
+    throw new ApiError(message, response.status, code);
   }
-  if (!payload.ok) throw new Error(payload.error.kind);
-  return payload.value;
+  const accepted = payload as
+    | { ok: true; value: AcceptedConversationSubmission }
+    | { ok: false; error: ConversationControlError };
+  if (!accepted.ok) throw new Error(accepted.error.kind);
+  return accepted.value;
 }
 
 // ── Work Units API — Bug: 8a281b3 ──

@@ -1,4 +1,4 @@
-import type { ConversationSpawnFailure } from '../api.js';
+import type { ConversationSpawnFailure, ConversationSpawnReceipt } from '../api.js';
 
 export type NewChatProvider = 'codex' | 'claude_code';
 export type NewChatPlacement = {
@@ -13,14 +13,15 @@ export type NewChatDraft =
   | (DraftIdentity & { state: 'choosing' })
   | (DraftIdentity & { state: 'starting'; provider: NewChatProvider })
   | (DraftIdentity & { state: 'failed'; provider: NewChatProvider; failure: ConversationSpawnFailure })
-  | (DraftIdentity & { state: 'ready'; provider: NewChatProvider; conversationId: string })
+  | (DraftIdentity & { state: 'accepted'; provider: NewChatProvider; conversationId: string; spawn: ConversationSpawnReceipt })
   | (DraftIdentity & { state: 'abandoned' });
 
 export type NewChatDraftAction =
   | { type: 'choose'; provider: NewChatProvider }
   | { type: 'fail'; failure: ConversationSpawnFailure }
   | { type: 'retry' }
-  | { type: 'ready'; conversationId: string }
+  | { type: 'accepted'; conversationId: string; spawn: ConversationSpawnReceipt }
+  | { type: 'observe'; spawn: ConversationSpawnReceipt }
   | { type: 'abandon' };
 
 export function reduceNewChatDraft(draft: NewChatDraft, action: NewChatDraftAction): NewChatDraft {
@@ -31,9 +32,17 @@ export function reduceNewChatDraft(draft: NewChatDraft, action: NewChatDraftActi
       return draft.state === 'starting' ? { ...draft, state: 'failed', failure: action.failure } : draft;
     case 'retry':
       return draft.state === 'failed' ? { ...draft, state: 'starting' } : draft;
-    case 'ready':
-      return draft.state === 'starting' ? { ...draft, state: 'ready', conversationId: action.conversationId } : draft;
+    case 'accepted':
+      return draft.state === 'starting'
+        ? { ...draft, state: 'accepted', conversationId: action.conversationId, spawn: action.spawn }
+        : draft;
+    case 'observe':
+      if (draft.state !== 'accepted' || action.spawn.reservation_id !== draft.conversationId) return draft;
+      if (action.spawn.attempt_count < draft.spawn.attempt_count) return draft;
+      if (action.spawn.attempt_count === draft.spawn.attempt_count
+          && action.spawn.updated_at < draft.spawn.updated_at) return draft;
+      return { ...draft, spawn: action.spawn };
     case 'abandon':
-      return draft.state === 'ready' ? draft : { ...draft, state: 'abandoned' };
+      return draft.state === 'accepted' ? draft : { ...draft, state: 'abandoned' };
   }
 }
