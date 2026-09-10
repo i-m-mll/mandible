@@ -136,10 +136,10 @@ describe("restricted project route enforcement", () => {
       method: "POST",
       url: "/api/conversation-spawns",
       body: {
-        schema: "mandible-conversation-spawn-request@2",
+        schema: "mandible-conversation-spawn-request@3",
         idempotency_key: "10000000-0000-4000-8000-000000000001",
         provider: "codex",
-        placement: { project_id: project.id, checkout_id: "spawn-checkout" },
+        placement: { kind: "project", project_id: project.id, checkout_id: "spawn-checkout" },
       },
       credential: token,
       transport: "http" as const,
@@ -153,7 +153,7 @@ describe("restricted project route enforcement", () => {
       permission: "spawn_console",
     });
     const allowed = await router.invoke(input);
-    expect(allowed.status).toBe(201);
+    expect(allowed.status).toBe(202);
     expect(allowed.body).toMatchObject({
       session: {
         canonical_project_id: project.id,
@@ -170,7 +170,7 @@ describe("restricted project route enforcement", () => {
     }));
     expect(manager.startConversation).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000001", {
       timeoutMs: 30_000,
-      signal: undefined,
+      signal: expect.any(AbortSignal),
       provenance,
     });
 
@@ -189,7 +189,7 @@ describe("restricted project route enforcement", () => {
         provider: "claude_code",
       },
     });
-    expect(claude.status).toBe(201);
+    expect(claude.status).toBe(202);
     expect(manager.create).toHaveBeenLastCalledWith(expect.objectContaining({
       id: "10000000-0000-4000-8000-000000000004",
       command: "claude",
@@ -198,7 +198,7 @@ describe("restricted project route enforcement", () => {
       runOptions: { model: "opus", permission_mode: "bypassPermissions" },
     }));
     expect(claude.body).toMatchObject({
-      spawn: { state: "ready", provider_session_id: null },
+      spawn: { state: "starting", provider_session_id: null },
       session: { canonical_project_id: project.id, canonical_checkout_id: "spawn-checkout" },
     });
 
@@ -208,17 +208,18 @@ describe("restricted project route enforcement", () => {
       ...input,
       body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000002" },
     });
-    expect(failed.status).toBe(502);
-    expect(failed.body).toMatchObject({
-      ok: false,
-      error: {
+    expect(failed.status).toBe(202);
+    await vi.waitFor(() => {
+      const row = db.prepare("SELECT state, error_json FROM conversation_spawn_requests WHERE id = ?")
+        .get("10000000-0000-4000-8000-000000000002") as { state: string; error_json: string };
+      expect(row.state).toBe("failed");
+      expect(JSON.parse(row.error_json)).toMatchObject({
         code: "provider_startup_failed",
         message: "The provider failed before its native conversation was ready.",
         retryable: true,
-      },
-      spawn: { state: "failed", native_session_id: null },
+      });
+      expect(row.error_json).not.toContain("secret provider error");
     });
-    expect(JSON.stringify(failed.body)).not.toContain("secret provider error");
     expect(manager.stop).not.toHaveBeenCalled();
     expect(manager.delete).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000002");
 
@@ -228,15 +229,16 @@ describe("restricted project route enforcement", () => {
       ...input,
       body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000005" },
     });
-    expect(cleanupFailed.status).toBe(502);
-    expect(cleanupFailed.body).toMatchObject({
-      ok: false,
-      error: {
+    expect(cleanupFailed.status).toBe(202);
+    await vi.waitFor(() => {
+      const row = db.prepare("SELECT state, error_json FROM conversation_spawn_requests WHERE id = ?")
+        .get("10000000-0000-4000-8000-000000000005") as { state: string; error_json: string };
+      expect(row.state).toBe("failed");
+      expect(JSON.parse(row.error_json)).toMatchObject({
         code: "provider_startup_failed",
         message: "Provider startup failed and its temporary session cleanup did not complete.",
         retryable: false,
-      },
-      spawn: { state: "failed", native_session_id: null },
+      });
     });
 
     const controller = new AbortController();
@@ -256,13 +258,13 @@ describe("restricted project route enforcement", () => {
       signal: controller.signal,
     });
     controller.abort();
-    await abortedResponse;
+    expect((await abortedResponse).status).toBe(202);
     const abortedRow = db.prepare(
       "SELECT state, native_session_id, error_json FROM conversation_spawn_requests WHERE idempotency_key = ?",
-    ).get("10000000-0000-4000-8000-000000000003") as { state: string; native_session_id: string | null; error_json: string };
-    expect(abortedRow.state).toBe("failed");
-    expect(abortedRow.native_session_id).toBeNull();
-    expect(JSON.parse(abortedRow.error_json)).toMatchObject({ code: "client_aborted", retryable: true });
+    ).get("10000000-0000-4000-8000-000000000003") as { state: string; native_session_id: string | null; error_json: string | null };
+    expect(abortedRow.state).toBe("starting");
+    expect(abortedRow.native_session_id).toBe("10000000-0000-4000-8000-000000000003");
+    expect(abortedRow.error_json).toBeNull();
   });
 
   it("denies restricted issue, artifact, and work reads and restores them with read access", async () => {

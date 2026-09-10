@@ -2609,6 +2609,31 @@ async function ingestFilePass(
     return;
   }
 
+  const spawnIdentity = db.prepare(`SELECT id
+      FROM conversation_spawn_requests
+     WHERE schema_version = 'mandible-conversation-spawn-request@3'
+       AND provider = ?
+       AND provider_session_id = ?
+     ORDER BY updated_at DESC, id
+     LIMIT 1`)
+    .get(result.conversation.source, result.conversation.session_id) as { id: string } | undefined;
+  if (spawnIdentity) {
+    const bound = db.prepare("SELECT * FROM conversations WHERE id = ?")
+      .get(spawnIdentity.id) as typeof existing;
+    if (bound) {
+      existing = bound;
+      if (!existingRows.some((row) => row.id === bound.id)) existingRows.push(bound);
+    } else if (existing && existing.id !== spawnIdentity.id) {
+      logger("warn", "ingestion_spawn_identity_conflict", {
+        file: filePath,
+        provider_session_id: result.conversation.session_id,
+        spawn_id: spawnIdentity.id,
+        existing_conversation_id: existing.id,
+      });
+      return;
+    }
+  }
+
   const repairedDuplicateIds = reconcileDuplicateConversationPathOwnership(
     db,
     filePath,
@@ -2741,7 +2766,7 @@ async function ingestFilePass(
 
   // Determine if this is new or updated
   const isNew = !existing;
-  const conversationId = existing?.id ?? randomUUID();
+  const conversationId = existing?.id ?? spawnIdentity?.id ?? randomUUID();
 
   // Bug: 212ed66 — hard guard: never insert conversations with 0 blocks
   if (result.blocks.length === 0 && !isProviderTitleOnlyAppend) {

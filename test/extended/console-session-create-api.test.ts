@@ -18,14 +18,14 @@ describe('console session creation payload', () => {
     await startProviderChat(
       '10000000-0000-4000-8000-000000000001',
       'codex',
-      { project_id: 'project-1', checkout_id: 'checkout-1' },
+      { kind: 'project', project_id: 'project-1', checkout_id: 'checkout-1' },
     );
 
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
-      schema: 'mandible-conversation-spawn-request@2',
+      schema: 'mandible-conversation-spawn-request@3',
       idempotency_key: '10000000-0000-4000-8000-000000000001',
       provider: 'codex',
-      placement: { project_id: 'project-1', checkout_id: 'checkout-1' },
+      placement: { kind: 'project', project_id: 'project-1', checkout_id: 'checkout-1' },
     });
   });
 
@@ -68,7 +68,7 @@ describe('console session creation payload', () => {
     const result = startProviderChat(
       '10000000-0000-4000-8000-000000000001',
       'codex',
-      { project_id: 'project-1', checkout_id: 'checkout-1' },
+      { kind: 'project', project_id: 'project-1', checkout_id: 'checkout-1' },
     );
     await expect(result).rejects.toBeInstanceOf(ConversationSpawnApiError);
     await expect(result).rejects.toMatchObject({ status: 502, failure, spawn });
@@ -83,7 +83,7 @@ describe('console session creation payload', () => {
     const result = startProviderChat(
       '10000000-0000-4000-8000-000000000001',
       'codex',
-      { project_id: 'project-1', checkout_id: 'checkout-1' },
+      { kind: 'project', project_id: 'project-1', checkout_id: 'checkout-1' },
       { signal: controller.signal },
     );
     controller.abort(new DOMException('abandoned', 'AbortError'));

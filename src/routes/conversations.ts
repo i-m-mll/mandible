@@ -39,6 +39,7 @@ import {
 } from "../conversations/freshness.js";
 import type { ResponseLike } from "../server.js";
 import type { ConversationExternalNavigation } from "../contracts.js";
+import type { ConversationSpawnReceipt } from "../conversation-spawn/types.js";
 import type { SessionRegistry } from "../registry.js";
 import {
   executeConversationExternalNavigation,
@@ -145,6 +146,8 @@ function mapSearchConversation(row: ConversationRow) {
 type ProjectedConversationRow = ConversationRow & {
   canonical_project_id?: string | null;
   canonical_project_key?: string | null;
+  canonical_placement_explicit?: number;
+  spawn?: ConversationSpawnReceipt;
 };
 
 function mapSidebarConversation(
@@ -157,6 +160,7 @@ function mapSidebarConversation(
       : mapConversation(row)),
     canonical_project_id: row.canonical_project_id ?? null,
     canonical_project_key: row.canonical_project_key ?? null,
+    ...(row.spawn ? { spawn: row.spawn } : {}),
   };
 }
 
@@ -724,8 +728,74 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     })).digest("base64url");
 
     const clientPinned = new Set(clientPinnedIds);
-    let rows = (db.prepare(`SELECT c.* FROM conversations c ${where}`).all(...params) as ConversationRow[])
+    let rows = (db.prepare(`SELECT c.*, s.project_id AS canonical_project_id,
+        CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS canonical_placement_explicit,
+        CASE WHEN s.id IS NULL THEN NULL ELSE p.project_key END AS canonical_project_key
+      FROM conversations c
+      LEFT JOIN conversation_spawn_requests s ON s.id = c.id AND s.schema_version = 'mandible-conversation-spawn-request@3'
+      LEFT JOIN ledger_projects p ON p.id = s.project_id
+      ${where}`).all(...params) as ProjectedConversationRow[])
       .map((row) => clientPinned.has(row.id) ? { ...row, starred: 1 } : row);
+    if (!query.starred && !(Number.isFinite(minBlocks) && minBlocks > 0)) {
+      const spawnRows = db.prepare(`SELECT * FROM conversation_spawn_requests s
+        WHERE s.schema_version = 'mandible-conversation-spawn-request@3'
+          AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id = s.id)
+        ORDER BY s.created_at DESC, s.id`).all() as Array<{
+          id: string; provider: string; project_id: string | null; checkout_id: string | null;
+          request_json: string; state: string; attempt_count: number; native_session_id: string | null;
+          provider_session_id: string | null; provider_receipt_json: string | null; error_json: string | null;
+          schema_version: string; created_at: number; updated_at: number;
+        }>;
+      for (const spawn of spawnRows) {
+        const source = spawn.provider === "codex" ? "codex" : "claude_code";
+        const title = spawn.provider === "codex" ? "New Codex chat" : "New Claude chat";
+        if (query.source && query.source !== source) continue;
+        if (searchNeedle && !title.toLowerCase().includes(searchNeedle.toLowerCase())) continue;
+        const receipt = {
+          schema: "mandible-conversation-spawn-receipt@3",
+          reservation_id: spawn.id,
+          request: JSON.parse(spawn.request_json),
+          state: spawn.state,
+          attempt_count: spawn.attempt_count,
+          native_session_id: spawn.native_session_id,
+          provider_session_id: spawn.provider_session_id,
+          provider_receipt: spawn.provider_receipt_json ? JSON.parse(spawn.provider_receipt_json) : null,
+          error: spawn.error_json ? JSON.parse(spawn.error_json) : null,
+          created_at: spawn.created_at,
+          updated_at: spawn.updated_at,
+        } as ConversationSpawnReceipt;
+        rows.push({
+          id: spawn.id,
+          source,
+          source_path: `mandible://chat/${spawn.id}`,
+          source_hash: "",
+          source_mtime: spawn.updated_at,
+          title,
+          summary: null,
+          started_at: new Date(spawn.created_at).toISOString(),
+          ended_at: spawn.state === "failed" || spawn.state === "cancelled" ? new Date(spawn.updated_at).toISOString() : null,
+          block_count: 0,
+          session_id: spawn.provider_session_id ?? spawn.id,
+          project_path: null,
+          cwd: null,
+          branch: null,
+          model: null,
+          cli_version: null,
+          starred: 0,
+          tags: "[]",
+          notes: null,
+          parent_conversation_id: null,
+          is_sidechain: 0,
+          agent_id: null,
+          created_at: new Date(spawn.created_at).toISOString(),
+          updated_at: new Date(spawn.updated_at).toISOString(),
+          canonical_project_id: spawn.project_id,
+          canonical_project_key: spawn.project_id ? projects.find((project) => project.id === spawn.project_id)?.project_key ?? null : null,
+          canonical_placement_explicit: 1,
+          spawn: receipt,
+        });
+      }
+    }
     if (searchNeedle && fullTextSearch && rows.length > 0) {
       const searched = await getConversationSearchCache(db).search({
         conversationIds: rows.map((row) => row.id),

@@ -61,6 +61,7 @@ import {
   normalizeProviderStartupError,
   type ProviderStartupProvenance,
 } from "./provider-startup.js";
+import { ConversationSpawnService } from "./conversation-spawn/service.js";
 
 interface ConsoleSessionRow {
   id: string;
@@ -1307,6 +1308,10 @@ export class SessionManager {
 
     backend.on("meta_update", (fields: BackendMetaUpdate) => {
       this.applyMetaUpdate(backend.id, fields);
+      if (fields.provider_session_id) {
+        new ConversationSpawnService(getDb(), Date.now, false)
+          .observeProviderSession(backend.id, fields.provider_session_id);
+      }
     });
 
     backend.on("status", (event: BackendStatusEvent) => {

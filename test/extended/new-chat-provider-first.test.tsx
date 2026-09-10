@@ -6,7 +6,7 @@ import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell'
 const draft: NewChatDraft = {
   id: '10000000-0000-4000-8000-000000000001',
   state: 'choosing',
-  placement: { projectId: 'project-1', checkoutId: 'checkout-1', projectLabel: 'Project' },
+  placement: { kind: 'project', projectId: 'project-1', checkoutId: 'checkout-1', projectLabel: 'Project' },
 };
 
 describe('provider-first new chat', () => {

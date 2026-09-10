@@ -232,7 +232,7 @@ describe("instance mutation policy", () => {
     }
   });
 
-  it("allows only exact Chat creation on an isolated launcher-owned preview copy", async () => {
+  it("allows only the bounded Chat lifecycle on an isolated launcher-owned preview copy", async () => {
     const fixture = createDatabaseIdentityFixture();
     const instance = resolveInstanceInfo({
       env: {
@@ -245,14 +245,16 @@ describe("instance mutation policy", () => {
       sourceDbPath: fixture.sourceDbPath,
     });
     const router = new Router({ instance });
-    for (const route of ["/api/conversation-spawns", "/api/conversation-spawns/retry", "/api/conversations"]) {
+    for (const route of ["/api/conversation-spawns", "/api/conversation-spawns/not-a-lifecycle", "/api/conversations"]) {
       router.post(route, (_req, res) => res.status(200).json({ route }), { fileRpc: "deny" });
     }
 
     expect(isIsolatedPreviewConversationSpawnMutation(instance, "POST", "/api/conversation-spawns")).toBe(true);
+    expect(isIsolatedPreviewConversationSpawnMutation(instance, "POST", "/api/conversation-spawns/10000000-0000-4000-8000-000000000001/retry")).toBe(true);
+    expect(isIsolatedPreviewConversationSpawnMutation(instance, "DELETE", "/api/conversation-spawns/10000000-0000-4000-8000-000000000001")).toBe(true);
     expect(await router.invoke({ method: "POST", url: "/api/conversation-spawns", body: {} }))
       .toEqual({ status: 200, body: { route: "/api/conversation-spawns" } });
-    for (const route of ["/api/conversation-spawns/retry", "/api/conversations"]) {
+    for (const route of ["/api/conversation-spawns/not-a-lifecycle", "/api/conversations"]) {
       expect(await router.invoke({ method: "POST", url: route, body: {} }))
         .toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden", category: "conversations" } });
     }
