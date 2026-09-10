@@ -113,7 +113,7 @@ function group(overrides: Partial<ConversationSidebarGroup> & Pick<ConversationS
 
 function renderView(
   consoleSessions: ConsoleSession[] = [],
-  onNewSession = vi.fn(),
+  onNewConversation = vi.fn(),
   instance: InstanceInfo | null = null,
   sidebarGroupLimit = 1,
 ): void {
@@ -124,7 +124,7 @@ function renderView(
     sidebarGroupLimit={sidebarGroupLimit}
     instance={instance}
     onSelectSession={() => undefined}
-    onNewSession={onNewSession}
+    onNewConversation={onNewConversation}
   />);
 }
 
@@ -315,8 +315,8 @@ describe('conversation sidebar groups', () => {
       }
       return { limit: 1, groups: [] };
     });
-    const onNewSession = vi.fn().mockResolvedValue('10000000-0000-4000-8000-000000000001');
-    renderView([], onNewSession, null, 5);
+    const onNewConversation = vi.fn().mockResolvedValue('10000000-0000-4000-8000-000000000001');
+    renderView([], onNewConversation, null, 5);
 
     expect(screen.queryByRole('button', { name: 'New chat in Mandible' })).toBeNull();
     fireEvent.click(await screen.findByRole('button', { name: 'Add project' }));
@@ -332,11 +332,11 @@ describe('conversation sidebar groups', () => {
     expect(within(projectSection).getByRole('button', { name: 'Open conversation Existing Claude' })).toBeTruthy();
     expect(within(projectSection).getByRole('button', { name: 'Open conversation Existing agy' })).toBeTruthy();
     expect(requests).toContainEqual(expect.objectContaining({ project_ids: ['prj-mandible'] }));
-    expect(onNewSession).not.toHaveBeenCalled();
+    expect(onNewConversation).not.toHaveBeenCalled();
 
     fireEvent.click(await screen.findByRole('button', { name: 'New chat in Mandible' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Start with Codex (OpenAI)' }));
-    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(onNewConversation).toHaveBeenLastCalledWith(expect.objectContaining({
       provider: 'codex',
       placement: {
         kind: 'project',
@@ -356,14 +356,14 @@ describe('conversation sidebar groups', () => {
       limit: 5,
       groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats' })],
     });
-    const onNewSession = vi.fn().mockResolvedValue('10000000-0000-4000-8000-000000000002');
-    renderView([], onNewSession, null, 5);
+    const onNewConversation = vi.fn().mockResolvedValue('10000000-0000-4000-8000-000000000002');
+    renderView([], onNewConversation, null, 5);
 
     fireEvent.click(within(screen.getByRole('region', { name: 'Chat actions' })).getByRole('button', { name: 'New chat' }));
     const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('section') as HTMLElement;
     expect(within(chatsSection).getByRole('button', { name: 'Open new chat draft' })).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: 'Start with Claude' }));
-    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(onNewConversation).toHaveBeenLastCalledWith(expect.objectContaining({
       provider: 'claude_code',
       placement: { kind: 'projectless' },
     }), expect.any(AbortSignal));

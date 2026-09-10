@@ -185,7 +185,7 @@ function renderConversationDetail(scopedConversation: Conversation, consoleSessi
       initialConversationId={scopedConversation.id}
       initialSessionId={null}
       onSelectSession={() => undefined}
-      onNewSession={() => undefined}
+      onNewConversation={() => undefined}
     />,
   );
 }
@@ -288,7 +288,7 @@ function MountedConversationsApp({
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />
       {sidebar?.open && sidebar.kind === 'tabs' ? (
         <aside aria-label={sidebar.ariaLabel}>
@@ -308,7 +308,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -329,7 +329,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -347,7 +347,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -395,7 +395,7 @@ describe('compact detail pane shell', () => {
           initialConversationId={scopedConversation.id}
           initialSessionId={null}
           onSelectSession={() => undefined}
-          onNewSession={() => undefined}
+          onNewConversation={() => undefined}
         />
       </MountedRightSidebarShell>,
     );
@@ -442,7 +442,7 @@ describe('compact detail pane shell', () => {
   it('routes every Chat detail state through one typed frame construction', () => {
     const source = readFileSync(resolve(process.cwd(), 'ui/src/views/conversations.tsx'), 'utf8');
     const states = Array.from(source.matchAll(/<ChatDetailFrame\s+[\s\S]*?state="([^"]+)"/g), (match) => match[1]).sort();
-    expect(states).toEqual(['conversation', 'draft', 'error', 'live-session', 'loading', 'no-selection', 'not-found']);
+    expect(states).toEqual(['conversation', 'draft', 'draft', 'error', 'live-session', 'loading', 'no-selection', 'not-found']);
     expect(source).not.toContain('<div className="chat-live-detail">');
     expect(source).not.toContain('return <LoadingSkeleton variant="detail"');
 
@@ -457,7 +457,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -497,7 +497,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={null}
         initialSessionId={session.id}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -529,7 +529,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={conversation.id}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -552,7 +552,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={conversation.id}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -954,7 +954,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={scopedConversation.id}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -1054,7 +1054,7 @@ describe('compact detail pane shell', () => {
       initialConversationId: scopedConversation.id,
       initialSessionId: null,
       onSelectSession: () => undefined,
-      onNewSession: () => undefined,
+      onNewConversation: () => undefined,
     };
     const view = render(<ConversationsView {...props} />);
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(1));

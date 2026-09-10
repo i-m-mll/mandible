@@ -314,6 +314,61 @@ export class ConversationControlStore {
     });
   }
 
+  adoptNewController(
+    conversationId: string,
+    generation: number,
+    adapterId: string,
+    controllerInstanceId: string,
+    providerSessionId: string,
+  ): Result<void, ConversationControlError> {
+    const transaction = this.db.transaction((): Result<void, ConversationControlError> => {
+      const ensured = this.ensure(conversationId);
+      if (!ensured.ok) return ensured;
+      const row = ensured.value;
+      if (row.owner_kind !== "none" || row.controller_state !== "stopped") {
+        return { ok: false, error: {
+          kind: "invalid-request",
+          field: "ownership",
+          message: "A new provider controller requires an unowned conversation",
+        } };
+      }
+      if (generation <= row.generation) {
+        return { ok: false, error: {
+          kind: "stale-generation",
+          expected_generation: generation,
+          actual_generation: row.generation,
+        } };
+      }
+      const acquiredRevision = row.revision + 1;
+      const readyRevision = acquiredRevision + 1;
+      const now = this.now();
+      this.db.prepare(`UPDATE conversation_control_state SET
+        revision = ?, generation = ?, owner_kind = 'mandible', controller_state = 'ready',
+        controller_instance_id = ?, adapter_id = ?, provider_session_id = ?, owner_detail_json = '{}',
+        last_authoritative_signal = ?, turn_state = 'none', turn_id = NULL, delivery_id = NULL,
+        state_detail_json = '{}', updated_at = ? WHERE conversation_id = ?
+      `).run(
+        readyRevision,
+        generation,
+        controllerInstanceId,
+        adapterId,
+        providerSessionId,
+        now,
+        now,
+        conversationId,
+      );
+      this.journal(conversationId, acquiredRevision, generation, "controller-acquired", {
+        adapter_id: adapterId,
+        controller_instance_id: controllerInstanceId,
+      }, now);
+      this.journal(conversationId, readyRevision, generation, "controller-ready", {
+        provider_session_id: providerSessionId,
+      }, now);
+      return { ok: true, value: undefined };
+    });
+    return transaction.immediate();
+  }
+
   publishLifecycle(conversationId: string, generation: number, event: ConversationLifecycleEvent): Result<void, ConversationControlError> {
     return this.mutateOwned(conversationId, generation, event.kind, (row, revision, now) => {
       const detail = parseObject<StoredDetail>(row.state_detail_json);

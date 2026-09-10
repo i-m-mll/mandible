@@ -315,7 +315,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerInboxRoutes(router, sessionRegistry, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);
-  registerConversationSpawnRoutes(router, db, sessionManager);
+  registerConversationSpawnRoutes(router, db, conversationControl);
   registerHookRoutes(router);
   // Bug: 4afab83 — auth hooks CRUD routes
   registerAuthHookRoutes(router);

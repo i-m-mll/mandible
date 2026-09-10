@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
 import {
   ConversationControllerRegistry,
   trapAdapterCall,
   type ControllerAcquisitionRequest,
+  type ControllerLease,
   type ConversationControllerAdapter,
 } from "./adapter.js";
 import { ConversationControlStore } from "./store.js";
@@ -21,6 +23,17 @@ import type {
 } from "./types.js";
 
 type ActiveTurn = Extract<TurnState, { kind: "queued" | "running" | "waiting-user" | "waiting-permission" }>;
+
+export type NewConversationControllerRequest = {
+  conversation_id: string;
+  provider: "claude_code" | "codex";
+  generation: number;
+  cwd: string;
+  runtime_options: import("./types.js").ConversationRuntimeOptions;
+  signal?: AbortSignal;
+};
+
+export type NewConversationControllerLease = ControllerLease & { adapter_id: string };
 
 function isActiveTurn(turn: TurnState): turn is ActiveTurn {
   return turn.kind === "queued"
@@ -77,6 +90,81 @@ export class ConversationControlService {
     if (!boundary.ok) return boundary;
     const adapter = this.adapters.forProvider(boundary.value.source);
     return this.store.snapshot(conversationId, adapter?.capabilities ?? null, adapter?.id ?? null);
+  }
+
+  async acquireNew(
+    request: NewConversationControllerRequest,
+    commit: (lease: NewConversationControllerLease) => void,
+  ): Promise<Result<NewConversationControllerLease, ConversationControlError>> {
+    const adapter = this.adapters.forProvider(request.provider);
+    if (!adapter) {
+      return { ok: false, error: { kind: "adapter-unavailable", adapter_id: null, provider: request.provider } };
+    }
+    const controllerInstanceId = randomUUID();
+    const acquisition: ControllerAcquisitionRequest = {
+      kind: "start",
+      conversation_id: request.conversation_id,
+      generation: request.generation,
+      controller_instance_id: controllerInstanceId,
+      cwd: request.cwd,
+      runtime_options: request.runtime_options,
+      ...(request.signal ? { signal: request.signal } : {}),
+    };
+    const acquired = await trapAdapterCall(adapter.id, () => adapter.acquire(acquisition));
+    if (!acquired.ok) return acquired;
+    if (acquired.value.controller_instance_id !== controllerInstanceId
+        || !acquired.value.provider_session_id.trim()) {
+      await trapAdapterCall(adapter.id, () => adapter.stop({
+        conversation_id: request.conversation_id,
+        provider_session_id: acquired.value.provider_session_id,
+        controller_instance_id: controllerInstanceId,
+        generation: request.generation,
+      }));
+      return { ok: false, error: {
+        kind: "adapter-contract-violation" as const,
+        adapter_id: adapter.id,
+        message: "Adapter returned identity outside the new controller claim",
+      } };
+    }
+    const lease: NewConversationControllerLease = { ...acquired.value, adapter_id: adapter.id };
+    const stopAcquired = () => trapAdapterCall(adapter.id, () => adapter.stop({
+      conversation_id: request.conversation_id,
+      provider_session_id: lease.provider_session_id,
+      controller_instance_id: lease.controller_instance_id,
+      generation: request.generation,
+    }));
+    if (request.signal?.aborted) {
+      await stopAcquired();
+      return { ok: false, error: {
+        kind: "adapter-failure",
+        adapter_id: adapter.id,
+        code: "acquisition-aborted",
+        message: "Native conversation controller acquisition was cancelled",
+        retryable: true,
+      } };
+    }
+    try {
+      this.db.transaction(() => {
+        commit(lease);
+        const adopted = this.store.adoptNewController(
+          request.conversation_id,
+          request.generation,
+          adapter.id,
+          lease.controller_instance_id,
+          lease.provider_session_id,
+        );
+        if (!adopted.ok) throw new Error(JSON.stringify(adopted.error));
+      }).immediate();
+    } catch (thrown) {
+      await stopAcquired();
+      return { ok: false, error: {
+        kind: "adapter-contract-violation",
+        adapter_id: adapter.id,
+        message: thrown instanceof Error ? thrown.message : String(thrown),
+      } };
+    }
+    this.notify(request.conversation_id);
+    return { ok: true, value: lease };
   }
 
   async submit(request: ConversationSubmitRequest): Promise<Result<AcceptedConversationSubmission, ConversationControlError>> {

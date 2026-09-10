@@ -89,7 +89,7 @@ describe("session run options", () => {
 
     expect(models?.allowedValues).toEqual([
       { value: "fable", label: "Fable 5.1" },
-      { value: "opus", label: "Opus 5" },
+      { value: "claude-opus-5", label: "Opus 5" },
       { value: "sonnet", label: "Sonnet 5" },
       { value: "haiku", label: "Haiku 4.5" },
     ]);

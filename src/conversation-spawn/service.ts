@@ -137,6 +137,47 @@ export class ConversationSpawnService {
     return this.get(reservationId);
   }
 
+  materializeConversationShell(
+    reservationId: string,
+    generation: number,
+    cwd: string,
+    providerSessionId: string,
+  ): Result<ConversationSpawnReceipt> {
+    const current = this.currentGeneration(reservationId, generation);
+    if (!current.ok) return current;
+    const row = current.value;
+    if (row.state !== "starting") {
+      return { ok: false, error: { kind: "spawn-in-progress", reservation_id: reservationId } };
+    }
+    const request = JSON.parse(row.request_json) as ConversationSpawnRequest;
+    const source = request.provider;
+    const title = source === "codex" ? "New Codex chat" : "New Claude chat";
+    const iso = new Date(row.created_at).toISOString();
+    this.db.prepare(`INSERT INTO conversations (
+      id, source, source_path, source_hash, source_mtime, title, started_at,
+      block_count, session_id, project_path, cwd, starred, tags,
+      started_at_ms, created_at_ms, updated_at_ms, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, '[]', ?, ?, ?, ?, ?)
+    `).run(
+      reservationId,
+      source,
+      `mandible://chat/${reservationId}`,
+      row.request_digest,
+      row.updated_at,
+      title,
+      iso,
+      providerSessionId,
+      cwd,
+      cwd,
+      row.created_at,
+      row.created_at,
+      row.updated_at,
+      iso,
+      iso,
+    );
+    return this.get(reservationId);
+  }
+
   observeProviderSession(nativeSessionId: string, providerSessionId: string): void {
     const id = providerSessionId.trim();
     if (!id) return;
