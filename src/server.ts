@@ -460,7 +460,7 @@ export class Router implements RouteRegistrar {
     if (match) {
       const { route, params } = match;
 
-      const mutationDecision = evaluateInstanceMutation(this.instance, normalizedMethod, pathname);
+      const mutationDecision = evaluateInstanceMutation(this.instance, normalizedMethod, pathname, body);
       if (!mutationDecision.allowed) {
         response.status(mutationDecision.status).json(mutationDecision.body);
         return true;
