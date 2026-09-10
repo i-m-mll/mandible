@@ -321,7 +321,10 @@ The script auto-detects:
 - Protected branch (`develop` if it exists, otherwise `main`)
 - Protected branch worktree path (from `git worktree list`)
 - Repo name (from git common dir)
-- Diff stats and unified diff
+
+The daemon captures merge counts and the unified diff from the exact reviewed
+commits. The CLI displays the returned counts rather than computing a second
+set locally.
 
 **Canonical change message:**
 
