@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   allowsOperationalMutations,
   isActorScopedBriefingResponseMutation,
+  isIsolatedPreviewConversationArchiveMutation,
   isIsolatedPreviewConversationSpawnMutation,
   operationalMutationCategoryForPath,
   resolveInstanceInfo,
@@ -257,6 +258,49 @@ describe("instance mutation policy", () => {
     for (const route of ["/api/conversation-spawns/not-a-lifecycle", "/api/conversations"]) {
       expect(await router.invoke({ method: "POST", url: route, body: {} }))
         .toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden", category: "conversations" } });
+    }
+  });
+
+  it("allows only archive-state PATCH bodies for conversations in an isolated preview copy", async () => {
+    const fixture = createDatabaseIdentityFixture();
+    const instance = resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+        MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+        MANDIBLE_PREVIEW_ROOT: fixture.root,
+      },
+      dbPath: fixture.previewDbPath,
+      sourceDbPath: fixture.sourceDbPath,
+    });
+    const router = new Router({ instance });
+    router.patch("/api/conversations/:id", (req, res) => {
+      res.status(200).json({ id: req.params.id, body: req.body });
+    }, { fileRpc: "allow" });
+
+    for (const archived of [true, false]) {
+      const body = { archived };
+      expect(isIsolatedPreviewConversationArchiveMutation(
+        instance, "PATCH", "/api/conversations/chat-1", body,
+      )).toBe(true);
+      expect(await router.invoke({
+        method: "PATCH", url: "/api/conversations/chat-1", body,
+      })).toEqual({ status: 200, body: { id: "chat-1", body } });
+    }
+
+    for (const body of [
+      { starred: true },
+      { tags: ["copied-preview"] },
+      { notes: "copied-preview" },
+      { archived: true, starred: true },
+      { archived: "true" },
+    ]) {
+      expect(await router.invoke({
+        method: "PATCH", url: "/api/conversations/chat-1", body,
+      })).toMatchObject({
+        status: 403,
+        body: { error: "instance_mutation_forbidden", category: "conversations" },
+      });
     }
   });
 
