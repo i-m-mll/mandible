@@ -5,6 +5,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getConversationSearchCache } from "../../src/conversations/search-cache.js";
+import { ConversationSpawnService } from "../../src/conversation-spawn/service.js";
+import { CONVERSATION_SPAWN_REQUEST_SCHEMA } from "../../src/conversation-spawn/types.js";
 import { migrate, openDb, setDb, type Db } from "../../src/db.js";
 import { addOrUpdateCheckout, addProject } from "../../src/ledger/project-registry.js";
 import { registerConversationRoutes } from "../../src/routes/conversations.js";
@@ -92,6 +94,44 @@ afterEach(() => {
 });
 
 describe("conversation sidebar projection", () => {
+  it("projects one ready empty conversation row while retaining its native spawn receipt", async () => {
+    const conversationId = "10000000-0000-4000-8000-000000000001";
+    const spawn = new ConversationSpawnService(db, () => 1_000);
+    expect(spawn.reserve({
+      schema: CONVERSATION_SPAWN_REQUEST_SCHEMA,
+      idempotency_key: conversationId,
+      provider: "codex",
+      placement: { kind: "projectless" },
+    })).toMatchObject({ ok: true });
+    expect(spawn.begin(conversationId)).toMatchObject({ ok: true });
+    expect(spawn.assignRuntime(conversationId, 1, "codex-controller-1")).toMatchObject({ ok: true });
+    spawn.materializeConversationShell(conversationId, 1, "/workspace", "codex-thread-1");
+    expect(spawn.ready(conversationId, 1, "codex-controller-1", "codex-thread-1", {
+      kind: "native-conversation-controller-ready",
+    })).toMatchObject({ ok: true });
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const response = await router.invoke({
+      method: "GET",
+      url: "/api/conversations/sidebar?limit=20&min_blocks=1",
+    });
+
+    expect(response.status).toBe(200);
+    const rows = groupsOf(response).flatMap((group) => group.conversations);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: conversationId,
+        block_count: 0,
+        spawn: expect.objectContaining({
+          state: "ready",
+          native_session_id: "codex-controller-1",
+          provider_session_id: "codex-thread-1",
+        }),
+      }),
+    ]);
+  });
+
   it("projects already-indexed provider rows into requested canonical groups without ingestion", async () => {
     const alpha = registerProject("alpha", "Alpha Project", "/workspace/alpha");
     const empty = registerProject("empty", "Empty Project", "/workspace/empty");

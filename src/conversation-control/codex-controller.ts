@@ -75,11 +75,27 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       return { ok: false, error: adapterFailure(this.id, "message-anchor-unsupported", "Codex App Server cannot resume an exact message anchor") };
     }
     let client: CodexAppServerClient | null = null;
+    let aborted = input.kind === "start" && input.signal?.aborted === true;
+    const abort = () => {
+      aborted = true;
+      if (client) void client.close();
+    };
+    if (input.kind === "start") input.signal?.addEventListener("abort", abort, { once: true });
     try {
+      if (aborted) throw new Error("Codex controller acquisition was cancelled");
       client = await this.connectedClient();
+      if (aborted) throw new Error("Codex controller acquisition was cancelled");
       const result = input.kind === "start"
-        ? await client.request("thread/start", { cwd: process.cwd(), ephemeral: false })
+        ? await client.request("thread/start", {
+          cwd: input.cwd,
+          ephemeral: false,
+          model: input.runtime_options?.model,
+          ...(input.runtime_options?.permission_mode === "agent-full-access"
+            ? { approvalPolicy: "never" as const, sandbox: "danger-full-access" as const }
+            : {}),
+        })
         : await client.request("thread/resume", { threadId: input.provider_session_id });
+      if (aborted) throw new Error("Codex controller acquisition was cancelled");
       const thread = responseThread(result);
       const providerSessionId = stringField(thread, "id");
       if (!providerSessionId) throw new Error("Codex App Server returned no thread identity");
@@ -112,6 +128,8 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     } catch (thrown) {
       if (client) await client.close();
       return { ok: false, error: adapterFailure(this.id, "startup-failed", thrown, { retryable: true }) };
+    } finally {
+      if (input.kind === "start") input.signal?.removeEventListener("abort", abort);
     }
   }
 

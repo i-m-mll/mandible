@@ -21,7 +21,6 @@ import { registerWorkRoutes } from "../src/routes/work.js";
 import { Router } from "../src/server.js";
 import type { ArtifactResolveResult } from "../src/types.js";
 import { createUser, setupOperator } from "../src/users/store.js";
-import { ProviderStartupError } from "../src/provider-startup.js";
 
 const SYSTEM_ACTOR = { attribution: systemAction() };
 
@@ -114,24 +113,40 @@ describe("restricted project route enforcement", () => {
       .run(project.id);
     const agent = createUser(db, { slug: "console-agent", kind: "agent", display_name: "Console Agent" });
     const { token } = authenticator.mintApiToken(agent.id);
-    const provenance = {
-      backend_type: "acp" as const,
-      provider: "codex",
-      implementation: { kind: "package" as const, name: "codex-acp", version: "1.0.2", entrypoint: "/exact/codex-acp", launcher: "/exact/node" },
-    };
-    let providerSessionId: string | null = null;
-    const manager = {
-      create: vi.fn((input: { id: string }) => ({ id: input.id })),
-      get: vi.fn((id: string) => ({ meta: { id, provider_session_id: providerSessionId } })),
-      getStartupProvenance: vi.fn(() => provenance),
-      startConversation: vi.fn(async () => {
-        providerSessionId = "provider-1";
-        return { provider_session_id: providerSessionId, provenance };
+    let failNext = false;
+    let waitForCancellation = false;
+    const control = {
+      acquireNew: vi.fn(async (request, commit) => {
+        if (waitForCancellation) {
+          await new Promise<void>((resolve) => request.signal.addEventListener("abort", resolve, { once: true }));
+          return { ok: false, error: {
+            kind: "adapter-failure",
+            adapter_id: "native-test",
+            code: "acquisition-aborted",
+            message: "cancelled",
+            retryable: true,
+          } };
+        }
+        if (failNext) {
+          failNext = false;
+          return { ok: false, error: {
+            kind: "adapter-failure",
+            adapter_id: "native-test",
+            code: "startup-failed",
+            message: "raw native provider secret",
+            retryable: true,
+          } };
+        }
+        const lease = {
+          adapter_id: request.provider === "codex" ? "codex-app-server-v2" : "claude-stream-json-v1",
+          controller_instance_id: `controller-${request.conversation_id}`,
+          provider_session_id: `provider-${request.conversation_id}`,
+        };
+        commit(lease);
+        return { ok: true, value: lease };
       }),
-      stop: vi.fn(),
-      delete: vi.fn(),
     };
-    registerConversationSpawnRoutes(router, db, manager as never);
+    registerConversationSpawnRoutes(router, db, control as never);
     const input = {
       method: "POST",
       url: "/api/conversation-spawns",
@@ -145,7 +160,7 @@ describe("restricted project route enforcement", () => {
       transport: "http" as const,
     };
     expect((await router.invoke(input)).status).toBe(403);
-    expect(manager.create).not.toHaveBeenCalled();
+    expect(control.acquireNew).not.toHaveBeenCalled();
     addGrant(db, {
       subject_type: "user",
       subject: agent.id,
@@ -155,32 +170,25 @@ describe("restricted project route enforcement", () => {
     const allowed = await router.invoke(input);
     expect(allowed.status).toBe(202);
     expect(allowed.body).toMatchObject({
-      session: {
-        canonical_project_id: project.id,
-        canonical_checkout_id: "spawn-checkout",
-      },
+      conversation_id: "10000000-0000-4000-8000-000000000001",
+      spawn: { state: "ready", native_session_id: expect.stringMatching(/^controller-/) },
     });
-    expect(manager.create).toHaveBeenCalledOnce();
-    expect(manager.create).toHaveBeenCalledWith(expect.objectContaining({
-      id: "10000000-0000-4000-8000-000000000001",
-      command: "codex",
-      backend_type: "acp",
-      transport_lane: "acp",
-      runOptions: { model: "gpt-5.6-sol", mode: "agent-full-access" },
-    }));
-    expect(manager.startConversation).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000001", {
-      timeoutMs: 30_000,
+    expect(control.acquireNew).toHaveBeenCalledWith(expect.objectContaining({
+      conversation_id: "10000000-0000-4000-8000-000000000001",
+      provider: "codex",
+      generation: 1,
+      cwd: "/work/spawn-project",
+      runtime_options: { model: "gpt-5.6-sol", permission_mode: "agent-full-access" },
       signal: expect.any(AbortSignal),
-      provenance,
-    });
+    }), expect.any(Function));
+    expect(db.prepare("SELECT source, session_id, cwd FROM conversations WHERE id = ?")
+      .get("10000000-0000-4000-8000-000000000001")).toEqual({
+        source: "codex",
+        session_id: "provider-10000000-0000-4000-8000-000000000001",
+        cwd: "/work/spawn-project",
+      });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM console_sessions").get()).toEqual({ count: 0 });
 
-    const claudeProvenance = {
-      backend_type: "sdk" as const,
-      provider: "claude_code",
-      implementation: { kind: "package" as const, name: "@anthropic-ai/claude-agent-sdk", version: "0.3.259", entrypoint: "/exact/claude", launcher: "/exact/node" },
-    };
-    manager.getStartupProvenance.mockReturnValueOnce(claudeProvenance);
-    manager.startConversation.mockResolvedValueOnce({ provider_session_id: null, provenance: claudeProvenance });
     const claude = await router.invoke({
       ...input,
       body: {
@@ -190,20 +198,13 @@ describe("restricted project route enforcement", () => {
       },
     });
     expect(claude.status).toBe(202);
-    expect(manager.create).toHaveBeenLastCalledWith(expect.objectContaining({
-      id: "10000000-0000-4000-8000-000000000004",
-      command: "claude",
-      backend_type: "sdk",
-      transport_lane: "sdk",
-      runOptions: { model: "claude-opus-5", permission_mode: "bypassPermissions" },
-    }));
-    expect(claude.body).toMatchObject({
-      spawn: { state: "starting", provider_session_id: null },
-      session: { canonical_project_id: project.id, canonical_checkout_id: "spawn-checkout" },
-    });
+    expect(control.acquireNew).toHaveBeenLastCalledWith(expect.objectContaining({
+      provider: "claude_code",
+      cwd: "/work/spawn-project",
+      runtime_options: { model: "claude-opus-5", permission_mode: "bypassPermissions" },
+    }), expect.any(Function));
 
-    providerSessionId = null;
-    manager.startConversation.mockRejectedValueOnce(new Error("raw SDK path and secret provider error"));
+    failNext = true;
     const failed = await router.invoke({
       ...input,
       body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000002" },
@@ -215,56 +216,32 @@ describe("restricted project route enforcement", () => {
       expect(row.state).toBe("failed");
       expect(JSON.parse(row.error_json)).toMatchObject({
         code: "provider_startup_failed",
-        message: "The provider failed before its native conversation was ready.",
+        message: "The native conversation controller failed before readiness.",
         retryable: true,
       });
-      expect(row.error_json).not.toContain("secret provider error");
-    });
-    expect(manager.stop).not.toHaveBeenCalled();
-    expect(manager.delete).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000002");
-
-    manager.startConversation.mockRejectedValueOnce(new Error("provider failed"));
-    manager.delete.mockImplementationOnce(() => { throw new Error("cleanup failed"); });
-    const cleanupFailed = await router.invoke({
-      ...input,
-      body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000005" },
-    });
-    expect(cleanupFailed.status).toBe(202);
-    await vi.waitFor(() => {
-      const row = db.prepare("SELECT state, error_json FROM conversation_spawn_requests WHERE id = ?")
-        .get("10000000-0000-4000-8000-000000000005") as { state: string; error_json: string };
-      expect(row.state).toBe("failed");
-      expect(JSON.parse(row.error_json)).toMatchObject({
-        code: "provider_startup_failed",
-        message: "Provider startup failed and its temporary session cleanup did not complete.",
-        retryable: false,
-      });
+      expect(row.error_json).not.toContain("secret");
     });
 
-    const controller = new AbortController();
-    manager.startConversation.mockImplementationOnce(async (_id, options) => {
-      await new Promise<void>((_resolve, reject) => {
-        options.signal?.addEventListener("abort", () => reject(new ProviderStartupError(
-          "client_aborted",
-          "The client disconnected during provider startup.",
-          "readiness",
-        )), { once: true });
-      });
-      throw new Error("unreachable");
-    });
-    const abortedResponse = router.invoke({
+    waitForCancellation = true;
+    const starting = await router.invoke({
       ...input,
       body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000003" },
-      signal: controller.signal,
     });
-    controller.abort();
-    expect((await abortedResponse).status).toBe(202);
+    expect(starting.status).toBe(202);
+    const cancelled = await router.invoke({
+      method: "DELETE",
+      url: "/api/conversation-spawns/10000000-0000-4000-8000-000000000003",
+      body: { expected_generation: 1 },
+      credential: token,
+      transport: "http",
+    });
+    expect(cancelled.status).toBe(200);
     const abortedRow = db.prepare(
       "SELECT state, native_session_id, error_json FROM conversation_spawn_requests WHERE idempotency_key = ?",
     ).get("10000000-0000-4000-8000-000000000003") as { state: string; native_session_id: string | null; error_json: string | null };
-    expect(abortedRow.state).toBe("starting");
-    expect(abortedRow.native_session_id).toBe("10000000-0000-4000-8000-000000000003");
-    expect(abortedRow.error_json).toBeNull();
+    expect(abortedRow.state).toBe("cancelled");
+    expect(abortedRow.native_session_id).toBeNull();
+    expect(JSON.parse(abortedRow.error_json!)).toMatchObject({ code: "provider_startup_cancelled" });
   });
 
   it("denies restricted issue, artifact, and work reads and restores them with read access", async () => {

@@ -148,19 +148,50 @@ type ProjectedConversationRow = ConversationRow & {
   canonical_project_key?: string | null;
   canonical_placement_explicit?: number;
   spawn?: ConversationSpawnReceipt;
+  spawn_schema_version?: string | null;
+  spawn_request_json?: string | null;
+  spawn_state?: string | null;
+  spawn_attempt_count?: number | null;
+  spawn_native_session_id?: string | null;
+  spawn_provider_session_id?: string | null;
+  spawn_provider_receipt_json?: string | null;
+  spawn_error_json?: string | null;
+  spawn_created_at?: number | null;
+  spawn_updated_at?: number | null;
 };
+
+function projectedSpawn(row: ProjectedConversationRow): ConversationSpawnReceipt | undefined {
+  if (!row.spawn_schema_version || !row.spawn_request_json || !row.spawn_state
+      || row.spawn_attempt_count == null || row.spawn_created_at == null || row.spawn_updated_at == null) {
+    return undefined;
+  }
+  return {
+    schema: row.spawn_schema_version as ConversationSpawnReceipt["schema"],
+    reservation_id: row.id,
+    request: JSON.parse(row.spawn_request_json),
+    state: row.spawn_state as ConversationSpawnReceipt["state"],
+    attempt_count: row.spawn_attempt_count,
+    native_session_id: row.spawn_native_session_id ?? null,
+    provider_session_id: row.spawn_provider_session_id ?? null,
+    provider_receipt: row.spawn_provider_receipt_json ? JSON.parse(row.spawn_provider_receipt_json) : null,
+    error: row.spawn_error_json ? JSON.parse(row.spawn_error_json) : null,
+    created_at: row.spawn_created_at,
+    updated_at: row.spawn_updated_at,
+  };
+}
 
 function mapSidebarConversation(
   row: ProjectedConversationRow,
   fullTextSearch: boolean,
 ) {
+  const spawn = row.spawn ?? projectedSpawn(row);
   return {
     ...(fullTextSearch
       ? mapSearchConversation(row)
       : mapConversation(row)),
     canonical_project_id: row.canonical_project_id ?? null,
     canonical_project_key: row.canonical_project_key ?? null,
-    ...(row.spawn ? { spawn: row.spawn } : {}),
+    ...(spawn ? { spawn } : {}),
   };
 }
 
@@ -703,7 +734,11 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     }
     const minBlocks = parseInt(query.min_blocks || "", 10);
     if (Number.isFinite(minBlocks) && minBlocks > 0) {
-      conditions.push("c.block_count >= ?");
+      conditions.push(`(c.block_count >= ? OR EXISTS (
+        SELECT 1 FROM conversation_spawn_requests visible_spawn
+        WHERE visible_spawn.id = c.id
+          AND visible_spawn.schema_version = 'mandible-conversation-spawn-request@3'
+      ))`);
       params.push(minBlocks);
     }
     const excludeSubagents = query.exclude_subagents === "true" || query.exclude_subagents === "1";
@@ -730,7 +765,14 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     const clientPinned = new Set(clientPinnedIds);
     let rows = (db.prepare(`SELECT c.*, s.project_id AS canonical_project_id,
         CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS canonical_placement_explicit,
-        CASE WHEN s.id IS NULL THEN NULL ELSE p.project_key END AS canonical_project_key
+        CASE WHEN s.id IS NULL THEN NULL ELSE p.project_key END AS canonical_project_key,
+        s.schema_version AS spawn_schema_version, s.request_json AS spawn_request_json,
+        s.state AS spawn_state, s.attempt_count AS spawn_attempt_count,
+        s.native_session_id AS spawn_native_session_id,
+        s.provider_session_id AS spawn_provider_session_id,
+        s.provider_receipt_json AS spawn_provider_receipt_json,
+        s.error_json AS spawn_error_json, s.created_at AS spawn_created_at,
+        s.updated_at AS spawn_updated_at
       FROM conversations c
       LEFT JOIN conversation_spawn_requests s ON s.id = c.id AND s.schema_version = 'mandible-conversation-spawn-request@3'
       LEFT JOIN ledger_projects p ON p.id = s.project_id

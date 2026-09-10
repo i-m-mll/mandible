@@ -2047,32 +2047,7 @@ export async function startProviderChat(
   provider: 'codex' | 'claude_code',
   placement: { kind: 'projectless' } | { kind: 'project'; project_id: string; checkout_id: string },
   options: { signal?: AbortSignal } = {},
-): Promise<{ session: {
-  id: string;
-  label: string;
-  agent_type: string;
-  interaction_mode: 'inbox_only' | 'direct' | 'both';
-  pinned?: boolean;
-  status: 'running' | 'stopped' | 'crashed';
-  is_operator: boolean;
-  provider_session_id: string | null;
-  canonical_project_id?: string | null;
-  canonical_checkout_id?: string | null;
-  unread_count?: number;
-  created_at: number;
-  started_at: number | null;
-  stopped_at: number | null;
-  command: string;
-  args: string[];
-  backend_type: ConsoleBackendType;
-  transport_lane: ConsoleTransportLane;
-  transport_badge?: {
-    label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
-    title: string;
-  };
-  allowed_tools: string[] | null;
-  mandible_session_id: string | null;
-} }> {
+): Promise<{ conversation_id: string; spawn: ContractConversationSpawnReceipt }> {
   const response = await fetch('/api/conversation-spawns', {
     method: 'POST',
     headers: {
@@ -2113,34 +2088,7 @@ export async function startProviderChat(
       typeof fallback === 'string' ? fallback : null,
     );
   }
-  return json as {
-    session: {
-      id: string;
-      label: string;
-      agent_type: string;
-      interaction_mode: 'inbox_only' | 'direct' | 'both';
-      pinned: boolean;
-      status: 'running' | 'stopped' | 'crashed';
-      is_operator: boolean;
-      provider_session_id: string | null;
-      canonical_project_id?: string | null;
-      canonical_checkout_id?: string | null;
-      unread_count: number;
-      created_at: number;
-      started_at: number | null;
-      stopped_at: number | null;
-      command: string;
-      args: string[];
-      backend_type: ConsoleBackendType;
-      transport_lane: ConsoleTransportLane;
-      transport_badge?: {
-        label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
-        title: string;
-      };
-      allowed_tools: string[] | null;
-      mandible_session_id: string | null;
-    };
-  };
+  return json as { conversation_id: string; spawn: ContractConversationSpawnReceipt };
 }
 
 export async function closeConsoleSession(sessionId: string): Promise<void> {

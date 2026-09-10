@@ -141,7 +141,7 @@ describe('conversation sidebar labeled-item rows', () => {
     ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-    render(<ConversationsView consoleSessions={[]} initialConversationId={null} initialSessionId={null} onSelectSession={() => undefined} onNewSession={() => undefined} />);
+    render(<ConversationsView consoleSessions={[]} initialConversationId={null} initialSessionId={null} onSelectSession={() => undefined} onNewConversation={() => undefined} />);
 
     const selected = await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
     const idle = await screen.findByRole('button', { name: `Open conversation ${idleConversation.title}` });
@@ -175,7 +175,7 @@ describe('conversation sidebar labeled-item rows', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -235,7 +235,7 @@ describe('conversation sidebar labeled-item rows', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -253,7 +253,7 @@ describe('conversation sidebar labeled-item rows', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
     await screen.findByRole('button', { name: `Open conversation ${unavailable.title}` });
@@ -283,7 +283,7 @@ describe('conversation sidebar labeled-item rows', () => {
         initialConversationId={conversation.id}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -355,7 +355,7 @@ describe('conversation sidebar labeled-item rows', () => {
         initialSessionId={null}
         instance={rejectModePreview}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 

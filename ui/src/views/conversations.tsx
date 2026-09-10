@@ -561,7 +561,7 @@ export type ConversationsViewProps = {
   chatEntityLinkAction?: ChatEntityClickAction;
   instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
-  onNewSession: (input: NewChatInput, signal?: AbortSignal) => Promise<string>;
+  onNewConversation: (input: NewChatInput, signal?: AbortSignal) => Promise<string>;
 };
 
 function HorizontalDotsIcon(): JSX.Element {
@@ -2632,7 +2632,7 @@ export function ConversationsView({
   chatEntityLinkAction = 'preview',
   instance = null,
   onSelectSession,
-  onNewSession,
+  onNewConversation,
 }: ConversationsViewProps): JSX.Element {
   const [selection, setSelection] = useState<ChatSelection>(null);
   const handleNavigateConversation = useCallback((conversationId: string) => {
@@ -3093,13 +3093,13 @@ export function ConversationsView({
           target.total += 1;
         }
         target.entries.push({
-          key: conversation.spawn
+          key: conversation.spawn && conversation.spawn.state !== 'ready'
             ? `spawn:${conversation.id}`
             : liveByProviderSession.has(conversation.session_id)
             ? `session:${liveByProviderSession.get(conversation.session_id)!.id}`
             : `conversation:${conversation.id}`,
           time: getConversationTime(conversation),
-          kind: conversation.spawn ? 'spawn' : 'conversation',
+          kind: conversation.spawn && conversation.spawn.state !== 'ready' ? 'spawn' : 'conversation',
           conversation,
           liveSession: conversation.spawn?.native_session_id
             ? liveSessions.find((session) => session.id === conversation.spawn?.native_session_id) ?? null
@@ -3188,6 +3188,14 @@ export function ConversationsView({
         : { type: 'spawn', id: indexed.id });
     } else if (indexed) handleNavigateConversation(indexed.id);
   }, [displayedConversations, handleNavigateConversation, liveSessions, selection]);
+
+  useEffect(() => {
+    if (selection?.type !== 'spawn') return;
+    const indexed = displayedConversations
+      .flatMap((group) => group.conversations)
+      .find((conversation) => conversation.id === selection.id);
+    if (indexed && (!indexed.spawn || indexed.spawn.state === 'ready')) handleNavigateConversation(indexed.id);
+  }, [displayedConversations, handleNavigateConversation, selection]);
 
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
@@ -3425,7 +3433,7 @@ export function ConversationsView({
     draftStartupController.current = startupController;
     setNewChatDraft(starting);
     try {
-      const sessionId = await onNewSession({
+      const conversationId = await onNewConversation({
         idempotency_key: starting.id,
         provider: starting.provider,
         placement: starting.placement.kind === 'project'
@@ -3438,15 +3446,14 @@ export function ConversationsView({
       }, startupController.signal);
       if (startupController.signal.aborted) return;
       setNewChatDraft((current) => current?.id === starting.id
-        ? reduceNewChatDraft(starting, { type: 'ready', sessionId })
+        ? reduceNewChatDraft(starting, { type: 'ready', conversationId })
         : current);
-      setSelection({ type: 'session', id: sessionId });
+      setSelection({ type: 'spawn', id: conversationId });
       const nextHash = hashWithAgentSession(
-        `#/console?session=${encodeURIComponent(sessionId)}`,
+        `#/console?conversation=${encodeURIComponent(conversationId)}`,
         getAgentPageBinding(),
       );
       if (window.location.hash !== nextHash) window.location.hash = nextHash;
-      onSelectSession(sessionId);
     } catch (error) {
       if (startupController.signal.aborted) return;
       const failure = error instanceof ConversationSpawnApiError
@@ -3462,7 +3469,7 @@ export function ConversationsView({
     } finally {
       if (draftStartupController.current === startupController) draftStartupController.current = null;
     }
-  }, [newChatDraft, onNewSession, onSelectSession]);
+  }, [newChatDraft, onNewConversation]);
 
   const openNewSession = (cwd?: string) => {
     const requested = cwd ? registeredProjects.find((project) => project.root === cwd) : null;

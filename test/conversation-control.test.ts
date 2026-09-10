@@ -42,7 +42,9 @@ class FakeAdapter implements ConversationControllerAdapter {
   acquisitions = 0;
   deliveries = 0;
   stops = 0;
+  lastAcquisition: ControllerAcquisitionRequest | null = null;
   invalidateOnAcquire = false;
+  invalidLeaseOnAcquire = false;
   delivered = new Set<string>();
   deliveryProbe: "delivered" | "not-delivered" | "unknown" = "unknown";
   probeResult: AdapterProbe = {
@@ -56,6 +58,7 @@ class FakeAdapter implements ConversationControllerAdapter {
 
   async acquire(input: ControllerAcquisitionRequest): Promise<Result<{ controller_instance_id: string; provider_session_id: string }, ConversationControlError>> {
     this.acquisitions += 1;
+    this.lastAcquisition = input;
     if (this.invalidateOnAcquire) {
       this.emit({
         conversation_id: input.conversation_id,
@@ -68,7 +71,7 @@ class FakeAdapter implements ConversationControllerAdapter {
     return {
       ok: true,
       value: {
-        controller_instance_id: input.controller_instance_id,
+        controller_instance_id: this.invalidLeaseOnAcquire ? "wrong-controller" : input.controller_instance_id,
         provider_session_id: input.kind === "start" ? "provider-1" : input.provider_session_id,
       },
     };
@@ -150,6 +153,80 @@ function request(revision: number, idempotencyKey: string, generation = 0) {
 }
 
 describe("authoritative conversation control", () => {
+  it("adopts a new native controller as the continued-Chat authority", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+
+    const started = await service.acquireNew({
+      conversation_id: "conversation-1",
+      provider: "codex",
+      generation: 1,
+      cwd: "/work/exact",
+      runtime_options: { model: "gpt-5.6-sol", permission_mode: "agent-full-access" },
+    }, () => undefined);
+
+    expect(started).toMatchObject({
+      ok: true,
+      value: { adapter_id: "fake-codex", provider_session_id: "provider-1" },
+    });
+    expect(adapter.lastAcquisition).toMatchObject({
+      kind: "start",
+      conversation_id: "conversation-1",
+      generation: 1,
+      cwd: "/work/exact",
+      runtime_options: { model: "gpt-5.6-sol", permission_mode: "agent-full-access" },
+    });
+    expect(service.getSnapshot("conversation-1")).toMatchObject({
+      ok: true,
+      value: {
+        provider_session_id: "provider-1",
+        ownership: { kind: "mandible", generation: 1, adapter_id: "fake-codex" },
+        controller: { kind: "ready" },
+        capability: { kind: "live-send", generation: 1 },
+      },
+    });
+  });
+
+  it("stops a new native controller when its durable commit fails", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+
+    const started = await service.acquireNew({
+      conversation_id: "conversation-1",
+      provider: "codex",
+      generation: 1,
+      cwd: "/work/exact",
+      runtime_options: {},
+    }, () => { throw new Error("commit failed"); });
+
+    expect(started).toMatchObject({ ok: false, error: { kind: "adapter-contract-violation" } });
+    expect(adapter.stops).toBe(1);
+    expect(service.getSnapshot("conversation-1")).toMatchObject({
+      ok: true,
+      value: { ownership: { kind: "none", generation: 0 }, controller: { kind: "stopped" } },
+    });
+  });
+
+  it("stops a new native controller whose lease violates the requested identity", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    adapter.invalidLeaseOnAcquire = true;
+    service.registerAdapter(adapter);
+
+    const started = await service.acquireNew({
+      conversation_id: "conversation-1",
+      provider: "codex",
+      generation: 1,
+      cwd: "/work/exact",
+      runtime_options: {},
+    }, () => undefined);
+
+    expect(started).toMatchObject({ ok: false, error: { kind: "adapter-contract-violation" } });
+    expect(adapter.stops).toBe(1);
+  });
+
   it("does not derive control or capability from transcript activity", () => {
     const service = new ConversationControlService(db);
     const adapter = new FakeAdapter();

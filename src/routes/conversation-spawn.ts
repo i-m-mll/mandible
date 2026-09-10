@@ -1,13 +1,12 @@
 import fs from "node:fs";
 import type { Db } from "../db.js";
-import type { SessionManager } from "../session-manager.js";
-import type { ConsoleSession, ConsoleSessionInput } from "../types.js";
+import type { ConversationControlService, NewConversationControllerLease } from "../conversation-control/service.js";
 import { ConversationSpawnService } from "../conversation-spawn/service.js";
 import type { ConversationSpawnError, ConversationSpawnRequest } from "../conversation-spawn/types.js";
 import type { RouteRegistrar } from "../server.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import { sendJson } from "./http.js";
-import { ProviderStartupError, normalizeProviderStartupError, type ProviderStartupProvenance } from "../provider-startup.js";
+import { ProviderStartupError, normalizeProviderStartupError } from "../provider-startup.js";
 import { getMandibleHomePath } from "../platform-paths.js";
 import { broadcast } from "../sse.js";
 
@@ -32,52 +31,21 @@ function cwdFor(db: Db, request: ConversationSpawnRequest): string {
   return root;
 }
 
-function sessionInput(db: Db, request: ConversationSpawnRequest): ConsoleSessionInput {
-  const codex = request.provider === "codex";
-  return {
-    id: request.idempotency_key,
-    label: codex ? "New Codex chat" : "New Claude chat",
-    command: codex ? "codex" : "claude",
-    args: [],
-    cwd: cwdFor(db, request),
-    env: {},
-    cols: 120,
-    rows: 30,
-    auto_restart: false,
-    is_operator: false,
-    interaction_mode: "both",
-    backend_type: codex ? "acp" : "sdk",
-    transport_lane: codex ? "acp" : "sdk",
-    channel_enabled: false,
-    runOptions: codex
-      ? { model: "gpt-5.6-sol", mode: "agent-full-access" }
-      : { model: "claude-opus-5", permission_mode: "bypassPermissions" },
-  };
-}
-
-function sessionWithPlacement(
-  session: ConsoleSession | null,
-  request: ConversationSpawnRequest,
-): (ConsoleSession & {
-  canonical_project_id: string | null;
-  canonical_checkout_id: string | null;
-}) | null {
-  return session ? {
-    ...session,
-    canonical_project_id: request.placement.kind === "project" ? request.placement.project_id : null,
-    canonical_checkout_id: request.placement.kind === "project" ? request.placement.checkout_id : null,
-  } : null;
+function runtimeOptions(request: ConversationSpawnRequest) {
+  return request.provider === "codex"
+    ? { model: "gpt-5.6-sol", permission_mode: "agent-full-access" as const }
+    : { model: "claude-opus-5", permission_mode: "bypassPermissions" as const };
 }
 
 export function registerConversationSpawnRoutes(
   server: RouteRegistrar,
   db: Db,
-  manager: SessionManager,
+  control: ConversationControlService,
   options: { startupTimeoutMs?: number } = {},
 ): void {
   const spawns = new ConversationSpawnService(db);
   const startupTimeoutMs = options.startupTimeoutMs ?? CONVERSATION_PROVIDER_STARTUP_TIMEOUT_MS;
-  const attempts = new Map<string, { generation: number; controller: AbortController; nativeSessionId: string | null }>();
+  const attempts = new Map<string, { generation: number; controller: AbortController }>();
 
   const publish = (reservationId: string) => {
     const result = spawns.get(reservationId);
@@ -88,55 +56,68 @@ export function registerConversationSpawnRoutes(
   const runAttempt = async (request: ConversationSpawnRequest, generation: number): Promise<void> => {
     const reservationId = request.idempotency_key;
     const controller = new AbortController();
-    const attempt = { generation, controller, nativeSessionId: null as string | null };
+    const attempt = { generation, controller };
     attempts.set(reservationId, attempt);
-    let provenance: ProviderStartupProvenance | undefined;
+    const timeout = setTimeout(() => controller.abort(new ProviderStartupError(
+      "provider_startup_timeout",
+      `Provider startup exceeded ${startupTimeoutMs}ms.`,
+      "readiness",
+    )), startupTimeoutMs);
+    timeout.unref();
     try {
-      const session = manager.create(sessionInput(db, request));
-      attempt.nativeSessionId = session.id;
-      const assigned = spawns.assignRuntime(reservationId, generation, session.id);
-      if (!assigned.ok) return;
-      publish(reservationId);
-      provenance = manager.getStartupProvenance(session.id);
-      const startup = await manager.startConversation(session.id, {
-        timeoutMs: startupTimeoutMs,
+      const cwd = cwdFor(db, request);
+      const acquired = await control.acquireNew({
+        conversation_id: reservationId,
+        provider: request.provider,
+        generation,
+        cwd,
+        runtime_options: runtimeOptions(request),
         signal: controller.signal,
-        provenance,
+      }, (lease: NewConversationControllerLease) => {
+        const assigned = spawns.assignRuntime(reservationId, generation, lease.controller_instance_id);
+        if (!assigned.ok) throw new Error(JSON.stringify(assigned.error));
+        const materialized = spawns.materializeConversationShell(
+          reservationId,
+          generation,
+          cwd,
+          lease.provider_session_id,
+        );
+        if (!materialized.ok) throw new Error(JSON.stringify(materialized.error));
+        const ready = spawns.ready(reservationId, generation, lease.controller_instance_id, lease.provider_session_id, {
+          kind: "native-conversation-controller-ready",
+          adapter_id: lease.adapter_id,
+          controller_instance_id: lease.controller_instance_id,
+          provider_session_id: lease.provider_session_id,
+        });
+        if (!ready.ok) throw new Error(JSON.stringify(ready.error));
       });
-      if (controller.signal.aborted) return;
-      provenance = startup.provenance;
-      spawns.observeProviderSession(session.id, startup.provider_session_id ?? "");
-      spawns.ready(reservationId, generation, session.id, startup.provider_session_id, {
-        kind: startup.provider_session_id ? "native-provider-session" : "provider-transport-ready",
-        native_session_id: session.id,
-        provider_session_id: startup.provider_session_id,
-        provenance,
-      });
+      if (!acquired.ok) {
+        if (controller.signal.aborted && controller.signal.reason instanceof ProviderStartupError) {
+          throw controller.signal.reason;
+        }
+        throw new ProviderStartupError(
+          "provider_startup_failed",
+          "The native conversation controller failed before readiness.",
+          "readiness",
+          acquired.error.kind === "adapter-failure" ? acquired.error.retryable : false,
+        );
+      }
       publish(reservationId);
     } catch (error) {
-      if (controller.signal.aborted) return;
-      let typed = normalizeProviderStartupError(error);
-      if (attempt.nativeSessionId) {
-        try {
-          manager.delete(attempt.nativeSessionId);
-        } catch {
-          typed = new ProviderStartupError(
-            "provider_startup_failed",
-            "Provider startup failed and its temporary session cleanup did not complete.",
-            typed.phase,
-            false,
-          );
-        }
-      }
+      const abortReason = controller.signal.aborted && controller.signal.reason instanceof ProviderStartupError
+        ? controller.signal.reason
+        : null;
+      if (abortReason?.code === "client_aborted") return;
+      const typed = abortReason ?? normalizeProviderStartupError(error);
       spawns.failed(reservationId, generation, {
         code: typed.code,
         message: typed.message,
         retryable: typed.retryable,
         phase: typed.phase,
-        ...(provenance ? { provenance } : {}),
       });
       publish(reservationId);
     } finally {
+      clearTimeout(timeout);
       if (attempts.get(reservationId) === attempt) attempts.delete(reservationId);
     }
   };
@@ -159,15 +140,12 @@ export function registerConversationSpawnRoutes(
     }
     const canonicalRequest = reserved.value.request as ConversationSpawnRequest;
     if (reserved.value.state !== "reserved") {
-      const session = reserved.value.native_session_id
-        ? manager.get(reserved.value.native_session_id)?.meta ?? null
-        : null;
       const terminalFailure = reserved.value.state === "failed" || reserved.value.state === "cancelled";
       sendJson(res, terminalFailure ? 409 : reserved.value.state === "starting" || reserved.value.state === "stopping" ? 202 : 200, {
         ok: !terminalFailure,
         ...(terminalFailure ? { error: reserved.value.error } : {}),
         spawn: reserved.value,
-        session: sessionWithPlacement(session, canonicalRequest),
+        conversation_id: reserved.value.reservation_id,
       });
       return;
     }
@@ -180,13 +158,10 @@ export function registerConversationSpawnRoutes(
     void runAttempt(canonicalRequest, begun.value.attempt_count);
     const current = spawns.get(reserved.value.reservation_id);
     const currentSpawn = current.ok ? current.value : begun.value;
-    const session = currentSpawn.native_session_id
-      ? manager.get(currentSpawn.native_session_id)?.meta ?? null
-      : null;
     sendJson(res, 202, {
       ok: true,
       spawn: currentSpawn,
-      session: sessionWithPlacement(session, canonicalRequest),
+      conversation_id: currentSpawn.reservation_id,
     });
   }, { authenticated: true }), { fileRpc: "allow" });
 
@@ -206,10 +181,7 @@ export function registerConversationSpawnRoutes(
     void runAttempt(request, begun.value.attempt_count);
     const current = spawns.get(req.params.id);
     const currentSpawn = current.ok ? current.value : begun.value;
-    const session = currentSpawn.native_session_id
-      ? manager.get(currentSpawn.native_session_id)?.meta ?? null
-      : null;
-    sendJson(res, 202, { ok: true, spawn: currentSpawn, session: sessionWithPlacement(session, request) });
+    sendJson(res, 202, { ok: true, spawn: currentSpawn, conversation_id: currentSpawn.reservation_id });
   }, { authenticated: true }), { fileRpc: "allow" });
 
   server.delete("/api/conversation-spawns/:id", globalCapabilityRoute("spawn_console", async (req, res) => {
@@ -231,20 +203,6 @@ export function registerConversationSpawnRoutes(
         "Chat creation was cancelled.",
         "readiness",
       ));
-      if (attempt.nativeSessionId) {
-        try {
-          manager.delete(attempt.nativeSessionId);
-        } catch {
-          const failed = spawns.failed(req.params.id, expectedGeneration, {
-            code: "provider_startup_failed",
-            message: "Chat cancellation could not stop its provider runtime.",
-            retryable: false,
-          });
-          publish(req.params.id);
-          sendJson(res, 502, failed.ok ? { ok: false, error: failed.value.error, spawn: failed.value } : failed);
-          return;
-        }
-      }
     }
     const cancelled = spawns.cancelled(req.params.id, expectedGeneration);
     publish(req.params.id);
