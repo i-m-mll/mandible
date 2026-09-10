@@ -257,13 +257,20 @@ describe("structured conversation controller adapters", () => {
       conversation_id: "conversation-1",
       generation: 4,
       controller_instance_id: "controller-1",
+      cwd: "/tmp",
+      runtime_options: { model: "claude-opus-5", permission_mode: "bypassPermissions" as const },
     };
     const claudeStarted = await claude.acquire(start);
-    const codexStarted = await codex.acquire(start);
+    const codexStarted = await codex.acquire({
+      ...start,
+      runtime_options: { model: "gpt-5.6-sol", permission_mode: "agent-full-access" },
+    });
 
     expect(claudeStarted.ok && claudeStarted.value.provider_session_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(claudeCalls[0].args).toContain("claude-opus-5");
     expect(claudeCalls[0].args.at(-2)).toBe("--session-id");
     expect(codexStarted).toMatchObject({ ok: true, value: { provider_session_id: "codex-new-thread" } });
+    expect(codexCalls[0]).toEqual({ command: "codex", args: ["app-server", "--listen", "stdio://"] });
     expect(claude.capabilities).toMatchObject({ steer: true, queue: false, resume_message_anchor: false });
     expect(codex.capabilities).toMatchObject({ steer: true, queue: false, resume_message_anchor: false });
   });

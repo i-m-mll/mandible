@@ -17,7 +17,7 @@ export type ControllerLease = {
 };
 
 export type ControllerAcquisitionRequest =
-  | { kind: "start"; conversation_id: string; generation: number; controller_instance_id: string; runtime_options?: ConversationRuntimeOptions }
+  | { kind: "start"; conversation_id: string; generation: number; controller_instance_id: string; cwd: string; signal?: AbortSignal; runtime_options?: ConversationRuntimeOptions }
   | { kind: "resume-provider-session"; conversation_id: string; generation: number; controller_instance_id: string; provider_session_id: string; runtime_options?: ConversationRuntimeOptions }
   | { kind: "resume-message-anchor"; conversation_id: string; generation: number; controller_instance_id: string; provider_session_id: string; message_anchor: string; runtime_options?: ConversationRuntimeOptions };
 

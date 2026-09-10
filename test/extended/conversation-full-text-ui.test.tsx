@@ -44,7 +44,7 @@ describe("conversation full-text UI request path", () => {
       initialConversationId={null}
       initialSessionId={null}
       onSelectSession={() => {}}
-      onNewSession={() => {}}
+      onNewConversation={() => {}}
     />);
 
     fireEvent.click(screen.getByRole("button", { name: "Search and filter options" }));

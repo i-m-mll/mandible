@@ -80,8 +80,19 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       providerSessionId,
     ];
     let processOwner: StructuredJsonProcess | null = null;
+    let aborted = input.kind === "start" && input.signal?.aborted === true;
+    const abort = () => {
+      aborted = true;
+      if (processOwner) void processOwner.close();
+    };
+    if (input.kind === "start") input.signal?.addEventListener("abort", abort, { once: true });
     try {
-      processOwner = await StructuredJsonProcess.start("claude", args, { spawnProcess: this.spawnProcess });
+      if (aborted) throw new Error("Claude controller acquisition was cancelled");
+      processOwner = await StructuredJsonProcess.start("claude", args, {
+        cwd: input.kind === "start" ? input.cwd : undefined,
+        spawnProcess: this.spawnProcess,
+      });
+      if (aborted) throw new Error("Claude controller acquisition was cancelled");
       const controller: ClaudeController = {
         conversationId: input.conversation_id,
         generation: input.generation,
@@ -105,6 +116,8 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     } catch (thrown) {
       if (processOwner) await processOwner.close();
       return { ok: false, error: adapterFailure(this.id, "startup-failed", thrown, { retryable: true }) };
+    } finally {
+      if (input.kind === "start") input.signal?.removeEventListener("abort", abort);
     }
   }
 
