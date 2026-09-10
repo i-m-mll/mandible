@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -14,6 +15,7 @@ import {
 } from "../src/db.js";
 import { startDaemon } from "../src/index.js";
 import { checkHealth } from "../src/lifecycle.js";
+import { MIGRATIONS } from "../src/db-migrations.js";
 import { schemaVersion } from "./helpers/schema-snapshot.js";
 
 const FLOOR_FIXTURE = fs.readFileSync(
@@ -86,6 +88,38 @@ describe.sequential("fresh schema baseline", () => {
 });
 
 describe.sequential("supported schema version range", () => {
+  it("reconciles the retained Chat preview schema-version collision without losing archive state", () => {
+    const dbPath = path.join(tempDir, "collided-chat-preview.db");
+    createFloorDatabase(dbPath);
+    const db = new Database(dbPath);
+    db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
+      createHash("sha256").update(String(value)).digest("hex"));
+    try {
+      db.transaction(() => {
+        for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= 175)) {
+          for (const statement of migration.statements) db.exec(statement);
+          db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(migration.version));
+        }
+        for (const name of ["unified_chat_creation_lifecycle", "mandible_conversation_archive_state"]) {
+          const migration = MIGRATIONS.find((candidate) => candidate.name === name)!;
+          for (const statement of migration.statements) db.exec(statement);
+        }
+        db.prepare("UPDATE meta SET value = '177' WHERE key = 'schema_version'").run();
+      })();
+
+      expect(db.prepare("SELECT 1 FROM conversation_archive_states").all()).toEqual([]);
+      expect(db.prepare("SELECT 1 FROM pragma_table_info('auth_requests') WHERE name = 'change_report_json'").get())
+        .toBeUndefined();
+      migrate(db);
+      expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
+      expect(db.prepare("SELECT 1 FROM pragma_table_info('auth_requests') WHERE name = 'change_report_json'").get())
+        .toBeDefined();
+      expect(db.prepare("SELECT 1 FROM conversation_archive_states").all()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("refuses a database below the floor and says what to do about it", () => {
     const belowFloor = MINIMUM_SUPPORTED_SCHEMA_VERSION - 1;
     const dbPath = path.join(tempDir, "old.db");
