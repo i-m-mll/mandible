@@ -258,7 +258,13 @@ export function SidebarItemOverflowMenu({
 
   return (
     <span
-      className="sidebar-item-row__overflow"
+      className={`sidebar-item-row__overflow${open ? ' sidebar-item-row__overflow--open' : ''}`}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+      }}
+      onClick={(event) => {
+        event.stopPropagation();
+      }}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
           setOpen(false);
@@ -272,8 +278,7 @@ export function SidebarItemOverflowMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         title={label}
-        onClick={(event) => {
-          event.stopPropagation();
+        onClick={() => {
           setOpen((current) => !current);
         }}
       >
@@ -305,8 +310,7 @@ export function SidebarItemOverflowMenu({
               role="menuitem"
               aria-label={action.ariaLabel}
               disabled={action.disabled}
-              onClick={(event) => {
-                event.stopPropagation();
+              onClick={() => {
                 setOpen(false);
                 action.onSelect();
               }}
