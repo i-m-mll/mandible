@@ -742,6 +742,7 @@ describe("auth queue", () => {
       expect("diff_summary" in row).toBe(false);
       expect("spec_content" in row).toBe(false);
       expect("output" in row).toBe(false);
+      expect("change_report" in row).toBe(false);
       // Bounded fields the sidebar needs are still present.
       expect(row.commit_message).toBe("feat: land it");
       expect(row.title).toBe("History row");

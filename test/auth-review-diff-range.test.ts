@@ -8,11 +8,8 @@
 // advance the base with an unrelated commit. Two-dot and three-dot disagree
 // only after that second step, so a test that skips it passes either way.
 //
-// Both derivations are exercised — the daemon's `computeAuthMergeReviewMetadata`
-// and the shell's `cli/auth-request.sh` — because they are separate
-// implementations either side of a language boundary and drifting apart is the
-// actual defect. Asserting the CLI against git's own three-dot shortstat, and
-// the daemon against the same, is what keeps them pinned to each other.
+// The daemon is the only count authority. The CLI deliberately submits no
+// headline statistics, so a caller cannot drift from the captured inventory.
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -159,10 +156,16 @@ describe("auth review diff range", () => {
 
     // The branch did not change, so its recorded size must not change either.
     // Under two dots this grows by 120 additions for work the branch never did.
-    expect(after).toEqual(before);
+    expect(after.filesChanged).toEqual(before.filesChanged);
+    expect(after.additions).toEqual(before.additions);
+    expect(after.deletions).toEqual(before.deletions);
+    expect(after.changeReport?.files).toEqual(before.changeReport?.files);
+    expect(after.changeReport?.comparison.head_sha).toBe(before.changeReport?.comparison.head_sha);
+    expect(after.changeReport?.comparison.merge_base_sha).toBe(before.changeReport?.comparison.merge_base_sha);
+    expect(after.changeReport?.comparison.base_sha).not.toBe(before.changeReport?.comparison.base_sha);
   });
 
-  it("the CLI submits the same three-dot counts the daemon would compute", async () => {
+  it("the CLI leaves counts to the daemon", async () => {
     const bodies: Record<string, unknown>[] = [];
     const server = http.createServer((req, res) => {
       if (req.method === "GET" && req.url === "/api/instance") {
@@ -196,7 +199,12 @@ describe("auth review diff range", () => {
         req.on("end", () => {
           bodies.push(JSON.parse(raw));
           res.writeHead(201, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ request_id: "req_review_range" }));
+          res.end(JSON.stringify({
+            request_id: "req_review_range",
+            files_changed: 1,
+            additions: 3,
+            deletions: 0,
+          }));
         });
         return;
       }
@@ -245,12 +253,9 @@ describe("auth review diff range", () => {
       expect(result.status, result.stderr).toBe(0);
       expect(bodies).toHaveLength(1);
 
-      const expected = shortstatFor("main...feature/small");
-      expect({
-        filesChanged: bodies[0].files_changed,
-        additions: bodies[0].additions,
-        deletions: bodies[0].deletions,
-      }).toEqual(expected);
+      expect(bodies[0]).not.toHaveProperty("files_changed");
+      expect(bodies[0]).not.toHaveProperty("additions");
+      expect(bodies[0]).not.toHaveProperty("deletions");
 
       // The preview the approver reads must not contain another lane's file.
       expect(String(bodies[0].diff_summary)).toContain("shared.txt");
