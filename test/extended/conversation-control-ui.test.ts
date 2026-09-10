@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ConversationControlSnapshot } from "../../ui/src/api.js";
+import { ApiError, type ConversationControlSnapshot } from "../../ui/src/api.js";
 import { submitConversationControl } from "../../ui/src/api.js";
 import { conversationControlPresentation } from "../../ui/src/chat/conversationControl.js";
 
@@ -107,5 +107,20 @@ describe("shared conversation control presentation", () => {
     }), { status: 409, headers: { "content-type": "application/json" } })));
 
     await expect(submitConversationControl(owned, "message")).rejects.toMatchObject({ snapshot: refreshed });
+  });
+
+  it("preserves a general HTTP rejection explanation instead of treating it as a control error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      error: "instance_mutation_forbidden",
+      message: "This preview can control only a Chat created and still owned by this preview.",
+    }), { status: 403, headers: { "content-type": "application/json" } })));
+
+    const result = submitConversationControl(owned, "message");
+    await expect(result).rejects.toBeInstanceOf(ApiError);
+    await expect(result).rejects.toMatchObject({
+      status: 403,
+      code: "instance_mutation_forbidden",
+      message: "This preview can control only a Chat created and still owned by this preview.",
+    });
   });
 });

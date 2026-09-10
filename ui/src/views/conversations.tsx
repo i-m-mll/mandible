@@ -42,6 +42,7 @@ import {
   getConversationWindow,
   getConversationControl,
   getConversationLiveProjection,
+  getProviderChat,
   getConversationSidebar,
   getConversations,
   getSessionIssues,
@@ -57,10 +58,12 @@ import {
   updateConsoleSession,
   updateConsoleSessionOptions,
   updateConversation,
+  updateConversationArchive,
   type SessionRunOptionsSnapshot,
   type ConversationRuntimeOptions,
   type ConversationControlApiError,
   type ConversationControlSnapshot,
+  type ConversationSpawnReceipt,
   type ProviderAdapterEvent,
   type ProviderLiveProjection,
 } from '../api.js';
@@ -434,14 +437,13 @@ type ViewMode = 'terminal' | 'rich' | 'events';
 type ChatSelection =
   | { type: 'conversation'; id: string }
   | { type: 'session'; id: string }
-  | { type: 'spawn'; id: string }
   | { type: 'draft'; id: string }
   | null;
 type ChatEntry = {
   key: string;
   time: number;
-  kind: 'conversation' | 'session' | 'spawn';
-  conversation?: Conversation;
+  kind: 'conversation' | 'session';
+  conversation?: ConversationSidebarConversation;
   session?: ConsoleSession;
   liveSession?: ConsoleSession | null;
 };
@@ -496,6 +498,61 @@ function conversationShell(conversation: Conversation): ConversationWithDetails 
       },
     },
   };
+}
+
+function conversationFromSpawn(
+  spawn: ConversationSpawnReceipt,
+  placement: NewChatDraft['placement'],
+): ConversationSidebarConversation {
+  const source = spawn.request.provider;
+  return {
+    id: spawn.reservation_id,
+    source,
+    source_path: `mandible://chat/${spawn.reservation_id}`,
+    title: source === 'codex' ? 'New Codex chat' : 'New Claude chat',
+    summary: null,
+    started_at: new Date(spawn.created_at).toISOString(),
+    ended_at: spawn.state === 'failed' || spawn.state === 'cancelled'
+      ? new Date(spawn.updated_at).toISOString()
+      : null,
+    block_count: 0,
+    session_id: spawn.provider_session_id ?? spawn.reservation_id,
+    project_path: null,
+    cwd: null,
+    branch: null,
+    model: source === 'codex' ? 'gpt-5.6-sol' : 'claude-opus-5',
+    cli_version: null,
+    is_sidechain: false,
+    agent_id: null,
+    starred: false,
+    tags: [],
+    notes: null,
+    parent_conversation_id: null,
+    children_count: 0,
+    canonical_project_id: placement.kind === 'project' ? placement.projectId : null,
+    canonical_project_key: null,
+    spawn,
+  };
+}
+
+function eventData<T>(payload: unknown): T | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const record = payload as Record<string, unknown>;
+  const data = record.data;
+  return (data && typeof data === 'object' ? data : record) as T;
+}
+
+function reconcileControlSnapshot(
+  current: ConversationControlSnapshot | null,
+  incoming: ConversationControlSnapshot,
+  conversationId: string,
+): ConversationControlSnapshot | null {
+  if (incoming.conversation_id !== conversationId) return current;
+  if (!current) return incoming;
+  if (incoming.ownership.generation < current.ownership.generation) return current;
+  if (incoming.ownership.generation === current.ownership.generation
+      && incoming.capability.revision < current.capability.revision) return current;
+  return incoming;
 }
 
 function flattenConversationWindow(payload: ConversationPositionWindow): ConversationWithDetails {
@@ -561,7 +618,10 @@ export type ConversationsViewProps = {
   chatEntityLinkAction?: ChatEntityClickAction;
   instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
-  onNewConversation: (input: NewChatInput, signal?: AbortSignal) => Promise<string>;
+  onNewConversation: (input: NewChatInput, signal?: AbortSignal) => Promise<{
+    conversation_id: string;
+    spawn: ConversationSpawnReceipt;
+  }>;
 };
 
 function HorizontalDotsIcon(): JSX.Element {
@@ -1063,6 +1123,9 @@ function ConversationDetail({
   consoleSessions,
   sidebarCollapsed,
   chatEntityLinkAction,
+  creationReceipt,
+  onRetryCreation,
+  onCancelCreation,
   externalNotice,
 }: {
   conversationId: string;
@@ -1072,6 +1135,9 @@ function ConversationDetail({
   consoleSessions: ConsoleSession[];
   sidebarCollapsed: boolean;
   chatEntityLinkAction: ChatEntityClickAction;
+  creationReceipt?: ConversationSpawnReceipt | null;
+  onRetryCreation?: () => void;
+  onCancelCreation?: () => void;
   externalNotice?: ComponentChildren;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
@@ -1220,7 +1286,7 @@ function ConversationDetail({
         if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
         if (isApiErrorStatus(err, 404)) {
           setError(null);
-          setNotFound(true);
+          setNotFound(!creationReceipt);
         } else {
           setError(conversationLoadFailure(err, Boolean(cached)));
           setNotFound(false);
@@ -1228,19 +1294,32 @@ function ConversationDetail({
         setLoading(false);
       });
     return () => controller.abort();
-  }, [anchorKey, conversationId, conversationRequestKey, effectiveAnchor, initialConversation, loadNonce]);
+  }, [anchorKey, conversationId, conversationRequestKey, creationReceipt, effectiveAnchor, initialConversation, loadNonce]);
+
+  const refreshControl = useCallback(() => {
+    let active = true;
+    void getConversationControl(conversationId)
+      .then((snapshot) => { if (active) setControl((current) => reconcileControlSnapshot(current, snapshot, conversationId)); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [conversationId]);
 
   useEffect(() => {
-    let active = true;
+    setControl(null);
     setLiveProjection(null);
-    void getConversationControl(conversationId)
-      .then((snapshot) => { if (active) setControl(snapshot); })
-      .catch(() => { if (active) setControl(null); });
+    const cancelControl = refreshControl();
+    let active = true;
     void getConversationLiveProjection(conversationId)
       .then((projection) => { if (active) setLiveProjection(projection); })
       .catch(() => { if (active) setLiveProjection(null); });
-    return () => { active = false; };
-  }, [conversationId]);
+    return () => { active = false; cancelControl(); };
+  }, [conversationId, refreshControl]);
+
+  useEffect(() => {
+    if (creationReceipt?.state !== 'ready') return;
+    setLoadNonce((nonce) => nonce + 1);
+    return refreshControl();
+  }, [creationReceipt?.attempt_count, creationReceipt?.state, creationReceipt?.updated_at, refreshControl]);
 
   useEffect(() => {
     if (!conversation || loading || loadedConversationKey !== conversationRequestKey) return;
@@ -1268,12 +1347,13 @@ function ConversationDetail({
       setWorkflowNonce((prev) => prev + 1);
     });
     const offControlUpdated = client.on('conversation:control-updated', (payload) => {
-      const snapshot = payload as unknown as ConversationControlSnapshot;
-      if (snapshot.conversation_id !== conversationId) return;
-      setControl(snapshot);
+      const snapshot = eventData<ConversationControlSnapshot>(payload);
+      if (!snapshot) return;
+      setControl((current) => reconcileControlSnapshot(current, snapshot, conversationId));
     });
     const offProviderEvent = client.on('conversation:provider-event', (payload) => {
-      const providerEvent = payload as unknown as ProviderAdapterEvent;
+      const providerEvent = eventData<ProviderAdapterEvent>(payload);
+      if (!providerEvent) return;
       if (providerEvent.conversation_id !== conversationId) return;
       if (providerEvent.kind === 'provider-lineage') scheduleRefresh();
       setLiveProjection((current) => mergeProviderLiveProjection(current, providerEvent));
@@ -1283,6 +1363,7 @@ function ConversationDetail({
     const offState = client.onState((_state, { reconnected }) => {
       if (reconnected) {
         scheduleRefresh();
+        refreshControl();
         void getConversationLiveProjection(conversationId).then(setLiveProjection).catch(() => {});
       }
     });
@@ -1297,7 +1378,7 @@ function ConversationDetail({
       offState();
       client.close();
     };
-  }, [conversationId]);
+  }, [conversationId, refreshControl]);
 
   useEffect(() => {
     if (!conversation?.session_id) {
@@ -1684,9 +1765,10 @@ function ConversationDetail({
   };
 
   const linkedConsoleSession = useMemo(() => {
+    if (creationReceipt) return null;
     if (!conversation?.session_id) return null;
     return consoleSessions.find((session) => session.provider_session_id === conversation.session_id) ?? null;
-  }, [consoleSessions, conversation?.session_id]);
+  }, [consoleSessions, conversation?.session_id, creationReceipt]);
 
   const controlPresentation = control ? conversationControlPresentation(control) : null;
 
@@ -2208,6 +2290,23 @@ function ConversationDetail({
     />
   ) : null;
 
+  const creationNotice = creationReceipt?.error ? (
+    <ChatFailureNotice
+      failure={chatSpawnFailureNotice(creationReceipt.error)}
+      onRetry={creationReceipt.error.retryable ? onRetryCreation : undefined}
+    />
+  ) : creationReceipt?.state === 'starting' || creationReceipt?.state === 'stopping' ? (
+    <DetailPaneNotice
+      severity="info"
+      density="compact"
+      actions={creationReceipt.state === 'starting' && onCancelCreation ? (
+        <button type="button" className="btn btn--ghost btn--sm" onClick={onCancelCreation}>Cancel</button>
+      ) : undefined}
+    >
+      {creationReceipt.state === 'starting' ? 'Starting provider…' : 'Stopping provider…'}
+    </DetailPaneNotice>
+  ) : undefined;
+
   const detailOverlays = (
     <>
       <ChatOverlay
@@ -2253,7 +2352,7 @@ function ConversationDetail({
       overlayControl={composerOverlay}
       overlays={detailOverlays}
       ariaBusy={loading}
-      notice={controlFailureNotice ?? externalNotice ?? loadErrorNotice}
+      notice={controlFailureNotice ?? creationNotice ?? externalNotice ?? loadErrorNotice}
     >
       {showMessageFilters && (
         <div className="conv-filter-bar">
@@ -2342,11 +2441,13 @@ function ConversationDetail({
           <ChatSurface
             events={chatEvents}
             streaming={providerStreaming}
-            emptyLabel={loading
+            emptyLabel={loading && creationReceipt?.state !== 'ready'
               ? 'Loading messages…'
               : error
                 ? 'Conversation content unavailable.'
-                : 'No messages match the current filters.'}
+                : blocks.length === 0
+                  ? 'No messages yet'
+                  : 'No messages match the current filters.'}
             unmaterializedAfterCount={conversation.position_window.window.after_count}
             onJumpToLatest={handleJumpToLatest}
             jumpingToLatest={jumpingToLatest}
@@ -2409,6 +2510,7 @@ function ChatEntryItem({
   onEditTags,
   onRenameSession,
   onOpenExternally,
+  onToggleArchived,
 }: {
   entry: ChatEntry;
   isSelected: boolean;
@@ -2419,6 +2521,7 @@ function ChatEntryItem({
   onEditTags?: (tags: string[]) => void;
   onRenameSession?: (label: string | null) => void;
   onOpenExternally?: () => void;
+  onToggleArchived?: () => void;
 }): JSX.Element {
   const conversation = entry.conversation;
   const session = entry.session;
@@ -2426,7 +2529,7 @@ function ChatEntryItem({
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
   const providerLabel = source ? SIDEBAR_PROVIDER_LABELS[source] : null;
   const title = conversation ? getConversationTitle(conversation) : getConsoleSessionTitle(session);
-  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession || onOpenExternally);
+  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession || onOpenExternally || onToggleArchived);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
   const hasBadges = Boolean(conversation?.tags.length || session?.owner);
 
@@ -2458,6 +2561,13 @@ function ChatEntryItem({
   }
   if (onRenameSession) {
     overflowActions.push({ id: 'rename-session', label: 'Rename session', onSelect: handleRenameSession });
+  }
+  if (onToggleArchived) {
+    overflowActions.push({
+      id: conversation?.archived_at ? 'unarchive' : 'archive',
+      label: conversation?.archived_at ? 'Unarchive' : 'Archive',
+      onSelect: onToggleArchived,
+    });
   }
 
   return (
@@ -2658,6 +2768,8 @@ export function ConversationsView({
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [chatViewState, setChatViewState] = useChatViewState();
+  const conversationLifecycle = chatViewState.conversationLifecycle;
+  const [retainedSelection, setRetainedSelection] = useState<ConversationSidebarConversation | null>(null);
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
@@ -2670,6 +2782,37 @@ export function ConversationsView({
   const [loading, setLoading] = useState(false);
   const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
+  const acceptedConversationId = newChatDraft?.state === 'accepted' ? newChatDraft.conversationId : null;
+  const acceptedSpawnState = newChatDraft?.state === 'accepted' ? newChatDraft.spawn.state : null;
+  const reconcileCreationReceipt = useCallback((spawn: ConversationSpawnReceipt) => {
+    setNewChatDraft((current) => current ? reduceNewChatDraft(current, { type: 'observe', spawn }) : current);
+  }, []);
+
+  useEffect(() => {
+    if (!acceptedConversationId || (acceptedSpawnState !== 'starting' && acceptedSpawnState !== 'stopping')) {
+      return undefined;
+    }
+    let active = true;
+    let timer: number | null = null;
+    const refresh = () => {
+      void getProviderChat(acceptedConversationId)
+        .then((spawn) => {
+          if (!active) return;
+          reconcileCreationReceipt(spawn);
+          if (spawn.state === 'starting' || spawn.state === 'stopping') {
+            timer = window.setTimeout(refresh, 500);
+          }
+        })
+        .catch(() => {
+          if (active) timer = window.setTimeout(refresh, 500);
+        });
+    };
+    refresh();
+    return () => {
+      active = false;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [acceptedConversationId, acceptedSpawnState, reconcileCreationReceipt]);
   const searchTimer = useRef<number | null>(null);
   const fetchGenerationRef = useRef(0);
   const groupsRef = useRef(serverGroups);
@@ -2679,6 +2822,7 @@ export function ConversationsView({
   const previousGroupLimitRef = useRef(sidebarGroupLimit);
   const pinActionRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingPinFocusKey = useRef<string | null>(null);
+  const pendingPinIntents = useRef(new Map<string, boolean>());
 
   useEffect(() => {
     let active = true;
@@ -2853,6 +2997,7 @@ export function ConversationsView({
       sort: sort === 'blocks' ? 'block_count' : 'started_at',
       exclude_subagents: true,
       project_ids: projectIds,
+      lifecycle: conversationLifecycle,
     };
     if (previewMutationsRejected) {
       const pinnedIds = Object.entries(chatViewState.previewPinOverrides)
@@ -2864,7 +3009,7 @@ export function ConversationsView({
     if (hideEmpty) params.min_blocks = 1;
     applyConversationSearchParams(params, search, searchMode);
     return params;
-  }, [chatViewState.previewPinOverrides, hideEmpty, previewMutationsRejected, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
+  }, [chatViewState.previewPinOverrides, conversationLifecycle, hideEmpty, previewMutationsRejected, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
   // A refresh starts from one bounded page per logical group, then replays only
   // the extra pages needed to restore that group's current visible target.
@@ -2937,7 +3082,7 @@ export function ConversationsView({
         typeof payload.data === 'object' && payload.data !== null ? payload.data : payload
       ) as ConversationAppendPayload;
       const rawData = data as ConversationAppendPayload & { updates?: unknown };
-      const membershipFields = ['starred', 'cwd', 'project_path', 'canonical_project_id', 'canonical_project_key'];
+      const membershipFields = ['starred', 'archived_at', 'cwd', 'project_path', 'canonical_project_id', 'canonical_project_key'];
       const membershipChanged = membershipFields.some((field) => Object.prototype.hasOwnProperty.call(rawData, field))
         || (Array.isArray(rawData.updates) && rawData.updates.some((field) => (
           typeof field === 'string' && membershipFields.includes(field)
@@ -2972,11 +3117,17 @@ export function ConversationsView({
     const offNew = client.on('conversation:new', () => {
       scheduleListRefetch();
     });
-    const offSpawn = client.on('conversation-spawn:updated', () => {
+    const offSpawn = client.on('conversation-spawn:updated', (payload) => {
+      const update = eventData<{ spawn?: ConversationSpawnReceipt }>(payload);
+      if (update?.spawn) reconcileCreationReceipt(update.spawn);
       scheduleListRefetch();
     });
     const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) void fetchConversationGroups();
+      if (!reconnected) return;
+      void fetchConversationGroups();
+      if (acceptedConversationId) {
+        void getProviderChat(acceptedConversationId).then(reconcileCreationReceipt).catch(() => {});
+      }
     });
     client.connect();
     return () => {
@@ -2989,7 +3140,7 @@ export function ConversationsView({
       offState();
       client.close();
     };
-  }, [fetchConversationGroups]);
+  }, [acceptedConversationId, fetchConversationGroups, reconcileCreationReceipt]);
 
   // Debounced fetch on filter changes
   useEffect(() => {
@@ -3003,15 +3154,54 @@ export function ConversationsView({
     };
   }, [canonicalProjectsReady, fetchConversationGroups, shownProjectsState.ready]);
 
+  const acceptedConversation = useMemo(() => newChatDraft?.state === 'accepted'
+    ? conversationFromSpawn(newChatDraft.spawn, newChatDraft.placement)
+    : null, [newChatDraft]);
+
+  const conversationGroups = useMemo(() => {
+    if (!acceptedConversation || newChatDraft?.state !== 'accepted') return serverGroups;
+    let found = false;
+    const reconciled = serverGroups.map((group) => ({
+      ...group,
+      conversations: group.conversations.map((conversation) => {
+        if (conversation.id !== acceptedConversation.id) return conversation;
+        found = true;
+        return { ...acceptedConversation, ...conversation, spawn: newChatDraft.spawn };
+      }),
+    }));
+    if (found) return reconciled;
+    const projectId = newChatDraft.placement.kind === 'project' ? newChatDraft.placement.projectId : null;
+    const targetIndex = reconciled.findIndex((group) => projectId
+      ? group.kind === 'project' && group.project_id === projectId
+      : group.kind === 'chats');
+    if (targetIndex >= 0) {
+      return reconciled.map((group, index) => index === targetIndex ? {
+        ...group,
+        total: group.total + 1,
+        conversations: [acceptedConversation, ...group.conversations],
+      } : group);
+    }
+    return [...reconciled, {
+      key: projectId ? `accepted-project-${projectId}` : 'chats',
+      kind: projectId ? 'project' as const : 'chats' as const,
+      label: newChatDraft.placement.projectLabel,
+      ...(projectId ? { project_id: projectId } : {}),
+      total: 1,
+      conversations: [acceptedConversation],
+      next_cursor: null,
+    }];
+  }, [acceptedConversation, newChatDraft, serverGroups]);
+
   const selectedConversationSummary = selection?.type === 'conversation'
-    ? serverGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id) ?? null
+    ? conversationGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id)
+      ?? (retainedSelection?.id === selection.id ? retainedSelection : null)
     : null;
 
   // Client-side title-only filter (when searchMode === 'title', server already
   // searched summary too, so we narrow here to title-only for the title mode).
   // When searchMode === 'full', server search is sufficient — show all results.
   const displayedConversations = useMemo(() => {
-    const base = serverGroups.map((group) => ({
+    const base = conversationGroups.map((group) => ({
       ...group,
       conversations: group.conversations.filter((conv) =>
         !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0 || Boolean(conv.spawn))
@@ -3023,7 +3213,7 @@ export function ConversationsView({
       ...group,
       conversations: group.conversations.filter((conv) => getConversationTitle(conv).toLowerCase().includes(needle)),
     }));
-  }, [serverGroups, hideEmpty, search, searchMode]);
+  }, [conversationGroups, hideEmpty, search, searchMode]);
 
   const liveByProviderSession = useMemo(() => {
     const map = new Map<string, ConsoleSession>();
@@ -3093,13 +3283,13 @@ export function ConversationsView({
           target.total += 1;
         }
         target.entries.push({
-          key: conversation.spawn && conversation.spawn.state !== 'ready'
-            ? `spawn:${conversation.id}`
+          key: conversation.spawn
+            ? `conversation:${conversation.id}`
             : liveByProviderSession.has(conversation.session_id)
-            ? `session:${liveByProviderSession.get(conversation.session_id)!.id}`
-            : `conversation:${conversation.id}`,
+              ? `session:${liveByProviderSession.get(conversation.session_id)!.id}`
+              : `conversation:${conversation.id}`,
           time: getConversationTime(conversation),
-          kind: conversation.spawn && conversation.spawn.state !== 'ready' ? 'spawn' : 'conversation',
+          kind: 'conversation',
           conversation,
           liveSession: conversation.spawn?.native_session_id
             ? liveSessions.find((session) => session.id === conversation.spawn?.native_session_id) ?? null
@@ -3114,6 +3304,7 @@ export function ConversationsView({
       displayedConversations.flatMap((group) => group.conversations.map((conversation) => conversation.id)),
     );
     for (const session of liveSessions) {
+      if (conversationLifecycle === 'archived') continue;
       if (isSubagentSession(session)) {
         continue;
       }
@@ -3173,7 +3364,7 @@ export function ConversationsView({
         .sort((left, right) => left.label.localeCompare(right.label)),
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [chatViewState.pinnedConversationIds, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
+  }, [chatViewState.pinnedConversationIds, conversationLifecycle, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
 
   useEffect(() => {
     if (selection?.type !== 'session') return;
@@ -3182,25 +3373,13 @@ export function ConversationsView({
     const indexed = displayedConversations
       .flatMap((group) => group.conversations)
       .find((conversation) => conversation.session_id === liveSession.provider_session_id);
-    if (indexed?.spawn) {
-      setSelection((current) => current?.type === 'spawn' && current.id === indexed.id
-        ? current
-        : { type: 'spawn', id: indexed.id });
-    } else if (indexed) handleNavigateConversation(indexed.id);
+    if (indexed) handleNavigateConversation(indexed.id);
   }, [displayedConversations, handleNavigateConversation, liveSessions, selection]);
-
-  useEffect(() => {
-    if (selection?.type !== 'spawn') return;
-    const indexed = displayedConversations
-      .flatMap((group) => group.conversations)
-      .find((conversation) => conversation.id === selection.id);
-    if (indexed && (!indexed.spawn || indexed.spawn.state === 'ready')) handleNavigateConversation(indexed.id);
-  }, [displayedConversations, handleNavigateConversation, selection]);
 
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
       .flatMap((group) => group.conversations)
-      .filter(isConversationPinned)
+      .filter((conversation) => pendingPinIntents.current.get(conversation.id) ?? isConversationPinned(conversation))
       .map((conversation) => conversation.id);
     setChatViewState((current) => {
       const reconciled = reconcileOrderedPinIds(current.pinnedConversationIds, effectivePinnedIds);
@@ -3222,20 +3401,13 @@ export function ConversationsView({
     !hideEmpty,
     sort !== 'date',
     searchMode !== 'title',
+    conversationLifecycle !== 'active',
   ].filter(Boolean).length;
 
   const selectedLiveSession = useMemo(() => {
     if (!selectedSessionId) return null;
     return consoleSessions.find((session) => session.id === selectedSessionId) ?? null;
   }, [consoleSessions, selectedSessionId]);
-  const selectedSpawn = selection?.type === 'spawn'
-    ? displayedConversations.flatMap((group) => group.conversations)
-      .find((conversation) => conversation.id === selection.id)?.spawn ?? null
-    : null;
-  const selectedSpawnSession = selectedSpawn?.native_session_id
-    ? consoleSessions.find((session) => session.id === selectedSpawn.native_session_id) ?? null
-    : null;
-
   useEffect(() => {
     if (!selection) return;
     if (selection.type !== 'session') return;
@@ -3246,10 +3418,6 @@ export function ConversationsView({
   useEffect(() => {
     if (selection) return;
     if (!firstChatEntry) return;
-    if (firstChatEntry.kind === 'spawn' && firstChatEntry.conversation) {
-      setSelection((current) => current ?? { type: 'spawn', id: firstChatEntry.conversation!.id });
-      return;
-    }
     if (firstChatEntry.kind === 'conversation' && firstChatEntry.conversation) {
       setSelection((current) => current ?? { type: 'conversation', id: firstChatEntry.conversation!.id });
       return;
@@ -3350,6 +3518,7 @@ export function ConversationsView({
     const conversationId = entry.conversation.id;
     const starred = !isConversationPinned(entry.conversation);
     if (previewMutationsRejected) {
+      pendingPinIntents.current.set(conversationId, starred);
       pendingPinFocusKey.current = entry.key;
       setChatViewState((current) => ({
         ...current,
@@ -3365,6 +3534,7 @@ export function ConversationsView({
     }
     try {
       const updated = await updateConversation(conversationId, { starred });
+      pendingPinIntents.current.set(conversationId, starred);
       pendingPinFocusKey.current = entry.key;
       updateConversationInList(updated);
       setChatViewState((current) => ({
@@ -3374,6 +3544,7 @@ export function ConversationsView({
           : current.pinnedConversationIds.filter((id) => id !== conversationId),
       }));
     } catch {
+      pendingPinIntents.current.delete(conversationId);
       // keep the current list state if persistence fails
     }
   };
@@ -3386,6 +3557,23 @@ export function ConversationsView({
       }
     } catch {
       // keep the current list state if persistence fails
+    }
+  };
+
+  const handleToggleArchived = async (entry: ChatEntry) => {
+    if (!entry.conversation) return;
+    const archived = !entry.conversation.archived_at;
+    try {
+      if (selection?.type === 'conversation' && selection.id === entry.conversation.id) {
+        setRetainedSelection(entry.conversation);
+      }
+      await updateConversationArchive(entry.conversation.id, archived);
+      await fetchConversationGroups();
+    } catch (error) {
+      setSidebarToast({
+        message: error instanceof Error ? error.message : `Chat could not be ${archived ? 'archived' : 'unarchived'}.`,
+        type: 'error',
+      });
     }
   };
 
@@ -3433,7 +3621,7 @@ export function ConversationsView({
     draftStartupController.current = startupController;
     setNewChatDraft(starting);
     try {
-      const conversationId = await onNewConversation({
+      const result = await onNewConversation({
         idempotency_key: starting.id,
         provider: starting.provider,
         placement: starting.placement.kind === 'project'
@@ -3446,11 +3634,15 @@ export function ConversationsView({
       }, startupController.signal);
       if (startupController.signal.aborted) return;
       setNewChatDraft((current) => current?.id === starting.id
-        ? reduceNewChatDraft(starting, { type: 'ready', conversationId })
+        ? reduceNewChatDraft(starting, {
+            type: 'accepted',
+            conversationId: result.conversation_id,
+            spawn: result.spawn,
+          })
         : current);
-      setSelection({ type: 'spawn', id: conversationId });
+      setSelection({ type: 'conversation', id: result.conversation_id });
       const nextHash = hashWithAgentSession(
-        `#/console?conversation=${encodeURIComponent(conversationId)}`,
+        `#/console?conversation=${encodeURIComponent(result.conversation_id)}`,
         getAgentPageBinding(),
       );
       if (window.location.hash !== nextHash) window.location.hash = nextHash;
@@ -3543,9 +3735,7 @@ export function ConversationsView({
     <ChatEntryItem
       key={entry.key}
       entry={entry}
-      isSelected={entry.kind === 'spawn'
-        ? selection?.type === 'spawn' && selection.id === entry.conversation?.id
-        : entry.kind === 'conversation'
+      isSelected={entry.kind === 'conversation'
         ? selectedConversationId === entry.conversation?.id
           || (selectedSessionId !== null && selectedSessionId === entry.liveSession?.id)
         : selectedSessionId === entry.session?.id}
@@ -3562,19 +3752,16 @@ export function ConversationsView({
       onOpenExternally={entry.conversation?.external_navigation
         ? () => { void handleOpenExternally(entry); }
         : undefined}
+      onToggleArchived={entry.conversation ? () => { void handleToggleArchived(entry); } : undefined}
       onClick={() => {
         if (newChatDraft?.state === 'choosing') discardDraft();
-        if (entry.kind === 'spawn' && entry.conversation) {
-          setSelection((current) => current?.type === 'spawn' && current.id === entry.conversation!.id
-            ? current
-            : { type: 'spawn', id: entry.conversation!.id });
-          return;
-        }
         if (entry.kind === 'conversation' && entry.conversation) {
           handleNavigateConversation(entry.conversation.id);
+          setRetainedSelection(entry.conversation);
           return;
         }
         if (entry.session) {
+          setRetainedSelection(null);
           handleSelectSession(entry.session.id);
         }
       }}
@@ -3617,12 +3804,28 @@ export function ConversationsView({
                 {!hideEmpty && <span>Empty shown</span>}
                 {sort !== 'date' && <span>By blocks</span>}
                 {searchMode === 'full' && <span>Full text</span>}
+                {conversationLifecycle === 'archived' && <span>Archived</span>}
               </>
             ) : undefined}
             panel={filterPanelOpen ? {
               variant: 'popover',
               children: (
                 <>
+                <div className="sidebar-search-filter__section">
+                  <div className="sidebar-search-filter__label">Chats</div>
+                  <div className="sidebar-search-filter__options">
+                    {(['active', 'archived'] as const).map((lifecycle) => (
+                      <button
+                        key={lifecycle}
+                        type="button"
+                        className={`conv-filter-btn${conversationLifecycle === lifecycle ? ' conv-filter-btn--active' : ''}`}
+                        onClick={() => setChatViewState((current) => ({ ...current, conversationLifecycle: lifecycle }))}
+                      >
+                        {lifecycle === 'active' ? 'Active' : 'Archived'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="sidebar-search-filter__section">
                   <div className="sidebar-search-filter__label">Agent</div>
                   <div className="sidebar-search-filter__options">
@@ -3784,7 +3987,7 @@ export function ConversationsView({
                   >
                     {newChatDraft
                       && newChatDraft.state !== 'abandoned'
-                      && newChatDraft.state !== 'ready'
+                      && newChatDraft.state !== 'accepted'
                       && newChatDraft.placement.kind === 'project'
                       && newChatDraft.placement.projectId === group.canonicalProjectId ? (
                         <SidebarItemRow
@@ -3826,7 +4029,7 @@ export function ConversationsView({
                 >
                   {newChatDraft
                     && newChatDraft.state !== 'abandoned'
-                    && newChatDraft.state !== 'ready'
+                    && newChatDraft.state !== 'accepted'
                     && newChatDraft.placement.kind === 'projectless' ? (
                       <SidebarItemRow
                         label="New chat"
@@ -3875,34 +4078,6 @@ export function ConversationsView({
           >
             <div className="chat-history-detail__empty" aria-hidden="true" />
           </ChatDetailFrame>
-        ) : selection?.type === 'spawn' && selectedSpawnSession ? (
-          <LiveSessionDetail key={selectedSpawnSession.id} session={selectedSpawnSession} />
-        ) : selection?.type === 'spawn' && selectedSpawn ? (
-          <ChatDetailFrame
-            state="draft"
-            header={<DetailPaneHeader variant="compact" title={selectedSpawn.request.provider === 'codex' ? 'New Codex chat' : 'New Claude chat'} />}
-            notice={selectedSpawn.error ? (
-              <ChatFailureNotice
-                failure={chatSpawnFailureNotice(selectedSpawn.error)}
-                onRetry={selectedSpawn.error.retryable ? () => {
-                  void retryProviderChat(selectedSpawn.reservation_id, selectedSpawn.attempt_count)
-                    .then(() => fetchConversationGroups());
-                } : undefined}
-              />
-            ) : undefined}
-          >
-            <div className="chat-history-detail__empty">
-              {selectedSpawn.state === 'starting' || selectedSpawn.state === 'stopping'
-                ? <span role="status">{selectedSpawn.state === 'starting' ? 'Starting provider…' : 'Stopping provider…'}</span>
-                : null}
-              {selectedSpawn.state === 'starting' ? (
-                <button type="button" className="btn btn--ghost btn--sm" onClick={() => {
-                  void cancelProviderChat(selectedSpawn.reservation_id, selectedSpawn.attempt_count)
-                    .then(() => fetchConversationGroups());
-                }}>Cancel</button>
-              ) : null}
-            </div>
-          </ChatDetailFrame>
         ) : selection?.type === 'conversation' ? (
           <ConversationDetail
             conversationId={selection.id}
@@ -3912,6 +4087,17 @@ export function ConversationsView({
             consoleSessions={consoleSessions}
             sidebarCollapsed={false}
             chatEntityLinkAction={chatEntityLinkAction}
+            creationReceipt={selectedConversationSummary?.spawn ?? null}
+            onRetryCreation={selectedConversationSummary?.spawn?.error?.retryable ? () => {
+              const spawn = selectedConversationSummary.spawn!;
+              void retryProviderChat(spawn.reservation_id, spawn.attempt_count)
+                .then(reconcileCreationReceipt);
+            } : undefined}
+            onCancelCreation={selectedConversationSummary?.spawn?.state === 'starting' ? () => {
+              const spawn = selectedConversationSummary.spawn!;
+              void cancelProviderChat(spawn.reservation_id, spawn.attempt_count)
+                .then(reconcileCreationReceipt);
+            } : undefined}
           />
         ) : selection?.type === 'session' && selectedLiveSession ? (
           <LiveSessionDetail

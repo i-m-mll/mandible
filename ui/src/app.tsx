@@ -1919,7 +1919,7 @@ function App(): JSX.Element {
   }, signal?: AbortSignal) => {
       const result = await startProviderChat(idempotency_key, provider, placement, { signal });
       if (!result.conversation_id) throw new Error('The server created a chat without a conversation ID.');
-      return result.conversation_id;
+      return result;
   };
 
   const handleAckAll = async () => {

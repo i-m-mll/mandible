@@ -344,7 +344,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerWorkflowRoutes(router);
   registerRedirectRoutes(router);
   registerConversationRoutes(router, sessionRegistry);
-  registerConversationControlRoutes(router, conversationControl);
+  registerConversationControlRoutes(router, conversationControl, { db, instance });
   registerConversationCustodyRoutes(router, db);
 
   try {
