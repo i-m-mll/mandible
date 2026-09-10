@@ -147,6 +147,7 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     try {
       controller.value.process.write({
         type: "user",
+        uuid: item.idempotency_key,
         message: { role: "user", content: [{ type: "text", text: item.message }] },
         parent_tool_use_id: null,
       });
@@ -229,7 +230,6 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       return;
     }
     if (record.type === "user") {
-      this.publishClaudeRecord(controller, record);
       this.acknowledgeUser(controller, record);
       return;
     }
@@ -257,10 +257,7 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
   private acknowledgeUser(controller: ClaudeController, record: Record<string, unknown>): void {
     const pending = controller.pending;
     if (!pending) return;
-    const message = object(record.message);
-    const content = Array.isArray(message?.content) ? message.content : [];
-    const echoedText = content.map((block) => object(block)?.text).filter((text): text is string => typeof text === "string").join("\n");
-    if (echoedText !== pending.item.message) return;
+    if (record.uuid !== pending.item.idempotency_key) return;
     controller.pending = null;
     clearTimeout(pending.timer);
     if (pending.item.operation !== "steer") {
@@ -270,6 +267,22 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       this.lifecycle.emit(this.event(controller, { kind: "turn-started", turn_id: pending.item.turn_id, at: Date.now() }));
     }
     const providerMessageId = typeof record.uuid === "string" && record.uuid ? record.uuid : null;
+    this.emitContent(controller, `message:${pending.item.idempotency_key}`, {
+      type: "user",
+      uuid: pending.item.idempotency_key,
+      session_id: controller.providerSessionId,
+      parent_tool_use_id: null,
+      message: {
+        id: pending.item.idempotency_key,
+        role: "user",
+        content: object(record.message)?.content ?? [{ type: "text", text: pending.item.message }],
+      },
+    }, {
+      intent_id: pending.item.idempotency_key,
+      delivery_id: pending.item.id,
+      turn_id: pending.item.turn_id,
+      ...(providerMessageId ? { provider_message_id: providerMessageId } : {}),
+    });
     pending.resolve({
       provider_receipt_id: providerMessageId
         ? `claude:message:${providerMessageId}`
@@ -323,7 +336,12 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     this.emitContent(controller, identity, record as { type: string; [key: string]: unknown });
   }
 
-  private emitContent(controller: ClaudeController, identity: string, event: { type: string; [key: string]: unknown }): void {
+  private emitContent(
+    controller: ClaudeController,
+    identity: string,
+    event: { type: string; [key: string]: unknown },
+    correlation?: Extract<ProviderAdapterEvent, { kind: "provisional-content" }>["correlation"],
+  ): void {
     this.providerEvents.emit({
       kind: "provisional-content",
       conversation_id: controller.conversationId,
@@ -332,6 +350,7 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       sequence: ++controller.providerSequence,
       observed_at: Date.now(),
       identity,
+      ...(correlation ? { correlation } : {}),
       event,
     });
   }

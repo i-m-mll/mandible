@@ -46,6 +46,12 @@ lines.on("line", (line) => {
     const turn = { id: activeTurnId, status: "inProgress" };
     respond({ turn });
     send({ method: "turn/started", params: { threadId: request.params.threadId, turn } });
+    send({ method: "item/completed", params: {
+      threadId: request.params.threadId,
+      turnId: activeTurnId,
+      completedAtMs: Date.now(),
+      item: { id: `user-${request.params.clientUserMessageId}`, type: "userMessage", content: request.params.input },
+    } });
     if (request.params.input[0]?.text === "delta") {
       send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "codex-message-1", delta: "hel" } });
       send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "codex-message-1", delta: "lo" } });

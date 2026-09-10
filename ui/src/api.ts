@@ -2550,6 +2550,7 @@ export async function submitConversationControl(
   message: string,
   messageAnchor?: string,
   runtimeOptions?: ConversationRuntimeOptions,
+  idempotencyKey: string = crypto.randomUUID(),
 ): Promise<AcceptedConversationSubmission> {
   const capability = snapshot.capability;
   const operation: ConversationControlOperation = capability.kind === 'live-send'
@@ -2577,7 +2578,7 @@ export async function submitConversationControl(
       message,
       ...(operation === 'resume-message-anchor' ? { message_anchor: messageAnchor } : {}),
       ...(runtimeOptions && Object.keys(runtimeOptions).length > 0 ? { runtime_options: runtimeOptions } : {}),
-      idempotency_key: crypto.randomUUID(),
+      idempotency_key: idempotencyKey,
     }),
   });
   const payload = await parseMaybeJson(response) as unknown;
