@@ -12,6 +12,7 @@ import type {
   AuthExecutionMode,
   AuthRequestType,
   AuthRequestActionInput,
+  AuthChangeReport,
   AuthOutputChunk,
   ArtifactRecord,
   ArtifactIdentitySourceKind,
@@ -43,6 +44,7 @@ export type {
   AuthExecutionMode,
   AuthRequestType,
   AuthRequestActionInput,
+  AuthChangeReport,
   AuthOutputChunk,
   ArtifactRecord,
   ArtifactIdentitySourceKind,
@@ -268,6 +270,7 @@ export interface AuthRequest {
   // Null until Stage 3 finalizers run; lets crash recovery resume mid-queue and
   // surfaces failed steps in the auth:finalized payload and detail views.
   merge_finalizer_state?: string | null;
+  change_report?: AuthChangeReport | null;
   files_changed?: number;
   additions?: number;
   deletions?: number;
@@ -356,7 +359,7 @@ export interface AuthRequestLifecycleEvent {
  */
 export type AuthRequestSummary = Omit<
   AuthRequest,
-  "diff_summary" | "spec_content" | "output"
+  "diff_summary" | "spec_content" | "output" | "change_report"
 > & { action_count: number };
 
 export interface AuthRequestInput {
@@ -382,6 +385,8 @@ export interface AuthRequestInput {
   base_branch?: string;
   head_branch?: string;
   merge_head_sha?: string | null;
+  /** Route-owned immutable report; never accepted from request callers. */
+  change_report?: AuthChangeReport | null;
   files_changed?: number;
   additions?: number;
   deletions?: number;

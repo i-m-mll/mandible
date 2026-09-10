@@ -23,7 +23,7 @@ export function authRequestSnapshot(db: Db, requestId: string): string {
   if (!row) throw new Error(`Auth request '${requestId}' is missing.`);
   const request = Object.fromEntries(Object.entries(row).map(([key, value]) => [
     key,
-    ["issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state"].includes(key)
+    ["issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json"].includes(key)
       ? parseJsonColumn(value)
       : value ?? null,
   ]));

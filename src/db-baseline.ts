@@ -15,7 +15,7 @@ import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 175;
+export const BASELINE_SCHEMA_VERSION = 176;
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -904,6 +904,33 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     db.exec("ALTER TABLE auth_requests ADD COLUMN supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT");
     db.exec("ALTER TABLE auth_requests ADD COLUMN superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT");
     db.exec("ALTER TABLE auth_requests ADD COLUMN custody_work_unit_id TEXT REFERENCES work_units(id) ON DELETE RESTRICT");
+    db.exec(`ALTER TABLE auth_requests ADD COLUMN change_report_json TEXT
+      CHECK(change_report_json IS NULL OR (
+        json_valid(change_report_json)
+        AND json_extract(change_report_json, '$.schema') = 'mandible-auth-change-report@1'
+        AND json_type(change_report_json, '$.files') = 'array'
+        AND json_extract(change_report_json, '$.totals.files') = json_array_length(json_extract(change_report_json, '$.files'))
+      ))`);
+    db.exec(`CREATE TRIGGER auth_change_report_insert_consistent
+      BEFORE INSERT ON auth_requests
+      WHEN NEW.change_report_json IS NOT NULL AND (
+        NEW.files_changed IS NOT json_extract(NEW.change_report_json, '$.totals.files')
+        OR NEW.additions IS NOT json_extract(NEW.change_report_json, '$.totals.additions')
+        OR NEW.deletions IS NOT json_extract(NEW.change_report_json, '$.totals.deletions')
+      )
+      BEGIN SELECT RAISE(ABORT, 'auth change report totals must own headline counts'); END`);
+    db.exec(`CREATE TRIGGER auth_change_report_immutable_update
+      BEFORE UPDATE OF change_report_json ON auth_requests
+      WHEN OLD.change_report_json IS NOT NEW.change_report_json
+      BEGIN SELECT RAISE(ABORT, 'auth change reports are immutable'); END`);
+    db.exec(`CREATE TRIGGER auth_change_report_counts_immutable_update
+      BEFORE UPDATE OF files_changed, additions, deletions ON auth_requests
+      WHEN OLD.change_report_json IS NOT NULL AND (
+        OLD.files_changed IS NOT NEW.files_changed
+        OR OLD.additions IS NOT NEW.additions
+        OR OLD.deletions IS NOT NEW.deletions
+      )
+      BEGIN SELECT RAISE(ABORT, 'captured auth headline counts are immutable'); END`);
     db.exec("ALTER TABLE work_units ADD COLUMN owner_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT");
     db.exec("ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)");
     db.exec("ALTER TABLE auth_request_actions ADD COLUMN replacement_action_id TEXT REFERENCES auth_request_actions(id) ON DELETE RESTRICT");
