@@ -8,6 +8,8 @@ import { migrate, openDb, setDb, type Db } from "../../src/db.js";
 import { registerConversationRoutes } from "../../src/routes/conversations.js";
 import { Router } from "../../src/server.js";
 import { setupOperator } from "../../src/users/store.js";
+import { ConversationSpawnService } from "../../src/conversation-spawn/service.js";
+import { CONVERSATION_SPAWN_REQUEST_SCHEMA } from "../../src/conversation-spawn/types.js";
 
 let tempDir = "";
 let db: Db;
@@ -87,5 +89,49 @@ describe("conversation metadata routes", () => {
       body: { tags_add: "not-an-array" },
     });
     expect(invalid.status).toBe(400);
+  });
+
+  it("persists one archive marker for materialized conversations and accepted reservations", async () => {
+    const reservationId = "10000000-0000-4000-8000-000000000001";
+    const spawns = new ConversationSpawnService(db, () => 1_000);
+    expect(spawns.reserve({
+      schema: CONVERSATION_SPAWN_REQUEST_SCHEMA,
+      idempotency_key: reservationId,
+      provider: "codex",
+      placement: { kind: "projectless" },
+    })).toMatchObject({ ok: true });
+    const router = new Router({ clientAuth: new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") }) });
+    registerConversationRoutes(router);
+
+    for (const id of ["conv-1", reservationId]) {
+      const archived = await router.invoke({
+        method: "PATCH",
+        url: `/api/conversations/${id}`,
+        credential: token,
+        body: { archived: true },
+      });
+      expect(archived.status).toBe(200);
+      expect(archived.body).toMatchObject({ id, archived_at: expect.any(Number) });
+    }
+
+    expect(db.prepare("SELECT conversation_id FROM conversation_archive_states ORDER BY conversation_id").all())
+      .toEqual([{ conversation_id: reservationId }, { conversation_id: "conv-1" }]);
+    const active = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?lifecycle=active&limit=20" });
+    expect((active.body as { groups: Array<{ conversations: Array<{ id: string }> }> }).groups
+      .flatMap((group) => group.conversations.map((row) => row.id))).toEqual([]);
+    const archived = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?lifecycle=archived&limit=20" });
+    expect((archived.body as { groups: Array<{ conversations: Array<{ id: string }> }> }).groups
+      .flatMap((group) => group.conversations.map((row) => row.id)).sort())
+      .toEqual(["conv-1", reservationId].sort());
+
+    const restored = await router.invoke({
+      method: "PATCH",
+      url: `/api/conversations/${reservationId}`,
+      credential: token,
+      body: { archived: false },
+    });
+    expect(restored.body).toEqual({ id: reservationId, archived_at: null });
+    expect(db.prepare("SELECT conversation_id FROM conversation_archive_states WHERE conversation_id = ?").get(reservationId))
+      .toBeUndefined();
   });
 });
