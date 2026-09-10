@@ -77,6 +77,7 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
 const ACTOR_SCOPED_BRIEFING_RESPONSE_ROUTE =
   /^\/api\/briefings\/[^/]+\/rounds\/[^/]+\/(?:answers|annotations|submit)$/;
 const PREVIEW_CONVERSATION_SPAWN_ROUTE = /^\/api\/conversation-spawns(?:\/[0-9a-f-]+\/retry|\/[0-9a-f-]+)?$/i;
+const PREVIEW_CONVERSATION_CONTROL_ROUTE = /^\/api\/conversations\/[^/]+\/control\/(?:submit|stop)$/;
 
 export function resolveInstanceInfo(options: {
   env?: NodeJS.ProcessEnv;
@@ -157,6 +158,9 @@ export function evaluateInstanceMutation(
   if (isIsolatedPreviewConversationSpawnMutation(instance, method, pathname)) {
     return { allowed: true };
   }
+  if (isIsolatedPreviewConversationControlMutation(instance, method, pathname)) {
+    return { allowed: true };
+  }
 
   return {
     allowed: false,
@@ -189,6 +193,20 @@ export function isIsolatedPreviewConversationSpawnMutation(
   return lifecycleMethod
     && PREVIEW_CONVERSATION_SPAWN_ROUTE.test(pathname)
     && (normalizedMethod !== "DELETE" || !pathname.endsWith("/retry"))
+    && instance.role === "preview"
+    && instance.operational_mutations === "reject"
+    && instance.db_path_source === "iab-preview-copy"
+    && hasIsolatedDatabaseCopy(instance.db_path, instance.source_db_path ?? null)
+    && isPathWithinRoot(instance.db_path, instance.preview_root ?? null);
+}
+
+export function isIsolatedPreviewConversationControlMutation(
+  instance: InstanceInfo,
+  method: string,
+  pathname: string,
+): boolean {
+  return method.toUpperCase() === "POST"
+    && PREVIEW_CONVERSATION_CONTROL_ROUTE.test(pathname)
     && instance.role === "preview"
     && instance.operational_mutations === "reject"
     && instance.db_path_source === "iab-preview-copy"
