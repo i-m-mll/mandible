@@ -33,6 +33,8 @@ type CodexController = {
   intentionalStop: boolean;
   providerSequence: number;
   liveMessages: Map<string, string>;
+  activeDelivery: ConversationOutboxItem | null;
+  userMessageIds: Map<string, string>;
 };
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -121,6 +123,8 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         intentionalStop: false,
         providerSequence: 0,
         liveMessages: new Map(),
+        activeDelivery: null,
+        userMessageIds: new Map(),
       };
       this.attach(controller);
       this.controllers.set(input.conversation_id, controller);
@@ -139,6 +143,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     const controller = current.value;
     const priorReceipt = controller.delivered.get(item.id);
     if (priorReceipt) return { ok: true, value: priorReceipt };
+    controller.activeDelivery = item;
     try {
       let providerTurnId: string;
       if (item.operation === "steer") {
@@ -199,9 +204,11 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
           provider_turn_id: providerTurnId,
         },
       };
+      this.emitUserContent(controller, item, controller.userMessageIds.get(item.idempotency_key) ?? item.idempotency_key);
       controller.delivered.set(item.id, receipt);
       return { ok: true, value: receipt };
     } catch (thrown) {
+      if (controller.activeDelivery?.id === item.id) controller.activeDelivery = null;
       return { ok: false, error: adapterFailure(this.id, "delivery-failed", thrown, { retryable: true }) };
     }
   }
@@ -383,6 +390,13 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     const itemId = stringField(item, "id");
     const itemType = stringField(item, "type");
     if (!item || !itemId || !itemType) return;
+    if (itemType === "userMessage") {
+      const delivery = controller.activeDelivery;
+      if (!delivery) return;
+      controller.userMessageIds.set(delivery.idempotency_key, itemId);
+      this.emitUserContent(controller, delivery, itemId, item);
+      return;
+    }
     if (itemType === "agentMessage") {
       const text = stringField(item, "text");
       if (text !== null) {
@@ -432,6 +446,40 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     });
   }
 
+  private emitUserContent(
+    controller: CodexController,
+    delivery: ConversationOutboxItem,
+    providerMessageId: string,
+    item?: Record<string, unknown>,
+  ): void {
+    const rawContent = item?.content;
+    const content = Array.isArray(rawContent) && rawContent.length > 0
+      ? rawContent
+      : [{ type: "text", text: delivery.message }];
+    this.providerEvents.emit({
+      kind: "provisional-content",
+      conversation_id: controller.conversationId,
+      provider_session_id: controller.providerSessionId,
+      generation: controller.generation,
+      sequence: ++controller.providerSequence,
+      observed_at: Date.now(),
+      identity: `message:${delivery.idempotency_key}`,
+      correlation: {
+        intent_id: delivery.idempotency_key,
+        delivery_id: delivery.id,
+        turn_id: delivery.turn_id,
+        provider_message_id: providerMessageId,
+      },
+      event: {
+        type: "user",
+        uuid: delivery.idempotency_key,
+        session_id: controller.providerSessionId,
+        parent_tool_use_id: null,
+        message: { id: delivery.idempotency_key, role: "user", content },
+      },
+    });
+  }
+
   private finishTurn(controller: CodexController, turn: Record<string, unknown> | null): void {
     const nativeTurnId = stringField(turn, "id");
     const status = stringField(turn, "status");
@@ -447,6 +495,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     }
     controller.activeControlTurnId = null;
     controller.activeNativeTurnId = null;
+    controller.activeDelivery = null;
     const now = Date.now();
     if (status === "completed") {
       this.lifecycle.emit(this.event(controller, { kind: "turn-completed", turn_id: controlTurnId, at: now }));

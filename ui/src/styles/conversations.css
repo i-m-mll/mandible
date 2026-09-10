@@ -661,29 +661,6 @@
   margin-top: 12px;
 }
 
-/* Filter bar in detail view */
-.conv-filter-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 10px 0;
-  border-top: 1px solid var(--neutral-alpha-06);
-  border-bottom: 1px solid var(--neutral-alpha-06);
-}
-
-.conv-filter-bar__types {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.conv-filter-bar__actions {
-  display: flex;
-  gap: 6px;
-}
-
 /* Selection toolbar */
 .conv-selection-toolbar {
   display: flex;
@@ -1213,11 +1190,6 @@
   }
 
   .conv-filters {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .conv-filter-bar {
     flex-direction: column;
     align-items: flex-start;
   }

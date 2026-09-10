@@ -725,7 +725,7 @@ describe('compact detail pane shell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     const menu = screen.getByRole('menu');
-    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(7);
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(6);
     expect(screen.queryByText('Inspect raw blocks')).toBeNull();
     expect(document.querySelector('.conv-blocks')).toBeNull();
     expect(document.querySelector('.block-user-message')).toBeNull();
@@ -764,8 +764,8 @@ describe('compact detail pane shell', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open markdown' }));
     expect(open).toHaveBeenCalledWith('blob:conversation-markdown', '_blank', 'noopener,noreferrer');
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Message filters' }));
-    expect(body?.querySelector('.conv-filter-bar')).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Message filters' })).toBeNull();
+    expect(body?.querySelector('.conv-filter-bar')).toBeNull();
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
   });
 
@@ -788,8 +788,9 @@ describe('compact detail pane shell', () => {
       disconnect(): void {}
     });
     let modelWidth = 100;
+    let runtimeWidth = 380;
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
-      if (this.classList.contains('conv-compose__runtime')) return domRect(0, 0, 380, 30);
+      if (this.classList.contains('conv-compose__runtime')) return domRect(0, 0, runtimeWidth, 30);
       if (this.classList.contains('session-controls__field')) {
         const label = this.querySelector('select')?.getAttribute('aria-label');
         return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Mode' ? 70 : 90, 30);
@@ -863,6 +864,12 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBe('true');
     modelWidth = 100;
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
+    runtimeWidth = 180;
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    runtimeWidth = 380;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     expect(actions?.children[0]).toBe(trigger);

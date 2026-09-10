@@ -5,9 +5,9 @@ export function emptyProviderLiveProjection(conversationId: string): ProviderLiv
 }
 
 export function providerAdapterEventKey(event: ProviderAdapterEvent): string {
-  return event.kind === "provisional-content"
-    ? `content:${event.identity}`
-    : `lineage:${event.provider_event_id}:${event.receiver_provider_session_id}`;
+  if (event.kind === "provisional-content") return `content:${event.identity}`;
+  if (event.kind === "durable-reconciliation") return `reconciliation:${event.provider_event_id}`;
+  return `lineage:${event.provider_event_id}:${event.receiver_provider_session_id}`;
 }
 
 export function mergeProviderLiveProjection(
@@ -18,12 +18,25 @@ export function mergeProviderLiveProjection(
   const base = current?.conversation_id === event.conversation_id
     ? current
     : emptyProviderLiveProjection(event.conversation_id);
+  if (event.kind === "durable-reconciliation") {
+    const covered = new Set(event.covered_identities);
+    const events = base.events.filter((candidate) => candidate.kind !== "provisional-content" || !covered.has(candidate.identity));
+    return events.length === base.events.length ? base : {
+      conversation_id: event.conversation_id,
+      revision: base.revision + 1,
+      events,
+    };
+  }
   const key = providerAdapterEventKey(event);
   const prior = base.events.find((candidate) => providerAdapterEventKey(candidate) === key);
+  const providerAcknowledgesOptimisticIntent = prior?.kind === "provisional-content"
+    && event.kind === "provisional-content"
+    && !prior.correlation
+    && Boolean(event.correlation);
   if (prior && (
     prior.generation > event.generation
     || (prior.generation === event.generation && prior.sequence >= event.sequence)
-  )) return base;
+  ) && !providerAcknowledgesOptimisticIntent) return base;
   const events = base.events
     .filter((candidate) => providerAdapterEventKey(candidate) !== key)
     .concat(event)

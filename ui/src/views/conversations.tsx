@@ -20,7 +20,6 @@ import {
 } from '../components/shared/orderedPins';
 import type { ConsoleSession } from '../state';
 import type {
-  BlockType,
   Conversation,
   ConversationBlock,
   ConversationChild,
@@ -251,28 +250,6 @@ function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void 
 }
 
 // ── Constants ──
-
-const ALL_BLOCK_TYPES: BlockType[] = [
-  'user_message',
-  'assistant_message',
-  'thinking',
-  'plan',
-  'tool_use',
-  'tool_result',
-  'system',
-  'event',
-];
-
-const BLOCK_TYPE_LABELS: Record<BlockType, string> = {
-  user_message: 'User',
-  assistant_message: 'Assistant',
-  thinking: 'Thinking',
-  plan: 'Plan',
-  tool_use: 'Tool Use',
-  tool_result: 'Tool Result',
-  system: 'System',
-  event: 'Event',
-};
 
 const SOURCE_LABELS: Record<ConversationSource, string> = {
   claude_code: 'Claude',
@@ -1125,7 +1102,6 @@ function ConversationDetail({
   chatEntityLinkAction,
   creationReceipt,
   onRetryCreation,
-  onCancelCreation,
   externalNotice,
 }: {
   conversationId: string;
@@ -1137,7 +1113,6 @@ function ConversationDetail({
   chatEntityLinkAction: ChatEntityClickAction;
   creationReceipt?: ConversationSpawnReceipt | null;
   onRetryCreation?: () => void;
-  onCancelCreation?: () => void;
   externalNotice?: ComponentChildren;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
@@ -1168,14 +1143,12 @@ function ConversationDetail({
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
-  const [visibleTypes, setVisibleTypes] = useState<Set<BlockType>>(new Set(ALL_BLOCK_TYPES));
   const [showExport, setShowExport] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   const [workflowNonce, setWorkflowNonce] = useState(0);
-  const [showMessageFilters, setShowMessageFilters] = useState(false);
   const [composerControlsOpen, setComposerControlsOpen] = useState(false);
   const [composerModel, setComposerModel] = useState('');
   const [composerEffort, setComposerEffort] = useState('');
@@ -1200,6 +1173,14 @@ function ConversationDetail({
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
   const [controlFailure, setControlFailure] = useState<ChatFailureNoticeModel | null>(null);
+  const [submitIntent, setSubmitIntent] = useState<{
+    id: string;
+    message: string;
+    messageAnchor?: string;
+    runtimeOptions: ConversationRuntimeOptions;
+    state: 'waiting' | 'submitting' | 'failed' | 'uncertain';
+  } | null>(null);
+  const submittingIntentRef = useRef<string | null>(null);
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
   const anchorKey = effectiveAnchor ? JSON.stringify(effectiveAnchor) : 'initial';
@@ -1307,6 +1288,8 @@ function ConversationDetail({
   useEffect(() => {
     setControl(null);
     setLiveProjection(null);
+    setSubmitIntent(null);
+    submittingIntentRef.current = null;
     const cancelControl = refreshControl();
     let active = true;
     void getConversationLiveProjection(conversationId)
@@ -1355,7 +1338,7 @@ function ConversationDetail({
       const providerEvent = eventData<ProviderAdapterEvent>(payload);
       if (!providerEvent) return;
       if (providerEvent.conversation_id !== conversationId) return;
-      if (providerEvent.kind === 'provider-lineage') scheduleRefresh();
+      if (providerEvent.kind === 'provider-lineage' || providerEvent.kind === 'durable-reconciliation') scheduleRefresh();
       setLiveProjection((current) => mergeProviderLiveProjection(current, providerEvent));
     });
     // Reconnect resync: refetch the open conversation after a dropped stream so
@@ -1564,10 +1547,7 @@ function ConversationDetail({
 
   const blocks = conversation?.blocks || [];
 
-  const visibleBlocks = useMemo(
-    () => blocks.filter((b) => visibleTypes.has(b.type)),
-    [blocks, visibleTypes],
-  );
+  const visibleBlocks = blocks;
   const historyEvents = useMemo(
     () => {
       const targetTurnId = conversation?.position_window.target.turn_id ?? null;
@@ -1660,33 +1640,8 @@ function ConversationDetail({
   }, [conversation?.parent_conversation_id, onNavigate]);
 
   const exportableBlocks = useMemo(
-    () => visibleBlocks.filter((b) => selected.has(b.id)),
-    [visibleBlocks, selected],
-  );
-
-  const selectedHiddenCount = useMemo(() => {
-    let count = 0;
-    for (const id of selected) {
-      const block = blocks.find((b) => b.id === id);
-      if (block && !visibleTypes.has(block.type)) {
-        count++;
-      }
-    }
-    return count;
-  }, [selected, blocks, visibleTypes]);
-
-  // Block type counts for filter bar
-  const typeCounts = useMemo(() => {
-    const counts: Partial<Record<BlockType, number>> = {};
-    for (const block of blocks) {
-      counts[block.type] = (counts[block.type] || 0) + 1;
-    }
-    return counts;
-  }, [blocks]);
-
-  const presentTypes = useMemo(
-    () => ALL_BLOCK_TYPES.filter((t) => (typeCounts[t] || 0) > 0),
-    [typeCounts],
+    () => blocks.filter((b) => selected.has(b.id)),
+    [blocks, selected],
   );
 
   // Selection handlers
@@ -1739,18 +1694,6 @@ function ConversationDetail({
   const clearSelection = () => {
     setSelected(new Set());
     setLastSelectedId(null);
-  };
-
-  const toggleType = (type: BlockType) => {
-    setVisibleTypes((prev) => {
-      const next = new Set(prev);
-      if (next.has(type)) {
-        next.delete(type);
-      } else {
-        next.add(type);
-      }
-      return next;
-    });
   };
 
   const handleStarToggle = async () => {
@@ -1835,13 +1778,14 @@ function ConversationDetail({
 
   const continueDisabledReason = useMemo(() => {
     if (!conversation) return null;
+    if (creationReceipt?.state === 'starting') return null;
     if (!controlPresentation) return 'Control state unavailable.';
     if (control?.capability.kind === 'message-anchor-resume' && !latestDagUuid) {
       return 'The required message anchor is unavailable.';
     }
     if (controlPresentation.composer === 'enabled') return null;
     return controlPresentation.title;
-  }, [control, controlPresentation, conversation, latestDagUuid]);
+  }, [control, controlPresentation, conversation, creationReceipt, latestDagUuid]);
 
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
   const modelRunOption = sessionRunOptions?.options.find((option) => option.id === 'model');
@@ -1883,48 +1827,100 @@ function ConversationDetail({
   }, [conversationId, thinkingRunOption?.id, thinkingRunOption?.currentValue,
     permissionRunOption?.id, permissionRunOption?.currentValue]);
 
-  const handleContinueSubmit = useCallback(async (event: JSX.TargetedEvent<HTMLFormElement, Event>) => {
-    event.preventDefault();
-    const prompt = continueDraft.trim();
-    if (!prompt) {
-      return;
-    }
-    if (continueDisabledReason) {
-      setContinueError(continueDisabledReason);
-      return;
-    }
+  const projectPendingIntent = useCallback((intent: { id: string; message: string }) => {
+    setLiveProjection((current) => mergeProviderLiveProjection(current, {
+      kind: 'provisional-content',
+      conversation_id: conversationId,
+      provider_session_id: conversation?.session_id ?? '',
+      generation: control?.ownership.generation ?? creationReceipt?.attempt_count ?? 0,
+      sequence: (current?.events.reduce((maximum, item) => Math.max(maximum, item.sequence), 0) ?? 0) + 1,
+      observed_at: Date.now(),
+      identity: `message:${intent.id}`,
+      event: {
+        type: 'user',
+        uuid: intent.id,
+        session_id: conversation?.session_id ?? undefined,
+        message: { id: intent.id, role: 'user', content: [{ type: 'text', text: intent.message }] },
+      },
+    }));
+  }, [control?.ownership.generation, conversation?.session_id, conversationId, creationReceipt?.attempt_count]);
+
+  const dispatchSubmitIntent = useCallback(async (intent: NonNullable<typeof submitIntent>) => {
+    if (!control || submittingIntentRef.current === intent.id) return;
+    if (creationReceipt?.state === 'starting') return;
+    if (!['live-send', 'live-steer', 'owned-queue', 'provider-session-resume', 'message-anchor-resume'].includes(control.capability.kind)) return;
+    submittingIntentRef.current = intent.id;
+    setSubmitIntent((current) => current?.id === intent.id ? { ...current, state: 'submitting' } : current);
     setContinueBusy(true);
     setContinueError(null);
     setControlFailure(null);
     try {
-      if (!control) return;
-      const messageAnchor = control.capability.kind === 'message-anchor-resume'
-        ? latestDagUuid ?? undefined
-        : undefined;
-      const runtimeOptions: ConversationRuntimeOptions = {
+      const result = await submitConversationControl(
+        control,
+        intent.message,
+        intent.messageAnchor,
+        intent.runtimeOptions,
+        intent.id,
+      );
+      setControl(result.snapshot);
+      setSubmitIntent((current) => current?.id === intent.id ? null : current);
+    } catch (err) {
+      const apiError = err as Partial<ConversationControlApiError>;
+      if (apiError.snapshot) setControl(apiError.snapshot);
+      const uncertain = apiError.controlError?.kind === 'delivery-uncertain';
+      if (!uncertain) {
+        setContinueDraft(intent.message);
+        setLiveProjection((current) => mergeProviderLiveProjection(current, {
+          kind: 'durable-reconciliation',
+          conversation_id: conversationId,
+          provider_session_id: conversation?.session_id ?? '',
+          generation: control.ownership.generation,
+          sequence: (current?.events.reduce((maximum, item) => Math.max(maximum, item.sequence), 0) ?? 0) + 1,
+          observed_at: Date.now(),
+          provider_event_id: `failed:${intent.id}`,
+          covered_identities: [`message:${intent.id}`],
+        }));
+      }
+      setSubmitIntent((current) => current?.id === intent.id
+        ? { ...current, state: uncertain ? 'uncertain' : 'failed' }
+        : current);
+      if (apiError.controlError) setControlFailure(chatControlFailureNotice(apiError.controlError));
+      else setContinueError(err instanceof Error ? err.message : String(err));
+    } finally {
+      submittingIntentRef.current = null;
+      setContinueBusy(false);
+    }
+  }, [control, conversation?.session_id, conversationId, creationReceipt?.state]);
+
+  useEffect(() => {
+    if (submitIntent?.state === 'waiting') void dispatchSubmitIntent(submitIntent);
+  }, [dispatchSubmitIntent, submitIntent]);
+
+  const handleContinueSubmit = useCallback((event: JSX.TargetedEvent<HTMLFormElement, Event>) => {
+    event.preventDefault();
+    const prompt = continueDraft.trim();
+    if (!prompt || submitIntent) return;
+    if (continueDisabledReason && creationReceipt?.state !== 'starting') {
+      setContinueError(continueDisabledReason);
+      return;
+    }
+    setContinueError(null);
+    setControlFailure(null);
+    const intent = {
+      id: crypto.randomUUID(),
+      message: prompt,
+      ...(control?.capability.kind === 'message-anchor-resume' && latestDagUuid ? { messageAnchor: latestDagUuid } : {}),
+      runtimeOptions: {
         ...(composerModel ? { model: composerModel } : {}),
         ...(composerEffort ? { effort: composerEffort } : {}),
         ...(composerPermission ? { permission_mode: composerPermission as ConversationRuntimeOptions['permission_mode'] } : {}),
-      };
-      const result = await submitConversationControl(control, prompt, messageAnchor, runtimeOptions);
-      setControl(result.snapshot);
-      setContinueDraft('');
-      setControlFailure(null);
-      setToast({ message: 'Message sent.', type: 'info' });
-    } catch (err) {
-      const apiError = err as Partial<ConversationControlApiError>;
-      if (apiError.snapshot) {
-        setControl(apiError.snapshot);
-      }
-      if (apiError.controlError) {
-        setControlFailure(chatControlFailureNotice(apiError.controlError));
-      } else {
-        setContinueError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      setContinueBusy(false);
-    }
-  }, [composerEffort, composerModel, composerPermission, continueDisabledReason, continueDraft, control, latestDagUuid]);
+      },
+      state: 'waiting' as const,
+    };
+    setContinueDraft('');
+    projectPendingIntent(intent);
+    setSubmitIntent(intent);
+  }, [composerEffort, composerModel, composerPermission, continueDisabledReason, continueDraft, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter') return;
@@ -2128,9 +2124,6 @@ function ConversationDetail({
                     Resume in Mandible
                   </button>
                 )}
-                <button type="button" role="menuitem" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
-                  {showMessageFilters ? 'Hide message filters' : 'Message filters'}
-                </button>
                 <button type="button" role="menuitem" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
                   Select messages
                 </button>
@@ -2186,7 +2179,9 @@ function ConversationDetail({
         <div className="conv-compose conv-compose--readonly" data-detail-pane-overlay-visual>
           <span>Read-only subagent transcript</span>
         </div>
-      ) : controlPresentation && controlPresentation.composer !== 'hidden' ? (
+      ) : ((controlPresentation && controlPresentation.composer !== 'hidden')
+        || creationReceipt?.state === 'starting'
+        || (creationReceipt?.state === 'ready' && !controlPresentation)) ? (
       <div className="conv-compose" data-detail-pane-overlay-visual>
         <form id={`conversation-compose-${conversation.id}`} className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
@@ -2195,7 +2190,9 @@ function ConversationDetail({
             onInput={(event) => setContinueDraft(event.currentTarget.value)}
             onKeyDown={handleComposerKeyDown}
             placeholder="Message..."
-            disabled={continueBusy || Boolean(continueDisabledReason)}
+            disabled={continueBusy
+              || submitIntent?.state === 'uncertain'
+              || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting')}
             rows={3}
           />
         </form>
@@ -2250,7 +2247,7 @@ function ConversationDetail({
                 type="submit"
                 form={`conversation-compose-${conversation.id}`}
                 className="conv-compose__send"
-                disabled={continueBusy || Boolean(continueDisabledReason) || !continueDraft.trim()}
+                disabled={continueBusy || Boolean(submitIntent) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || !continueDraft.trim()}
                 title={controlPresentation?.submitLabel ?? 'Send'}
                 aria-label={controlPresentation?.submitLabel ?? 'Send'}
               >
@@ -2271,7 +2268,7 @@ function ConversationDetail({
             {renderRunOptionFields()}
           </div>
         )}
-        {(continueError || continueDisabledReason) && (
+        {(continueError || (continueDisabledReason && creationReceipt?.state !== 'starting')) && (
           <div className={`conv-compose__status${continueError ? ' conv-compose__status--error' : ''}`}>
             {continueError ?? continueDisabledReason}
           </div>
@@ -2283,9 +2280,10 @@ function ConversationDetail({
     <ChatFailureNotice
       failure={controlFailure}
       busy={continueBusy}
-      onRetry={controlFailure.retryable ? () => {
-        const form = document.getElementById(`conversation-compose-${conversation.id}`) as HTMLFormElement | null;
-        form?.requestSubmit();
+      onRetry={controlFailure.retryable && submitIntent?.state === 'failed' ? () => {
+        setContinueDraft('');
+        projectPendingIntent(submitIntent);
+        setSubmitIntent({ ...submitIntent, state: 'waiting' });
       } : undefined}
     />
   ) : null;
@@ -2295,16 +2293,6 @@ function ConversationDetail({
       failure={chatSpawnFailureNotice(creationReceipt.error)}
       onRetry={creationReceipt.error.retryable ? onRetryCreation : undefined}
     />
-  ) : creationReceipt?.state === 'starting' || creationReceipt?.state === 'stopping' ? (
-    <DetailPaneNotice
-      severity="info"
-      density="compact"
-      actions={creationReceipt.state === 'starting' && onCancelCreation ? (
-        <button type="button" className="btn btn--ghost btn--sm" onClick={onCancelCreation}>Cancel</button>
-      ) : undefined}
-    >
-      {creationReceipt.state === 'starting' ? 'Starting provider…' : 'Stopping provider…'}
-    </DetailPaneNotice>
   ) : undefined;
 
   const detailOverlays = (
@@ -2354,40 +2342,6 @@ function ConversationDetail({
       ariaBusy={loading}
       notice={controlFailureNotice ?? creationNotice ?? externalNotice ?? loadErrorNotice}
     >
-      {showMessageFilters && (
-        <div className="conv-filter-bar">
-          <div className="conv-filter-bar__types">
-            {presentTypes.map((type) => (
-              <button
-                key={type}
-                type="button"
-                className={`conv-filter-btn${visibleTypes.has(type) ? ' conv-filter-btn--active' : ''}`}
-                onClick={() => toggleType(type)}
-              >
-                {BLOCK_TYPE_LABELS[type]}
-                <span className="conv-filter-btn__count">{typeCounts[type] || 0}</span>
-              </button>
-            ))}
-          </div>
-          <div className="conv-filter-bar__actions">
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => setVisibleTypes(new Set(ALL_BLOCK_TYPES))}
-            >
-              Show all
-            </button>
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => setVisibleTypes(new Set())}
-            >
-              Hide all
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Selection toolbar */}
       {(selectMode || selected.size > 0) && (
         <div className="conv-selection-toolbar">
@@ -2400,9 +2354,6 @@ function ConversationDetail({
           </button>
           <span className="conv-selection-toolbar__count">
             {selected.size} selected
-            {selectedHiddenCount > 0 && (
-              <span className="text-muted"> + {selectedHiddenCount} hidden</span>
-            )}
           </span>
           <button type="button" className="btn btn--ghost btn--sm" onClick={selectAllVisible}>
             Select all visible
@@ -2427,7 +2378,7 @@ function ConversationDetail({
           conversationId={conversationId}
           exportableCount={exportableBlocks.length}
           totalSelectedCount={selected.size}
-          hiddenSelectedCount={selectedHiddenCount}
+          hiddenSelectedCount={0}
           selectedIds={exportableBlocks.map((b) => b.id)}
           onClose={() => setShowExport(false)}
         />
@@ -2441,13 +2392,9 @@ function ConversationDetail({
           <ChatSurface
             events={chatEvents}
             streaming={providerStreaming}
-            emptyLabel={loading && creationReceipt?.state !== 'ready'
-              ? 'Loading messages…'
-              : error
+            emptyLabel={error
                 ? 'Conversation content unavailable.'
-                : blocks.length === 0
-                  ? 'No messages yet'
-                  : 'No messages match the current filters.'}
+                : 'No messages yet'}
             unmaterializedAfterCount={conversation.position_window.window.after_count}
             onJumpToLatest={handleJumpToLatest}
             jumpingToLatest={jumpingToLatest}
@@ -4091,11 +4038,6 @@ export function ConversationsView({
             onRetryCreation={selectedConversationSummary?.spawn?.error?.retryable ? () => {
               const spawn = selectedConversationSummary.spawn!;
               void retryProviderChat(spawn.reservation_id, spawn.attempt_count)
-                .then(reconcileCreationReceipt);
-            } : undefined}
-            onCancelCreation={selectedConversationSummary?.spawn?.state === 'starting' ? () => {
-              const spawn = selectedConversationSummary.spawn!;
-              void cancelProviderChat(spawn.reservation_id, spawn.attempt_count)
                 .then(reconcileCreationReceipt);
             } : undefined}
           />
