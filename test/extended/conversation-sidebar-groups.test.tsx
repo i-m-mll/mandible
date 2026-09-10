@@ -479,16 +479,24 @@ describe('conversation sidebar groups', () => {
     fireEvent.click(await screen.findByRole('button', { name: provider === 'codex' ? 'Start with Codex (OpenAI)' : 'Start with Claude' }));
     const row = await screen.findByRole('button', { name: provider === 'codex' ? 'Open conversation New Codex chat' : 'Open conversation New Claude chat' });
     expect(row.getAttribute('aria-current')).toBe('true');
-    expect(await screen.findByText('Starting provider…')).toBeTruthy();
-
-    FakeEventSource.instances[0].emit({ type: 'conversation-spawn:updated', data: { spawn: spawnReceipt(id, provider, placement, 'ready') } });
     expect(await screen.findByText('No messages yet')).toBeTruthy();
     const composer = await screen.findByPlaceholderText('Message...') as HTMLTextAreaElement;
     fireEvent.input(composer, { target: { value: 'First message' } });
     if (submitKind === 'return') fireEvent.keyDown(composer, { key: 'Enter' });
     else fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText('First message')).toBeTruthy();
+    expect(submit).not.toHaveBeenCalled();
+
+    FakeEventSource.instances[0].emit({ type: 'conversation-spawn:updated', data: { spawn: spawnReceipt(id, provider, placement, 'ready') } });
+    expect(await screen.findByPlaceholderText('Message...')).toBe(composer);
     await waitFor(() => expect(submit).toHaveBeenCalledOnce());
-    expect(submit).toHaveBeenCalledWith(expect.objectContaining({ conversation_id: id }), 'First message', undefined, expect.any(Object));
+    expect(submit).toHaveBeenCalledWith(
+      expect.objectContaining({ conversation_id: id }),
+      'First message',
+      undefined,
+      expect.any(Object),
+      expect.any(String),
+    );
     expect(composer.value).toBe('');
   });
 

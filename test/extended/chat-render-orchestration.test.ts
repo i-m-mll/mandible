@@ -67,6 +67,15 @@ describe("chat render orchestration", () => {
         live(3, "message:live-1", "latest"),
         live(1, "message:live-1", "stale"),
         live(4, "message:durable-1", "must disappear"),
+        {
+          ...live(5, "message:client-intent-1", "provisional discrepancy"),
+          correlation: {
+            intent_id: "client-intent-1",
+            delivery_id: "delivery-1",
+            turn_id: "turn-1",
+            provider_message_id: "durable-1",
+          },
+        },
       ],
     };
 

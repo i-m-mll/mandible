@@ -495,6 +495,7 @@ describe("exact conversation freshness", () => {
 
   it("refreshes one exact provider title, broadcasts once, and leaves an unchanged transcript bounded", async () => {
     const seeded = await seed("title-authority-session");
+    db.prepare("UPDATE conversations SET title = 'New Codex chat' WHERE id = ?").run(seeded.id);
     updateThread("title-authority-session", { title: "Current provider title", rolloutPath: seeded.file });
     let ingests = 0;
     const events: Array<{ event: string; data: unknown }> = [];

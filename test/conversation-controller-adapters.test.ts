@@ -212,6 +212,19 @@ describe("structured conversation controller adapters", () => {
       identity: "message:codex-message-1",
       event: { message: { content: [{ type: "text", text: "hello" }] } },
     });
+    expect(claudeEvents.find((event) => event.kind === "provisional-content" && event.identity === "message:key-claude-turn")).toMatchObject({
+      correlation: { intent_id: "key-claude-turn", delivery_id: "delivery-claude-turn", turn_id: "claude-turn" },
+      event: { type: "user", message: { role: "user" } },
+    });
+    expect(codexEvents.filter((event) => event.kind === "provisional-content" && event.identity === "message:key-codex-turn").at(-1)).toMatchObject({
+      correlation: {
+        intent_id: "key-codex-turn",
+        delivery_id: "delivery-codex-turn",
+        turn_id: "codex-turn",
+        provider_message_id: "user-key-codex-turn",
+      },
+      event: { type: "user", message: { role: "user" } },
+    });
   });
 
   it("classifies Codex spawn lineage only with exact sender and receiver identities", async () => {

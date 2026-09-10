@@ -40,6 +40,7 @@ export function useIntrinsicOverflowGroup(enabled: boolean, measurementKey: stri
     if (typeof ResizeObserver === 'undefined') return () => cancelAnimationFrame(frame);
     const observer = new ResizeObserver(measure);
     observer.observe(container);
+    if (container.parentElement) observer.observe(container.parentElement);
     observer.observe(content);
     Array.from(content.children).forEach((element) => observer.observe(element));
     Array.from(fixed.children).forEach((element) => observer.observe(element));

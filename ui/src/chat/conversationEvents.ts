@@ -67,7 +67,13 @@ export function reconcileProviderProjection(
   const historyIds = new Set(historyEvents.map(stableProviderEventIdentity).filter((id): id is string => id !== null));
   const latest = new Map<string, Extract<ProviderLiveProjection['events'][number], { kind: 'provisional-content' }>>();
   for (const candidate of projection.events) {
-    if (candidate.kind !== 'provisional-content' || historyIds.has(candidate.identity)) continue;
+    if (candidate.kind !== 'provisional-content') continue;
+    const durableProviderIdentity = candidate.correlation?.provider_message_id;
+    if (historyIds.has(candidate.identity)
+      || (durableProviderIdentity && (
+        historyIds.has(`message:${durableProviderIdentity}`)
+        || historyIds.has(`event:${durableProviderIdentity}`)
+      ))) continue;
     const prior = latest.get(candidate.identity);
     if (!prior
       || candidate.generation > prior.generation

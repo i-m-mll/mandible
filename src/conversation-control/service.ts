@@ -48,16 +48,26 @@ export class ConversationControlService {
 
   private readonly onChange: ((snapshot: ConversationControlSnapshot) => void) | undefined;
   private readonly onProviderEvent: ((event: ProviderAdapterEvent) => void) | undefined;
+  private readonly onTerminalTurn: ((input: {
+    conversation_id: string;
+    provider_session_id: string;
+    turn_id: string;
+  }) => Promise<{ status: string }>) | undefined;
+  private readonly onReconciliationDiagnostic: ((details: Record<string, unknown>) => void) | undefined;
   private readonly liveProjection = new Map<string, ProviderLiveProjection>();
 
   constructor(private readonly db: Db, options: {
     now?: () => number;
     onChange?: (snapshot: ConversationControlSnapshot) => void;
     onProviderEvent?: (event: ProviderAdapterEvent) => void;
+    onTerminalTurn?: (input: { conversation_id: string; provider_session_id: string; turn_id: string }) => Promise<{ status: string }>;
+    onReconciliationDiagnostic?: (details: Record<string, unknown>) => void;
   } = {}) {
     this.store = new ConversationControlStore(db, options.now);
     this.onChange = options.onChange;
     this.onProviderEvent = options.onProviderEvent;
+    this.onTerminalTurn = options.onTerminalTurn;
+    this.onReconciliationDiagnostic = options.onReconciliationDiagnostic;
   }
 
   registerAdapter(adapter: ConversationControllerAdapter): () => void {
@@ -72,6 +82,9 @@ export class ConversationControlService {
             ? this.store.bindProviderSession(conversation_id, generation, lifecycle.provider_session_id)
             : this.store.publishLifecycle(conversation_id, generation, lifecycle);
       if (result.ok) this.notify(conversation_id);
+      if (result.ok && lifecycle.kind === "turn-completed") {
+        void this.reconcileTerminalTurn(conversation_id, generation, lifecycle.turn_id);
+      }
       return result;
     });
     const unsubscribeProviderEvents = adapter.subscribeProviderEvents((event) => {
@@ -488,6 +501,84 @@ export class ConversationControlService {
     const current = this.liveProjection.get(event.conversation_id) ?? null;
     const next = mergeProviderLiveProjection(current, event);
     if (next !== current) this.liveProjection.set(event.conversation_id, next);
+  }
+
+  private async reconcileTerminalTurn(conversationId: string, generation: number, turnId: string): Promise<void> {
+    const snapshot = this.getSnapshot(conversationId);
+    const providerSessionId = snapshot.ok ? snapshot.value.provider_session_id : null;
+    if (!providerSessionId || !this.onTerminalTurn) return;
+    let status = "failed";
+    try {
+      status = (await this.onTerminalTurn({
+        conversation_id: conversationId,
+        provider_session_id: providerSessionId,
+        turn_id: turnId,
+      })).status;
+    } catch {
+      // The live projection remains authoritative until durable evidence exists.
+    }
+
+    const durableIds = new Set<string>();
+    const current = this.liveProjection.get(conversationId) ?? emptyProviderLiveProjection(conversationId);
+    let coveredIdentities: string[] = [];
+    try {
+      const rows = this.db.prepare(`
+        SELECT dag_uuid, metadata_json
+          FROM conversation_blocks
+         WHERE conversation_id = ?
+           AND (dag_uuid IS NOT NULL OR metadata_json LIKE '%provider_message_id%')
+      `).all(conversationId) as Array<{ dag_uuid: string | null; metadata_json: string }>;
+      for (const row of rows) {
+        if (row.dag_uuid) durableIds.add(row.dag_uuid);
+        try {
+          const metadata = JSON.parse(row.metadata_json) as { provider_message_id?: unknown };
+          if (typeof metadata.provider_message_id === "string" && metadata.provider_message_id) {
+            durableIds.add(metadata.provider_message_id);
+          }
+        } catch {
+          // Invalid metadata cannot establish durable coverage.
+        }
+      }
+
+      coveredIdentities = current.events.flatMap((event) => {
+        if (event.kind !== "provisional-content") return [];
+        const message = event.event.message;
+        const candidates = [
+          event.correlation?.provider_message_id,
+          typeof message?.id === "string" ? message.id : null,
+          typeof event.event.uuid === "string" ? event.event.uuid : null,
+          event.identity.startsWith("message:") ? event.identity.slice("message:".length) : null,
+          event.identity.startsWith("event:") ? event.identity.slice("event:".length) : null,
+        ];
+        return candidates.some((candidate) => candidate && durableIds.has(candidate)) ? [event.identity] : [];
+      });
+      if (coveredIdentities.length > 0) {
+        const sequence = current.events.reduce((maximum, event) => Math.max(maximum, event.sequence), 0) + 1;
+        const event: ProviderAdapterEvent = {
+          kind: "durable-reconciliation",
+          conversation_id: conversationId,
+          provider_session_id: providerSessionId,
+          generation,
+          sequence,
+          observed_at: Date.now(),
+          provider_event_id: `turn:${turnId}`,
+          covered_identities: [...new Set(coveredIdentities)],
+        };
+        this.projectProviderEvent(event);
+        this.onProviderEvent?.(event);
+      }
+    } catch {
+      status = `${status}:projection_error`;
+    }
+    this.onReconciliationDiagnostic?.({
+      conversation_id: conversationId,
+      provider_session_id: providerSessionId,
+      turn_id: turnId,
+      ingest_status: status,
+      durable_identity_count: durableIds.size,
+      retired_live_count: new Set(coveredIdentities).size,
+      retained_live_count: current.events.filter((event) => event.kind === "provisional-content").length - new Set(coveredIdentities).size,
+    });
   }
 
   private materializeExactLineage(event: Extract<ProviderAdapterEvent, { kind: "provider-lineage" }>): void {

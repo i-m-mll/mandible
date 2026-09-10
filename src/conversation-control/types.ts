@@ -187,7 +187,24 @@ export type ProviderLiveContentEvent = {
   sequence: number;
   observed_at: number;
   identity: string;
+  correlation?: {
+    intent_id: string;
+    delivery_id: string;
+    turn_id: string;
+    provider_message_id?: string;
+  };
   event: ProviderLiveStreamEvent;
+};
+
+export type ProviderDurableReconciliationEvent = {
+  kind: "durable-reconciliation";
+  conversation_id: string;
+  provider_session_id: string;
+  generation: number;
+  sequence: number;
+  observed_at: number;
+  provider_event_id: string;
+  covered_identities: string[];
 };
 
 export type ProviderLineageEvent = {
@@ -203,7 +220,7 @@ export type ProviderLineageEvent = {
   receiver_provider_session_id: string;
 };
 
-export type ProviderAdapterEvent = ProviderLiveContentEvent | ProviderLineageEvent;
+export type ProviderAdapterEvent = ProviderLiveContentEvent | ProviderLineageEvent | ProviderDurableReconciliationEvent;
 
 export type ProviderLiveProjection = {
   conversation_id: string;
