@@ -2375,6 +2375,7 @@ export type ConversationSidebarResponse = {
 };
 
 export async function getConversationSidebar(params: {
+  lifecycle?: 'active' | 'archived';
   source?: string;
   starred?: boolean;
   search?: string;
@@ -2389,6 +2390,7 @@ export async function getConversationSidebar(params: {
   cursor?: string;
 }): Promise<ConversationSidebarResponse> {
   const query = new URLSearchParams();
+  if (params.lifecycle) query.set('lifecycle', params.lifecycle);
   if (params.source) query.set('source', params.source);
   if (params.starred) query.set('starred', '1');
   if (params.search) query.set('search', params.search);
@@ -2441,6 +2443,11 @@ export async function updateConversation(id: string, data: {
   const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, data);
   invalidateApiGetCache('/api/conversations');
   return (await parseMaybeJson(resp)) as Conversation;
+}
+
+export async function updateConversationArchive(id: string, archived: boolean): Promise<void> {
+  await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, { archived });
+  invalidateApiGetCache('/api/conversations');
 }
 
 export async function exportConversationBlocks(id: string, data: {

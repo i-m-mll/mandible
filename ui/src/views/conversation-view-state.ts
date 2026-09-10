@@ -18,11 +18,13 @@ export type ShownChatProject = {
 };
 
 export type ChatViewState = {
+  conversationLifecycle: 'active' | 'archived';
   pinnedConversationIds: string[];
   previewPinOverrides: Record<string, boolean>;
 };
 
 export const DEFAULT_CHAT_VIEW_STATE: ChatViewState = {
+  conversationLifecycle: 'active',
   pinnedConversationIds: [],
   previewPinOverrides: {},
 };
@@ -39,6 +41,7 @@ export function normalizeChatViewState(value: unknown): LegacyChatViewState {
     ? row.previewPinOverrides as Record<string, unknown>
     : {};
   return {
+    conversationLifecycle: row.conversationLifecycle === 'archived' ? 'archived' : 'active',
     pinnedConversationIds: normalizeOrderedPinIds(row.pinnedConversationIds),
     previewPinOverrides: Object.fromEntries(
       Object.entries(rawOverrides)
@@ -103,6 +106,7 @@ export function useChatViewState() {
     (value) => {
       const normalized = normalizeChatViewState(value);
       return {
+        conversationLifecycle: normalized.conversationLifecycle,
         pinnedConversationIds: normalized.pinnedConversationIds,
         previewPinOverrides: normalized.previewPinOverrides,
       };
@@ -133,6 +137,7 @@ function removeLegacyShownProjects(): void {
     if (raw === null) return;
     const normalized = normalizeChatViewState(JSON.parse(raw));
     window.localStorage.setItem(CHAT_VIEW_STATE_KEY, JSON.stringify({
+      conversationLifecycle: normalized.conversationLifecycle,
       pinnedConversationIds: normalized.pinnedConversationIds,
       previewPinOverrides: normalized.previewPinOverrides,
     }));
