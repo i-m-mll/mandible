@@ -78,6 +78,7 @@ const ACTOR_SCOPED_BRIEFING_RESPONSE_ROUTE =
   /^\/api\/briefings\/[^/]+\/rounds\/[^/]+\/(?:answers|annotations|submit)$/;
 const PREVIEW_CONVERSATION_SPAWN_ROUTE = /^\/api\/conversation-spawns(?:\/[0-9a-f-]+\/retry|\/[0-9a-f-]+)?$/i;
 const PREVIEW_CONVERSATION_CONTROL_ROUTE = /^\/api\/conversations\/[^/]+\/control\/(?:submit|stop)$/;
+const PREVIEW_CONVERSATION_METADATA_ROUTE = /^\/api\/conversations\/[^/]+$/;
 
 export function resolveInstanceInfo(options: {
   env?: NodeJS.ProcessEnv;
@@ -144,6 +145,7 @@ export function evaluateInstanceMutation(
   instance: InstanceInfo,
   method: string,
   pathname: string,
+  body?: unknown,
 ): InstanceMutationDecision {
   const category = operationalMutationCategoryForPath(method, pathname);
   if (!category || instance.operational_mutations === "allow") {
@@ -159,6 +161,9 @@ export function evaluateInstanceMutation(
     return { allowed: true };
   }
   if (isIsolatedPreviewConversationControlMutation(instance, method, pathname)) {
+    return { allowed: true };
+  }
+  if (isIsolatedPreviewConversationArchiveMutation(instance, method, pathname, body)) {
     return { allowed: true };
   }
 
@@ -193,7 +198,29 @@ export function isIsolatedPreviewConversationSpawnMutation(
   return lifecycleMethod
     && PREVIEW_CONVERSATION_SPAWN_ROUTE.test(pathname)
     && (normalizedMethod !== "DELETE" || !pathname.endsWith("/retry"))
-    && instance.role === "preview"
+    && isIsolatedLauncherPreview(instance);
+}
+
+export function isIsolatedPreviewConversationArchiveMutation(
+  instance: InstanceInfo,
+  method: string,
+  pathname: string,
+  body: unknown,
+): boolean {
+  if (method.toUpperCase() !== "PATCH" || !PREVIEW_CONVERSATION_METADATA_ROUTE.test(pathname)) {
+    return false;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const fields = Object.keys(body);
+  if (fields.length !== 1 || fields[0] !== "archived"
+      || typeof (body as { archived?: unknown }).archived !== "boolean") {
+    return false;
+  }
+  return isIsolatedLauncherPreview(instance);
+}
+
+function isIsolatedLauncherPreview(instance: InstanceInfo): boolean {
+  return instance.role === "preview"
     && instance.operational_mutations === "reject"
     && instance.db_path_source === "iab-preview-copy"
     && hasIsolatedDatabaseCopy(instance.db_path, instance.source_db_path ?? null)
