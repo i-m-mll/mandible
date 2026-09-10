@@ -1,8 +1,10 @@
-export const CONVERSATION_SPAWN_REQUEST_SCHEMA = "mandible-conversation-spawn-request@2" as const;
-export const CONVERSATION_SPAWN_RECEIPT_SCHEMA = "mandible-conversation-spawn-receipt@2" as const;
+export const CONVERSATION_SPAWN_REQUEST_SCHEMA = "mandible-conversation-spawn-request@3" as const;
+export const CONVERSATION_SPAWN_RECEIPT_SCHEMA = "mandible-conversation-spawn-receipt@3" as const;
 
 export type ConversationSpawnProvider = "claude_code" | "codex";
-export type ConversationSpawnPlacement = { project_id: string; checkout_id: string };
+export type ConversationSpawnPlacement =
+  | { kind: "projectless" }
+  | { kind: "project"; project_id: string; checkout_id: string };
 
 export interface ConversationSpawnRequest {
   schema: typeof CONVERSATION_SPAWN_REQUEST_SCHEMA;
@@ -12,7 +14,7 @@ export interface ConversationSpawnRequest {
 }
 
 export interface HistoricalConversationSpawnRequest {
-  schema: "mandible-conversation-spawn-request@1";
+  schema: "mandible-conversation-spawn-request@1" | "mandible-conversation-spawn-request@2";
   idempotency_key: string;
   provider: ConversationSpawnProvider | "gemini";
   label: string;
@@ -33,7 +35,7 @@ export interface HistoricalConversationSpawnRequest {
   };
 }
 
-export type ConversationSpawnState = "reserved" | "starting" | "ready" | "failed";
+export type ConversationSpawnState = "reserved" | "starting" | "stopping" | "ready" | "failed" | "cancelled";
 export type HistoricalConversationSpawnState = "reserved" | "creating" | "delivering" | "delivered" | "failed";
 
 export interface ConversationSpawnFailure {
@@ -45,7 +47,7 @@ export interface ConversationSpawnFailure {
 }
 
 export interface ConversationSpawnReceipt {
-  schema: typeof CONVERSATION_SPAWN_RECEIPT_SCHEMA | "mandible-conversation-spawn-receipt@1";
+  schema: typeof CONVERSATION_SPAWN_RECEIPT_SCHEMA | "mandible-conversation-spawn-receipt@1" | "mandible-conversation-spawn-receipt@2";
   reservation_id: string;
   request: ConversationSpawnRequest | HistoricalConversationSpawnRequest;
   state: ConversationSpawnState | HistoricalConversationSpawnState;
@@ -66,6 +68,7 @@ export type ConversationSpawnError =
   | { kind: "checkout-not-found"; checkout_id: string }
   | { kind: "checkout-project-mismatch"; project_id: string; checkout_id: string }
   | { kind: "spawn-in-progress"; reservation_id: string }
+  | { kind: "stale-generation"; reservation_id: string; expected_generation: number; actual_generation: number }
   | { kind: "not-found"; reservation_id: string };
 
 export type Result<T, E = ConversationSpawnError> = { ok: true; value: T } | { ok: false; error: E };

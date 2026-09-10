@@ -49,8 +49,10 @@ import {
   listCanonicalProjects,
   ApiError,
   ConversationSpawnApiError,
+  cancelProviderChat,
   isApiErrorStatus,
   openConversationExternally,
+  retryProviderChat,
   submitConversationControl,
   updateConsoleSession,
   updateConsoleSessionOptions,
@@ -87,6 +89,7 @@ import {
   serializeConversationToMarkdown,
   useStatuslineTelemetry,
   chatControlFailureNotice,
+  chatSpawnFailureNotice,
   reduceNewChatDraft,
   type ChatPreviewTarget,
   type ChatActivityItem,
@@ -431,12 +434,13 @@ type ViewMode = 'terminal' | 'rich' | 'events';
 type ChatSelection =
   | { type: 'conversation'; id: string }
   | { type: 'session'; id: string }
+  | { type: 'spawn'; id: string }
   | { type: 'draft'; id: string }
   | null;
 type ChatEntry = {
   key: string;
   time: number;
-  kind: 'conversation' | 'session';
+  kind: 'conversation' | 'session' | 'spawn';
   conversation?: Conversation;
   session?: ConsoleSession;
   liveSession?: ConsoleSession | null;
@@ -545,7 +549,7 @@ export function conversationTurnSelectionHref(
 export type NewChatInput = {
   idempotency_key: string;
   provider: NewChatProvider;
-  placement: { project_id: string; checkout_id: string };
+  placement: { kind: 'projectless' } | { kind: 'project'; project_id: string; checkout_id: string };
 };
 
 export type ConversationsViewProps = {
@@ -2632,7 +2636,9 @@ export function ConversationsView({
 }: ConversationsViewProps): JSX.Element {
   const [selection, setSelection] = useState<ChatSelection>(null);
   const handleNavigateConversation = useCallback((conversationId: string) => {
-    setSelection({ type: 'conversation', id: conversationId });
+    setSelection((current) => current?.type === 'conversation' && current.id === conversationId
+      ? current
+      : { type: 'conversation', id: conversationId });
     const nextHash = hashWithAgentSession(
       `#/console?conversation=${encodeURIComponent(conversationId)}`,
       getAgentPageBinding(),
@@ -2966,6 +2972,9 @@ export function ConversationsView({
     const offNew = client.on('conversation:new', () => {
       scheduleListRefetch();
     });
+    const offSpawn = client.on('conversation-spawn:updated', () => {
+      scheduleListRefetch();
+    });
     const offState = client.onState((_state, { reconnected }) => {
       if (reconnected) void fetchConversationGroups();
     });
@@ -2976,6 +2985,7 @@ export function ConversationsView({
       }
       offUpdated();
       offNew();
+      offSpawn();
       offState();
       client.close();
     };
@@ -3004,7 +3014,7 @@ export function ConversationsView({
     const base = serverGroups.map((group) => ({
       ...group,
       conversations: group.conversations.filter((conv) =>
-        !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0)
+        !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0 || Boolean(conv.spawn))
       ),
     }));
     if (!search.trim() || searchMode === 'full') return base;
@@ -3083,24 +3093,32 @@ export function ConversationsView({
           target.total += 1;
         }
         target.entries.push({
-          key: liveByProviderSession.has(conversation.session_id)
+          key: conversation.spawn
+            ? `spawn:${conversation.id}`
+            : liveByProviderSession.has(conversation.session_id)
             ? `session:${liveByProviderSession.get(conversation.session_id)!.id}`
             : `conversation:${conversation.id}`,
           time: getConversationTime(conversation),
-          kind: 'conversation',
+          kind: conversation.spawn ? 'spawn' : 'conversation',
           conversation,
-          liveSession: liveByProviderSession.get(conversation.session_id) ?? null,
+          liveSession: conversation.spawn?.native_session_id
+            ? liveSessions.find((session) => session.id === conversation.spawn?.native_session_id) ?? null
+            : liveByProviderSession.get(conversation.session_id) ?? null,
         });
       }
     }
     const conversationProviderIds = new Set(
       displayedConversations.flatMap((group) => group.conversations.map((conversation) => conversation.session_id)),
     );
+    const conversationLogicalIds = new Set(
+      displayedConversations.flatMap((group) => group.conversations.map((conversation) => conversation.id)),
+    );
     for (const session of liveSessions) {
       if (isSubagentSession(session)) {
         continue;
       }
-      if (session.provider_session_id && conversationProviderIds.has(session.provider_session_id)) {
+      if (conversationLogicalIds.has(session.id)
+          || (session.provider_session_id && conversationProviderIds.has(session.provider_session_id))) {
         continue;
       }
       const canonicalProjectGroup = session.canonical_project_id
@@ -3164,7 +3182,11 @@ export function ConversationsView({
     const indexed = displayedConversations
       .flatMap((group) => group.conversations)
       .find((conversation) => conversation.session_id === liveSession.provider_session_id);
-    if (indexed) handleNavigateConversation(indexed.id);
+    if (indexed?.spawn) {
+      setSelection((current) => current?.type === 'spawn' && current.id === indexed.id
+        ? current
+        : { type: 'spawn', id: indexed.id });
+    } else if (indexed) handleNavigateConversation(indexed.id);
   }, [displayedConversations, handleNavigateConversation, liveSessions, selection]);
 
   useEffect(() => {
@@ -3198,6 +3220,13 @@ export function ConversationsView({
     if (!selectedSessionId) return null;
     return consoleSessions.find((session) => session.id === selectedSessionId) ?? null;
   }, [consoleSessions, selectedSessionId]);
+  const selectedSpawn = selection?.type === 'spawn'
+    ? displayedConversations.flatMap((group) => group.conversations)
+      .find((conversation) => conversation.id === selection.id)?.spawn ?? null
+    : null;
+  const selectedSpawnSession = selectedSpawn?.native_session_id
+    ? consoleSessions.find((session) => session.id === selectedSpawn.native_session_id) ?? null
+    : null;
 
   useEffect(() => {
     if (!selection) return;
@@ -3209,12 +3238,16 @@ export function ConversationsView({
   useEffect(() => {
     if (selection) return;
     if (!firstChatEntry) return;
+    if (firstChatEntry.kind === 'spawn' && firstChatEntry.conversation) {
+      setSelection((current) => current ?? { type: 'spawn', id: firstChatEntry.conversation!.id });
+      return;
+    }
     if (firstChatEntry.kind === 'conversation' && firstChatEntry.conversation) {
-      setSelection({ type: 'conversation', id: firstChatEntry.conversation.id });
+      setSelection((current) => current ?? { type: 'conversation', id: firstChatEntry.conversation!.id });
       return;
     }
     if (firstChatEntry.session) {
-      setSelection({ type: 'session', id: firstChatEntry.session.id });
+      setSelection((current) => current ?? { type: 'session', id: firstChatEntry.session!.id });
       onSelectSession(firstChatEntry.session.id);
     }
   }, [firstChatEntry, onSelectSession, selection]);
@@ -3370,19 +3403,15 @@ export function ConversationsView({
 
   const draftStartupController = useRef<AbortController | null>(null);
   const discardDraft = useCallback(() => {
+    const draft = newChatDraft;
+    if (draft?.state === 'starting') {
+      void cancelProviderChat(draft.id, 1).then(() => fetchConversationGroups()).catch(() => undefined);
+    }
     draftStartupController.current?.abort();
     draftStartupController.current = null;
     setNewChatDraft((draft) => draft ? reduceNewChatDraft(draft, { type: 'abandon' }) : null);
     setSelection((current) => current?.type === 'draft' ? null : current);
-  }, []);
-
-  useEffect(() => {
-    if (!newChatDraft || newChatDraft.state === 'ready' || newChatDraft.state === 'abandoned') return;
-    if (selection?.type === 'draft' && selection.id === newChatDraft.id) return;
-    discardDraft();
-  }, [discardDraft, newChatDraft, selection]);
-
-  useEffect(() => () => draftStartupController.current?.abort(), []);
+  }, [fetchConversationGroups, newChatDraft]);
 
   const startDraft = useCallback(async (provider: NewChatProvider, retry = false) => {
     const draft = newChatDraft;
@@ -3399,10 +3428,13 @@ export function ConversationsView({
       const sessionId = await onNewSession({
         idempotency_key: starting.id,
         provider: starting.provider,
-        placement: {
-          project_id: starting.placement.projectId,
-          checkout_id: starting.placement.checkoutId,
-        },
+        placement: starting.placement.kind === 'project'
+          ? {
+              kind: 'project',
+              project_id: starting.placement.projectId!,
+              checkout_id: starting.placement.checkoutId!,
+            }
+          : { kind: 'projectless' },
       }, startupController.signal);
       if (startupController.signal.aborted) return;
       setNewChatDraft((current) => current?.id === starting.id
@@ -3433,17 +3465,8 @@ export function ConversationsView({
   }, [newChatDraft, onNewSession, onSelectSession]);
 
   const openNewSession = (cwd?: string) => {
-    const selectedProjectId = selectedConversationSummary
-      ? getCanonicalConversationProjectId(selectedConversationSummary)
-      : null;
-    const requested = cwd
-      ? registeredProjects.find((project) => project.root === cwd)
-      : registeredProjects.find((project) => project.id === selectedProjectId)
-        ?? shownProjects.flatMap((shown) => registeredProjects.filter((project) => (
-          project.id === shown.projectId && project.checkoutId === shown.checkoutId
-        )))[0]
-        ?? registeredProjects[0];
-    if (!requested) {
+    const requested = cwd ? registeredProjects.find((project) => project.root === cwd) : null;
+    if (cwd && !requested) {
       setSidebarToast({ message: 'Register a project checkout before starting a chat.', type: 'error' });
       return;
     }
@@ -3452,14 +3475,17 @@ export function ConversationsView({
       id,
       state: 'choosing',
       placement: {
-        projectId: requested.id,
-        checkoutId: requested.checkoutId,
-        projectLabel: requested.label,
+        kind: requested ? 'project' : 'projectless',
+        projectId: requested?.id ?? null,
+        checkoutId: requested?.checkoutId ?? null,
+        projectLabel: requested?.label ?? 'Chats',
       },
     });
-    setShownProjects((current) => current.some((shown) => (
-      shown.projectId === requested.id && shown.checkoutId === requested.checkoutId
-    )) ? current : [...current, { projectId: requested.id, checkoutId: requested.checkoutId }]);
+    if (requested) {
+      setShownProjects((current) => current.some((shown) => (
+        shown.projectId === requested.id && shown.checkoutId === requested.checkoutId
+      )) ? current : [...current, { projectId: requested.id, checkoutId: requested.checkoutId }]);
+    }
     setSelection({ type: 'draft', id });
   };
 
@@ -3510,7 +3536,9 @@ export function ConversationsView({
     <ChatEntryItem
       key={entry.key}
       entry={entry}
-      isSelected={entry.kind === 'conversation'
+      isSelected={entry.kind === 'spawn'
+        ? selection?.type === 'spawn' && selection.id === entry.conversation?.id
+        : entry.kind === 'conversation'
         ? selectedConversationId === entry.conversation?.id
           || (selectedSessionId !== null && selectedSessionId === entry.liveSession?.id)
         : selectedSessionId === entry.session?.id}
@@ -3528,7 +3556,13 @@ export function ConversationsView({
         ? () => { void handleOpenExternally(entry); }
         : undefined}
       onClick={() => {
-        discardDraft();
+        if (newChatDraft?.state === 'choosing') discardDraft();
+        if (entry.kind === 'spawn' && entry.conversation) {
+          setSelection((current) => current?.type === 'spawn' && current.id === entry.conversation!.id
+            ? current
+            : { type: 'spawn', id: entry.conversation!.id });
+          return;
+        }
         if (entry.kind === 'conversation' && entry.conversation) {
           handleNavigateConversation(entry.conversation.id);
           return;
@@ -3744,6 +3778,7 @@ export function ConversationsView({
                     {newChatDraft
                       && newChatDraft.state !== 'abandoned'
                       && newChatDraft.state !== 'ready'
+                      && newChatDraft.placement.kind === 'project'
                       && newChatDraft.placement.projectId === group.canonicalProjectId ? (
                         <SidebarItemRow
                           label="New chat"
@@ -3782,6 +3817,26 @@ export function ConversationsView({
                   loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}
                 >
+                  {newChatDraft
+                    && newChatDraft.state !== 'abandoned'
+                    && newChatDraft.state !== 'ready'
+                    && newChatDraft.placement.kind === 'projectless' ? (
+                      <SidebarItemRow
+                        label="New chat"
+                        selectionLabel="Open new chat draft"
+                        selected={selection?.type === 'draft' && selection.id === newChatDraft.id}
+                        ariaCurrent={selection?.type === 'draft' && selection.id === newChatDraft.id ? 'true' : undefined}
+                        provider={newChatDraft.state === 'choosing'
+                          ? undefined
+                          : {
+                              label: newChatDraft.provider === 'codex' ? 'Codex' : 'Claude',
+                              tone: newChatDraft.provider === 'codex' ? 'codex' : 'claude',
+                            }}
+                        onSelect={() => setSelection((current) => current?.type === 'draft' && current.id === newChatDraft.id
+                          ? current
+                          : { type: 'draft', id: newChatDraft.id })}
+                      />
+                    ) : null}
                   {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
                   {totalVisibleEntries === 0 && sidebarLoaded && !loading ? (
                     <div className="sidebar-group-node__placeholder">No chats</div>
@@ -3812,6 +3867,34 @@ export function ConversationsView({
             )}
           >
             <div className="chat-history-detail__empty" aria-hidden="true" />
+          </ChatDetailFrame>
+        ) : selection?.type === 'spawn' && selectedSpawnSession ? (
+          <LiveSessionDetail key={selectedSpawnSession.id} session={selectedSpawnSession} />
+        ) : selection?.type === 'spawn' && selectedSpawn ? (
+          <ChatDetailFrame
+            state="draft"
+            header={<DetailPaneHeader variant="compact" title={selectedSpawn.request.provider === 'codex' ? 'New Codex chat' : 'New Claude chat'} />}
+            notice={selectedSpawn.error ? (
+              <ChatFailureNotice
+                failure={chatSpawnFailureNotice(selectedSpawn.error)}
+                onRetry={selectedSpawn.error.retryable ? () => {
+                  void retryProviderChat(selectedSpawn.reservation_id, selectedSpawn.attempt_count)
+                    .then(() => fetchConversationGroups());
+                } : undefined}
+              />
+            ) : undefined}
+          >
+            <div className="chat-history-detail__empty">
+              {selectedSpawn.state === 'starting' || selectedSpawn.state === 'stopping'
+                ? <span role="status">{selectedSpawn.state === 'starting' ? 'Starting provider…' : 'Stopping provider…'}</span>
+                : null}
+              {selectedSpawn.state === 'starting' ? (
+                <button type="button" className="btn btn--ghost btn--sm" onClick={() => {
+                  void cancelProviderChat(selectedSpawn.reservation_id, selectedSpawn.attempt_count)
+                    .then(() => fetchConversationGroups());
+                }}>Cancel</button>
+              ) : null}
+            </div>
           </ChatDetailFrame>
         ) : selection?.type === 'conversation' ? (
           <ConversationDetail

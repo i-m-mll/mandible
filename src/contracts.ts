@@ -65,6 +65,7 @@ export type MandibleEventType =
   | "console:subagent:start"
   | "console:subagent:stop"
   | "conversation:new"
+  | "conversation-spawn:updated"
   | "conversation:updated"
   | "daemon:reloaded"
   | "heartbeat"

@@ -315,7 +315,7 @@ describe('conversation sidebar groups', () => {
       }
       return { limit: 1, groups: [] };
     });
-    const onNewSession = vi.fn();
+    const onNewSession = vi.fn().mockResolvedValue('10000000-0000-4000-8000-000000000001');
     renderView([], onNewSession, null, 5);
 
     expect(screen.queryByRole('button', { name: 'New chat in Mandible' })).toBeNull();
@@ -335,13 +335,38 @@ describe('conversation sidebar groups', () => {
     expect(onNewSession).not.toHaveBeenCalled();
 
     fireEvent.click(await screen.findByRole('button', { name: 'New chat in Mandible' }));
-    fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Alternate scoped chat' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
-    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/repos/mandible' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start with Codex (OpenAI)' }));
+    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      provider: 'codex',
+      placement: {
+        kind: 'project',
+        project_id: 'prj-mandible',
+        checkout_id: 'checkout-mandible',
+      },
+    }), expect.any(AbortSignal));
     await waitFor(() => expect(api.updateChatShownProjectsPreference).toHaveBeenLastCalledWith(
       [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
       expect.any(Number),
     ));
+  });
+
+  it('creates top-level Chat intent only in Chats with explicit projectless placement', async () => {
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
+      limit: 5,
+      groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats' })],
+    });
+    const onNewSession = vi.fn().mockResolvedValue('10000000-0000-4000-8000-000000000002');
+    renderView([], onNewSession, null, 5);
+
+    fireEvent.click(within(screen.getByRole('region', { name: 'Chat actions' })).getByRole('button', { name: 'New chat' }));
+    const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('section') as HTMLElement;
+    expect(within(chatsSection).getByRole('button', { name: 'Open new chat draft' })).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Start with Claude' }));
+    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      provider: 'claude_code',
+      placement: { kind: 'projectless' },
+    }), expect.any(AbortSignal));
   });
 
   it('cannot manufacture a project group from a legacy directory label or path', async () => {
