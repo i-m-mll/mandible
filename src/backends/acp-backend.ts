@@ -151,7 +151,7 @@ const ACP_AGENT_REGISTRY: Record<string, AcpAgentDefinition> = {
     runOptions: [],
   },
   codex: {
-    // Observed in @agentclientprotocol/codex-acp@1.0.2: api-key, chat-gpt, gateway.
+    // Observed in @agentclientprotocol/codex-acp@1.11.0: api-key, chat-gpt, gateway.
     // ChatGPT is omitted by the adapter when NO_BROWSER is set; gateway is only
     // advertised when the client opts into the gateway auth capability.
     selectAuthMethod(authMethods, env) {

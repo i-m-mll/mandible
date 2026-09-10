@@ -3,12 +3,12 @@ import type { SessionRunOptionChoice } from "./session-run-options.js";
 /**
  * Pre-start choices for providers whose authoritative inventory is only
  * available after a session begins. Keep the display names current when the
- * provider client is upgraded; stable aliases keep routing ownership with the
- * provider instead of pinning Mandible to dated model identifiers.
+ * provider client is upgraded. The default model uses its exact provider ID so
+ * launch provenance records the requested model without alias resolution.
  */
 export const CLAUDE_CODE_BOOTSTRAP_MODELS = [
   { value: "fable", label: "Fable 5.1" },
-  { value: "opus", label: "Opus 5" },
+  { value: "claude-opus-5", label: "Opus 5" },
   { value: "sonnet", label: "Sonnet 5" },
   { value: "haiku", label: "Haiku 4.5" },
 ] satisfies readonly SessionRunOptionChoice[];

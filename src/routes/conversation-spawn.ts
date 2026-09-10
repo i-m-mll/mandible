@@ -51,7 +51,7 @@ function sessionInput(db: Db, request: ConversationSpawnRequest): ConsoleSession
     channel_enabled: false,
     runOptions: codex
       ? { model: "gpt-5.6-sol", mode: "agent-full-access" }
-      : { model: "opus", permission_mode: "bypassPermissions" },
+      : { model: "claude-opus-5", permission_mode: "bypassPermissions" },
   };
 }
 

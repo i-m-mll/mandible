@@ -195,7 +195,7 @@ describe("restricted project route enforcement", () => {
       command: "claude",
       backend_type: "sdk",
       transport_lane: "sdk",
-      runOptions: { model: "opus", permission_mode: "bypassPermissions" },
+      runOptions: { model: "claude-opus-5", permission_mode: "bypassPermissions" },
     }));
     expect(claude.body).toMatchObject({
       spawn: { state: "starting", provider_session_id: null },
