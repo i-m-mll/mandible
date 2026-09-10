@@ -76,7 +76,7 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
 
 const ACTOR_SCOPED_BRIEFING_RESPONSE_ROUTE =
   /^\/api\/briefings\/[^/]+\/rounds\/[^/]+\/(?:answers|annotations|submit)$/;
-const PREVIEW_CONVERSATION_SPAWN_ROUTE = "/api/conversation-spawns";
+const PREVIEW_CONVERSATION_SPAWN_ROUTE = /^\/api\/conversation-spawns(?:\/[0-9a-f-]+\/retry|\/[0-9a-f-]+)?$/i;
 
 export function resolveInstanceInfo(options: {
   env?: NodeJS.ProcessEnv;
@@ -184,8 +184,11 @@ export function isIsolatedPreviewConversationSpawnMutation(
   method: string,
   pathname: string,
 ): boolean {
-  return method.toUpperCase() === "POST"
-    && pathname === PREVIEW_CONVERSATION_SPAWN_ROUTE
+  const normalizedMethod = method.toUpperCase();
+  const lifecycleMethod = normalizedMethod === "POST" || normalizedMethod === "DELETE";
+  return lifecycleMethod
+    && PREVIEW_CONVERSATION_SPAWN_ROUTE.test(pathname)
+    && (normalizedMethod !== "DELETE" || !pathname.endsWith("/retry"))
     && instance.role === "preview"
     && instance.operational_mutations === "reject"
     && instance.db_path_source === "iab-preview-copy"

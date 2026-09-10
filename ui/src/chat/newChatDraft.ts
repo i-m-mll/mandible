@@ -2,8 +2,9 @@ import type { ConversationSpawnFailure } from '../api.js';
 
 export type NewChatProvider = 'codex' | 'claude_code';
 export type NewChatPlacement = {
-  projectId: string;
-  checkoutId: string;
+  kind: 'projectless' | 'project';
+  projectId: string | null;
+  checkoutId: string | null;
   projectLabel: string;
 };
 

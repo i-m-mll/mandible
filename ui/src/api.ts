@@ -2045,7 +2045,7 @@ export type ConsoleSessionOptions = {
 export async function startProviderChat(
   idempotencyKey: string,
   provider: 'codex' | 'claude_code',
-  placement: { project_id: string; checkout_id: string },
+  placement: { kind: 'projectless' } | { kind: 'project'; project_id: string; checkout_id: string },
   options: { signal?: AbortSignal } = {},
 ): Promise<{ session: {
   id: string;
@@ -2080,7 +2080,7 @@ export async function startProviderChat(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      schema: 'mandible-conversation-spawn-request@2',
+      schema: 'mandible-conversation-spawn-request@3',
       idempotency_key: idempotencyKey,
       provider,
       placement,
@@ -2145,6 +2145,26 @@ export async function startProviderChat(
 
 export async function closeConsoleSession(sessionId: string): Promise<void> {
   await apiDelete(`/api/console/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export async function retryProviderChat(id: string, expectedGeneration: number): Promise<ContractConversationSpawnReceipt> {
+  const response = await apiPost(`/api/conversation-spawns/${encodeURIComponent(id)}/retry`, {
+    expected_generation: expectedGeneration,
+  });
+  const payload = await parseMaybeJson(response) as { spawn: ContractConversationSpawnReceipt };
+  return payload.spawn;
+}
+
+export async function cancelProviderChat(id: string, expectedGeneration: number): Promise<ContractConversationSpawnReceipt> {
+  const path = `/api/conversation-spawns/${encodeURIComponent(id)}`;
+  const response = await fetch(path, {
+    method: 'DELETE',
+    headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_generation: expectedGeneration }),
+  });
+  if (!response.ok) await throwOnError(response, 'DELETE', path);
+  const payload = await parseMaybeJson(response) as { value: ContractConversationSpawnReceipt };
+  return payload.value;
 }
 
 export async function getConsoleStreamEvents<T = unknown>(
@@ -2387,6 +2407,7 @@ export async function getConversations(params?: {
 export type ConversationSidebarConversation = Conversation & {
   canonical_project_id: string | null;
   canonical_project_key: string | null;
+  spawn?: ContractConversationSpawnReceipt;
 };
 
 export type ConversationSidebarGroup = {

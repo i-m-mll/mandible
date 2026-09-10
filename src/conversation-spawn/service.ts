@@ -25,6 +25,12 @@ type SpawnRow = {
   updated_at: number;
 };
 
+function projectIds(request: ConversationSpawnRequest): { projectId: string | null; checkoutId: string | null } {
+  return request.placement.kind === "project"
+    ? { projectId: request.placement.project_id, checkoutId: request.placement.checkout_id }
+    : { projectId: null, checkoutId: null };
+}
+
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
   if (value && typeof value === "object") {
@@ -39,8 +45,12 @@ function isUuid(value: string): boolean {
 }
 
 export class ConversationSpawnService {
-  constructor(private readonly db: Db, private readonly now: () => number = Date.now) {
-    this.terminalizeInterrupted();
+  constructor(
+    private readonly db: Db,
+    private readonly now: () => number = Date.now,
+    recoverInterrupted = true,
+  ) {
+    if (recoverInterrupted) this.terminalizeInterrupted();
   }
 
   reserve(input: ConversationSpawnRequest): Result<ConversationSpawnReceipt> {
@@ -58,6 +68,7 @@ export class ConversationSpawnService {
       return { ok: true, value: this.receipt(existing) };
     }
     const at = this.now();
+    const placement = projectIds(request);
     this.db.transaction(() => {
       this.db.prepare(`INSERT INTO conversation_spawn_requests
         (id, schema_version, idempotency_key, request_digest, request_json, provider, project_id, checkout_id,
@@ -69,8 +80,8 @@ export class ConversationSpawnService {
         digest,
         requestJson,
         request.provider,
-        request.placement.project_id,
-        request.placement.checkout_id,
+        placement.projectId,
+        placement.checkoutId,
         at,
         at,
       );
@@ -79,34 +90,81 @@ export class ConversationSpawnService {
     return this.get(request.idempotency_key);
   }
 
-  begin(reservationId: string): Result<ConversationSpawnReceipt> {
+  begin(reservationId: string, expectedGeneration?: number): Result<ConversationSpawnReceipt> {
     const row = this.row(reservationId);
     if (!row) return { ok: false, error: { kind: "not-found", reservation_id: reservationId } };
     if (row.schema_version !== CONVERSATION_SPAWN_REQUEST_SCHEMA) {
       return this.invalid("schema", "Historical spawn receipts are read-only");
     }
-    if (row.state === "starting") {
+    if (expectedGeneration !== undefined && row.attempt_count !== expectedGeneration) {
+      return { ok: false, error: {
+        kind: "stale-generation",
+        reservation_id: reservationId,
+        expected_generation: expectedGeneration,
+        actual_generation: row.attempt_count,
+      } };
+    }
+    if (row.state === "starting" || row.state === "stopping") {
       return { ok: false, error: { kind: "spawn-in-progress", reservation_id: reservationId } };
     }
     if (row.state === "ready") return { ok: true, value: this.receipt(row) };
     const at = this.now();
     this.db.transaction(() => {
       this.db.prepare(`UPDATE conversation_spawn_requests
-        SET state = 'starting', attempt_count = attempt_count + 1, error_json = NULL, updated_at = ? WHERE id = ?`)
+        SET state = 'starting', attempt_count = attempt_count + 1, native_session_id = NULL,
+          provider_session_id = NULL, provider_receipt_json = NULL, error_json = NULL, updated_at = ? WHERE id = ?`)
         .run(at, reservationId);
       this.event(reservationId, "startup-started", {}, at);
     })();
     return this.get(reservationId);
   }
 
+  assignRuntime(reservationId: string, generation: number, nativeSessionId: string): Result<ConversationSpawnReceipt> {
+    const row = this.currentGeneration(reservationId, generation);
+    if (!row.ok) return row;
+    if (row.value.state !== "starting") {
+      return { ok: false, error: { kind: "spawn-in-progress", reservation_id: reservationId } };
+    }
+    if (row.value.native_session_id && row.value.native_session_id !== nativeSessionId) {
+      return { ok: false, error: { kind: "idempotency-conflict", idempotency_key: reservationId } };
+    }
+    const at = this.now();
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE conversation_spawn_requests SET native_session_id = ?, updated_at = ? WHERE id = ?")
+        .run(nativeSessionId, at, reservationId);
+      this.event(reservationId, "runtime-assigned", { generation, native_session_id: nativeSessionId }, at);
+    })();
+    return this.get(reservationId);
+  }
+
+  observeProviderSession(nativeSessionId: string, providerSessionId: string): void {
+    const id = providerSessionId.trim();
+    if (!id) return;
+    const row = this.db.prepare(`SELECT * FROM conversation_spawn_requests
+      WHERE native_session_id = ? AND state = 'starting' ORDER BY updated_at DESC LIMIT 1`)
+      .get(nativeSessionId) as SpawnRow | undefined;
+    if (!row || row.provider_session_id === id) return;
+    const at = this.now();
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE conversation_spawn_requests SET provider_session_id = ?, updated_at = ? WHERE id = ?")
+        .run(id, at, row.id);
+      this.event(row.id, "provider-observed", { generation: row.attempt_count, provider_session_id: id }, at);
+    })();
+  }
+
   ready(
     reservationId: string,
+    generation: number,
     nativeSessionId: string,
     providerSessionId: string | null,
     providerReceipt: Record<string, unknown>,
   ): Result<ConversationSpawnReceipt> {
-    const row = this.row(reservationId);
-    if (!row) return { ok: false, error: { kind: "not-found", reservation_id: reservationId } };
+    const current = this.currentGeneration(reservationId, generation);
+    if (!current.ok) return current;
+    const row = current.value;
+    if (row.state !== "starting") {
+      return { ok: false, error: { kind: "spawn-in-progress", reservation_id: reservationId } };
+    }
     if (row.native_session_id && row.native_session_id !== nativeSessionId) {
       return { ok: false, error: { kind: "idempotency-conflict", idempotency_key: row.id } };
     }
@@ -122,9 +180,14 @@ export class ConversationSpawnService {
 
   failed(
     reservationId: string,
+    generation: number,
     error: ConversationSpawnFailure,
   ): Result<ConversationSpawnReceipt> {
-    if (!this.row(reservationId)) return { ok: false, error: { kind: "not-found", reservation_id: reservationId } };
+    const current = this.currentGeneration(reservationId, generation);
+    if (!current.ok) return current;
+    if (current.value.state !== "starting" && current.value.state !== "stopping") {
+      return { ok: false, error: { kind: "spawn-in-progress", reservation_id: reservationId } };
+    }
     const at = this.now();
     this.db.transaction(() => {
       this.db.prepare(`UPDATE conversation_spawn_requests SET state = 'failed', native_session_id = NULL,
@@ -133,6 +196,45 @@ export class ConversationSpawnService {
       this.event(reservationId, "failed", error, at);
     })();
     return this.get(reservationId);
+  }
+
+  stopping(reservationId: string, generation: number): Result<ConversationSpawnReceipt> {
+    const current = this.currentGeneration(reservationId, generation);
+    if (!current.ok) return current;
+    if (current.value.state === "cancelled") return this.get(reservationId);
+    if (current.value.state !== "starting") {
+      return { ok: false, error: { kind: "spawn-in-progress", reservation_id: reservationId } };
+    }
+    const at = this.now();
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE conversation_spawn_requests SET state = 'stopping', updated_at = ? WHERE id = ?")
+        .run(at, reservationId);
+      this.event(reservationId, "stopping", { generation }, at);
+    })();
+    return this.get(reservationId);
+  }
+
+  cancelled(reservationId: string, generation: number): Result<ConversationSpawnReceipt> {
+    const current = this.currentGeneration(reservationId, generation);
+    if (!current.ok) return current;
+    const at = this.now();
+    const error: ConversationSpawnFailure = {
+      code: "provider_startup_cancelled",
+      message: "Chat creation was cancelled.",
+      retryable: true,
+    };
+    this.db.transaction(() => {
+      this.db.prepare(`UPDATE conversation_spawn_requests SET state = 'cancelled', native_session_id = NULL,
+        provider_session_id = NULL, provider_receipt_json = NULL, error_json = ?, updated_at = ? WHERE id = ?`)
+        .run(stable(error), at, reservationId);
+      this.event(reservationId, "cancelled", { generation }, at);
+    })();
+    return this.get(reservationId);
+  }
+
+  listCurrent(): ConversationSpawnReceipt[] {
+    return (this.db.prepare("SELECT * FROM conversation_spawn_requests WHERE schema_version = ? ORDER BY created_at DESC, id")
+      .all(CONVERSATION_SPAWN_REQUEST_SCHEMA) as SpawnRow[]).map((row) => this.receipt(row));
   }
 
   get(reservationId: string): Result<ConversationSpawnReceipt> {
@@ -155,8 +257,12 @@ export class ConversationSpawnService {
       return this.invalid("provider", "Only Codex and Claude are supported");
     }
     const placement = input.placement;
-    if (!placement?.project_id?.trim() || !placement.checkout_id?.trim()) {
-      return this.invalid("placement", "An exact canonical project and checkout are required");
+    if (placement?.kind === "projectless") {
+      if (Object.keys(placement).length !== 1) return this.invalid("placement", "Projectless placement accepts no project fields");
+      return { ok: true, value: { ...input, idempotency_key: id, placement: { kind: "projectless" } } };
+    }
+    if (placement?.kind !== "project" || !placement.project_id?.trim() || !placement.checkout_id?.trim()) {
+      return this.invalid("placement", "Placement must be explicitly projectless or name one exact project checkout");
     }
     if (!this.db.prepare("SELECT 1 FROM ledger_projects WHERE id = ?").get(placement.project_id)) {
       return { ok: false, error: { kind: "project-not-found", project_id: placement.project_id } };
@@ -165,7 +271,11 @@ export class ConversationSpawnService {
       .get(placement.checkout_id) as { project_id: string } | undefined;
     if (!checkout) return { ok: false, error: { kind: "checkout-not-found", checkout_id: placement.checkout_id } };
     if (checkout.project_id !== placement.project_id) {
-      return { ok: false, error: { kind: "checkout-project-mismatch", ...placement } };
+      return { ok: false, error: {
+        kind: "checkout-project-mismatch",
+        project_id: placement.project_id,
+        checkout_id: placement.checkout_id,
+      } };
     }
     return { ok: true, value: { ...input, idempotency_key: id } };
   }
@@ -174,9 +284,23 @@ export class ConversationSpawnService {
     return { ok: false, error: { kind: "invalid-request", field, message } };
   }
 
+  private currentGeneration(reservationId: string, generation: number): Result<SpawnRow> {
+    const row = this.row(reservationId);
+    if (!row) return { ok: false, error: { kind: "not-found", reservation_id: reservationId } };
+    if (row.attempt_count !== generation) {
+      return { ok: false, error: {
+        kind: "stale-generation",
+        reservation_id: reservationId,
+        expected_generation: generation,
+        actual_generation: row.attempt_count,
+      } };
+    }
+    return { ok: true, value: row };
+  }
+
   private terminalizeInterrupted(): void {
     const rows = this.db.prepare(
-      "SELECT id FROM conversation_spawn_requests WHERE state IN ('creating', 'delivering', 'starting') ORDER BY created_at, id",
+      "SELECT id FROM conversation_spawn_requests WHERE state IN ('creating', 'delivering', 'starting', 'stopping') ORDER BY created_at, id",
     ).all() as Array<{ id: string }>;
     if (rows.length === 0) return;
     const at = this.now();
@@ -212,7 +336,9 @@ export class ConversationSpawnService {
     return {
       schema: row.schema_version === CONVERSATION_SPAWN_REQUEST_SCHEMA
         ? CONVERSATION_SPAWN_RECEIPT_SCHEMA
-        : "mandible-conversation-spawn-receipt@1",
+        : row.schema_version === "mandible-conversation-spawn-request@2"
+          ? "mandible-conversation-spawn-receipt@2"
+          : "mandible-conversation-spawn-receipt@1",
       reservation_id: row.id,
       request: JSON.parse(row.request_json),
       state: row.state,

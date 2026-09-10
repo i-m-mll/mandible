@@ -26,6 +26,7 @@ export interface ConversationSidebarRow {
   block_count: number;
   canonical_project_id?: string | null;
   canonical_project_key?: string | null;
+  canonical_placement_explicit?: boolean | number;
 }
 
 export interface ConversationSidebarGroup<Row extends ConversationSidebarRow> {
@@ -72,6 +73,11 @@ function resolveCanonicalProject(
   row: ConversationSidebarRow,
   projects: ConversationSidebarProject[],
 ): ConversationSidebarProject | null {
+  if (row.canonical_placement_explicit) {
+    return row.canonical_project_id
+      ? projects.find((project) => project.id === row.canonical_project_id) ?? null
+      : null;
+  }
   const storedPaths = [normalizedAbsolutePath(row.cwd), normalizedAbsolutePath(row.project_path)]
     .filter((value): value is string => value !== null);
   let specificity = -1;

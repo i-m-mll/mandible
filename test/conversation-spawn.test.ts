@@ -33,7 +33,7 @@ function request(overrides: Partial<ConversationSpawnRequest> = {}): Conversatio
     schema: CONVERSATION_SPAWN_REQUEST_SCHEMA,
     idempotency_key: ID,
     provider: "codex",
-    placement: { project_id: "project-a", checkout_id: "checkout-a" },
+    placement: { kind: "project", project_id: "project-a", checkout_id: "checkout-a" },
     ...overrides,
   };
 }
@@ -48,6 +48,19 @@ describe("provider-first conversation spawn authority", () => {
     expect(readConversationSpawnPlacementBatch(db, [ID]).get(ID)).toEqual({
       canonical_project_id: "project-a",
       canonical_checkout_id: "checkout-a",
+    });
+  });
+
+  it("represents projectless placement explicitly without consulting the project registry", () => {
+    const service = new ConversationSpawnService(db, () => clock++);
+    const result = service.reserve(request({ placement: { kind: "projectless" } }));
+    expect(result).toMatchObject({
+      ok: true,
+      value: { request: { placement: { kind: "projectless" } } },
+    });
+    expect(readConversationSpawnPlacementBatch(db, [ID]).get(ID)).toEqual({
+      canonical_project_id: null,
+      canonical_checkout_id: null,
     });
   });
 
@@ -75,7 +88,15 @@ describe("provider-first conversation spawn authority", () => {
       ok: true,
       value: { state: "failed", error: { code: "provider_startup_interrupted", retryable: true } },
     });
-    expect(restarted.begin(ID)).toMatchObject({ ok: true, value: { state: "starting", attempt_count: 2 } });
+    expect(restarted.begin(ID, 1)).toMatchObject({ ok: true, value: { state: "starting", attempt_count: 2 } });
+    expect(restarted.failed(ID, 1, { code: "late", message: "late", retryable: false }))
+      .toMatchObject({ ok: false, error: { kind: "stale-generation", actual_generation: 2 } });
+    expect(restarted.assignRuntime(ID, 2, "runtime-2")).toMatchObject({ ok: true });
+    expect(restarted.stopping(ID, 2)).toMatchObject({ ok: true, value: { state: "stopping" } });
+    expect(restarted.cancelled(ID, 2)).toMatchObject({ ok: true, value: { state: "cancelled" } });
+    expect(restarted.ready(ID, 2, "runtime-2", "provider-2", {}))
+      .toMatchObject({ ok: false, error: { kind: "spawn-in-progress" } });
+    expect(restarted.get(ID)).toMatchObject({ ok: true, value: { state: "cancelled" } });
   });
 
   it("reads historical version-1 receipts without accepting their creation path", () => {
