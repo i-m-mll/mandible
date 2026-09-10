@@ -946,6 +946,39 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     version: 176,
+    name: "immutable_auth_change_reports",
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN change_report_json TEXT
+         CHECK(change_report_json IS NULL OR (
+           json_valid(change_report_json)
+           AND json_extract(change_report_json, '$.schema') = 'mandible-auth-change-report@1'
+           AND json_type(change_report_json, '$.files') = 'array'
+           AND json_extract(change_report_json, '$.totals.files') = json_array_length(json_extract(change_report_json, '$.files'))
+         ))`,
+      `CREATE TRIGGER auth_change_report_insert_consistent
+         BEFORE INSERT ON auth_requests
+         WHEN NEW.change_report_json IS NOT NULL AND (
+           NEW.files_changed IS NOT json_extract(NEW.change_report_json, '$.totals.files')
+           OR NEW.additions IS NOT json_extract(NEW.change_report_json, '$.totals.additions')
+           OR NEW.deletions IS NOT json_extract(NEW.change_report_json, '$.totals.deletions')
+         )
+         BEGIN SELECT RAISE(ABORT, 'auth change report totals must own headline counts'); END`,
+      `CREATE TRIGGER auth_change_report_immutable_update
+         BEFORE UPDATE OF change_report_json ON auth_requests
+         WHEN OLD.change_report_json IS NOT NEW.change_report_json
+         BEGIN SELECT RAISE(ABORT, 'auth change reports are immutable'); END`,
+      `CREATE TRIGGER auth_change_report_counts_immutable_update
+         BEFORE UPDATE OF files_changed, additions, deletions ON auth_requests
+         WHEN OLD.change_report_json IS NOT NULL AND (
+           OLD.files_changed IS NOT NEW.files_changed
+           OR OLD.additions IS NOT NEW.additions
+           OR OLD.deletions IS NOT NEW.deletions
+         )
+         BEGIN SELECT RAISE(ABORT, 'captured auth headline counts are immutable'); END`,
+    ],
+  },
+  {
+    version: 177,
     name: "unified_chat_creation_lifecycle",
     statements: [
       "DROP TRIGGER conversation_spawn_events_immutable_update",
@@ -973,7 +1006,7 @@ export const MIGRATIONS: readonly Migration[] = [
     ],
   },
   {
-    version: 177,
+    version: 178,
     name: "mandible_conversation_archive_state",
     statements: [
       `CREATE TABLE conversation_archive_states (
@@ -1071,6 +1104,43 @@ function getSchemaVersion(db: Db): number {
   return Number.isFinite(version) ? version : 0;
 }
 
+/**
+ * Reconcile the one schema-number collision created by the persistent Chat
+ * integration preview before the auth-report migration landed on `main`.
+ *
+ * That preview recorded the v3 Chat lifecycle as v176 and archive state as
+ * v177. The protected branch independently used v176 for immutable auth change
+ * reports. Exact shape checks distinguish the preview lineage: archive state
+ * and the v3 spawn schema are present, while the auth-report column is absent.
+ * Applying the canonical auth migration completes the v178 shape without
+ * rebuilding or discarding preview-only Chat state.
+ */
+function reconcileCollidedChatPreviewSchema(db: Db, found: number): number {
+  if (found !== 177) return found;
+  const archiveState = db.prepare(
+    "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'conversation_archive_states'",
+  ).get();
+  const authReportColumn = db.prepare(
+    "SELECT 1 FROM pragma_table_info('auth_requests') WHERE name = 'change_report_json'",
+  ).get();
+  const spawnSchema = db.prepare(
+    "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'conversation_spawn_requests'",
+  ).get() as { sql?: string } | undefined;
+  if (!archiveState || authReportColumn || !spawnSchema?.sql?.includes("mandible-conversation-spawn-request@3")) {
+    return found;
+  }
+
+  const authMigration = MIGRATIONS.find((migration) => migration.name === "immutable_auth_change_reports");
+  if (!authMigration) throw new Error("Canonical immutable auth change-report migration is missing");
+  db.transaction(() => {
+    for (const statement of authMigration.statements) db.exec(statement);
+    db.prepare(
+      "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    ).run(SCHEMA_VERSION_KEY, String(CURRENT_SCHEMA_VERSION));
+  })();
+  return CURRENT_SCHEMA_VERSION;
+}
+
 function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
   if (migrations.length === 0) return;
   const setVersion = db.prepare(
@@ -1101,13 +1171,15 @@ export function migrate(db: Db): void {
     return;
   }
 
-  const found = getSchemaVersion(db);
+  let found = getSchemaVersion(db);
   if (found < MINIMUM_SUPPORTED_SCHEMA_VERSION) {
     throw new UnsupportedSchemaVersionError(found, belowFloorMessage(found, databasePath(db)));
   }
   if (found > CURRENT_SCHEMA_VERSION) {
     throw new UnsupportedSchemaVersionError(found, aboveHeadMessage(found, databasePath(db)));
   }
+
+  found = reconcileCollidedChatPreviewSchema(db, found);
 
   applySchemaMigrations(db, MIGRATIONS.filter((migration) => migration.version > found));
 }

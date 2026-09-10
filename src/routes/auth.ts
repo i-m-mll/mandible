@@ -4,6 +4,7 @@ import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import { AuthClearanceError, AuthClearanceManager } from "../auth-clearance.js";
 import { DelegatedSigningResource } from "../delegated-signing-resource.js";
 import {
+  authGitEnv,
   classifyGitFailure,
   computeAuthMergeReviewMetadata,
   describeGitFailure,
@@ -102,7 +103,7 @@ export function registerAuthRoutes(
           });
           return;
         }
-        payload.merge_head_sha = payload.merge_head_sha ?? resolved.headSha;
+        payload.merge_head_sha = resolved.headSha;
         // Issue 08a5f04 — submission-time (never approval-time) normalization
         // of the legacy single-source command shape: the reviewed row must
         // already carry the canonical `mandible auth merge <head> --into
@@ -116,30 +117,27 @@ export function registerAuthRoutes(
         if (normalizedCommand) {
           payload.command = normalizedCommand;
         }
-        const needsCounts =
-          payload.files_changed === undefined ||
-          payload.additions === undefined ||
-          payload.deletions === undefined;
-        const needsDiffSummary = payload.diff_summary == null;
         // Issue 7d64d8f — review metadata no longer includes a synthesized
         // commit message. A request either carries an agent-authored canonical
         // change message or carries none, in which case the merge keeps git's
         // own `fmt-merge-msg` default.
         const metadata = await computeAuthMergeReviewMetadata(
           resolved.targetRepoRoot,
-          resolved.baseBranch,
-          resolved.headBranch,
+          resolved.baseSha,
+          resolved.headSha,
           {
-            counts: needsCounts,
-            diffSummary: needsDiffSummary,
+            counts: true,
+            diffSummary: true,
           }
         );
-        payload.files_changed = payload.files_changed ?? metadata.filesChanged;
-        payload.additions = payload.additions ?? metadata.additions;
-        payload.deletions = payload.deletions ?? metadata.deletions;
-        if (payload.diff_summary == null) {
-          payload.diff_summary = metadata.diffSummary;
+        if (!metadata.changeReport) {
+          throw new Error("Auth change report collection returned no report.");
         }
+        payload.change_report = metadata.changeReport;
+        payload.files_changed = metadata.changeReport.totals.files;
+        payload.additions = metadata.changeReport.totals.additions;
+        payload.deletions = metadata.changeReport.totals.deletions;
+        payload.diff_summary = metadata.diffSummary;
       } catch (error) {
         res.status(400).json({
           error: error instanceof Error ? error.message : "Invalid auth merge execution context."
@@ -229,7 +227,12 @@ export function registerAuthRoutes(
       payload.requester_credential_id = requester.credentialId;
       payload.require_delivery_custody = isAuthMerge;
       const request = authQueue.submit(payload, requester.userId);
-      res.status(201).json({ request_id: request.id });
+      res.status(201).json({
+        request_id: request.id,
+        files_changed: request.files_changed,
+        additions: request.additions,
+        deletions: request.deletions,
+      });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -1334,7 +1337,7 @@ export function verifyMandibleIssueReferences(
     const output = execFileSync(
       "git",
       ["log", "--no-merges", "--format=%H", `${base_branch}..${head_branch}`],
-      { cwd, encoding: "utf-8", timeout: 10000 }
+      { cwd, encoding: "utf-8", timeout: 10000, env: authGitEnv() }
     ).trim();
 
     if (!output) {
@@ -1353,6 +1356,7 @@ export function verifyMandibleIssueReferences(
         cwd,
         encoding: "utf-8",
         timeout: 5000,
+        env: authGitEnv(),
       }).trim();
 
       if (!body.split("\n").some((line: string) => line.startsWith("Mandible-Issue:"))) {
@@ -1360,6 +1364,7 @@ export function verifyMandibleIssueReferences(
           cwd,
           encoding: "utf-8",
           timeout: 5000,
+          env: authGitEnv(),
         }).trim();
         missing.push(oneline);
       }

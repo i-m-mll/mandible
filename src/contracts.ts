@@ -228,6 +228,67 @@ export type AuthRequestType =
   | "branch-delete"
   | "config-change"
   | "data-delete";
+
+export const AUTH_CHANGE_REPORT_FILE_ROLE_PRECEDENCE = [
+  "fixtures_data",
+  "tests",
+  "documentation",
+  "configuration",
+  "implementation",
+  "other",
+] as const;
+
+export type AuthChangeFileRole =
+  (typeof AUTH_CHANGE_REPORT_FILE_ROLE_PRECEDENCE)[number];
+export type AuthChangeFileType = "blob" | "symlink" | "gitlink" | "absent";
+export type AuthChangeKind =
+  | "added"
+  | "deleted"
+  | "modified"
+  | "renamed"
+  | "copied"
+  | "type_changed";
+
+export type AuthChangeFile = {
+  old_path: string | null;
+  new_path: string | null;
+  change_kind: AuthChangeKind;
+  file_type_before: AuthChangeFileType;
+  file_type_after: AuthChangeFileType;
+  additions: number | null;
+  deletions: number | null;
+  bytes_before: number | null;
+  bytes_after: number | null;
+  language: string;
+  file_role: AuthChangeFileRole;
+  generated: boolean;
+  vendor: boolean;
+};
+
+/**
+ * Immutable server-captured inventory for one reviewed merge candidate.
+ * Null on an AuthRequest means unavailable (legacy request or non-merge),
+ * never an empty or freshly recomputed report.
+ */
+export type AuthChangeReport = {
+  schema: "mandible-auth-change-report@1";
+  classifier_version: "mandible-auth-change-classifier@1";
+  rules_version: "mandible-auth-change-rules@1";
+  comparison: {
+    base_sha: string;
+    head_sha: string;
+    merge_base_sha: string;
+  };
+  rename_similarity_percent: 50;
+  totals: {
+    files: number;
+    additions: number;
+    deletions: number;
+    text_files: number;
+    binary_files: number;
+  };
+  files: AuthChangeFile[];
+};
 /**
  * The staged auth-action vocabulary, declared once as a value.
  *
@@ -290,6 +351,7 @@ export type AuthRequest = {
   merge_preflight_base_sha?: string | null;
   merge_preflight_queue_fingerprint?: string | null;
   merge_finalized_at?: number | null;
+  change_report?: AuthChangeReport | null;
   files_changed?: number;
   additions?: number;
   deletions?: number;
