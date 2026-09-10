@@ -58,6 +58,7 @@ import {
   updateConsoleSession,
   updateConsoleSessionOptions,
   updateConversation,
+  updateConversationArchive,
   type SessionRunOptionsSnapshot,
   type ConversationRuntimeOptions,
   type ConversationControlApiError,
@@ -442,7 +443,7 @@ type ChatEntry = {
   key: string;
   time: number;
   kind: 'conversation' | 'session';
-  conversation?: Conversation;
+  conversation?: ConversationSidebarConversation;
   session?: ConsoleSession;
   liveSession?: ConsoleSession | null;
 };
@@ -2509,6 +2510,7 @@ function ChatEntryItem({
   onEditTags,
   onRenameSession,
   onOpenExternally,
+  onToggleArchived,
 }: {
   entry: ChatEntry;
   isSelected: boolean;
@@ -2519,6 +2521,7 @@ function ChatEntryItem({
   onEditTags?: (tags: string[]) => void;
   onRenameSession?: (label: string | null) => void;
   onOpenExternally?: () => void;
+  onToggleArchived?: () => void;
 }): JSX.Element {
   const conversation = entry.conversation;
   const session = entry.session;
@@ -2526,7 +2529,7 @@ function ChatEntryItem({
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
   const providerLabel = source ? SIDEBAR_PROVIDER_LABELS[source] : null;
   const title = conversation ? getConversationTitle(conversation) : getConsoleSessionTitle(session);
-  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession || onOpenExternally);
+  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession || onOpenExternally || onToggleArchived);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
   const hasBadges = Boolean(conversation?.tags.length || session?.owner);
 
@@ -2558,6 +2561,13 @@ function ChatEntryItem({
   }
   if (onRenameSession) {
     overflowActions.push({ id: 'rename-session', label: 'Rename session', onSelect: handleRenameSession });
+  }
+  if (onToggleArchived) {
+    overflowActions.push({
+      id: conversation?.archived_at ? 'unarchive' : 'archive',
+      label: conversation?.archived_at ? 'Unarchive' : 'Archive',
+      onSelect: onToggleArchived,
+    });
   }
 
   return (
@@ -2758,6 +2768,8 @@ export function ConversationsView({
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [chatViewState, setChatViewState] = useChatViewState();
+  const conversationLifecycle = chatViewState.conversationLifecycle;
+  const [retainedSelection, setRetainedSelection] = useState<ConversationSidebarConversation | null>(null);
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
@@ -2985,6 +2997,7 @@ export function ConversationsView({
       sort: sort === 'blocks' ? 'block_count' : 'started_at',
       exclude_subagents: true,
       project_ids: projectIds,
+      lifecycle: conversationLifecycle,
     };
     if (previewMutationsRejected) {
       const pinnedIds = Object.entries(chatViewState.previewPinOverrides)
@@ -2996,7 +3009,7 @@ export function ConversationsView({
     if (hideEmpty) params.min_blocks = 1;
     applyConversationSearchParams(params, search, searchMode);
     return params;
-  }, [chatViewState.previewPinOverrides, hideEmpty, previewMutationsRejected, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
+  }, [chatViewState.previewPinOverrides, conversationLifecycle, hideEmpty, previewMutationsRejected, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
   // A refresh starts from one bounded page per logical group, then replays only
   // the extra pages needed to restore that group's current visible target.
@@ -3069,7 +3082,7 @@ export function ConversationsView({
         typeof payload.data === 'object' && payload.data !== null ? payload.data : payload
       ) as ConversationAppendPayload;
       const rawData = data as ConversationAppendPayload & { updates?: unknown };
-      const membershipFields = ['starred', 'cwd', 'project_path', 'canonical_project_id', 'canonical_project_key'];
+      const membershipFields = ['starred', 'archived_at', 'cwd', 'project_path', 'canonical_project_id', 'canonical_project_key'];
       const membershipChanged = membershipFields.some((field) => Object.prototype.hasOwnProperty.call(rawData, field))
         || (Array.isArray(rawData.updates) && rawData.updates.some((field) => (
           typeof field === 'string' && membershipFields.includes(field)
@@ -3180,7 +3193,8 @@ export function ConversationsView({
   }, [acceptedConversation, newChatDraft, serverGroups]);
 
   const selectedConversationSummary = selection?.type === 'conversation'
-    ? conversationGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id) ?? null
+    ? conversationGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id)
+      ?? (retainedSelection?.id === selection.id ? retainedSelection : null)
     : null;
 
   // Client-side title-only filter (when searchMode === 'title', server already
@@ -3290,6 +3304,7 @@ export function ConversationsView({
       displayedConversations.flatMap((group) => group.conversations.map((conversation) => conversation.id)),
     );
     for (const session of liveSessions) {
+      if (conversationLifecycle === 'archived') continue;
       if (isSubagentSession(session)) {
         continue;
       }
@@ -3349,7 +3364,7 @@ export function ConversationsView({
         .sort((left, right) => left.label.localeCompare(right.label)),
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [chatViewState.pinnedConversationIds, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
+  }, [chatViewState.pinnedConversationIds, conversationLifecycle, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
 
   useEffect(() => {
     if (selection?.type !== 'session') return;
@@ -3386,6 +3401,7 @@ export function ConversationsView({
     !hideEmpty,
     sort !== 'date',
     searchMode !== 'title',
+    conversationLifecycle !== 'active',
   ].filter(Boolean).length;
 
   const selectedLiveSession = useMemo(() => {
@@ -3541,6 +3557,23 @@ export function ConversationsView({
       }
     } catch {
       // keep the current list state if persistence fails
+    }
+  };
+
+  const handleToggleArchived = async (entry: ChatEntry) => {
+    if (!entry.conversation) return;
+    const archived = !entry.conversation.archived_at;
+    try {
+      if (selection?.type === 'conversation' && selection.id === entry.conversation.id) {
+        setRetainedSelection(entry.conversation);
+      }
+      await updateConversationArchive(entry.conversation.id, archived);
+      await fetchConversationGroups();
+    } catch (error) {
+      setSidebarToast({
+        message: error instanceof Error ? error.message : `Chat could not be ${archived ? 'archived' : 'unarchived'}.`,
+        type: 'error',
+      });
     }
   };
 
@@ -3719,13 +3752,16 @@ export function ConversationsView({
       onOpenExternally={entry.conversation?.external_navigation
         ? () => { void handleOpenExternally(entry); }
         : undefined}
+      onToggleArchived={entry.conversation ? () => { void handleToggleArchived(entry); } : undefined}
       onClick={() => {
         if (newChatDraft?.state === 'choosing') discardDraft();
         if (entry.kind === 'conversation' && entry.conversation) {
           handleNavigateConversation(entry.conversation.id);
+          setRetainedSelection(entry.conversation);
           return;
         }
         if (entry.session) {
+          setRetainedSelection(null);
           handleSelectSession(entry.session.id);
         }
       }}
@@ -3768,12 +3804,28 @@ export function ConversationsView({
                 {!hideEmpty && <span>Empty shown</span>}
                 {sort !== 'date' && <span>By blocks</span>}
                 {searchMode === 'full' && <span>Full text</span>}
+                {conversationLifecycle === 'archived' && <span>Archived</span>}
               </>
             ) : undefined}
             panel={filterPanelOpen ? {
               variant: 'popover',
               children: (
                 <>
+                <div className="sidebar-search-filter__section">
+                  <div className="sidebar-search-filter__label">Chats</div>
+                  <div className="sidebar-search-filter__options">
+                    {(['active', 'archived'] as const).map((lifecycle) => (
+                      <button
+                        key={lifecycle}
+                        type="button"
+                        className={`conv-filter-btn${conversationLifecycle === lifecycle ? ' conv-filter-btn--active' : ''}`}
+                        onClick={() => setChatViewState((current) => ({ ...current, conversationLifecycle: lifecycle }))}
+                      >
+                        {lifecycle === 'active' ? 'Active' : 'Archived'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="sidebar-search-filter__section">
                   <div className="sidebar-search-filter__label">Agent</div>
                   <div className="sidebar-search-filter__options">
