@@ -67,6 +67,7 @@ interface ConversationRow {
   model: string | null;
   cli_version: string | null;
   starred: number;
+  archived_at?: number | null;
   tags: string;
   notes: string | null;
   parent_conversation_id: string | null;
@@ -122,6 +123,7 @@ function mapConversation(row: ConversationRow, externalNavigation?: Conversation
     updated_at: row.updated_at,
     tags,
     starred: row.starred === 1,
+    archived_at: row.archived_at ?? null,
     parent_conversation_id: row.parent_conversation_id ?? null,
     is_sidechain: row.is_sidechain === 1,
     agent_id: row.agent_id ?? null,
@@ -689,6 +691,11 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
   // GET /api/conversations/sidebar — bounded, independently paged sidebar groups.
   server.get("/api/conversations/sidebar", async (req, res) => {
     const query = req.query ?? {};
+    const lifecycle = query.lifecycle || "active";
+    if (lifecycle !== "active" && lifecycle !== "archived") {
+      sendJson(res, 400, { error: "lifecycle must be active or archived" });
+      return;
+    }
     let requestedProjectIds: string[];
     let clientPinnedIds: string[];
     try {
@@ -716,6 +723,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
 
     const conditions: string[] = [];
     const params: unknown[] = [];
+    conditions.push(lifecycle === "archived" ? "a.conversation_id IS NOT NULL" : "a.conversation_id IS NULL");
     if (query.source) {
       conditions.push("c.source = ?");
       params.push(query.source);
@@ -759,6 +767,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       exclude_subagents: excludeSubagents,
       project_ids: [...requestedProjectIds].sort(),
       pinned_ids: [...clientPinnedIds].sort(),
+      lifecycle,
       sort,
     })).digest("base64url");
 
@@ -774,21 +783,24 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
         s.error_json AS spawn_error_json, s.created_at AS spawn_created_at,
         s.updated_at AS spawn_updated_at
       FROM conversations c
+      LEFT JOIN conversation_archive_states a ON a.conversation_id = c.id
       LEFT JOIN conversation_spawn_requests s ON s.id = c.id AND s.schema_version = 'mandible-conversation-spawn-request@3'
       LEFT JOIN ledger_projects p ON p.id = s.project_id
       ${where}`).all(...params) as ProjectedConversationRow[])
       .map((row) => clientPinned.has(row.id) ? { ...row, starred: 1 } : row);
     if (!query.starred && !(Number.isFinite(minBlocks) && minBlocks > 0)) {
-      const spawnRows = db.prepare(`SELECT * FROM conversation_spawn_requests s
+      const spawnRows = db.prepare(`SELECT s.*, a.archived_at FROM conversation_spawn_requests s
+        LEFT JOIN conversation_archive_states a ON a.conversation_id = s.id
         WHERE s.schema_version = 'mandible-conversation-spawn-request@3'
           AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id = s.id)
         ORDER BY s.created_at DESC, s.id`).all() as Array<{
           id: string; provider: string; project_id: string | null; checkout_id: string | null;
           request_json: string; state: string; attempt_count: number; native_session_id: string | null;
           provider_session_id: string | null; provider_receipt_json: string | null; error_json: string | null;
-          schema_version: string; created_at: number; updated_at: number;
+          schema_version: string; created_at: number; updated_at: number; archived_at: number | null;
         }>;
       for (const spawn of spawnRows) {
+        if ((lifecycle === "archived") !== (spawn.archived_at != null)) continue;
         const source = spawn.provider === "codex" ? "codex" : "claude_code";
         const title = spawn.provider === "codex" ? "New Codex chat" : "New Claude chat";
         if (query.source && query.source !== source) continue;
@@ -824,6 +836,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
           model: null,
           cli_version: null,
           starred: 0,
+          archived_at: spawn.archived_at,
           tags: "[]",
           notes: null,
           parent_conversation_id: null,
@@ -1079,7 +1092,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
 
     const conversations = db
       .prepare(
-        `SELECT * FROM conversations WHERE ${convConditions.join(" AND ")} ORDER BY started_at DESC`,
+        `SELECT conversations.*,
+           (SELECT archived_at FROM conversation_archive_states archive
+             WHERE archive.conversation_id = conversations.id) AS archived_at
+         FROM conversations WHERE ${convConditions.join(" AND ")} ORDER BY started_at DESC`,
       )
       .all(...convParams) as ConversationRow[];
 
@@ -1179,7 +1195,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     }
 
     const conv = db
-      .prepare("SELECT * FROM conversations WHERE id = ?")
+      .prepare(`SELECT conversations.*,
+        (SELECT archived_at FROM conversation_archive_states archive
+          WHERE archive.conversation_id = conversations.id) AS archived_at
+        FROM conversations WHERE id = ?`)
       .get(id) as ConversationRow | undefined;
     if (!conv) {
       sendJson(res, 404, { error: "Conversation not found" });
@@ -1763,7 +1782,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     }
 
     const body = readBody<Record<string, unknown>>(req);
-    const allowed = new Set(["starred", "tags", "tags_add", "tags_remove", "notes", "notes_append"]);
+    const allowed = new Set(["starred", "archived", "tags", "tags_add", "tags_remove", "notes", "notes_append"]);
     const supplied = Object.keys(body);
     if (supplied.length === 0 || supplied.some((key) => !allowed.has(key))) {
       sendJson(res, 400, { error: "No updates provided" });
@@ -1773,6 +1792,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     try {
       if ("starred" in body && body.starred !== true && body.starred !== false && body.starred !== 0 && body.starred !== 1) {
         throw new Error("starred must be a boolean");
+      }
+      if ("archived" in body && typeof body.archived !== "boolean") {
+        throw new Error("archived must be a boolean");
       }
       if ("notes" in body && body.notes !== null && typeof body.notes !== "string") {
         throw new Error("notes must be a string or null");
@@ -1785,7 +1807,31 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       const result = db.transaction(() => {
         const current = db.prepare("SELECT * FROM conversations WHERE id = ?")
           .get(id) as ConversationRow | undefined;
-        if (!current) return null;
+        const spawn = db.prepare(`SELECT id FROM conversation_spawn_requests
+          WHERE id = ? AND schema_version = 'mandible-conversation-spawn-request@3'`).get(id);
+        if (!current && !spawn) return null;
+        const conversationOnlyFields = supplied.filter((field) => field !== "archived");
+        if (!current && conversationOnlyFields.length > 0) {
+          throw new Error("Only archive state can be updated before a conversation materializes");
+        }
+        const previousArchive = db.prepare("SELECT archived_at FROM conversation_archive_states WHERE conversation_id = ?")
+          .get(id) as { archived_at: number } | undefined;
+        const changedFields: string[] = [];
+        if ("archived" in body) {
+          if (body.archived && !previousArchive) {
+            db.prepare("INSERT INTO conversation_archive_states (conversation_id, archived_at) VALUES (?, ?)")
+              .run(id, Date.now());
+            changedFields.push("archived_at");
+          } else if (!body.archived && previousArchive) {
+            db.prepare("DELETE FROM conversation_archive_states WHERE conversation_id = ?").run(id);
+            changedFields.push("archived_at");
+          }
+        }
+        if (!current) {
+          const archive = db.prepare("SELECT archived_at FROM conversation_archive_states WHERE conversation_id = ?")
+            .get(id) as { archived_at: number } | undefined;
+          return { updated: null, archivedAt: archive?.archived_at ?? null, changedFields };
+        }
         let tags = canonicalizeTags(JSON.parse(current.tags), "stored tags");
         if ("tags" in body) tags = canonicalizeTags(body.tags, "tags");
         if ("tags_add" in body) tags = canonicalizeTags([...tags, ...canonicalizeTags(body.tags_add, "tags_add")], "tags");
@@ -1794,7 +1840,6 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
           tags = tags.filter((tag) => !remove.has(tag));
         }
 
-        const changedFields: string[] = [];
         const nextStarred = "starred" in body ? (body.starred === true || body.starred === 1 ? 1 : 0) : current.starred;
         if (nextStarred !== current.starred) changedFields.push("starred");
         const nextTags = JSON.stringify(tags);
@@ -1810,15 +1855,17 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
         db.prepare(`UPDATE conversations
           SET starred = ?, tags = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
           .run(nextStarred, nextTags, nextNotes, id);
-        const updated = db.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as ConversationRow;
-        return { updated, changedFields };
+        const updated = db.prepare(`SELECT c.*, a.archived_at FROM conversations c
+          LEFT JOIN conversation_archive_states a ON a.conversation_id = c.id WHERE c.id = ?`)
+          .get(id) as ConversationRow;
+        return { updated, archivedAt: updated.archived_at ?? null, changedFields };
       }).immediate();
       if (!result) {
         sendJson(res, 404, { error: "Conversation not found" });
         return;
       }
       broadcast("conversation:updated", { id, updates: result.changedFields });
-      sendJson(res, 200, mapConversation(result.updated));
+      sendJson(res, 200, result.updated ? mapConversation(result.updated) : { id, archived_at: result.archivedAt });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid metadata update" });
     }
@@ -1856,7 +1903,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     }
 
     const conv = db
-      .prepare("SELECT * FROM conversations WHERE id = ?")
+      .prepare(`SELECT conversations.*,
+        (SELECT archived_at FROM conversation_archive_states archive
+          WHERE archive.conversation_id = conversations.id) AS archived_at
+        FROM conversations WHERE id = ?`)
       .get(id) as ConversationRow | undefined;
     if (!conv) {
       sendJson(res, 404, { error: "Conversation not found" });

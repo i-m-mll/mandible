@@ -15,10 +15,12 @@ import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { associateProjectArtifact, ingestArtifact, recordArtifactVersion } from "../src/provider-artifacts.js";
 import { registerConsoleRoutes } from "../src/routes/console.js";
 import { registerConversationSpawnRoutes } from "../src/routes/conversation-spawn.js";
+import { registerConversationControlRoutes } from "../src/routes/conversation-control.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import { registerWorkRoutes } from "../src/routes/work.js";
 import { Router } from "../src/server.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
 import type { ArtifactResolveResult } from "../src/types.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 
@@ -242,6 +244,81 @@ describe("restricted project route enforcement", () => {
     expect(abortedRow.state).toBe("cancelled");
     expect(abortedRow.native_session_id).toBeNull();
     expect(JSON.parse(abortedRow.error_json!)).toMatchObject({ code: "provider_startup_cancelled" });
+  });
+
+  it("admits preview submit and stop only for a preview-created controller owned at the exact generation", async () => {
+    const previewRoot = path.join(tempDir, "preview");
+    fs.mkdirSync(previewRoot);
+    const previewDb = path.join(previewRoot, "mandible.db");
+    const sourceDb = path.join(tempDir, "source.db");
+    fs.writeFileSync(previewDb, "preview");
+    fs.writeFileSync(sourceDb, "source");
+    const instance = resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+        MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+        MANDIBLE_PREVIEW_ROOT: previewRoot,
+      },
+      dbPath: previewDb,
+      sourceDbPath: sourceDb,
+    });
+    const previewRouter = new Router({ clientAuth: authenticator, instance });
+    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
+    const { token } = authenticator.mintApiToken(operator.id);
+    const conversationId = "10000000-0000-4000-8000-000000000099";
+    db.prepare(`INSERT INTO conversation_spawn_requests (
+      id, schema_version, idempotency_key, request_digest, request_json, provider,
+      project_id, checkout_id, topology_kind, state, attempt_count,
+      native_session_id, provider_session_id, initial_message_state, created_at, updated_at
+    ) VALUES (?, 'mandible-conversation-spawn-request@3', ?, ?, ?, 'codex',
+      NULL, NULL, 'top-level', 'ready', 1, 'controller-1', 'provider-1', NULL, 1, 1)`)
+      .run(conversationId, conversationId, "d".repeat(64), JSON.stringify({
+        schema: "mandible-conversation-spawn-request@3",
+        idempotency_key: conversationId,
+        provider: "codex",
+        placement: { kind: "projectless" },
+      }));
+    let owned = false;
+    const control = {
+      ownsController: vi.fn(async (_id: string, generation: number) => owned && generation === 1),
+      submit: vi.fn(async () => ({ ok: true, value: { kind: "accepted", delivery_id: "delivery-1", turn_id: "turn-1", snapshot: {} } })),
+      stop: vi.fn(async () => ({ ok: true, value: undefined })),
+      getSnapshot: vi.fn(() => ({ ok: false, error: { kind: "conversation-not-found" } })),
+      getLiveProjection: vi.fn(() => ({ ok: false, error: { kind: "conversation-not-found" } })),
+    };
+    registerConversationControlRoutes(previewRouter, control as never, { db, instance });
+    const submit = (id = conversationId, generation = 1) => previewRouter.invoke({
+      method: "POST",
+      url: `/api/conversations/${id}/control/submit`,
+      credential: token,
+      transport: "http",
+      body: {
+        operation: "send",
+        expected_revision: 2,
+        expected_generation: generation,
+        message: "hello",
+        idempotency_key: "submission-1",
+      },
+    });
+
+    expect(await submit()).toMatchObject({
+      status: 403,
+      body: { error: "preview_conversation_control_forbidden" },
+    });
+    owned = true;
+    expect((await submit()).status).toBe(202);
+    expect((await submit("copied-historical-chat")).status).toBe(403);
+    expect((await submit(conversationId, 2)).status).toBe(403);
+    expect((await previewRouter.invoke({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/control/stop`,
+      credential: token,
+      transport: "http",
+      body: { generation: 1 },
+    })).status).toBe(200);
+    expect(control.submit).toHaveBeenCalledOnce();
+    expect(control.stop).toHaveBeenCalledOnce();
   });
 
   it("denies restricted issue, artifact, and work reads and restores them with read access", async () => {

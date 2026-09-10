@@ -972,6 +972,16 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP TABLE conversation_spawn_requests_v175",
     ],
   },
+  {
+    version: 177,
+    name: "mandible_conversation_archive_state",
+    statements: [
+      `CREATE TABLE conversation_archive_states (
+        conversation_id TEXT PRIMARY KEY,
+        archived_at INTEGER NOT NULL CHECK(archived_at > 0)
+      )`,
+    ],
+  },
 ];
 
 /**

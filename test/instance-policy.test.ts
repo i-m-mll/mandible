@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   allowsOperationalMutations,
   isActorScopedBriefingResponseMutation,
+  isIsolatedPreviewConversationControlMutation,
   isIsolatedPreviewConversationSpawnMutation,
   operationalMutationCategoryForPath,
   resolveInstanceInfo,
@@ -252,8 +253,15 @@ describe("instance mutation policy", () => {
     expect(isIsolatedPreviewConversationSpawnMutation(instance, "POST", "/api/conversation-spawns")).toBe(true);
     expect(isIsolatedPreviewConversationSpawnMutation(instance, "POST", "/api/conversation-spawns/10000000-0000-4000-8000-000000000001/retry")).toBe(true);
     expect(isIsolatedPreviewConversationSpawnMutation(instance, "DELETE", "/api/conversation-spawns/10000000-0000-4000-8000-000000000001")).toBe(true);
+    expect(isIsolatedPreviewConversationControlMutation(instance, "POST", "/api/conversations/10000000-0000-4000-8000-000000000001/control/submit")).toBe(true);
+    expect(isIsolatedPreviewConversationControlMutation(instance, "POST", "/api/conversations/10000000-0000-4000-8000-000000000001/control/stop")).toBe(true);
     expect(await router.invoke({ method: "POST", url: "/api/conversation-spawns", body: {} }))
       .toEqual({ status: 200, body: { route: "/api/conversation-spawns" } });
+    for (const action of ["submit", "stop"]) {
+      router.post(`/api/conversations/:id/control/${action}`, (_req, res) => res.status(200).json({ action }), { fileRpc: "deny" });
+      expect(await router.invoke({ method: "POST", url: `/api/conversations/chat-1/control/${action}`, body: {} }))
+        .toEqual({ status: 200, body: { action } });
+    }
     for (const route of ["/api/conversation-spawns/not-a-lifecycle", "/api/conversations"]) {
       expect(await router.invoke({ method: "POST", url: route, body: {} }))
         .toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden", category: "conversations" } });

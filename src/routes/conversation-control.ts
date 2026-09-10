@@ -1,7 +1,9 @@
 import { operatorOnlyManagedSessionRoute } from "../client-auth/authz.js";
 import type { ConversationControlService } from "../conversation-control/service.js";
 import type { ConversationControlError, ConversationSubmitRequest } from "../conversation-control/types.js";
-import type { RouteRegistrar } from "../server.js";
+import type { Db } from "../db.js";
+import type { ResponseLike, RouteRegistrar } from "../server.js";
+import type { InstanceInfo } from "../types.js";
 import { bodyRecord, sendJson } from "./http.js";
 
 function statusFor(error: ConversationControlError): number {
@@ -44,7 +46,28 @@ function runtimeOptions(value: unknown): ConversationSubmitRequest["runtime_opti
   return result;
 }
 
-export function registerConversationControlRoutes(server: RouteRegistrar, control: ConversationControlService): void {
+export function registerConversationControlRoutes(
+  server: RouteRegistrar,
+  control: ConversationControlService,
+  options: { db?: Db; instance?: InstanceInfo } = {},
+): void {
+  const previewControlAllowed = async (conversationId: string, generation: number): Promise<boolean> => {
+    if (options.instance?.operational_mutations !== "reject") return true;
+    if (!options.db || options.instance.role !== "preview") return false;
+    const spawn = options.db.prepare(`SELECT attempt_count, state FROM conversation_spawn_requests
+      WHERE id = ? AND schema_version = 'mandible-conversation-spawn-request@3'`).get(conversationId) as
+      | { attempt_count: number; state: string }
+      | undefined;
+    if (!spawn || spawn.attempt_count !== generation || spawn.state !== "ready") return false;
+    return control.ownsController(conversationId, generation);
+  };
+  const rejectIneligiblePreviewControl = (res: ResponseLike) => {
+    sendJson(res, 403, {
+      error: "preview_conversation_control_forbidden",
+      message: "This preview can control only a Chat created and still owned by this preview.",
+    });
+  };
+
   server.get("/api/conversations/:id/control", (req, res) => {
     const result = control.getSnapshot(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
@@ -96,6 +119,10 @@ export function registerConversationControlRoutes(server: RouteRegistrar, contro
       sendJson(res, statusFor(error), { ok: false, error });
       return;
     }
+    if (!await previewControlAllowed(request.conversation_id, request.expected_generation)) {
+      rejectIneligiblePreviewControl(res);
+      return;
+    }
     const result = await control.submit(request);
     if (!result.ok && result.error.kind === "capability-drift") {
       const refreshed = control.getSnapshot(request.conversation_id);
@@ -111,6 +138,10 @@ export function registerConversationControlRoutes(server: RouteRegistrar, contro
     if (!Number.isSafeInteger(generation) || generation < 1) {
       const error: ConversationControlError = { kind: "invalid-request", field: "generation", message: "Generation must be a positive integer" };
       sendJson(res, statusFor(error), { ok: false, error });
+      return;
+    }
+    if (!await previewControlAllowed(req.params.id, generation)) {
+      rejectIneligiblePreviewControl(res);
       return;
     }
     const result = await control.stop(req.params.id, generation);
