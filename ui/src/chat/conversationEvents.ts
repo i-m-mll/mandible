@@ -150,6 +150,7 @@ export function conversationBlocksToStreamEvents(
         session_id: providerSessionId,
         parent_tool_use_id: null,
         message: {
+          id: providerMessageId,
           role: 'user',
           content: [{ type: 'text', text: block.content, source }],
         },

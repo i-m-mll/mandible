@@ -10,6 +10,10 @@ import type {
 } from "../src/conversation-control/adapter.js";
 import { ConversationControlService } from "../src/conversation-control/service.js";
 import { ConversationControlStore } from "../src/conversation-control/store.js";
+import { ConversationSourceStore } from "../src/conversations/source-store.js";
+import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
+import { CodexParser } from "../src/parsers/codex.js";
 import type {
   ConversationControlError,
   ConversationLifecycleEvent,
@@ -489,7 +493,9 @@ describe("authoritative conversation control", () => {
 
     adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-started", turn_id: submitted.value.turn_id, at: 3 });
     adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-completed", turn_id: submitted.value.turn_id, at: 4 });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    for (let attempt = 0; attempt < 20 && emitted.at(-1)?.kind !== "durable-reconciliation"; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
 
     expect(service.getLiveProjection("conversation-1")).toMatchObject({
       ok: true,
@@ -500,5 +506,82 @@ describe("authoritative conversation control", () => {
       ingest_status: "ingested:fresh", retired_live_count: 1, retained_live_count: 1,
     })]);
     expect(JSON.stringify(diagnostics)).not.toContain("hello");
+  });
+
+  it("retires a source-backed Codex prompt through its exact native turn", async () => {
+    const emitted: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
+    const service = new ConversationControlService(db, {
+      onTerminalTurn: async () => ({ status: "ingested:fresh" }),
+      onProviderEvent: (event) => emitted.push(event),
+    });
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+    const submitted = await service.submit(request(0, "intent-native-turn"));
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    const generation = submitted.value.snapshot.ownership.generation;
+    adapter.emitProvider({
+      kind: "provisional-content", conversation_id: "conversation-1", provider_session_id: "provider-1",
+      generation, sequence: 1, observed_at: 1, identity: "message:intent-native-turn",
+      correlation: {
+        intent_id: "intent-native-turn",
+        delivery_id: submitted.value.delivery_id,
+        turn_id: submitted.value.turn_id,
+        provider_message_id: "provider-user-without-jsonl-id",
+      },
+      event: {
+        type: "user",
+        uuid: "intent-native-turn",
+        message: { id: "intent-native-turn", role: "user", content: [{ type: "text", text: "hello" }] },
+      },
+    });
+    db.prepare(`UPDATE conversation_control_outbox
+      SET provider_receipt_id = 'codex:turn:native-turn-1'
+      WHERE id = ?`).run(submitted.value.delivery_id);
+
+    const sourcePath = path.join(root, ".codex", "sessions", "2026", "09", "11", "rollout-source-backed.jsonl");
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(sourcePath, [
+      { type: "session_meta", timestamp: "2026-09-11T00:00:00Z", payload: { id: "provider-1", cwd: "/tmp/project" } },
+      { type: "response_item", timestamp: "2026-09-11T00:00:01Z", payload: {
+        type: "message", role: "user", content: [{ type: "input_text", text: "durable text wins" }],
+        internal_chat_message_metadata_passthrough: { turn_id: "native-turn-1" },
+      } },
+    ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+    const parsed = await new CodexParser().parse(sourcePath);
+    expect(parsed).not.toBeNull();
+    if (!parsed) return;
+    db.prepare(`UPDATE conversations
+      SET source_path = ?, source_hash = ?, source_mtime = ?, block_count = ?
+      WHERE id = 'conversation-1'`).run(
+      sourcePath, parsed.conversation.source_hash, parsed.conversation.source_mtime, parsed.blocks.length,
+    );
+    await new ConversationSourceStore(db).recordConversation({
+      conversationId: "conversation-1",
+      provider: "codex",
+      nativeSessionId: "provider-1",
+      filePath: sourcePath,
+      expectedContentHash: parsed.conversation.source_hash,
+      blocks: parsed.blocks.map((block) => ({ ...block, legacyId: `legacy-${block.position}` })),
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+    expect(getConversationStructureCache(db).captureDenseRows(db, "conversation-1", "replace").captured)
+      .toBe(parsed.blocks.length);
+    db.exec("DELETE FROM conversation_structural_blocks; DELETE FROM conversation_blocks;");
+
+    adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-started", turn_id: submitted.value.turn_id, at: 3 });
+    adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-completed", turn_id: submitted.value.turn_id, at: 4 });
+    for (let attempt = 0; attempt < 20 && emitted.at(-1)?.kind !== "durable-reconciliation"; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(service.getLiveProjection("conversation-1")).toMatchObject({
+      ok: true,
+      value: { events: [] },
+    });
+    expect(emitted.at(-1)).toMatchObject({
+      kind: "durable-reconciliation",
+      covered_identities: ["message:intent-native-turn"],
+    });
   });
 });

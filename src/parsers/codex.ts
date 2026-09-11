@@ -60,6 +60,9 @@ interface CodexResponsePayload {
   // reasoning fields
   summary?: string;
   encrypted_content?: string;
+  internal_chat_message_metadata_passthrough?: {
+    turn_id?: string;
+  };
 }
 
 interface CodexTurnContext {
@@ -76,6 +79,7 @@ interface CodexTurnContext {
 
 interface CodexEventMsg {
   type: string;
+  client_id?: string;
   message?: string;
   text_elements?: Array<{ text?: string }>;
   info?: unknown;
@@ -121,6 +125,26 @@ function extractResponseItemText(payload: CodexResponsePayload): string {
     return parts.join("\n");
   }
   return "";
+}
+
+function providerTurnId(payload: CodexResponsePayload): string | undefined {
+  const turnId = payload.internal_chat_message_metadata_passthrough?.turn_id;
+  return typeof turnId === "string" && turnId ? turnId : undefined;
+}
+
+function isInjectedUserContext(payload: CodexResponsePayload): boolean {
+  if (!payload.content || payload.content.length < 2) return false;
+  const prefixes = [
+    "<recommended_plugins>",
+    "# AGENTS.md instructions",
+    "<environment_context>",
+    "<skills_instructions>",
+    "<permissions instructions>",
+  ];
+  return payload.content.every((block) => {
+    const text = block.text ?? block.input_text ?? "";
+    return prefixes.some((prefix) => text.startsWith(prefix));
+  });
 }
 
 function parseToolArguments(argumentsText: string | undefined): unknown {
@@ -444,6 +468,7 @@ export class CodexParser implements ConversationParser {
     // Map call_id → position for linking function outputs to calls
     const callMap = new Map<string, number>();
     const callNameMap = new Map<string, string>();
+    let pendingUserBlockIndex: number | null = null;
 
     for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
       const rec = records[recordIndex];
@@ -459,6 +484,7 @@ export class CodexParser implements ConversationParser {
           if (!text) continue;
 
           const role = payload.role;
+          const turnId = providerTurnId(payload);
           if (role === "developer") {
             blocks.push({
               type: "system",
@@ -472,6 +498,20 @@ export class CodexParser implements ConversationParser {
                 visibility: "default_hidden",
               },
             });
+          } else if (role === "user" && isInjectedUserContext(payload)) {
+            blocks.push({
+              type: "system",
+              role: "system",
+              content: text,
+              position: position++,
+              timestamp: ts,
+              parent_id: null,
+              metadata: {
+                source_event_type: "user_meta",
+                visibility: "default_hidden",
+                provider_turn_id: turnId,
+              },
+            });
           } else if (role === "user") {
             blocks.push({
               type: "user_message",
@@ -480,8 +520,12 @@ export class CodexParser implements ConversationParser {
               position: position++,
               timestamp: ts,
               parent_id: null,
-              metadata: { source_event_type: "user" },
+              metadata: {
+                source_event_type: "user",
+                provider_turn_id: turnId,
+              },
             });
+            pendingUserBlockIndex = blocks.length - 1;
           } else if (role === "assistant") {
             blocks.push({
               type: "assistant_message",
@@ -590,7 +634,13 @@ export class CodexParser implements ConversationParser {
         }
       } else if (rec.type === "event_msg") {
         const evt = rec.payload as CodexEventMsg;
-        if (evt.type === "token_count") {
+        if (evt.type === "user_message") {
+          if (pendingUserBlockIndex !== null && typeof evt.client_id === "string" && evt.client_id) {
+            blocks[pendingUserBlockIndex].dag_uuid = evt.client_id;
+            blocks[pendingUserBlockIndex].metadata.client_intent_id = evt.client_id;
+          }
+          pendingUserBlockIndex = null;
+        } else if (evt.type === "token_count") {
           const usageTelemetry = normalizeCodexTokenCount(evt);
           if (usageTelemetry) {
             blocks.push({
@@ -609,7 +659,7 @@ export class CodexParser implements ConversationParser {
           }
         }
         // agent_reasoning, context_compacted, turn_aborted — skip
-        // user_message events are duplicates of response_item user messages
+        // user_message events only supply exact identity for their response_item mirror
       }
       for (let index = firstRecordBlock; index < blocks.length; index += 1) {
         blocks[index].metadata.source_record_ordinal = options.baseRecordCount + recordIndex;
