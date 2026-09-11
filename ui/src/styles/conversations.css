@@ -454,6 +454,11 @@
   box-shadow: none;
 }
 
+.conv-compose__input::placeholder {
+  color: var(--text-chrome-faint);
+  opacity: 1;
+}
+
 .conv-compose__input:disabled {
   opacity: 0.55;
 }

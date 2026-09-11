@@ -135,6 +135,7 @@
   --text-muted: var(--neutral-9);
   --text-subdued: var(--neutral-10);
   --text-chrome-muted: #747474;
+  --text-chrome-faint: #626262;
   --text-disabled: rgba(154, 164, 178, 0.56);
   --text-inverse: #fff;
   --text-on-accent: var(--text-inverse);
@@ -352,6 +353,7 @@
   --text-subtle: rgba(23, 32, 42, 0.72);
   --text-subdued: var(--neutral-8);
   --text-chrome-muted: #A8A9A9;
+  --text-chrome-faint: #BABBBB;
   --border-focus: rgba(11, 99, 206, 0.64);
   --chrome-icon-hover-indirect: #868788;
   --chrome-icon-hover-direct: #1A1C1F;
