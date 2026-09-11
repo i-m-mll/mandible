@@ -185,11 +185,11 @@ describe('conversation sidebar labeled-item rows', () => {
     expect(idle.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--selected')).toBe(false);
     expect(idle.nextElementSibling?.classList.contains('sidebar-item-row__trailing')).toBe(true);
     expect(sidebarItemRowStylesheet).not.toMatch(
-      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-dot|actions)/,
+      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-mark|actions)/,
     );
     idle.focus();
     expect(document.activeElement).toBe(idle);
-    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s);
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{[^}]*--sidebar-item-row-reveal-width: var\(--sidebar-item-row-trailing-width, 0px\);/s);
     expect(chatHistoryStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|content|select|label|actions|provider)/);
   });
 
@@ -224,13 +224,13 @@ describe('conversation sidebar labeled-item rows', () => {
     expect(row?.querySelector('.chat-history-item__tags')?.textContent).toBe('design · review');
     expect(select.getAttribute('aria-description')).toBe('Provider: Codex');
     expect(within(row as HTMLElement).getByRole('img', { name: 'Provider: Codex' })
-      .classList.contains('sidebar-item-row__provider-dot--codex')).toBe(true);
+      .getAttribute('viewBox')).toBe('0 0 721 721');
     const trailing = row?.querySelector('.sidebar-item-row__trailing');
-    expect(trailing?.firstElementChild?.classList.contains('sidebar-item-row__provider')).toBe(true);
-    expect(trailing?.lastElementChild?.classList.contains('sidebar-item-row__actions')).toBe(true);
+    expect(trailing?.firstElementChild?.classList.contains('sidebar-item-row__actions')).toBe(true);
+    expect(trailing?.lastElementChild?.classList.contains('sidebar-item-row__provider')).toBe(true);
     expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__trailing/);
-    expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__provider-dot/);
-    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s);
+    expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__provider-mark/);
+    expect(sidebarItemRowStylesheet).not.toMatch(/sidebar-selection|selection-(?:claude|codex|agy)/);
     expect(chatHistoryStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|select|label|actions|provider)/);
     expect(row?.querySelector('.agent-mark')).toBeNull();
     const chatsHeading = screen.getByRole('button', { name: /^Chats/ });

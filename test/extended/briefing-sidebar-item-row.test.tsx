@@ -708,12 +708,12 @@ describe('Briefing sidebar row actions', () => {
     expect(row.classList.contains('sidebar-item-row--selected')).toBe(true);
     expect(row.classList.contains('sidebar-item-row--persistent-pin')).toBe(false);
     expect(sidebarItemRowStylesheet).not.toMatch(
-      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-dot|actions)/,
+      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-mark|actions)/,
     );
     selected.focus();
     expect(document.activeElement).toBe(selected);
     expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s,
+      /\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{[^}]*--sidebar-item-row-reveal-width: var\(--sidebar-item-row-trailing-width, 0px\);/s,
     );
     expect(briefingStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|select|label|actions|overflow)/);
   });
