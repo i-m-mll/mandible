@@ -9,14 +9,14 @@ import * as api from '../../ui/src/api.js';
 import type { Conversation, ConversationBlock, ConversationControlSnapshot, ConversationPositionWindow } from '../../ui/src/api.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
 import { AppShellProvider, type AppRightSidebarDescriptor } from '../../ui/src/app-shell.js';
+import { detailRequestKey, writePersistedDetail } from '../../ui/src/detail-cache.js';
+import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import {
   ConversationsView,
   conversationAnchorFromHash,
   conversationAnchorHref,
   conversationLoadFailure,
-  conversationTurnSelectionHref,
-  getConversationHeaderProviderLabel,
   scopeConversationRightSidebar,
 } from '../../ui/src/views/conversations.js';
 
@@ -57,6 +57,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  __resetSharedSseForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.head.querySelector('[data-test-compact-header-styles]')?.remove();
@@ -186,7 +187,7 @@ function renderConversationDetail(scopedConversation: Conversation, consoleSessi
       initialConversationId={scopedConversation.id}
       initialSessionId={null}
       onSelectSession={() => undefined}
-      onNewSession={() => undefined}
+      onNewConversation={() => undefined}
     />,
   );
 }
@@ -289,7 +290,7 @@ function MountedConversationsApp({
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />
       {sidebar?.open && sidebar.kind === 'tabs' ? (
         <aside aria-label={sidebar.ariaLabel}>
@@ -301,6 +302,26 @@ function MountedConversationsApp({
 }
 
 describe('compact detail pane shell', () => {
+  it('keeps routine sidebar reconciliation silent', async () => {
+    const sidebar = deferred<Awaited<ReturnType<typeof api.getConversationSidebar>>>();
+    vi.mocked(api.getConversationSidebar).mockReturnValue(sidebar.promise);
+
+    render(
+      <ConversationsView
+        conversations={[]}
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewConversation={() => undefined}
+      />,
+    );
+
+    expect(screen.queryByText('Loading…')).toBeNull();
+    await act(async () => sidebar.resolve({ groups: [], limit: 50 }));
+    expect(await screen.findByText('No chats')).toBeTruthy();
+  });
+
   it('shows the chat placeholder after a successful empty sidebar response', async () => {
     render(
       <ConversationsView
@@ -309,7 +330,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -330,7 +351,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -348,7 +369,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -396,7 +417,7 @@ describe('compact detail pane shell', () => {
           initialConversationId={scopedConversation.id}
           initialSessionId={null}
           onSelectSession={() => undefined}
-          onNewSession={() => undefined}
+          onNewConversation={() => undefined}
         />
       </MountedRightSidebarShell>,
     );
@@ -458,7 +479,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -498,7 +519,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={null}
         initialSessionId={session.id}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -507,6 +528,8 @@ describe('compact detail pane shell', () => {
     expect(shell?.classList.contains('chat-detail-frame--live-session')).toBe(true);
     expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
       .toBeTruthy();
+    expect(shell?.querySelector('.detail-pane-header__compact-metadata')).toBeNull();
+    expect(shell?.querySelector(':scope > .detail-pane-shell__header')?.textContent).toBe(session.label);
     expect(shell?.querySelector(':scope > .detail-pane-shell__body.chat-live-detail__pane'))
       .toBeTruthy();
   });
@@ -528,7 +551,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={conversation.id}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -551,7 +574,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={conversation.id}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -568,14 +591,6 @@ describe('compact detail pane shell', () => {
     expect(conversationAnchorFromHash('#/console?conversation=conv&turn=turn-9')).toEqual({ turn: 'turn-9' });
     expect(conversationAnchorFromHash('#/console?conversation=conv')).toBeNull();
     expect(conversationAnchorHref('conv 1', { block: 'block/42' })).toBe('#/console?conversation=conv+1&block=block%2F42');
-    expect(conversationTurnSelectionHref('conv 1', 'turn-9', 'turn-9')).toBe('#/console?conversation=conv+1');
-    expect(conversationTurnSelectionHref('conv 1', null, 'turn-9')).toBe('#/console?conversation=conv+1&turn=turn-9');
-  });
-
-  it('uses the compact-header provider presentation contract', () => {
-    expect(getConversationHeaderProviderLabel('claude_code')).toBe('Claude');
-    expect(getConversationHeaderProviderLabel('codex')).toBe('Codex');
-    expect(getConversationHeaderProviderLabel('gemini')).toBe('agy');
   });
 
   it('keeps the compact header and optional footer outside the scrolling body', () => {
@@ -689,21 +704,18 @@ describe('compact detail pane shell', () => {
     expect(canonicalHeader?.textContent).not.toContain(conversation.id);
     expect(canonicalHeader?.querySelector('.detail-pane-header__identity')).toBeNull();
     expect(canonicalHeader?.querySelector('.ledger-copy-ref-button')).toBeNull();
-    const status = canonicalHeader?.querySelector('.conv-detail__status');
-    expect(status?.querySelector('.conv-detail__provider')?.textContent).toBe('Codex');
-    expect(status?.textContent).not.toContain('Resumable');
+    expect(canonicalHeader?.querySelector('.conv-detail__status')).toBeNull();
+    expect(canonicalHeader?.textContent).not.toContain('Codex');
+    expect(canonicalHeader?.textContent).not.toContain('Stopped');
     const titleRow = canonicalHeader?.querySelector('.detail-pane-header__title-row');
     const compactMenu = canonicalHeader?.querySelector('.detail-pane-header__menu');
-    const metadata = canonicalHeader?.querySelector('.detail-pane-header__compact-metadata');
     const main = canonicalHeader?.querySelector(':scope > .detail-pane-header__main');
     expect(titleRow?.querySelector('.detail-pane-header__title')?.nextElementSibling).toBe(compactMenu);
-    expect(titleRow?.nextElementSibling).toBe(metadata);
-    expect(metadata?.contains(status ?? null)).toBe(true);
+    expect(titleRow?.nextElementSibling).toBeNull();
     expect(getComputedStyle(canonicalHeader!).height).toBe('48px');
     expect(getComputedStyle(main!).height).toBe('100%');
     expect(getComputedStyle(main!).flexDirection).toBe('row');
     expect(getComputedStyle(main!).alignItems).toBe('center');
-    expect(getComputedStyle(metadata!).marginLeft).toBe('auto');
     expect(canonicalHeader?.querySelector('.detail-pane-header__title')?.getAttribute('title')).toBe(conversation.title);
     expect(compactMenu?.getAttribute('aria-label')).toBe('Conversation detail actions');
     expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
@@ -720,12 +732,21 @@ describe('compact detail pane shell', () => {
     expect(runtimeActions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(runtimeActions?.lastElementChild?.classList.contains('conv-compose__send')).toBe(true);
     expect(overlayControl?.querySelector('.conv-compose__hint')).toBeNull();
-    expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
+    const composerInput = screen.getByPlaceholderText('Message...') as HTMLTextAreaElement;
+    const submit = screen.getByRole('button', { name: 'Resume' }) as HTMLButtonElement;
+    const submitIcon = submit.querySelector('svg');
+    expect(composerInput).toBeTruthy();
+    expect(submit.disabled).toBe(true);
+    expect(submitIcon?.getAttribute('viewBox')).toBe('0 0 24 24');
+    expect(submitIcon?.getAttribute('stroke-width')).toBe('1');
+    fireEvent.input(composerInput, { target: { value: 'Resume this chat.' } });
+    expect(submit.disabled).toBe(false);
     expect(overlayControl?.textContent).not.toContain('Sending will resume this session.');
 
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     const menu = screen.getByRole('menu');
-    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(7);
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(5);
+    expect(screen.queryByRole('menuitem', { name: 'Select messages' })).toBeNull();
     expect(screen.queryByText('Inspect raw blocks')).toBeNull();
     expect(document.querySelector('.conv-blocks')).toBeNull();
     expect(document.querySelector('.block-user-message')).toBeNull();
@@ -746,6 +767,10 @@ describe('compact detail pane shell', () => {
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*0 0 auto;[^}]*max-width:\s*min\(240px, 100%\);/s);
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__select\s*\{[^}]*width:\s*auto;[^}]*min-width:\s*44px;[^}]*field-sizing:\s*content;/s);
     expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);
+    expect(conversationCss).toMatch(/\.conv-detail__body \.user-bubble__text :where\(p, li, blockquote, dd\)[^{]*\{[^}]*font-size:\s*var\(--text-lg\);/s);
+    expect(conversationCss).toMatch(/\.conv-compose__send\s*\{[^}]*--conv-compose-send-hit-size:\s*34px;[^}]*--conv-compose-send-visual-size:\s*25\.5px;[^}]*--conv-compose-send-icon-size:\s*17px;/s);
+    expect(conversationCss).toMatch(/\.conv-compose__send::before\s*\{[^}]*width:\s*var\(--conv-compose-send-visual-size\);[^}]*height:\s*var\(--conv-compose-send-visual-size\);/s);
+    expect(conversationCss).toMatch(/\.conv-compose__send > svg\s*\{[^}]*width:\s*var\(--conv-compose-send-icon-size\);[^}]*height:\s*var\(--conv-compose-send-icon-size\);/s);
     expect(conversationCss).not.toContain('@container (max-width: 700px)');
     expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
@@ -761,8 +786,8 @@ describe('compact detail pane shell', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open markdown' }));
     expect(open).toHaveBeenCalledWith('blob:conversation-markdown', '_blank', 'noopener,noreferrer');
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Message filters' }));
-    expect(body?.querySelector('.conv-filter-bar')).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Message filters' })).toBeNull();
+    expect(body?.querySelector('.conv-filter-bar')).toBeNull();
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
   });
 
@@ -785,11 +810,13 @@ describe('compact detail pane shell', () => {
       disconnect(): void {}
     });
     let modelWidth = 100;
+    let modeWidth = 70;
+    let runtimeWidth = 380;
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
-      if (this.classList.contains('conv-compose__runtime')) return domRect(0, 0, 380, 30);
+      if (this.classList.contains('conv-compose__runtime')) return domRect(0, 0, runtimeWidth, 30);
       if (this.classList.contains('session-controls__field')) {
         const label = this.querySelector('select')?.getAttribute('aria-label');
-        return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Mode' ? 70 : 90, 30);
+        return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Mode' ? modeWidth : 90, 30);
       }
       if (this.classList.contains('context-usage') || this.classList.contains('conv-compose__send')) {
         return domRect(0, 0, 30, 30);
@@ -855,11 +882,25 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(inlineRunOptions?.querySelectorAll('select')).toHaveLength(3));
     expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false);
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBeNull();
+    fireEvent.input(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'read-only' } });
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
+    modeWidth = 230;
+    fireEvent.change(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'agent' } });
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    modeWidth = 70;
+    fireEvent.change(inlineRunOptions?.querySelector('select[aria-label="Mode"]') as HTMLSelectElement, { target: { value: 'read-only' } });
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modelWidth = 220;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBe('true');
     modelWidth = 100;
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
+    runtimeWidth = 180;
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    runtimeWidth = 380;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     expect(actions?.children[0]).toBe(trigger);
@@ -951,7 +992,7 @@ describe('compact detail pane shell', () => {
         initialConversationId={scopedConversation.id}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -982,7 +1023,6 @@ describe('compact detail pane shell', () => {
         turn: { kind: 'running', turn_id: 'turn-1', since: 2 },
         capability: { kind: 'live-steer', revision: 2, generation: 1 },
       } satisfies ConversationControlSnapshot,
-      badge: 'Running',
       hasComposer: true,
     },
     {
@@ -995,13 +1035,11 @@ describe('compact detail pane shell', () => {
         turn: { kind: 'unknown', turn_id: null, since: 2, reason: 'probe-ambiguous' },
         capability: { kind: 'blocked-external', revision: 2, evidence_kind: 'registered-process' },
       } satisfies ConversationControlSnapshot,
-      badge: 'External',
       hasComposer: true,
     },
     {
       label: 'stopped',
       control: defaultControl,
-      badge: 'Stopped',
       hasComposer: true,
     },
     {
@@ -1012,18 +1050,19 @@ describe('compact detail pane shell', () => {
         ownership: { kind: 'none', generation: 0 },
         capability: { kind: 'unavailable', revision: 0, reason: 'no-provider-session' },
       } satisfies ConversationControlSnapshot,
-      badge: 'Unavailable',
       hasComposer: false,
     },
-  ])('keeps the simplified header and composer contract in $label state', async ({ control, badge, hasComposer }) => {
+  ])('keeps the provider-neutral header and composer contract in $label state', async ({ control, hasComposer }) => {
     const scopedConversation = mockConversationDetail(control);
     renderConversationDetail(scopedConversation);
 
     await screen.findByRole('heading', { name: conversation.title! });
     const header = document.querySelector('.detail-pane-header--compact') as HTMLElement;
-    const status = header.querySelector('.conv-detail__status');
-    expect(status?.textContent).toContain(badge);
-    expect(status?.parentElement?.classList.contains('detail-pane-header__compact-metadata')).toBe(true);
+    expect(header.querySelector('.conv-detail__status')).toBeNull();
+    expect(header.querySelector('.detail-pane-header__compact-metadata')).toBeNull();
+    for (const forbidden of ['Codex', 'Running', 'External', 'Stopped', 'Unavailable']) {
+      expect(header.textContent).not.toContain(forbidden);
+    }
     expect(header.querySelector('.detail-pane-header__title')?.nextElementSibling?.classList.contains('detail-pane-header__menu')).toBe(true);
     expect(header.querySelector('.detail-pane-header__topline')).toBeNull();
     expect(header.querySelector('.detail-pane-header__identity')).toBeNull();
@@ -1053,7 +1092,7 @@ describe('compact detail pane shell', () => {
       initialConversationId: scopedConversation.id,
       initialSessionId: null,
       onSelectSession: () => undefined,
-      onNewSession: () => undefined,
+      onNewConversation: () => undefined,
     };
     const view = render(<ConversationsView {...props} />);
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(1));
@@ -1070,6 +1109,164 @@ describe('compact detail pane shell', () => {
     await Promise.resolve();
     expect(screen.queryByText('Late initial loses')).toBeNull();
     expect(screen.getByText('Exact anchor wins')).toBeTruthy();
+  });
+
+  it('keeps the live transcript mounted while a same-conversation reconciliation is pending', async () => {
+    const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
+    const refresh = deferred<ConversationPositionWindow>();
+    const appendedBlock = {
+      ...transcriptBlock,
+      id: 'block-user-2',
+      content: 'Live content stays visible',
+      position: 1,
+    };
+    vi.mocked(api.getConversationWindow)
+      .mockResolvedValueOnce(positionPayload(scopedConversation, [transcriptBlock]))
+      .mockImplementationOnce(() => refresh.promise);
+
+    renderConversationDetail(scopedConversation);
+    expect(await screen.findByText(transcriptBlock.content)).toBeTruthy();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('conversation:sse', {
+        detail: {
+          type: 'conversation:updated',
+          data: {
+            id: conversation.id,
+            block_count: 2,
+            append: { from_position: 1, blocks: [appendedBlock] },
+          },
+        },
+      }));
+    });
+    expect(await screen.findByText('Live content stays visible')).toBeTruthy();
+
+    const staleWindow = positionPayload(scopedConversation, [transcriptBlock]);
+    writePersistedDetail('conversations', detailRequestKey('conversation', {
+      conversationId: conversation.id,
+      anchor: 'initial',
+    }), {
+      ...scopedConversation,
+      blocks: [transcriptBlock],
+      children: [],
+      parent: null,
+      position_window: {
+        revision: staleWindow.revision,
+        total: staleWindow.total,
+        target: staleWindow.target,
+        window: staleWindow.window,
+      },
+    });
+    act(() => {
+      window.dispatchEvent(new CustomEvent('conversation:sse', {
+        detail: {
+          type: 'conversation:updated',
+          data: {
+            id: conversation.id,
+            block_count: 4,
+            append: {
+              from_position: 3,
+              blocks: [{ ...appendedBlock, id: 'gap-block', position: 3 }],
+            },
+          },
+        },
+      }));
+    });
+
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Live content stays visible')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
+
+    await act(async () => refresh.resolve(positionPayload(scopedConversation, [transcriptBlock, appendedBlock])));
+    expect(screen.getByText('Live content stays visible')).toBeTruthy();
+  });
+
+  it('keeps Codex provisional assistant content until its durable replacement arrives', async () => {
+    const messageListeners = new Set<(event: MessageEvent) => void>();
+    class ProviderEventSource {
+      readyState = 1;
+      onerror: (() => void) | null = null;
+      onopen: (() => void) | null = null;
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+        if (type === 'message' && typeof listener === 'function') {
+          messageListeners.add(listener as (event: MessageEvent) => void);
+        }
+      }
+      removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+        if (type === 'message' && typeof listener === 'function') {
+          messageListeners.delete(listener as (event: MessageEvent) => void);
+        }
+      }
+      close(): void { this.readyState = 2; }
+    }
+    vi.stubGlobal('EventSource', ProviderEventSource);
+    __resetSharedSseForTests(ProviderEventSource as unknown as typeof EventSource);
+    const emit = (data: unknown) => {
+      const event = new MessageEvent('message', { data: JSON.stringify(data) });
+      messageListeners.forEach((listener) => listener(event));
+    };
+
+    const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
+    const durable = deferred<ConversationPositionWindow>();
+    vi.mocked(api.getConversationWindow)
+      .mockResolvedValueOnce(positionPayload(scopedConversation, [transcriptBlock]))
+      .mockImplementationOnce(() => durable.promise);
+    vi.spyOn(api, 'getConversationLiveProjection').mockResolvedValue({
+      conversation_id: conversation.id,
+      revision: 0,
+      events: [],
+    });
+    renderConversationDetail(scopedConversation);
+    expect(await screen.findByText(transcriptBlock.content)).toBeTruthy();
+
+    act(() => emit({
+      type: 'conversation:provider-event',
+      data: {
+        kind: 'provisional-content',
+        conversation_id: conversation.id,
+        provider_session_id: conversation.session_id,
+        generation: 1,
+        sequence: 1,
+        observed_at: 1,
+        identity: 'message:agent-1',
+        event: {
+          type: 'assistant',
+          uuid: 'agent-1',
+          session_id: conversation.session_id,
+          message: { id: 'agent-1', role: 'assistant', content: [{ type: 'text', text: 'Assistant stays continuous' }] },
+        },
+      },
+    }));
+    expect(await screen.findByText('Assistant stays continuous')).toBeTruthy();
+
+    act(() => emit({
+      type: 'conversation:provider-event',
+      data: {
+        kind: 'durable-reconciliation',
+        conversation_id: conversation.id,
+        provider_session_id: conversation.session_id,
+        generation: 1,
+        sequence: 2,
+        observed_at: 2,
+        provider_event_id: 'reconcile-1',
+        covered_identities: ['message:agent-1'],
+      },
+    }));
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Assistant stays continuous')).toBeTruthy();
+
+    const durableAssistant: ConversationBlock = {
+      ...transcriptBlock,
+      id: 'block-agent-1',
+      type: 'assistant_message',
+      role: 'assistant',
+      content: 'Assistant stays continuous',
+      position: 1,
+      dag_uuid: 'agent-1',
+      metadata_json: JSON.stringify({ provider_message_id: 'agent-1' }),
+    };
+    await act(async () => durable.resolve(positionPayload(scopedConversation, [transcriptBlock, durableAssistant])));
+    await waitFor(() => expect(screen.getAllByText('Assistant stays continuous')).toHaveLength(1));
   });
 
   it('re-resolves the true end when an append arrives during Jump to latest', async () => {

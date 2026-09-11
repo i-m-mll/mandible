@@ -10,6 +10,10 @@ import type {
 } from "../src/conversation-control/adapter.js";
 import { ConversationControlService } from "../src/conversation-control/service.js";
 import { ConversationControlStore } from "../src/conversation-control/store.js";
+import { ConversationSourceStore } from "../src/conversations/source-store.js";
+import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
+import { CodexParser } from "../src/parsers/codex.js";
 import type {
   ConversationControlError,
   ConversationLifecycleEvent,
@@ -42,7 +46,9 @@ class FakeAdapter implements ConversationControllerAdapter {
   acquisitions = 0;
   deliveries = 0;
   stops = 0;
+  lastAcquisition: ControllerAcquisitionRequest | null = null;
   invalidateOnAcquire = false;
+  invalidLeaseOnAcquire = false;
   delivered = new Set<string>();
   deliveryProbe: "delivered" | "not-delivered" | "unknown" = "unknown";
   probeResult: AdapterProbe = {
@@ -56,6 +62,7 @@ class FakeAdapter implements ConversationControllerAdapter {
 
   async acquire(input: ControllerAcquisitionRequest): Promise<Result<{ controller_instance_id: string; provider_session_id: string }, ConversationControlError>> {
     this.acquisitions += 1;
+    this.lastAcquisition = input;
     if (this.invalidateOnAcquire) {
       this.emit({
         conversation_id: input.conversation_id,
@@ -68,7 +75,7 @@ class FakeAdapter implements ConversationControllerAdapter {
     return {
       ok: true,
       value: {
-        controller_instance_id: input.controller_instance_id,
+        controller_instance_id: this.invalidLeaseOnAcquire ? "wrong-controller" : input.controller_instance_id,
         provider_session_id: input.kind === "start" ? "provider-1" : input.provider_session_id,
       },
     };
@@ -150,6 +157,80 @@ function request(revision: number, idempotencyKey: string, generation = 0) {
 }
 
 describe("authoritative conversation control", () => {
+  it("adopts a new native controller as the continued-Chat authority", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+
+    const started = await service.acquireNew({
+      conversation_id: "conversation-1",
+      provider: "codex",
+      generation: 1,
+      cwd: "/work/exact",
+      runtime_options: { model: "gpt-5.6-sol", permission_mode: "agent-full-access" },
+    }, () => undefined);
+
+    expect(started).toMatchObject({
+      ok: true,
+      value: { adapter_id: "fake-codex", provider_session_id: "provider-1" },
+    });
+    expect(adapter.lastAcquisition).toMatchObject({
+      kind: "start",
+      conversation_id: "conversation-1",
+      generation: 1,
+      cwd: "/work/exact",
+      runtime_options: { model: "gpt-5.6-sol", permission_mode: "agent-full-access" },
+    });
+    expect(service.getSnapshot("conversation-1")).toMatchObject({
+      ok: true,
+      value: {
+        provider_session_id: "provider-1",
+        ownership: { kind: "mandible", generation: 1, adapter_id: "fake-codex" },
+        controller: { kind: "ready" },
+        capability: { kind: "live-send", generation: 1 },
+      },
+    });
+  });
+
+  it("stops a new native controller when its durable commit fails", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+
+    const started = await service.acquireNew({
+      conversation_id: "conversation-1",
+      provider: "codex",
+      generation: 1,
+      cwd: "/work/exact",
+      runtime_options: {},
+    }, () => { throw new Error("commit failed"); });
+
+    expect(started).toMatchObject({ ok: false, error: { kind: "adapter-contract-violation" } });
+    expect(adapter.stops).toBe(1);
+    expect(service.getSnapshot("conversation-1")).toMatchObject({
+      ok: true,
+      value: { ownership: { kind: "none", generation: 0 }, controller: { kind: "stopped" } },
+    });
+  });
+
+  it("stops a new native controller whose lease violates the requested identity", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    adapter.invalidLeaseOnAcquire = true;
+    service.registerAdapter(adapter);
+
+    const started = await service.acquireNew({
+      conversation_id: "conversation-1",
+      provider: "codex",
+      generation: 1,
+      cwd: "/work/exact",
+      runtime_options: {},
+    }, () => undefined);
+
+    expect(started).toMatchObject({ ok: false, error: { kind: "adapter-contract-violation" } });
+    expect(adapter.stops).toBe(1);
+  });
+
   it("does not derive control or capability from transcript activity", () => {
     const service = new ConversationControlService(db);
     const adapter = new FakeAdapter();
@@ -378,5 +459,129 @@ describe("authoritative conversation control", () => {
 
     const snapshot = service.getSnapshot("conversation-1");
     expect(snapshot.ok && snapshot.value.capability).toMatchObject({ kind: "unavailable", reason: "turn-transition" });
+  });
+
+  it("retires only live messages covered by the terminal durable transcript barrier", async () => {
+    const diagnostics: Array<Record<string, unknown>> = [];
+    const emitted: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
+    const service = new ConversationControlService(db, {
+      onTerminalTurn: async () => ({ status: "ingested:fresh" }),
+      onProviderEvent: (event) => emitted.push(event),
+      onReconciliationDiagnostic: (details) => diagnostics.push(details),
+    });
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+    const submitted = await service.submit(request(0, "intent-1"));
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    const generation = submitted.value.snapshot.ownership.generation;
+    adapter.emitProvider({
+      kind: "provisional-content", conversation_id: "conversation-1", provider_session_id: "provider-1",
+      generation, sequence: 1, observed_at: 1, identity: "message:intent-1",
+      correlation: { intent_id: "intent-1", delivery_id: submitted.value.delivery_id, turn_id: submitted.value.turn_id, provider_message_id: "provider-user-1" },
+      event: { type: "user", uuid: "intent-1", message: { id: "intent-1", role: "user", content: [{ type: "text", text: "hello" }] } },
+    });
+    adapter.emitProvider({
+      kind: "provisional-content", conversation_id: "conversation-1", provider_session_id: "provider-1",
+      generation, sequence: 2, observed_at: 2, identity: "message:assistant-incomplete",
+      event: { type: "assistant", uuid: "assistant-incomplete", message: { id: "assistant-incomplete", role: "assistant", content: [{ type: "text", text: "partial" }] } },
+    });
+    db.prepare(`INSERT INTO conversation_blocks (
+      id, conversation_id, type, role, content, position, metadata_json, dag_uuid
+    ) VALUES ('block-1', 'conversation-1', 'user_message', 'user', 'durable text wins', 0,
+      '{"provider_message_id":"provider-user-1"}', 'provider-user-1')`).run();
+
+    adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-started", turn_id: submitted.value.turn_id, at: 3 });
+    adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-completed", turn_id: submitted.value.turn_id, at: 4 });
+    for (let attempt = 0; attempt < 20 && emitted.at(-1)?.kind !== "durable-reconciliation"; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(service.getLiveProjection("conversation-1")).toMatchObject({
+      ok: true,
+      value: { events: [expect.objectContaining({ identity: "message:assistant-incomplete" })] },
+    });
+    expect(emitted.at(-1)).toMatchObject({ kind: "durable-reconciliation", covered_identities: ["message:intent-1"] });
+    expect(diagnostics).toEqual([expect.objectContaining({
+      ingest_status: "ingested:fresh", retired_live_count: 1, retained_live_count: 1,
+    })]);
+    expect(JSON.stringify(diagnostics)).not.toContain("hello");
+  });
+
+  it("retires a source-backed Codex prompt through its exact native turn", async () => {
+    const emitted: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
+    const service = new ConversationControlService(db, {
+      onTerminalTurn: async () => ({ status: "ingested:fresh" }),
+      onProviderEvent: (event) => emitted.push(event),
+    });
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+    const submitted = await service.submit(request(0, "intent-native-turn"));
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    const generation = submitted.value.snapshot.ownership.generation;
+    adapter.emitProvider({
+      kind: "provisional-content", conversation_id: "conversation-1", provider_session_id: "provider-1",
+      generation, sequence: 1, observed_at: 1, identity: "message:intent-native-turn",
+      correlation: {
+        intent_id: "intent-native-turn",
+        delivery_id: submitted.value.delivery_id,
+        turn_id: submitted.value.turn_id,
+        provider_message_id: "provider-user-without-jsonl-id",
+      },
+      event: {
+        type: "user",
+        uuid: "intent-native-turn",
+        message: { id: "intent-native-turn", role: "user", content: [{ type: "text", text: "hello" }] },
+      },
+    });
+    db.prepare(`UPDATE conversation_control_outbox
+      SET provider_receipt_id = 'codex:turn:native-turn-1'
+      WHERE id = ?`).run(submitted.value.delivery_id);
+
+    const sourcePath = path.join(root, ".codex", "sessions", "2026", "09", "11", "rollout-source-backed.jsonl");
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(sourcePath, [
+      { type: "session_meta", timestamp: "2026-09-11T00:00:00Z", payload: { id: "provider-1", cwd: "/tmp/project" } },
+      { type: "response_item", timestamp: "2026-09-11T00:00:01Z", payload: {
+        type: "message", role: "user", content: [{ type: "input_text", text: "durable text wins" }],
+        internal_chat_message_metadata_passthrough: { turn_id: "native-turn-1" },
+      } },
+    ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+    const parsed = await new CodexParser().parse(sourcePath);
+    expect(parsed).not.toBeNull();
+    if (!parsed) return;
+    db.prepare(`UPDATE conversations
+      SET source_path = ?, source_hash = ?, source_mtime = ?, block_count = ?
+      WHERE id = 'conversation-1'`).run(
+      sourcePath, parsed.conversation.source_hash, parsed.conversation.source_mtime, parsed.blocks.length,
+    );
+    await new ConversationSourceStore(db).recordConversation({
+      conversationId: "conversation-1",
+      provider: "codex",
+      nativeSessionId: "provider-1",
+      filePath: sourcePath,
+      expectedContentHash: parsed.conversation.source_hash,
+      blocks: parsed.blocks.map((block) => ({ ...block, legacyId: `legacy-${block.position}` })),
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+    expect(getConversationStructureCache(db).captureDenseRows(db, "conversation-1", "replace").captured)
+      .toBe(parsed.blocks.length);
+    db.exec("DELETE FROM conversation_structural_blocks; DELETE FROM conversation_blocks;");
+
+    adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-started", turn_id: submitted.value.turn_id, at: 3 });
+    adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-completed", turn_id: submitted.value.turn_id, at: 4 });
+    for (let attempt = 0; attempt < 20 && emitted.at(-1)?.kind !== "durable-reconciliation"; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(service.getLiveProjection("conversation-1")).toMatchObject({
+      ok: true,
+      value: { events: [] },
+    });
+    expect(emitted.at(-1)).toMatchObject({
+      kind: "durable-reconciliation",
+      covered_identities: ["message:intent-native-turn"],
+    });
   });
 });

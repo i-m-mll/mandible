@@ -297,6 +297,7 @@ export class ApiError extends Error {
 }
 
 export type ConversationSpawnFailure = NonNullable<ContractConversationSpawnReceipt['error']>;
+export type ConversationSpawnReceipt = ContractConversationSpawnReceipt;
 
 export class ConversationSpawnApiError extends Error {
   readonly status: number;
@@ -2045,47 +2046,22 @@ export type ConsoleSessionOptions = {
 export async function startProviderChat(
   idempotencyKey: string,
   provider: 'codex' | 'claude_code',
-  placement: { project_id: string; checkout_id: string },
-): Promise<{ session: {
-  id: string;
-  label: string;
-  agent_type: string;
-  interaction_mode: 'inbox_only' | 'direct' | 'both';
-  pinned?: boolean;
-  status: 'running' | 'stopped' | 'crashed';
-  is_operator: boolean;
-  provider_session_id: string | null;
-  canonical_project_id?: string | null;
-  canonical_checkout_id?: string | null;
-  unread_count?: number;
-  created_at: number;
-  started_at: number | null;
-  stopped_at: number | null;
-  command: string;
-  args: string[];
-  backend_type: ConsoleBackendType;
-  transport_lane: ConsoleTransportLane;
-  transport_badge?: {
-    label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
-    title: string;
-  };
-  allowed_tools: string[] | null;
-  mandible_session_id: string | null;
-} }> {
-  const controller = new AbortController();
-  const post = fetch('/api/conversation-spawns', {
+  placement: { kind: 'projectless' } | { kind: 'project'; project_id: string; checkout_id: string },
+  options: { signal?: AbortSignal } = {},
+): Promise<{ conversation_id: string; spawn: ContractConversationSpawnReceipt }> {
+  const response = await fetch('/api/conversation-spawns', {
     method: 'POST',
     headers: {
       ...DEFAULT_HEADERS,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      schema: 'mandible-conversation-spawn-request@2',
+      schema: 'mandible-conversation-spawn-request@3',
       idempotency_key: idempotencyKey,
       provider,
       placement,
     }),
-    signal: controller.signal,
+    signal: options.signal,
   });
   type SpawnResponse = {
     ok?: boolean;
@@ -2094,55 +2070,7 @@ export async function startProviderChat(
     session?: unknown;
     message?: string;
   };
-  let watchdog: ReturnType<typeof setTimeout> | null = null;
-  const reconciled = new Promise<{ response: Response; json: SpawnResponse }>((resolve, reject) => {
-    watchdog = setTimeout(() => {
-      void fetch(`/api/conversation-spawns/${encodeURIComponent(idempotencyKey)}`, {
-        headers: DEFAULT_HEADERS,
-      }).then(async (statusResponse) => {
-        const status = await parseMaybeJson(statusResponse) as {
-          ok?: boolean;
-          value?: ContractConversationSpawnReceipt;
-          error?: unknown;
-        };
-        const spawn = status.value;
-        if (!statusResponse.ok || !status.ok || !spawn) {
-          throw new ApiError('Provider startup status could not be reconciled.', statusResponse.status, 'spawn_status_unavailable');
-        }
-        controller.abort();
-        if (spawn.state === 'ready' && spawn.native_session_id) {
-          const sessionResponse = await fetch(`/api/console/sessions/${encodeURIComponent(spawn.native_session_id)}`, {
-            headers: DEFAULT_HEADERS,
-          });
-          const sessionPayload = await parseMaybeJson(sessionResponse) as { session?: unknown };
-          if (!sessionResponse.ok || !sessionPayload.session) {
-            throw new ApiError('The provider is ready but its chat session could not be loaded.', sessionResponse.status, 'spawn_session_unavailable');
-          }
-          resolve({ response: new Response(null, { status: 200 }), json: { ok: true, spawn, session: sessionPayload.session } });
-          return;
-        }
-        const failure = spawn.error ?? {
-          code: 'provider_startup_timeout',
-          message: 'The provider did not become ready before the client watchdog expired.',
-          retryable: true,
-          phase: 'readiness' as const,
-        };
-        reject(new ConversationSpawnApiError(504, failure, spawn));
-      }).catch(reject);
-    }, 31_000);
-  });
-  let response: Response;
-  let json: SpawnResponse;
-  try {
-    const outcome = await Promise.race([
-      post.then(async (postResponse) => ({ response: postResponse, json: await parseMaybeJson(postResponse) as SpawnResponse })),
-      reconciled,
-    ]);
-    response = outcome.response;
-    json = outcome.json;
-  } finally {
-    if (watchdog) clearTimeout(watchdog);
-  }
+  const json = await parseMaybeJson(response) as SpawnResponse;
   if (!response.ok) {
     const failure = json.error;
     if (failure && typeof failure === 'object'
@@ -2161,38 +2089,40 @@ export async function startProviderChat(
       typeof fallback === 'string' ? fallback : null,
     );
   }
-  return json as {
-    session: {
-      id: string;
-      label: string;
-      agent_type: string;
-      interaction_mode: 'inbox_only' | 'direct' | 'both';
-      pinned: boolean;
-      status: 'running' | 'stopped' | 'crashed';
-      is_operator: boolean;
-      provider_session_id: string | null;
-      canonical_project_id?: string | null;
-      canonical_checkout_id?: string | null;
-      unread_count: number;
-      created_at: number;
-      started_at: number | null;
-      stopped_at: number | null;
-      command: string;
-      args: string[];
-      backend_type: ConsoleBackendType;
-      transport_lane: ConsoleTransportLane;
-      transport_badge?: {
-        label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
-        title: string;
-      };
-      allowed_tools: string[] | null;
-      mandible_session_id: string | null;
-    };
-  };
+  return json as { conversation_id: string; spawn: ContractConversationSpawnReceipt };
+}
+
+export async function getProviderChat(id: string): Promise<ContractConversationSpawnReceipt> {
+  const response = await apiGet(`/api/conversation-spawns/${encodeURIComponent(id)}`);
+  const result = await parseMaybeJson(response) as
+    | { ok: true; value: ContractConversationSpawnReceipt }
+    | { ok: false; error: unknown };
+  if (!result.ok) throw new Error('Conversation creation receipt is unavailable.');
+  return result.value;
 }
 
 export async function closeConsoleSession(sessionId: string): Promise<void> {
   await apiDelete(`/api/console/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export async function retryProviderChat(id: string, expectedGeneration: number): Promise<ContractConversationSpawnReceipt> {
+  const response = await apiPost(`/api/conversation-spawns/${encodeURIComponent(id)}/retry`, {
+    expected_generation: expectedGeneration,
+  });
+  const payload = await parseMaybeJson(response) as { spawn: ContractConversationSpawnReceipt };
+  return payload.spawn;
+}
+
+export async function cancelProviderChat(id: string, expectedGeneration: number): Promise<ContractConversationSpawnReceipt> {
+  const path = `/api/conversation-spawns/${encodeURIComponent(id)}`;
+  const response = await fetch(path, {
+    method: 'DELETE',
+    headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_generation: expectedGeneration }),
+  });
+  if (!response.ok) await throwOnError(response, 'DELETE', path);
+  const payload = await parseMaybeJson(response) as { value: ContractConversationSpawnReceipt };
+  return payload.value;
 }
 
 export async function getConsoleStreamEvents<T = unknown>(
@@ -2435,6 +2365,7 @@ export async function getConversations(params?: {
 export type ConversationSidebarConversation = Conversation & {
   canonical_project_id: string | null;
   canonical_project_key: string | null;
+  spawn?: ContractConversationSpawnReceipt;
 };
 
 export type ConversationSidebarGroup = {
@@ -2454,6 +2385,7 @@ export type ConversationSidebarResponse = {
 };
 
 export async function getConversationSidebar(params: {
+  lifecycle?: 'active' | 'archived';
   source?: string;
   starred?: boolean;
   search?: string;
@@ -2468,6 +2400,7 @@ export async function getConversationSidebar(params: {
   cursor?: string;
 }): Promise<ConversationSidebarResponse> {
   const query = new URLSearchParams();
+  if (params.lifecycle) query.set('lifecycle', params.lifecycle);
   if (params.source) query.set('source', params.source);
   if (params.starred) query.set('starred', '1');
   if (params.search) query.set('search', params.search);
@@ -2520,6 +2453,11 @@ export async function updateConversation(id: string, data: {
   const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, data);
   invalidateApiGetCache('/api/conversations');
   return (await parseMaybeJson(resp)) as Conversation;
+}
+
+export async function updateConversationArchive(id: string, archived: boolean): Promise<void> {
+  await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, { archived });
+  invalidateApiGetCache('/api/conversations');
 }
 
 export async function exportConversationBlocks(id: string, data: {
@@ -2612,6 +2550,7 @@ export async function submitConversationControl(
   message: string,
   messageAnchor?: string,
   runtimeOptions?: ConversationRuntimeOptions,
+  idempotencyKey: string = crypto.randomUUID(),
 ): Promise<AcceptedConversationSubmission> {
   const capability = snapshot.capability;
   const operation: ConversationControlOperation = capability.kind === 'live-send'
@@ -2639,22 +2578,40 @@ export async function submitConversationControl(
       message,
       ...(operation === 'resume-message-anchor' ? { message_anchor: messageAnchor } : {}),
       ...(runtimeOptions && Object.keys(runtimeOptions).length > 0 ? { runtime_options: runtimeOptions } : {}),
-      idempotency_key: crypto.randomUUID(),
+      idempotency_key: idempotencyKey,
     }),
   });
-  const payload = await parseMaybeJson(response) as
-    | { ok: true; value: AcceptedConversationSubmission }
-    | { ok: false; error: ConversationControlError; snapshot?: ConversationControlSnapshot | null };
+  const payload = await parseMaybeJson(response) as unknown;
   if (!response.ok) {
-    const failed = payload as Extract<typeof payload, { ok: false }>;
-    const error = new Error(failed.error.kind) as ConversationControlApiError;
-    error.status = response.status;
-    error.controlError = failed.error;
-    error.snapshot = failed.snapshot ?? null;
-    throw error;
+    const failed = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
+    const candidate = failed?.error;
+    if (failed?.ok === false && candidate && typeof candidate === 'object'
+        && typeof (candidate as { kind?: unknown }).kind === 'string') {
+      const error = new Error((candidate as ConversationControlError).kind) as ConversationControlApiError;
+      error.status = response.status;
+      error.controlError = candidate as ConversationControlError;
+      error.snapshot = failed.snapshot && typeof failed.snapshot === 'object'
+        ? failed.snapshot as ConversationControlSnapshot
+        : null;
+      throw error;
+    }
+    const message = typeof failed?.message === 'string'
+      ? failed.message
+      : typeof candidate === 'string'
+        ? candidate
+        : `POST ${path} failed: ${response.status}`;
+    const code = typeof failed?.code === 'string'
+      ? failed.code
+      : typeof candidate === 'string'
+        ? candidate
+        : null;
+    throw new ApiError(message, response.status, code);
   }
-  if (!payload.ok) throw new Error(payload.error.kind);
-  return payload.value;
+  const accepted = payload as
+    | { ok: true; value: AcceptedConversationSubmission }
+    | { ok: false; error: ConversationControlError };
+  if (!accepted.ok) throw new Error(accepted.error.kind);
+  return accepted.value;
 }
 
 // ── Work Units API — Bug: 8a281b3 ──

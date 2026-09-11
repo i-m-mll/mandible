@@ -108,7 +108,7 @@ import {
   parseAuthResolvedId,
 } from './state';
 import { createAuthOutputCoalescer } from './auth-output-coalescer';
-import type { BugRef, ConsoleSession, ConsoleSessionPayload } from './state';
+import type { BugRef, ConsoleSessionPayload } from './state';
 import {
   normalizeAppThemeMode,
   normalizeTerminalThemeId,
@@ -1908,36 +1908,18 @@ function App(): JSX.Element {
     dispatch({ type: 'setConsoleActiveSessionId', sessionId });
   };
 
-  const handleConsoleNewSession = async ({
+  const handleNewConversation = async ({
     idempotency_key,
     provider,
     placement,
   }: {
     idempotency_key: string;
     provider: 'codex' | 'claude_code';
-    placement: { project_id: string; checkout_id: string };
-  }) => {
-      const result = await startProviderChat(idempotency_key, provider, placement);
-      const session = {
-        pinned: false,
-        unread_count: 0,
-        channel_enabled: false,
-        transport_badge: result.session.transport_badge,
-        ...result.session,
-        agent_type: (provider === 'claude_code' ? 'claude' : 'codex') as ConsoleSession['agent_type'],
-      } as ConsoleSession;
-      const id = session.id;
-      if (!id) throw new Error('The server created a chat without a session ID.');
-
-      // Optimistic upsert: add the session immediately so the tab appears
-      // without waiting for the SSE console:session:created event to arrive.
-      // The SSE event will upsert again (idempotent) with the authoritative data.
-      dispatch({
-        type: 'upsertConsoleSession',
-        session,
-      });
-      dispatch({ type: 'setConsoleActiveSessionId', sessionId: id });
-      return id;
+    placement: { kind: 'projectless' } | { kind: 'project'; project_id: string; checkout_id: string };
+  }, signal?: AbortSignal) => {
+      const result = await startProviderChat(idempotency_key, provider, placement, { signal });
+      if (!result.conversation_id) throw new Error('The server created a chat without a conversation ID.');
+      return result;
   };
 
   const handleAckAll = async () => {
@@ -2709,7 +2691,7 @@ function App(): JSX.Element {
               chatEntityLinkAction={state.settings.chat_entity_link_action === 'open' ? 'open' : 'preview'}
               instance={instanceInfo}
               onSelectSession={handleConsoleSelectSession}
-              onNewSession={handleConsoleNewSession}
+              onNewConversation={handleNewConversation}
             />
           );
         })())}

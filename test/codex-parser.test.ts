@@ -293,6 +293,72 @@ describe("CodexParser", () => {
     });
   });
 
+  it("keeps injected startup context hidden and binds the visible prompt to its client intent", async () => {
+    const parser = new CodexParser();
+    const providerTurnId = "provider-turn-1";
+    const clientIntentId = "client-intent-1";
+    const result = await parser.parseIncremental?.({
+      filePath: "/tmp/provider-user-message.jsonl",
+      raw: [
+        {
+          type: "response_item",
+          timestamp: "2026-09-11T00:00:00.000Z",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: "<recommended_plugins>plugins</recommended_plugins>" },
+              { type: "input_text", text: "# AGENTS.md instructions\n\n<INSTRUCTIONS>policy</INSTRUCTIONS>" },
+              { type: "input_text", text: "<environment_context>workspace</environment_context>" },
+            ],
+            internal_chat_message_metadata_passthrough: { turn_id: providerTurnId },
+          },
+        },
+        {
+          type: "response_item",
+          timestamp: "2026-09-11T00:00:00.001Z",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Visible prompt" }],
+            internal_chat_message_metadata_passthrough: { turn_id: providerTurnId },
+          },
+        },
+        {
+          type: "event_msg",
+          timestamp: "2026-09-11T00:00:00.002Z",
+          payload: { type: "user_message", client_id: clientIntentId, message: "Visible prompt" },
+        },
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n",
+      baseBlockCount: 0,
+      sourceHash: "append:provider-user-message",
+      sourceMtime: 42,
+    });
+
+    expect(result?.blocks).toEqual([
+      expect.objectContaining({
+        type: "system",
+        role: "system",
+        metadata: expect.objectContaining({
+          source_event_type: "user_meta",
+          visibility: "default_hidden",
+          provider_turn_id: providerTurnId,
+        }),
+      }),
+      expect.objectContaining({
+        type: "user_message",
+        role: "user",
+        content: "Visible prompt",
+        dag_uuid: clientIntentId,
+        metadata: expect.objectContaining({
+          source_event_type: "user",
+          provider_turn_id: providerTurnId,
+          client_intent_id: clientIntentId,
+        }),
+      }),
+    ]);
+  });
+
   it("preserves Codex accounting and capacity without inferring current context", async () => {
     const parser = new CodexParser();
     const sessionPath = await makeCodexSession("session-context");

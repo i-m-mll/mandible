@@ -65,6 +65,7 @@ export type MandibleEventType =
   | "console:subagent:start"
   | "console:subagent:stop"
   | "conversation:new"
+  | "conversation-spawn:updated"
   | "conversation:updated"
   | "daemon:reloaded"
   | "heartbeat"
@@ -503,6 +504,7 @@ export type Conversation = {
   is_sidechain: boolean;
   agent_id: string | null;
   starred: boolean;
+  archived_at?: number | null;
   tags: string[];
   notes: string | null;
   parent_conversation_id: string | null;

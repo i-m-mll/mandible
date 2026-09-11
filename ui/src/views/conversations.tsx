@@ -20,7 +20,6 @@ import {
 } from '../components/shared/orderedPins';
 import type { ConsoleSession } from '../state';
 import type {
-  BlockType,
   Conversation,
   ConversationBlock,
   ConversationChild,
@@ -34,7 +33,6 @@ import type {
   WorkflowRun,
 } from '../api.js';
 import {
-  exportConversationBlocks,
   forkConversation,
   getConsoleSessionUsage,
   getConsoleSessionOptions,
@@ -42,6 +40,7 @@ import {
   getConversationWindow,
   getConversationControl,
   getConversationLiveProjection,
+  getProviderChat,
   getConversationSidebar,
   getConversations,
   getSessionIssues,
@@ -49,16 +48,20 @@ import {
   listCanonicalProjects,
   ApiError,
   ConversationSpawnApiError,
+  cancelProviderChat,
   isApiErrorStatus,
   openConversationExternally,
+  retryProviderChat,
   submitConversationControl,
   updateConsoleSession,
   updateConsoleSessionOptions,
   updateConversation,
+  updateConversationArchive,
   type SessionRunOptionsSnapshot,
   type ConversationRuntimeOptions,
   type ConversationControlApiError,
   type ConversationControlSnapshot,
+  type ConversationSpawnReceipt,
   type ProviderAdapterEvent,
   type ProviderLiveProjection,
 } from '../api.js';
@@ -87,6 +90,7 @@ import {
   serializeConversationToMarkdown,
   useStatuslineTelemetry,
   chatControlFailureNotice,
+  chatSpawnFailureNotice,
   reduceNewChatDraft,
   type ChatPreviewTarget,
   type ChatActivityItem,
@@ -246,50 +250,16 @@ function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void 
 
 // ── Constants ──
 
-const ALL_BLOCK_TYPES: BlockType[] = [
-  'user_message',
-  'assistant_message',
-  'thinking',
-  'plan',
-  'tool_use',
-  'tool_result',
-  'system',
-  'event',
-];
-
-const BLOCK_TYPE_LABELS: Record<BlockType, string> = {
-  user_message: 'User',
-  assistant_message: 'Assistant',
-  thinking: 'Thinking',
-  plan: 'Plan',
-  tool_use: 'Tool Use',
-  tool_result: 'Tool Result',
-  system: 'System',
-  event: 'Event',
-};
-
 const SOURCE_LABELS: Record<ConversationSource, string> = {
   claude_code: 'Claude',
   codex: 'Codex',
   gemini: 'Gemini',
 };
 
-const DETAIL_HEADER_PROVIDER_LABELS: Record<ConversationSource, string> = {
+const SIDEBAR_PROVIDER_LABELS: Record<ConversationSource, string> = {
   claude_code: 'Claude',
   codex: 'Codex',
   gemini: 'agy',
-};
-
-export function getConversationHeaderProviderLabel(source: ConversationSource): string {
-  return DETAIL_HEADER_PROVIDER_LABELS[source];
-}
-
-const AGENT_LABELS: Record<string, string> = {
-  operator: 'Operator',
-  claude: 'Claude',
-  codex: 'Codex',
-  gemini: 'Gemini',
-  shell: 'Shell',
 };
 
 // ── Helpers ──
@@ -342,10 +312,6 @@ export function applyConversationSearchParams(
 
 function isLiveConsoleSession(session: ConsoleSession): boolean {
   return session.status !== 'stopped' && session.status !== 'crashed';
-}
-
-function getAgentLabel(agentType: string): string {
-  return AGENT_LABELS[agentType] ?? agentType;
 }
 
 function sourceFromSession(session: ConsoleSession): ConversationSource | null {
@@ -453,7 +419,7 @@ type ChatEntry = {
   key: string;
   time: number;
   kind: 'conversation' | 'session';
-  conversation?: Conversation;
+  conversation?: ConversationSidebarConversation;
   session?: ConsoleSession;
   liveSession?: ConsoleSession | null;
 };
@@ -510,6 +476,90 @@ function conversationShell(conversation: Conversation): ConversationWithDetails 
   };
 }
 
+function conversationFromSpawn(
+  spawn: ConversationSpawnReceipt,
+  placement: NewChatDraft['placement'],
+): ConversationSidebarConversation {
+  const source = spawn.request.provider;
+  return {
+    id: spawn.reservation_id,
+    source,
+    source_path: `mandible://chat/${spawn.reservation_id}`,
+    title: source === 'codex' ? 'New Codex chat' : 'New Claude chat',
+    summary: null,
+    started_at: new Date(spawn.created_at).toISOString(),
+    ended_at: spawn.state === 'failed' || spawn.state === 'cancelled'
+      ? new Date(spawn.updated_at).toISOString()
+      : null,
+    block_count: 0,
+    session_id: spawn.provider_session_id ?? spawn.reservation_id,
+    project_path: null,
+    cwd: null,
+    branch: null,
+    model: source === 'codex' ? 'gpt-5.6-sol' : 'claude-opus-5',
+    cli_version: null,
+    is_sidechain: false,
+    agent_id: null,
+    starred: false,
+    tags: [],
+    notes: null,
+    parent_conversation_id: null,
+    children_count: 0,
+    canonical_project_id: placement.kind === 'project' ? placement.projectId : null,
+    canonical_project_key: null,
+    spawn,
+  };
+}
+
+function optimisticConversationSpawn(
+  draft: Extract<NewChatDraft, { state: 'starting' }>,
+): ConversationSpawnReceipt {
+  return {
+    schema: 'mandible-conversation-spawn-receipt@3',
+    reservation_id: draft.id,
+    request: {
+      schema: 'mandible-conversation-spawn-request@3',
+      idempotency_key: draft.id,
+      provider: draft.provider,
+      placement: draft.placement.kind === 'project'
+        ? {
+            kind: 'project',
+            project_id: draft.placement.projectId!,
+            checkout_id: draft.placement.checkoutId!,
+          }
+        : { kind: 'projectless' },
+    },
+    state: 'starting',
+    attempt_count: 1,
+    native_session_id: null,
+    provider_session_id: null,
+    provider_receipt: null,
+    error: null,
+    created_at: 0,
+    updated_at: 0,
+  };
+}
+
+function eventData<T>(payload: unknown): T | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const record = payload as Record<string, unknown>;
+  const data = record.data;
+  return (data && typeof data === 'object' ? data : record) as T;
+}
+
+function reconcileControlSnapshot(
+  current: ConversationControlSnapshot | null,
+  incoming: ConversationControlSnapshot,
+  conversationId: string,
+): ConversationControlSnapshot | null {
+  if (incoming.conversation_id !== conversationId) return current;
+  if (!current) return incoming;
+  if (incoming.ownership.generation < current.ownership.generation) return current;
+  if (incoming.ownership.generation === current.ownership.generation
+      && incoming.capability.revision < current.capability.revision) return current;
+  return incoming;
+}
+
 function flattenConversationWindow(payload: ConversationPositionWindow): ConversationWithDetails {
   return {
     ...payload.conversation,
@@ -545,23 +595,12 @@ export function conversationAnchorHref(
   return `#/console?${params.toString()}`;
 }
 
-export function conversationTurnSelectionHref(
-  conversationId: string,
-  selectedTurnId: string | null,
-  nextTurnId: string,
-): string {
-  if (selectedTurnId === nextTurnId) {
-    return `#/console?${new URLSearchParams({ conversation: conversationId }).toString()}`;
-  }
-  return conversationAnchorHref(conversationId, { turn: nextTurnId });
-}
-
 // ── Props ──
 
 export type NewChatInput = {
   idempotency_key: string;
   provider: NewChatProvider;
-  placement: { project_id: string; checkout_id: string };
+  placement: { kind: 'projectless' } | { kind: 'project'; project_id: string; checkout_id: string };
 };
 
 export type ConversationsViewProps = {
@@ -573,7 +612,10 @@ export type ConversationsViewProps = {
   chatEntityLinkAction?: ChatEntityClickAction;
   instance?: InstanceInfo | null;
   onSelectSession: (sessionId: string) => void;
-  onNewSession: (input: NewChatInput) => Promise<string>;
+  onNewConversation: (input: NewChatInput, signal?: AbortSignal) => Promise<{
+    conversation_id: string;
+    spawn: ConversationSpawnReceipt;
+  }>;
 };
 
 function HorizontalDotsIcon(): JSX.Element {
@@ -586,126 +628,12 @@ function HorizontalDotsIcon(): JSX.Element {
   );
 }
 
-// ── Export Panel ──
-
-function ExportPanel({
-  conversationId,
-  exportableCount,
-  hiddenSelectedCount,
-  selectedIds,
-  onClose,
-}: {
-  conversationId: string;
-  exportableCount: number;
-  totalSelectedCount: number;
-  hiddenSelectedCount: number;
-  selectedIds: string[];
-  onClose: () => void;
-}): JSX.Element {
-  const [format, setFormat] = useState<'mdx' | 'markdown' | 'json'>('markdown');
-  const [status, setStatus] = useState<'idle' | 'exporting' | 'done' | 'error'>('idle');
-  const [result, setResult] = useState<{ content: string; filename: string } | null>(null);
-
-  const handleExport = async () => {
-    setStatus('exporting');
-    try {
-      const res = await exportConversationBlocks(conversationId, {
-        block_ids: selectedIds,
-        format,
-      });
-      setResult(res);
-      setStatus('done');
-    } catch {
-      setStatus('error');
-    }
-  };
-
-  const handleCopy = async () => {
-    if (result?.content) {
-      await navigator.clipboard.writeText(result.content);
-    }
-  };
-
-  const handleDownload = () => {
-    if (!result) return;
-    const blob = new Blob([result.content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = result.filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
+export function ChatComposerSubmitIcon(): JSX.Element {
   return (
-    <div className="export-panel">
-      <div className="export-panel__header">
-        <h3 className="export-panel__title">Export Blocks</h3>
-        <button type="button" className="btn btn--ghost btn--sm" onClick={onClose}>
-          Close
-        </button>
-      </div>
-
-      <div className="export-panel__info">
-        <span>{exportableCount} visible selected block{exportableCount !== 1 ? 's' : ''}</span>
-        {hiddenSelectedCount > 0 && (
-          <span className="text-muted"> + {hiddenSelectedCount} hidden (excluded)</span>
-        )}
-      </div>
-
-      <div className="export-panel__format">
-        <label className="export-panel__label">Format</label>
-        <div className="toggle-group">
-          {(['markdown', 'mdx', 'json'] as const).map((f) => (
-            <button
-              key={f}
-              type="button"
-              className={`btn btn--sm${format === f ? ' btn--active' : ' btn--ghost'}`}
-              onClick={() => setFormat(f)}
-            >
-              {f.toUpperCase()}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="export-panel__actions">
-        {status === 'idle' && (
-          <button
-            type="button"
-            className="btn btn--success"
-            onClick={handleExport}
-            disabled={exportableCount === 0}
-          >
-            Export
-          </button>
-        )}
-        {status === 'exporting' && (
-          <span className="text-muted">Exporting...</span>
-        )}
-        {status === 'done' && result && (
-          <div className="export-panel__result">
-            <div className="export-panel__result-actions">
-              <button type="button" className="btn btn--ghost btn--sm" onClick={handleCopy}>
-                Copy to clipboard
-              </button>
-              <button type="button" className="btn btn--ghost btn--sm" onClick={handleDownload}>
-                Download ({result.filename})
-              </button>
-            </div>
-            <pre className="export-panel__preview">{truncate(result.content, 2000)}</pre>
-          </div>
-        )}
-        {status === 'error' && (
-          <div className="export-panel__error">
-            <span className="text-muted">Export failed.</span>
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => setStatus('idle')}>
-              Retry
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="m6 12 6-6 6 6" />
+      <path d="M12 6v12" />
+    </svg>
   );
 }
 
@@ -1066,6 +994,8 @@ function ConversationDetail({
   consoleSessions,
   sidebarCollapsed,
   chatEntityLinkAction,
+  creationReceipt,
+  onRetryCreation,
   externalNotice,
 }: {
   conversationId: string;
@@ -1075,6 +1005,8 @@ function ConversationDetail({
   consoleSessions: ConsoleSession[];
   sidebarCollapsed: boolean;
   chatEntityLinkAction: ChatEntityClickAction;
+  creationReceipt?: ConversationSpawnReceipt | null;
+  onRetryCreation?: () => void;
   externalNotice?: ComponentChildren;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
@@ -1083,6 +1015,7 @@ function ConversationDetail({
   const [loadedConversationKey, setLoadedConversationKey] = useState(
     () => detailRequestKey('conversation', { conversationId, leaf: null }),
   );
+  const loadedConversationKeyRef = useRef(loadedConversationKey);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ConversationLoadFailure | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -1101,18 +1034,11 @@ function ConversationDetail({
     smooth: boolean;
   } | null>(null);
 
-  // Selection state
-  const [selectMode, setSelectMode] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
-  const [visibleTypes, setVisibleTypes] = useState<Set<BlockType>>(new Set(ALL_BLOCK_TYPES));
-  const [showExport, setShowExport] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   const [workflowNonce, setWorkflowNonce] = useState(0);
-  const [showMessageFilters, setShowMessageFilters] = useState(false);
   const [composerControlsOpen, setComposerControlsOpen] = useState(false);
   const [composerModel, setComposerModel] = useState('');
   const [composerEffort, setComposerEffort] = useState('');
@@ -1121,6 +1047,7 @@ function ConversationDetail({
   const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
   const [liveProjection, setLiveProjection] = useState<ProviderLiveProjection | null>(null);
+  const pendingDurableReconciliationsRef = useRef<Array<Extract<ProviderAdapterEvent, { kind: 'durable-reconciliation' }>>>([]);
   const [rightSidebarViewState, setRightSidebarViewState] = useState<ConversationRightSidebarViewState>({
     conversationId,
     previewTarget: null,
@@ -1137,6 +1064,14 @@ function ConversationDetail({
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
   const [controlFailure, setControlFailure] = useState<ChatFailureNoticeModel | null>(null);
+  const [submitIntent, setSubmitIntent] = useState<{
+    id: string;
+    message: string;
+    messageAnchor?: string;
+    runtimeOptions: ConversationRuntimeOptions;
+    state: 'waiting' | 'submitting' | 'failed' | 'uncertain';
+  } | null>(null);
+  const submittingIntentRef = useRef<string | null>(null);
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
   const anchorKey = effectiveAnchor ? JSON.stringify(effectiveAnchor) : 'initial';
@@ -1195,10 +1130,16 @@ function ConversationDetail({
     const generation = ++requestGenerationRef.current;
     const requestKey = conversationRequestKey;
     const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
+    const requestChanged = loadedConversationKeyRef.current !== requestKey;
     const preserveErrorWhileRetrying = retryingLoadRef.current;
     retryingLoadRef.current = false;
+    loadedConversationKeyRef.current = requestKey;
     setLoadedConversationKey(requestKey);
-    setConversation(cached ?? (initialConversation ? conversationShell(initialConversation) : null));
+    setConversation((current) => (
+      requestChanged
+        ? cached ?? (initialConversation ? conversationShell(initialConversation) : null)
+        : current ?? cached ?? (initialConversation ? conversationShell(initialConversation) : null)
+    ));
     setLoading(true);
     setNotFound(false);
     if (!preserveErrorWhileRetrying) setError(null);
@@ -1208,6 +1149,15 @@ function ConversationDetail({
         const conv = flattenConversationWindow(payload);
         latestRevisionRef.current = Math.max(latestRevisionRef.current, payload.revision);
         setConversation(conv);
+        const pendingReconciliations = pendingDurableReconciliationsRef.current
+          .splice(0)
+          .filter((event) => event.conversation_id === conversationId);
+        if (pendingReconciliations.length > 0) {
+          setLiveProjection((current) => pendingReconciliations.reduce(
+            (projection, event) => mergeProviderLiveProjection(projection, event),
+            current,
+          ));
+        }
         setNavigationTarget({
           key: `${generation}:${payload.revision}:${payload.target.kind}:${payload.target.turn_id ?? ''}`,
           kind: payload.target.kind,
@@ -1223,7 +1173,7 @@ function ConversationDetail({
         if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
         if (isApiErrorStatus(err, 404)) {
           setError(null);
-          setNotFound(true);
+          setNotFound(!creationReceipt);
         } else {
           setError(conversationLoadFailure(err, Boolean(cached)));
           setNotFound(false);
@@ -1231,19 +1181,35 @@ function ConversationDetail({
         setLoading(false);
       });
     return () => controller.abort();
-  }, [anchorKey, conversationId, conversationRequestKey, effectiveAnchor, initialConversation, loadNonce]);
+  }, [anchorKey, conversationId, conversationRequestKey, creationReceipt, effectiveAnchor, initialConversation, loadNonce]);
+
+  const refreshControl = useCallback(() => {
+    let active = true;
+    void getConversationControl(conversationId)
+      .then((snapshot) => { if (active) setControl((current) => reconcileControlSnapshot(current, snapshot, conversationId)); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [conversationId]);
 
   useEffect(() => {
-    let active = true;
+    setControl(null);
     setLiveProjection(null);
-    void getConversationControl(conversationId)
-      .then((snapshot) => { if (active) setControl(snapshot); })
-      .catch(() => { if (active) setControl(null); });
+    pendingDurableReconciliationsRef.current = [];
+    setSubmitIntent(null);
+    submittingIntentRef.current = null;
+    const cancelControl = refreshControl();
+    let active = true;
     void getConversationLiveProjection(conversationId)
       .then((projection) => { if (active) setLiveProjection(projection); })
       .catch(() => { if (active) setLiveProjection(null); });
-    return () => { active = false; };
-  }, [conversationId]);
+    return () => { active = false; cancelControl(); };
+  }, [conversationId, refreshControl]);
+
+  useEffect(() => {
+    if (creationReceipt?.state !== 'ready') return;
+    setLoadNonce((nonce) => nonce + 1);
+    return refreshControl();
+  }, [creationReceipt?.attempt_count, creationReceipt?.state, creationReceipt?.updated_at, refreshControl]);
 
   useEffect(() => {
     if (!conversation || loading || loadedConversationKey !== conversationRequestKey) return;
@@ -1271,13 +1237,22 @@ function ConversationDetail({
       setWorkflowNonce((prev) => prev + 1);
     });
     const offControlUpdated = client.on('conversation:control-updated', (payload) => {
-      const snapshot = payload as unknown as ConversationControlSnapshot;
-      if (snapshot.conversation_id !== conversationId) return;
-      setControl(snapshot);
+      const snapshot = eventData<ConversationControlSnapshot>(payload);
+      if (!snapshot) return;
+      setControl((current) => reconcileControlSnapshot(current, snapshot, conversationId));
     });
     const offProviderEvent = client.on('conversation:provider-event', (payload) => {
-      const providerEvent = payload as unknown as ProviderAdapterEvent;
+      const providerEvent = eventData<ProviderAdapterEvent>(payload);
+      if (!providerEvent) return;
       if (providerEvent.conversation_id !== conversationId) return;
+      if (providerEvent.kind === 'durable-reconciliation') {
+        // Keep the provisional item visible until the durable window that
+        // replaces it has actually arrived. Removing it at the assertion and
+        // fetching afterward creates a visible empty frame for Codex turns.
+        pendingDurableReconciliationsRef.current.push(providerEvent);
+        scheduleRefresh();
+        return;
+      }
       if (providerEvent.kind === 'provider-lineage') scheduleRefresh();
       setLiveProjection((current) => mergeProviderLiveProjection(current, providerEvent));
     });
@@ -1286,6 +1261,7 @@ function ConversationDetail({
     const offState = client.onState((_state, { reconnected }) => {
       if (reconnected) {
         scheduleRefresh();
+        refreshControl();
         void getConversationLiveProjection(conversationId).then(setLiveProjection).catch(() => {});
       }
     });
@@ -1300,7 +1276,7 @@ function ConversationDetail({
       offState();
       client.close();
     };
-  }, [conversationId]);
+  }, [conversationId, refreshControl]);
 
   useEffect(() => {
     if (!conversation?.session_id) {
@@ -1445,6 +1421,7 @@ function ConversationDetail({
         skipNextWindowLoadRef.current = true;
         setEffectiveAnchor(null);
       }
+      loadedConversationKeyRef.current = latestRequestKey;
       setLoadedConversationKey(latestRequestKey);
       const params = new URLSearchParams({ conversation: conversationId });
       window.history.replaceState(null, '', `#/console?${params.toString()}`);
@@ -1486,10 +1463,7 @@ function ConversationDetail({
 
   const blocks = conversation?.blocks || [];
 
-  const visibleBlocks = useMemo(
-    () => blocks.filter((b) => visibleTypes.has(b.type)),
-    [blocks, visibleTypes],
-  );
+  const visibleBlocks = blocks;
   const historyEvents = useMemo(
     () => {
       const targetTurnId = conversation?.position_window.target.turn_id ?? null;
@@ -1581,100 +1555,6 @@ function ConversationDetail({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [conversation?.parent_conversation_id, onNavigate]);
 
-  const exportableBlocks = useMemo(
-    () => visibleBlocks.filter((b) => selected.has(b.id)),
-    [visibleBlocks, selected],
-  );
-
-  const selectedHiddenCount = useMemo(() => {
-    let count = 0;
-    for (const id of selected) {
-      const block = blocks.find((b) => b.id === id);
-      if (block && !visibleTypes.has(block.type)) {
-        count++;
-      }
-    }
-    return count;
-  }, [selected, blocks, visibleTypes]);
-
-  // Block type counts for filter bar
-  const typeCounts = useMemo(() => {
-    const counts: Partial<Record<BlockType, number>> = {};
-    for (const block of blocks) {
-      counts[block.type] = (counts[block.type] || 0) + 1;
-    }
-    return counts;
-  }, [blocks]);
-
-  const presentTypes = useMemo(
-    () => ALL_BLOCK_TYPES.filter((t) => (typeCounts[t] || 0) > 0),
-    [typeCounts],
-  );
-
-  // Selection handlers
-  const toggleSelect = (blockId: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(blockId)) {
-        next.delete(blockId);
-      } else {
-        next.add(blockId);
-      }
-      return next;
-    });
-    setLastSelectedId(blockId);
-  };
-
-  const handleShiftSelect = (blockId: string) => {
-    if (!lastSelectedId) {
-      toggleSelect(blockId);
-      return;
-    }
-    const startIdx = visibleBlocks.findIndex((b) => b.id === lastSelectedId);
-    const endIdx = visibleBlocks.findIndex((b) => b.id === blockId);
-    if (startIdx === -1 || endIdx === -1) {
-      toggleSelect(blockId);
-      return;
-    }
-    const low = Math.min(startIdx, endIdx);
-    const high = Math.max(startIdx, endIdx);
-    setSelected((prev) => {
-      const next = new Set(prev);
-      for (let i = low; i <= high; i++) {
-        next.add(visibleBlocks[i].id);
-      }
-      return next;
-    });
-    setLastSelectedId(blockId);
-  };
-
-  const selectAllVisible = () => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      for (const block of visibleBlocks) {
-        next.add(block.id);
-      }
-      return next;
-    });
-  };
-
-  const clearSelection = () => {
-    setSelected(new Set());
-    setLastSelectedId(null);
-  };
-
-  const toggleType = (type: BlockType) => {
-    setVisibleTypes((prev) => {
-      const next = new Set(prev);
-      if (next.has(type)) {
-        next.delete(type);
-      } else {
-        next.add(type);
-      }
-      return next;
-    });
-  };
-
   const handleStarToggle = async () => {
     if (!conversation) return;
     const newStarred = !conversation.starred;
@@ -1687,9 +1567,10 @@ function ConversationDetail({
   };
 
   const linkedConsoleSession = useMemo(() => {
+    if (creationReceipt) return null;
     if (!conversation?.session_id) return null;
     return consoleSessions.find((session) => session.provider_session_id === conversation.session_id) ?? null;
-  }, [consoleSessions, conversation?.session_id]);
+  }, [consoleSessions, conversation?.session_id, creationReceipt]);
 
   const controlPresentation = control ? conversationControlPresentation(control) : null;
 
@@ -1756,13 +1637,14 @@ function ConversationDetail({
 
   const continueDisabledReason = useMemo(() => {
     if (!conversation) return null;
+    if (creationReceipt?.state === 'starting') return null;
     if (!controlPresentation) return 'Control state unavailable.';
     if (control?.capability.kind === 'message-anchor-resume' && !latestDagUuid) {
       return 'The required message anchor is unavailable.';
     }
     if (controlPresentation.composer === 'enabled') return null;
     return controlPresentation.title;
-  }, [control, controlPresentation, conversation, latestDagUuid]);
+  }, [control, controlPresentation, conversation, creationReceipt, latestDagUuid]);
 
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
   const modelRunOption = sessionRunOptions?.options.find((option) => option.id === 'model');
@@ -1791,7 +1673,7 @@ function ConversationDetail({
 
   const runOptionsGeometry = useIntrinsicOverflowGroup(
     hasRunOptions,
-    `${composerPermission}\u0000${composerModel}\u0000${composerEffort}\u0000${sessionRunOptions?.revision ?? ''}\u0000${rightSidebarState.open}\u0000${rightSidebarState.width}`,
+    `${Boolean(permissionRunOption)}\u0000${composerPermission}\u0000${Boolean(currentModel)}\u0000${composerModel}\u0000${Boolean(thinkingRunOption)}\u0000${composerEffort}\u0000${Boolean(canShowSessionControls)}\u0000${sessionRunOptions?.revision ?? ''}`,
   );
 
   useEffect(() => {
@@ -1804,48 +1686,100 @@ function ConversationDetail({
   }, [conversationId, thinkingRunOption?.id, thinkingRunOption?.currentValue,
     permissionRunOption?.id, permissionRunOption?.currentValue]);
 
-  const handleContinueSubmit = useCallback(async (event: JSX.TargetedEvent<HTMLFormElement, Event>) => {
-    event.preventDefault();
-    const prompt = continueDraft.trim();
-    if (!prompt) {
-      return;
-    }
-    if (continueDisabledReason) {
-      setContinueError(continueDisabledReason);
-      return;
-    }
+  const projectPendingIntent = useCallback((intent: { id: string; message: string }) => {
+    setLiveProjection((current) => mergeProviderLiveProjection(current, {
+      kind: 'provisional-content',
+      conversation_id: conversationId,
+      provider_session_id: conversation?.session_id ?? '',
+      generation: control?.ownership.generation ?? creationReceipt?.attempt_count ?? 0,
+      sequence: (current?.events.reduce((maximum, item) => Math.max(maximum, item.sequence), 0) ?? 0) + 1,
+      observed_at: Date.now(),
+      identity: `message:${intent.id}`,
+      event: {
+        type: 'user',
+        uuid: intent.id,
+        session_id: conversation?.session_id ?? undefined,
+        message: { id: intent.id, role: 'user', content: [{ type: 'text', text: intent.message }] },
+      },
+    }));
+  }, [control?.ownership.generation, conversation?.session_id, conversationId, creationReceipt?.attempt_count]);
+
+  const dispatchSubmitIntent = useCallback(async (intent: NonNullable<typeof submitIntent>) => {
+    if (!control || submittingIntentRef.current === intent.id) return;
+    if (creationReceipt?.state === 'starting') return;
+    if (!['live-send', 'live-steer', 'owned-queue', 'provider-session-resume', 'message-anchor-resume'].includes(control.capability.kind)) return;
+    submittingIntentRef.current = intent.id;
+    setSubmitIntent((current) => current?.id === intent.id ? { ...current, state: 'submitting' } : current);
     setContinueBusy(true);
     setContinueError(null);
     setControlFailure(null);
     try {
-      if (!control) return;
-      const messageAnchor = control.capability.kind === 'message-anchor-resume'
-        ? latestDagUuid ?? undefined
-        : undefined;
-      const runtimeOptions: ConversationRuntimeOptions = {
+      const result = await submitConversationControl(
+        control,
+        intent.message,
+        intent.messageAnchor,
+        intent.runtimeOptions,
+        intent.id,
+      );
+      setControl(result.snapshot);
+      setSubmitIntent((current) => current?.id === intent.id ? null : current);
+    } catch (err) {
+      const apiError = err as Partial<ConversationControlApiError>;
+      if (apiError.snapshot) setControl(apiError.snapshot);
+      const uncertain = apiError.controlError?.kind === 'delivery-uncertain';
+      if (!uncertain) {
+        setContinueDraft(intent.message);
+        setLiveProjection((current) => mergeProviderLiveProjection(current, {
+          kind: 'durable-reconciliation',
+          conversation_id: conversationId,
+          provider_session_id: conversation?.session_id ?? '',
+          generation: control.ownership.generation,
+          sequence: (current?.events.reduce((maximum, item) => Math.max(maximum, item.sequence), 0) ?? 0) + 1,
+          observed_at: Date.now(),
+          provider_event_id: `failed:${intent.id}`,
+          covered_identities: [`message:${intent.id}`],
+        }));
+      }
+      setSubmitIntent((current) => current?.id === intent.id
+        ? { ...current, state: uncertain ? 'uncertain' : 'failed' }
+        : current);
+      if (apiError.controlError) setControlFailure(chatControlFailureNotice(apiError.controlError));
+      else setContinueError(err instanceof Error ? err.message : String(err));
+    } finally {
+      submittingIntentRef.current = null;
+      setContinueBusy(false);
+    }
+  }, [control, conversation?.session_id, conversationId, creationReceipt?.state]);
+
+  useEffect(() => {
+    if (submitIntent?.state === 'waiting') void dispatchSubmitIntent(submitIntent);
+  }, [dispatchSubmitIntent, submitIntent]);
+
+  const handleContinueSubmit = useCallback((event: JSX.TargetedEvent<HTMLFormElement, Event>) => {
+    event.preventDefault();
+    const prompt = continueDraft.trim();
+    if (!prompt || submitIntent) return;
+    if (continueDisabledReason && creationReceipt?.state !== 'starting') {
+      setContinueError(continueDisabledReason);
+      return;
+    }
+    setContinueError(null);
+    setControlFailure(null);
+    const intent = {
+      id: crypto.randomUUID(),
+      message: prompt,
+      ...(control?.capability.kind === 'message-anchor-resume' && latestDagUuid ? { messageAnchor: latestDagUuid } : {}),
+      runtimeOptions: {
         ...(composerModel ? { model: composerModel } : {}),
         ...(composerEffort ? { effort: composerEffort } : {}),
         ...(composerPermission ? { permission_mode: composerPermission as ConversationRuntimeOptions['permission_mode'] } : {}),
-      };
-      const result = await submitConversationControl(control, prompt, messageAnchor, runtimeOptions);
-      setControl(result.snapshot);
-      setContinueDraft('');
-      setControlFailure(null);
-      setToast({ message: 'Message sent.', type: 'info' });
-    } catch (err) {
-      const apiError = err as Partial<ConversationControlApiError>;
-      if (apiError.snapshot) {
-        setControl(apiError.snapshot);
-      }
-      if (apiError.controlError) {
-        setControlFailure(chatControlFailureNotice(apiError.controlError));
-      } else {
-        setContinueError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      setContinueBusy(false);
-    }
-  }, [composerEffort, composerModel, composerPermission, continueDisabledReason, continueDraft, control, latestDagUuid]);
+      },
+      state: 'waiting' as const,
+    };
+    setContinueDraft('');
+    projectPendingIntent(intent);
+    setSubmitIntent(intent);
+  }, [composerEffort, composerModel, composerPermission, continueDisabledReason, continueDraft, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter') return;
@@ -2049,30 +1983,9 @@ function ConversationDetail({
                     Resume in Mandible
                   </button>
                 )}
-                <button type="button" role="menuitem" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
-                  {showMessageFilters ? 'Hide message filters' : 'Message filters'}
-                </button>
-                <button type="button" role="menuitem" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
-                  Select messages
-                </button>
             </div>
           )}
         </div>
-      )}
-      metadata={(
-        <span className="conv-detail__status">
-          <span className="conv-detail__provider">
-            {getConversationHeaderProviderLabel(conversation.source)}
-          </span>
-          {controlPresentation && control && (
-            <span
-              className={`conv-attach-badge conv-attach-badge--${control.capability.kind}`}
-              title={controlPresentation.title}
-            >
-              {controlPresentation.status}
-            </span>
-          )}
-        </span>
       )}
       actionsLabel="Chat sidebar"
     />
@@ -2122,7 +2035,9 @@ function ConversationDetail({
         <div className="conv-compose conv-compose--readonly" data-detail-pane-overlay-visual>
           <span>Read-only subagent transcript</span>
         </div>
-      ) : controlPresentation && controlPresentation.composer !== 'hidden' ? (
+      ) : ((controlPresentation && controlPresentation.composer !== 'hidden')
+        || creationReceipt?.state === 'starting'
+        || (creationReceipt?.state === 'ready' && !controlPresentation)) ? (
       <div className="conv-compose" data-detail-pane-overlay-visual>
         <form id={`conversation-compose-${conversation.id}`} className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
@@ -2131,7 +2046,9 @@ function ConversationDetail({
             onInput={(event) => setContinueDraft(event.currentTarget.value)}
             onKeyDown={handleComposerKeyDown}
             placeholder="Message..."
-            disabled={continueBusy || Boolean(continueDisabledReason)}
+            disabled={continueBusy
+              || submitIntent?.state === 'uncertain'
+              || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting')}
             rows={3}
           />
         </form>
@@ -2186,16 +2103,11 @@ function ConversationDetail({
                 type="submit"
                 form={`conversation-compose-${conversation.id}`}
                 className="conv-compose__send"
-                disabled={continueBusy || Boolean(continueDisabledReason) || !continueDraft.trim()}
+                disabled={continueBusy || Boolean(submitIntent) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || !continueDraft.trim()}
                 title={controlPresentation?.submitLabel ?? 'Send'}
                 aria-label={controlPresentation?.submitLabel ?? 'Send'}
               >
-                {continueBusy ? '…' : (
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="m6 12 6-6 6 6" />
-                    <path d="M12 6v12" />
-                  </svg>
-                )}
+                {continueBusy ? <span aria-hidden="true">…</span> : <ChatComposerSubmitIcon />}
               </button>
             </span>
           </div>
@@ -2212,7 +2124,7 @@ function ConversationDetail({
             {renderRunOptionFields()}
           </div>
         )}
-        {(continueError || continueDisabledReason) && (
+        {(continueError || (continueDisabledReason && creationReceipt?.state !== 'starting')) && (
           <div className={`conv-compose__status${continueError ? ' conv-compose__status--error' : ''}`}>
             {continueError ?? continueDisabledReason}
           </div>
@@ -2224,12 +2136,20 @@ function ConversationDetail({
     <ChatFailureNotice
       failure={controlFailure}
       busy={continueBusy}
-      onRetry={controlFailure.retryable ? () => {
-        const form = document.getElementById(`conversation-compose-${conversation.id}`) as HTMLFormElement | null;
-        form?.requestSubmit();
+      onRetry={controlFailure.retryable && submitIntent?.state === 'failed' ? () => {
+        setContinueDraft('');
+        projectPendingIntent(submitIntent);
+        setSubmitIntent({ ...submitIntent, state: 'waiting' });
       } : undefined}
     />
   ) : null;
+
+  const creationNotice = creationReceipt?.error ? (
+    <ChatFailureNotice
+      failure={chatSpawnFailureNotice(creationReceipt.error)}
+      onRetry={creationReceipt.error.retryable ? onRetryCreation : undefined}
+    />
+  ) : undefined;
 
   const detailOverlays = (
     <>
@@ -2276,87 +2196,8 @@ function ConversationDetail({
       overlayControl={composerOverlay}
       overlays={detailOverlays}
       ariaBusy={loading}
-      notice={controlFailureNotice ?? externalNotice ?? loadErrorNotice}
+      notice={controlFailureNotice ?? creationNotice ?? externalNotice ?? loadErrorNotice}
     >
-      {showMessageFilters && (
-        <div className="conv-filter-bar">
-          <div className="conv-filter-bar__types">
-            {presentTypes.map((type) => (
-              <button
-                key={type}
-                type="button"
-                className={`conv-filter-btn${visibleTypes.has(type) ? ' conv-filter-btn--active' : ''}`}
-                onClick={() => toggleType(type)}
-              >
-                {BLOCK_TYPE_LABELS[type]}
-                <span className="conv-filter-btn__count">{typeCounts[type] || 0}</span>
-              </button>
-            ))}
-          </div>
-          <div className="conv-filter-bar__actions">
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => setVisibleTypes(new Set(ALL_BLOCK_TYPES))}
-            >
-              Show all
-            </button>
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => setVisibleTypes(new Set())}
-            >
-              Hide all
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Selection toolbar */}
-      {(selectMode || selected.size > 0) && (
-        <div className="conv-selection-toolbar">
-          <button
-            type="button"
-            className={`btn btn--sm${selectMode ? ' btn--active' : ' btn--ghost'}`}
-            onClick={() => setSelectMode((prev) => !prev)}
-          >
-            Select mode
-          </button>
-          <span className="conv-selection-toolbar__count">
-            {selected.size} selected
-            {selectedHiddenCount > 0 && (
-              <span className="text-muted"> + {selectedHiddenCount} hidden</span>
-            )}
-          </span>
-          <button type="button" className="btn btn--ghost btn--sm" onClick={selectAllVisible}>
-            Select all visible
-          </button>
-          <button type="button" className="btn btn--ghost btn--sm" onClick={clearSelection}>
-            Clear
-          </button>
-          <button
-            type="button"
-            className="btn btn--success btn--sm"
-            onClick={() => setShowExport(true)}
-            disabled={exportableBlocks.length === 0}
-          >
-            Export ({exportableBlocks.length})
-          </button>
-        </div>
-      )}
-
-      {/* Export panel */}
-      {showExport && (
-        <ExportPanel
-          conversationId={conversationId}
-          exportableCount={exportableBlocks.length}
-          totalSelectedCount={selected.size}
-          hiddenSelectedCount={selectedHiddenCount}
-          selectedIds={exportableBlocks.map((b) => b.id)}
-          onClose={() => setShowExport(false)}
-        />
-      )}
-
       <div className="conv-transcript">
         <ChatEntityLinkBoundary
           defaultAction={chatEntityLinkAction}
@@ -2365,27 +2206,14 @@ function ConversationDetail({
           <ChatSurface
             events={chatEvents}
             streaming={providerStreaming}
-            emptyLabel={loading
-              ? 'Loading messages…'
-              : error
+            emptyLabel={error
                 ? 'Conversation content unavailable.'
-                : 'No messages match the current filters.'}
+                : 'No messages yet'}
             unmaterializedAfterCount={conversation.position_window.window.after_count}
             onJumpToLatest={handleJumpToLatest}
             jumpingToLatest={jumpingToLatest}
             navigationTarget={navigationTarget}
-            selectedMessageId={conversation.position_window.target.turn_id}
-            selectedBlockIds={selected}
-            selectMode={selectMode}
-            onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
             onFork={handleFork}
-            onSelectMessageInfo={(turnId) => {
-              window.location.hash = conversationTurnSelectionHref(
-                conversationId,
-                conversation.position_window.target.turn_id,
-                turnId,
-              );
-            }}
             sessionInfo={{
               sessionId: conversation.session_id,
               backend: conversation.source,
@@ -2432,6 +2260,7 @@ function ChatEntryItem({
   onEditTags,
   onRenameSession,
   onOpenExternally,
+  onToggleArchived,
 }: {
   entry: ChatEntry;
   isSelected: boolean;
@@ -2442,14 +2271,15 @@ function ChatEntryItem({
   onEditTags?: (tags: string[]) => void;
   onRenameSession?: (label: string | null) => void;
   onOpenExternally?: () => void;
+  onToggleArchived?: () => void;
 }): JSX.Element {
   const conversation = entry.conversation;
   const session = entry.session;
   const isSubAgent = !!conversation?.parent_conversation_id;
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
-  const providerLabel = source ? DETAIL_HEADER_PROVIDER_LABELS[source] : null;
+  const providerLabel = source ? SIDEBAR_PROVIDER_LABELS[source] : null;
   const title = conversation ? getConversationTitle(conversation) : getConsoleSessionTitle(session);
-  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession || onOpenExternally);
+  const canShowActions = Boolean(onTogglePin || onEditTags || onRenameSession || onOpenExternally || onToggleArchived);
   const isPinned = pinned ?? Boolean(conversation?.starred || session?.pinned);
   const hasBadges = Boolean(conversation?.tags.length || session?.owner);
 
@@ -2481,6 +2311,13 @@ function ChatEntryItem({
   }
   if (onRenameSession) {
     overflowActions.push({ id: 'rename-session', label: 'Rename session', onSelect: handleRenameSession });
+  }
+  if (onToggleArchived) {
+    overflowActions.push({
+      id: conversation?.archived_at ? 'unarchive' : 'archive',
+      label: conversation?.archived_at ? 'Unarchive' : 'Archive',
+      onSelect: onToggleArchived,
+    });
   }
 
   return (
@@ -2593,33 +2430,19 @@ function LiveSessionDetail({
     return () => { offControlUpdated(); client.close(); };
   }, [control?.conversation_id]);
 
-  const controlPresentation = control ? conversationControlPresentation(control) : null;
   const detailHeader = (
     <DetailPaneHeader
       variant="compact"
       title={session.label || 'Untitled session'}
       titleTooltip={session.label || 'Untitled session'}
-      metadata={(
-        <div className="chat-live-detail__meta">
-          <span className={`chat-live-session__status chat-live-session__status--${controlPresentation?.status.toLowerCase() ?? 'unavailable'}`} />
-          <span>{getAgentLabel(session.agent_type)}</span>
-          {session.owner && (
-            <span>{session.owner.display_name} · {session.owner.kind}</span>
-          )}
-          <span title={controlPresentation?.title}>{controlPresentation?.status ?? 'Unavailable'}</span>
-          <span title={session.transport_badge?.title}>
-            {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
-          </span>
-          {session.identity_mismatch && (
-            <span
-              className="chat-live-detail__identity-warning"
-              title={session.identity_mismatch.message}
-            >
-              ⚠ identity mismatch
-            </span>
-          )}
-        </div>
-      )}
+      metadata={session.identity_mismatch ? (
+        <span
+          className="chat-live-detail__identity-warning"
+          title={session.identity_mismatch.message}
+        >
+          ⚠ identity mismatch
+        </span>
+      ) : undefined}
     />
   );
 
@@ -2669,11 +2492,13 @@ export function ConversationsView({
   chatEntityLinkAction = 'preview',
   instance = null,
   onSelectSession,
-  onNewSession,
+  onNewConversation,
 }: ConversationsViewProps): JSX.Element {
   const [selection, setSelection] = useState<ChatSelection>(null);
   const handleNavigateConversation = useCallback((conversationId: string) => {
-    setSelection({ type: 'conversation', id: conversationId });
+    setSelection((current) => current?.type === 'conversation' && current.id === conversationId
+      ? current
+      : { type: 'conversation', id: conversationId });
     const nextHash = hashWithAgentSession(
       `#/console?conversation=${encodeURIComponent(conversationId)}`,
       getAgentPageBinding(),
@@ -2693,6 +2518,8 @@ export function ConversationsView({
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [chatViewState, setChatViewState] = useChatViewState();
+  const conversationLifecycle = chatViewState.conversationLifecycle;
+  const [retainedSelection, setRetainedSelection] = useState<ConversationSidebarConversation | null>(null);
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
@@ -2705,6 +2532,37 @@ export function ConversationsView({
   const [loading, setLoading] = useState(false);
   const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
+  const acceptedConversationId = newChatDraft?.state === 'accepted' ? newChatDraft.conversationId : null;
+  const acceptedSpawnState = newChatDraft?.state === 'accepted' ? newChatDraft.spawn.state : null;
+  const reconcileCreationReceipt = useCallback((spawn: ConversationSpawnReceipt) => {
+    setNewChatDraft((current) => current ? reduceNewChatDraft(current, { type: 'observe', spawn }) : current);
+  }, []);
+
+  useEffect(() => {
+    if (!acceptedConversationId || (acceptedSpawnState !== 'starting' && acceptedSpawnState !== 'stopping')) {
+      return undefined;
+    }
+    let active = true;
+    let timer: number | null = null;
+    const refresh = () => {
+      void getProviderChat(acceptedConversationId)
+        .then((spawn) => {
+          if (!active) return;
+          reconcileCreationReceipt(spawn);
+          if (spawn.state === 'starting' || spawn.state === 'stopping') {
+            timer = window.setTimeout(refresh, 500);
+          }
+        })
+        .catch(() => {
+          if (active) timer = window.setTimeout(refresh, 500);
+        });
+    };
+    refresh();
+    return () => {
+      active = false;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [acceptedConversationId, acceptedSpawnState, reconcileCreationReceipt]);
   const searchTimer = useRef<number | null>(null);
   const fetchGenerationRef = useRef(0);
   const groupsRef = useRef(serverGroups);
@@ -2714,6 +2572,7 @@ export function ConversationsView({
   const previousGroupLimitRef = useRef(sidebarGroupLimit);
   const pinActionRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingPinFocusKey = useRef<string | null>(null);
+  const pendingPinIntents = useRef(new Map<string, boolean>());
 
   useEffect(() => {
     let active = true;
@@ -2773,11 +2632,6 @@ export function ConversationsView({
 
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
-  useEffect(() => {
-    if (!newChatDraft || (newChatDraft.state !== 'choosing' && newChatDraft.state !== 'failed')) return;
-    if (selection?.type === 'draft' && selection.id === newChatDraft.id) return;
-    setNewChatDraft(reduceNewChatDraft(newChatDraft, { type: 'abandon' }));
-  }, [newChatDraft, selection]);
   const previewMutationsRejected = instance?.operational_mutations === 'reject';
   const isConversationPinned = useCallback((conversation: Conversation): boolean => {
     if (!previewMutationsRejected) return conversation.starred;
@@ -2893,6 +2747,7 @@ export function ConversationsView({
       sort: sort === 'blocks' ? 'block_count' : 'started_at',
       exclude_subagents: true,
       project_ids: projectIds,
+      lifecycle: conversationLifecycle,
     };
     if (previewMutationsRejected) {
       const pinnedIds = Object.entries(chatViewState.previewPinOverrides)
@@ -2904,7 +2759,7 @@ export function ConversationsView({
     if (hideEmpty) params.min_blocks = 1;
     applyConversationSearchParams(params, search, searchMode);
     return params;
-  }, [chatViewState.previewPinOverrides, hideEmpty, previewMutationsRejected, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
+  }, [chatViewState.previewPinOverrides, conversationLifecycle, hideEmpty, previewMutationsRejected, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
   // A refresh starts from one bounded page per logical group, then replays only
   // the extra pages needed to restore that group's current visible target.
@@ -2977,7 +2832,7 @@ export function ConversationsView({
         typeof payload.data === 'object' && payload.data !== null ? payload.data : payload
       ) as ConversationAppendPayload;
       const rawData = data as ConversationAppendPayload & { updates?: unknown };
-      const membershipFields = ['starred', 'cwd', 'project_path', 'canonical_project_id', 'canonical_project_key'];
+      const membershipFields = ['starred', 'archived_at', 'cwd', 'project_path', 'canonical_project_id', 'canonical_project_key'];
       const membershipChanged = membershipFields.some((field) => Object.prototype.hasOwnProperty.call(rawData, field))
         || (Array.isArray(rawData.updates) && rawData.updates.some((field) => (
           typeof field === 'string' && membershipFields.includes(field)
@@ -3012,8 +2867,17 @@ export function ConversationsView({
     const offNew = client.on('conversation:new', () => {
       scheduleListRefetch();
     });
+    const offSpawn = client.on('conversation-spawn:updated', (payload) => {
+      const update = eventData<{ spawn?: ConversationSpawnReceipt }>(payload);
+      if (update?.spawn) reconcileCreationReceipt(update.spawn);
+      scheduleListRefetch();
+    });
     const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) void fetchConversationGroups();
+      if (!reconnected) return;
+      void fetchConversationGroups();
+      if (acceptedConversationId) {
+        void getProviderChat(acceptedConversationId).then(reconcileCreationReceipt).catch(() => {});
+      }
     });
     client.connect();
     return () => {
@@ -3022,10 +2886,11 @@ export function ConversationsView({
       }
       offUpdated();
       offNew();
+      offSpawn();
       offState();
       client.close();
     };
-  }, [fetchConversationGroups]);
+  }, [acceptedConversationId, fetchConversationGroups, reconcileCreationReceipt]);
 
   // Debounced fetch on filter changes
   useEffect(() => {
@@ -3039,18 +2904,57 @@ export function ConversationsView({
     };
   }, [canonicalProjectsReady, fetchConversationGroups, shownProjectsState.ready]);
 
+  const acceptedConversation = useMemo(() => newChatDraft?.state === 'accepted'
+    ? conversationFromSpawn(newChatDraft.spawn, newChatDraft.placement)
+    : null, [newChatDraft]);
+
+  const conversationGroups = useMemo(() => {
+    if (!acceptedConversation || newChatDraft?.state !== 'accepted') return serverGroups;
+    let found = false;
+    const reconciled = serverGroups.map((group) => ({
+      ...group,
+      conversations: group.conversations.map((conversation) => {
+        if (conversation.id !== acceptedConversation.id) return conversation;
+        found = true;
+        return { ...acceptedConversation, ...conversation, spawn: newChatDraft.spawn };
+      }),
+    }));
+    if (found) return reconciled;
+    const projectId = newChatDraft.placement.kind === 'project' ? newChatDraft.placement.projectId : null;
+    const targetIndex = reconciled.findIndex((group) => projectId
+      ? group.kind === 'project' && group.project_id === projectId
+      : group.kind === 'chats');
+    if (targetIndex >= 0) {
+      return reconciled.map((group, index) => index === targetIndex ? {
+        ...group,
+        total: group.total + 1,
+        conversations: [acceptedConversation, ...group.conversations],
+      } : group);
+    }
+    return [...reconciled, {
+      key: projectId ? `accepted-project-${projectId}` : 'chats',
+      kind: projectId ? 'project' as const : 'chats' as const,
+      label: newChatDraft.placement.projectLabel,
+      ...(projectId ? { project_id: projectId } : {}),
+      total: 1,
+      conversations: [acceptedConversation],
+      next_cursor: null,
+    }];
+  }, [acceptedConversation, newChatDraft, serverGroups]);
+
   const selectedConversationSummary = selection?.type === 'conversation'
-    ? serverGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id) ?? null
+    ? conversationGroups.flatMap((group) => group.conversations).find((conv) => conv.id === selection.id)
+      ?? (retainedSelection?.id === selection.id ? retainedSelection : null)
     : null;
 
   // Client-side title-only filter (when searchMode === 'title', server already
   // searched summary too, so we narrow here to title-only for the title mode).
   // When searchMode === 'full', server search is sufficient — show all results.
   const displayedConversations = useMemo(() => {
-    const base = serverGroups.map((group) => ({
+    const base = conversationGroups.map((group) => ({
       ...group,
       conversations: group.conversations.filter((conv) =>
-        !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0)
+        !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0 || Boolean(conv.spawn))
       ),
     }));
     if (!search.trim() || searchMode === 'full') return base;
@@ -3059,7 +2963,7 @@ export function ConversationsView({
       ...group,
       conversations: group.conversations.filter((conv) => getConversationTitle(conv).toLowerCase().includes(needle)),
     }));
-  }, [serverGroups, hideEmpty, search, searchMode]);
+  }, [conversationGroups, hideEmpty, search, searchMode]);
 
   const liveByProviderSession = useMemo(() => {
     const map = new Map<string, ConsoleSession>();
@@ -3129,24 +3033,33 @@ export function ConversationsView({
           target.total += 1;
         }
         target.entries.push({
-          key: liveByProviderSession.has(conversation.session_id)
-            ? `session:${liveByProviderSession.get(conversation.session_id)!.id}`
-            : `conversation:${conversation.id}`,
+          key: conversation.spawn
+            ? `conversation:${conversation.id}`
+            : liveByProviderSession.has(conversation.session_id)
+              ? `session:${liveByProviderSession.get(conversation.session_id)!.id}`
+              : `conversation:${conversation.id}`,
           time: getConversationTime(conversation),
           kind: 'conversation',
           conversation,
-          liveSession: liveByProviderSession.get(conversation.session_id) ?? null,
+          liveSession: conversation.spawn?.native_session_id
+            ? liveSessions.find((session) => session.id === conversation.spawn?.native_session_id) ?? null
+            : liveByProviderSession.get(conversation.session_id) ?? null,
         });
       }
     }
     const conversationProviderIds = new Set(
       displayedConversations.flatMap((group) => group.conversations.map((conversation) => conversation.session_id)),
     );
+    const conversationLogicalIds = new Set(
+      displayedConversations.flatMap((group) => group.conversations.map((conversation) => conversation.id)),
+    );
     for (const session of liveSessions) {
+      if (conversationLifecycle === 'archived') continue;
       if (isSubagentSession(session)) {
         continue;
       }
-      if (session.provider_session_id && conversationProviderIds.has(session.provider_session_id)) {
+      if (conversationLogicalIds.has(session.id)
+          || (session.provider_session_id && conversationProviderIds.has(session.provider_session_id))) {
         continue;
       }
       const canonicalProjectGroup = session.canonical_project_id
@@ -3201,7 +3114,7 @@ export function ConversationsView({
         .sort((left, right) => left.label.localeCompare(right.label)),
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [chatViewState.pinnedConversationIds, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
+  }, [chatViewState.pinnedConversationIds, conversationLifecycle, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
 
   useEffect(() => {
     if (selection?.type !== 'session') return;
@@ -3216,7 +3129,7 @@ export function ConversationsView({
   useEffect(() => {
     const effectivePinnedIds = displayedConversations
       .flatMap((group) => group.conversations)
-      .filter(isConversationPinned)
+      .filter((conversation) => pendingPinIntents.current.get(conversation.id) ?? isConversationPinned(conversation))
       .map((conversation) => conversation.id);
     setChatViewState((current) => {
       const reconciled = reconcileOrderedPinIds(current.pinnedConversationIds, effectivePinnedIds);
@@ -3238,13 +3151,13 @@ export function ConversationsView({
     !hideEmpty,
     sort !== 'date',
     searchMode !== 'title',
+    conversationLifecycle !== 'active',
   ].filter(Boolean).length;
 
   const selectedLiveSession = useMemo(() => {
     if (!selectedSessionId) return null;
     return consoleSessions.find((session) => session.id === selectedSessionId) ?? null;
   }, [consoleSessions, selectedSessionId]);
-
   useEffect(() => {
     if (!selection) return;
     if (selection.type !== 'session') return;
@@ -3256,11 +3169,11 @@ export function ConversationsView({
     if (selection) return;
     if (!firstChatEntry) return;
     if (firstChatEntry.kind === 'conversation' && firstChatEntry.conversation) {
-      setSelection({ type: 'conversation', id: firstChatEntry.conversation.id });
+      setSelection((current) => current ?? { type: 'conversation', id: firstChatEntry.conversation!.id });
       return;
     }
     if (firstChatEntry.session) {
-      setSelection({ type: 'session', id: firstChatEntry.session.id });
+      setSelection((current) => current ?? { type: 'session', id: firstChatEntry.session!.id });
       onSelectSession(firstChatEntry.session.id);
     }
   }, [firstChatEntry, onSelectSession, selection]);
@@ -3355,6 +3268,7 @@ export function ConversationsView({
     const conversationId = entry.conversation.id;
     const starred = !isConversationPinned(entry.conversation);
     if (previewMutationsRejected) {
+      pendingPinIntents.current.set(conversationId, starred);
       pendingPinFocusKey.current = entry.key;
       setChatViewState((current) => ({
         ...current,
@@ -3370,6 +3284,7 @@ export function ConversationsView({
     }
     try {
       const updated = await updateConversation(conversationId, { starred });
+      pendingPinIntents.current.set(conversationId, starred);
       pendingPinFocusKey.current = entry.key;
       updateConversationInList(updated);
       setChatViewState((current) => ({
@@ -3379,6 +3294,7 @@ export function ConversationsView({
           : current.pinnedConversationIds.filter((id) => id !== conversationId),
       }));
     } catch {
+      pendingPinIntents.current.delete(conversationId);
       // keep the current list state if persistence fails
     }
   };
@@ -3391,6 +3307,23 @@ export function ConversationsView({
       }
     } catch {
       // keep the current list state if persistence fails
+    }
+  };
+
+  const handleToggleArchived = async (entry: ChatEntry) => {
+    if (!entry.conversation) return;
+    const archived = !entry.conversation.archived_at;
+    try {
+      if (selection?.type === 'conversation' && selection.id === entry.conversation.id) {
+        setRetainedSelection(entry.conversation);
+      }
+      await updateConversationArchive(entry.conversation.id, archived);
+      await fetchConversationGroups();
+    } catch (error) {
+      setSidebarToast({
+        message: error instanceof Error ? error.message : `Chat could not be ${archived ? 'archived' : 'unarchived'}.`,
+        type: 'error',
+      });
     }
   };
 
@@ -3414,10 +3347,17 @@ export function ConversationsView({
     }
   };
 
+  const draftStartupController = useRef<AbortController | null>(null);
   const discardDraft = useCallback(() => {
+    const draft = newChatDraft;
+    if (draft?.state === 'starting') {
+      void cancelProviderChat(draft.id, 1).then(() => fetchConversationGroups()).catch(() => undefined);
+    }
+    draftStartupController.current?.abort();
+    draftStartupController.current = null;
     setNewChatDraft((draft) => draft ? reduceNewChatDraft(draft, { type: 'abandon' }) : null);
     setSelection((current) => current?.type === 'draft' ? null : current);
-  }, []);
+  }, [fetchConversationGroups, newChatDraft]);
 
   const startDraft = useCallback(async (provider: NewChatProvider, retry = false) => {
     const draft = newChatDraft;
@@ -3426,27 +3366,41 @@ export function ConversationsView({
       ? reduceNewChatDraft(draft, { type: 'retry' })
       : reduceNewChatDraft(draft, { type: 'choose', provider });
     if (starting.state !== 'starting') return;
-    setNewChatDraft(starting);
+    draftStartupController.current?.abort();
+    const startupController = new AbortController();
+    draftStartupController.current = startupController;
+    const optimisticSpawn = optimisticConversationSpawn(starting);
+    const accepted = reduceNewChatDraft(starting, {
+      type: 'accepted',
+      conversationId: starting.id,
+      spawn: optimisticSpawn,
+    });
+    setNewChatDraft(accepted);
+    setSelection({ type: 'conversation', id: starting.id });
+    const nextHash = hashWithAgentSession(
+      `#/console?conversation=${encodeURIComponent(starting.id)}`,
+      getAgentPageBinding(),
+    );
+    if (window.location.hash !== nextHash) window.location.hash = nextHash;
     try {
-      const sessionId = await onNewSession({
+      const result = await onNewConversation({
         idempotency_key: starting.id,
         provider: starting.provider,
-        placement: {
-          project_id: starting.placement.projectId,
-          checkout_id: starting.placement.checkoutId,
-        },
-      });
-      setNewChatDraft((current) => current?.id === starting.id
-        ? reduceNewChatDraft(starting, { type: 'ready', sessionId })
-        : current);
-      setSelection({ type: 'session', id: sessionId });
-      const nextHash = hashWithAgentSession(
-        `#/console?session=${encodeURIComponent(sessionId)}`,
-        getAgentPageBinding(),
-      );
-      if (window.location.hash !== nextHash) window.location.hash = nextHash;
-      onSelectSession(sessionId);
+        placement: starting.placement.kind === 'project'
+          ? {
+              kind: 'project',
+              project_id: starting.placement.projectId!,
+              checkout_id: starting.placement.checkoutId!,
+            }
+          : { kind: 'projectless' },
+      }, startupController.signal);
+      if (startupController.signal.aborted) return;
+      if (result.conversation_id !== starting.id || result.spawn.reservation_id !== starting.id) {
+        throw new Error('The server returned a different identity for the reserved chat.');
+      }
+      reconcileCreationReceipt(result.spawn);
     } catch (error) {
+      if (startupController.signal.aborted) return;
       const failure = error instanceof ConversationSpawnApiError
         ? error.failure
         : {
@@ -3454,24 +3408,20 @@ export function ConversationsView({
             message: error instanceof Error ? error.message : 'The provider could not start.',
             retryable: false,
           };
-      setNewChatDraft((current) => current?.id === starting.id
-        ? reduceNewChatDraft(starting, { type: 'fail', failure })
-        : current);
+      reconcileCreationReceipt({
+        ...optimisticSpawn,
+        state: 'failed',
+        error: failure,
+        updated_at: Date.now(),
+      });
+    } finally {
+      if (draftStartupController.current === startupController) draftStartupController.current = null;
     }
-  }, [newChatDraft, onNewSession, onSelectSession]);
+  }, [newChatDraft, onNewConversation, reconcileCreationReceipt]);
 
   const openNewSession = (cwd?: string) => {
-    const selectedProjectId = selectedConversationSummary
-      ? getCanonicalConversationProjectId(selectedConversationSummary)
-      : null;
-    const requested = cwd
-      ? registeredProjects.find((project) => project.root === cwd)
-      : registeredProjects.find((project) => project.id === selectedProjectId)
-        ?? shownProjects.flatMap((shown) => registeredProjects.filter((project) => (
-          project.id === shown.projectId && project.checkoutId === shown.checkoutId
-        )))[0]
-        ?? registeredProjects[0];
-    if (!requested) {
+    const requested = cwd ? registeredProjects.find((project) => project.root === cwd) : null;
+    if (cwd && !requested) {
       setSidebarToast({ message: 'Register a project checkout before starting a chat.', type: 'error' });
       return;
     }
@@ -3480,14 +3430,17 @@ export function ConversationsView({
       id,
       state: 'choosing',
       placement: {
-        projectId: requested.id,
-        checkoutId: requested.checkoutId,
-        projectLabel: requested.label,
+        kind: requested ? 'project' : 'projectless',
+        projectId: requested?.id ?? null,
+        checkoutId: requested?.checkoutId ?? null,
+        projectLabel: requested?.label ?? 'Chats',
       },
     });
-    setShownProjects((current) => current.some((shown) => (
-      shown.projectId === requested.id && shown.checkoutId === requested.checkoutId
-    )) ? current : [...current, { projectId: requested.id, checkoutId: requested.checkoutId }]);
+    if (requested) {
+      setShownProjects((current) => current.some((shown) => (
+        shown.projectId === requested.id && shown.checkoutId === requested.checkoutId
+      )) ? current : [...current, { projectId: requested.id, checkoutId: requested.checkoutId }]);
+    }
     setSelection({ type: 'draft', id });
   };
 
@@ -3555,13 +3508,16 @@ export function ConversationsView({
       onOpenExternally={entry.conversation?.external_navigation
         ? () => { void handleOpenExternally(entry); }
         : undefined}
+      onToggleArchived={entry.conversation ? () => { void handleToggleArchived(entry); } : undefined}
       onClick={() => {
-        discardDraft();
+        if (newChatDraft?.state === 'choosing') discardDraft();
         if (entry.kind === 'conversation' && entry.conversation) {
           handleNavigateConversation(entry.conversation.id);
+          setRetainedSelection(entry.conversation);
           return;
         }
         if (entry.session) {
+          setRetainedSelection(null);
           handleSelectSession(entry.session.id);
         }
       }}
@@ -3604,12 +3560,28 @@ export function ConversationsView({
                 {!hideEmpty && <span>Empty shown</span>}
                 {sort !== 'date' && <span>By blocks</span>}
                 {searchMode === 'full' && <span>Full text</span>}
+                {conversationLifecycle === 'archived' && <span>Archived</span>}
               </>
             ) : undefined}
             panel={filterPanelOpen ? {
               variant: 'popover',
               children: (
                 <>
+                <div className="sidebar-search-filter__section">
+                  <div className="sidebar-search-filter__label">Chats</div>
+                  <div className="sidebar-search-filter__options">
+                    {(['active', 'archived'] as const).map((lifecycle) => (
+                      <button
+                        key={lifecycle}
+                        type="button"
+                        className={`conv-filter-btn${conversationLifecycle === lifecycle ? ' conv-filter-btn--active' : ''}`}
+                        onClick={() => setChatViewState((current) => ({ ...current, conversationLifecycle: lifecycle }))}
+                      >
+                        {lifecycle === 'active' ? 'Active' : 'Archived'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="sidebar-search-filter__section">
                   <div className="sidebar-search-filter__label">Agent</div>
                   <div className="sidebar-search-filter__options">
@@ -3771,7 +3743,8 @@ export function ConversationsView({
                   >
                     {newChatDraft
                       && newChatDraft.state !== 'abandoned'
-                      && newChatDraft.state !== 'ready'
+                      && newChatDraft.state !== 'accepted'
+                      && newChatDraft.placement.kind === 'project'
                       && newChatDraft.placement.projectId === group.canonicalProjectId ? (
                         <SidebarItemRow
                           label="New chat"
@@ -3810,6 +3783,26 @@ export function ConversationsView({
                   loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}
                 >
+                  {newChatDraft
+                    && newChatDraft.state !== 'abandoned'
+                    && newChatDraft.state !== 'accepted'
+                    && newChatDraft.placement.kind === 'projectless' ? (
+                      <SidebarItemRow
+                        label="New chat"
+                        selectionLabel="Open new chat draft"
+                        selected={selection?.type === 'draft' && selection.id === newChatDraft.id}
+                        ariaCurrent={selection?.type === 'draft' && selection.id === newChatDraft.id ? 'true' : undefined}
+                        provider={newChatDraft.state === 'choosing'
+                          ? undefined
+                          : {
+                              label: newChatDraft.provider === 'codex' ? 'Codex' : 'Claude',
+                              tone: newChatDraft.provider === 'codex' ? 'codex' : 'claude',
+                            }}
+                        onSelect={() => setSelection((current) => current?.type === 'draft' && current.id === newChatDraft.id
+                          ? current
+                          : { type: 'draft', id: newChatDraft.id })}
+                      />
+                    ) : null}
                   {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
                   {totalVisibleEntries === 0 && sidebarLoaded && !loading ? (
                     <div className="sidebar-group-node__placeholder">No chats</div>
@@ -3817,9 +3810,6 @@ export function ConversationsView({
                 </SidebarGroupNode>
               );
             })() : null}
-            {loading && (
-              <div className="chat-history-empty">Loading…</div>
-            )}
       </ViewSidebar>
 
       {/* Detail pane */}
@@ -3850,6 +3840,12 @@ export function ConversationsView({
             consoleSessions={consoleSessions}
             sidebarCollapsed={false}
             chatEntityLinkAction={chatEntityLinkAction}
+            creationReceipt={selectedConversationSummary?.spawn ?? null}
+            onRetryCreation={selectedConversationSummary?.spawn?.error?.retryable ? () => {
+              const spawn = selectedConversationSummary.spawn!;
+              void retryProviderChat(spawn.reservation_id, spawn.attempt_count)
+                .then(reconcileCreationReceipt);
+            } : undefined}
           />
         ) : selection?.type === 'session' && selectedLiveSession ? (
           <LiveSessionDetail

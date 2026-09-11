@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
 import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
@@ -11,9 +12,11 @@ import { decompressContent } from "../src/compression.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
+import { ensureExactConversationFresh } from "../src/conversations/freshness.js";
 
 let tempDir = "";
 let db: Db;
+let previousCodexHome: string | undefined;
 const TEST_APPEND_BATCH_BYTES = 16 * 1024 * 1024;
 const TEST_HIGH_APPEND_OFFSET = 2_147_483_647 + 8192;
 
@@ -89,15 +92,61 @@ beforeEach(() => {
   db = openDb(path.join(tempDir, "mandible.db"));
   migrate(db);
   setDb(db);
+  previousCodexHome = process.env.CODEX_HOME;
 });
 
 afterEach(() => {
+  if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = previousCodexHome;
   vi.restoreAllMocks();
   db.close();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
 describe("incremental tail ingestion", () => {
+  it("attaches one preview-created Codex Chat by exact thread authority and replaces its provisional title", async () => {
+    const sessionId = "01a00000-0000-7000-8000-000000000123";
+    const reservationId = "01a00000-0000-7000-8000-000000000456";
+    const codexRoot = path.join(tempDir, ".codex");
+    const sessionDir = path.join(codexRoot, "sessions", "2026", "07", "02");
+    const sessionPath = path.join(sessionDir, `rollout-2026-07-02T00-00-00-${sessionId}.jsonl`);
+    await fsp.mkdir(sessionDir, { recursive: true });
+    await writeWithMtime(sessionPath, initialCodexRows(sessionId), 1);
+    process.env.CODEX_HOME = codexRoot;
+    const state = new Database(path.join(codexRoot, "state_5.sqlite"));
+    state.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, rollout_path TEXT, updated_at INTEGER, updated_at_ms INTEGER)");
+    state.prepare("INSERT INTO threads VALUES (?, ?, ?, ?, ?)").run(
+      sessionId,
+      "Current exact provider title",
+      sessionPath,
+      1_900_000_000,
+      1_900_000_000_000,
+    );
+    state.close();
+    db.prepare(`INSERT INTO conversation_spawn_requests (
+      id, schema_version, idempotency_key, request_digest, request_json, provider,
+      topology_kind, state, attempt_count, native_session_id, provider_session_id, created_at, updated_at
+    ) VALUES (?, 'mandible-conversation-spawn-request@3', ?, ?, '{}', 'codex',
+      'top-level', 'ready', 1, 'controller-1', ?, 1, 1)`).run(reservationId, reservationId, "a".repeat(64), sessionId);
+    db.prepare(`INSERT INTO conversations (
+      id, source, source_path, source_hash, source_mtime, title, started_at,
+      block_count, session_id, cwd, created_at, updated_at
+    ) VALUES (?, 'codex', ?, ?, 1, 'New Codex chat', '2026-07-02T00:00:00Z',
+      0, ?, '/tmp/project', '2026-07-02T00:00:00Z', '2026-07-02T00:00:00Z')`)
+      .run(reservationId, `mandible://chat/${reservationId}`, "b".repeat(64), sessionId);
+
+    await expect(triggerTargetedIngest({ sessionRef: sessionId, now: 1_000 })).resolves.toMatchObject({
+      status: "ingested",
+      transcript_path: sessionPath,
+    });
+    await expect(ensureExactConversationFresh(db, reservationId)).resolves.toMatchObject({ conversationId: reservationId });
+    expect(db.prepare("SELECT id, source_path, title FROM conversations WHERE id = ?").get(reservationId)).toEqual({
+      id: reservationId,
+      source_path: sessionPath,
+      title: "Current exact provider title",
+    });
+  });
+
   it("ingests appended Codex JSONL records without duplicating prior blocks", async () => {
     const sessionPath = await makeCodexSession();
     await writeWithMtime(sessionPath, initialCodexRows(), 1);

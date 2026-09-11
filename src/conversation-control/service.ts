@@ -1,8 +1,15 @@
+import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
+import { ConversationSourceReader } from "../conversations/source-reader.js";
+import {
+  getConversationStructureCache,
+  sparseConversationBlockId,
+} from "../conversations/structure-cache.js";
 import {
   ConversationControllerRegistry,
   trapAdapterCall,
   type ControllerAcquisitionRequest,
+  type ControllerLease,
   type ConversationControllerAdapter,
 } from "./adapter.js";
 import { ConversationControlStore } from "./store.js";
@@ -22,6 +29,17 @@ import type {
 
 type ActiveTurn = Extract<TurnState, { kind: "queued" | "running" | "waiting-user" | "waiting-permission" }>;
 
+export type NewConversationControllerRequest = {
+  conversation_id: string;
+  provider: "claude_code" | "codex";
+  generation: number;
+  cwd: string;
+  runtime_options: import("./types.js").ConversationRuntimeOptions;
+  signal?: AbortSignal;
+};
+
+export type NewConversationControllerLease = ControllerLease & { adapter_id: string };
+
 function isActiveTurn(turn: TurnState): turn is ActiveTurn {
   return turn.kind === "queued"
     || turn.kind === "running"
@@ -35,16 +53,26 @@ export class ConversationControlService {
 
   private readonly onChange: ((snapshot: ConversationControlSnapshot) => void) | undefined;
   private readonly onProviderEvent: ((event: ProviderAdapterEvent) => void) | undefined;
+  private readonly onTerminalTurn: ((input: {
+    conversation_id: string;
+    provider_session_id: string;
+    turn_id: string;
+  }) => Promise<{ status: string }>) | undefined;
+  private readonly onReconciliationDiagnostic: ((details: Record<string, unknown>) => void) | undefined;
   private readonly liveProjection = new Map<string, ProviderLiveProjection>();
 
   constructor(private readonly db: Db, options: {
     now?: () => number;
     onChange?: (snapshot: ConversationControlSnapshot) => void;
     onProviderEvent?: (event: ProviderAdapterEvent) => void;
+    onTerminalTurn?: (input: { conversation_id: string; provider_session_id: string; turn_id: string }) => Promise<{ status: string }>;
+    onReconciliationDiagnostic?: (details: Record<string, unknown>) => void;
   } = {}) {
     this.store = new ConversationControlStore(db, options.now);
     this.onChange = options.onChange;
     this.onProviderEvent = options.onProviderEvent;
+    this.onTerminalTurn = options.onTerminalTurn;
+    this.onReconciliationDiagnostic = options.onReconciliationDiagnostic;
   }
 
   registerAdapter(adapter: ConversationControllerAdapter): () => void {
@@ -59,6 +87,9 @@ export class ConversationControlService {
             ? this.store.bindProviderSession(conversation_id, generation, lifecycle.provider_session_id)
             : this.store.publishLifecycle(conversation_id, generation, lifecycle);
       if (result.ok) this.notify(conversation_id);
+      if (result.ok && lifecycle.kind === "turn-completed") {
+        void this.reconcileTerminalTurn(conversation_id, generation, lifecycle.turn_id);
+      }
       return result;
     });
     const unsubscribeProviderEvents = adapter.subscribeProviderEvents((event) => {
@@ -77,6 +108,100 @@ export class ConversationControlService {
     if (!boundary.ok) return boundary;
     const adapter = this.adapters.forProvider(boundary.value.source);
     return this.store.snapshot(conversationId, adapter?.capabilities ?? null, adapter?.id ?? null);
+  }
+
+  async ownsController(conversationId: string, generation: number): Promise<boolean> {
+    const snapshot = this.getSnapshot(conversationId);
+    if (!snapshot.ok || snapshot.value.ownership.kind !== "mandible"
+        || snapshot.value.ownership.generation !== generation) return false;
+    const ownership = snapshot.value.ownership;
+    const adapter = this.adapters.byAdapterId(ownership.adapter_id);
+    if (!adapter) return false;
+    const probed = await trapAdapterCall(adapter.id, () => adapter.probe({
+      conversation_id: conversationId,
+      provider_session_id: ownership.provider_session_id,
+      controller_instance_id: ownership.controller_instance_id,
+      generation,
+    }));
+    return probed.ok
+      && probed.value.kind === "owned"
+      && probed.value.provider_session_id === ownership.provider_session_id
+      && probed.value.controller_instance_id === ownership.controller_instance_id;
+  }
+
+  async acquireNew(
+    request: NewConversationControllerRequest,
+    commit: (lease: NewConversationControllerLease) => void,
+  ): Promise<Result<NewConversationControllerLease, ConversationControlError>> {
+    const adapter = this.adapters.forProvider(request.provider);
+    if (!adapter) {
+      return { ok: false, error: { kind: "adapter-unavailable", adapter_id: null, provider: request.provider } };
+    }
+    const controllerInstanceId = randomUUID();
+    const acquisition: ControllerAcquisitionRequest = {
+      kind: "start",
+      conversation_id: request.conversation_id,
+      generation: request.generation,
+      controller_instance_id: controllerInstanceId,
+      cwd: request.cwd,
+      runtime_options: request.runtime_options,
+      ...(request.signal ? { signal: request.signal } : {}),
+    };
+    const acquired = await trapAdapterCall(adapter.id, () => adapter.acquire(acquisition));
+    if (!acquired.ok) return acquired;
+    if (acquired.value.controller_instance_id !== controllerInstanceId
+        || !acquired.value.provider_session_id.trim()) {
+      await trapAdapterCall(adapter.id, () => adapter.stop({
+        conversation_id: request.conversation_id,
+        provider_session_id: acquired.value.provider_session_id,
+        controller_instance_id: controllerInstanceId,
+        generation: request.generation,
+      }));
+      return { ok: false, error: {
+        kind: "adapter-contract-violation" as const,
+        adapter_id: adapter.id,
+        message: "Adapter returned identity outside the new controller claim",
+      } };
+    }
+    const lease: NewConversationControllerLease = { ...acquired.value, adapter_id: adapter.id };
+    const stopAcquired = () => trapAdapterCall(adapter.id, () => adapter.stop({
+      conversation_id: request.conversation_id,
+      provider_session_id: lease.provider_session_id,
+      controller_instance_id: lease.controller_instance_id,
+      generation: request.generation,
+    }));
+    if (request.signal?.aborted) {
+      await stopAcquired();
+      return { ok: false, error: {
+        kind: "adapter-failure",
+        adapter_id: adapter.id,
+        code: "acquisition-aborted",
+        message: "Native conversation controller acquisition was cancelled",
+        retryable: true,
+      } };
+    }
+    try {
+      this.db.transaction(() => {
+        commit(lease);
+        const adopted = this.store.adoptNewController(
+          request.conversation_id,
+          request.generation,
+          adapter.id,
+          lease.controller_instance_id,
+          lease.provider_session_id,
+        );
+        if (!adopted.ok) throw new Error(JSON.stringify(adopted.error));
+      }).immediate();
+    } catch (thrown) {
+      await stopAcquired();
+      return { ok: false, error: {
+        kind: "adapter-contract-violation",
+        adapter_id: adapter.id,
+        message: thrown instanceof Error ? thrown.message : String(thrown),
+      } };
+    }
+    this.notify(request.conversation_id);
+    return { ok: true, value: lease };
   }
 
   async submit(request: ConversationSubmitRequest): Promise<Result<AcceptedConversationSubmission, ConversationControlError>> {
@@ -381,6 +506,191 @@ export class ConversationControlService {
     const current = this.liveProjection.get(event.conversation_id) ?? null;
     const next = mergeProviderLiveProjection(current, event);
     if (next !== current) this.liveProjection.set(event.conversation_id, next);
+  }
+
+  private async reconcileTerminalTurn(conversationId: string, generation: number, turnId: string): Promise<void> {
+    const snapshot = this.getSnapshot(conversationId);
+    const providerSessionId = snapshot.ok ? snapshot.value.provider_session_id : null;
+    if (!providerSessionId || !this.onTerminalTurn) return;
+    let status = "failed";
+    try {
+      status = (await this.onTerminalTurn({
+        conversation_id: conversationId,
+        provider_session_id: providerSessionId,
+        turn_id: turnId,
+      })).status;
+    } catch {
+      // The live projection remains authoritative until durable evidence exists.
+    }
+
+    const durableIds = new Set<string>();
+    const current = this.liveProjection.get(conversationId) ?? emptyProviderLiveProjection(conversationId);
+    let coveredIdentities: string[] = [];
+    try {
+      const delivery = this.db.prepare(`
+        SELECT idempotency_key, provider_receipt_id
+          FROM conversation_control_outbox
+         WHERE conversation_id = ? AND generation = ? AND turn_id = ?
+      `).get(conversationId, generation, turnId) as {
+        idempotency_key: string;
+        provider_receipt_id: string | null;
+      } | undefined;
+      const codexReceiptPrefix = "codex:turn:";
+      const durableProviderTurnIds = new Set<string>();
+      const rows = this.db.prepare(`
+        SELECT type, dag_uuid, metadata_json
+          FROM conversation_blocks
+         WHERE conversation_id = ?
+           AND (dag_uuid IS NOT NULL OR metadata_json LIKE '%provider_message_id%'
+             OR metadata_json LIKE '%provider_turn_id%')
+      `).all(conversationId) as Array<{ type: string; dag_uuid: string | null; metadata_json: string }>;
+      for (const row of rows) {
+        if (row.dag_uuid) durableIds.add(row.dag_uuid);
+        try {
+          const metadata = JSON.parse(row.metadata_json) as {
+            provider_message_id?: unknown;
+            provider_turn_id?: unknown;
+          };
+          if (typeof metadata.provider_message_id === "string" && metadata.provider_message_id) {
+            durableIds.add(metadata.provider_message_id);
+          }
+          if (row.type === "user_message"
+              && typeof metadata.provider_turn_id === "string"
+              && metadata.provider_turn_id) {
+            durableProviderTurnIds.add(metadata.provider_turn_id);
+          }
+        } catch {
+          // Invalid metadata cannot establish durable coverage.
+        }
+      }
+
+      const structuralIds = this.db.prepare(`
+        SELECT dag_uuid
+          FROM conversation_structural_blocks
+         WHERE conversation_id = ? AND status = 'current' AND dag_uuid IS NOT NULL
+         ORDER BY position DESC
+         LIMIT 512
+      `).all(conversationId) as Array<{ dag_uuid: string }>;
+      for (const row of structuralIds) durableIds.add(row.dag_uuid);
+
+      const expectedCodexTurnId = delivery?.provider_receipt_id?.startsWith(codexReceiptPrefix)
+        ? delivery.provider_receipt_id.slice(codexReceiptPrefix.length)
+        : null;
+      if (expectedCodexTurnId) {
+        const reader = new ConversationSourceReader(this.db);
+        const recentBlockIds = (this.db.prepare(`
+          SELECT id
+            FROM conversation_structural_blocks
+           WHERE conversation_id = ? AND status = 'current'
+           ORDER BY position DESC
+           LIMIT 64
+        `).all(conversationId) as Array<{ id: string }>).map((row) => row.id);
+
+        // Source-backed conversations intentionally reclaim dense structural rows.
+        // Read the bounded tail from the disposable sparse index as well, otherwise
+        // terminal reconciliation races the first lazy transcript read and leaves
+        // the optimistic prompt projected beside its durable copy.
+        const source = this.db.prepare(`
+          SELECT current_version_id
+            FROM conversation_sources
+           WHERE conversation_id = ? AND availability = 'available'
+        `).get(conversationId) as { current_version_id: string | null } | undefined;
+        if (source?.current_version_id) {
+          const cache = getConversationStructureCache(this.db);
+          const head = cache.readPage(conversationId, source.current_version_id, {
+            offset: 0,
+            limit: 1,
+          });
+          if (head && head.total > 0) {
+            const tail = cache.readPage(conversationId, source.current_version_id, {
+              offset: Math.max(0, head.total - 64),
+              limit: 64,
+            });
+            for (const row of tail?.rows ?? []) {
+              recentBlockIds.push(sparseConversationBlockId(conversationId, row.position));
+            }
+          }
+          const firstUser = cache.readPage(conversationId, source.current_version_id, {
+            offset: 0,
+            limit: 1,
+            types: ["user_message"],
+          });
+          if (firstUser && firstUser.total > 0) {
+            const recentUsers = cache.readPage(conversationId, source.current_version_id, {
+              offset: Math.max(0, firstUser.total - 16),
+              limit: 16,
+              types: ["user_message"],
+            });
+            for (const row of recentUsers?.rows ?? []) {
+              recentBlockIds.push(sparseConversationBlockId(conversationId, row.position));
+            }
+          }
+        }
+
+        for (const blockId of new Set(recentBlockIds)) {
+          const read = await reader.readBlock(blockId);
+          if (read.status !== "source" && read.status !== "legacy") continue;
+          if (read.value.dag_uuid) durableIds.add(read.value.dag_uuid);
+          try {
+            const metadata = JSON.parse(read.value.metadata_json) as {
+              provider_message_id?: unknown;
+              provider_turn_id?: unknown;
+            };
+            if (typeof metadata.provider_message_id === "string" && metadata.provider_message_id) {
+              durableIds.add(metadata.provider_message_id);
+            }
+            if (read.value.type === "user_message" && metadata.provider_turn_id === expectedCodexTurnId) {
+              durableProviderTurnIds.add(expectedCodexTurnId);
+            }
+          } catch {
+            // Invalid source metadata cannot establish durable coverage.
+          }
+        }
+      }
+      if (delivery?.provider_receipt_id?.startsWith(codexReceiptPrefix)
+          && durableProviderTurnIds.has(delivery.provider_receipt_id.slice(codexReceiptPrefix.length))) {
+        durableIds.add(delivery.idempotency_key);
+      }
+
+      coveredIdentities = current.events.flatMap((event) => {
+        if (event.kind !== "provisional-content") return [];
+        const message = event.event.message;
+        const candidates = [
+          event.correlation?.provider_message_id,
+          typeof message?.id === "string" ? message.id : null,
+          typeof event.event.uuid === "string" ? event.event.uuid : null,
+          event.identity.startsWith("message:") ? event.identity.slice("message:".length) : null,
+          event.identity.startsWith("event:") ? event.identity.slice("event:".length) : null,
+        ];
+        return candidates.some((candidate) => candidate && durableIds.has(candidate)) ? [event.identity] : [];
+      });
+      if (coveredIdentities.length > 0) {
+        const sequence = current.events.reduce((maximum, event) => Math.max(maximum, event.sequence), 0) + 1;
+        const event: ProviderAdapterEvent = {
+          kind: "durable-reconciliation",
+          conversation_id: conversationId,
+          provider_session_id: providerSessionId,
+          generation,
+          sequence,
+          observed_at: Date.now(),
+          provider_event_id: `turn:${turnId}`,
+          covered_identities: [...new Set(coveredIdentities)],
+        };
+        this.projectProviderEvent(event);
+        this.onProviderEvent?.(event);
+      }
+    } catch {
+      status = `${status}:projection_error`;
+    }
+    this.onReconciliationDiagnostic?.({
+      conversation_id: conversationId,
+      provider_session_id: providerSessionId,
+      turn_id: turnId,
+      ingest_status: status,
+      durable_identity_count: durableIds.size,
+      retired_live_count: new Set(coveredIdentities).size,
+      retained_live_count: current.events.filter((event) => event.kind === "provisional-content").length - new Set(coveredIdentities).size,
+    });
   }
 
   private materializeExactLineage(event: Extract<ProviderAdapterEvent, { kind: "provider-lineage" }>): void {

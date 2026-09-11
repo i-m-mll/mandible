@@ -15,13 +15,14 @@ import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { associateProjectArtifact, ingestArtifact, recordArtifactVersion } from "../src/provider-artifacts.js";
 import { registerConsoleRoutes } from "../src/routes/console.js";
 import { registerConversationSpawnRoutes } from "../src/routes/conversation-spawn.js";
+import { registerConversationControlRoutes } from "../src/routes/conversation-control.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import { registerWorkRoutes } from "../src/routes/work.js";
 import { Router } from "../src/server.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
 import type { ArtifactResolveResult } from "../src/types.js";
 import { createUser, setupOperator } from "../src/users/store.js";
-import { ProviderStartupError } from "../src/provider-startup.js";
 
 const SYSTEM_ACTOR = { attribution: systemAction() };
 
@@ -114,38 +115,54 @@ describe("restricted project route enforcement", () => {
       .run(project.id);
     const agent = createUser(db, { slug: "console-agent", kind: "agent", display_name: "Console Agent" });
     const { token } = authenticator.mintApiToken(agent.id);
-    const provenance = {
-      backend_type: "acp" as const,
-      provider: "codex",
-      implementation: { kind: "package" as const, name: "codex-acp", version: "1.0.2", entrypoint: "/exact/codex-acp", launcher: "/exact/node" },
-    };
-    let providerSessionId: string | null = null;
-    const manager = {
-      create: vi.fn((input: { id: string }) => ({ id: input.id })),
-      get: vi.fn((id: string) => ({ meta: { id, provider_session_id: providerSessionId } })),
-      getStartupProvenance: vi.fn(() => provenance),
-      startConversation: vi.fn(async () => {
-        providerSessionId = "provider-1";
-        return { provider_session_id: providerSessionId, provenance };
+    let failNext = false;
+    let waitForCancellation = false;
+    const control = {
+      acquireNew: vi.fn(async (request, commit) => {
+        if (waitForCancellation) {
+          await new Promise<void>((resolve) => request.signal.addEventListener("abort", resolve, { once: true }));
+          return { ok: false, error: {
+            kind: "adapter-failure",
+            adapter_id: "native-test",
+            code: "acquisition-aborted",
+            message: "cancelled",
+            retryable: true,
+          } };
+        }
+        if (failNext) {
+          failNext = false;
+          return { ok: false, error: {
+            kind: "adapter-failure",
+            adapter_id: "native-test",
+            code: "startup-failed",
+            message: "raw native provider secret",
+            retryable: true,
+          } };
+        }
+        const lease = {
+          adapter_id: request.provider === "codex" ? "codex-app-server-v2" : "claude-stream-json-v1",
+          controller_instance_id: `controller-${request.conversation_id}`,
+          provider_session_id: `provider-${request.conversation_id}`,
+        };
+        commit(lease);
+        return { ok: true, value: lease };
       }),
-      stop: vi.fn(),
-      delete: vi.fn(),
     };
-    registerConversationSpawnRoutes(router, db, manager as never);
+    registerConversationSpawnRoutes(router, db, control as never);
     const input = {
       method: "POST",
       url: "/api/conversation-spawns",
       body: {
-        schema: "mandible-conversation-spawn-request@2",
+        schema: "mandible-conversation-spawn-request@3",
         idempotency_key: "10000000-0000-4000-8000-000000000001",
         provider: "codex",
-        placement: { project_id: project.id, checkout_id: "spawn-checkout" },
+        placement: { kind: "project", project_id: project.id, checkout_id: "spawn-checkout" },
       },
       credential: token,
       transport: "http" as const,
     };
     expect((await router.invoke(input)).status).toBe(403);
-    expect(manager.create).not.toHaveBeenCalled();
+    expect(control.acquireNew).not.toHaveBeenCalled();
     addGrant(db, {
       subject_type: "user",
       subject: agent.id,
@@ -153,34 +170,27 @@ describe("restricted project route enforcement", () => {
       permission: "spawn_console",
     });
     const allowed = await router.invoke(input);
-    expect(allowed.status).toBe(201);
+    expect(allowed.status).toBe(202);
     expect(allowed.body).toMatchObject({
-      session: {
-        canonical_project_id: project.id,
-        canonical_checkout_id: "spawn-checkout",
-      },
+      conversation_id: "10000000-0000-4000-8000-000000000001",
+      spawn: { state: "ready", native_session_id: expect.stringMatching(/^controller-/) },
     });
-    expect(manager.create).toHaveBeenCalledOnce();
-    expect(manager.create).toHaveBeenCalledWith(expect.objectContaining({
-      id: "10000000-0000-4000-8000-000000000001",
-      command: "codex",
-      backend_type: "acp",
-      transport_lane: "acp",
-      runOptions: { model: "gpt-5.6-sol", mode: "agent-full-access" },
-    }));
-    expect(manager.startConversation).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000001", {
-      timeoutMs: 30_000,
-      signal: undefined,
-      provenance,
-    });
+    expect(control.acquireNew).toHaveBeenCalledWith(expect.objectContaining({
+      conversation_id: "10000000-0000-4000-8000-000000000001",
+      provider: "codex",
+      generation: 1,
+      cwd: "/work/spawn-project",
+      runtime_options: { model: "gpt-5.6-sol", permission_mode: "agent-full-access" },
+      signal: expect.any(AbortSignal),
+    }), expect.any(Function));
+    expect(db.prepare("SELECT source, session_id, cwd FROM conversations WHERE id = ?")
+      .get("10000000-0000-4000-8000-000000000001")).toEqual({
+        source: "codex",
+        session_id: "provider-10000000-0000-4000-8000-000000000001",
+        cwd: "/work/spawn-project",
+      });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM console_sessions").get()).toEqual({ count: 0 });
 
-    const claudeProvenance = {
-      backend_type: "sdk" as const,
-      provider: "claude_code",
-      implementation: { kind: "package" as const, name: "@anthropic-ai/claude-agent-sdk", version: "0.3.259", entrypoint: "/exact/claude", launcher: "/exact/node" },
-    };
-    manager.getStartupProvenance.mockReturnValueOnce(claudeProvenance);
-    manager.startConversation.mockResolvedValueOnce({ provider_session_id: null, provenance: claudeProvenance });
     const claude = await router.invoke({
       ...input,
       body: {
@@ -189,63 +199,126 @@ describe("restricted project route enforcement", () => {
         provider: "claude_code",
       },
     });
-    expect(claude.status).toBe(201);
-    expect(manager.create).toHaveBeenLastCalledWith(expect.objectContaining({
-      id: "10000000-0000-4000-8000-000000000004",
-      command: "claude",
-      backend_type: "sdk",
-      transport_lane: "sdk",
-      runOptions: { model: "opus", permission_mode: "bypassPermissions" },
-    }));
-    expect(claude.body).toMatchObject({
-      spawn: { state: "ready", provider_session_id: null },
-      session: { canonical_project_id: project.id, canonical_checkout_id: "spawn-checkout" },
-    });
+    expect(claude.status).toBe(202);
+    expect(control.acquireNew).toHaveBeenLastCalledWith(expect.objectContaining({
+      provider: "claude_code",
+      cwd: "/work/spawn-project",
+      runtime_options: { model: "claude-opus-5", permission_mode: "bypassPermissions" },
+    }), expect.any(Function));
 
-    providerSessionId = null;
-    manager.startConversation.mockRejectedValueOnce(new Error("raw SDK path and secret provider error"));
+    failNext = true;
     const failed = await router.invoke({
       ...input,
       body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000002" },
     });
-    expect(failed.status).toBe(502);
-    expect(failed.body).toMatchObject({
-      ok: false,
-      error: {
+    expect(failed.status).toBe(202);
+    await vi.waitFor(() => {
+      const row = db.prepare("SELECT state, error_json FROM conversation_spawn_requests WHERE id = ?")
+        .get("10000000-0000-4000-8000-000000000002") as { state: string; error_json: string };
+      expect(row.state).toBe("failed");
+      expect(JSON.parse(row.error_json)).toMatchObject({
         code: "provider_startup_failed",
-        message: "The provider failed before its native conversation was ready.",
+        message: "The native conversation controller failed before readiness.",
         retryable: true,
-      },
-      spawn: { state: "failed", native_session_id: null },
-    });
-    expect(JSON.stringify(failed.body)).not.toContain("secret provider error");
-    expect(manager.stop).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000002", "SIGTERM");
-    expect(manager.delete).toHaveBeenCalledWith("10000000-0000-4000-8000-000000000002");
-
-    const controller = new AbortController();
-    manager.startConversation.mockImplementationOnce(async (_id, options) => {
-      await new Promise<void>((_resolve, reject) => {
-        options.signal?.addEventListener("abort", () => reject(new ProviderStartupError(
-          "client_aborted",
-          "The client disconnected during provider startup.",
-          "readiness",
-        )), { once: true });
       });
-      throw new Error("unreachable");
+      expect(row.error_json).not.toContain("secret");
     });
-    const abortedResponse = router.invoke({
+
+    waitForCancellation = true;
+    const starting = await router.invoke({
       ...input,
       body: { ...input.body, idempotency_key: "10000000-0000-4000-8000-000000000003" },
-      signal: controller.signal,
     });
-    controller.abort();
-    await abortedResponse;
+    expect(starting.status).toBe(202);
+    const cancelled = await router.invoke({
+      method: "DELETE",
+      url: "/api/conversation-spawns/10000000-0000-4000-8000-000000000003",
+      body: { expected_generation: 1 },
+      credential: token,
+      transport: "http",
+    });
+    expect(cancelled.status).toBe(200);
     const abortedRow = db.prepare(
       "SELECT state, native_session_id, error_json FROM conversation_spawn_requests WHERE idempotency_key = ?",
-    ).get("10000000-0000-4000-8000-000000000003") as { state: string; native_session_id: string | null; error_json: string };
-    expect(abortedRow.state).toBe("failed");
+    ).get("10000000-0000-4000-8000-000000000003") as { state: string; native_session_id: string | null; error_json: string | null };
+    expect(abortedRow.state).toBe("cancelled");
     expect(abortedRow.native_session_id).toBeNull();
-    expect(JSON.parse(abortedRow.error_json)).toMatchObject({ code: "client_aborted", retryable: true });
+    expect(JSON.parse(abortedRow.error_json!)).toMatchObject({ code: "provider_startup_cancelled" });
+  });
+
+  it("admits preview submit and stop only for a preview-created controller owned at the exact generation", async () => {
+    const previewRoot = path.join(tempDir, "preview");
+    fs.mkdirSync(previewRoot);
+    const previewDb = path.join(previewRoot, "mandible.db");
+    const sourceDb = path.join(tempDir, "source.db");
+    fs.writeFileSync(previewDb, "preview");
+    fs.writeFileSync(sourceDb, "source");
+    const instance = resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+        MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+        MANDIBLE_PREVIEW_ROOT: previewRoot,
+      },
+      dbPath: previewDb,
+      sourceDbPath: sourceDb,
+    });
+    const previewRouter = new Router({ clientAuth: authenticator, instance });
+    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
+    const { token } = authenticator.mintApiToken(operator.id);
+    const conversationId = "10000000-0000-4000-8000-000000000099";
+    db.prepare(`INSERT INTO conversation_spawn_requests (
+      id, schema_version, idempotency_key, request_digest, request_json, provider,
+      project_id, checkout_id, topology_kind, state, attempt_count,
+      native_session_id, provider_session_id, initial_message_state, created_at, updated_at
+    ) VALUES (?, 'mandible-conversation-spawn-request@3', ?, ?, ?, 'codex',
+      NULL, NULL, 'top-level', 'ready', 1, 'controller-1', 'provider-1', NULL, 1, 1)`)
+      .run(conversationId, conversationId, "d".repeat(64), JSON.stringify({
+        schema: "mandible-conversation-spawn-request@3",
+        idempotency_key: conversationId,
+        provider: "codex",
+        placement: { kind: "projectless" },
+      }));
+    let owned = false;
+    const control = {
+      ownsController: vi.fn(async (_id: string, generation: number) => owned && generation === 1),
+      submit: vi.fn(async () => ({ ok: true, value: { kind: "accepted", delivery_id: "delivery-1", turn_id: "turn-1", snapshot: {} } })),
+      stop: vi.fn(async () => ({ ok: true, value: undefined })),
+      getSnapshot: vi.fn(() => ({ ok: false, error: { kind: "conversation-not-found" } })),
+      getLiveProjection: vi.fn(() => ({ ok: false, error: { kind: "conversation-not-found" } })),
+    };
+    registerConversationControlRoutes(previewRouter, control as never, { db, instance });
+    const submit = (id = conversationId, generation = 1) => previewRouter.invoke({
+      method: "POST",
+      url: `/api/conversations/${id}/control/submit`,
+      credential: token,
+      transport: "http",
+      body: {
+        operation: "send",
+        expected_revision: 2,
+        expected_generation: generation,
+        message: "hello",
+        idempotency_key: "submission-1",
+      },
+    });
+
+    expect(await submit()).toMatchObject({
+      status: 403,
+      body: { error: "preview_conversation_control_forbidden" },
+    });
+    owned = true;
+    expect((await submit()).status).toBe(202);
+    expect((await submit("copied-historical-chat")).status).toBe(403);
+    expect((await submit(conversationId, 2)).status).toBe(403);
+    expect((await previewRouter.invoke({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/control/stop`,
+      credential: token,
+      transport: "http",
+      body: { generation: 1 },
+    })).status).toBe(200);
+    expect(control.submit).toHaveBeenCalledOnce();
+    expect(control.stop).toHaveBeenCalledOnce();
   });
 
   it("denies restricted issue, artifact, and work reads and restores them with read access", async () => {

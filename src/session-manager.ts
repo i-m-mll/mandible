@@ -61,6 +61,7 @@ import {
   normalizeProviderStartupError,
   type ProviderStartupProvenance,
 } from "./provider-startup.js";
+import { ConversationSpawnService } from "./conversation-spawn/service.js";
 
 interface ConsoleSessionRow {
   id: string;
@@ -674,40 +675,65 @@ export class SessionManager {
     options: { timeoutMs: number; signal?: AbortSignal; provenance?: ProviderStartupProvenance },
   ): Promise<{ provider_session_id: string | null; provenance: ProviderStartupProvenance }> {
     const provenance = options.provenance ?? this.getStartupProvenance(id);
-
-    const deadline = Date.now() + options.timeoutMs;
     const backend = this.requireSession(id);
     const readinessController = new AbortController();
-    const abortReadiness = () => readinessController.abort();
+    let phase: ProviderStartupError["phase"] = "configuration";
+    const abortReadiness = () => {
+      if (!readinessController.signal.aborted) {
+        readinessController.abort(new ProviderStartupError(
+          "client_aborted",
+          "The client disconnected during provider startup.",
+          phase,
+        ));
+      }
+    };
     options.signal?.addEventListener("abort", abortReadiness, { once: true });
     if (options.signal?.aborted) abortReadiness();
+    const timeout = setTimeout(() => {
+      if (!readinessController.signal.aborted) {
+        readinessController.abort(new ProviderStartupError(
+          "provider_startup_timeout",
+          "The provider did not become ready before the startup deadline.",
+          phase,
+        ));
+      }
+    }, Math.max(0, options.timeoutMs));
     const providerSession = backend.prepare
       ? null
-      : this.waitForProviderSession(id, deadline, readinessController.signal);
+      : this.waitForProviderSession(id, readinessController.signal).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
     try {
+      if (readinessController.signal.aborted) {
+        throw this.startupAbortError(readinessController.signal, phase);
+      }
       this.start(id);
       await this.awaitStartupStep(
         this.waitForInitialRunOptions(id),
-        deadline,
         readinessController.signal,
         "configuration",
       );
+      phase = "readiness";
       if (backend.prepare) {
         await this.awaitStartupStep(
           backend.prepare(readinessController.signal),
-          deadline,
           readinessController.signal,
           "readiness",
         );
         return { provider_session_id: null, provenance };
       }
-      const providerSessionId = await providerSession!;
-      return { provider_session_id: providerSessionId, provenance };
+      const providerSessionResult = await providerSession!;
+      if (!providerSessionResult.ok) throw providerSessionResult.error;
+      return { provider_session_id: providerSessionResult.value, provenance };
     } catch (error) {
-      readinessController.abort();
-      if (providerSession) await providerSession.catch(() => undefined);
+      if (!readinessController.signal.aborted) {
+        readinessController.abort(normalizeProviderStartupError(error, phase));
+      }
+      if (providerSession) await providerSession;
       throw error;
     } finally {
+      clearTimeout(timeout);
       options.signal?.removeEventListener("abort", abortReadiness);
     }
   }
@@ -738,33 +764,22 @@ export class SessionManager {
 
   private awaitStartupStep<T>(
     operation: Promise<T>,
-    deadline: number,
-    signal: AbortSignal | undefined,
+    signal: AbortSignal,
     phase: "configuration" | "readiness",
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      if (signal?.aborted) {
-        reject(new ProviderStartupError("client_aborted", "The client disconnected during provider startup.", phase));
+      if (signal.aborted) {
+        reject(this.startupAbortError(signal, phase));
         return;
       }
-      const remaining = Math.max(0, deadline - Date.now());
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new ProviderStartupError(
-          "provider_startup_timeout",
-          "The provider did not become ready before the startup deadline.",
-          phase,
-        ));
-      }, remaining);
       const onAbort = () => {
         cleanup();
-        reject(new ProviderStartupError("client_aborted", "The client disconnected during provider startup.", phase));
+        reject(this.startupAbortError(signal, phase));
       };
       const cleanup = () => {
-        clearTimeout(timeout);
-        signal?.removeEventListener("abort", onAbort);
+        signal.removeEventListener("abort", onAbort);
       };
-      signal?.addEventListener("abort", onAbort, { once: true });
+      signal.addEventListener("abort", onAbort, { once: true });
       operation.then(
         (value) => { cleanup(); resolve(value); },
         (error) => { cleanup(); reject(normalizeProviderStartupError(error, phase)); },
@@ -774,20 +789,12 @@ export class SessionManager {
 
   private waitForProviderSession(
     id: string,
-    deadline: number,
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<string> {
     const backend = this.requireSession(id);
     return new Promise<string>((resolve, reject) => {
-      const remaining = Math.max(0, deadline - Date.now());
-      const timeout = setTimeout(() => settleError(new ProviderStartupError(
-        "provider_startup_timeout",
-        "The provider did not become ready before the startup deadline.",
-        "readiness",
-      )), remaining);
       const cleanup = () => {
-        clearTimeout(timeout);
-        signal?.removeEventListener("abort", onAbort);
+        signal.removeEventListener("abort", onAbort);
         backend.removeListener("meta_update", onMetaUpdate);
         backend.removeListener("status", onStatus);
         backend.removeListener("startup_error", onStartupError);
@@ -811,18 +818,20 @@ export class SessionManager {
       const onStartupError = (error: unknown) => {
         settleError(normalizeProviderStartupError(error));
       };
-      const onAbort = () => settleError(new ProviderStartupError(
-        "client_aborted",
-        "The client disconnected during provider startup.",
-        "readiness",
-      ));
+      const onAbort = () => settleError(this.startupAbortError(signal, "readiness"));
       backend.on("meta_update", onMetaUpdate);
       backend.on("status", onStatus);
       backend.on("startup_error", onStartupError);
-      signal?.addEventListener("abort", onAbort, { once: true });
-      if (signal?.aborted) onAbort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
       else onMetaUpdate({});
     });
+  }
+
+  private startupAbortError(signal: AbortSignal, phase: ProviderStartupError["phase"]): ProviderStartupError {
+    return signal.reason instanceof ProviderStartupError
+      ? signal.reason
+      : new ProviderStartupError("client_aborted", "The client disconnected during provider startup.", phase);
   }
 
   describeRunOptions(backendType: BackendType, command: string): SessionRunOptionsSnapshot {
@@ -1299,6 +1308,10 @@ export class SessionManager {
 
     backend.on("meta_update", (fields: BackendMetaUpdate) => {
       this.applyMetaUpdate(backend.id, fields);
+      if (fields.provider_session_id) {
+        new ConversationSpawnService(getDb(), Date.now, false)
+          .observeProviderSession(backend.id, fields.provider_session_id);
+      }
     });
 
     backend.on("status", (event: BackendStatusEvent) => {

@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../../ui/src/api.js';
 import type {
   CanonicalProject,
+  ConversationControlSnapshot,
+  ConversationSpawnReceipt,
   ConversationSidebarConversation,
   ConversationSidebarGroup,
   InstanceInfo,
@@ -41,6 +43,11 @@ vi.mock('@xterm/xterm', () => ({ Terminal: class { options = {}; loadAddon(): vo
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  });
   const rows = new Map<string, string>();
   const storage = {
     get length() { return rows.size; },
@@ -85,6 +92,32 @@ const pinnedTwo = conversation('pin-2', 'Pinned two', true);
 const projectOne = conversation('project-1', 'Project one');
 const projectTwo = conversation('project-2', 'Project two');
 
+function spawnReceipt(
+  id: string,
+  provider: 'codex' | 'claude_code',
+  placement: { kind: 'projectless' } | { kind: 'project'; project_id: string; checkout_id: string },
+  state: 'starting' | 'ready' = 'starting',
+): ConversationSpawnReceipt {
+  return {
+    schema: 'mandible-conversation-spawn-receipt@3',
+    reservation_id: id,
+    request: {
+      schema: 'mandible-conversation-spawn-request@3',
+      idempotency_key: id,
+      provider,
+      placement,
+    },
+    state,
+    attempt_count: 1,
+    native_session_id: state === 'ready' ? `controller-${id}` : null,
+    provider_session_id: state === 'ready' ? `provider-${id}` : null,
+    provider_receipt: null,
+    error: null,
+    created_at: 1,
+    updated_at: state === 'ready' ? 2 : 1,
+  };
+}
+
 const canonicalProjects: CanonicalProject[] = [
   {
     id: 'prj-mandible', project_key: 'mandible', display_name: 'Mandible',
@@ -113,7 +146,7 @@ function group(overrides: Partial<ConversationSidebarGroup> & Pick<ConversationS
 
 function renderView(
   consoleSessions: ConsoleSession[] = [],
-  onNewSession = vi.fn(),
+  onNewConversation = vi.fn(),
   instance: InstanceInfo | null = null,
   sidebarGroupLimit = 1,
 ): void {
@@ -124,7 +157,7 @@ function renderView(
     sidebarGroupLimit={sidebarGroupLimit}
     instance={instance}
     onSelectSession={() => undefined}
-    onNewSession={onNewSession}
+    onNewConversation={onNewConversation}
   />);
 }
 
@@ -315,8 +348,10 @@ describe('conversation sidebar groups', () => {
       }
       return { limit: 1, groups: [] };
     });
-    const onNewSession = vi.fn();
-    renderView([], onNewSession, null, 5);
+    const createdId = '10000000-0000-4000-8000-000000000001';
+    const placement = { kind: 'project' as const, project_id: 'prj-mandible', checkout_id: 'checkout-mandible' };
+    const onNewConversation = vi.fn().mockResolvedValue({ conversation_id: createdId, spawn: spawnReceipt(createdId, 'codex', placement) });
+    renderView([], onNewConversation, null, 5);
 
     expect(screen.queryByRole('button', { name: 'New chat in Mandible' })).toBeNull();
     fireEvent.click(await screen.findByRole('button', { name: 'Add project' }));
@@ -332,16 +367,156 @@ describe('conversation sidebar groups', () => {
     expect(within(projectSection).getByRole('button', { name: 'Open conversation Existing Claude' })).toBeTruthy();
     expect(within(projectSection).getByRole('button', { name: 'Open conversation Existing agy' })).toBeTruthy();
     expect(requests).toContainEqual(expect.objectContaining({ project_ids: ['prj-mandible'] }));
-    expect(onNewSession).not.toHaveBeenCalled();
+    expect(onNewConversation).not.toHaveBeenCalled();
 
     fireEvent.click(await screen.findByRole('button', { name: 'New chat in Mandible' }));
-    fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Alternate scoped chat' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create chat' }));
-    expect(onNewSession).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/repos/mandible' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start with Codex (OpenAI)' }));
+    expect(onNewConversation).toHaveBeenLastCalledWith(expect.objectContaining({
+      provider: 'codex',
+      placement: {
+        kind: 'project',
+        project_id: 'prj-mandible',
+        checkout_id: 'checkout-mandible',
+      },
+    }), expect.any(AbortSignal));
     await waitFor(() => expect(api.updateChatShownProjectsPreference).toHaveBeenLastCalledWith(
       [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
       expect.any(Number),
     ));
+  });
+
+  it('creates top-level Chat intent only in Chats with explicit projectless placement', async () => {
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
+      limit: 5,
+      groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats' })],
+    });
+    const createdId = '10000000-0000-4000-8000-000000000002';
+    const placement = { kind: 'projectless' as const };
+    const onNewConversation = vi.fn().mockResolvedValue({ conversation_id: createdId, spawn: spawnReceipt(createdId, 'claude_code', placement) });
+    renderView([], onNewConversation, null, 5);
+
+    fireEvent.click(within(screen.getByRole('region', { name: 'Chat actions' })).getByRole('button', { name: 'New chat' }));
+    const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('section') as HTMLElement;
+    expect(within(chatsSection).getByRole('button', { name: 'Open new chat draft' })).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Start with Claude' }));
+    expect(onNewConversation).toHaveBeenLastCalledWith(expect.objectContaining({
+      provider: 'claude_code',
+      placement: { kind: 'projectless' },
+    }), expect.any(AbortSignal));
+  });
+
+  it('shows the ordinary conversation composer immediately while provider startup is still being requested', async () => {
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
+      limit: 5,
+      groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats' })],
+    });
+    vi.spyOn(api, 'getProviderChat').mockImplementation(() => new Promise(() => undefined));
+    const onNewConversation = vi.fn().mockImplementation(() => new Promise(() => undefined));
+    renderView([], onNewConversation, null, 5);
+
+    fireEvent.click(within(screen.getByRole('region', { name: 'Chat actions' })).getByRole('button', { name: 'New chat' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start with Codex (OpenAI)' }));
+
+    expect(await screen.findByPlaceholderText('Message...')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open conversation New Codex chat' }).getAttribute('aria-current')).toBe('true');
+    expect(screen.queryByRole('dialog', { name: 'Choose a provider for the new chat' })).toBeNull();
+    expect(screen.queryByText('Starting provider…')).toBeNull();
+  });
+
+  it.each([
+    ['codex', 'projectless', 'click'],
+    ['claude_code', 'projectless', 'return'],
+    ['codex', 'project', 'return'],
+    ['claude_code', 'project', 'click'],
+  ] as const)('keeps one accepted %s %s identity through readiness and its immediate first submit', async (provider, placementKind, submitKind) => {
+    FakeEventSource.instances = [];
+    __resetSharedSseForTests(FakeEventSource as unknown as typeof EventSource);
+    vi.stubGlobal('EventSource', FakeEventSource);
+    vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
+    const id = `10000000-0000-4000-8000-0000000000${provider === 'codex' ? '1' : '2'}${placementKind === 'project' ? '1' : '0'}`;
+    vi.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue(id as `${string}-${string}-${string}-${string}-${string}`);
+    const placement = placementKind === 'project'
+      ? { kind: 'project' as const, project_id: 'prj-mandible', checkout_id: 'checkout-mandible' }
+      : { kind: 'projectless' as const };
+    if (placementKind === 'project') {
+      window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
+        shownProjects: [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
+      }));
+    }
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
+      limit: 5,
+      groups: [group({
+        key: placementKind === 'project' ? 'opaque:project:mandible' : 'opaque:chats',
+        kind: placementKind === 'project' ? 'project' : 'chats',
+        label: placementKind === 'project' ? 'Mandible' : 'Chats',
+        ...(placementKind === 'project' ? { project_id: 'prj-mandible', project_key: 'mandible' } : {}),
+      })],
+    });
+    vi.spyOn(api, 'getProviderChat').mockImplementation(() => new Promise(() => undefined));
+    const readyControl: ConversationControlSnapshot = {
+      conversation_id: id,
+      provider,
+      provider_session_id: `provider-${id}`,
+      provider_mode: 'app-server-managed',
+      provider_capabilities: null,
+      revision: 1,
+      ownership: {
+        kind: 'mandible', generation: 1, controller_instance_id: `controller-${id}`,
+        adapter_id: provider, provider_session_id: `provider-${id}`, last_authoritative_signal: 2,
+      },
+      controller: { kind: 'ready', since: 2 },
+      turn: { kind: 'none' },
+      capability: { kind: 'live-send', revision: 1, generation: 1 },
+      updated_at: 2,
+    };
+    vi.spyOn(api, 'getConversationControl').mockResolvedValue(readyControl);
+    vi.spyOn(api, 'getConversationLiveProjection').mockRejectedValue(new Error('No projection yet'));
+    const scopedConversation = {
+      ...conversation(id, ''),
+      source: provider,
+      session_id: `provider-${id}`,
+      canonical_project_id: placementKind === 'project' ? 'prj-mandible' : null,
+      canonical_project_key: placementKind === 'project' ? 'mandible' : null,
+    };
+    vi.spyOn(api, 'getConversationWindow').mockResolvedValue({
+      conversation: scopedConversation,
+      body_source: 'legacy', blocks: [], children: [], parent: null, revision: 0, total: 0,
+      target: { kind: 'initial', requested_value: null, position: null, block_id: null, turn_id: null },
+      window: { start_position: null, end_position: null, has_before: false, has_after: false, after_count: 0, limit: 160 },
+    });
+    const submit = vi.spyOn(api, 'submitConversationControl').mockResolvedValue({
+      kind: 'accepted', delivery_id: `delivery-${id}`, turn_id: `turn-${id}`, snapshot: readyControl,
+    });
+    const onNewConversation = vi.fn().mockResolvedValue({ conversation_id: id, spawn: spawnReceipt(id, provider, placement) });
+    renderView([], onNewConversation, null, 5);
+
+    const newChat = placementKind === 'project'
+      ? await screen.findByRole('button', { name: 'New chat in Mandible' })
+      : within(screen.getByRole('region', { name: 'Chat actions' })).getByRole('button', { name: 'New chat' });
+    fireEvent.click(newChat);
+    fireEvent.click(await screen.findByRole('button', { name: provider === 'codex' ? 'Start with Codex (OpenAI)' : 'Start with Claude' }));
+    const row = await screen.findByRole('button', { name: provider === 'codex' ? 'Open conversation New Codex chat' : 'Open conversation New Claude chat' });
+    expect(row.getAttribute('aria-current')).toBe('true');
+    expect(await screen.findByText('No messages yet')).toBeTruthy();
+    const composer = await screen.findByPlaceholderText('Message...') as HTMLTextAreaElement;
+    fireEvent.input(composer, { target: { value: 'First message' } });
+    if (submitKind === 'return') fireEvent.keyDown(composer, { key: 'Enter' });
+    else fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText('First message')).toBeTruthy();
+    expect(submit).not.toHaveBeenCalled();
+
+    FakeEventSource.instances[0].emit({ type: 'conversation-spawn:updated', data: { spawn: spawnReceipt(id, provider, placement, 'ready') } });
+    expect(await screen.findByPlaceholderText('Message...')).toBe(composer);
+    await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+    expect(submit).toHaveBeenCalledWith(
+      expect.objectContaining({ conversation_id: id }),
+      'First message',
+      undefined,
+      expect.any(Object),
+      expect.any(String),
+    );
+    expect(composer.value).toBe('');
   });
 
   it('cannot manufacture a project group from a legacy directory label or path', async () => {

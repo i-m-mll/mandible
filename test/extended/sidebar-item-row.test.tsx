@@ -104,7 +104,7 @@ describe('SidebarItemRow', () => {
     const labelRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__label \{([^}]*)\}/)?.[1] ?? '';
     const trailingRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1] ?? '';
     const revealRule = sidebarItemRowStylesheet.match(
-      /\.sidebar-item-row:hover \.sidebar-item-row__trailing,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__trailing,\s*\.sidebar-item-row--persistent-pin \.sidebar-item-row__trailing \{([^}]*)\}/,
+      /\.sidebar-item-row:hover \.sidebar-item-row__trailing,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__trailing,\s*\.sidebar-item-row--persistent-pin \.sidebar-item-row__trailing,\s*\.sidebar-item-row__trailing:has\(\.sidebar-item-row__overflow--open\) \{([^}]*)\}/,
     )?.[1] ?? '';
     expect(rowRule).toContain('--sidebar-item-row-reveal-width: 0px');
     expect(rowRule).toContain('display: block');
@@ -365,6 +365,53 @@ describe('SidebarItemRow', () => {
     fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Rename' }), { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps an open overflow menu hit-tested and contains one pointer activation', () => {
+    const onSelect = vi.fn();
+    const onArchive = vi.fn();
+    const onOuterPointerDown = vi.fn();
+    render(
+      <div onPointerDown={onOuterPointerDown}>
+        <SidebarItemRow
+          label="Pointer row"
+          selectionLabel="Select pointer row"
+          onSelect={onSelect}
+          actions={(
+            <SidebarItemOverflowMenu
+              label="More actions for pointer row"
+              actions={[{ id: 'archive', label: 'Archive', onSelect: onArchive }]}
+            />
+          )}
+        />
+      </div>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for pointer row' }));
+    const menu = screen.getByRole('menu');
+    const action = screen.getByRole('menuitem', { name: 'Archive' });
+    const overflow = menu.closest('.sidebar-item-row__overflow');
+    expect(overflow?.classList.contains('sidebar-item-row__overflow--open')).toBe(true);
+    expect(sidebarItemRowStylesheet).toMatch(
+      /\.sidebar-item-row__trailing:has\(\.sidebar-item-row__overflow--open\)[^{]*\{[^}]*opacity:\s*1;/s,
+    );
+    expect(sidebarItemRowStylesheet).toMatch(
+      /\.sidebar-item-row__actions:has\(\.sidebar-item-row__overflow--open\)\s*\{[^}]*opacity:\s*1;/s,
+    );
+    expect(sidebarItemRowStylesheet).toMatch(
+      /\.sidebar-item-row__menu\s*\{[^}]*pointer-events:\s*auto;/s,
+    );
+    expect(sidebarItemRowStylesheet).toMatch(
+      /\.sidebar-item-row--persistent-pin:not\(:hover\):not\(:focus-within\) \.sidebar-item-row__overflow:not\(\.sidebar-item-row__overflow--open\)/,
+    );
+
+    fireEvent.pointerDown(action);
+    fireEvent.pointerUp(action);
+    fireEvent.click(action);
+    expect(onArchive).toHaveBeenCalledOnce();
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onOuterPointerDown).not.toHaveBeenCalled();
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('flips and clamps overflow menus inside the viewport layer', async () => {

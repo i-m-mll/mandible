@@ -7,6 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   allowsOperationalMutations,
   isActorScopedBriefingResponseMutation,
+  isIsolatedPreviewConversationArchiveMutation,
+  isIsolatedPreviewConversationControlMutation,
+  isIsolatedPreviewConversationSpawnMutation,
   operationalMutationCategoryForPath,
   resolveInstanceInfo,
 } from "../src/instance-policy.js";
@@ -228,6 +231,109 @@ describe("instance mutation policy", () => {
         instance_role: "preview",
         operational_mutations: "reject",
       });
+    }
+  });
+
+  it("allows only the bounded Chat lifecycle on an isolated launcher-owned preview copy", async () => {
+    const fixture = createDatabaseIdentityFixture();
+    const instance = resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+        MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+        MANDIBLE_PREVIEW_ROOT: fixture.root,
+      },
+      dbPath: fixture.previewDbPath,
+      sourceDbPath: fixture.sourceDbPath,
+    });
+    const router = new Router({ instance });
+    for (const route of ["/api/conversation-spawns", "/api/conversation-spawns/not-a-lifecycle", "/api/conversations"]) {
+      router.post(route, (_req, res) => res.status(200).json({ route }), { fileRpc: "deny" });
+    }
+
+    expect(isIsolatedPreviewConversationSpawnMutation(instance, "POST", "/api/conversation-spawns")).toBe(true);
+    expect(isIsolatedPreviewConversationSpawnMutation(instance, "POST", "/api/conversation-spawns/10000000-0000-4000-8000-000000000001/retry")).toBe(true);
+    expect(isIsolatedPreviewConversationSpawnMutation(instance, "DELETE", "/api/conversation-spawns/10000000-0000-4000-8000-000000000001")).toBe(true);
+    expect(isIsolatedPreviewConversationControlMutation(instance, "POST", "/api/conversations/10000000-0000-4000-8000-000000000001/control/submit")).toBe(true);
+    expect(isIsolatedPreviewConversationControlMutation(instance, "POST", "/api/conversations/10000000-0000-4000-8000-000000000001/control/stop")).toBe(true);
+    expect(await router.invoke({ method: "POST", url: "/api/conversation-spawns", body: {} }))
+      .toEqual({ status: 200, body: { route: "/api/conversation-spawns" } });
+    for (const action of ["submit", "stop"]) {
+      router.post(`/api/conversations/:id/control/${action}`, (_req, res) => res.status(200).json({ action }), { fileRpc: "deny" });
+      expect(await router.invoke({ method: "POST", url: `/api/conversations/chat-1/control/${action}`, body: {} }))
+        .toEqual({ status: 200, body: { action } });
+    }
+    for (const route of ["/api/conversation-spawns/not-a-lifecycle", "/api/conversations"]) {
+      expect(await router.invoke({ method: "POST", url: route, body: {} }))
+        .toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden", category: "conversations" } });
+    }
+  });
+
+  it("allows only archive-state PATCH bodies for conversations in an isolated preview copy", async () => {
+    const fixture = createDatabaseIdentityFixture();
+    const instance = resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+        MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+        MANDIBLE_PREVIEW_ROOT: fixture.root,
+      },
+      dbPath: fixture.previewDbPath,
+      sourceDbPath: fixture.sourceDbPath,
+    });
+    const router = new Router({ instance });
+    router.patch("/api/conversations/:id", (req, res) => {
+      res.status(200).json({ id: req.params.id, body: req.body });
+    }, { fileRpc: "allow" });
+
+    for (const archived of [true, false]) {
+      const body = { archived };
+      expect(isIsolatedPreviewConversationArchiveMutation(
+        instance, "PATCH", "/api/conversations/chat-1", body,
+      )).toBe(true);
+      expect(await router.invoke({
+        method: "PATCH", url: "/api/conversations/chat-1", body,
+      })).toEqual({ status: 200, body: { id: "chat-1", body } });
+    }
+
+    for (const body of [
+      { starred: true },
+      { tags: ["copied-preview"] },
+      { notes: "copied-preview" },
+      { archived: true, starred: true },
+      { archived: "true" },
+    ]) {
+      expect(await router.invoke({
+        method: "PATCH", url: "/api/conversations/chat-1", body,
+      })).toMatchObject({
+        status: 403,
+        body: { error: "instance_mutation_forbidden", category: "conversations" },
+      });
+    }
+  });
+
+  it("rejects Chat creation when preview-copy provenance or containment is absent", async () => {
+    const fixture = createDatabaseIdentityFixture();
+    for (const instance of [
+      resolveInstanceInfo({
+        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_PREVIEW_ROOT: fixture.root },
+        dbPath: fixture.previewDbPath,
+        sourceDbPath: fixture.sourceDbPath,
+      }),
+      resolveInstanceInfo({
+        env: {
+          MANDIBLE_INSTANCE_ROLE: "preview",
+          MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+          MANDIBLE_PREVIEW_ROOT: path.join(fixture.root, "missing-root"),
+        },
+        dbPath: fixture.previewDbPath,
+        sourceDbPath: fixture.sourceDbPath,
+      }),
+    ]) {
+      const router = new Router({ instance });
+      router.post("/api/conversation-spawns", (_req, res) => res.status(200).json({ ok: true }), { fileRpc: "deny" });
+      expect(await router.invoke({ method: "POST", url: "/api/conversation-spawns", body: {} }))
+        .toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden" } });
     }
   });
 

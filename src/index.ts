@@ -90,7 +90,8 @@ import { registerTrashRoutes } from "./routes/trash.js";
 import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerDashboardRoutes } from "./routes/dashboard.js";
-import { startIngestion, stopIngestionGracefully } from "./ingestion.js";
+import { startIngestion, stopIngestionGracefully, triggerTargetedIngest } from "./ingestion.js";
+import { ensureExactConversationFresh } from "./conversations/freshness.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
@@ -307,6 +308,19 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       event: "conversation:provider-event",
       data: event,
     }),
+    onTerminalTurn: async ({ conversation_id, provider_session_id }) => {
+      const result = await triggerTargetedIngest({ sessionRef: provider_session_id });
+      try {
+        await ensureExactConversationFresh(db, conversation_id);
+        return { status: `${result.status}:fresh` };
+      } catch (error) {
+        const code = typeof error === "object" && error !== null && "code" in error
+          ? String((error as { code: unknown }).code)
+          : "freshness_error";
+        return { status: `${result.status}:${code}` };
+      }
+    },
+    onReconciliationDiagnostic: (details) => logger("info", "conversation_terminal_reconciliation", details),
   });
   registerDefaultConversationControllers(conversationControl);
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
@@ -315,7 +329,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerInboxRoutes(router, sessionRegistry, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);
-  registerConversationSpawnRoutes(router, db, sessionManager);
+  registerConversationSpawnRoutes(router, db, conversationControl);
   registerHookRoutes(router);
   // Bug: 4afab83 — auth hooks CRUD routes
   registerAuthHookRoutes(router);
@@ -344,7 +358,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerWorkflowRoutes(router);
   registerRedirectRoutes(router);
   registerConversationRoutes(router, sessionRegistry);
-  registerConversationControlRoutes(router, conversationControl);
+  registerConversationControlRoutes(router, conversationControl, { db, instance });
   registerConversationCustodyRoutes(router, db);
 
   try {

@@ -8,6 +8,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
+import Database from "better-sqlite3";
 import { getDb, type Db } from "./db.js";
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
@@ -16,6 +17,7 @@ import {
   codexRelocationCandidates,
   getCodexSessionIndexPath,
   isCodexRolloutPath,
+  locateCodexRollout,
   loadCodexNativeSessionId,
   loadCodexSessionIndexTitle,
 } from "./parsers/codex.js";
@@ -992,7 +994,7 @@ export interface TargetedIngestResult {
 
 export async function triggerTargetedIngest(input: TargetedIngestInput): Promise<TargetedIngestResult> {
   const sessionRef = normalizeTargetRef(input.sessionRef);
-  const transcriptPath = normalizeTargetPath(input.transcriptPath) ?? findTranscriptPathForSession(sessionRef);
+  const transcriptPath = normalizeTargetPath(input.transcriptPath) ?? await findTranscriptPathForSession(sessionRef);
   if (!transcriptPath) {
     return { ok: true, status: "no_target", transcript_path: null, session_ref: sessionRef };
   }
@@ -1070,20 +1072,43 @@ function normalizeTargetPath(value: string | null | undefined): string | null {
   return trimmed;
 }
 
-function findTranscriptPathForSession(sessionRef: string | null): string | null {
+async function findTranscriptPathForSession(sessionRef: string | null): Promise<string | null> {
   if (!sessionRef) {
     return null;
   }
   try {
     const db = getDb();
     const row = db.prepare(`
-      SELECT source_path
+      SELECT source, source_path, cwd
       FROM conversations
       WHERE session_id = ?
       ORDER BY updated_at DESC
       LIMIT 1
-    `).get(sessionRef) as { source_path: string | null } | undefined;
-    return normalizeTargetPath(row?.source_path ?? null);
+    `).get(sessionRef) as { source: string; source_path: string | null; cwd: string | null } | undefined;
+    const indexed = normalizeTargetPath(row?.source_path ?? null);
+    if (indexed) return indexed;
+    if (row?.source === "claude_code" && row.cwd) {
+      const encodedProject = row.cwd.replace(/[^A-Za-z0-9]/g, "-");
+      const candidate = path.join(os.homedir(), ".claude", "projects", encodedProject, `${sessionRef}.jsonl`);
+      return fs.existsSync(candidate) ? candidate : null;
+    }
+    if (row?.source === "codex") {
+      const codexRoot = path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"));
+      let stateDb: Database.Database | null = null;
+      try {
+        stateDb = new Database(path.join(codexRoot, "state_5.sqlite"), { readonly: true, fileMustExist: true });
+        const exact = stateDb.prepare("SELECT id, rollout_path FROM threads WHERE id = ?").get(sessionRef) as
+          | { id: string; rollout_path: string }
+          | undefined;
+        const candidate = normalizeTargetPath(exact?.rollout_path);
+        const location = candidate ? locateCodexRollout(candidate) : null;
+        if (!exact || exact.id !== sessionRef || !candidate || path.resolve(location?.codexRoot ?? "") !== codexRoot || !fs.existsSync(candidate)) return null;
+        return await loadCodexNativeSessionId(candidate) === sessionRef ? candidate : null;
+      } finally {
+        stateDb?.close();
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -2609,6 +2634,31 @@ async function ingestFilePass(
     return;
   }
 
+  const spawnIdentity = db.prepare(`SELECT id
+      FROM conversation_spawn_requests
+     WHERE schema_version = 'mandible-conversation-spawn-request@3'
+       AND provider = ?
+       AND provider_session_id = ?
+     ORDER BY updated_at DESC, id
+     LIMIT 1`)
+    .get(result.conversation.source, result.conversation.session_id) as { id: string } | undefined;
+  if (spawnIdentity) {
+    const bound = db.prepare("SELECT * FROM conversations WHERE id = ?")
+      .get(spawnIdentity.id) as typeof existing;
+    if (bound) {
+      existing = bound;
+      if (!existingRows.some((row) => row.id === bound.id)) existingRows.push(bound);
+    } else if (existing && existing.id !== spawnIdentity.id) {
+      logger("warn", "ingestion_spawn_identity_conflict", {
+        file: filePath,
+        provider_session_id: result.conversation.session_id,
+        spawn_id: spawnIdentity.id,
+        existing_conversation_id: existing.id,
+      });
+      return;
+    }
+  }
+
   const repairedDuplicateIds = reconcileDuplicateConversationPathOwnership(
     db,
     filePath,
@@ -2741,7 +2791,7 @@ async function ingestFilePass(
 
   // Determine if this is new or updated
   const isNew = !existing;
-  const conversationId = existing?.id ?? randomUUID();
+  const conversationId = existing?.id ?? spawnIdentity?.id ?? randomUUID();
 
   // Bug: 212ed66 — hard guard: never insert conversations with 0 blocks
   if (result.blocks.length === 0 && !isProviderTitleOnlyAppend) {

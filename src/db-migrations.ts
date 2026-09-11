@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL } from "./conversation-control/schema.js";
 import {
   CONVERSATION_SPAWN_SCHEMA_SQL,
+  CONVERSATION_SPAWN_SCHEMA_V2_SQL,
   CONVERSATION_SPAWN_SCHEMA_V1_SQL,
 } from "./conversation-spawn/schema.js";
 import {
@@ -924,7 +925,7 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP INDEX idx_conversation_spawn_requests_state",
       "ALTER TABLE conversation_spawn_events RENAME TO conversation_spawn_events_v174",
       "ALTER TABLE conversation_spawn_requests RENAME TO conversation_spawn_requests_v174",
-      ...CONVERSATION_SPAWN_SCHEMA_SQL,
+      ...CONVERSATION_SPAWN_SCHEMA_V2_SQL,
       `INSERT INTO conversation_spawn_requests (
          id, schema_version, idempotency_key, request_digest, request_json, provider,
          project_id, checkout_id, topology_kind, topology_target_conversation_id,
@@ -974,6 +975,44 @@ export const MIGRATIONS: readonly Migration[] = [
            OR OLD.deletions IS NOT NEW.deletions
          )
          BEGIN SELECT RAISE(ABORT, 'captured auth headline counts are immutable'); END`,
+    ],
+  },
+  {
+    version: 177,
+    name: "unified_chat_creation_lifecycle",
+    statements: [
+      "DROP TRIGGER conversation_spawn_events_immutable_update",
+      "DROP TRIGGER conversation_spawn_events_immutable_delete",
+      "DROP INDEX idx_conversation_spawn_requests_state",
+      "ALTER TABLE conversation_spawn_events RENAME TO conversation_spawn_events_v175",
+      "ALTER TABLE conversation_spawn_requests RENAME TO conversation_spawn_requests_v175",
+      ...CONVERSATION_SPAWN_SCHEMA_SQL,
+      `INSERT INTO conversation_spawn_requests (
+         id, schema_version, idempotency_key, request_digest, request_json, provider,
+         project_id, checkout_id, topology_kind, topology_target_conversation_id,
+         state, attempt_count, native_session_id, provider_session_id, provider_receipt_json,
+         initial_message_state, error_json, created_at, updated_at)
+       SELECT id, schema_version, idempotency_key, request_digest, request_json, provider,
+         project_id, checkout_id, topology_kind, topology_target_conversation_id,
+         state, attempt_count, native_session_id, provider_session_id, provider_receipt_json,
+         initial_message_state, error_json, created_at, updated_at
+       FROM conversation_spawn_requests_v175`,
+      `INSERT INTO conversation_spawn_events
+         (id, spawn_id, ordinal, event_kind, event_json, created_at)
+       SELECT id, spawn_id, ordinal, event_kind, event_json, created_at
+       FROM conversation_spawn_events_v175`,
+      "DROP TABLE conversation_spawn_events_v175",
+      "DROP TABLE conversation_spawn_requests_v175",
+    ],
+  },
+  {
+    version: 178,
+    name: "mandible_conversation_archive_state",
+    statements: [
+      `CREATE TABLE conversation_archive_states (
+        conversation_id TEXT PRIMARY KEY,
+        archived_at INTEGER NOT NULL CHECK(archived_at > 0)
+      )`,
     ],
   },
 ];
@@ -1065,6 +1104,43 @@ function getSchemaVersion(db: Db): number {
   return Number.isFinite(version) ? version : 0;
 }
 
+/**
+ * Reconcile the one schema-number collision created by the persistent Chat
+ * integration preview before the auth-report migration landed on `main`.
+ *
+ * That preview recorded the v3 Chat lifecycle as v176 and archive state as
+ * v177. The protected branch independently used v176 for immutable auth change
+ * reports. Exact shape checks distinguish the preview lineage: archive state
+ * and the v3 spawn schema are present, while the auth-report column is absent.
+ * Applying the canonical auth migration completes the v178 shape without
+ * rebuilding or discarding preview-only Chat state.
+ */
+function reconcileCollidedChatPreviewSchema(db: Db, found: number): number {
+  if (found !== 177) return found;
+  const archiveState = db.prepare(
+    "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'conversation_archive_states'",
+  ).get();
+  const authReportColumn = db.prepare(
+    "SELECT 1 FROM pragma_table_info('auth_requests') WHERE name = 'change_report_json'",
+  ).get();
+  const spawnSchema = db.prepare(
+    "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'conversation_spawn_requests'",
+  ).get() as { sql?: string } | undefined;
+  if (!archiveState || authReportColumn || !spawnSchema?.sql?.includes("mandible-conversation-spawn-request@3")) {
+    return found;
+  }
+
+  const authMigration = MIGRATIONS.find((migration) => migration.name === "immutable_auth_change_reports");
+  if (!authMigration) throw new Error("Canonical immutable auth change-report migration is missing");
+  db.transaction(() => {
+    for (const statement of authMigration.statements) db.exec(statement);
+    db.prepare(
+      "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    ).run(SCHEMA_VERSION_KEY, String(CURRENT_SCHEMA_VERSION));
+  })();
+  return CURRENT_SCHEMA_VERSION;
+}
+
 function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
   if (migrations.length === 0) return;
   const setVersion = db.prepare(
@@ -1095,13 +1171,15 @@ export function migrate(db: Db): void {
     return;
   }
 
-  const found = getSchemaVersion(db);
+  let found = getSchemaVersion(db);
   if (found < MINIMUM_SUPPORTED_SCHEMA_VERSION) {
     throw new UnsupportedSchemaVersionError(found, belowFloorMessage(found, databasePath(db)));
   }
   if (found > CURRENT_SCHEMA_VERSION) {
     throw new UnsupportedSchemaVersionError(found, aboveHeadMessage(found, databasePath(db)));
   }
+
+  found = reconcileCollidedChatPreviewSchema(db, found);
 
   applySchemaMigrations(db, MIGRATIONS.filter((migration) => migration.version > found));
 }

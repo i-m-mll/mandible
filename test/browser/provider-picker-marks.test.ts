@@ -4,8 +4,9 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 type ProviderMarkState = {
-  activeLabel: string | null;
-  before: { background: string; borderWidth: string; markOpacity: string };
+  initialActiveLabel: string | null;
+  focusedActiveLabel: string | null;
+  before: { background: string; borderWidth: string; markOpacity: string; ariaPressed: string | null };
   focused: { background: string; outlineStyle: string; outlineWidth: string; markOpacity: string };
 };
 
@@ -27,32 +28,43 @@ function renderProviderMarkState(): ProviderMarkState {
     ${tokens}\n${conversations}
     .new-chat-provider-picker__mark { transition: none; }
   </style></head><body>
-    <button class="new-chat-provider-picker__provider" aria-label="Start with Codex (OpenAI)">
-      <svg class="new-chat-provider-picker__mark" viewBox="0 0 721 721" aria-hidden="true"><path d="M0 0h721v721H0z" /></svg>
-    </button>
+    <div role="dialog" aria-label="Choose a provider for the new chat" tabindex="-1">
+      <button class="new-chat-provider-picker__provider" aria-label="Start with Codex (OpenAI)">
+        <svg class="new-chat-provider-picker__mark" viewBox="0 0 721 721" aria-hidden="true"><path d="M0 0h721v721H0z" /></svg>
+      </button>
+    </div>
     <script>
+      document.title = 'pending';
+      const dialog = document.querySelector('[role=dialog]');
       const button = document.querySelector('button');
       const mark = document.querySelector('svg');
+      dialog.focus();
       const beforeButton = getComputedStyle(button);
       const beforeMark = getComputedStyle(mark);
       const before = {
         background: beforeButton.backgroundColor,
         borderWidth: beforeButton.borderTopWidth,
         markOpacity: beforeMark.opacity,
+        ariaPressed: button.getAttribute('aria-pressed'),
       };
-      button.focus();
-      const focusedButton = getComputedStyle(button);
-      const focusedMark = getComputedStyle(mark);
-      document.title = btoa(JSON.stringify({
-        activeLabel: document.activeElement?.getAttribute('aria-label') ?? null,
-        before,
-        focused: {
-          background: focusedButton.backgroundColor,
-          outlineStyle: focusedButton.outlineStyle,
-          outlineWidth: focusedButton.outlineWidth,
-          markOpacity: focusedMark.opacity,
-        },
-      }));
+      const initialActiveLabel = document.activeElement?.getAttribute('aria-label') ?? null;
+      (async () => {
+        button.focus();
+        await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+        const focusedButton = getComputedStyle(button);
+        const focusedMark = getComputedStyle(mark);
+        document.title = btoa(JSON.stringify({
+          initialActiveLabel,
+          focusedActiveLabel: document.activeElement?.getAttribute('aria-label') ?? null,
+          before,
+          focused: {
+            background: focusedButton.backgroundColor,
+            outlineStyle: focusedButton.outlineStyle,
+            outlineWidth: focusedButton.outlineWidth,
+            markOpacity: focusedMark.opacity,
+          },
+        }));
+      })();
     </script>
   </body></html>`;
 
@@ -60,13 +72,15 @@ function renderProviderMarkState(): ProviderMarkState {
     '--headless=new',
     '--disable-gpu',
     '--no-sandbox',
+    '--run-all-compositor-stages-before-draw',
+    '--virtual-time-budget=1000',
     '--dump-dom',
     '--window-size=320,240',
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
   ], { encoding: 'utf8', maxBuffer: 10_000_000 });
   if (rendered.status !== 0) throw new Error(`Chromium provider mark fixture failed: ${rendered.stderr}`);
   const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
-  if (!encoded) throw new Error('Chromium provider mark fixture did not return computed styles.');
+  if (!encoded || encoded === 'pending') throw new Error('Chromium provider mark fixture did not return settled computed styles.');
   return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as ProviderMarkState;
 }
 
@@ -74,9 +88,11 @@ describe('New chat provider marks', () => {
   it('keeps the default hit target unboxed and reveals the darker focus treatment', () => {
     const state = renderProviderMarkState();
 
-    expect(state.activeLabel).toBe('Start with Codex (OpenAI)');
+    expect(state.initialActiveLabel).toBe('Choose a provider for the new chat');
+    expect(state.focusedActiveLabel).toBe('Start with Codex (OpenAI)');
     expect(state.before.background).toBe('rgba(0, 0, 0, 0)');
     expect(state.before.borderWidth).toBe('0px');
+    expect(state.before.ariaPressed).toBeNull();
     expect(Number(state.focused.markOpacity)).toBeGreaterThan(Number(state.before.markOpacity));
     expect(state.focused.background).not.toBe(state.before.background);
     expect(state.focused.outlineStyle).not.toBe('none');

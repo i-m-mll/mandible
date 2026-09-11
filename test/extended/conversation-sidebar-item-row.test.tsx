@@ -126,6 +126,42 @@ function positionWindow(row: Conversation) {
 }
 
 describe('conversation sidebar labeled-item rows', () => {
+  it('persists the lifecycle filter and archives and restores through the mounted sidebar', async () => {
+    let serverRow: ConversationSidebarConversation = { ...conversation, archived_at: null };
+    vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {
+      const archived = serverRow.archived_at != null;
+      return sidebarResponse((params.lifecycle === 'archived') === archived ? [serverRow] : []);
+    });
+    vi.spyOn(api, 'getConversationWindow').mockImplementation(async () => positionWindow(serverRow));
+    vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
+    vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
+    const updateArchive = vi.spyOn(api, 'updateConversationArchive').mockImplementation(async (_id, archived) => {
+      serverRow = { ...serverRow, archived_at: archived ? 1_000 : null };
+    });
+
+    render(<ConversationsView consoleSessions={[]} initialConversationId={null} initialSessionId={null} onSelectSession={() => undefined} onNewConversation={() => undefined} />);
+    await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
+    fireEvent.click(screen.getByRole('button', { name: `Chat actions for ${conversation.title}` }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
+    await waitFor(() => expect(updateArchive).toHaveBeenCalledWith(conversation.id, true));
+    await waitFor(() => expect(screen.queryByRole('button', { name: `Open conversation ${conversation.title}` })).toBeNull());
+    expect(document.querySelector('.chat-history-detail')?.textContent).toContain(conversation.title);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search and filter options' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archived' }));
+    const archivedRow = await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
+    expect(archivedRow).toBeTruthy();
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}'))
+      .toMatchObject({ conversationLifecycle: 'archived' }));
+    fireEvent.click(screen.getByRole('button', { name: `Chat actions for ${conversation.title}` }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Unarchive' }));
+    await waitFor(() => expect(updateArchive).toHaveBeenLastCalledWith(conversation.id, false));
+    await waitFor(() => expect(screen.queryByRole('button', { name: `Open conversation ${conversation.title}` })).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Active' }));
+    await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
+  });
+
   it('keeps selected and idle Chat widths full until actual focus reveals the shared overlay', async () => {
     const idleConversation = {
       ...conversation,
@@ -141,7 +177,7 @@ describe('conversation sidebar labeled-item rows', () => {
     ));
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-    render(<ConversationsView consoleSessions={[]} initialConversationId={null} initialSessionId={null} onSelectSession={() => undefined} onNewSession={() => undefined} />);
+    render(<ConversationsView consoleSessions={[]} initialConversationId={null} initialSessionId={null} onSelectSession={() => undefined} onNewConversation={() => undefined} />);
 
     const selected = await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
     const idle = await screen.findByRole('button', { name: `Open conversation ${idleConversation.title}` });
@@ -175,7 +211,7 @@ describe('conversation sidebar labeled-item rows', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -235,7 +271,7 @@ describe('conversation sidebar labeled-item rows', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -253,7 +289,7 @@ describe('conversation sidebar labeled-item rows', () => {
         initialConversationId={null}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
     await screen.findByRole('button', { name: `Open conversation ${unavailable.title}` });
@@ -283,7 +319,7 @@ describe('conversation sidebar labeled-item rows', () => {
         initialConversationId={conversation.id}
         initialSessionId={null}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
@@ -355,7 +391,7 @@ describe('conversation sidebar labeled-item rows', () => {
         initialSessionId={null}
         instance={rejectModePreview}
         onSelectSession={() => undefined}
-        onNewSession={() => undefined}
+        onNewConversation={() => undefined}
       />,
     );
 
