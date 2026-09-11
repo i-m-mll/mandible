@@ -1047,6 +1047,7 @@ function ConversationDetail({
   const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
   const [liveProjection, setLiveProjection] = useState<ProviderLiveProjection | null>(null);
+  const pendingDurableReconciliationsRef = useRef<Array<Extract<ProviderAdapterEvent, { kind: 'durable-reconciliation' }>>>([]);
   const [rightSidebarViewState, setRightSidebarViewState] = useState<ConversationRightSidebarViewState>({
     conversationId,
     previewTarget: null,
@@ -1148,6 +1149,15 @@ function ConversationDetail({
         const conv = flattenConversationWindow(payload);
         latestRevisionRef.current = Math.max(latestRevisionRef.current, payload.revision);
         setConversation(conv);
+        const pendingReconciliations = pendingDurableReconciliationsRef.current
+          .splice(0)
+          .filter((event) => event.conversation_id === conversationId);
+        if (pendingReconciliations.length > 0) {
+          setLiveProjection((current) => pendingReconciliations.reduce(
+            (projection, event) => mergeProviderLiveProjection(projection, event),
+            current,
+          ));
+        }
         setNavigationTarget({
           key: `${generation}:${payload.revision}:${payload.target.kind}:${payload.target.turn_id ?? ''}`,
           kind: payload.target.kind,
@@ -1184,6 +1194,7 @@ function ConversationDetail({
   useEffect(() => {
     setControl(null);
     setLiveProjection(null);
+    pendingDurableReconciliationsRef.current = [];
     setSubmitIntent(null);
     submittingIntentRef.current = null;
     const cancelControl = refreshControl();
@@ -1234,7 +1245,15 @@ function ConversationDetail({
       const providerEvent = eventData<ProviderAdapterEvent>(payload);
       if (!providerEvent) return;
       if (providerEvent.conversation_id !== conversationId) return;
-      if (providerEvent.kind === 'provider-lineage' || providerEvent.kind === 'durable-reconciliation') scheduleRefresh();
+      if (providerEvent.kind === 'durable-reconciliation') {
+        // Keep the provisional item visible until the durable window that
+        // replaces it has actually arrived. Removing it at the assertion and
+        // fetching afterward creates a visible empty frame for Codex turns.
+        pendingDurableReconciliationsRef.current.push(providerEvent);
+        scheduleRefresh();
+        return;
+      }
+      if (providerEvent.kind === 'provider-lineage') scheduleRefresh();
       setLiveProjection((current) => mergeProviderLiveProjection(current, providerEvent));
     });
     // Reconnect resync: refetch the open conversation after a dropped stream so
@@ -1654,7 +1673,7 @@ function ConversationDetail({
 
   const runOptionsGeometry = useIntrinsicOverflowGroup(
     hasRunOptions,
-    `${Boolean(permissionRunOption)}\u0000${Boolean(currentModel)}\u0000${Boolean(thinkingRunOption)}\u0000${Boolean(canShowSessionControls)}\u0000${sessionRunOptions?.revision ?? ''}`,
+    `${Boolean(permissionRunOption)}\u0000${composerPermission}\u0000${Boolean(currentModel)}\u0000${composerModel}\u0000${Boolean(thinkingRunOption)}\u0000${composerEffort}\u0000${Boolean(canShowSessionControls)}\u0000${sessionRunOptions?.revision ?? ''}`,
   );
 
   useEffect(() => {

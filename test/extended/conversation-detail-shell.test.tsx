@@ -10,6 +10,7 @@ import type { Conversation, ConversationBlock, ConversationControlSnapshot, Conv
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
 import { AppShellProvider, type AppRightSidebarDescriptor } from '../../ui/src/app-shell.js';
 import { detailRequestKey, writePersistedDetail } from '../../ui/src/detail-cache.js';
+import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import {
   ConversationsView,
@@ -56,6 +57,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  __resetSharedSseForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.head.querySelector('[data-test-compact-header-styles]')?.remove();
@@ -808,12 +810,13 @@ describe('compact detail pane shell', () => {
       disconnect(): void {}
     });
     let modelWidth = 100;
+    let modeWidth = 70;
     let runtimeWidth = 380;
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
       if (this.classList.contains('conv-compose__runtime')) return domRect(0, 0, runtimeWidth, 30);
       if (this.classList.contains('session-controls__field')) {
         const label = this.querySelector('select')?.getAttribute('aria-label');
-        return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Mode' ? 70 : 90, 30);
+        return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Mode' ? modeWidth : 90, 30);
       }
       if (this.classList.contains('context-usage') || this.classList.contains('conv-compose__send')) {
         return domRect(0, 0, 30, 30);
@@ -880,6 +883,12 @@ describe('compact detail pane shell', () => {
     expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false);
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBeNull();
     fireEvent.input(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'read-only' } });
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
+    modeWidth = 230;
+    fireEvent.change(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'agent' } });
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    modeWidth = 70;
+    fireEvent.change(inlineRunOptions?.querySelector('select[aria-label="Mode"]') as HTMLSelectElement, { target: { value: 'read-only' } });
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modelWidth = 220;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
@@ -1170,6 +1179,94 @@ describe('compact detail pane shell', () => {
 
     await act(async () => refresh.resolve(positionPayload(scopedConversation, [transcriptBlock, appendedBlock])));
     expect(screen.getByText('Live content stays visible')).toBeTruthy();
+  });
+
+  it('keeps Codex provisional assistant content until its durable replacement arrives', async () => {
+    const messageListeners = new Set<(event: MessageEvent) => void>();
+    class ProviderEventSource {
+      readyState = 1;
+      onerror: (() => void) | null = null;
+      onopen: (() => void) | null = null;
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+        if (type === 'message' && typeof listener === 'function') {
+          messageListeners.add(listener as (event: MessageEvent) => void);
+        }
+      }
+      removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+        if (type === 'message' && typeof listener === 'function') {
+          messageListeners.delete(listener as (event: MessageEvent) => void);
+        }
+      }
+      close(): void { this.readyState = 2; }
+    }
+    vi.stubGlobal('EventSource', ProviderEventSource);
+    __resetSharedSseForTests(ProviderEventSource as unknown as typeof EventSource);
+    const emit = (data: unknown) => {
+      const event = new MessageEvent('message', { data: JSON.stringify(data) });
+      messageListeners.forEach((listener) => listener(event));
+    };
+
+    const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
+    const durable = deferred<ConversationPositionWindow>();
+    vi.mocked(api.getConversationWindow)
+      .mockResolvedValueOnce(positionPayload(scopedConversation, [transcriptBlock]))
+      .mockImplementationOnce(() => durable.promise);
+    vi.spyOn(api, 'getConversationLiveProjection').mockResolvedValue({
+      conversation_id: conversation.id,
+      revision: 0,
+      events: [],
+    });
+    renderConversationDetail(scopedConversation);
+    expect(await screen.findByText(transcriptBlock.content)).toBeTruthy();
+
+    act(() => emit({
+      type: 'conversation:provider-event',
+      data: {
+        kind: 'provisional-content',
+        conversation_id: conversation.id,
+        provider_session_id: conversation.session_id,
+        generation: 1,
+        sequence: 1,
+        observed_at: 1,
+        identity: 'message:agent-1',
+        event: {
+          type: 'assistant',
+          uuid: 'agent-1',
+          session_id: conversation.session_id,
+          message: { id: 'agent-1', role: 'assistant', content: [{ type: 'text', text: 'Assistant stays continuous' }] },
+        },
+      },
+    }));
+    expect(await screen.findByText('Assistant stays continuous')).toBeTruthy();
+
+    act(() => emit({
+      type: 'conversation:provider-event',
+      data: {
+        kind: 'durable-reconciliation',
+        conversation_id: conversation.id,
+        provider_session_id: conversation.session_id,
+        generation: 1,
+        sequence: 2,
+        observed_at: 2,
+        provider_event_id: 'reconcile-1',
+        covered_identities: ['message:agent-1'],
+      },
+    }));
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Assistant stays continuous')).toBeTruthy();
+
+    const durableAssistant: ConversationBlock = {
+      ...transcriptBlock,
+      id: 'block-agent-1',
+      type: 'assistant_message',
+      role: 'assistant',
+      content: 'Assistant stays continuous',
+      position: 1,
+      dag_uuid: 'agent-1',
+      metadata_json: JSON.stringify({ provider_message_id: 'agent-1' }),
+    };
+    await act(async () => durable.resolve(positionPayload(scopedConversation, [transcriptBlock, durableAssistant])));
+    await waitFor(() => expect(screen.getAllByText('Assistant stays continuous')).toHaveLength(1));
   });
 
   it('re-resolves the true end when an append arrives during Jump to latest', async () => {

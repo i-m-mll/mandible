@@ -21,8 +21,12 @@ export function useIntrinsicOverflowGroup(enabled: boolean, structureKey: string
       const styles = getComputedStyle(element);
       return Number.parseFloat(styles.columnGap || styles.gap) || 0;
     };
+    const intrinsicWidth = (element: Element) => Math.max(
+      element.getBoundingClientRect().width,
+      element instanceof HTMLElement ? element.scrollWidth : 0,
+    );
     const sumWidths = (elements: Element[], itemGap: number) => elements.reduce(
-      (width, element) => width + element.getBoundingClientRect().width,
+      (width, element) => width + intrinsicWidth(element),
       Math.max(0, elements.length - 1) * itemGap,
     );
     const measure = () => {
@@ -43,7 +47,7 @@ export function useIntrinsicOverflowGroup(enabled: boolean, structureKey: string
     observer.observe(container);
     if (container.parentElement) observer.observe(container.parentElement);
     observer.observe(content);
-    Array.from(content.children).forEach((element) => observer.observe(element));
+    Array.from(content.querySelectorAll('*')).forEach((element) => observer.observe(element));
     Array.from(fixed.children).forEach((element) => observer.observe(element));
     return () => {
       cancelAnimationFrame(frame);
