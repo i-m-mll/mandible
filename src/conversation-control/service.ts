@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
 import {
+  getConversationStructureCache,
+  sparseConversationBlockId,
+} from "../conversations/structure-cache.js";
+import {
   ConversationControllerRegistry,
   trapAdapterCall,
   type ControllerAcquisitionRequest,
@@ -574,21 +578,69 @@ export class ConversationControlService {
         : null;
       if (expectedCodexTurnId) {
         const reader = new ConversationSourceReader(this.db);
-        const recentUserBlocks = this.db.prepare(`
+        const recentBlockIds = (this.db.prepare(`
           SELECT id
             FROM conversation_structural_blocks
-           WHERE conversation_id = ? AND status = 'current' AND type = 'user_message'
+           WHERE conversation_id = ? AND status = 'current'
            ORDER BY position DESC
-           LIMIT 16
-        `).all(conversationId) as Array<{ id: string }>;
-        for (const row of recentUserBlocks) {
-          const read = await reader.readBlock(row.id);
+           LIMIT 64
+        `).all(conversationId) as Array<{ id: string }>).map((row) => row.id);
+
+        // Source-backed conversations intentionally reclaim dense structural rows.
+        // Read the bounded tail from the disposable sparse index as well, otherwise
+        // terminal reconciliation races the first lazy transcript read and leaves
+        // the optimistic prompt projected beside its durable copy.
+        const source = this.db.prepare(`
+          SELECT current_version_id
+            FROM conversation_sources
+           WHERE conversation_id = ? AND availability = 'available'
+        `).get(conversationId) as { current_version_id: string | null } | undefined;
+        if (source?.current_version_id) {
+          const cache = getConversationStructureCache(this.db);
+          const head = cache.readPage(conversationId, source.current_version_id, {
+            offset: 0,
+            limit: 1,
+          });
+          if (head && head.total > 0) {
+            const tail = cache.readPage(conversationId, source.current_version_id, {
+              offset: Math.max(0, head.total - 64),
+              limit: 64,
+            });
+            for (const row of tail?.rows ?? []) {
+              recentBlockIds.push(sparseConversationBlockId(conversationId, row.position));
+            }
+          }
+          const firstUser = cache.readPage(conversationId, source.current_version_id, {
+            offset: 0,
+            limit: 1,
+            types: ["user_message"],
+          });
+          if (firstUser && firstUser.total > 0) {
+            const recentUsers = cache.readPage(conversationId, source.current_version_id, {
+              offset: Math.max(0, firstUser.total - 16),
+              limit: 16,
+              types: ["user_message"],
+            });
+            for (const row of recentUsers?.rows ?? []) {
+              recentBlockIds.push(sparseConversationBlockId(conversationId, row.position));
+            }
+          }
+        }
+
+        for (const blockId of new Set(recentBlockIds)) {
+          const read = await reader.readBlock(blockId);
           if (read.status !== "source" && read.status !== "legacy") continue;
+          if (read.value.dag_uuid) durableIds.add(read.value.dag_uuid);
           try {
-            const metadata = JSON.parse(read.value.metadata_json) as { provider_turn_id?: unknown };
-            if (metadata.provider_turn_id === expectedCodexTurnId) {
+            const metadata = JSON.parse(read.value.metadata_json) as {
+              provider_message_id?: unknown;
+              provider_turn_id?: unknown;
+            };
+            if (typeof metadata.provider_message_id === "string" && metadata.provider_message_id) {
+              durableIds.add(metadata.provider_message_id);
+            }
+            if (read.value.type === "user_message" && metadata.provider_turn_id === expectedCodexTurnId) {
               durableProviderTurnIds.add(expectedCodexTurnId);
-              break;
             }
           } catch {
             // Invalid source metadata cannot establish durable coverage.
