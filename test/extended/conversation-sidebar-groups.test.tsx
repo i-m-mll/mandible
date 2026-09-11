@@ -406,6 +406,24 @@ describe('conversation sidebar groups', () => {
     }), expect.any(AbortSignal));
   });
 
+  it('shows the ordinary conversation composer immediately while provider startup is still being requested', async () => {
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({
+      limit: 5,
+      groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats' })],
+    });
+    vi.spyOn(api, 'getProviderChat').mockImplementation(() => new Promise(() => undefined));
+    const onNewConversation = vi.fn().mockImplementation(() => new Promise(() => undefined));
+    renderView([], onNewConversation, null, 5);
+
+    fireEvent.click(within(screen.getByRole('region', { name: 'Chat actions' })).getByRole('button', { name: 'New chat' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Start with Codex (OpenAI)' }));
+
+    expect(await screen.findByPlaceholderText('Message...')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open conversation New Codex chat' }).getAttribute('aria-current')).toBe('true');
+    expect(screen.queryByRole('dialog', { name: 'Choose a provider for the new chat' })).toBeNull();
+    expect(screen.queryByText('Starting provider…')).toBeNull();
+  });
+
   it.each([
     ['codex', 'projectless', 'click'],
     ['claude_code', 'projectless', 'return'],
@@ -417,6 +435,7 @@ describe('conversation sidebar groups', () => {
     vi.stubGlobal('EventSource', FakeEventSource);
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
     const id = `10000000-0000-4000-8000-0000000000${provider === 'codex' ? '1' : '2'}${placementKind === 'project' ? '1' : '0'}`;
+    vi.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue(id as `${string}-${string}-${string}-${string}-${string}`);
     const placement = placementKind === 'project'
       ? { kind: 'project' as const, project_id: 'prj-mandible', checkout_id: 'checkout-mandible' }
       : { kind: 'projectless' as const };

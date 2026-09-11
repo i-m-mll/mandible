@@ -512,6 +512,35 @@ function conversationFromSpawn(
   };
 }
 
+function optimisticConversationSpawn(
+  draft: Extract<NewChatDraft, { state: 'starting' }>,
+): ConversationSpawnReceipt {
+  return {
+    schema: 'mandible-conversation-spawn-receipt@3',
+    reservation_id: draft.id,
+    request: {
+      schema: 'mandible-conversation-spawn-request@3',
+      idempotency_key: draft.id,
+      provider: draft.provider,
+      placement: draft.placement.kind === 'project'
+        ? {
+            kind: 'project',
+            project_id: draft.placement.projectId!,
+            checkout_id: draft.placement.checkoutId!,
+          }
+        : { kind: 'projectless' },
+    },
+    state: 'starting',
+    attempt_count: 1,
+    native_session_id: null,
+    provider_session_id: null,
+    provider_receipt: null,
+    error: null,
+    created_at: 0,
+    updated_at: 0,
+  };
+}
+
 function eventData<T>(payload: unknown): T | null {
   if (!payload || typeof payload !== 'object') return null;
   const record = payload as Record<string, unknown>;
@@ -3566,7 +3595,19 @@ export function ConversationsView({
     draftStartupController.current?.abort();
     const startupController = new AbortController();
     draftStartupController.current = startupController;
-    setNewChatDraft(starting);
+    const optimisticSpawn = optimisticConversationSpawn(starting);
+    const accepted = reduceNewChatDraft(starting, {
+      type: 'accepted',
+      conversationId: starting.id,
+      spawn: optimisticSpawn,
+    });
+    setNewChatDraft(accepted);
+    setSelection({ type: 'conversation', id: starting.id });
+    const nextHash = hashWithAgentSession(
+      `#/console?conversation=${encodeURIComponent(starting.id)}`,
+      getAgentPageBinding(),
+    );
+    if (window.location.hash !== nextHash) window.location.hash = nextHash;
     try {
       const result = await onNewConversation({
         idempotency_key: starting.id,
@@ -3580,19 +3621,10 @@ export function ConversationsView({
           : { kind: 'projectless' },
       }, startupController.signal);
       if (startupController.signal.aborted) return;
-      setNewChatDraft((current) => current?.id === starting.id
-        ? reduceNewChatDraft(starting, {
-            type: 'accepted',
-            conversationId: result.conversation_id,
-            spawn: result.spawn,
-          })
-        : current);
-      setSelection({ type: 'conversation', id: result.conversation_id });
-      const nextHash = hashWithAgentSession(
-        `#/console?conversation=${encodeURIComponent(result.conversation_id)}`,
-        getAgentPageBinding(),
-      );
-      if (window.location.hash !== nextHash) window.location.hash = nextHash;
+      if (result.conversation_id !== starting.id || result.spawn.reservation_id !== starting.id) {
+        throw new Error('The server returned a different identity for the reserved chat.');
+      }
+      reconcileCreationReceipt(result.spawn);
     } catch (error) {
       if (startupController.signal.aborted) return;
       const failure = error instanceof ConversationSpawnApiError
@@ -3602,13 +3634,16 @@ export function ConversationsView({
             message: error instanceof Error ? error.message : 'The provider could not start.',
             retryable: false,
           };
-      setNewChatDraft((current) => current?.id === starting.id
-        ? reduceNewChatDraft(starting, { type: 'fail', failure })
-        : current);
+      reconcileCreationReceipt({
+        ...optimisticSpawn,
+        state: 'failed',
+        error: failure,
+        updated_at: Date.now(),
+      });
     } finally {
       if (draftStartupController.current === startupController) draftStartupController.current = null;
     }
-  }, [newChatDraft, onNewConversation]);
+  }, [newChatDraft, onNewConversation, reconcileCreationReceipt]);
 
   const openNewSession = (cwd?: string) => {
     const requested = cwd ? registeredProjects.find((project) => project.root === cwd) : null;
