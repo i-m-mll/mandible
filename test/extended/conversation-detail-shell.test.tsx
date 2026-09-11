@@ -15,7 +15,6 @@ import {
   conversationAnchorFromHash,
   conversationAnchorHref,
   conversationLoadFailure,
-  conversationTurnSelectionHref,
   scopeConversationRightSidebar,
 } from '../../ui/src/views/conversations.js';
 
@@ -569,8 +568,6 @@ describe('compact detail pane shell', () => {
     expect(conversationAnchorFromHash('#/console?conversation=conv&turn=turn-9')).toEqual({ turn: 'turn-9' });
     expect(conversationAnchorFromHash('#/console?conversation=conv')).toBeNull();
     expect(conversationAnchorHref('conv 1', { block: 'block/42' })).toBe('#/console?conversation=conv+1&block=block%2F42');
-    expect(conversationTurnSelectionHref('conv 1', 'turn-9', 'turn-9')).toBe('#/console?conversation=conv+1');
-    expect(conversationTurnSelectionHref('conv 1', null, 'turn-9')).toBe('#/console?conversation=conv+1&turn=turn-9');
   });
 
   it('keeps the compact header and optional footer outside the scrolling body', () => {
@@ -718,14 +715,15 @@ describe('compact detail pane shell', () => {
     expect(composerInput).toBeTruthy();
     expect(submit.disabled).toBe(true);
     expect(submitIcon?.getAttribute('viewBox')).toBe('0 0 24 24');
-    expect(submitIcon?.getAttribute('stroke-width')).toBe('2.25');
+    expect(submitIcon?.getAttribute('stroke-width')).toBe('1');
     fireEvent.input(composerInput, { target: { value: 'Resume this chat.' } });
     expect(submit.disabled).toBe(false);
     expect(overlayControl?.textContent).not.toContain('Sending will resume this session.');
 
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     const menu = screen.getByRole('menu');
-    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(6);
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(5);
+    expect(screen.queryByRole('menuitem', { name: 'Select messages' })).toBeNull();
     expect(screen.queryByText('Inspect raw blocks')).toBeNull();
     expect(document.querySelector('.conv-blocks')).toBeNull();
     expect(document.querySelector('.block-user-message')).toBeNull();
@@ -746,7 +744,8 @@ describe('compact detail pane shell', () => {
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*0 0 auto;[^}]*max-width:\s*min\(240px, 100%\);/s);
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__select\s*\{[^}]*width:\s*auto;[^}]*min-width:\s*44px;[^}]*field-sizing:\s*content;/s);
     expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);
-    expect(conversationCss).toMatch(/\.conv-compose__send\s*\{[^}]*--conv-compose-send-hit-size:\s*34px;[^}]*--conv-compose-send-visual-size:\s*25\.5px;[^}]*--conv-compose-send-icon-size:\s*25\.5px;/s);
+    expect(conversationCss).toMatch(/\.conv-detail__body \.user-bubble__text :where\(p, li, blockquote, dd\)[^{]*\{[^}]*font-size:\s*var\(--text-lg\);/s);
+    expect(conversationCss).toMatch(/\.conv-compose__send\s*\{[^}]*--conv-compose-send-hit-size:\s*34px;[^}]*--conv-compose-send-visual-size:\s*25\.5px;[^}]*--conv-compose-send-icon-size:\s*17px;/s);
     expect(conversationCss).toMatch(/\.conv-compose__send::before\s*\{[^}]*width:\s*var\(--conv-compose-send-visual-size\);[^}]*height:\s*var\(--conv-compose-send-visual-size\);/s);
     expect(conversationCss).toMatch(/\.conv-compose__send > svg\s*\{[^}]*width:\s*var\(--conv-compose-send-icon-size\);[^}]*height:\s*var\(--conv-compose-send-icon-size\);/s);
     expect(conversationCss).not.toContain('@container (max-width: 700px)');
@@ -859,6 +858,8 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(inlineRunOptions?.querySelectorAll('select')).toHaveLength(3));
     expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false);
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBeNull();
+    fireEvent.input(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'read-only' } });
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modelWidth = 220;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
