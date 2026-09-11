@@ -523,21 +523,44 @@ export class ConversationControlService {
     let coveredIdentities: string[] = [];
     try {
       const rows = this.db.prepare(`
-        SELECT dag_uuid, metadata_json
+        SELECT type, dag_uuid, metadata_json
           FROM conversation_blocks
          WHERE conversation_id = ?
-           AND (dag_uuid IS NOT NULL OR metadata_json LIKE '%provider_message_id%')
-      `).all(conversationId) as Array<{ dag_uuid: string | null; metadata_json: string }>;
+           AND (dag_uuid IS NOT NULL OR metadata_json LIKE '%provider_message_id%'
+             OR metadata_json LIKE '%provider_turn_id%')
+      `).all(conversationId) as Array<{ type: string; dag_uuid: string | null; metadata_json: string }>;
+      const durableProviderTurnIds = new Set<string>();
       for (const row of rows) {
         if (row.dag_uuid) durableIds.add(row.dag_uuid);
         try {
-          const metadata = JSON.parse(row.metadata_json) as { provider_message_id?: unknown };
+          const metadata = JSON.parse(row.metadata_json) as {
+            provider_message_id?: unknown;
+            provider_turn_id?: unknown;
+          };
           if (typeof metadata.provider_message_id === "string" && metadata.provider_message_id) {
             durableIds.add(metadata.provider_message_id);
+          }
+          if (row.type === "user_message"
+              && typeof metadata.provider_turn_id === "string"
+              && metadata.provider_turn_id) {
+            durableProviderTurnIds.add(metadata.provider_turn_id);
           }
         } catch {
           // Invalid metadata cannot establish durable coverage.
         }
+      }
+      const delivery = this.db.prepare(`
+        SELECT idempotency_key, provider_receipt_id
+          FROM conversation_control_outbox
+         WHERE conversation_id = ? AND generation = ? AND turn_id = ?
+      `).get(conversationId, generation, turnId) as {
+        idempotency_key: string;
+        provider_receipt_id: string | null;
+      } | undefined;
+      const codexReceiptPrefix = "codex:turn:";
+      if (delivery?.provider_receipt_id?.startsWith(codexReceiptPrefix)
+          && durableProviderTurnIds.has(delivery.provider_receipt_id.slice(codexReceiptPrefix.length))) {
+        durableIds.add(delivery.idempotency_key);
       }
 
       coveredIdentities = current.events.flatMap((event) => {

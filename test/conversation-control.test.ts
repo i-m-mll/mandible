@@ -501,4 +501,53 @@ describe("authoritative conversation control", () => {
     })]);
     expect(JSON.stringify(diagnostics)).not.toContain("hello");
   });
+
+  it("retires a Codex prompt through its exact native turn when JSONL omits the provider message id", async () => {
+    const emitted: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
+    const service = new ConversationControlService(db, {
+      onTerminalTurn: async () => ({ status: "ingested:fresh" }),
+      onProviderEvent: (event) => emitted.push(event),
+    });
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+    const submitted = await service.submit(request(0, "intent-native-turn"));
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    const generation = submitted.value.snapshot.ownership.generation;
+    adapter.emitProvider({
+      kind: "provisional-content", conversation_id: "conversation-1", provider_session_id: "provider-1",
+      generation, sequence: 1, observed_at: 1, identity: "message:intent-native-turn",
+      correlation: {
+        intent_id: "intent-native-turn",
+        delivery_id: submitted.value.delivery_id,
+        turn_id: submitted.value.turn_id,
+        provider_message_id: "provider-user-without-jsonl-id",
+      },
+      event: {
+        type: "user",
+        uuid: "intent-native-turn",
+        message: { id: "intent-native-turn", role: "user", content: [{ type: "text", text: "hello" }] },
+      },
+    });
+    db.prepare(`UPDATE conversation_control_outbox
+      SET provider_receipt_id = 'codex:turn:native-turn-1'
+      WHERE id = ?`).run(submitted.value.delivery_id);
+    db.prepare(`INSERT INTO conversation_blocks (
+      id, conversation_id, type, role, content, position, metadata_json
+    ) VALUES ('block-native-turn', 'conversation-1', 'user_message', 'user', 'durable text wins', 0,
+      '{"provider_turn_id":"native-turn-1"}')`).run();
+
+    adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-started", turn_id: submitted.value.turn_id, at: 3 });
+    adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-completed", turn_id: submitted.value.turn_id, at: 4 });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(service.getLiveProjection("conversation-1")).toMatchObject({
+      ok: true,
+      value: { events: [] },
+    });
+    expect(emitted.at(-1)).toMatchObject({
+      kind: "durable-reconciliation",
+      covered_identities: ["message:intent-native-turn"],
+    });
+  });
 });

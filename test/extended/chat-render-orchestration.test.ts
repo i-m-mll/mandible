@@ -142,6 +142,11 @@ describe("chat render orchestration", () => {
         metadata_json: "{}",
       },
     ]);
+    expect(historyEvents[0]).toMatchObject({
+      type: "user",
+      uuid: "u1",
+      message: { id: "u1", role: "user" },
+    });
 
     const liveEvents: StreamEvent[] = [
       {
