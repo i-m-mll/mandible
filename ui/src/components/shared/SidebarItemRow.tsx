@@ -2,6 +2,7 @@ import type { ComponentChildren, JSX } from 'preact';
 import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { ContextualAction } from './ContextualAction';
+import { OfficialProviderMark, type OfficialProviderMarkKind } from './OfficialProviderMark';
 
 export type SidebarItemRowProps = {
   label: string;
@@ -10,7 +11,6 @@ export type SidebarItemRowProps = {
   selected?: boolean;
   className?: string;
   provider?: SidebarItemProvider;
-  selectionTone?: SidebarItemProviderTone;
   trailingReveal?: 'interaction' | 'persistent-pin';
   leading?: ComponentChildren;
   badges?: ComponentChildren;
@@ -55,7 +55,6 @@ export function SidebarItemRow({
   selected = false,
   className,
   provider,
-  selectionTone,
   trailingReveal = 'interaction',
   leading,
   badges,
@@ -92,7 +91,7 @@ export function SidebarItemRow({
   }, [actions, provider, syncTrailingWidth, trailingReveal]);
 
   return (
-    <div ref={rowRef} className={`sidebar-item-row contextual-action-owner${selected ? ' sidebar-item-row--selected' : ''}${selectionTone ? ` sidebar-item-row--selection-${selectionTone}` : ''}${trailingReveal === 'persistent-pin' ? ' sidebar-item-row--persistent-pin' : ''}${className ? ` ${className}` : ''}`}>
+    <div ref={rowRef} className={`sidebar-item-row contextual-action-owner${selected ? ' sidebar-item-row--selected' : ''}${provider?.mark ? ' sidebar-item-row--has-provider-mark' : ''}${trailingReveal === 'persistent-pin' ? ' sidebar-item-row--persistent-pin' : ''}${className ? ` ${className}` : ''}`}>
       <button
         ref={selectRef}
         type="button"
@@ -111,7 +110,7 @@ export function SidebarItemRow({
           {badges ? <span className="sidebar-item-row__badges">{badges}</span> : null}
         </span>
       </button>
-      {provider || actions ? (
+      {provider?.mark || actions ? (
         <span
           ref={(element) => {
             trailingRef.current = element;
@@ -119,12 +118,16 @@ export function SidebarItemRow({
           }}
           className="sidebar-item-row__trailing contextual-action-scope"
         >
-          {provider ? (
+          {actions ? <span className={`sidebar-item-row__actions contextual-action-group${trailingReveal === 'persistent-pin' ? ' contextual-action-group--persistent' : ''}`}>{actions}</span> : null}
+          {provider?.mark ? (
             <span className="sidebar-item-row__provider">
-              <SidebarItemProviderDot label={provider.label} tone={provider.tone} />
+              <OfficialProviderMark
+                kind={provider.mark}
+                className="sidebar-item-row__provider-mark"
+                accessibleLabel={`Provider: ${provider.label}`}
+              />
             </span>
           ) : null}
-          {actions ? <span className={`sidebar-item-row__actions contextual-action-group${trailingReveal === 'persistent-pin' ? ' contextual-action-group--persistent' : ''}`}>{actions}</span> : null}
         </span>
       ) : null}
     </div>
@@ -153,30 +156,10 @@ export function SidebarItemBadge({
   );
 }
 
-export type SidebarItemProviderTone = 'claude' | 'codex' | 'agy';
-
 export type SidebarItemProvider = {
   label: string;
-  tone: SidebarItemProviderTone;
+  mark: OfficialProviderMarkKind | null;
 };
-
-export function SidebarItemProviderDot({
-  label,
-  tone,
-}: {
-  label: string;
-  tone: SidebarItemProviderTone;
-}): JSX.Element {
-  const accessibleLabel = `Provider: ${label}`;
-  return (
-    <span
-      className={`sidebar-item-row__provider-dot sidebar-item-row__provider-dot--${tone}`}
-      role="img"
-      aria-label={accessibleLabel}
-      title={accessibleLabel}
-    />
-  );
-}
 
 function PinIcon(): JSX.Element {
   return (
