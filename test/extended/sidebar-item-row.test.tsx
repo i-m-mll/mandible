@@ -235,7 +235,7 @@ describe('SidebarItemRow', () => {
     expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('54px');
   });
 
-  it('keeps an accessible official provider mark persistently at the right edge after reveal-only actions', () => {
+  it('keeps an accessible official provider mark in a fixed right-edge slot after reveal-only actions', () => {
     render(
       <SidebarItemRow
         label="Provider row"
@@ -263,19 +263,21 @@ describe('SidebarItemRow', () => {
     const selectRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__select \{([^}]*)\}/)?.[1] ?? '';
     expect(selectRule).toContain('padding: 5px 7px 5px var(--sidebar-title-column-inset, 7px)');
     const providerRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider \{([^}]*)\}/)?.[1] ?? '';
-    expect(providerRule).toContain('width: 14px');
-    expect(providerRule).toContain('flex: 0 0 14px');
+    expect(providerRule).toContain('width: 18px');
+    expect(providerRule).toContain('flex: 0 0 18px');
     expect(providerRule).toContain('justify-content: center');
     expect(providerRule).not.toMatch(/position: absolute|left:/);
     const markRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-mark \{([^}]*)\}/)?.[1] ?? '';
-    expect(markRule).toContain('width: 14px');
+    expect(markRule).toContain('width: 18px');
+    expect(markRule).toContain('height: 18px');
     expect(markRule).toContain('color: var(--text-subdued)');
-    expect(markRule).not.toMatch(/opacity|background/);
+    expect(markRule).toContain('opacity: 0');
+    expect(markRule).not.toMatch(/background/);
     const providerFootprintRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row--has-provider-mark \{([^}]*)\}/)?.[1] ?? '';
-    expect(providerFootprintRule).toContain('--sidebar-item-row-reveal-width: 18px');
+    expect(providerFootprintRule).toContain('--sidebar-item-row-reveal-width: 22px');
   });
 
-  it('keeps the mark visible on a selected row while actions remain interaction-only', () => {
+  it('reveals provider marks only for hover, focus-within, and selection while actions remain interaction-only', () => {
     render(
       <SidebarItemRow
         label="Selected at rest"
@@ -293,9 +295,10 @@ describe('SidebarItemRow', () => {
     expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1]).toContain('opacity: 1');
     expect(screen.getByRole('img', { name: 'Provider: Codex' })).toBeTruthy();
     expect(row.querySelector('.sidebar-item-row__actions')?.classList.contains('contextual-action-group')).toBe(true);
-    expect(sidebarItemRowStylesheet).not.toMatch(
-      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-mark|actions)/,
+    expect(sidebarItemRowStylesheet).toMatch(
+      /\.sidebar-item-row:hover \.sidebar-item-row__provider-mark,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-mark,\s*\.sidebar-item-row--selected \.sidebar-item-row__provider-mark \{\s*opacity: 1;/,
     );
+    expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|actions)/);
     expect(row.classList.contains('contextual-action-owner')).toBe(true);
     expect(contextualActionStylesheet).not.toMatch(/selected[^}]*contextual-action-group/);
   });
