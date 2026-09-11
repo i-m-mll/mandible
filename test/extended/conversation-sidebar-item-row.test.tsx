@@ -184,9 +184,8 @@ describe('conversation sidebar labeled-item rows', () => {
     await waitFor(() => expect(selected.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--selected')).toBe(true));
     expect(idle.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--selected')).toBe(false);
     expect(idle.nextElementSibling?.classList.contains('sidebar-item-row__trailing')).toBe(true);
-    expect(sidebarItemRowStylesheet).not.toMatch(
-      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-mark|actions)/,
-    );
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__provider-mark \{\s*opacity: 1;/);
+    expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|actions)/);
     idle.focus();
     expect(document.activeElement).toBe(idle);
     expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{[^}]*--sidebar-item-row-reveal-width: var\(--sidebar-item-row-trailing-width, 0px\);/s);
@@ -229,7 +228,7 @@ describe('conversation sidebar labeled-item rows', () => {
     expect(trailing?.firstElementChild?.classList.contains('sidebar-item-row__actions')).toBe(true);
     expect(trailing?.lastElementChild?.classList.contains('sidebar-item-row__provider')).toBe(true);
     expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__trailing/);
-    expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__provider-mark/);
+    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__provider-mark \{\s*opacity: 1;/);
     expect(sidebarItemRowStylesheet).not.toMatch(/sidebar-selection|selection-(?:claude|codex|agy)/);
     expect(chatHistoryStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|select|label|actions|provider)/);
     expect(row?.querySelector('.agent-mark')).toBeNull();
