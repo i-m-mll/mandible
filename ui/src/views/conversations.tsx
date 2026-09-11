@@ -33,7 +33,6 @@ import type {
   WorkflowRun,
 } from '../api.js';
 import {
-  exportConversationBlocks,
   forkConversation,
   getConsoleSessionUsage,
   getConsoleSessionOptions,
@@ -596,17 +595,6 @@ export function conversationAnchorHref(
   return `#/console?${params.toString()}`;
 }
 
-export function conversationTurnSelectionHref(
-  conversationId: string,
-  selectedTurnId: string | null,
-  nextTurnId: string,
-): string {
-  if (selectedTurnId === nextTurnId) {
-    return `#/console?${new URLSearchParams({ conversation: conversationId }).toString()}`;
-  }
-  return conversationAnchorHref(conversationId, { turn: nextTurnId });
-}
-
 // ── Props ──
 
 export type NewChatInput = {
@@ -642,133 +630,10 @@ function HorizontalDotsIcon(): JSX.Element {
 
 export function ChatComposerSubmitIcon(): JSX.Element {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <path d="m6 12 6-6 6 6" />
       <path d="M12 6v12" />
     </svg>
-  );
-}
-
-// ── Export Panel ──
-
-function ExportPanel({
-  conversationId,
-  exportableCount,
-  hiddenSelectedCount,
-  selectedIds,
-  onClose,
-}: {
-  conversationId: string;
-  exportableCount: number;
-  totalSelectedCount: number;
-  hiddenSelectedCount: number;
-  selectedIds: string[];
-  onClose: () => void;
-}): JSX.Element {
-  const [format, setFormat] = useState<'mdx' | 'markdown' | 'json'>('markdown');
-  const [status, setStatus] = useState<'idle' | 'exporting' | 'done' | 'error'>('idle');
-  const [result, setResult] = useState<{ content: string; filename: string } | null>(null);
-
-  const handleExport = async () => {
-    setStatus('exporting');
-    try {
-      const res = await exportConversationBlocks(conversationId, {
-        block_ids: selectedIds,
-        format,
-      });
-      setResult(res);
-      setStatus('done');
-    } catch {
-      setStatus('error');
-    }
-  };
-
-  const handleCopy = async () => {
-    if (result?.content) {
-      await navigator.clipboard.writeText(result.content);
-    }
-  };
-
-  const handleDownload = () => {
-    if (!result) return;
-    const blob = new Blob([result.content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = result.filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  return (
-    <div className="export-panel">
-      <div className="export-panel__header">
-        <h3 className="export-panel__title">Export Blocks</h3>
-        <button type="button" className="btn btn--ghost btn--sm" onClick={onClose}>
-          Close
-        </button>
-      </div>
-
-      <div className="export-panel__info">
-        <span>{exportableCount} visible selected block{exportableCount !== 1 ? 's' : ''}</span>
-        {hiddenSelectedCount > 0 && (
-          <span className="text-muted"> + {hiddenSelectedCount} hidden (excluded)</span>
-        )}
-      </div>
-
-      <div className="export-panel__format">
-        <label className="export-panel__label">Format</label>
-        <div className="toggle-group">
-          {(['markdown', 'mdx', 'json'] as const).map((f) => (
-            <button
-              key={f}
-              type="button"
-              className={`btn btn--sm${format === f ? ' btn--active' : ' btn--ghost'}`}
-              onClick={() => setFormat(f)}
-            >
-              {f.toUpperCase()}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="export-panel__actions">
-        {status === 'idle' && (
-          <button
-            type="button"
-            className="btn btn--success"
-            onClick={handleExport}
-            disabled={exportableCount === 0}
-          >
-            Export
-          </button>
-        )}
-        {status === 'exporting' && (
-          <span className="text-muted">Exporting...</span>
-        )}
-        {status === 'done' && result && (
-          <div className="export-panel__result">
-            <div className="export-panel__result-actions">
-              <button type="button" className="btn btn--ghost btn--sm" onClick={handleCopy}>
-                Copy to clipboard
-              </button>
-              <button type="button" className="btn btn--ghost btn--sm" onClick={handleDownload}>
-                Download ({result.filename})
-              </button>
-            </div>
-            <pre className="export-panel__preview">{truncate(result.content, 2000)}</pre>
-          </div>
-        )}
-        {status === 'error' && (
-          <div className="export-panel__error">
-            <span className="text-muted">Export failed.</span>
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => setStatus('idle')}>
-              Retry
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
   );
 }
 
@@ -1168,11 +1033,6 @@ function ConversationDetail({
     smooth: boolean;
   } | null>(null);
 
-  // Selection state
-  const [selectMode, setSelectMode] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
-  const [showExport, setShowExport] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
@@ -1668,63 +1528,6 @@ function ConversationDetail({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [conversation?.parent_conversation_id, onNavigate]);
 
-  const exportableBlocks = useMemo(
-    () => blocks.filter((b) => selected.has(b.id)),
-    [blocks, selected],
-  );
-
-  // Selection handlers
-  const toggleSelect = (blockId: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(blockId)) {
-        next.delete(blockId);
-      } else {
-        next.add(blockId);
-      }
-      return next;
-    });
-    setLastSelectedId(blockId);
-  };
-
-  const handleShiftSelect = (blockId: string) => {
-    if (!lastSelectedId) {
-      toggleSelect(blockId);
-      return;
-    }
-    const startIdx = visibleBlocks.findIndex((b) => b.id === lastSelectedId);
-    const endIdx = visibleBlocks.findIndex((b) => b.id === blockId);
-    if (startIdx === -1 || endIdx === -1) {
-      toggleSelect(blockId);
-      return;
-    }
-    const low = Math.min(startIdx, endIdx);
-    const high = Math.max(startIdx, endIdx);
-    setSelected((prev) => {
-      const next = new Set(prev);
-      for (let i = low; i <= high; i++) {
-        next.add(visibleBlocks[i].id);
-      }
-      return next;
-    });
-    setLastSelectedId(blockId);
-  };
-
-  const selectAllVisible = () => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      for (const block of visibleBlocks) {
-        next.add(block.id);
-      }
-      return next;
-    });
-  };
-
-  const clearSelection = () => {
-    setSelected(new Set());
-    setLastSelectedId(null);
-  };
-
   const handleStarToggle = async () => {
     if (!conversation) return;
     const newStarred = !conversation.starred;
@@ -1843,7 +1646,7 @@ function ConversationDetail({
 
   const runOptionsGeometry = useIntrinsicOverflowGroup(
     hasRunOptions,
-    `${composerPermission}\u0000${composerModel}\u0000${composerEffort}\u0000${sessionRunOptions?.revision ?? ''}\u0000${rightSidebarState.open}\u0000${rightSidebarState.width}`,
+    `${Boolean(permissionRunOption)}\u0000${Boolean(currentModel)}\u0000${Boolean(thinkingRunOption)}\u0000${Boolean(canShowSessionControls)}\u0000${sessionRunOptions?.revision ?? ''}`,
   );
 
   useEffect(() => {
@@ -2153,9 +1956,6 @@ function ConversationDetail({
                     Resume in Mandible
                   </button>
                 )}
-                <button type="button" role="menuitem" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
-                  Select messages
-                </button>
             </div>
           )}
         </div>
@@ -2371,48 +2171,6 @@ function ConversationDetail({
       ariaBusy={loading}
       notice={controlFailureNotice ?? creationNotice ?? externalNotice ?? loadErrorNotice}
     >
-      {/* Selection toolbar */}
-      {(selectMode || selected.size > 0) && (
-        <div className="conv-selection-toolbar">
-          <button
-            type="button"
-            className={`btn btn--sm${selectMode ? ' btn--active' : ' btn--ghost'}`}
-            onClick={() => setSelectMode((prev) => !prev)}
-          >
-            Select mode
-          </button>
-          <span className="conv-selection-toolbar__count">
-            {selected.size} selected
-          </span>
-          <button type="button" className="btn btn--ghost btn--sm" onClick={selectAllVisible}>
-            Select all visible
-          </button>
-          <button type="button" className="btn btn--ghost btn--sm" onClick={clearSelection}>
-            Clear
-          </button>
-          <button
-            type="button"
-            className="btn btn--success btn--sm"
-            onClick={() => setShowExport(true)}
-            disabled={exportableBlocks.length === 0}
-          >
-            Export ({exportableBlocks.length})
-          </button>
-        </div>
-      )}
-
-      {/* Export panel */}
-      {showExport && (
-        <ExportPanel
-          conversationId={conversationId}
-          exportableCount={exportableBlocks.length}
-          totalSelectedCount={selected.size}
-          hiddenSelectedCount={0}
-          selectedIds={exportableBlocks.map((b) => b.id)}
-          onClose={() => setShowExport(false)}
-        />
-      )}
-
       <div className="conv-transcript">
         <ChatEntityLinkBoundary
           defaultAction={chatEntityLinkAction}
@@ -2428,18 +2186,7 @@ function ConversationDetail({
             onJumpToLatest={handleJumpToLatest}
             jumpingToLatest={jumpingToLatest}
             navigationTarget={navigationTarget}
-            selectedMessageId={conversation.position_window.target.turn_id}
-            selectedBlockIds={selected}
-            selectMode={selectMode}
-            onToggleBlockSelect={(blockId, shiftKey) => shiftKey ? handleShiftSelect(blockId) : toggleSelect(blockId)}
             onFork={handleFork}
-            onSelectMessageInfo={(turnId) => {
-              window.location.hash = conversationTurnSelectionHref(
-                conversationId,
-                conversation.position_window.target.turn_id,
-                turnId,
-              );
-            }}
             sessionInfo={{
               sessionId: conversation.session_id,
               backend: conversation.source,
