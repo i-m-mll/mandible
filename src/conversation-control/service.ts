@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
+import { ConversationSourceReader } from "../conversations/source-reader.js";
 import {
   ConversationControllerRegistry,
   trapAdapterCall,
@@ -522,6 +523,16 @@ export class ConversationControlService {
     const current = this.liveProjection.get(conversationId) ?? emptyProviderLiveProjection(conversationId);
     let coveredIdentities: string[] = [];
     try {
+      const delivery = this.db.prepare(`
+        SELECT idempotency_key, provider_receipt_id
+          FROM conversation_control_outbox
+         WHERE conversation_id = ? AND generation = ? AND turn_id = ?
+      `).get(conversationId, generation, turnId) as {
+        idempotency_key: string;
+        provider_receipt_id: string | null;
+      } | undefined;
+      const codexReceiptPrefix = "codex:turn:";
+      const durableProviderTurnIds = new Set<string>();
       const rows = this.db.prepare(`
         SELECT type, dag_uuid, metadata_json
           FROM conversation_blocks
@@ -529,7 +540,6 @@ export class ConversationControlService {
            AND (dag_uuid IS NOT NULL OR metadata_json LIKE '%provider_message_id%'
              OR metadata_json LIKE '%provider_turn_id%')
       `).all(conversationId) as Array<{ type: string; dag_uuid: string | null; metadata_json: string }>;
-      const durableProviderTurnIds = new Set<string>();
       for (const row of rows) {
         if (row.dag_uuid) durableIds.add(row.dag_uuid);
         try {
@@ -549,15 +559,42 @@ export class ConversationControlService {
           // Invalid metadata cannot establish durable coverage.
         }
       }
-      const delivery = this.db.prepare(`
-        SELECT idempotency_key, provider_receipt_id
-          FROM conversation_control_outbox
-         WHERE conversation_id = ? AND generation = ? AND turn_id = ?
-      `).get(conversationId, generation, turnId) as {
-        idempotency_key: string;
-        provider_receipt_id: string | null;
-      } | undefined;
-      const codexReceiptPrefix = "codex:turn:";
+
+      const structuralIds = this.db.prepare(`
+        SELECT dag_uuid
+          FROM conversation_structural_blocks
+         WHERE conversation_id = ? AND status = 'current' AND dag_uuid IS NOT NULL
+         ORDER BY position DESC
+         LIMIT 512
+      `).all(conversationId) as Array<{ dag_uuid: string }>;
+      for (const row of structuralIds) durableIds.add(row.dag_uuid);
+
+      const expectedCodexTurnId = delivery?.provider_receipt_id?.startsWith(codexReceiptPrefix)
+        ? delivery.provider_receipt_id.slice(codexReceiptPrefix.length)
+        : null;
+      if (expectedCodexTurnId) {
+        const reader = new ConversationSourceReader(this.db);
+        const recentUserBlocks = this.db.prepare(`
+          SELECT id
+            FROM conversation_structural_blocks
+           WHERE conversation_id = ? AND status = 'current' AND type = 'user_message'
+           ORDER BY position DESC
+           LIMIT 16
+        `).all(conversationId) as Array<{ id: string }>;
+        for (const row of recentUserBlocks) {
+          const read = await reader.readBlock(row.id);
+          if (read.status !== "source" && read.status !== "legacy") continue;
+          try {
+            const metadata = JSON.parse(read.value.metadata_json) as { provider_turn_id?: unknown };
+            if (metadata.provider_turn_id === expectedCodexTurnId) {
+              durableProviderTurnIds.add(expectedCodexTurnId);
+              break;
+            }
+          } catch {
+            // Invalid source metadata cannot establish durable coverage.
+          }
+        }
+      }
       if (delivery?.provider_receipt_id?.startsWith(codexReceiptPrefix)
           && durableProviderTurnIds.has(delivery.provider_receipt_id.slice(codexReceiptPrefix.length))) {
         durableIds.add(delivery.idempotency_key);
