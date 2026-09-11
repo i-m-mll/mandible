@@ -1015,6 +1015,7 @@ function ConversationDetail({
   const [loadedConversationKey, setLoadedConversationKey] = useState(
     () => detailRequestKey('conversation', { conversationId, leaf: null }),
   );
+  const loadedConversationKeyRef = useRef(loadedConversationKey);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ConversationLoadFailure | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -1128,10 +1129,16 @@ function ConversationDetail({
     const generation = ++requestGenerationRef.current;
     const requestKey = conversationRequestKey;
     const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
+    const requestChanged = loadedConversationKeyRef.current !== requestKey;
     const preserveErrorWhileRetrying = retryingLoadRef.current;
     retryingLoadRef.current = false;
+    loadedConversationKeyRef.current = requestKey;
     setLoadedConversationKey(requestKey);
-    setConversation(cached ?? (initialConversation ? conversationShell(initialConversation) : null));
+    setConversation((current) => (
+      requestChanged
+        ? cached ?? (initialConversation ? conversationShell(initialConversation) : null)
+        : current ?? cached ?? (initialConversation ? conversationShell(initialConversation) : null)
+    ));
     setLoading(true);
     setNotFound(false);
     if (!preserveErrorWhileRetrying) setError(null);
@@ -1395,6 +1402,7 @@ function ConversationDetail({
         skipNextWindowLoadRef.current = true;
         setEffectiveAnchor(null);
       }
+      loadedConversationKeyRef.current = latestRequestKey;
       setLoadedConversationKey(latestRequestKey);
       const params = new URLSearchParams({ conversation: conversationId });
       window.history.replaceState(null, '', `#/console?${params.toString()}`);
@@ -3783,9 +3791,6 @@ export function ConversationsView({
                 </SidebarGroupNode>
               );
             })() : null}
-            {loading && (
-              <div className="chat-history-empty">Loading…</div>
-            )}
       </ViewSidebar>
 
       {/* Detail pane */}
