@@ -461,7 +461,7 @@
 .conv-compose__send {
   --conv-compose-send-hit-size: 34px;
   --conv-compose-send-visual-size: 25.5px;
-  --conv-compose-send-icon-size: 25.5px;
+  --conv-compose-send-icon-size: 17px;
   position: relative;
   width: var(--conv-compose-send-hit-size);
   height: var(--conv-compose-send-hit-size);
@@ -661,29 +661,6 @@
   margin-top: 12px;
 }
 
-/* Selection toolbar */
-.conv-selection-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 8px 14px;
-  background: rgba(77, 163, 255, 0.08);
-  border: 1px solid rgba(77, 163, 255, 0.15);
-  border-radius: 12px;
-}
-
-.conv-selection-toolbar--minimal {
-  background: transparent;
-  border-color: transparent;
-  padding: 4px 0;
-}
-
-.conv-selection-toolbar__count {
-  font-size: 13px;
-  font-weight: 500;
-}
-
 .conv-transcript {
   flex: 1;
   min-height: 0;
@@ -722,92 +699,13 @@
 .conv-detail__body .msg-text-block.rendered-markdown,
 .conv-detail__body .msg-text-block.rendered-markdown :where(p, li, blockquote, dd),
 .conv-detail__body .user-bubble__text,
+.conv-detail__body .user-bubble__text :where(p, li, blockquote, dd),
 .conv-detail__body .tool-call-group__summary,
 .conv-detail__body .tool-call-group__summary-text,
 .conv-detail__body .tool-card__header,
 .conv-detail__body .tool-card__verb,
 .conv-detail__body .tool-card__target {
   font-size: var(--text-lg);
-}
-
-/* ── Export panel ── */
-
-.export-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--neutral-alpha-08);
-  border-radius: 14px;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  box-shadow: var(--shadow-soft);
-}
-
-.export-panel__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.export-panel__title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.export-panel__info {
-  font-size: 13px;
-}
-
-.export-panel__format {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.export-panel__label {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-}
-
-.export-panel__actions {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.export-panel__result {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.export-panel__result-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.export-panel__preview {
-  margin: 0;
-  padding: 12px;
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 8px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.4;
-  max-height: 200px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-primary);
-}
-
-.export-panel__error {
-  display: flex;
-  align-items: center;
-  gap: 10px;
 }
 
 /* ── Sub-agent conversation styles ── */
@@ -1192,10 +1090,6 @@
   .conv-filters {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .conv-selection-toolbar {
-    flex-wrap: wrap;
   }
 
   .conv-transcript {
