@@ -307,7 +307,7 @@ describe('conversation sidebar groups', () => {
     expect(screen.getByRole('button', { name: 'Projects' })).toBeTruthy();
   });
 
-  it('maps agy live sessions to the accessible agy Chat provider dot', async () => {
+  it('preserves accessible agy identity without inventing an unofficial provider mark', async () => {
     vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ limit: 1, groups: [] });
     vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
     vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
@@ -323,9 +323,8 @@ describe('conversation sidebar groups', () => {
     expect(row.getAttribute('aria-description')).toBe('Provider: agy');
     expect(row.querySelector('.sidebar-item-row__badges')).toBeNull();
     const sharedRow = row.closest('.sidebar-item-row') as HTMLElement;
-    expect(sharedRow.classList.contains('sidebar-item-row--selection-agy')).toBe(true);
-    expect(within(sharedRow).getByRole('img', { name: 'Provider: agy' })
-      .classList.contains('sidebar-item-row__provider-dot--agy')).toBe(true);
+    expect([...sharedRow.classList].some((className) => className.startsWith('sidebar-item-row--selection-'))).toBe(false);
+    expect(within(sharedRow).queryByRole('img', { name: 'Provider: agy' })).toBeNull();
   });
 
   it('adds a canonical project and immediately consumes its pre-existing multi-provider server group', async () => {
@@ -363,9 +362,16 @@ describe('conversation sidebar groups', () => {
 
     const projectHeading = await screen.findByRole('button', { name: /^Mandible/ });
     const projectSection = projectHeading.closest('section') as HTMLElement;
-    expect(within(projectSection).getByRole('button', { name: 'Open conversation Existing Codex' })).toBeTruthy();
-    expect(within(projectSection).getByRole('button', { name: 'Open conversation Existing Claude' })).toBeTruthy();
-    expect(within(projectSection).getByRole('button', { name: 'Open conversation Existing agy' })).toBeTruthy();
+    const codexRow = within(projectSection).getByRole('button', { name: 'Open conversation Existing Codex' });
+    const claudeRow = within(projectSection).getByRole('button', { name: 'Open conversation Existing Claude' });
+    const agyRow = within(projectSection).getByRole('button', { name: 'Open conversation Existing agy' });
+    expect(within(codexRow.closest('.sidebar-item-row') as HTMLElement)
+      .getByRole('img', { name: 'Provider: Codex' }).getAttribute('viewBox')).toBe('0 0 721 721');
+    expect(within(claudeRow.closest('.sidebar-item-row') as HTMLElement)
+      .getByRole('img', { name: 'Provider: Claude' }).getAttribute('viewBox')).toBe('0 0 92 64');
+    expect(agyRow.getAttribute('aria-description')).toBe('Provider: agy');
+    expect(within(agyRow.closest('.sidebar-item-row') as HTMLElement)
+      .queryByRole('img', { name: 'Provider: agy' })).toBeNull();
     expect(requests).toContainEqual(expect.objectContaining({ project_ids: ['prj-mandible'] }));
     expect(onNewConversation).not.toHaveBeenCalled();
 

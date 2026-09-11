@@ -13,16 +13,6 @@ import {
 const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
 const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
 
-function contrastRatio(foreground: string, background: string): number {
-  const luminance = (hex: string) => {
-    const channels = [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16) / 255)
-      .map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
-    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
-  };
-  const values = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
-  return (values[0] + 0.05) / (values[1] + 0.05);
-}
-
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -103,9 +93,6 @@ describe('SidebarItemRow', () => {
     const contentRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__content \{([\s\S]*?)\n\}/)?.[1] ?? '';
     const labelRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__label \{([^}]*)\}/)?.[1] ?? '';
     const trailingRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1] ?? '';
-    const revealRule = sidebarItemRowStylesheet.match(
-      /\.sidebar-item-row:hover \.sidebar-item-row__trailing,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__trailing,\s*\.sidebar-item-row--persistent-pin \.sidebar-item-row__trailing,\s*\.sidebar-item-row__trailing:has\(\.sidebar-item-row__overflow--open\) \{([^}]*)\}/,
-    )?.[1] ?? '';
     expect(rowRule).toContain('--sidebar-item-row-reveal-width: 0px');
     expect(rowRule).toContain('display: block');
     expect(selectRule).toContain('width: 100%');
@@ -122,10 +109,8 @@ describe('SidebarItemRow', () => {
     expect(labelRule).not.toContain('mask-image');
     expect(trailingRule).toContain('position: absolute');
     expect(trailingRule).toContain('right: 0');
-    expect(trailingRule).toContain('opacity: 0');
+    expect(trailingRule).toContain('opacity: 1');
     expect(trailingRule).not.toMatch(/flex: 0 0|margin-left|padding-left/);
-    expect(revealRule).toContain('opacity: 1');
-    expect(revealRule).not.toMatch(/width|padding|margin/);
     const actionRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__action \{([^}]*)\}/)?.[1] ?? '';
     expect(actionRule).toContain('width: 24px');
     expect(contextualActionStylesheet).toMatch(/\.contextual-action\s*\{[^}]*border-radius: 0;[^}]*background: transparent;/s);
@@ -178,8 +163,7 @@ describe('SidebarItemRow', () => {
     expect(persistentRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-persistent-width, 0px)');
     const coarsePointerRule = sidebarItemRowStylesheet.match(/@media \(hover: none\), \(pointer: coarse\) \{([\s\S]*)\n\}/)?.[1] ?? '';
     expect(coarsePointerRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-trailing-width, 0px)');
-    expect(coarsePointerRule).toContain('.sidebar-item-row__trailing');
-    expect(coarsePointerRule).toContain('opacity: 1');
+    expect(coarsePointerRule).toContain('.sidebar-item-row--persistent-pin .sidebar-item-row__overflow');
     expect(coarsePointerRule).toContain('pointer-events: auto');
   });
 
@@ -251,12 +235,12 @@ describe('SidebarItemRow', () => {
     expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('54px');
   });
 
-  it('keeps an accessible provider in the fixed right footprint and reveals its dot only through interaction', () => {
+  it('keeps an accessible official provider mark persistently at the right edge after reveal-only actions', () => {
     render(
       <SidebarItemRow
         label="Provider row"
         selectionLabel="Select provider row"
-        provider={{ label: 'Codex', tone: 'codex' }}
+        provider={{ label: 'Codex', mark: 'openai' }}
         onSelect={() => undefined}
         actions={<SidebarItemPinAction label="provider row" pressed={false} onPress={() => undefined} />}
       />,
@@ -264,13 +248,16 @@ describe('SidebarItemRow', () => {
 
     const select = screen.getByRole('button', { name: 'Select provider row' });
     expect(select.getAttribute('aria-description')).toBe('Provider: Codex');
-    const dot = screen.getByRole('img', { name: 'Provider: Codex' });
-    expect(dot.classList.contains('sidebar-item-row__provider-dot--codex')).toBe(true);
-    expect(dot.parentElement?.classList.contains('sidebar-item-row__provider')).toBe(true);
+    const mark = screen.getByRole('img', { name: 'Provider: Codex' });
+    expect(mark.classList.contains('sidebar-item-row__provider-mark')).toBe(true);
+    expect(mark.getAttribute('viewBox')).toBe('0 0 721 721');
+    expect(mark.querySelector('path')?.getAttribute('fill')).toBe('currentColor');
+    expect(mark.parentElement?.classList.contains('sidebar-item-row__provider')).toBe(true);
     const trailing = select.nextElementSibling as HTMLElement;
     expect(trailing.classList.contains('sidebar-item-row__trailing')).toBe(true);
-    expect(dot.parentElement).toBe(trailing.firstElementChild);
-    expect(dot.parentElement?.nextElementSibling?.classList.contains('sidebar-item-row__actions')).toBe(true);
+    expect(trailing.firstElementChild?.classList.contains('sidebar-item-row__actions')).toBe(true);
+    expect(mark.parentElement).toBe(trailing.lastElementChild);
+    expect(select.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--has-provider-mark')).toBe(true);
     expect(select.querySelector('.sidebar-item-row__badges')).toBeNull();
 
     const selectRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__select \{([^}]*)\}/)?.[1] ?? '';
@@ -280,22 +267,21 @@ describe('SidebarItemRow', () => {
     expect(providerRule).toContain('flex: 0 0 14px');
     expect(providerRule).toContain('justify-content: center');
     expect(providerRule).not.toMatch(/position: absolute|left:/);
-    const dotRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-dot \{([^}]*)\}/)?.[1] ?? '';
-    expect(dotRule).toContain('width: 7px');
-    expect(dotRule).toContain('opacity: 0');
-    const revealRule = sidebarItemRowStylesheet.match(
-      /\.sidebar-item-row:hover \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row__select:focus \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-dot,\s*\.sidebar-item-row--persistent-pin \.sidebar-item-row__provider-dot \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(revealRule).toContain('opacity: 1');
+    const markRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-mark \{([^}]*)\}/)?.[1] ?? '';
+    expect(markRule).toContain('width: 14px');
+    expect(markRule).toContain('color: var(--text-subdued)');
+    expect(markRule).not.toMatch(/opacity|background/);
+    const providerFootprintRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row--has-provider-mark \{([^}]*)\}/)?.[1] ?? '';
+    expect(providerFootprintRule).toContain('--sidebar-item-row-reveal-width: 18px');
   });
 
-  it('keeps a selected untouched row full-width with its provider and hover-only actions hidden', () => {
+  it('keeps the mark visible on a selected row while actions remain interaction-only', () => {
     render(
       <SidebarItemRow
         label="Selected at rest"
         selectionLabel="Select at-rest row"
         selected
-        provider={{ label: 'Codex', tone: 'codex' }}
+        provider={{ label: 'Codex', mark: 'openai' }}
         onSelect={() => undefined}
         actions={<SidebarItemPinAction label="at-rest row" pressed={false} onPress={() => undefined} />}
       />,
@@ -304,39 +290,35 @@ describe('SidebarItemRow', () => {
     const row = screen.getByRole('button', { name: 'Select at-rest row' }).closest('.sidebar-item-row')!;
     expect(row.classList.contains('sidebar-item-row--selected')).toBe(true);
     expect(row.classList.contains('sidebar-item-row--persistent-pin')).toBe(false);
-    expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1]).toContain('opacity: 0');
-    expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__provider-dot \{([^}]*)\}/)?.[1]).toContain('opacity: 0');
+    expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1]).toContain('opacity: 1');
+    expect(screen.getByRole('img', { name: 'Provider: Codex' })).toBeTruthy();
     expect(row.querySelector('.sidebar-item-row__actions')?.classList.contains('contextual-action-group')).toBe(true);
     expect(sidebarItemRowStylesheet).not.toMatch(
-      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-dot|actions)/,
-    );
-    expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row:hover \.sidebar-item-row__trailing,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__trailing[^}]*\{[^}]*opacity: 1;/s,
+      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-mark|actions)/,
     );
     expect(row.classList.contains('contextual-action-owner')).toBe(true);
     expect(contextualActionStylesheet).not.toMatch(/selected[^}]*contextual-action-group/);
   });
 
-  it('uses neutral shared selection and reserves provider tones for explicit consumers', () => {
-    render(<SidebarItemRow label="Neutral" selectionLabel="Select neutral" selected onSelect={() => undefined} />);
+  it('uses the same neutral shared state for selected and hovered rows', () => {
+    render(<SidebarItemRow label="Neutral" selectionLabel="Select neutral" selected provider={{ label: 'Codex', mark: 'openai' }} onSelect={() => undefined} />);
     const neutral = screen.getByRole('button', { name: 'Select neutral' }).closest('.sidebar-item-row')!;
-    expect(neutral.classList.contains('sidebar-item-row--selection-codex')).toBe(false);
+    expect([...neutral.classList].some((className) => className.startsWith('sidebar-item-row--selection-'))).toBe(false);
     const selectedRule = sidebarItemRowStylesheet.match(/\n\n\.sidebar-item-row--selected \{([^}]*)\}/)?.[1] ?? '';
+    const hoveredRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{([^}]*)\}/)?.[1] ?? '';
     expect(selectedRule).toContain('background: var(--neutral-alpha-05)');
     expect(selectedRule).toContain('color: var(--text-primary)');
-    expect(selectedRule).not.toMatch(/accent-bg|accent-fg/);
+    expect(hoveredRule).toContain('background: var(--neutral-alpha-05)');
+    expect(sidebarItemRowStylesheet).not.toMatch(/sidebar-selection|selection-(?:claude|codex|agy)/);
   });
 
-  it('keeps every resolved light and dark provider selection pair above WCAG AA', () => {
-    const pairs = [
-      ['#f8e5dc', '#492f26'], ['#eaebff', '#30345b'], ['#def7eb', '#1d4334'],
-      ['#5e2f1d', '#f3e2da'], ['#30366f', '#e4e6f7'], ['#174b36', '#dceee5'],
-    ];
-    for (const [foreground, background] of pairs) {
-      expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);
-      expect(sidebarItemRowStylesheet).toContain(foreground);
-      expect(sidebarItemRowStylesheet).toContain(background);
-    }
+  it('fails closed without inventing a mark while preserving unsupported provider identity', () => {
+    render(<SidebarItemRow label="Unsupported" selectionLabel="Select unsupported" provider={{ label: 'agy', mark: null }} onSelect={() => undefined} />);
+    const select = screen.getByRole('button', { name: 'Select unsupported' });
+    expect(select.getAttribute('aria-description')).toBe('Provider: agy');
+    expect(select.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--has-provider-mark')).toBe(false);
+    expect(screen.queryByRole('img', { name: 'Provider: agy' })).toBeNull();
+    expect(select.nextElementSibling).toBeNull();
   });
 
   it('reveals actions through focus-within and returns focus when Escape closes overflow', () => {
@@ -393,7 +375,7 @@ describe('SidebarItemRow', () => {
     const overflow = menu.closest('.sidebar-item-row__overflow');
     expect(overflow?.classList.contains('sidebar-item-row__overflow--open')).toBe(true);
     expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row__trailing:has\(\.sidebar-item-row__overflow--open\)[^{]*\{[^}]*opacity:\s*1;/s,
+      /\.sidebar-item-row__trailing:has\(\.sidebar-item-row__overflow--open\)[^{]*\{[^}]*pointer-events:\s*auto;/s,
     );
     expect(sidebarItemRowStylesheet).toMatch(
       /\.sidebar-item-row__actions:has\(\.sidebar-item-row__overflow--open\)\s*\{[^}]*opacity:\s*1;/s,

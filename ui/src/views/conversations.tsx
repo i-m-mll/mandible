@@ -12,8 +12,8 @@ import {
   SidebarItemPinAction,
   SidebarItemRow,
   type SidebarItemOverflowAction,
-  type SidebarItemProviderTone,
 } from '../components/shared/SidebarItemRow';
+import type { OfficialProviderMarkKind } from '../components/shared/OfficialProviderMark';
 import {
   orderByPinnedIds,
   reconcileOrderedPinIds,
@@ -323,10 +323,10 @@ function sourceFromSession(session: ConsoleSession): ConversationSource | null {
   return null;
 }
 
-const CHAT_PROVIDER_TONES: Record<ConversationSource, SidebarItemProviderTone> = {
-  claude_code: 'claude',
-  codex: 'codex',
-  gemini: 'agy',
+const CHAT_PROVIDER_MARKS: Record<ConversationSource, OfficialProviderMarkKind | null> = {
+  claude_code: 'anthropic',
+  codex: 'openai',
+  gemini: null,
 };
 
 function parseModelFromArgs(args: string[] | undefined): string | undefined {
@@ -2324,8 +2324,7 @@ function ChatEntryItem({
     <SidebarItemRow
       label={title}
       selectionLabel={`Open ${entry.kind === 'conversation' ? 'conversation' : 'session'} ${title}`}
-      provider={providerLabel && source ? { label: providerLabel, tone: CHAT_PROVIDER_TONES[source] } : undefined}
-      selectionTone={source ? CHAT_PROVIDER_TONES[source] : undefined}
+      provider={providerLabel && source ? { label: providerLabel, mark: CHAT_PROVIDER_MARKS[source] } : undefined}
       selected={isSelected}
       ariaCurrent={isSelected ? 'true' : undefined}
       className={`chat-history-item${isSubAgent ? ' chat-history-item--subagent' : ''}`}
@@ -3755,7 +3754,7 @@ export function ConversationsView({
                             ? undefined
                             : {
                                 label: newChatDraft.provider === 'codex' ? 'Codex' : 'Claude',
-                                tone: newChatDraft.provider === 'codex' ? 'codex' : 'claude',
+                                mark: newChatDraft.provider === 'codex' ? 'openai' : 'anthropic',
                               }}
                           onSelect={() => setSelection({ type: 'draft', id: newChatDraft.id })}
                         />
@@ -3796,7 +3795,7 @@ export function ConversationsView({
                           ? undefined
                           : {
                               label: newChatDraft.provider === 'codex' ? 'Codex' : 'Claude',
-                              tone: newChatDraft.provider === 'codex' ? 'codex' : 'claude',
+                              mark: newChatDraft.provider === 'codex' ? 'openai' : 'anthropic',
                             }}
                         onSelect={() => setSelection((current) => current?.type === 'draft' && current.id === newChatDraft.id
                           ? current
