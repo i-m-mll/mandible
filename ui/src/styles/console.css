@@ -1148,8 +1148,8 @@
 }
 
 /* Reveal only from the message that owns this action bar. */
-.message-block-wrapper:is(:hover, :focus-within) > .message-actions,
-.message-actions:focus-within {
+.message-block-wrapper:hover > .message-actions,
+.message-block-wrapper:has(.message-actions .contextual-action:focus-visible) > .message-actions {
   opacity: 1;
   pointer-events: auto;
 }

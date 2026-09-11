@@ -9,6 +9,7 @@ import * as api from '../../ui/src/api.js';
 import type { Conversation, ConversationBlock, ConversationControlSnapshot, ConversationPositionWindow } from '../../ui/src/api.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
 import { AppShellProvider, type AppRightSidebarDescriptor } from '../../ui/src/app-shell.js';
+import { detailRequestKey, writePersistedDetail } from '../../ui/src/detail-cache.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import {
   ConversationsView,
@@ -299,6 +300,26 @@ function MountedConversationsApp({
 }
 
 describe('compact detail pane shell', () => {
+  it('keeps routine sidebar reconciliation silent', async () => {
+    const sidebar = deferred<Awaited<ReturnType<typeof api.getConversationSidebar>>>();
+    vi.mocked(api.getConversationSidebar).mockReturnValue(sidebar.promise);
+
+    render(
+      <ConversationsView
+        conversations={[]}
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewConversation={() => undefined}
+      />,
+    );
+
+    expect(screen.queryByText('Loading…')).toBeNull();
+    await act(async () => sidebar.resolve({ groups: [], limit: 50 }));
+    expect(await screen.findByText('No chats')).toBeTruthy();
+  });
+
   it('shows the chat placeholder after a successful empty sidebar response', async () => {
     render(
       <ConversationsView
@@ -1079,6 +1100,76 @@ describe('compact detail pane shell', () => {
     await Promise.resolve();
     expect(screen.queryByText('Late initial loses')).toBeNull();
     expect(screen.getByText('Exact anchor wins')).toBeTruthy();
+  });
+
+  it('keeps the live transcript mounted while a same-conversation reconciliation is pending', async () => {
+    const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
+    const refresh = deferred<ConversationPositionWindow>();
+    const appendedBlock = {
+      ...transcriptBlock,
+      id: 'block-user-2',
+      content: 'Live content stays visible',
+      position: 1,
+    };
+    vi.mocked(api.getConversationWindow)
+      .mockResolvedValueOnce(positionPayload(scopedConversation, [transcriptBlock]))
+      .mockImplementationOnce(() => refresh.promise);
+
+    renderConversationDetail(scopedConversation);
+    expect(await screen.findByText(transcriptBlock.content)).toBeTruthy();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('conversation:sse', {
+        detail: {
+          type: 'conversation:updated',
+          data: {
+            id: conversation.id,
+            block_count: 2,
+            append: { from_position: 1, blocks: [appendedBlock] },
+          },
+        },
+      }));
+    });
+    expect(await screen.findByText('Live content stays visible')).toBeTruthy();
+
+    const staleWindow = positionPayload(scopedConversation, [transcriptBlock]);
+    writePersistedDetail('conversations', detailRequestKey('conversation', {
+      conversationId: conversation.id,
+      anchor: 'initial',
+    }), {
+      ...scopedConversation,
+      blocks: [transcriptBlock],
+      children: [],
+      parent: null,
+      position_window: {
+        revision: staleWindow.revision,
+        total: staleWindow.total,
+        target: staleWindow.target,
+        window: staleWindow.window,
+      },
+    });
+    act(() => {
+      window.dispatchEvent(new CustomEvent('conversation:sse', {
+        detail: {
+          type: 'conversation:updated',
+          data: {
+            id: conversation.id,
+            block_count: 4,
+            append: {
+              from_position: 3,
+              blocks: [{ ...appendedBlock, id: 'gap-block', position: 3 }],
+            },
+          },
+        },
+      }));
+    });
+
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Live content stays visible')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
+
+    await act(async () => refresh.resolve(positionPayload(scopedConversation, [transcriptBlock, appendedBlock])));
+    expect(screen.getByText('Live content stays visible')).toBeTruthy();
   });
 
   it('re-resolves the true end when an append arrives during Jump to latest', async () => {

@@ -43,12 +43,16 @@ describe('chat turn presentation', () => {
     expect(messageBlocksCss).toMatch(/:root\[data-theme='light'\] \.user-bubble__text\s*{[^}]*background: #F3F3F4;/s);
   });
 
-  it('scopes pointer reveal to owner hover without retaining it on owner focus', () => {
+  it('scopes pointer reveal to owner hover without retaining pointer focus', () => {
     expect(consoleCss).not.toContain('*:hover > .message-actions');
     expect(contextualActionCss).toContain('.contextual-action-owner:hover > .contextual-action-group');
     expect(contextualActionCss).toContain('.contextual-action-owner:hover > .contextual-action-scope > .contextual-action-group');
     expect(contextualActionCss).not.toContain('.contextual-action-owner:is(:hover, :focus-within)');
-    expect(contextualActionCss).toContain('.contextual-action-group:focus-within');
+    expect(contextualActionCss).not.toContain('.contextual-action-group:focus-within');
+    expect(contextualActionCss).toContain('.contextual-action-group:has(.contextual-action:focus-visible)');
+    expect(consoleCss).not.toContain('.message-block-wrapper:is(:hover, :focus-within)');
+    expect(consoleCss).toContain('.message-block-wrapper:hover > .message-actions');
+    expect(consoleCss).toContain('.message-block-wrapper:has(.message-actions .contextual-action:focus-visible) > .message-actions');
     expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*height: 24px;/s);
   });
 
