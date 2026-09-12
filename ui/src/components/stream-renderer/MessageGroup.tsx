@@ -17,6 +17,8 @@ export function MessageGroup({
   isThinking,
   getBlockExpanded,
   onBlockExpandedChange,
+  getDisclosureExpanded,
+  onDisclosureExpandedChange,
   selectedBlockIds,
   selectMode,
   onToggleBlockSelect,
@@ -145,20 +147,15 @@ export function MessageGroup({
         continue;
       }
 
-      const groupBlock: ToolUseContentBlock = {
-        type: 'tool_use',
-        id: `group:${run[0].id}`,
-        name: 'tool-call-group',
-        input: {},
-      };
-      const expanded = getBlockExpanded?.(groupBlock, index, false);
+      const groupId = `tool-group:${run[0].id}`;
+      const expanded = getDisclosureExpanded?.(groupId, false);
       rendered.push(
         <ToolCallGroup
-          key={groupBlock.id}
+          key={groupId}
           summary={summarizeToolRun(run)}
           icons={toolRunIcons(run)}
           expanded={expanded}
-          onExpandedChange={(next) => onBlockExpandedChange?.(groupBlock, index, next)}
+          onExpandedChange={(next) => onDisclosureExpandedChange?.(groupId, next)}
         >
           {run.map((block, offset) => renderBlock(block, index + offset))}
         </ToolCallGroup>,

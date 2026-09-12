@@ -188,6 +188,13 @@ describe("GeminiParser", () => {
       tool_kind: "gemini_tool_call",
       tool_input: { path: "README.md" },
     });
+    expect(result?.blocks.map((block) => block.metadata.chat_item?.type)).toEqual([
+      "message", "plan", "tool-call", "tool-call", "message",
+    ]);
+    expect(result?.blocks.map((block) => block.metadata.chat_item?.identity.native_content_index)).toEqual([
+      0, 0, 1, 2, 3,
+    ]);
+    expect(result?.blocks.every((block) => block.metadata.chat_item?.provenance.provider === "gemini")).toBe(true);
   });
 
   it("parses appended JSONL messages at the requested base position", async () => {
@@ -207,6 +214,7 @@ describe("GeminiParser", () => {
         content: "Incremental Gemini answer.",
       })}\n`,
       baseBlockCount: 5,
+      baseRecordCount: 3,
       sourceHash: "append:hash",
       sourceMtime: 42,
     });
@@ -217,6 +225,13 @@ describe("GeminiParser", () => {
       type: "assistant_message",
       position: 5,
       content: "Incremental Gemini answer.",
+      metadata: {
+        chat_item: {
+          identity: { source_record_ordinal: 3, source_sub_block_ordinal: 0, native_item_id: "g2" },
+          provenance: { source: "verified-provider-transcript", provider: "gemini" },
+          type: "message",
+        },
+      },
     });
   });
 });

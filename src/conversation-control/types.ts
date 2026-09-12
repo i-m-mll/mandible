@@ -1,3 +1,5 @@
+import type { ChatItem } from "../parsers/types.js";
+
 export type Result<T, E> =
   | { ok: true; value: T }
   | { ok: false; error: E };
@@ -171,14 +173,6 @@ export type ProviderDeliveryReceipt = {
   acceptance: ProviderProtocolEvidence;
 };
 
-export type ProviderLiveStreamEvent = {
-  type: string;
-  uuid?: string;
-  session_id?: string;
-  message?: Record<string, unknown>;
-  [key: string]: unknown;
-};
-
 export type ProviderLiveContentEvent = {
   kind: "provisional-content";
   conversation_id: string;
@@ -186,6 +180,7 @@ export type ProviderLiveContentEvent = {
   generation: number;
   sequence: number;
   observed_at: number;
+  /** Exact provider-qualified Chat item/content-block identity. */
   identity: string;
   correlation?: {
     intent_id: string;
@@ -193,7 +188,7 @@ export type ProviderLiveContentEvent = {
     turn_id: string;
     provider_message_id?: string;
   };
-  event: ProviderLiveStreamEvent;
+  item: ChatItem;
 };
 
 export type ProviderDurableReconciliationEvent = {
@@ -204,7 +199,14 @@ export type ProviderDurableReconciliationEvent = {
   sequence: number;
   observed_at: number;
   provider_event_id: string;
+  /** Live identities proven to have exact durable Chat-item counterparts. */
   covered_identities: string[];
+  /**
+   * Provider-complete live items whose transient lifetime ends after a fresh
+   * terminal transcript is established, even when the provider exposes no
+   * cross-surface identity that could prove durable equivalence.
+   */
+  terminal_retired_identities?: string[];
 };
 
 export type ProviderLineageEvent = {
@@ -220,11 +222,35 @@ export type ProviderLineageEvent = {
   receiver_provider_session_id: string;
 };
 
-export type ProviderAdapterEvent = ProviderLiveContentEvent | ProviderLineageEvent | ProviderDurableReconciliationEvent;
+export type ProviderTransientRetirementEvent = {
+  kind: "transient-retirement";
+  conversation_id: string;
+  provider_session_id: string;
+  generation: number;
+  sequence: number;
+  observed_at: number;
+  provider_event_id: string;
+  reason: "provider-disconnected" | "generation-replaced";
+};
 
+export type ProviderAdapterEvent =
+  | ProviderLiveContentEvent
+  | ProviderLineageEvent
+  | ProviderDurableReconciliationEvent
+  | ProviderTransientRetirementEvent;
+
+/**
+ * Bounded live supplements for one provider controller generation.
+ *
+ * A provisional item lives only until its exact durable Chat-item identity is
+ * observed, its controller disconnects, a newer generation replaces it, or
+ * the oldest item crosses the bounded projection limit. The provider
+ * transcript remains the durable authority throughout this lifecycle.
+ */
 export type ProviderLiveProjection = {
   conversation_id: string;
   revision: number;
+  generation: number;
   events: ProviderAdapterEvent[];
 };
 

@@ -2319,17 +2319,31 @@ async function ingestFilePass(
 
   let alreadyIngestedCount = 0;
   let structureCacheNeedsRebuild = false;
+  let sourceEpochNeedsRebuild = false;
   if (existing) {
     const actualCount = existing.actual_count ?? 0;
     const expectedCount = existing.block_count ?? 0;
     alreadyIngestedCount = Math.max(actualCount, expectedCount);
     const currentSource = db.prepare(`
-      SELECT current_version_id
+      SELECT current_version_id, parser_format, parser_version,
+             normalization_version, redaction_epoch
         FROM conversation_sources
        WHERE conversation_id = ? AND current_version_id IS NOT NULL
        ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC
        LIMIT 1
-    `).get(existing.id) as { current_version_id: string } | undefined;
+    `).get(existing.id) as {
+      current_version_id: string;
+      parser_format: string;
+      parser_version: string;
+      normalization_version: string;
+      redaction_epoch: number;
+    } | undefined;
+    sourceEpochNeedsRebuild = !currentSource || (
+      currentSource.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
+      || currentSource.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
+      || currentSource.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
+      || currentSource.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
+    );
     const sparseComplete = Boolean(currentSource
       && getConversationStructureCache(db).hasCompleteConversation(
         existing.id,
@@ -2370,6 +2384,7 @@ async function ingestFilePass(
     !options.forceFull
     && !options.bypassSameMtimeUnchanged
     && !structureCacheNeedsRebuild
+    && !sourceEpochNeedsRebuild
     && sameMtimeAsExisting
     && parser.source === "codex"
     && appendState
@@ -2418,6 +2433,7 @@ async function ingestFilePass(
   // any unchanged/append shortcut is considered.
   let forceFullReingest = options.forceFull === true
     || structureCacheNeedsRebuild
+    || sourceEpochNeedsRebuild
     || (sameMtimeAsExisting && appendState?.byte_offset === stat.size);
 
   // Parse the file

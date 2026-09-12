@@ -16,6 +16,88 @@ export type Role = "user" | "assistant" | "system" | "tool";
 
 export type ConversationSource = "claude_code" | "codex" | "gemini";
 
+export type ActivityKind =
+  | "reasoning-summary"
+  | "thinking"
+  | "tool-progress"
+  | "tool-summary"
+  | "status"
+  | "information"
+  | "diagnostic";
+
+export type ChatContentCompletion = "streaming" | "complete";
+export type ChatExecutionOutcome = "succeeded" | "failed" | "cancelled" | "unknown";
+
+export interface ChatContentPart {
+  type: "text";
+  text: string;
+  /** Provider-native content/summary part index, when the provider supplies one. */
+  native_index?: number;
+}
+
+export interface ChatItemIdentity {
+  provider: ConversationSource;
+  session_id: string;
+  /** Provider-native item/message identity. Absence is meaningful. */
+  native_item_id?: string;
+  native_turn_id?: string;
+  native_tool_id?: string;
+  native_content_index?: number;
+  /** Verified transcript coordinates used only when reusable native identity is absent. */
+  source_record_ordinal: number;
+  source_sub_block_ordinal: number;
+}
+
+export interface ChatItemProvenance {
+  source: "verified-provider-transcript" | "live-provider-event";
+  provider: ConversationSource;
+  source_event_type: string;
+}
+
+export interface ChatItemBase {
+  identity: ChatItemIdentity;
+  provenance: ChatItemProvenance;
+  parts: ChatContentPart[];
+  content_completion: ChatContentCompletion;
+  /** Content completion never implies an execution outcome. */
+  execution_outcome?: ChatExecutionOutcome;
+}
+
+export interface MessageItem extends ChatItemBase {
+  type: "message";
+  role: "user" | "assistant" | "system";
+}
+
+export interface PlanItem extends ChatItemBase {
+  type: "plan";
+  role: "assistant";
+}
+
+export interface ToolCallItem extends ChatItemBase {
+  type: "tool-call";
+  role: "assistant" | "tool";
+  phase: "call" | "result";
+  tool_name?: string;
+  tool_kind?: string;
+  tool_id?: string;
+  input?: unknown;
+  output?: unknown;
+}
+
+export interface ActivityItem extends ChatItemBase {
+  type: "activity";
+  role: "assistant" | "system";
+  activity_kind: ActivityKind;
+  severity?: "info" | "warning" | "error";
+  status?: string;
+  elapsed_ms?: number;
+  tool_name?: string;
+  tool_id?: string;
+  related_tool_ids?: string[];
+}
+
+export type ChatItem = MessageItem | PlanItem | ToolCallItem | ActivityItem;
+
 export interface BlockMetadata {
   tool_name?: string;
   tool_kind?: string;
@@ -39,6 +121,10 @@ export interface BlockMetadata {
   source_record_ordinal?: number;
   /** Stable order when one native record normalizes into several blocks. */
   source_sub_block_ordinal?: number;
+  /** Native content-block index within one provider message/record. */
+  provider_content_index?: number;
+  /** Provider-neutral Chat item emitted by transcript normalization. */
+  chat_item?: ChatItem;
 }
 
 export interface ConversationBlock {
@@ -93,6 +179,8 @@ export interface ParseResult {
 export interface IncrementalParseInput {
   filePath: string;
   raw: string;
+  /** Verified native session identity when parsing an isolated durable record. */
+  nativeSessionId?: string;
   baseBlockCount: number;
   baseRecordCount?: number;
   sourceHash: string;
@@ -104,4 +192,87 @@ export interface ConversationParser {
   canParse(filePath: string): boolean;
   parse(filePath: string): Promise<ParseResult | null>;
   parseIncremental?(input: IncrementalParseInput): Promise<ParseResult | null>;
+}
+
+export interface TranscriptChatItemInput {
+  provider: ConversationSource;
+  sessionId: string;
+  sourceEventType: string;
+  sourceRecordOrdinal: number;
+  sourceSubBlockOrdinal: number;
+  parts?: ChatContentPart[];
+  activityKind?: ActivityKind;
+  severity?: ActivityItem["severity"];
+  status?: string;
+  elapsedMs?: number;
+  relatedToolIds?: string[];
+  executionOutcome?: ChatExecutionOutcome;
+}
+
+/** Attach the canonical durable Chat item without inventing provider identity or prose. */
+export function attachTranscriptChatItem(
+  block: Omit<ConversationBlock, "id" | "conversation_id">,
+  input: TranscriptChatItemInput,
+): void {
+  const parts = input.parts ?? (block.content
+    ? [{ type: "text" as const, text: block.content }]
+    : []);
+  const identity: ChatItemIdentity = {
+    provider: input.provider,
+    session_id: input.sessionId,
+    source_record_ordinal: input.sourceRecordOrdinal,
+    source_sub_block_ordinal: input.sourceSubBlockOrdinal,
+    ...(block.metadata.provider_message_id
+      ? { native_item_id: block.metadata.provider_message_id }
+      : block.dag_uuid ? { native_item_id: block.dag_uuid } : {}),
+    ...(block.metadata.provider_turn_id ? { native_turn_id: block.metadata.provider_turn_id } : {}),
+    ...(block.metadata.tool_id ? { native_tool_id: block.metadata.tool_id } : {}),
+    ...(block.metadata.provider_content_index !== undefined
+      ? { native_content_index: block.metadata.provider_content_index }
+      : {}),
+  };
+  const base: ChatItemBase = {
+    identity,
+    provenance: {
+      source: "verified-provider-transcript",
+      provider: input.provider,
+      source_event_type: input.sourceEventType,
+    },
+    parts,
+    content_completion: "complete",
+    ...(input.executionOutcome ? { execution_outcome: input.executionOutcome } : {}),
+  };
+
+  let item: ChatItem | null = null;
+  if (block.type === "user_message" || block.type === "assistant_message") {
+    item = { ...base, type: "message", role: block.role as "user" | "assistant" };
+  } else if (block.type === "plan") {
+    item = { ...base, type: "plan", role: "assistant" };
+  } else if (block.type === "tool_use" || block.type === "tool_result") {
+    item = {
+      ...base,
+      type: "tool-call",
+      role: block.role as "assistant" | "tool",
+      phase: block.type === "tool_use" ? "call" : "result",
+      ...(block.metadata.tool_name ? { tool_name: block.metadata.tool_name } : {}),
+      ...(block.metadata.tool_kind ? { tool_kind: block.metadata.tool_kind } : {}),
+      ...(block.metadata.tool_id ? { tool_id: block.metadata.tool_id } : {}),
+      ...(block.metadata.tool_input !== undefined ? { input: block.metadata.tool_input } : {}),
+      ...(block.metadata.tool_output !== undefined ? { output: block.metadata.tool_output } : {}),
+    };
+  } else if (input.activityKind) {
+    item = {
+      ...base,
+      type: "activity",
+      role: block.role === "assistant" ? "assistant" : "system",
+      activity_kind: input.activityKind,
+      ...(input.severity ? { severity: input.severity } : {}),
+      ...(input.status ? { status: input.status } : {}),
+      ...(input.elapsedMs !== undefined ? { elapsed_ms: input.elapsedMs } : {}),
+      ...(block.metadata.tool_name ? { tool_name: block.metadata.tool_name } : {}),
+      ...(block.metadata.tool_id ? { tool_id: block.metadata.tool_id } : {}),
+      ...(input.relatedToolIds?.length ? { related_tool_ids: input.relatedToolIds } : {}),
+    };
+  }
+  if (item) block.metadata.chat_item = item;
 }

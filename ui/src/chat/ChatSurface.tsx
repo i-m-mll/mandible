@@ -14,6 +14,7 @@ import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
+import { ActivityGroup, ActivityRow } from '../components/message-blocks/ActivityBlock';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
 import { openMarkdownDocument } from './markdownActions';
 import {
@@ -21,6 +22,7 @@ import {
   deriveTokenCount,
   extractTurns,
   formatElapsed,
+  groupActivityItemsForDisplay,
   groupMessagesForDisplay,
   serializeDisplayGroupToMarkdown,
   useStreamState,
@@ -531,6 +533,21 @@ export function ChatSurface({
         );
       }
 
+      case 'activity': {
+        const source = node.source;
+        return (
+          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
+            <ActivityRow item={node.item} />
+            <MessageActions
+              onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
+              isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
+              selectMode={selectMode}
+              metadata={{ timestamp: source?.timestamp }}
+            />
+          </div>
+        );
+      }
+
       case 'assistant_turn': {
         const { turn } = node;
         const isLastStreamingTurn = streaming && node.key === lastAssistantKey;
@@ -554,6 +571,8 @@ export function ChatSurface({
               onBlockExpandedChange={(contentBlock, index, expanded) => (
                 setBlockExpanded(blockId(turn.id, contentBlock, index), expanded)
               )}
+              getDisclosureExpanded={(id, defaultExpanded) => expandedBlocks[`${turn.id}:${id}`] ?? defaultExpanded}
+              onDisclosureExpandedChange={(id, expanded) => setBlockExpanded(`${turn.id}:${id}`, expanded)}
               selectedBlockIds={selectedBlockIds}
               selectMode={selectMode}
               onToggleBlockSelect={onToggleBlockSelect}
@@ -590,7 +609,20 @@ export function ChatSurface({
         speaker={group.speaker}
         footer={footer}
       >
-        {group.nodes.map(renderNodeBody)}
+        {groupActivityItemsForDisplay(group.nodes).map((entry) => {
+          if (entry.kind === 'node') return renderNodeBody(entry.node);
+          return (
+            <ActivityGroup
+              key={entry.key}
+              activityKind={entry.activityKind}
+              items={entry.nodes.map((node) => node.item)}
+              expanded={expandedBlocks[entry.key] ?? false}
+              onExpandedChange={(next) => setBlockExpanded(entry.key, next)}
+            >
+              {entry.nodes.map(renderNodeBody)}
+            </ActivityGroup>
+          );
+        })}
       </TurnGroup>
     );
   }

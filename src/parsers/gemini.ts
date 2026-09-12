@@ -12,6 +12,7 @@ import type {
   IncrementalParseInput,
   ParseResult,
 } from "./types.js";
+import { attachTranscriptChatItem } from "./types.js";
 
 // --- Raw JSON shapes ---
 
@@ -296,6 +297,7 @@ export class GeminiParser implements ConversationParser {
     }
     return this.parseRaw(filePath, raw, {
       baseBlockCount: 0,
+      baseRecordCount: 0,
       sourceHash: crypto.createHash("sha256").update(raw).digest("hex"),
       sourceMtime,
     });
@@ -308,6 +310,7 @@ export class GeminiParser implements ConversationParser {
     }
     return this.parseRaw(input.filePath, input.raw, {
       baseBlockCount: input.baseBlockCount,
+      baseRecordCount: input.baseRecordCount ?? 0,
       sourceHash: input.sourceHash,
       sourceMtime: input.sourceMtime,
     });
@@ -316,7 +319,7 @@ export class GeminiParser implements ConversationParser {
   private async parseRaw(
     filePath: string,
     raw: string,
-    options: { baseBlockCount: number; sourceHash: string; sourceMtime: number },
+    options: { baseBlockCount: number; baseRecordCount: number; sourceHash: string; sourceMtime: number },
   ): Promise<ParseResult | null> {
     const session = parseGeminiSession(raw, filePath);
 
@@ -350,12 +353,32 @@ export class GeminiParser implements ConversationParser {
     const blocks: Omit<ConversationBlock, "id" | "conversation_id">[] = [];
     let position = options.baseBlockCount;
 
-    for (const msg of session.messages) {
+    for (const [messageIndex, msg] of session.messages.entries()) {
       const ts = msg.timestamp || startedAt;
+      let sourceSubBlockOrdinal = 0;
+      const appendBlock = (
+        block: Omit<ConversationBlock, "id" | "conversation_id">,
+        sourceEventType: string,
+        activityKind?: "thinking",
+      ) => {
+        block.metadata.provider_message_id = msg.id;
+        block.metadata.provider_content_index = sourceSubBlockOrdinal;
+        block.metadata.source_event_type = sourceEventType;
+        attachTranscriptChatItem(block, {
+          provider: "gemini",
+          sessionId,
+          sourceEventType,
+          sourceRecordOrdinal: options.baseRecordCount + messageIndex,
+          sourceSubBlockOrdinal,
+          ...(activityKind ? { activityKind } : {}),
+        });
+        sourceSubBlockOrdinal += 1;
+        blocks.push(block);
+      };
 
       if (msg.type === "user") {
         const rendered = renderGeminiContent(msg.content);
-        blocks.push({
+        appendBlock({
           type: "user_message",
           role: "user",
           content: rendered,
@@ -363,7 +386,7 @@ export class GeminiParser implements ConversationParser {
           timestamp: ts,
           parent_id: null,
           metadata: {},
-        });
+        }, "gemini_user_message");
       } else if (msg.type === "gemini") {
         // Emit thinking blocks first (they precede the response)
         if (msg.thoughts && msg.thoughts.length > 0) {
@@ -371,7 +394,7 @@ export class GeminiParser implements ConversationParser {
             const content = thought.description || thought.subject || "";
             if (!content) continue;
             const label = thought.subject ? `[${thought.subject}] ` : "";
-            blocks.push({
+            appendBlock({
               type: "thinking",
               role: "assistant",
               content: `${label}${thought.description || ""}`.trim(),
@@ -383,13 +406,13 @@ export class GeminiParser implements ConversationParser {
                 visibility: "default_hidden",
                 source_event_type: "gemini_thought",
               },
-            });
+            }, "gemini_thought", "thinking");
           }
         }
 
         const plan = renderGeminiContent(msg.plan).trim();
         if (plan) {
-          blocks.push({
+          appendBlock({
             type: "plan",
             role: "assistant",
             content: plan,
@@ -400,7 +423,7 @@ export class GeminiParser implements ConversationParser {
               model: msg.model || undefined,
               source_event_type: "gemini_plan",
             },
-          });
+          }, "gemini_plan");
         }
 
         // Emit tool calls before the main message
@@ -411,7 +434,7 @@ export class GeminiParser implements ConversationParser {
             const toolContent = tc.name
               ? `${tc.name}(${JSON.stringify(tc.args)})`
               : JSON.stringify(tc.args);
-            blocks.push({
+            appendBlock({
               type: "tool_use",
               role: "assistant",
               content: toolContent,
@@ -426,14 +449,14 @@ export class GeminiParser implements ConversationParser {
                 visibility: "default_hidden",
                 model: msg.model || undefined,
               },
-            });
+            }, "gemini_tool_call");
 
             // tool_result block (if result exists)
             if (tc.result !== undefined && tc.result !== null) {
               const resultStr = typeof tc.result === "string"
                 ? tc.result
                 : JSON.stringify(tc.result);
-              blocks.push({
+              appendBlock({
                 type: "tool_result",
                 role: "tool",
                 content: resultStr,
@@ -447,7 +470,7 @@ export class GeminiParser implements ConversationParser {
                   tool_output: resultStr.length > 1000 ? undefined : resultStr,
                   visibility: "default_hidden",
                 },
-              });
+              }, "gemini_tool_result");
             }
           }
         }
@@ -463,7 +486,7 @@ export class GeminiParser implements ConversationParser {
               }
             : undefined;
 
-          blocks.push({
+          appendBlock({
             type: "assistant_message",
             role: "assistant",
             content: rendered,
@@ -474,7 +497,7 @@ export class GeminiParser implements ConversationParser {
               model: msg.model || undefined,
               token_usage: tokenUsage,
             },
-          });
+          }, "gemini_message");
         }
       }
     }

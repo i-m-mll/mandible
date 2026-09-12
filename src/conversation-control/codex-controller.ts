@@ -1,4 +1,13 @@
 import type {
+  ActivityItem,
+  ActivityKind,
+  ChatItem,
+  MessageItem,
+  PlanItem,
+  ToolCallItem,
+} from "../parsers/types.js";
+import { chatItemIdentityKey } from "./provider-live.js";
+import type {
   AdapterProbe,
   ConversationControllerAdapter,
   ControllerAcquisitionRequest,
@@ -32,7 +41,7 @@ type CodexController = {
   delivered: Map<string, ProviderDeliveryReceipt>;
   intentionalStop: boolean;
   providerSequence: number;
-  liveMessages: Map<string, string>;
+  liveText: Map<string, string>;
   activeDelivery: ConversationOutboxItem | null;
   userMessageIds: Map<string, string>;
 };
@@ -122,7 +131,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         delivered: new Map(),
         intentionalStop: false,
         providerSequence: 0,
-        liveMessages: new Map(),
+        liveText: new Map(),
         activeDelivery: null,
         userMessageIds: new Map(),
       };
@@ -353,23 +362,92 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         this.markAmbiguous(controller);
         return;
       }
-      const text = `${controller.liveMessages.get(itemId) ?? ""}${delta}`;
-      controller.liveMessages.set(itemId, text);
-      this.emitContent(controller, `message:${itemId}`, {
-        type: "assistant",
-        uuid: itemId,
-        session_id: controller.providerSessionId,
-        parent_tool_use_id: null,
-        message: {
-          id: itemId,
-          role: "assistant",
-          content: [{ type: "text", text }],
-        },
-      });
+      const text = `${controller.liveText.get(`message:${itemId}`) ?? ""}${delta}`;
+      controller.liveText.set(`message:${itemId}`, text);
+      this.emitItem(controller, this.messageItem(controller, itemId, "assistant", text, "streaming", turnId));
+      return;
+    }
+    if (record.method === "item/reasoning/summaryTextDelta" || record.method === "item/reasoning/textDelta") {
+      const params = object(record.params);
+      const threadId = stringField(params, "threadId");
+      const turnId = stringField(params, "turnId");
+      const itemId = stringField(params, "itemId");
+      const delta = stringField(params, "delta");
+      const nativeIndex = Number(record.method === "item/reasoning/summaryTextDelta"
+        ? params?.summaryIndex
+        : params?.contentIndex);
+      if (threadId !== controller.providerSessionId || !turnId || !itemId || delta === null
+          || !Number.isInteger(nativeIndex) || nativeIndex < 0
+          || (controller.activeNativeTurnId && turnId !== controller.activeNativeTurnId)) {
+        this.markAmbiguous(controller);
+        return;
+      }
+      const activityKind: ActivityKind = record.method === "item/reasoning/summaryTextDelta"
+        ? "reasoning-summary"
+        : "thinking";
+      const prefix = `${activityKind}:${itemId}:`;
+      const key = `${prefix}${nativeIndex}`;
+      const text = `${controller.liveText.get(key) ?? ""}${delta}`;
+      controller.liveText.set(key, text);
+      const parts = [...controller.liveText.entries()].flatMap(([candidate, value]) => {
+        if (!candidate.startsWith(prefix)) return [];
+        const index = Number(candidate.slice(prefix.length));
+        return Number.isInteger(index) ? [{ type: "text" as const, text: value, native_index: index }] : [];
+      }).sort((left, right) => left.native_index - right.native_index);
+      this.emitItem(controller, this.activityItem(
+        controller,
+        itemId,
+        activityKind,
+        parts,
+        "streaming",
+        turnId,
+      ));
+      return;
+    }
+    if (record.method === "item/commandExecution/outputDelta") {
+      const params = object(record.params);
+      const threadId = stringField(params, "threadId");
+      const turnId = stringField(params, "turnId");
+      const itemId = stringField(params, "itemId");
+      const delta = stringField(params, "delta");
+      if (threadId !== controller.providerSessionId || !turnId || !itemId || delta === null
+          || (controller.activeNativeTurnId && turnId !== controller.activeNativeTurnId)) {
+        this.markAmbiguous(controller);
+        return;
+      }
+      const key = `command:${itemId}`;
+      const output = `${controller.liveText.get(key) ?? ""}${delta}`;
+      controller.liveText.set(key, output);
+      this.emitItem(controller, this.toolItem(controller, itemId, "streaming", turnId, {
+        tool_name: "command",
+        tool_kind: "commandExecution",
+        output,
+      }));
+      return;
+    }
+    if (record.method === "item/mcpToolCall/progress") {
+      const params = object(record.params);
+      const threadId = stringField(params, "threadId");
+      const turnId = stringField(params, "turnId");
+      const itemId = stringField(params, "itemId");
+      const message = stringField(params, "message");
+      if (threadId !== controller.providerSessionId || !turnId || !itemId || message === null
+          || (controller.activeNativeTurnId && turnId !== controller.activeNativeTurnId)) {
+        this.markAmbiguous(controller);
+        return;
+      }
+      this.emitItem(controller, this.activityItem(
+        controller,
+        itemId,
+        "tool-progress",
+        message ? [{ type: "text", text: message }] : [],
+        "streaming",
+        turnId,
+      ));
       return;
     }
     if (record.method === "item/started" || record.method === "item/completed") {
-      this.acceptItem(controller, object(record.params));
+      this.acceptItem(controller, object(record.params), record.method === "item/completed");
       return;
     }
     if (record.method === "turn/completed") {
@@ -384,8 +462,13 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     if (record.method === "error" && controller.activeControlTurnId) this.markAmbiguous(controller);
   }
 
-  private acceptItem(controller: CodexController, params: Record<string, unknown> | null): void {
+  private acceptItem(controller: CodexController, params: Record<string, unknown> | null, complete: boolean): void {
     if (!params || stringField(params, "threadId") !== controller.providerSessionId) return;
+    const turnId = stringField(params, "turnId");
+    if (!turnId || (controller.activeNativeTurnId && turnId !== controller.activeNativeTurnId)) {
+      this.markAmbiguous(controller);
+      return;
+    }
     const item = object(params.item);
     const itemId = stringField(item, "id");
     const itemType = stringField(item, "type");
@@ -394,46 +477,42 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       const delivery = controller.activeDelivery;
       if (!delivery) return;
       controller.userMessageIds.set(delivery.idempotency_key, itemId);
-      this.emitUserContent(controller, delivery, itemId, item);
+      this.emitUserContent(controller, delivery, itemId, item, complete);
       return;
     }
-    if (itemType === "agentMessage") {
-      const text = stringField(item, "text");
-      if (text !== null) {
-        controller.liveMessages.set(itemId, text);
-        this.emitContent(controller, `message:${itemId}`, {
-          type: "assistant",
-          uuid: itemId,
-          session_id: controller.providerSessionId,
-          parent_tool_use_id: null,
-          message: { id: itemId, role: "assistant", content: [{ type: "text", text }] },
+    for (const liveItem of this.codexItems(controller, item, complete, turnId)) {
+      this.emitItem(controller, liveItem);
+    }
+    if (itemType === "collabAgentToolCall" && stringField(item, "tool") === "spawnAgent") {
+      const sender = stringField(item, "senderThreadId");
+      const receivers = Array.isArray(item.receiverThreadIds)
+        ? item.receiverThreadIds.filter((value): value is string => typeof value === "string" && Boolean(value))
+        : [];
+      if (sender !== controller.providerSessionId || receivers.length === 0) return;
+      for (const receiver of receivers) {
+        this.providerEvents.emit({
+          kind: "provider-lineage",
+          conversation_id: controller.conversationId,
+          provider_session_id: controller.providerSessionId,
+          generation: controller.generation,
+          sequence: ++controller.providerSequence,
+          observed_at: Date.now(),
+          provider_event_id: itemId,
+          relation: "spawned-child",
+          sender_provider_session_id: sender,
+          receiver_provider_session_id: receiver,
         });
       }
-      return;
-    }
-    if (itemType !== "collabAgentToolCall" || stringField(item, "tool") !== "spawnAgent") return;
-    const sender = stringField(item, "senderThreadId");
-    const receivers = Array.isArray(item.receiverThreadIds)
-      ? item.receiverThreadIds.filter((value): value is string => typeof value === "string" && Boolean(value))
-      : [];
-    if (sender !== controller.providerSessionId || receivers.length === 0) return;
-    for (const receiver of receivers) {
-      this.providerEvents.emit({
-        kind: "provider-lineage",
-        conversation_id: controller.conversationId,
-        provider_session_id: controller.providerSessionId,
-        generation: controller.generation,
-        sequence: ++controller.providerSequence,
-        observed_at: Date.now(),
-        provider_event_id: itemId,
-        relation: "spawned-child",
-        sender_provider_session_id: sender,
-        receiver_provider_session_id: receiver,
-      });
     }
   }
 
-  private emitContent(controller: CodexController, identity: string, event: { type: string; [key: string]: unknown }): void {
+  private emitItem(
+    controller: CodexController,
+    item: ChatItem,
+    correlation?: Extract<ProviderAdapterEvent, { kind: "provisional-content" }>["correlation"],
+  ): void {
+    const identity = chatItemIdentityKey(item);
+    if (!identity) return;
     this.providerEvents.emit({
       kind: "provisional-content",
       conversation_id: controller.conversationId,
@@ -442,7 +521,8 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       sequence: ++controller.providerSequence,
       observed_at: Date.now(),
       identity,
-      event,
+      ...(correlation ? { correlation } : {}),
+      item,
     });
   }
 
@@ -451,33 +531,196 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     delivery: ConversationOutboxItem,
     providerMessageId: string,
     item?: Record<string, unknown>,
+    complete = true,
   ): void {
     const rawContent = item?.content;
     const content = Array.isArray(rawContent) && rawContent.length > 0
       ? rawContent
       : [{ type: "text", text: delivery.message }];
-    this.providerEvents.emit({
-      kind: "provisional-content",
-      conversation_id: controller.conversationId,
-      provider_session_id: controller.providerSessionId,
-      generation: controller.generation,
-      sequence: ++controller.providerSequence,
-      observed_at: Date.now(),
-      identity: `message:${delivery.idempotency_key}`,
-      correlation: {
+    const text = content.flatMap((part) => {
+      const candidate = object(part);
+      return typeof candidate?.text === "string" ? [candidate.text] : [];
+    }).join("");
+    this.emitItem(controller, this.messageItem(
+      controller,
+      delivery.idempotency_key,
+      "user",
+      text || delivery.message,
+      complete ? "complete" : "streaming",
+      controller.activeNativeTurnId ?? undefined,
+    ), {
         intent_id: delivery.idempotency_key,
         delivery_id: delivery.id,
         turn_id: delivery.turn_id,
         provider_message_id: providerMessageId,
-      },
-      event: {
-        type: "user",
-        uuid: delivery.idempotency_key,
-        session_id: controller.providerSessionId,
-        parent_tool_use_id: null,
-        message: { id: delivery.idempotency_key, role: "user", content },
-      },
     });
+  }
+
+  private liveIdentity(
+    controller: CodexController,
+    itemId: string,
+    turnId?: string,
+    contentIndex?: number,
+  ): ChatItem["identity"] {
+    return {
+      provider: "codex",
+      session_id: controller.providerSessionId,
+      native_item_id: itemId,
+      ...(turnId ? { native_turn_id: turnId } : {}),
+      ...(contentIndex !== undefined ? { native_content_index: contentIndex } : {}),
+      // Live identities always carry native identity; transcript coordinates
+      // are therefore deliberately inert placeholders in the frozen shape.
+      source_record_ordinal: 0,
+      source_sub_block_ordinal: contentIndex ?? 0,
+    };
+  }
+
+  private messageItem(
+    controller: CodexController,
+    itemId: string,
+    role: MessageItem["role"],
+    value: string,
+    completion: MessageItem["content_completion"],
+    turnId?: string,
+  ): MessageItem {
+    return {
+      type: "message",
+      role,
+      identity: this.liveIdentity(controller, itemId, turnId),
+      provenance: { source: "live-provider-event", provider: "codex", source_event_type: "message" },
+      parts: value ? [{ type: "text", text: value }] : [],
+      content_completion: completion,
+    };
+  }
+
+  private activityItem(
+    controller: CodexController,
+    itemId: string,
+    activityKind: ActivityKind,
+    parts: ActivityItem["parts"],
+    completion: ActivityItem["content_completion"],
+    turnId?: string,
+    fields: Partial<Pick<ActivityItem, "severity" | "status" | "elapsed_ms" | "tool_name" | "tool_id" | "related_tool_ids">> = {},
+  ): ActivityItem {
+    return {
+      type: "activity",
+      role: "assistant",
+      activity_kind: activityKind,
+      identity: this.liveIdentity(controller, itemId, turnId),
+      provenance: { source: "live-provider-event", provider: "codex", source_event_type: activityKind },
+      parts,
+      content_completion: completion,
+      ...fields,
+    };
+  }
+
+  private toolItem(
+    controller: CodexController,
+    itemId: string,
+    completion: ToolCallItem["content_completion"],
+    turnId: string,
+    fields: Partial<ToolCallItem>,
+  ): ToolCallItem {
+    return {
+      type: "tool-call",
+      role: "assistant",
+      phase: "call",
+      identity: this.liveIdentity(controller, itemId, turnId),
+      provenance: { source: "live-provider-event", provider: "codex", source_event_type: String(fields.tool_kind ?? "tool") },
+      parts: [],
+      content_completion: completion,
+      ...fields,
+    };
+  }
+
+  private codexItems(
+    controller: CodexController,
+    item: Record<string, unknown>,
+    complete: boolean,
+    turnId: string,
+  ): ChatItem[] {
+    const itemId = stringField(item, "id");
+    const type = stringField(item, "type");
+    if (!itemId || !type) return [];
+    const completion = complete ? "complete" as const : "streaming" as const;
+    if (type === "agentMessage") {
+      const value = stringField(item, "text");
+      return value === null ? [] : [this.messageItem(controller, itemId, "assistant", value, completion, turnId)];
+    }
+    if (type === "plan") {
+      const value = stringField(item, "text");
+      if (value === null) return [];
+      const plan: PlanItem = {
+        type: "plan",
+        role: "assistant",
+        identity: this.liveIdentity(controller, itemId, turnId),
+        provenance: { source: "live-provider-event", provider: "codex", source_event_type: "plan" },
+        parts: value ? [{ type: "text", text: value }] : [],
+        content_completion: completion,
+      };
+      return [plan];
+    }
+    if (type === "reasoning") {
+      const parts = (value: unknown) => Array.isArray(value)
+        ? value.flatMap((text, nativeIndex) => typeof text === "string" && text
+          ? [{ type: "text" as const, text, native_index: nativeIndex }]
+          : [])
+        : [];
+      const summary = parts(item.summary);
+      const content = parts(item.content);
+      return [
+        ...(summary.length > 0
+          ? [this.activityItem(controller, itemId, "reasoning-summary", summary, completion, turnId)]
+          : []),
+        ...(content.length > 0
+          ? [this.activityItem(controller, itemId, "thinking", content, completion, turnId)]
+          : []),
+      ];
+    }
+
+    const status = stringField(item, "status");
+    const executionOutcome = status === "completed" ? "succeeded" as const
+      : status === "failed" || status === "declined" ? "failed" as const
+      : undefined;
+    if (type === "commandExecution") {
+      const output = stringField(item, "aggregatedOutput");
+      const command = stringField(item, "command");
+      return [this.toolItem(controller, itemId, completion, turnId, {
+        tool_name: "command",
+        tool_kind: type,
+        ...(command !== null ? { input: command } : {}),
+        ...(output !== null ? { output, parts: output ? [{ type: "text", text: output }] : [] } : {}),
+        ...(executionOutcome ? { execution_outcome: executionOutcome } : {}),
+      })];
+    }
+    if (type === "mcpToolCall" || type === "dynamicToolCall") {
+      const tool = stringField(item, "tool");
+      return [this.toolItem(controller, itemId, completion, turnId, {
+        ...(tool ? { tool_name: tool } : {}),
+        tool_kind: type,
+        ...(item.arguments !== undefined ? { input: item.arguments } : {}),
+        ...(item.result !== undefined && item.result !== null ? { output: item.result } : {}),
+        ...(executionOutcome ? { execution_outcome: executionOutcome } : {}),
+      })];
+    }
+    if (type === "fileChange" || type === "collabAgentToolCall" || type === "webSearch"
+        || type === "imageGeneration") {
+      const tool = type === "collabAgentToolCall" ? stringField(item, "tool") : type;
+      return [this.toolItem(controller, itemId, completion, turnId, {
+        tool_name: tool ?? type,
+        tool_kind: type,
+        ...(type === "fileChange" ? { input: item.changes } : {}),
+        ...(executionOutcome ? { execution_outcome: executionOutcome } : {}),
+      })];
+    }
+    if (type === "contextCompaction" || type === "enteredReviewMode" || type === "exitedReviewMode"
+        || type === "sleep" || type === "subAgentActivity") {
+      return [this.activityItem(controller, itemId, "status", [], completion, turnId, {
+        status: type,
+        ...(typeof item.durationMs === "number" ? { elapsed_ms: item.durationMs } : {}),
+      })];
+    }
+    return [];
   }
 
   private finishTurn(controller: CodexController, turn: Record<string, unknown> | null): void {

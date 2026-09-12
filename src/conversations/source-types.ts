@@ -167,6 +167,6 @@ export interface UpdateConversationSourceCustodyInput {
 export const CURRENT_CONVERSATION_SOURCE_EPOCHS: Readonly<ConversationSourceEpochs> = Object.freeze({
   parserFormat: "provider-jsonl",
   parserVersion: "1",
-  normalizationVersion: "1",
+  normalizationVersion: "2",
   redactionEpoch: 0,
 });

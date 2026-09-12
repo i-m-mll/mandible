@@ -13,7 +13,7 @@ import {
   type ConversationControllerAdapter,
 } from "./adapter.js";
 import { ConversationControlStore } from "./store.js";
-import { emptyProviderLiveProjection, mergeProviderLiveProjection } from "./provider-live.js";
+import { chatItemIdentityKey, emptyProviderLiveProjection, mergeProviderLiveProjection } from "./provider-live.js";
 import type {
   AcceptedConversationSubmission,
   ConversationControlError,
@@ -87,14 +87,16 @@ export class ConversationControlService {
             ? this.store.bindProviderSession(conversation_id, generation, lifecycle.provider_session_id)
             : this.store.publishLifecycle(conversation_id, generation, lifecycle);
       if (result.ok) this.notify(conversation_id);
+      if (result.ok && lifecycle.kind === "controller-released") {
+        this.retireProviderTransients(conversation_id, generation, "provider-disconnected");
+      }
       if (result.ok && lifecycle.kind === "turn-completed") {
         void this.reconcileTerminalTurn(conversation_id, generation, lifecycle.turn_id);
       }
       return result;
     });
     const unsubscribeProviderEvents = adapter.subscribeProviderEvents((event) => {
-      this.projectProviderEvent(event);
-      this.onProviderEvent?.(event);
+      if (this.projectProviderEvent(event)) this.onProviderEvent?.(event);
     });
     return () => {
       unsubscribeProviderEvents();
@@ -501,11 +503,42 @@ export class ConversationControlService {
     if (snapshot.ok) this.onChange(snapshot.value);
   }
 
-  private projectProviderEvent(event: ProviderAdapterEvent): void {
+  private projectProviderEvent(event: ProviderAdapterEvent): boolean {
+    if (event.kind !== "durable-reconciliation" && event.kind !== "transient-retirement") {
+      const snapshot = this.getSnapshot(event.conversation_id);
+      if (!snapshot.ok || snapshot.value.ownership.kind !== "mandible"
+          || snapshot.value.ownership.generation !== event.generation
+          || snapshot.value.provider_session_id !== event.provider_session_id) return false;
+    }
     if (event.kind === "provider-lineage") this.materializeExactLineage(event);
     const current = this.liveProjection.get(event.conversation_id) ?? null;
     const next = mergeProviderLiveProjection(current, event);
-    if (next !== current) this.liveProjection.set(event.conversation_id, next);
+    if (next === current) return false;
+    this.liveProjection.set(event.conversation_id, next);
+    return true;
+  }
+
+  private retireProviderTransients(
+    conversationId: string,
+    generation: number,
+    reason: "provider-disconnected" | "generation-replaced",
+  ): void {
+    const current = this.liveProjection.get(conversationId);
+    if (!current || current.events.length === 0) return;
+    const providerSessionId = current.events.find((event) => event.generation === generation)?.provider_session_id;
+    if (!providerSessionId) return;
+    const sequence = current.events.reduce((maximum, event) => Math.max(maximum, event.sequence), 0) + 1;
+    const retirement: ProviderAdapterEvent = {
+      kind: "transient-retirement",
+      conversation_id: conversationId,
+      provider_session_id: providerSessionId,
+      generation,
+      sequence,
+      observed_at: Date.now(),
+      provider_event_id: `${reason}:${generation}`,
+      reason,
+    };
+    if (this.projectProviderEvent(retirement)) this.onProviderEvent?.(retirement);
   }
 
   private async reconcileTerminalTurn(conversationId: string, generation: number, turnId: string): Promise<void> {
@@ -527,144 +560,119 @@ export class ConversationControlService {
     const current = this.liveProjection.get(conversationId) ?? emptyProviderLiveProjection(conversationId);
     let coveredIdentities: string[] = [];
     try {
+      const durableUserTurnIds = new Set<string>();
       const delivery = this.db.prepare(`
-        SELECT idempotency_key, provider_receipt_id
+        SELECT id, idempotency_key, provider_receipt_id
           FROM conversation_control_outbox
          WHERE conversation_id = ? AND generation = ? AND turn_id = ?
       `).get(conversationId, generation, turnId) as {
+        id: string;
         idempotency_key: string;
         provider_receipt_id: string | null;
       } | undefined;
-      const codexReceiptPrefix = "codex:turn:";
-      const durableProviderTurnIds = new Set<string>();
-      const rows = this.db.prepare(`
-        SELECT type, dag_uuid, metadata_json
-          FROM conversation_blocks
-         WHERE conversation_id = ?
-           AND (dag_uuid IS NOT NULL OR metadata_json LIKE '%provider_message_id%'
-             OR metadata_json LIKE '%provider_turn_id%')
-      `).all(conversationId) as Array<{ type: string; dag_uuid: string | null; metadata_json: string }>;
-      for (const row of rows) {
-        if (row.dag_uuid) durableIds.add(row.dag_uuid);
+      const addDurableIdentity = (metadataJson: string): void => {
         try {
-          const metadata = JSON.parse(row.metadata_json) as {
-            provider_message_id?: unknown;
-            provider_turn_id?: unknown;
-          };
-          if (typeof metadata.provider_message_id === "string" && metadata.provider_message_id) {
-            durableIds.add(metadata.provider_message_id);
+          const metadata = JSON.parse(metadataJson) as { chat_item?: unknown; client_intent_id?: unknown };
+          if (!metadata.chat_item || typeof metadata.chat_item !== "object") return;
+          const item = metadata.chat_item as Parameters<typeof chatItemIdentityKey>[0];
+          if (item.type === "message" && item.role === "user" && item.identity.native_turn_id) {
+            durableUserTurnIds.add(item.identity.native_turn_id);
           }
-          if (row.type === "user_message"
-              && typeof metadata.provider_turn_id === "string"
-              && metadata.provider_turn_id) {
-            durableProviderTurnIds.add(metadata.provider_turn_id);
+          const key = chatItemIdentityKey(
+            item,
+            { allowTranscriptCoordinates: true },
+          );
+          if (key) durableIds.add(key);
+          // Codex writes its exact echoed client identity in the following
+          // user_message event, after the response_item was normalized. Cover
+          // that same durable Chat item without guessing from prose or turns.
+          if (item.type === "message" && item.role === "user"
+              && typeof metadata.client_intent_id === "string" && metadata.client_intent_id) {
+            const clientItem = {
+              ...item,
+              identity: { ...item.identity, native_item_id: metadata.client_intent_id },
+            };
+            const clientKey = chatItemIdentityKey(clientItem);
+            if (clientKey) durableIds.add(clientKey);
           }
         } catch {
           // Invalid metadata cannot establish durable coverage.
         }
-      }
-
-      const structuralIds = this.db.prepare(`
-        SELECT dag_uuid
-          FROM conversation_structural_blocks
-         WHERE conversation_id = ? AND status = 'current' AND dag_uuid IS NOT NULL
+      };
+      const rows = this.db.prepare(`
+        SELECT metadata_json
+          FROM conversation_blocks
+         WHERE conversation_id = ?
+           AND metadata_json LIKE '%"chat_item"%'
          ORDER BY position DESC
          LIMIT 512
-      `).all(conversationId) as Array<{ dag_uuid: string }>;
-      for (const row of structuralIds) durableIds.add(row.dag_uuid);
+      `).all(conversationId) as Array<{ metadata_json: string }>;
+      for (const row of rows) addDurableIdentity(row.metadata_json);
 
-      const expectedCodexTurnId = delivery?.provider_receipt_id?.startsWith(codexReceiptPrefix)
-        ? delivery.provider_receipt_id.slice(codexReceiptPrefix.length)
-        : null;
-      if (expectedCodexTurnId) {
-        const reader = new ConversationSourceReader(this.db);
-        const recentBlockIds = (this.db.prepare(`
-          SELECT id
-            FROM conversation_structural_blocks
-           WHERE conversation_id = ? AND status = 'current'
-           ORDER BY position DESC
-           LIMIT 64
-        `).all(conversationId) as Array<{ id: string }>).map((row) => row.id);
+      const reader = new ConversationSourceReader(this.db);
+      const recentBlockIds = (this.db.prepare(`
+        SELECT id
+          FROM conversation_structural_blocks
+         WHERE conversation_id = ? AND status = 'current'
+         ORDER BY position DESC
+         LIMIT 256
+      `).all(conversationId) as Array<{ id: string }>).map((row) => row.id);
 
-        // Source-backed conversations intentionally reclaim dense structural rows.
-        // Read the bounded tail from the disposable sparse index as well, otherwise
-        // terminal reconciliation races the first lazy transcript read and leaves
-        // the optimistic prompt projected beside its durable copy.
-        const source = this.db.prepare(`
-          SELECT current_version_id
-            FROM conversation_sources
-           WHERE conversation_id = ? AND availability = 'available'
-        `).get(conversationId) as { current_version_id: string | null } | undefined;
-        if (source?.current_version_id) {
-          const cache = getConversationStructureCache(this.db);
-          const head = cache.readPage(conversationId, source.current_version_id, {
-            offset: 0,
-            limit: 1,
+      // Source-backed conversations reclaim dense rows, so exact terminal
+      // reconciliation reads the same bounded tail from the sparse index.
+      const source = this.db.prepare(`
+        SELECT current_version_id
+          FROM conversation_sources
+         WHERE conversation_id = ? AND availability = 'available'
+      `).get(conversationId) as { current_version_id: string | null } | undefined;
+      if (source?.current_version_id) {
+        const cache = getConversationStructureCache(this.db);
+        const head = cache.readPage(conversationId, source.current_version_id, {
+          offset: 0,
+          limit: 1,
+        });
+        if (head && head.total > 0) {
+          const tail = cache.readPage(conversationId, source.current_version_id, {
+            offset: Math.max(0, head.total - 256),
+            limit: 256,
           });
-          if (head && head.total > 0) {
-            const tail = cache.readPage(conversationId, source.current_version_id, {
-              offset: Math.max(0, head.total - 64),
-              limit: 64,
-            });
-            for (const row of tail?.rows ?? []) {
-              recentBlockIds.push(sparseConversationBlockId(conversationId, row.position));
-            }
-          }
-          const firstUser = cache.readPage(conversationId, source.current_version_id, {
-            offset: 0,
-            limit: 1,
-            types: ["user_message"],
-          });
-          if (firstUser && firstUser.total > 0) {
-            const recentUsers = cache.readPage(conversationId, source.current_version_id, {
-              offset: Math.max(0, firstUser.total - 16),
-              limit: 16,
-              types: ["user_message"],
-            });
-            for (const row of recentUsers?.rows ?? []) {
-              recentBlockIds.push(sparseConversationBlockId(conversationId, row.position));
-            }
-          }
-        }
-
-        for (const blockId of new Set(recentBlockIds)) {
-          const read = await reader.readBlock(blockId);
-          if (read.status !== "source" && read.status !== "legacy") continue;
-          if (read.value.dag_uuid) durableIds.add(read.value.dag_uuid);
-          try {
-            const metadata = JSON.parse(read.value.metadata_json) as {
-              provider_message_id?: unknown;
-              provider_turn_id?: unknown;
-            };
-            if (typeof metadata.provider_message_id === "string" && metadata.provider_message_id) {
-              durableIds.add(metadata.provider_message_id);
-            }
-            if (read.value.type === "user_message" && metadata.provider_turn_id === expectedCodexTurnId) {
-              durableProviderTurnIds.add(expectedCodexTurnId);
-            }
-          } catch {
-            // Invalid source metadata cannot establish durable coverage.
+          for (const row of tail?.rows ?? []) {
+            recentBlockIds.push(sparseConversationBlockId(conversationId, row.position));
           }
         }
       }
-      if (delivery?.provider_receipt_id?.startsWith(codexReceiptPrefix)
-          && durableProviderTurnIds.has(delivery.provider_receipt_id.slice(codexReceiptPrefix.length))) {
-        durableIds.add(delivery.idempotency_key);
+
+      for (const blockId of new Set(recentBlockIds)) {
+        const read = await reader.readBlock(blockId);
+        if (read.status !== "source" && read.status !== "legacy") continue;
+        addDurableIdentity(read.value.metadata_json);
       }
 
       coveredIdentities = current.events.flatMap((event) => {
         if (event.kind !== "provisional-content") return [];
-        const message = event.event.message;
-        const candidates = [
-          event.correlation?.provider_message_id,
-          typeof message?.id === "string" ? message.id : null,
-          typeof event.event.uuid === "string" ? event.event.uuid : null,
-          event.identity.startsWith("message:") ? event.identity.slice("message:".length) : null,
-          event.identity.startsWith("event:") ? event.identity.slice("event:".length) : null,
-        ];
-        return candidates.some((candidate) => candidate && durableIds.has(candidate)) ? [event.identity] : [];
+        if (durableIds.has(event.identity)) return [event.identity];
+        const receiptTurnId = delivery?.provider_receipt_id?.startsWith("codex:turn:")
+          ? delivery.provider_receipt_id.slice("codex:turn:".length)
+          : null;
+        const exactTurnCoverage = Boolean(receiptTurnId
+          && delivery
+          && event.correlation
+          && durableUserTurnIds.has(receiptTurnId)
+          && event.item.type === "message"
+          && event.item.role === "user"
+          && event.correlation.intent_id === delivery.idempotency_key
+          && event.correlation.delivery_id === delivery.id);
+        return exactTurnCoverage ? [event.identity] : [];
       });
-      if (coveredIdentities.length > 0) {
+      const terminalRetiredIdentities = status.endsWith(":fresh")
+        ? current.events.flatMap((event) => event.kind === "provisional-content"
+          && event.item.content_completion === "complete"
+          && !coveredIdentities.includes(event.identity)
+          ? [event.identity]
+          : [])
+        : [];
+      const retiredIdentities = new Set([...coveredIdentities, ...terminalRetiredIdentities]);
+      if (retiredIdentities.size > 0) {
         const sequence = current.events.reduce((maximum, event) => Math.max(maximum, event.sequence), 0) + 1;
         const event: ProviderAdapterEvent = {
           kind: "durable-reconciliation",
@@ -675,10 +683,13 @@ export class ConversationControlService {
           observed_at: Date.now(),
           provider_event_id: `turn:${turnId}`,
           covered_identities: [...new Set(coveredIdentities)],
+          ...(terminalRetiredIdentities.length > 0
+            ? { terminal_retired_identities: [...new Set(terminalRetiredIdentities)] }
+            : {}),
         };
-        this.projectProviderEvent(event);
-        this.onProviderEvent?.(event);
+        if (this.projectProviderEvent(event)) this.onProviderEvent?.(event);
       }
+      coveredIdentities = [...retiredIdentities];
     } catch {
       status = `${status}:projection_error`;
     }

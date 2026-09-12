@@ -21,6 +21,7 @@ import type {
   SourceReadFailureKind,
   SourceReadResult,
 } from "./source-types.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./source-types.js";
 import {
   getConversationStructureCache,
   parseSparseConversationBlockId,
@@ -102,7 +103,7 @@ interface CheckpointRow {
 }
 
 type SnapshotResult =
-  | { ok: true; records: Map<string, Buffer>; version: VersionRow; provider: ConversationSource; aliasPath: string }
+  | { ok: true; records: Map<string, Buffer>; version: VersionRow; provider: ConversationSource; nativeSessionId: string; aliasPath: string }
   | { ok: false; kind: SourceReadFailureKind; reason: string };
 
 function recordKey(row: Pick<StructuralRow, "record_offset" | "record_length">): string {
@@ -405,8 +406,8 @@ export class ConversationSourceReader {
     }
     if (
       snapshot.version.parser_format !== "provider-jsonl"
-      || snapshot.version.parser_version !== "1"
-      || snapshot.version.normalization_version !== "1"
+      || snapshot.version.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
+      || snapshot.version.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
     ) {
       return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "unsupported", "recorded parser epoch is unavailable");
     }
@@ -427,6 +428,7 @@ export class ConversationSourceReader {
           ? "source-record.json"
           : "source-record.jsonl",
         raw: `${record.toString("utf8")}\n`,
+        nativeSessionId: snapshot.nativeSessionId,
         baseBlockCount,
         baseRecordCount: recordRows[0].record_ordinal,
         sourceHash: snapshot.version.content_sha256,
@@ -461,10 +463,22 @@ export class ConversationSourceReader {
       }
       const parent = row.parent_block_id ? rowById.get(row.parent_block_id) : undefined;
       const parentBlock = parent ? parsedByPosition.get(parent.position) : undefined;
-      const withBoundedLinkage = block.type === "tool_result"
+      const linkedToolName = block.type === "tool_result"
         && typeof block.metadata.tool_name !== "string"
         && typeof parentBlock?.metadata.tool_name === "string"
-        ? { ...block, metadata: { ...block.metadata, tool_name: parentBlock.metadata.tool_name } }
+        ? parentBlock.metadata.tool_name
+        : null;
+      const withBoundedLinkage = linkedToolName
+        ? {
+            ...block,
+            metadata: {
+              ...block.metadata,
+              tool_name: linkedToolName,
+              ...(block.metadata.chat_item?.type === "tool-call"
+                ? { chat_item: withToolName(block.metadata.chat_item, linkedToolName) }
+                : {}),
+            },
+          }
         : block;
       const checkpoint = row.normalization_checkpoint_id
         ? checkpointById.get(row.normalization_checkpoint_id)
@@ -712,6 +726,7 @@ export class ConversationSourceReader {
           ])),
           version,
           provider: source.provider,
+          nativeSessionId: source.nativeSessionId,
           aliasPath: alias.path,
         };
       } catch (error) {
@@ -726,4 +741,19 @@ export class ConversationSourceReader {
     }
     return { ok: false, kind: "stale", reason: "no exact root-confined alias matches the recorded source version" };
   }
+}
+
+function withToolName(
+  item: Extract<NonNullable<ConversationBlock["metadata"]["chat_item"]>, { type: "tool-call" }>,
+  toolName: string,
+): Extract<NonNullable<ConversationBlock["metadata"]["chat_item"]>, { type: "tool-call" }> {
+  const { tool_kind: toolKind, tool_id: toolId, input, output, ...head } = item;
+  return {
+    ...head,
+    tool_name: toolName,
+    ...(toolKind ? { tool_kind: toolKind } : {}),
+    ...(toolId ? { tool_id: toolId } : {}),
+    ...(input !== undefined ? { input } : {}),
+    ...(output !== undefined ? { output } : {}),
+  };
 }

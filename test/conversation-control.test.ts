@@ -9,11 +9,17 @@ import type {
   ControllerAdapterCapabilities,
 } from "../src/conversation-control/adapter.js";
 import { ConversationControlService } from "../src/conversation-control/service.js";
+import {
+  chatItemIdentityKey,
+  emptyProviderLiveProjection,
+  mergeProviderLiveProjection,
+} from "../src/conversation-control/provider-live.js";
 import { ConversationControlStore } from "../src/conversation-control/store.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
 import { CodexParser } from "../src/parsers/codex.js";
+import type { ActivityItem, ChatItem, MessageItem } from "../src/parsers/types.js";
 import type {
   ConversationControlError,
   ConversationLifecycleEvent,
@@ -156,6 +162,57 @@ function request(revision: number, idempotencyKey: string, generation = 0) {
   };
 }
 
+function liveMessage(id: string, text: string, contentIndex?: number): MessageItem {
+  return {
+    type: "message",
+    role: id.startsWith("intent") ? "user" : "assistant",
+    identity: {
+      provider: "codex",
+      session_id: "provider-1",
+      native_item_id: id,
+      ...(contentIndex !== undefined ? { native_content_index: contentIndex } : {}),
+      source_record_ordinal: 0,
+      source_sub_block_ordinal: contentIndex ?? 0,
+    },
+    provenance: { source: "live-provider-event", provider: "codex", source_event_type: "message" },
+    parts: [{ type: "text", text, ...(contentIndex !== undefined ? { native_index: contentIndex } : {}) }],
+    content_completion: "streaming",
+  };
+}
+
+function liveEvent(item: ChatItem, generation: number, sequence: number) {
+  const identity = chatItemIdentityKey(item);
+  if (!identity) throw new Error("test live item lacks identity");
+  return {
+    kind: "provisional-content" as const,
+    conversation_id: "conversation-1",
+    provider_session_id: "provider-1",
+    generation,
+    sequence,
+    observed_at: sequence,
+    identity,
+    item,
+  };
+}
+
+function liveActivity(id: string, text: string): ActivityItem {
+  return {
+    type: "activity",
+    role: "assistant",
+    activity_kind: "reasoning-summary",
+    identity: {
+      provider: "codex",
+      session_id: "provider-1",
+      native_item_id: id,
+      source_record_ordinal: 0,
+      source_sub_block_ordinal: 0,
+    },
+    provenance: { source: "live-provider-event", provider: "codex", source_event_type: "reasoning_summary" },
+    parts: [{ type: "text", text }],
+    content_completion: "streaming",
+  };
+}
+
 describe("authoritative conversation control", () => {
   it("adopts a new native controller as the continued-Chat authority", async () => {
     const service = new ConversationControlService(db);
@@ -276,39 +333,107 @@ describe("authoritative conversation control", () => {
     expect(adapter.deliveries).toBe(1);
   });
 
-  it("retains the newest provisional event across duplicates and reordering", () => {
-    const service = new ConversationControlService(db);
-    const adapter = new FakeAdapter();
-    service.registerAdapter(adapter);
-    const event = (sequence: number, text: string) => ({
-      kind: "provisional-content" as const,
+  it("keeps first-observed order while rejecting stale and repeated snapshots", () => {
+    const first = liveEvent(liveMessage("native-1", "partial"), 1, 1);
+    const second = liveEvent(liveMessage("native-2", "sibling"), 1, 2);
+    const updated = liveEvent(liveMessage("native-1", "complete"), 1, 3);
+    let projection = mergeProviderLiveProjection(emptyProviderLiveProjection("conversation-1"), first);
+    projection = mergeProviderLiveProjection(projection, second);
+    projection = mergeProviderLiveProjection(projection, updated);
+    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("native-1", "stale"), 1, 2));
+    const repeated = mergeProviderLiveProjection(projection, liveEvent(liveMessage("native-1", "complete"), 1, 4));
+
+    expect(repeated).toBe(projection);
+    expect(projection.events.map((event) => event.kind === "provisional-content"
+      ? [event.item.identity.native_item_id, event.item.parts[0]?.text]
+      : [])).toEqual([["native-1", "complete"], ["native-2", "sibling"]]);
+    expect(projection.revision).toBe(3);
+
+    const replaced = mergeProviderLiveProjection(projection, liveEvent(liveMessage("native-3", "new owner"), 2, 1));
+    expect(replaced).toMatchObject({
+      revision: 4,
+      generation: 2,
+      events: [expect.objectContaining({ item: expect.objectContaining({
+        identity: expect.objectContaining({ native_item_id: "native-3" }),
+      }) })],
+    });
+    expect(mergeProviderLiveProjection(replaced, liveEvent(liveMessage("late", "old owner"), 1, 99))).toBe(replaced);
+  });
+
+  it("bounds transient projection custody by evicting the oldest observed item", () => {
+    let projection = emptyProviderLiveProjection("conversation-1");
+    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("one", "1"), 1, 1), 2);
+    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("two", "2"), 1, 2), 2);
+    projection = mergeProviderLiveProjection(projection, liveEvent(liveMessage("three", "3"), 1, 3), 2);
+    expect(projection.events.map((event) => event.kind === "provisional-content"
+      ? event.item.identity.native_item_id : null)).toEqual(["two", "three"]);
+  });
+
+  it("does not let durable text coverage erase a live reasoning sibling", () => {
+    const message = liveMessage("shared-native-item", "answer");
+    const reasoning = liveActivity("shared-native-item", "reasoning summary");
+    const messageEvent = liveEvent(message, 1, 1);
+    const reasoningIdentity = chatItemIdentityKey(reasoning);
+    if (!reasoningIdentity) throw new Error("test reasoning item lacks identity");
+    const reasoningEvent = liveEvent(reasoning, 1, 2);
+    let projection = mergeProviderLiveProjection(emptyProviderLiveProjection("conversation-1"), messageEvent);
+    projection = mergeProviderLiveProjection(projection, reasoningEvent);
+    projection = mergeProviderLiveProjection(projection, {
+      kind: "durable-reconciliation",
       conversation_id: "conversation-1",
       provider_session_id: "provider-1",
       generation: 1,
-      sequence,
-      observed_at: sequence,
-      identity: "message:native-1",
-      event: {
-        type: "assistant",
-        uuid: "native-1",
-        message: { id: "native-1", role: "assistant", content: [{ type: "text", text }] },
-      },
+      sequence: 3,
+      observed_at: 3,
+      provider_event_id: "durable-message-only",
+      covered_identities: [messageEvent.identity],
     });
 
-    adapter.emitProvider(event(2, "complete"));
-    adapter.emitProvider(event(1, "stale"));
-    adapter.emitProvider(event(2, "duplicate"));
+    expect(projection.events).toEqual([expect.objectContaining({
+      identity: reasoningIdentity,
+      item: expect.objectContaining({ type: "activity", activity_kind: "reasoning-summary" }),
+    })]);
+  });
+
+  it("retires a disconnected generation and rejects its late provider events", async () => {
+    const emitted: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
+    const service = new ConversationControlService(db, { onProviderEvent: (event) => emitted.push(event) });
+    const adapter = new FakeAdapter();
+    service.registerAdapter(adapter);
+    const submitted = await service.submit(request(0, "intent-disconnect"));
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    const generation = submitted.value.snapshot.ownership.generation;
+    const itemEvent = liveEvent(liveMessage("assistant-before-disconnect", "partial"), generation, 1);
+    adapter.emitProvider(itemEvent);
+    expect(service.getLiveProjection("conversation-1")).toMatchObject({
+      ok: true,
+      value: { generation, events: [expect.objectContaining({ identity: itemEvent.identity })] },
+    });
+
+    adapter.emit({
+      conversation_id: "conversation-1",
+      generation,
+      kind: "turn-unknown",
+      turn_id: submitted.value.turn_id,
+      reason: "probe-ambiguous",
+      at: 2,
+    });
+    adapter.emit({ conversation_id: "conversation-1", generation, kind: "controller-released", at: 3 });
+    adapter.emitProvider(liveEvent(liveMessage("late", "stale"), generation, 3));
 
     expect(service.getLiveProjection("conversation-1")).toMatchObject({
       ok: true,
-      value: {
-        revision: 1,
-        events: [{ sequence: 2, event: { message: { content: [{ text: "complete" }] } } }],
-      },
+      value: { generation, events: [] },
+    });
+    expect(emitted.at(-1)).toMatchObject({
+      kind: "transient-retirement",
+      reason: "provider-disconnected",
+      generation,
     });
   });
 
-  it("materializes a child relationship only from exact Codex lineage identities", () => {
+  it("materializes a child relationship only from the owned Codex generation and exact identities", async () => {
     db.prepare(`INSERT INTO conversations (
       id, source, source_path, source_hash, source_mtime, title, started_at,
       block_count, session_id, created_at, updated_at
@@ -317,12 +442,30 @@ describe("authoritative conversation control", () => {
     const service = new ConversationControlService(db);
     const adapter = new FakeAdapter();
     service.registerAdapter(adapter);
+    const submitted = await service.submit(request(0, "lineage-turn"));
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
 
     adapter.emitProvider({
       kind: "provider-lineage",
       conversation_id: "conversation-1",
       provider_session_id: "provider-1",
-      generation: 1,
+      generation: submitted.value.snapshot.ownership.generation - 1,
+      sequence: 1,
+      observed_at: 1,
+      provider_event_id: "stale-spawn",
+      relation: "spawned-child",
+      sender_provider_session_id: "provider-1",
+      receiver_provider_session_id: "provider-child",
+    });
+    expect(db.prepare("SELECT parent_conversation_id FROM conversations WHERE id = 'conversation-child'").get())
+      .toEqual({ parent_conversation_id: null });
+
+    adapter.emitProvider({
+      kind: "provider-lineage",
+      conversation_id: "conversation-1",
+      provider_session_id: "provider-1",
+      generation: submitted.value.snapshot.ownership.generation,
       sequence: 1,
       observed_at: 1,
       provider_event_id: "spawn-1",
@@ -475,21 +618,27 @@ describe("authoritative conversation control", () => {
     expect(submitted.ok).toBe(true);
     if (!submitted.ok) return;
     const generation = submitted.value.snapshot.ownership.generation;
-    adapter.emitProvider({
-      kind: "provisional-content", conversation_id: "conversation-1", provider_session_id: "provider-1",
-      generation, sequence: 1, observed_at: 1, identity: "message:intent-1",
+    const userEvent = {
+      ...liveEvent(liveMessage("intent-1", "hello"), generation, 1),
       correlation: { intent_id: "intent-1", delivery_id: submitted.value.delivery_id, turn_id: submitted.value.turn_id, provider_message_id: "provider-user-1" },
-      event: { type: "user", uuid: "intent-1", message: { id: "intent-1", role: "user", content: [{ type: "text", text: "hello" }] } },
-    });
-    adapter.emitProvider({
-      kind: "provisional-content", conversation_id: "conversation-1", provider_session_id: "provider-1",
-      generation, sequence: 2, observed_at: 2, identity: "message:assistant-incomplete",
-      event: { type: "assistant", uuid: "assistant-incomplete", message: { id: "assistant-incomplete", role: "assistant", content: [{ type: "text", text: "partial" }] } },
-    });
+    };
+    const assistantEvent = liveEvent(liveMessage("assistant-incomplete", "partial"), generation, 2);
+    const completeLiveOnly = liveEvent({
+      ...liveMessage("provider-complete-without-durable-id", "provider-only completion"),
+      content_completion: "complete" as const,
+    }, generation, 3);
+    adapter.emitProvider(userEvent);
+    adapter.emitProvider(assistantEvent);
+    adapter.emitProvider(completeLiveOnly);
+    const durableUserItem = {
+      ...userEvent.item,
+      provenance: { source: "verified-provider-transcript", provider: "codex", source_event_type: "message" },
+      content_completion: "complete",
+    };
     db.prepare(`INSERT INTO conversation_blocks (
       id, conversation_id, type, role, content, position, metadata_json, dag_uuid
     ) VALUES ('block-1', 'conversation-1', 'user_message', 'user', 'durable text wins', 0,
-      '{"provider_message_id":"provider-user-1"}', 'provider-user-1')`).run();
+      ?, 'intent-1')`).run(JSON.stringify({ chat_item: durableUserItem }));
 
     adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-started", turn_id: submitted.value.turn_id, at: 3 });
     adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-completed", turn_id: submitted.value.turn_id, at: 4 });
@@ -499,20 +648,26 @@ describe("authoritative conversation control", () => {
 
     expect(service.getLiveProjection("conversation-1")).toMatchObject({
       ok: true,
-      value: { events: [expect.objectContaining({ identity: "message:assistant-incomplete" })] },
+      value: { events: [expect.objectContaining({ identity: assistantEvent.identity })] },
     });
-    expect(emitted.at(-1)).toMatchObject({ kind: "durable-reconciliation", covered_identities: ["message:intent-1"] });
+    expect(emitted.at(-1)).toMatchObject({
+      kind: "durable-reconciliation",
+      covered_identities: [userEvent.identity],
+      terminal_retired_identities: [completeLiveOnly.identity],
+    });
     expect(diagnostics).toEqual([expect.objectContaining({
-      ingest_status: "ingested:fresh", retired_live_count: 1, retained_live_count: 1,
+      ingest_status: "ingested:fresh", retired_live_count: 2, retained_live_count: 1,
     })]);
     expect(JSON.stringify(diagnostics)).not.toContain("hello");
   });
 
-  it("retires a source-backed Codex prompt through its exact native turn", async () => {
+  it("retires a source-backed Codex prompt through its exact client identity", async () => {
     const emitted: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
+    const diagnostics: Array<Record<string, unknown>> = [];
     const service = new ConversationControlService(db, {
       onTerminalTurn: async () => ({ status: "ingested:fresh" }),
       onProviderEvent: (event) => emitted.push(event),
+      onReconciliationDiagnostic: (details) => diagnostics.push(details),
     });
     const adapter = new FakeAdapter();
     service.registerAdapter(adapter);
@@ -520,21 +675,16 @@ describe("authoritative conversation control", () => {
     expect(submitted.ok).toBe(true);
     if (!submitted.ok) return;
     const generation = submitted.value.snapshot.ownership.generation;
-    adapter.emitProvider({
-      kind: "provisional-content", conversation_id: "conversation-1", provider_session_id: "provider-1",
-      generation, sequence: 1, observed_at: 1, identity: "message:intent-native-turn",
+    const sourceBackedEvent = {
+      ...liveEvent(liveMessage("intent-native-turn", "hello"), generation, 1),
       correlation: {
         intent_id: "intent-native-turn",
         delivery_id: submitted.value.delivery_id,
         turn_id: submitted.value.turn_id,
         provider_message_id: "provider-user-without-jsonl-id",
       },
-      event: {
-        type: "user",
-        uuid: "intent-native-turn",
-        message: { id: "intent-native-turn", role: "user", content: [{ type: "text", text: "hello" }] },
-      },
-    });
+    };
+    adapter.emitProvider(sourceBackedEvent);
     db.prepare(`UPDATE conversation_control_outbox
       SET provider_receipt_id = 'codex:turn:native-turn-1'
       WHERE id = ?`).run(submitted.value.delivery_id);
@@ -547,10 +697,17 @@ describe("authoritative conversation control", () => {
         type: "message", role: "user", content: [{ type: "input_text", text: "durable text wins" }],
         internal_chat_message_metadata_passthrough: { turn_id: "native-turn-1" },
       } },
+      { type: "event_msg", timestamp: "2026-09-11T00:00:01Z", payload: {
+        type: "user_message", client_id: "intent-native-turn",
+      } },
     ].map((row) => JSON.stringify(row)).join("\n") + "\n");
     const parsed = await new CodexParser().parse(sourcePath);
     expect(parsed).not.toBeNull();
     if (!parsed) return;
+    expect(parsed.blocks[0].metadata).toMatchObject({
+      client_intent_id: "intent-native-turn",
+      chat_item: { type: "message", role: "user" },
+    });
     db.prepare(`UPDATE conversations
       SET source_path = ?, source_hash = ?, source_mtime = ?, block_count = ?
       WHERE id = 'conversation-1'`).run(
@@ -575,13 +732,14 @@ describe("authoritative conversation control", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
     }
 
+    expect(diagnostics).toEqual([expect.objectContaining({ durable_identity_count: 1, retired_live_count: 1 })]);
     expect(service.getLiveProjection("conversation-1")).toMatchObject({
       ok: true,
       value: { events: [] },
     });
     expect(emitted.at(-1)).toMatchObject({
       kind: "durable-reconciliation",
-      covered_identities: ["message:intent-native-turn"],
+      covered_identities: [sourceBackedEvent.identity],
     });
   });
 });

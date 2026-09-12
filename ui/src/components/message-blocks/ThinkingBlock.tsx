@@ -4,7 +4,7 @@
 
 // Bug: bce7370 — Collapsible thinking block
 
-import { useState } from 'preact/hooks';
+import { ChatDisclosure } from '../shared/ChatDisclosure';
 
 export type ThinkingBlockProps = {
   content: string;
@@ -19,17 +19,6 @@ export function ThinkingBlock({
   expanded,
   onExpandedChange,
 }: ThinkingBlockProps): JSX.Element {
-  const [localExpanded, setLocalExpanded] = useState(!defaultCollapsed);
-  const isExpanded = expanded ?? localExpanded;
-
-  function toggleExpanded(): void {
-    const next = !isExpanded;
-    if (expanded === undefined) {
-      setLocalExpanded(next);
-    }
-    onExpandedChange?.(next);
-  }
-
   return (
     <div className="thinking-block">
       <div className="thinking-block__gutter" aria-hidden="true">
@@ -44,30 +33,16 @@ export function ThinkingBlock({
           />
         </svg>
       </div>
-      <button
-        type="button"
-        className={`thinking-block__bubble${isExpanded ? ' thinking-block__bubble--expanded' : ''}`}
-        onClick={toggleExpanded}
-        aria-expanded={isExpanded}
-        title={isExpanded ? 'Collapse thinking' : 'Expand thinking'}
+      <ChatDisclosure
+        className="thinking-block__bubble"
+        summary="Thinking"
+        regionLabel="Thinking details"
+        defaultExpanded={!defaultCollapsed}
+        expanded={expanded}
+        onExpandedChange={onExpandedChange}
       >
-        {!isExpanded ? (
-          <div className="thinking-block__collapsed">
-            <span className="thinking-block__chevron">{'\u25B8'}</span>
-            <span className="thinking-block__label">Thinking</span>
-          </div>
-        ) : (
-          <div className="thinking-block__expanded-header">
-            <span className="thinking-block__chevron">{'\u25BE'}</span>
-            <span className="thinking-block__label">Thinking</span>
-          </div>
-        )}
-        {isExpanded && (
-          <div className="thinking-block__body">
-            <pre>{content}</pre>
-          </div>
-        )}
-      </button>
+        <div className="thinking-block__body"><pre>{content}</pre></div>
+      </ChatDisclosure>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useMemo } from 'preact/hooks';
 import type {
   AssistantEvent,
+  CanonicalChatItemEvent,
   ContentBlock,
   DisplayGroup,
   RenderNode,
@@ -15,6 +16,7 @@ import type {
   TranscriptSemanticEvent,
   UserEvent,
 } from '../components/stream-renderer/types';
+import type { ActivityItem, ChatItem, MessageItem, PlanItem, ToolCallItem } from '../../../src/parsers/types';
 
 export type StreamState = {
   nodes: RenderNode[];
@@ -24,6 +26,28 @@ export type StreamState = {
 
 let turnIndexCounter = 0;
 export const TOOL_RESULT_EXCERPT_CHARS = 12000;
+
+function chatItemText(item: MessageItem | PlanItem | ToolCallItem | ActivityItem): string {
+  return item.parts.map((part) => part.text).join('\n');
+}
+
+export function chatItemStableKey(item: ChatItem): string {
+  const identity = item.identity;
+  const native = identity.native_item_id ?? identity.native_tool_id;
+  return native
+    ? `${identity.provider}:${identity.session_id}:${native}:${identity.native_content_index ?? 'item'}`
+    : `${identity.provider}:${identity.session_id}:${identity.source_record_ordinal}:${identity.source_sub_block_ordinal}`;
+}
+
+function toolValueText(value: unknown, fallback: string): string {
+  if (value === undefined) return fallback;
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return fallback;
+  }
+}
 
 function buildTurn(
   assistant: AssistantEvent,
@@ -76,6 +100,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
   let initEvent: SystemInitEvent | null = null;
   let resultEvent: ResultEvent | null = null;
   let pendingAssistant: AssistantEvent | null = null;
+  let pendingCanonicalTurnId: string | undefined;
   const pendingResults = new Map<string, ToolResultContentBlock>();
   let userMsgIdx = 0;
 
@@ -92,6 +117,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
         turn,
       });
       pendingAssistant = null;
+      pendingCanonicalTurnId = undefined;
       for (const [toolUseId, result] of pendingResults) {
         if (!toolUseIds.has(toolUseId)) {
           nodes.push({
@@ -107,7 +133,87 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
   }
 
   for (const event of events) {
-    if (event.type === 'system' && (event as SystemInitEvent).subtype === 'init') {
+    if (event.type === 'chat:item') {
+      const canonical = event as CanonicalChatItemEvent;
+      const item = canonical.item;
+      const key = chatItemStableKey(item);
+      const source = canonical.source;
+      const turnId = item.identity.native_turn_id;
+      if (pendingAssistant && pendingCanonicalTurnId && turnId && pendingCanonicalTurnId !== turnId) {
+        flushPendingTurn();
+      }
+
+      if (item.type === 'message' && item.role === 'user') {
+        flushPendingTurn();
+        nodes.push({ kind: 'user_message', key, entity: 'user', text: chatItemText(item), source: 'stream', persisted: source });
+      } else if (item.type === 'message' && item.role === 'system') {
+        flushPendingTurn();
+        nodes.push({
+          kind: 'semantic_event',
+          key,
+          entity: 'system',
+          event: {
+            type: 'transcript:semantic',
+            uuid: key,
+            session_id: item.identity.session_id,
+            semantic_kind: 'system',
+            content: chatItemText(item),
+            label: item.provenance.source_event_type,
+            is_error: item.execution_outcome === 'failed',
+            source: source ?? { blockId: key },
+          },
+        });
+      } else if (item.type === 'message' || item.type === 'plan') {
+        if (!pendingAssistant) {
+          pendingAssistant = {
+            type: 'assistant',
+            uuid: turnId ?? key,
+            session_id: item.identity.session_id,
+            parent_tool_use_id: null,
+            message: { id: turnId ?? key, role: 'assistant', content: [] },
+          };
+          pendingCanonicalTurnId = turnId;
+        }
+        pendingAssistant.message.content.push(item.type === 'plan'
+          ? { type: 'plan', text: chatItemText(item), source }
+          : { type: 'text', text: chatItemText(item), source });
+      } else if (item.type === 'tool-call') {
+        const toolItem = item as ToolCallItem;
+        const toolId = toolItem.tool_id ?? toolItem.identity.native_tool_id ?? key;
+        if (toolItem.phase === 'call') {
+          if (!pendingAssistant) {
+            pendingAssistant = {
+              type: 'assistant',
+              uuid: turnId ?? key,
+              session_id: item.identity.session_id,
+              parent_tool_use_id: null,
+              message: { id: turnId ?? key, role: 'assistant', content: [] },
+            };
+            pendingCanonicalTurnId = turnId;
+          }
+          pendingAssistant.message.content.push({
+            type: 'tool_use',
+            id: toolId,
+            name: toolItem.tool_name ?? toolItem.tool_kind ?? 'tool',
+            input: toolItem.input === undefined ? '' : toolValueText(toolItem.input, ''),
+            source,
+          });
+        } else {
+          const result = boundToolResultBlock({
+            type: 'tool_result',
+            tool_use_id: toolId,
+            content: toolValueText(toolItem.output, chatItemText(toolItem)),
+            is_error: toolItem.execution_outcome === 'failed',
+            source,
+          });
+          if (pendingAssistant) pendingResults.set(toolId, result);
+          else nodes.push({ kind: 'unmatched_tool_result', key, entity: 'system', result });
+        }
+      } else if (item.type === 'activity') {
+        flushPendingTurn();
+        nodes.push({ kind: 'activity', key, entity: item.role, item, source });
+      }
+    } else if (event.type === 'system' && (event as SystemInitEvent).subtype === 'init') {
       initEvent = event as SystemInitEvent;
     } else if (event.type === 'transcript:semantic') {
       flushPendingTurn();
@@ -253,6 +359,46 @@ export function groupMessagesForDisplay(nodes: RenderNode[]): DisplayGroup[] {
   });
 }
 
+export type ActivityDisplayEntry =
+  | { kind: 'node'; node: RenderNode }
+  | { kind: 'activity-group'; key: string; activityKind: ActivityItem['activity_kind']; nodes: Array<Extract<RenderNode, { kind: 'activity' }>> };
+
+function knownTurnBoundary(left: ActivityItem, right: ActivityItem): boolean {
+  const leftTurn = left.identity.native_turn_id;
+  const rightTurn = right.identity.native_turn_id;
+  return Boolean(leftTurn && rightTurn && leftTurn !== rightTurn);
+}
+
+/** Groups only maximal same-kind activity runs; every other item is a boundary. */
+export function groupActivityItemsForDisplay(nodes: RenderNode[]): ActivityDisplayEntry[] {
+  const entries: ActivityDisplayEntry[] = [];
+  let index = 0;
+  while (index < nodes.length) {
+    const node = nodes[index];
+    if (node.kind !== 'activity') {
+      entries.push({ kind: 'node', node });
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (end < nodes.length) {
+      const next = nodes[end];
+      const previous = nodes[end - 1];
+      if (next.kind !== 'activity'
+        || previous.kind !== 'activity'
+        || next.entity !== node.entity
+        || next.item.activity_kind !== node.item.activity_kind
+        || knownTurnBoundary(previous.item, next.item)) break;
+      end += 1;
+    }
+    const run = nodes.slice(index, end) as Array<Extract<RenderNode, { kind: 'activity' }>>;
+    if (run.length < 2) entries.push({ kind: 'node', node });
+    else entries.push({ kind: 'activity-group', key: `activity-group:${node.key}`, activityKind: node.item.activity_kind, nodes: run });
+    index = end;
+  }
+  return entries;
+}
+
 export function computeTotalTokens(
   usage: {
     input_tokens?: number;
@@ -301,6 +447,11 @@ export function renderNodeToMarkdown(node: RenderNode): string {
   if (node.kind === 'unmatched_tool_result') {
     const body = extractToolResultText(node.result.fullText ?? node.result.content).trim();
     return `## ${node.result.is_error ? 'Tool error' : 'Unmatched tool result'}\n\n${body}`;
+  }
+  if (node.kind === 'activity') {
+    const body = chatItemText(node.item).trim();
+    const status = [node.item.status, node.item.execution_outcome].filter(Boolean).join(' · ');
+    return `## Activity: ${node.item.activity_kind}${status ? ` (${status})` : ''}\n\n${body}`;
   }
 
   const parts = node.turn.assistantEvent.message.content

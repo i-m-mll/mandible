@@ -1090,23 +1090,23 @@
   background: var(--status-warning-bg-soft);
   border-radius: var(--radius-md);
   padding: var(--space-2) var(--space-3);
-  cursor: pointer;
   text-align: left;
   color: inherit;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 
+.thinking-block__bubble .chat-disclosure__summary {
+  min-height: calc(var(--space-4) + var(--space-1));
+  color: var(--text-muted);
+}
+
+.thinking-block__bubble .chat-disclosure__body {
+  padding-top: var(--space-1);
+}
+
 .thinking-block__bubble:hover {
   background: var(--status-warning-bg);
   border-color: var(--status-warning-border);
-}
-
-.thinking-block__collapsed {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: calc(var(--space-4) + var(--space-1));
-  color: var(--text-muted);
 }
 
 .thinking-block__body pre {

@@ -705,8 +705,8 @@
 .conv-detail__body .msg-text-block.rendered-markdown :where(p, li, blockquote, dd),
 .conv-detail__body .user-bubble__text,
 .conv-detail__body .user-bubble__text :where(p, li, blockquote, dd),
-.conv-detail__body .tool-call-group__summary,
-.conv-detail__body .tool-call-group__summary-text,
+.conv-detail__body .tool-call-group .chat-disclosure__summary,
+.conv-detail__body .tool-call-group .chat-disclosure__summary-text,
 .conv-detail__body .tool-card__header,
 .conv-detail__body .tool-card__verb,
 .conv-detail__body .tool-card__target {

@@ -19,6 +19,8 @@ import {
   conversationLoadFailure,
   scopeConversationRightSidebar,
 } from '../../ui/src/views/conversations.js';
+import { chatItemIdentityKey } from '../../src/conversation-control/provider-live.js';
+import type { ChatItem } from '../../src/parsers/types.js';
 
 
 vi.mock('@xterm/xterm', () => ({
@@ -108,26 +110,48 @@ const defaultControl: ConversationControlSnapshot = {
   updated_at: 1,
 };
 
-const transcriptBlock: ConversationBlock = {
-  id: 'block-user-1',
-  conversation_id: conversation.id,
-  type: 'user_message',
-  role: 'user',
-  content: 'Preserve the whole conversation export.',
-  position: 0,
-  timestamp: '2026-08-18T12:01:00.000Z',
-  parent_id: null,
-  metadata_json: JSON.stringify({
+function makeTranscriptBlock(overrides: Partial<ConversationBlock> = {}): ConversationBlock {
+  const value: ConversationBlock = {
+    id: 'block-user-1',
+    conversation_id: conversation.id,
+    type: 'user_message',
+    role: 'user',
+    content: 'Preserve the whole conversation export.',
+    position: 0,
+    timestamp: '2026-08-18T12:01:00.000Z',
+    parent_id: null,
+    metadata_json: JSON.stringify({
     context_usage: {
       source: 'mirror_exact',
       percent: 42,
       used_tokens: 42_000,
       window_tokens: 100_000,
     },
-  }),
-  dag_uuid: 'dag-user-1',
-  dag_parent_uuid: null,
-};
+    }),
+    dag_uuid: 'dag-user-1',
+    dag_parent_uuid: null,
+    ...overrides,
+  };
+  const metadata = JSON.parse(value.metadata_json || '{}') as Record<string, unknown>;
+  const item: ChatItem = {
+    type: 'message',
+    role: value.role === 'assistant' ? 'assistant' : value.role === 'system' ? 'system' : 'user',
+    identity: {
+      provider: 'codex',
+      session_id: conversation.session_id,
+      native_item_id: value.dag_uuid ?? value.id,
+      ...(value.role === 'assistant' ? { native_turn_id: value.dag_uuid ?? value.id } : {}),
+      source_record_ordinal: value.position,
+      source_sub_block_ordinal: 0,
+    },
+    provenance: { source: 'verified-provider-transcript', provider: 'codex', source_event_type: 'test-message' },
+    parts: [{ type: 'text', text: value.content }],
+    content_completion: 'complete',
+  };
+  return { ...value, metadata_json: JSON.stringify({ ...metadata, chat_item: item }) };
+}
+
+const transcriptBlock = makeTranscriptBlock();
 
 function domRect(left: number, top: number, width: number, height: number): DOMRect {
   return {
@@ -405,7 +429,7 @@ describe('compact detail pane shell', () => {
   });
 
   it('registers Chat tabs and previews issue links without remounting the transcript', async () => {
-    const issueBlock = { ...transcriptBlock, content: 'Inspect [issue:5096e37] here.' };
+    const issueBlock = makeTranscriptBlock({ content: 'Inspect [issue:5096e37] here.' });
     const scopedConversation = mockConversationDetail(defaultControl, [issueBlock]);
     vi.spyOn(api, 'resolveAgentSession').mockResolvedValue({ provider: null, provider_session_id: scopedConversation.session_id, truncated: false, matches: [] });
     vi.spyOn(api, 'getSessions').mockResolvedValue([]);
@@ -542,6 +566,7 @@ describe('compact detail pane shell', () => {
       provider: 'codex',
       provider_session_id: conversation.session_id,
       revision: 0,
+      generation: 0,
       events: [],
     });
 
@@ -1101,11 +1126,11 @@ describe('compact detail pane shell', () => {
     view.rerender(<ConversationsView {...props} />);
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
 
-    const exactBlock = { ...transcriptBlock, id: 'exact-block', content: 'Exact anchor wins', position: 50 };
+    const exactBlock = makeTranscriptBlock({ id: 'exact-block', dag_uuid: 'exact-block', content: 'Exact anchor wins', position: 50 });
     exact.resolve(positionPayload(scopedConversation, [exactBlock], { kind: 'block', hasAfter: true, revision: 100 }));
     expect(await screen.findByText('Exact anchor wins')).toBeTruthy();
 
-    initial.resolve(positionPayload(scopedConversation, [{ ...transcriptBlock, content: 'Late initial loses' }], { revision: 100 }));
+    initial.resolve(positionPayload(scopedConversation, [makeTranscriptBlock({ content: 'Late initial loses' })], { revision: 100 }));
     await Promise.resolve();
     expect(screen.queryByText('Late initial loses')).toBeNull();
     expect(screen.getByText('Exact anchor wins')).toBeTruthy();
@@ -1114,12 +1139,12 @@ describe('compact detail pane shell', () => {
   it('keeps the live transcript mounted while a same-conversation reconciliation is pending', async () => {
     const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
     const refresh = deferred<ConversationPositionWindow>();
-    const appendedBlock = {
-      ...transcriptBlock,
+    const appendedBlock = makeTranscriptBlock({
       id: 'block-user-2',
+      dag_uuid: 'block-user-2',
       content: 'Live content stays visible',
       position: 1,
-    };
+    });
     vi.mocked(api.getConversationWindow)
       .mockResolvedValueOnce(positionPayload(scopedConversation, [transcriptBlock]))
       .mockImplementationOnce(() => refresh.promise);
@@ -1166,7 +1191,7 @@ describe('compact detail pane shell', () => {
             block_count: 4,
             append: {
               from_position: 3,
-              blocks: [{ ...appendedBlock, id: 'gap-block', position: 3 }],
+              blocks: [makeTranscriptBlock({ id: 'gap-block', dag_uuid: 'gap-block', position: 3, content: appendedBlock.content })],
             },
           },
         },
@@ -1214,10 +1239,28 @@ describe('compact detail pane shell', () => {
     vi.spyOn(api, 'getConversationLiveProjection').mockResolvedValue({
       conversation_id: conversation.id,
       revision: 0,
+      generation: 0,
       events: [],
     });
     renderConversationDetail(scopedConversation);
     expect(await screen.findByText(transcriptBlock.content)).toBeTruthy();
+
+    const liveAssistant: ChatItem = {
+      type: 'message',
+      role: 'assistant',
+      identity: {
+        provider: 'codex',
+        session_id: conversation.session_id,
+        native_item_id: 'agent-1',
+        native_turn_id: 'agent-1',
+        source_record_ordinal: 0,
+        source_sub_block_ordinal: 0,
+      },
+      provenance: { source: 'live-provider-event', provider: 'codex', source_event_type: 'agent_message' },
+      parts: [{ type: 'text', text: 'Assistant stays continuous' }],
+      content_completion: 'streaming',
+    };
+    const liveIdentity = chatItemIdentityKey(liveAssistant)!;
 
     act(() => emit({
       type: 'conversation:provider-event',
@@ -1228,13 +1271,8 @@ describe('compact detail pane shell', () => {
         generation: 1,
         sequence: 1,
         observed_at: 1,
-        identity: 'message:agent-1',
-        event: {
-          type: 'assistant',
-          uuid: 'agent-1',
-          session_id: conversation.session_id,
-          message: { id: 'agent-1', role: 'assistant', content: [{ type: 'text', text: 'Assistant stays continuous' }] },
-        },
+        identity: liveIdentity,
+        item: liveAssistant,
       },
     }));
     expect(await screen.findByText('Assistant stays continuous')).toBeTruthy();
@@ -1249,14 +1287,13 @@ describe('compact detail pane shell', () => {
         sequence: 2,
         observed_at: 2,
         provider_event_id: 'reconcile-1',
-        covered_identities: ['message:agent-1'],
+        covered_identities: [liveIdentity],
       },
     }));
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
     expect(screen.getByText('Assistant stays continuous')).toBeTruthy();
 
-    const durableAssistant: ConversationBlock = {
-      ...transcriptBlock,
+    const durableAssistant = makeTranscriptBlock({
       id: 'block-agent-1',
       type: 'assistant_message',
       role: 'assistant',
@@ -1264,7 +1301,7 @@ describe('compact detail pane shell', () => {
       position: 1,
       dag_uuid: 'agent-1',
       metadata_json: JSON.stringify({ provider_message_id: 'agent-1' }),
-    };
+    });
     await act(async () => durable.resolve(positionPayload(scopedConversation, [transcriptBlock, durableAssistant])));
     await waitFor(() => expect(screen.getAllByText('Assistant stays continuous')).toHaveLength(1));
   });
@@ -1274,7 +1311,7 @@ describe('compact detail pane shell', () => {
     const firstLatest = deferred<ConversationPositionWindow>();
     const trueLatest = deferred<ConversationPositionWindow>();
     let latestCalls = 0;
-    const middleBlock = { ...transcriptBlock, id: 'middle', content: 'Middle window', position: 1 };
+    const middleBlock = makeTranscriptBlock({ id: 'middle', dag_uuid: 'middle', content: 'Middle window', position: 1 });
     vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
       if ('target' in request && request.target === 'latest') {
         latestCalls += 1;
@@ -1300,9 +1337,9 @@ describe('compact detail pane shell', () => {
           block_count: 12,
           append: {
             from_position: 2,
-            blocks: Array.from({ length: 10 }, (_, index) => ({
-              ...transcriptBlock,
+            blocks: Array.from({ length: 10 }, (_, index) => makeTranscriptBlock({
               id: `append-${index + 2}`,
+              dag_uuid: `append-${index + 2}`,
               position: index + 2,
               content: `append ${index + 2}`,
             })),
@@ -1319,13 +1356,13 @@ describe('compact detail pane shell', () => {
         data: {
           id: conversation.id,
           block_count: 13,
-          append: { from_position: 12, blocks: [{ ...transcriptBlock, id: 'append-12', position: 12, content: 'append 12' }] },
+          append: { from_position: 12, blocks: [makeTranscriptBlock({ id: 'append-12', dag_uuid: 'append-12', position: 12, content: 'append 12' })] },
         },
       },
     }));
-    firstLatest.resolve(positionPayload(scopedConversation, [{ ...transcriptBlock, id: 'old-tail', position: 11, content: 'Old tail' }], { kind: 'latest', revision: 12 }));
+    firstLatest.resolve(positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'old-tail', dag_uuid: 'old-tail', position: 11, content: 'Old tail' })], { kind: 'latest', revision: 12 }));
     await waitFor(() => expect(latestCalls).toBe(2));
-    trueLatest.resolve(positionPayload(scopedConversation, [{ ...transcriptBlock, id: 'true-tail', position: 12, content: 'Newest true tail' }], { kind: 'latest', revision: 13 }));
+    trueLatest.resolve(positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'true-tail', dag_uuid: 'true-tail', position: 12, content: 'Newest true tail' })], { kind: 'latest', revision: 13 }));
     expect(await screen.findByText('Newest true tail')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
     expect(window.location.hash).toBe(`#/console?conversation=${conversation.id}`);

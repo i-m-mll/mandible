@@ -1,5 +1,7 @@
 // Bug: aa35aeb — Console tab renderer: stream-json event parsing and rich HTML rendering
 
+import type { ActivityItem, ChatItem } from '../../../../src/parsers/types';
+
 // ---- Raw event types (as emitted by Claude Code --output-format stream-json) ----
 
 export type PersistedBlockSource = {
@@ -30,7 +32,7 @@ export type ToolUseContentBlock = {
   type: 'tool_use';
   id: string;
   name: string;
-  input: Record<string, unknown>;
+  input: Record<string, unknown> | string;
   source?: PersistedBlockSource;
 };
 
@@ -61,6 +63,13 @@ export type TranscriptSemanticEvent = {
   label?: string;
   is_error?: boolean;
   source: PersistedBlockSource;
+};
+
+/** Provider-neutral item emitted by durable normalization and live adapters. */
+export type CanonicalChatItemEvent = {
+  type: 'chat:item';
+  item: ChatItem;
+  source?: PersistedBlockSource;
 };
 
 export type SystemInitEvent = {
@@ -147,6 +156,7 @@ export type StreamEvent =
   | ResultEvent
   | SyntheticPromptEvent
   | TranscriptSemanticEvent
+  | CanonicalChatItemEvent
   | { type: string; [key: string]: unknown };
 
 // ---- Render model (derived from raw events) ----
@@ -195,7 +205,15 @@ export type RenderNodeUnmatchedToolResult = {
   result: ToolResultContentBlock;
 };
 
-export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeSemanticEvent | RenderNodeUnmatchedToolResult;
+export type RenderNodeActivity = {
+  kind: 'activity';
+  key: string;
+  entity: 'assistant' | 'system';
+  item: ActivityItem;
+  source?: PersistedBlockSource;
+};
+
+export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeSemanticEvent | RenderNodeUnmatchedToolResult | RenderNodeActivity;
 
 export type DisplayGroupMeta = {
   totalTokens?: number;
@@ -223,6 +241,8 @@ export interface MessageGroupProps {
   isThinking?: boolean;
   getBlockExpanded?: (block: ContentBlock, index: number, defaultExpanded: boolean) => boolean;
   onBlockExpandedChange?: (block: ContentBlock, index: number, expanded: boolean) => void;
+  getDisclosureExpanded?: (id: string, defaultExpanded: boolean) => boolean;
+  onDisclosureExpandedChange?: (id: string, expanded: boolean) => void;
   selectedBlockIds?: ReadonlySet<string>;
   selectMode?: boolean;
   onToggleBlockSelect?: (blockId: string, shiftKey: boolean) => void;

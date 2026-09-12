@@ -6,6 +6,7 @@ import {
   boundToolResultBlock,
   buildStreamState,
   conversationBlocksToStreamEvents,
+  groupActivityItemsForDisplay,
   groupMessagesForDisplay,
   serializeConversationToMarkdown,
 } from '../../ui/src/chat';
@@ -13,6 +14,7 @@ import { ChatSurface, shouldShowJumpToLatest } from '../../ui/src/chat/ChatSurfa
 import { MessageActions } from '../../ui/src/components/shared/MessageActions';
 import { TextBlock } from '../../ui/src/components/message-blocks/TextBlock';
 import type { StreamEvent, ToolResultContentBlock } from '../../ui/src/components/stream-renderer/types';
+import type { ActivityItem, ChatItem } from '../../src/parsers/types';
 
 function installBrowserStubs(): void {
   const store = new Map<string, string>();
@@ -91,6 +93,36 @@ function result(): StreamEvent {
   };
 }
 
+function canonicalItem<T extends ChatItem>(item: Omit<T, 'identity' | 'provenance' | 'content_completion'> & {
+  ordinal: number;
+  turn?: string;
+}): T {
+  const { ordinal, turn, ...rest } = item;
+  return {
+    ...rest,
+    identity: {
+      provider: 'codex', session_id: 'canonical-session', native_turn_id: turn,
+      source_record_ordinal: ordinal, source_sub_block_ordinal: 0,
+    },
+    provenance: { source: 'verified-provider-transcript', provider: 'codex', source_event_type: 'test' },
+    content_completion: 'complete',
+  } as T;
+}
+
+function canonicalEvent(item: ChatItem, blockId: string): StreamEvent {
+  return { type: 'chat:item', item, source: { blockId } };
+}
+
+function persistedBlock(id: string, item: ChatItem, timestamp?: string) {
+  return {
+    id,
+    type: 'event' as const,
+    content: 'provider-shaped content must not render',
+    timestamp,
+    metadata_json: JSON.stringify({ chat_item: item }),
+  };
+}
+
 beforeEach(() => {
   installBrowserStubs();
 });
@@ -115,12 +147,10 @@ describe('chat message stream render model', () => {
   });
 
   it('preserves the stable logical turn id when a bounded window starts mid-turn', () => {
-    const events = conversationBlocksToStreamEvents('session', [{
-      id: 'visible-middle-block',
-      type: 'assistant_message',
-      content: 'middle',
-      metadata_json: '{}',
-    }], { leadingAssistantTurnId: 'stable-turn-start' });
+    const events = conversationBlocksToStreamEvents('session', [persistedBlock(
+      'visible-middle-block',
+      canonicalItem({ type: 'message', role: 'assistant', parts: [{ type: 'text', text: 'middle' }], ordinal: 0, turn: 'stable-turn-start' }),
+    )]);
     const state = buildStreamState(events);
     expect(state.nodes[0]).toMatchObject({ kind: 'assistant_turn', key: 'stable-turn-start' });
   });
@@ -156,9 +186,83 @@ describe('chat message stream render model', () => {
     expect(String(bounded.content)).not.toContain('TAIL-MARKER');
     expect(bounded.fullText).toContain('TAIL-MARKER');
   });
+
+  it('uses canonical ChatItem metadata for all four variants', () => {
+    const items: ChatItem[] = [
+      canonicalItem({ type: 'message', role: 'user', parts: [{ type: 'text', text: 'canonical prompt' }], ordinal: 0 }),
+      canonicalItem({ type: 'plan', role: 'assistant', parts: [{ type: 'text', text: 'canonical plan' }], ordinal: 1, turn: 't1' }),
+      canonicalItem({ type: 'tool-call', role: 'assistant', phase: 'call', tool_id: 'tool-1', tool_name: 'Read', input: { path: 'a.ts' }, parts: [], ordinal: 2, turn: 't1' }),
+      canonicalItem({ type: 'tool-call', role: 'tool', phase: 'result', tool_id: 'tool-1', output: 'file body', parts: [], ordinal: 3, turn: 't1' }),
+      canonicalItem({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [{ type: 'text', text: 'canonical status' }], ordinal: 4, turn: 't1' }),
+    ];
+    const blocks = items.map((item, index) => ({
+      id: `b${index}`,
+      type: 'event' as const,
+      content: 'legacy content must not render',
+      metadata_json: JSON.stringify({ chat_item: item }),
+    }));
+    const state = buildStreamState(conversationBlocksToStreamEvents('ignored-provider-session', blocks));
+
+    expect(state.nodes.map((node) => node.kind)).toEqual(['user_message', 'assistant_turn', 'activity']);
+    expect(state.nodes[0]).toMatchObject({ kind: 'user_message', text: 'canonical prompt' });
+    const turn = state.nodes[1].kind === 'assistant_turn' ? state.nodes[1].turn : null;
+    expect(turn?.assistantEvent.message.content.map((block) => block.type)).toEqual(['plan', 'tool_use']);
+    expect(turn?.toolResults.get('tool-1')).toMatchObject({ content: 'file body' });
+    expect(state.nodes[2]).toMatchObject({ kind: 'activity', item: { activity_kind: 'status' } });
+  });
+
+  it('groups only consecutive same-kind activities inside known turn boundaries', () => {
+    const activities = [
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'thinking', parts: [], ordinal: 0, turn: 't1' }),
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'thinking', parts: [], ordinal: 1, turn: 't1' }),
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [], ordinal: 2, turn: 't1' }),
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [], ordinal: 3, turn: 't2' }),
+    ];
+    const nodes = buildStreamState(activities.map((item, index) => canonicalEvent(item, `a${index}`))).nodes;
+    expect(groupActivityItemsForDisplay(nodes).map((entry) => entry.kind)).toEqual([
+      'activity-group', 'node', 'node',
+    ]);
+  });
 });
 
 describe('ChatSurface stream behavior', () => {
+  it('renders one compact activity row and an accessible stable disclosure for a run', () => {
+    const activity = (ordinal: number, text: string, severity?: ActivityItem['severity']): ActivityItem => canonicalItem<ActivityItem>({
+      type: 'activity', role: 'assistant', activity_kind: 'diagnostic', severity,
+      execution_outcome: severity === 'error' ? 'failed' : undefined,
+      status: severity === 'warning' ? 'action required' : undefined,
+      parts: [{ type: 'text', text }], ordinal, turn: 't1',
+    });
+    const single = render(<ChatSurface events={[canonicalEvent(activity(0, '<img src=x onerror=alert(1)>'), 'a0')]} streaming={false} sessionInfo={{ sessionId: 'single-activity' }} />);
+    expect(screen.queryByRole('button', { name: /Diagnostic/ })).toBeNull();
+    expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeTruthy();
+    expect(single.container.querySelector('img')).toBeNull();
+    single.unmount();
+
+    const { rerender } = render(<ChatSurface events={[
+      canonicalEvent(activity(1, 'check one', 'warning'), 'a1'),
+      canonicalEvent(activity(2, 'check two', 'error'), 'a2'),
+    ]} streaming={false} sessionInfo={{ sessionId: 'activity-run' }} />);
+    const summary = screen.getByRole('button', { name: /Diagnostic · 2.*failed.*warning.*action required/i });
+    expect(summary.getAttribute('aria-expanded')).toBe('false');
+    const controlledRegion = summary.getAttribute('aria-controls');
+    expect(controlledRegion).toBeTruthy();
+    expect(screen.queryByText('check one')).toBeNull();
+    fireEvent.click(summary);
+    expect(document.getElementById(controlledRegion!)?.getAttribute('role')).toBe('region');
+    expect(screen.getByText('check one')).toBeTruthy();
+    expect(document.querySelector('[data-block-id="a1"]')).toBeTruthy();
+    expect(document.querySelector('[data-block-id="a2"]')).toBeTruthy();
+
+    rerender(<ChatSurface events={[
+      canonicalEvent(activity(1, 'check one', 'warning'), 'a1'),
+      canonicalEvent(activity(2, 'check two', 'error'), 'a2'),
+      canonicalEvent(activity(3, 'check three'), 'a3'),
+    ]} streaming={false} sessionInfo={{ sessionId: 'activity-run' }} />);
+    expect(screen.getByRole('button', { name: /Diagnostic · 3/ }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('check three')).toBeTruthy();
+  });
+
   it('uses a distance-plus-viewport threshold distinct from the follow threshold', () => {
     expect(shouldShowJumpToLatest(79, 800)).toBe(false);
     expect(shouldShowJumpToLatest(800, 800)).toBe(false);
@@ -240,8 +344,8 @@ describe('ChatSurface stream behavior', () => {
 
   it('does not copy turn tokens or persisted timestamps onto ordinary row actions', () => {
     const events = conversationBlocksToStreamEvents('row-metadata', [
-      { id: 'u1', type: 'user_message', content: 'Prompt', timestamp: '2026-01-02T03:04:05Z', metadata_json: '{}' },
-      { id: 'a1', type: 'assistant_message', content: 'Answer', timestamp: '2026-01-02T03:04:06Z', metadata_json: JSON.stringify({ token_usage: { input: 10, output: 5 } }) },
+      persistedBlock('u1', canonicalItem({ type: 'message', role: 'user', parts: [{ type: 'text', text: 'Prompt' }], ordinal: 0 }), '2026-01-02T03:04:05Z'),
+      persistedBlock('a1', canonicalItem({ type: 'message', role: 'assistant', parts: [{ type: 'text', text: 'Answer' }], ordinal: 1, turn: 'a1' }), '2026-01-02T03:04:06Z'),
     ]);
     const view = render(<ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'row-metadata' }} />);
 
@@ -451,10 +555,18 @@ describe('ChatSurface stream behavior', () => {
   it('materializes and centers an exact persisted block anchor', async () => {
     const blocks = Array.from({ length: 80 }, (_, index) => ({
       id: `block-${index}`,
-      type: index % 2 === 0 ? 'user_message' as const : 'assistant_message' as const,
-      content: `message ${index}`,
+      type: 'event' as const,
+      content: 'provider-shaped content must not render',
       timestamp: `2026-01-01T00:${String(index % 60).padStart(2, '0')}:00Z`,
-      metadata_json: '{}',
+      metadata_json: JSON.stringify({
+        chat_item: canonicalItem({
+          type: 'message',
+          role: index % 2 === 0 ? 'user' : 'assistant',
+          parts: [{ type: 'text', text: `message ${index}` }],
+          ordinal: index,
+          ...(index % 2 === 1 ? { turn: `turn-${index}` } : {}),
+        }),
+      }),
     }));
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -478,27 +590,15 @@ describe('ChatSurface stream behavior', () => {
 
   it('materializes and centers a far-off matched tool-result anchor', async () => {
     const blocks = Array.from({ length: 80 }, (_, index) => ([
-      {
-        id: `prompt-${index}`,
-        type: 'user_message' as const,
-        content: `prompt ${index}`,
-        timestamp: `2026-01-01T00:${String(index % 60).padStart(2, '0')}:00Z`,
-        metadata_json: '{}',
-      },
-      {
-        id: `tool-${index}`,
-        type: 'tool_use' as const,
-        content: '{}',
-        timestamp: `2026-01-01T01:${String(index % 60).padStart(2, '0')}:00Z`,
-        metadata_json: JSON.stringify({ tool_id: `call-${index}`, tool_name: 'Read', tool_input: { path: `${index}.ts` } }),
-      },
-      {
-        id: `result-${index}`,
-        type: 'tool_result' as const,
-        content: `result ${index}`,
-        timestamp: `2026-01-01T02:${String(index % 60).padStart(2, '0')}:00Z`,
-        metadata_json: JSON.stringify({ tool_id: `call-${index}` }),
-      },
+      persistedBlock(`prompt-${index}`, canonicalItem({
+        type: 'message', role: 'user', parts: [{ type: 'text', text: `prompt ${index}` }], ordinal: index * 3,
+      }), `2026-01-01T00:${String(index % 60).padStart(2, '0')}:00Z`),
+      persistedBlock(`tool-${index}`, canonicalItem({
+        type: 'tool-call', role: 'assistant', phase: 'call', tool_id: `call-${index}`, tool_name: 'Read', input: { path: `${index}.ts` }, parts: [], ordinal: index * 3 + 1, turn: `turn-${index}`,
+      }), `2026-01-01T01:${String(index % 60).padStart(2, '0')}:00Z`),
+      persistedBlock(`result-${index}`, canonicalItem({
+        type: 'tool-call', role: 'tool', phase: 'result', tool_id: `call-${index}`, output: `result ${index}`, parts: [], ordinal: index * 3 + 2, turn: `turn-${index}`,
+      }), `2026-01-01T02:${String(index % 60).padStart(2, '0')}:00Z`),
     ])).flat();
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -621,11 +721,11 @@ describe('ChatSurface stream behavior', () => {
   it('renders persisted events and unmatched results through canonical selectable nodes', () => {
     const onToggle = vi.fn();
     const events = conversationBlocksToStreamEvents('codex-history', [
-      { id: 's1', type: 'system', content: 'System notice', timestamp: '2026-01-02T03:04:05Z', metadata_json: '{}' },
-      { id: 'e1', type: 'event', content: 'Stream failed', timestamp: '2026-01-02T03:04:06Z', metadata_json: JSON.stringify({ event_type: 'provider_error', is_error: true }) },
-      { id: 'tu1', type: 'tool_use', content: '{}', timestamp: '2026-01-02T03:04:06Z', metadata_json: JSON.stringify({ tool_id: 'paired', tool_name: 'Read', tool_input: { path: 'a.ts' } }) },
-      { id: 'tr-paired', type: 'tool_result', content: 'paired output', timestamp: '2026-01-02T03:04:06Z', metadata_json: JSON.stringify({ tool_id: 'paired' }) },
-      { id: 'tr1', type: 'tool_result', content: 'No matching request', timestamp: '2026-01-02T03:04:07Z', metadata_json: JSON.stringify({ tool_id: 'missing', is_error: true }) },
+      persistedBlock('s1', canonicalItem({ type: 'message', role: 'system', parts: [{ type: 'text', text: 'System notice' }], ordinal: 0 }), '2026-01-02T03:04:05Z'),
+      persistedBlock('e1', canonicalItem({ type: 'activity', role: 'system', activity_kind: 'diagnostic', severity: 'error', execution_outcome: 'failed', parts: [{ type: 'text', text: 'Stream failed' }], ordinal: 1 }), '2026-01-02T03:04:06Z'),
+      persistedBlock('tu1', canonicalItem({ type: 'tool-call', role: 'assistant', phase: 'call', tool_id: 'paired', tool_name: 'Read', input: { path: 'a.ts' }, parts: [], ordinal: 2, turn: 'turn-1' }), '2026-01-02T03:04:06Z'),
+      persistedBlock('tr-paired', canonicalItem({ type: 'tool-call', role: 'tool', phase: 'result', tool_id: 'paired', output: 'paired output', parts: [], ordinal: 3, turn: 'turn-1' }), '2026-01-02T03:04:06Z'),
+      persistedBlock('tr1', canonicalItem({ type: 'tool-call', role: 'tool', phase: 'result', tool_id: 'missing', output: 'No matching request', execution_outcome: 'failed', parts: [], ordinal: 4 }), '2026-01-02T03:04:07Z'),
     ]);
 
     render(
@@ -642,7 +742,7 @@ describe('ChatSurface stream behavior', () => {
     expect(screen.getByText('System notice')).toBeTruthy();
     expect(screen.getByText('Stream failed')).toBeTruthy();
     expect(screen.getByText('Unmatched tool error')).toBeTruthy();
-    expect(screen.getByText('provider_error')).toBeTruthy();
+    expect(screen.getByText('Diagnostic')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Read a file/ }));
     expect(document.querySelector('[data-block-id="tr-paired"]')).toBeTruthy();
     expect(screen.queryByText(/2026/)).toBeNull();

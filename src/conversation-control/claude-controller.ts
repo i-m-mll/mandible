@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type {
+  ActivityItem,
+  ActivityKind,
+  ChatItem,
+  MessageItem,
+  ToolCallItem,
+} from "../parsers/types.js";
+import type {
   AdapterProbe,
   ConversationControllerAdapter,
   ControllerAcquisitionRequest,
@@ -8,6 +15,7 @@ import type {
 } from "./adapter.js";
 import { AdapterLifecycle, AdapterProviderEvents, adapterFailure, type AdapterLifecycleEvent } from "./provider-adapter.js";
 import { CLAUDE_SDK_MANAGED_PROFILE } from "./provider-capabilities.js";
+import { chatItemIdentityKey } from "./provider-live.js";
 import { StructuredJsonProcess, type StructuredProcessExit, type StructuredProcessSpawner } from "./structured-process.js";
 import type {
   ConversationControlError,
@@ -38,7 +46,7 @@ type ClaudeController = {
   intentionalStop: boolean;
   providerSequence: number;
   liveMessageId: string | null;
-  liveText: string;
+  liveText: Map<string, string>;
 };
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -106,7 +114,7 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
         intentionalStop: false,
         providerSequence: 0,
         liveMessageId: null,
-        liveText: "",
+        liveText: new Map(),
       };
       processOwner.onRecord((record) => this.acceptRecord(controller, record));
       processOwner.onMalformed(() => this.markAmbiguous(controller));
@@ -237,6 +245,11 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       this.publishClaudeRecord(controller, record);
       return;
     }
+    if (record.type === "progress" || record.type === "tool_progress"
+        || record.type === "tool_use_summary" || record.type === "system") {
+      this.publishClaudeActivity(controller, record);
+      return;
+    }
     if (record.type === "stream_event") {
       this.acceptStreamDelta(controller, record);
       return;
@@ -267,22 +280,22 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       this.lifecycle.emit(this.event(controller, { kind: "turn-started", turn_id: pending.item.turn_id, at: Date.now() }));
     }
     const providerMessageId = typeof record.uuid === "string" && record.uuid ? record.uuid : null;
-    this.emitContent(controller, `message:${pending.item.idempotency_key}`, {
-      type: "user",
-      uuid: pending.item.idempotency_key,
-      session_id: controller.providerSessionId,
-      parent_tool_use_id: null,
-      message: {
-        id: pending.item.idempotency_key,
-        role: "user",
-        content: object(record.message)?.content ?? [{ type: "text", text: pending.item.message }],
-      },
-    }, {
+    const correlation = {
       intent_id: pending.item.idempotency_key,
       delivery_id: pending.item.id,
       turn_id: pending.item.turn_id,
       ...(providerMessageId ? { provider_message_id: providerMessageId } : {}),
-    });
+    };
+    const content = object(record.message)?.content;
+    const items = this.claudeContentItems(
+      controller,
+      pending.item.idempotency_key,
+      "user",
+      content ?? pending.item.message,
+      "complete",
+      undefined,
+    );
+    for (const item of items) this.emitItem(controller, item, correlation);
     pending.resolve({
       provider_receipt_id: providerMessageId
         ? `claude:message:${providerMessageId}`
@@ -300,48 +313,68 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
     if (!stream || typeof stream.type !== "string") return;
     if (stream.type === "message_start") {
       const message = object(stream.message);
-      controller.liveMessageId = typeof message?.id === "string" ? message.id : controller.activeTurnId;
-      controller.liveText = "";
+      controller.liveMessageId = typeof message?.id === "string" && message.id ? message.id : null;
+      controller.liveText.clear();
+      return;
+    }
+    if (stream.type === "content_block_start") {
+      const messageId = controller.liveMessageId;
+      const index = Number(stream.index);
+      const content = object(stream.content_block);
+      if (!messageId || !Number.isInteger(index) || index < 0 || !content) return;
+      const [item] = this.claudeContentItems(
+        controller,
+        messageId,
+        "assistant",
+        [content],
+        "streaming",
+        undefined,
+        index,
+      );
+      if (item) this.emitItem(controller, item);
       return;
     }
     if (stream.type === "content_block_delta") {
       const delta = object(stream.delta);
-      if (delta?.type !== "text_delta" || typeof delta.text !== "string") return;
-      controller.liveText += delta.text;
-      const identity = controller.liveMessageId ?? controller.activeTurnId;
-      if (!identity) return;
-      this.emitContent(controller, `message:${identity}`, {
-        type: "assistant",
-        uuid: identity,
-        session_id: controller.providerSessionId,
-        parent_tool_use_id: null,
-        message: {
-          id: identity,
-          role: "assistant",
-          content: [{ type: "text", text: controller.liveText }],
-        },
-      });
+      const messageId = controller.liveMessageId;
+      const index = Number(stream.index ?? 0);
+      if (!messageId || !Number.isInteger(index) || index < 0 || !delta) return;
+      const activityKind: ActivityKind | null = delta.type === "thinking_delta" ? "thinking" : null;
+      const fragment = delta.type === "text_delta" ? delta.text
+        : delta.type === "thinking_delta" ? delta.thinking
+        : null;
+      if (typeof fragment !== "string") return;
+      const key = `${activityKind ?? "message"}:${messageId}:${index}`;
+      const text = `${controller.liveText.get(key) ?? ""}${fragment}`;
+      controller.liveText.set(key, text);
+      const item = activityKind
+        ? this.activityItem(controller, messageId, activityKind, text, "streaming", index)
+        : this.messageItem(controller, messageId, "assistant", text, "streaming", index);
+      this.emitItem(controller, item);
     }
   }
 
   private publishClaudeRecord(controller: ClaudeController, record: Record<string, unknown>): void {
     const messageId = object(record.message)?.id;
-    const uuid = typeof record.uuid === "string" && record.uuid ? record.uuid : null;
-    const identity = typeof messageId === "string" && messageId
-      ? `message:${messageId}`
-      : uuid
-        ? `event:${uuid}`
-        : null;
-    if (!identity) return;
-    this.emitContent(controller, identity, record as { type: string; [key: string]: unknown });
+    if (typeof messageId !== "string" || !messageId) return;
+    const content = object(record.message)?.content;
+    for (const item of this.claudeContentItems(
+      controller,
+      messageId,
+      "assistant",
+      content,
+      "complete",
+      undefined,
+    )) this.emitItem(controller, item);
   }
 
-  private emitContent(
+  private emitItem(
     controller: ClaudeController,
-    identity: string,
-    event: { type: string; [key: string]: unknown },
+    item: ChatItem,
     correlation?: Extract<ProviderAdapterEvent, { kind: "provisional-content" }>["correlation"],
   ): void {
+    const identity = chatItemIdentityKey(item);
+    if (!identity) return;
     this.providerEvents.emit({
       kind: "provisional-content",
       conversation_id: controller.conversationId,
@@ -351,8 +384,186 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       observed_at: Date.now(),
       identity,
       ...(correlation ? { correlation } : {}),
-      event,
+      item,
     });
+  }
+
+  private liveIdentity(
+    controller: ClaudeController,
+    itemId: string,
+    contentIndex?: number,
+    turnId?: string,
+    toolId?: string,
+  ): ChatItem["identity"] {
+    return {
+      provider: "claude_code",
+      session_id: controller.providerSessionId,
+      native_item_id: itemId,
+      ...(turnId ? { native_turn_id: turnId } : {}),
+      ...(toolId ? { native_tool_id: toolId } : {}),
+      ...(contentIndex !== undefined ? { native_content_index: contentIndex } : {}),
+      // Native identity is mandatory for live items, leaving the frozen
+      // transcript-coordinate fields inert.
+      source_record_ordinal: 0,
+      source_sub_block_ordinal: contentIndex ?? 0,
+    };
+  }
+
+  private messageItem(
+    controller: ClaudeController,
+    itemId: string,
+    role: MessageItem["role"],
+    text: string,
+    completion: MessageItem["content_completion"],
+    contentIndex?: number,
+    turnId?: string,
+  ): MessageItem {
+    return {
+      type: "message",
+      role,
+      identity: this.liveIdentity(controller, itemId, contentIndex, turnId),
+      provenance: { source: "live-provider-event", provider: "claude_code", source_event_type: role },
+      parts: text ? [{ type: "text", text, ...(contentIndex !== undefined ? { native_index: contentIndex } : {}) }] : [],
+      content_completion: completion,
+    };
+  }
+
+  private activityItem(
+    controller: ClaudeController,
+    itemId: string,
+    activityKind: ActivityKind,
+    text: string,
+    completion: ActivityItem["content_completion"],
+    contentIndex?: number,
+    turnId?: string,
+    fields: Partial<Pick<ActivityItem, "severity" | "status" | "elapsed_ms" | "tool_name" | "tool_id" | "related_tool_ids">> = {},
+  ): ActivityItem {
+    return {
+      type: "activity",
+      role: "assistant",
+      activity_kind: activityKind,
+      identity: this.liveIdentity(controller, itemId, contentIndex, turnId, fields.tool_id),
+      provenance: { source: "live-provider-event", provider: "claude_code", source_event_type: activityKind },
+      parts: text ? [{ type: "text", text, ...(contentIndex !== undefined ? { native_index: contentIndex } : {}) }] : [],
+      content_completion: completion,
+      ...fields,
+    };
+  }
+
+  private claudeContentItems(
+    controller: ClaudeController,
+    messageId: string,
+    role: "user" | "assistant",
+    content: unknown,
+    completion: ChatItem["content_completion"],
+    turnId?: string,
+    contentOffset = 0,
+  ): ChatItem[] {
+    if (typeof content === "string") {
+      return content ? [this.messageItem(controller, messageId, role, content, completion, undefined, turnId)] : [];
+    }
+    if (!Array.isArray(content)) return [];
+    return content.flatMap((value, offset): ChatItem[] => {
+      const block = object(value);
+      if (!block) return [];
+      const contentIndex = contentOffset + offset;
+      if (block.type === "text" && typeof block.text === "string") {
+        return [this.messageItem(controller, messageId, role, block.text, completion, contentIndex, turnId)];
+      }
+      if (role === "assistant" && block.type === "thinking" && typeof block.thinking === "string") {
+        return [this.activityItem(controller, messageId, "thinking", block.thinking, completion, contentIndex, turnId)];
+      }
+      if (role === "assistant" && block.type === "tool_use" && typeof block.id === "string" && block.id) {
+        const item: ToolCallItem = {
+          type: "tool-call",
+          role: "assistant",
+          phase: "call",
+          identity: this.liveIdentity(controller, messageId, contentIndex, turnId, block.id),
+          provenance: { source: "live-provider-event", provider: "claude_code", source_event_type: "tool_use" },
+          parts: [],
+          content_completion: completion,
+          tool_id: block.id,
+          ...(typeof block.name === "string" && block.name ? { tool_name: block.name } : {}),
+          tool_kind: "claude_tool_use",
+          ...(block.input !== undefined ? { input: block.input } : {}),
+        };
+        return [item];
+      }
+      if (role === "user" && block.type === "tool_result" && typeof block.tool_use_id === "string" && block.tool_use_id) {
+        const output = block.content;
+        const text = typeof output === "string" ? output
+          : Array.isArray(output) ? output.flatMap((part) => {
+            const candidate = object(part);
+            return typeof candidate?.text === "string" ? [candidate.text] : [];
+          }).join("\n") : "";
+        const item: ToolCallItem = {
+          type: "tool-call",
+          role: "tool",
+          phase: "result",
+          identity: this.liveIdentity(controller, messageId, contentIndex, turnId, block.tool_use_id),
+          provenance: { source: "live-provider-event", provider: "claude_code", source_event_type: "tool_result" },
+          parts: text ? [{ type: "text", text, native_index: contentIndex }] : [],
+          content_completion: completion,
+          tool_id: block.tool_use_id,
+          tool_kind: "claude_tool_result",
+          ...(output !== undefined ? { output } : {}),
+        };
+        return [item];
+      }
+      return [];
+    });
+  }
+
+  private publishClaudeActivity(controller: ClaudeController, record: Record<string, unknown>): void {
+    const recordId = typeof record.uuid === "string" && record.uuid ? record.uuid : null;
+    if (!recordId) return;
+    const type = String(record.type);
+    const data = object(record.data);
+    const progress = type === "progress" || type === "tool_progress";
+    const sourceType = progress
+      ? `progress.${type === "tool_progress" ? "tool_progress" : String(data?.type ?? "progress")}`
+      : type === "system" ? String(record.subtype ?? "system")
+      : type;
+    const activityKind: ActivityKind | null = progress ? "tool-progress"
+      : sourceType === "tool_use_summary" ? "tool-summary"
+      : sourceType === "informational" ? "information"
+      : sourceType === "status" ? "status"
+      : null;
+    if (!activityKind) return;
+    const text = type === "tool_use_summary" && typeof record.summary === "string" ? record.summary
+      : typeof record.content === "string" ? record.content
+      : typeof data?.message === "string" ? data.message
+      : "";
+    const toolId = typeof record.tool_use_id === "string" ? record.tool_use_id
+      : typeof record.toolUseID === "string" ? record.toolUseID
+      : typeof record.parent_tool_use_id === "string" ? record.parent_tool_use_id
+      : undefined;
+    const toolName = typeof record.tool_name === "string" ? record.tool_name
+      : typeof data?.tool_name === "string" ? data.tool_name
+      : typeof data?.toolName === "string" ? data.toolName
+      : undefined;
+    const elapsedSeconds = typeof record.elapsed_time_seconds === "number" ? record.elapsed_time_seconds
+      : typeof data?.elapsed_time_seconds === "number" ? data.elapsed_time_seconds
+      : typeof data?.elapsedTimeSeconds === "number" ? data.elapsedTimeSeconds
+      : undefined;
+    const related = Array.isArray(record.precedingToolUseIDs) ? record.precedingToolUseIDs
+      : Array.isArray(record.preceding_tool_use_ids) ? record.preceding_tool_use_ids
+      : [];
+    const item = this.activityItem(controller, recordId, activityKind, text, "complete", undefined,
+      undefined, {
+        ...(record.level === "error" ? { severity: "error" as const }
+          : record.level === "warning" ? { severity: "warning" as const } : {}),
+        ...(progress ? { status: sourceType.slice("progress.".length) } : {}),
+        ...(elapsedSeconds !== undefined ? { elapsed_ms: elapsedSeconds * 1000 } : {}),
+        ...(toolId ? { tool_id: toolId } : {}),
+        ...(toolName ? { tool_name: toolName } : {}),
+        ...(related.length > 0
+          ? { related_tool_ids: related.filter((value): value is string => typeof value === "string") }
+          : {}),
+      });
+    item.role = "system";
+    item.provenance.source_event_type = sourceType;
+    this.emitItem(controller, item);
   }
 
   private finishTurn(controller: ClaudeController, record: Record<string, unknown>): void {
