@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ControllerAcquisitionRequest } from "../src/conversation-control/adapter.js";
 import { ClaudeStreamControllerAdapter } from "../src/conversation-control/claude-controller.js";
 import { CodexAppServerControllerAdapter } from "../src/conversation-control/codex-controller.js";
+import { chatItemIdentityKey } from "../src/conversation-control/provider-live.js";
 import {
   CLAUDE_NATIVE_BACKGROUND_PROFILE,
   defaultProviderMode,
@@ -196,35 +197,99 @@ describe("structured conversation controller adapters", () => {
     expect((await claude.deliver(delivery("resume-provider-session", "claude-turn", "delta"))).ok).toBe(true);
     expect((await codex.deliver(delivery("resume-provider-session", "codex-turn", "delta"))).ok).toBe(true);
     await waitUntil(() => {
-      const hasFinalDelta = (events: ProviderAdapterEvent[], identity: string) => events.some((event) =>
+      const hasFinalDelta = (events: ProviderAdapterEvent[], itemId: string) => events.some((event) =>
         event.kind === "provisional-content"
-        && event.identity === identity
-        && event.event.message?.content?.some((content) => content.type === "text" && content.text === "hello"));
-      return hasFinalDelta(claudeEvents, "message:claude-message-1")
-        && hasFinalDelta(codexEvents, "message:codex-message-1");
+        && event.item.identity.native_item_id === itemId
+        && event.item.parts.some((content) => content.text === "hello"));
+      return hasFinalDelta(claudeEvents, "claude-message-1")
+        && hasFinalDelta(codexEvents, "codex-message-1");
     });
 
-    expect(claudeEvents.filter((event) => event.kind === "provisional-content" && event.identity === "message:claude-message-1").at(-1)).toMatchObject({
-      identity: "message:claude-message-1",
-      event: { message: { content: [{ type: "text", text: "hello" }] } },
+    expect(claudeEvents.filter((event) => event.kind === "provisional-content"
+      && event.item.identity.native_item_id === "claude-message-1").at(-1)).toMatchObject({
+      item: { type: "message", parts: [{ type: "text", text: "hello", native_index: 0 }] },
     });
-    expect(codexEvents.filter((event) => event.kind === "provisional-content" && event.identity === "message:codex-message-1").at(-1)).toMatchObject({
-      identity: "message:codex-message-1",
-      event: { message: { content: [{ type: "text", text: "hello" }] } },
+    expect(codexEvents.filter((event) => event.kind === "provisional-content"
+      && event.item.identity.native_item_id === "codex-message-1").at(-1)).toMatchObject({
+      item: { type: "message", parts: [{ type: "text", text: "hello" }] },
     });
-    expect(claudeEvents.find((event) => event.kind === "provisional-content" && event.identity === "message:key-claude-turn")).toMatchObject({
+    expect(claudeEvents.find((event) => event.kind === "provisional-content"
+      && event.item.identity.native_item_id === "key-claude-turn")).toMatchObject({
       correlation: { intent_id: "key-claude-turn", delivery_id: "delivery-claude-turn", turn_id: "claude-turn" },
-      event: { type: "user", message: { role: "user" } },
+      item: { type: "message", role: "user" },
     });
-    expect(codexEvents.filter((event) => event.kind === "provisional-content" && event.identity === "message:key-codex-turn").at(-1)).toMatchObject({
+    expect(codexEvents.filter((event) => event.kind === "provisional-content"
+      && event.item.identity.native_item_id === "key-codex-turn").at(-1)).toMatchObject({
       correlation: {
         intent_id: "key-codex-turn",
         delivery_id: "delivery-codex-turn",
         turn_id: "codex-turn",
         provider_message_id: "user-key-codex-turn",
       },
-      event: { type: "user", message: { role: "user" } },
+      item: { type: "message", role: "user" },
     });
+    for (const event of [...claudeEvents, ...codexEvents]) {
+      if (event.kind === "provisional-content") expect(event.identity).toBe(chatItemIdentityKey(event.item));
+    }
+  });
+
+  it("preserves Claude sibling content blocks and drops live records without message identity", async () => {
+    const claude = new ClaudeStreamControllerAdapter({ spawnProcess: spawner("claude", []) });
+    adapters.push(claude);
+    const events = providerEvents(claude);
+    expect((await claude.acquire(acquisition("claude-session"))).ok).toBe(true);
+
+    expect((await claude.deliver(delivery("resume-provider-session", "sibling-turn", "siblings"))).ok).toBe(true);
+    await waitUntil(() => events.filter((event) => event.kind === "provisional-content"
+      && event.item.identity.native_item_id === "claude-siblings"
+      && event.item.content_completion === "complete").length === 2);
+
+    const siblings = events.filter((event) => event.kind === "provisional-content"
+      && event.item.identity.native_item_id === "claude-siblings"
+      && event.item.content_completion === "complete");
+    expect(siblings.map((event) => event.kind === "provisional-content" ? [
+      event.item.type === "activity" ? event.item.activity_kind : event.item.type,
+      event.item.identity.native_content_index,
+      event.item.parts[0]?.text,
+    ] : [])).toEqual([
+      ["thinking", 0, "working"],
+      ["message", 1, "answer"],
+    ]);
+    expect(new Set(siblings.map((event) => event.kind === "provisional-content" ? event.identity : "")).size).toBe(2);
+
+    const beforeMissing = events.length;
+    expect((await claude.deliver(delivery("resume-provider-session", "missing-turn", "missing-id"))).ok).toBe(true);
+    await settle();
+    expect(events.slice(beforeMissing).some((event) => event.kind === "provisional-content"
+      && event.item.parts.some((part) => part.text.includes("must")))).toBe(false);
+  });
+
+  it("adapts Codex reasoning, plans, and tool snapshots without hidden provider payloads", async () => {
+    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []) });
+    adapters.push(codex);
+    const events = providerEvents(codex);
+    expect((await codex.acquire(acquisition("codex-thread"))).ok).toBe(true);
+    expect((await codex.deliver(delivery("resume-provider-session", "rich-turn", "rich"))).ok).toBe(true);
+    await waitUntil(() => events.some((event) => event.kind === "provisional-content"
+      && event.item.identity.native_item_id === "command-rich"
+      && event.item.content_completion === "complete"));
+
+    const items = events.flatMap((event) => event.kind === "provisional-content" ? [event.item] : []);
+    expect(items.find((item) => item.type === "activity" && item.activity_kind === "reasoning-summary"
+      && item.content_completion === "complete")).toMatchObject({
+      parts: [{ text: "first", native_index: 0 }, { text: "second", native_index: 1 }],
+    });
+    expect(items.find((item) => item.type === "activity" && item.activity_kind === "thinking")).toMatchObject({
+      parts: [{ text: "visible reasoning", native_index: 0 }],
+    });
+    expect(items.find((item) => item.type === "plan")).toMatchObject({
+      parts: [{ text: "Do the exact work" }], content_completion: "complete",
+    });
+    expect(items.find((item) => item.type === "tool-call" && item.identity.native_item_id === "command-rich"
+      && item.content_completion === "complete")).toMatchObject({
+      tool_kind: "commandExecution", input: "true", output: "ok", execution_outcome: "succeeded",
+    });
+    expect(JSON.stringify(items)).not.toContain("encrypted");
   });
 
   it("classifies Codex spawn lineage only with exact sender and receiver identities", async () => {
@@ -253,7 +318,8 @@ describe("structured conversation controller adapters", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(liveEvents.some((event) => event.kind === "provisional-content"
-      && event.identity === "message:claude-before-crash")).toBe(true);
+      && event.item.identity.native_item_id === "claude-before-crash"
+      && event.item.parts.some((part) => part.text === "visible before crash"))).toBe(true);
     expect(lifecycleEvents.filter((event) => event.kind === "turn-unknown")).toHaveLength(1);
     expect(lifecycleEvents.filter((event) => event.kind === "controller-released")).toHaveLength(1);
   });
