@@ -8,9 +8,11 @@ import {
   conversationBlocksToStreamEvents,
   groupActivityItemsForDisplay,
   groupMessagesForDisplay,
+  isRoutineActivityStatus,
   serializeConversationToMarkdown,
 } from '../../ui/src/chat';
 import { ChatSurface, shouldShowJumpToLatest } from '../../ui/src/chat/ChatSurface';
+import { plainActivityHeader } from '../../ui/src/components/message-blocks/ActivityBlock';
 import { MessageActions } from '../../ui/src/components/shared/MessageActions';
 import { TextBlock } from '../../ui/src/components/message-blocks/TextBlock';
 import type { StreamEvent, ToolResultContentBlock } from '../../ui/src/components/stream-renderer/types';
@@ -223,6 +225,40 @@ describe('chat message stream render model', () => {
       'activity-group', 'node', 'node',
     ]);
   });
+
+  it('hides only empty routine Codex start and completion status', () => {
+    const status = (
+      ordinal: number,
+      sourceEventType: string,
+      value: string,
+      text = '',
+      fields: Partial<Pick<ActivityItem, 'severity' | 'execution_outcome'>> = {},
+    ): ActivityItem => {
+      const item = canonicalItem<ActivityItem>({
+        type: 'activity', role: 'system', activity_kind: 'status', status: value,
+        parts: text ? [{ type: 'text', text }] : [], ordinal, turn: `t${ordinal}`, ...fields,
+      });
+      item.provenance.source_event_type = sourceEventType;
+      return item;
+    };
+    const routineStart = status(0, 'task_started', 'started');
+    const routineComplete = status(1, 'task_complete', 'complete');
+    const authoredStart = status(2, 'task_started', 'started', 'Preparing the workspace');
+    const warningComplete = status(3, 'task_complete', 'complete', '', { severity: 'warning' });
+    const failedComplete = status(4, 'task_complete', 'complete', '', { execution_outcome: 'failed' });
+    const compacted = status(5, 'context_compacted', 'compacted');
+    const claudeStatus = status(6, 'status', 'complete');
+    claudeStatus.provenance.provider = 'claude_code';
+    claudeStatus.identity.provider = 'claude_code';
+
+    expect(isRoutineActivityStatus(routineStart)).toBe(true);
+    expect(isRoutineActivityStatus(routineComplete)).toBe(true);
+    expect([authoredStart, warningComplete, failedComplete, compacted, claudeStatus]
+      .every((item) => !isRoutineActivityStatus(item))).toBe(true);
+    expect(buildStreamState([
+      routineStart, routineComplete, authoredStart, warningComplete, failedComplete, compacted, claudeStatus,
+    ].map((item, index) => canonicalEvent(item, `status-${index}`))).nodes).toHaveLength(5);
+  });
 });
 
 describe('ChatSurface stream behavior', () => {
@@ -243,7 +279,9 @@ describe('ChatSurface stream behavior', () => {
       canonicalEvent(activity(1, 'check one', 'warning'), 'a1'),
       canonicalEvent(activity(2, 'check two', 'error'), 'a2'),
     ]} streaming={false} sessionInfo={{ sessionId: 'activity-run' }} />);
-    const summary = screen.getByRole('button', { name: /Diagnostic · 2.*failed.*warning.*action required/i });
+    const summary = screen.getByRole('button', { name: /Diagnostic.*failed.*warning.*action required/i });
+    expect(summary.textContent).not.toMatch(/Diagnostic\s*[· ]\s*2/);
+    expect(summary.querySelector('.activity-row__icon svg')).toBeTruthy();
     expect(summary.getAttribute('aria-expanded')).toBe('false');
     const controlledRegion = summary.getAttribute('aria-controls');
     expect(controlledRegion).toBeTruthy();
@@ -259,8 +297,23 @@ describe('ChatSurface stream behavior', () => {
       canonicalEvent(activity(2, 'check two', 'error'), 'a2'),
       canonicalEvent(activity(3, 'check three'), 'a3'),
     ]} streaming={false} sessionInfo={{ sessionId: 'activity-run' }} />);
-    expect(screen.getByRole('button', { name: /Diagnostic · 3/ }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: /Diagnostic.*failed/ }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('check three')).toBeTruthy();
+  });
+
+  it('renders provider formatting as inert plain activity text with a shared icon slot', () => {
+    const item = canonicalItem<ActivityItem>({
+      type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary',
+      parts: [{ type: 'text', text: '**Checked** the __typed__ status payload' }], ordinal: 0,
+    });
+    const view = render(<ChatSurface events={[canonicalEvent(item, 'plain-activity')]} streaming={false} sessionInfo={{ sessionId: 'plain-activity' }} />);
+    expect(screen.getByText('Checked the typed status payload')).toBeTruthy();
+    expect(view.container.textContent).not.toContain('**');
+    expect(view.container.textContent).not.toContain('__');
+    expect(view.container.querySelector('.activity-row__icon svg')).toBeTruthy();
+    expect(view.container.querySelector('strong')).toBeNull();
+    expect(plainActivityHeader('**Header**\nMore **provider-authored words**')).toBe('Header\nMore provider-authored words');
+    expect(plainActivityHeader('value__name__suffix and 2 ** 3')).toBe('value__name__suffix and 2 ** 3');
   });
 
   it('uses a distance-plus-viewport threshold distinct from the follow threshold', () => {

@@ -151,6 +151,9 @@ describe('message action cards', () => {
     expect(css).toMatch(/\.tool-call-group \.chat-disclosure__summary,\s*\.tool-call-group \.chat-disclosure__summary-text\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.15;/s);
     expect(css).toMatch(/\.chat-disclosure__summary\s*\{[^}]*padding:\s*1px 0;/s);
     expect(css).toMatch(/\.tool-call-group \.chat-disclosure__summary\s*\{[^}]*color:\s*var\(--tool-activity-text\);/s);
+    expect(css).toMatch(/\.activity-row,\s*\.activity-group \.chat-disclosure__summary\s*\{[^}]*align-items:\s*center;[^}]*gap:\s*6px;[^}]*padding:\s*1px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font:\s*500 var\(--text-lg\)\/1\.15 var\(--font-sans\);/s);
+    expect(css).toMatch(/\.activity-group \.chat-disclosure__trailing\s*\{[^}]*color:\s*inherit;[^}]*font:\s*inherit;/s);
+    expect(css).toMatch(/\.activity-group__body\s*\{[^}]*gap:\s*0;[^}]*padding-left:\s*0;/s);
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?border:\s*1px solid var\(--tool-activity-border\);[\s\S]*?background:\s*var\(--tool-activity-background\);/);
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
