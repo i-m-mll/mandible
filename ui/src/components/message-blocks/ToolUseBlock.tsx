@@ -1,9 +1,9 @@
-import { useId, useMemo, useState } from 'preact/hooks';
+import { useMemo } from 'preact/hooks';
 import { computeDiffStats, FileEditBlock } from './FileEditBlock';
 import { MessageActions } from '../shared/MessageActions';
 import { OverflowFade } from '../shared/OverflowFade';
 import type { PersistedBlockSource } from '../stream-renderer/types';
-import { DisclosureChevronIcon } from '../shared/DisclosureChevronIcon';
+import { CompactActivityRow } from '../shared/ChatDisclosure';
 import { presentTool, toolInputObject, toolTarget, type ToolCategory } from './toolPresentation';
 import { ToolActivityIcon } from './ToolActivityIcon';
 
@@ -256,10 +256,6 @@ export function ToolCard({
   const status = statusFor(result, statusEmoji);
   const commandLike = isCommandTool(toolName);
   const editLike = isEditTool(toolName) && typeof inputObj.file_path === 'string';
-  const initialExpanded = defaultExpanded ?? false;
-  const [localExpanded, setLocalExpanded] = useState(initialExpanded);
-  const isExpanded = expanded ?? localExpanded;
-  const bodyId = useId();
 
   const diffStats = useMemo(() => {
     if (!editLike) return null;
@@ -290,13 +286,6 @@ export function ToolCard({
     return <JsonInputPanel input={input} />;
   }
 
-  function setExpandedValue(nextExpanded: boolean): void {
-    if (expanded === undefined) {
-      setLocalExpanded(nextExpanded);
-    }
-    onExpandedChange?.(nextExpanded);
-  }
-
   function renderResult(content: JSX.Element): JSX.Element {
     if (!result) return content;
     const source = result.source;
@@ -317,50 +306,36 @@ export function ToolCard({
     );
   }
 
+  const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'running' || status === 'pending' ? ' · Running' : status === 'failed' ? ' · Failed' : ''}`;
+  const details = (
+    <div className="tool-card__body">
+      {diffStats ? <div className="tool-card__diff-stats">+{diffStats.additions} / -{diffStats.deletions}</div> : null}
+      {renderInputPanel()}
+      {result && hasVisibleResult(result)
+        ? renderResult(<ResultBody result={result} commandLike={commandLike} />)
+        : null}
+    </div>
+  );
+
   return (
     <section
-      className={`tool-card${isExpanded ? ' tool-card--expanded' : ' tool-card--collapsed'}${compact ? ' tool-card--compact' : ''}`}
+      className={`tool-card${compact ? ' tool-card--compact' : ''}`}
       data-tool={toolName}
       data-tool-kind={visual.kind}
       data-id={toolUseId}
       data-block-id={result?.source?.blockId}
     >
-      <button
-        type="button"
-        className="tool-card__header"
-        aria-expanded={isExpanded}
-        aria-controls={bodyId}
-        onClick={() => setExpandedValue(!isExpanded)}
-      >
-        <span className="tool-card__icon" aria-hidden="true">
-          <ToolActivityIcon icon={visual.icon} />
-        </span>
-        <span className="tool-card__verb">{visual.verb}</span>
-        {target && (
-          <span className="tool-card__target" title={target}>
-            {displayTarget}
-          </span>
-        )}
-        <span className="tool-card__chevron"><DisclosureChevronIcon expanded={isExpanded} /></span>
-        {diffStats && (
-          <span className="tool-card__stat-chip">+{diffStats.additions} / -{diffStats.deletions}</span>
-        )}
-        <span className="tool-card__spacer" aria-hidden="true" />
-        {(status === 'pending' || status === 'running') && (
-          <span className="tool-card__status tool-card__status--running">Running</span>
-        )}
-        {status === 'failed' && (
-          <span className="tool-card__status tool-card__status--failed">Failed</span>
-        )}
-      </button>
-      {isExpanded ? (
-        <div id={bodyId} role="region" aria-label={`${visual.verb} details`} className="tool-card__body">
-          {renderInputPanel()}
-          {result && hasVisibleResult(result)
-            ? renderResult(<ResultBody result={result} commandLike={commandLike} />)
-            : null}
-        </div>
-      ) : null}
+      <CompactActivityRow
+        icon={<ToolActivityIcon icon={visual.icon} />}
+        summary={summary}
+        disclosure={{
+          content: details,
+          regionLabel: `${visual.verb} details`,
+          defaultExpanded,
+          expanded,
+          onExpandedChange,
+        }}
+      />
     </section>
   );
 }

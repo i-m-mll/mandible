@@ -4,9 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computeDiffStats } from '../../ui/src/components/message-blocks/FileEditBlock';
 import { latestPlanIndex, parsePlanEntries } from '../../ui/src/components/message-blocks/PlanBlock';
 import { getToolVisual, leftTruncateTarget, ToolUseBlock } from '../../ui/src/components/message-blocks/ToolUseBlock';
-import { presentTool, summarizeToolRun, toolRunIcons } from '../../ui/src/components/message-blocks/toolPresentation';
+import { presentTool, summarizeToolRun, toolRunIcon } from '../../ui/src/components/message-blocks/toolPresentation';
 import { PermissionApprovalCard, permissionActionsForRequest } from '../../ui/src/components/console/PermissionApprovalCard';
 import { MessageGroup } from '../../ui/src/components/stream-renderer/MessageGroup';
+import { CompactActivityRow } from '../../ui/src/components/shared/ChatDisclosure';
 import type { ConsolePermissionRequest } from '../../ui/src/api';
 import type { RenderedTurn } from '../../ui/src/components/stream-renderer/types';
 
@@ -108,7 +109,7 @@ describe('message action cards', () => {
       delta: 'four',
     };
     const result = render(<ToolUseBlock toolName="Read" input={input} />);
-    expect(result.container.querySelector('.tool-card--collapsed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Read a file/ }).getAttribute('aria-expanded')).toBe('false');
 
     result.rerender(
       <ToolUseBlock
@@ -122,7 +123,7 @@ describe('message action cards', () => {
       />,
     );
 
-    expect(result.container.querySelector('.tool-card--collapsed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Read a file/ }).getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByText('complete')).toBeNull();
   });
 
@@ -144,17 +145,12 @@ describe('message action cards', () => {
     for (const token of ['#767778', '#F4F4F4', '#DADADB', '#88888A', '#A3A3A3', '#242424', '#464646', '#919191']) {
       expect(css).toContain(token);
     }
-    expect(css).toMatch(/\.tool-card\s*\{[^}]*width:\s*100%;/s);
+    expect(css).toMatch(/\.compact-activity,\s*\.tool-card\s*\{[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.tool-card__body\s*\{[^}]*width:\s*100%;/s);
-    expect(css).toMatch(/\.tool-card__header\s*\{[^}]*padding:\s*1px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.15;/s);
+    expect(css).toMatch(/\.compact-activity__row\s*\{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\) 16px;[^}]*gap:\s*6px;[^}]*min-height:\s*22px;[^}]*padding:\s*1px 0;[^}]*font:\s*400 var\(--text-lg\)\/1\.15 var\(--font-sans\);/s);
+    expect(css).toMatch(/\.compact-activity__row--inert\s*\{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\);/s);
     expect(css).toMatch(/\.msg-text-block\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);/s);
-    expect(css).toMatch(/\.tool-call-group \.chat-disclosure__summary,\s*\.tool-call-group \.chat-disclosure__summary-text\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.15;/s);
-    expect(css).toMatch(/\.chat-disclosure__summary\s*\{[^}]*padding:\s*1px 0;/s);
-    expect(css).toMatch(/\.tool-call-group \.chat-disclosure__summary\s*\{[^}]*color:\s*var\(--tool-activity-text\);/s);
-    expect(css).toMatch(/\.activity-row,\s*\.activity-group \.chat-disclosure__summary\s*\{[^}]*align-items:\s*center;[^}]*gap:\s*6px;[^}]*padding:\s*1px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font:\s*500 var\(--text-lg\)\/1\.15 var\(--font-sans\);/s);
-    expect(css).toMatch(/\.activity-group \.chat-disclosure__trailing\s*\{[^}]*color:\s*inherit;[^}]*font:\s*inherit;/s);
-    expect(css).toMatch(/\.activity-group__body\s*\{[^}]*gap:\s*0;[^}]*padding-left:\s*0;/s);
-    expect(css).toMatch(/\.tool-card__input,[\s\S]*?border:\s*1px solid var\(--tool-activity-border\);[\s\S]*?background:\s*var\(--tool-activity-background\);/);
+    expect(css).toMatch(/\.compact-activity__details\s*\{[^}]*border:\s*1px solid var\(--tool-activity-border\);[^}]*background:\s*var\(--tool-activity-background\);/s);
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?font-size:\s*var\(--text-lg\);/);
@@ -163,6 +159,9 @@ describe('message action cards', () => {
     expect(css).not.toContain('background: var(--status-danger-bg-soft)');
     expect(css).toMatch(/\.overflow-fade::before,\s*\.overflow-fade::after\s*\{[^}]*height:\s*1\.35em;/s);
     expect(css).toContain('var(--overflow-fade-color, var(--surface-app))');
+    expect(css).not.toContain('.tool-card__header');
+    expect(css).not.toContain('.chat-disclosure__summary');
+    expect(css).not.toContain('.activity-row__label');
 
     const group = render(<MessageGroup turn={{
       id: 'typography',
@@ -175,16 +174,29 @@ describe('message action cards', () => {
       },
       toolResults: new Map(),
     }} isStreaming={false} />);
-    expect(group.container.querySelector('.tool-call-group > .chat-disclosure__summary > .chat-disclosure__summary-text')).toBeTruthy();
-    expect(group.container.querySelectorAll('.tool-call-group__icons .tool-call-group__icon')).toHaveLength(1);
+    expect(group.container.querySelector('.tool-call-group > .compact-activity__row > .compact-activity__summary')).toBeTruthy();
+    expect(group.container.querySelectorAll('.tool-call-group > .compact-activity__row > .compact-activity__icon')).toHaveLength(1);
   });
 
-  it('gives grouped tool runs one icon for each represented tool category', () => {
-    expect(toolRunIcons([
+  it('gives grouped tool runs exactly one representative icon', () => {
+    expect(toolRunIcon([
       { name: 'Read', input: { path: 'one' } },
       { name: 'Read', input: { path: 'two' } },
       { name: 'Bash', input: { command: 'true' } },
-    ])).toEqual(['↗', 'terminal']);
+    ])).toBe('↗');
+  });
+
+  it('keeps shared disclosure semantics and restores focus when controlled content closes', () => {
+    const disclosure = (expanded: boolean) => ({
+      content: <button type="button">Detail action</button>,
+      regionLabel: 'Shared details',
+      expanded,
+    });
+    const view = render(<CompactActivityRow icon={<span>·</span>} summary="Shared summary" disclosure={disclosure(true)} />);
+    const detailAction = screen.getByRole('button', { name: 'Detail action' });
+    detailAction.focus();
+    view.rerender(<CompactActivityRow icon={<span>·</span>} summary="Shared summary" disclosure={disclosure(false)} />);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Shared summary' }));
   });
 
   it('wins the real light-theme pre fill without changing general code surfaces', () => {
@@ -269,7 +281,7 @@ describe('message action cards', () => {
     fireEvent.click(group);
     expect(screen.getByRole('region', { name: /Read some files, ran a command details/ })).toBeTruthy();
     expect(view.container.querySelectorAll('.tool-card')).toHaveLength(4);
-    const leaves = view.container.querySelectorAll<HTMLButtonElement>('.tool-card__header');
+    const leaves = view.container.querySelectorAll<HTMLButtonElement>('.tool-card > .compact-activity > .compact-activity__row');
     expect(leaves[0].getAttribute('aria-controls')).toBeTruthy();
     fireEvent.click(leaves[0]);
     expect(leaves[0].getAttribute('aria-expanded')).toBe('true');
@@ -328,7 +340,7 @@ describe('message action cards', () => {
     expect(groupBody.querySelector(':scope > .overflow-fade__scroll')).toBeNull();
     expect(groupBody.querySelectorAll('.tool-card')).toHaveLength(2);
 
-    fireEvent.click(view.container.querySelector<HTMLButtonElement>('.tool-card__header')!);
+    fireEvent.click(view.container.querySelector<HTMLButtonElement>('.tool-card > .compact-activity > .compact-activity__row')!);
     expect(view.container.querySelectorAll('.tool-card__body > .tool-card__input .overflow-fade, .tool-card__body > .tool-card__result-wrapper .overflow-fade')).toHaveLength(2);
     const inputFade = view.container.querySelector<HTMLElement>('.tool-card__input .overflow-fade')!;
     const inputScroll = inputFade.querySelector<HTMLElement>('.overflow-fade__scroll')!;

@@ -9,7 +9,7 @@ import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
 import { latestPlanIndex, PlanBlock } from '../message-blocks/PlanBlock';
 import { MessageActions } from '../shared/MessageActions';
 import { ToolCallGroup } from '../message-blocks/ToolCallGroup';
-import { summarizeToolRun, toolRunIcons } from '../message-blocks/toolPresentation';
+import { summarizeToolRun, toolRunIcon } from '../message-blocks/toolPresentation';
 
 export function MessageGroup({
   turn,
@@ -153,7 +153,7 @@ export function MessageGroup({
         <ToolCallGroup
           key={groupId}
           summary={summarizeToolRun(run)}
-          icons={toolRunIcons(run)}
+          icon={toolRunIcon(run)}
           expanded={expanded}
           onExpandedChange={(next) => onDisclosureExpandedChange?.(groupId, next)}
         >
