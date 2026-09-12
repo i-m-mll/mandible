@@ -148,8 +148,9 @@ describe('message action cards', () => {
     expect(css).toMatch(/\.tool-card__body\s*\{[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.tool-card__header\s*\{[^}]*padding:\s*1px 0;[^}]*color:\s*var\(--tool-activity-text\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.15;/s);
     expect(css).toMatch(/\.msg-text-block\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);/s);
-    expect(css).toMatch(/\.tool-call-group__summary,\s*\.tool-call-group__summary-text\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.15;/s);
-    expect(css).toMatch(/\.tool-call-group__summary\s*\{[^}]*padding:\s*1px 0;[^}]*color:\s*var\(--tool-activity-text\);/s);
+    expect(css).toMatch(/\.tool-call-group \.chat-disclosure__summary,\s*\.tool-call-group \.chat-disclosure__summary-text\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);[^}]*line-height:\s*1\.15;/s);
+    expect(css).toMatch(/\.chat-disclosure__summary\s*\{[^}]*padding:\s*1px 0;/s);
+    expect(css).toMatch(/\.tool-call-group \.chat-disclosure__summary\s*\{[^}]*color:\s*var\(--tool-activity-text\);/s);
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?border:\s*1px solid var\(--tool-activity-border\);[\s\S]*?background:\s*var\(--tool-activity-background\);/);
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
@@ -171,7 +172,7 @@ describe('message action cards', () => {
       },
       toolResults: new Map(),
     }} isStreaming={false} />);
-    expect(group.container.querySelector('.tool-call-group__summary > .tool-call-group__summary-text')).toBeTruthy();
+    expect(group.container.querySelector('.tool-call-group > .chat-disclosure__summary > .chat-disclosure__summary-text')).toBeTruthy();
     expect(group.container.querySelectorAll('.tool-call-group__icons .tool-call-group__icon')).toHaveLength(1);
   });
 
@@ -287,17 +288,17 @@ describe('message action cards', () => {
       },
       toolResults: new Map(),
     });
-    const getBlockExpanded = (contentBlock: RenderedTurn['assistantEvent']['message']['content'][number]) => {
-      if (contentBlock.type === 'tool_use' && contentBlock.id.startsWith('group:')) seen.push(contentBlock.id);
+    const getDisclosureExpanded = (id: string) => {
+      seen.push(id);
       return false;
     };
     const view = render(
-      <MessageGroup turn={turn([block('one'), block('two')])} isStreaming getBlockExpanded={getBlockExpanded} />,
+      <MessageGroup turn={turn([block('one'), block('two')])} isStreaming getDisclosureExpanded={getDisclosureExpanded} />,
     );
     view.rerender(
-      <MessageGroup turn={turn([block('one'), block('two'), block('three')])} isStreaming getBlockExpanded={getBlockExpanded} />,
+      <MessageGroup turn={turn([block('one'), block('two'), block('three')])} isStreaming getDisclosureExpanded={getDisclosureExpanded} />,
     );
-    expect(seen).toEqual(['group:one', 'group:one']);
+    expect(seen).toEqual(['tool-group:one', 'tool-group:one']);
   });
 
   it('shows every grouped tool row while retaining independent fades inside expanded leaves', () => {

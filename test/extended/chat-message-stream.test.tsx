@@ -6,6 +6,7 @@ import {
   boundToolResultBlock,
   buildStreamState,
   conversationBlocksToStreamEvents,
+  groupActivityItemsForDisplay,
   groupMessagesForDisplay,
   serializeConversationToMarkdown,
 } from '../../ui/src/chat';
@@ -13,6 +14,7 @@ import { ChatSurface, shouldShowJumpToLatest } from '../../ui/src/chat/ChatSurfa
 import { MessageActions } from '../../ui/src/components/shared/MessageActions';
 import { TextBlock } from '../../ui/src/components/message-blocks/TextBlock';
 import type { StreamEvent, ToolResultContentBlock } from '../../ui/src/components/stream-renderer/types';
+import type { ActivityItem, ChatItem } from '../../src/parsers/types';
 
 function installBrowserStubs(): void {
   const store = new Map<string, string>();
@@ -91,6 +93,26 @@ function result(): StreamEvent {
   };
 }
 
+function canonicalItem<T extends ChatItem>(item: Omit<T, 'identity' | 'provenance' | 'content_completion'> & {
+  ordinal: number;
+  turn?: string;
+}): T {
+  const { ordinal, turn, ...rest } = item;
+  return {
+    ...rest,
+    identity: {
+      provider: 'codex', session_id: 'canonical-session', native_turn_id: turn,
+      source_record_ordinal: ordinal, source_sub_block_ordinal: 0,
+    },
+    provenance: { source: 'verified-provider-transcript', provider: 'codex', source_event_type: 'test' },
+    content_completion: 'complete',
+  } as T;
+}
+
+function canonicalEvent(item: ChatItem, blockId: string): StreamEvent {
+  return { type: 'chat:item', item, source: { blockId } };
+}
+
 beforeEach(() => {
   installBrowserStubs();
 });
@@ -156,9 +178,83 @@ describe('chat message stream render model', () => {
     expect(String(bounded.content)).not.toContain('TAIL-MARKER');
     expect(bounded.fullText).toContain('TAIL-MARKER');
   });
+
+  it('uses canonical ChatItem metadata for all four variants', () => {
+    const items: ChatItem[] = [
+      canonicalItem({ type: 'message', role: 'user', parts: [{ type: 'text', text: 'canonical prompt' }], ordinal: 0 }),
+      canonicalItem({ type: 'plan', role: 'assistant', parts: [{ type: 'text', text: 'canonical plan' }], ordinal: 1, turn: 't1' }),
+      canonicalItem({ type: 'tool-call', role: 'assistant', phase: 'call', tool_id: 'tool-1', tool_name: 'Read', input: { path: 'a.ts' }, parts: [], ordinal: 2, turn: 't1' }),
+      canonicalItem({ type: 'tool-call', role: 'tool', phase: 'result', tool_id: 'tool-1', output: 'file body', parts: [], ordinal: 3, turn: 't1' }),
+      canonicalItem({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [{ type: 'text', text: 'canonical status' }], ordinal: 4, turn: 't1' }),
+    ];
+    const blocks = items.map((item, index) => ({
+      id: `b${index}`,
+      type: 'event' as const,
+      content: 'legacy content must not render',
+      metadata_json: JSON.stringify({ chat_item: item }),
+    }));
+    const state = buildStreamState(conversationBlocksToStreamEvents('ignored-provider-session', blocks));
+
+    expect(state.nodes.map((node) => node.kind)).toEqual(['user_message', 'assistant_turn', 'activity']);
+    expect(state.nodes[0]).toMatchObject({ kind: 'user_message', text: 'canonical prompt' });
+    const turn = state.nodes[1].kind === 'assistant_turn' ? state.nodes[1].turn : null;
+    expect(turn?.assistantEvent.message.content.map((block) => block.type)).toEqual(['plan', 'tool_use']);
+    expect(turn?.toolResults.get('tool-1')).toMatchObject({ content: 'file body' });
+    expect(state.nodes[2]).toMatchObject({ kind: 'activity', item: { activity_kind: 'status' } });
+  });
+
+  it('groups only consecutive same-kind activities inside known turn boundaries', () => {
+    const activities = [
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'thinking', parts: [], ordinal: 0, turn: 't1' }),
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'thinking', parts: [], ordinal: 1, turn: 't1' }),
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [], ordinal: 2, turn: 't1' }),
+      canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [], ordinal: 3, turn: 't2' }),
+    ];
+    const nodes = buildStreamState(activities.map((item, index) => canonicalEvent(item, `a${index}`))).nodes;
+    expect(groupActivityItemsForDisplay(nodes).map((entry) => entry.kind)).toEqual([
+      'activity-group', 'node', 'node',
+    ]);
+  });
 });
 
 describe('ChatSurface stream behavior', () => {
+  it('renders one compact activity row and an accessible stable disclosure for a run', () => {
+    const activity = (ordinal: number, text: string, severity?: ActivityItem['severity']): ActivityItem => canonicalItem<ActivityItem>({
+      type: 'activity', role: 'assistant', activity_kind: 'diagnostic', severity,
+      execution_outcome: severity === 'error' ? 'failed' : undefined,
+      status: severity === 'warning' ? 'action required' : undefined,
+      parts: [{ type: 'text', text }], ordinal, turn: 't1',
+    });
+    const single = render(<ChatSurface events={[canonicalEvent(activity(0, '<img src=x onerror=alert(1)>'), 'a0')]} streaming={false} sessionInfo={{ sessionId: 'single-activity' }} />);
+    expect(screen.queryByRole('button', { name: /Diagnostic/ })).toBeNull();
+    expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeTruthy();
+    expect(single.container.querySelector('img')).toBeNull();
+    single.unmount();
+
+    const { rerender } = render(<ChatSurface events={[
+      canonicalEvent(activity(1, 'check one', 'warning'), 'a1'),
+      canonicalEvent(activity(2, 'check two', 'error'), 'a2'),
+    ]} streaming={false} sessionInfo={{ sessionId: 'activity-run' }} />);
+    const summary = screen.getByRole('button', { name: /Diagnostic · 2.*failed.*warning.*action required/i });
+    expect(summary.getAttribute('aria-expanded')).toBe('false');
+    const controlledRegion = summary.getAttribute('aria-controls');
+    expect(controlledRegion).toBeTruthy();
+    expect(screen.queryByText('check one')).toBeNull();
+    fireEvent.click(summary);
+    expect(document.getElementById(controlledRegion!)?.getAttribute('role')).toBe('region');
+    expect(screen.getByText('check one')).toBeTruthy();
+    expect(document.querySelector('[data-block-id="a1"]')).toBeTruthy();
+    expect(document.querySelector('[data-block-id="a2"]')).toBeTruthy();
+
+    rerender(<ChatSurface events={[
+      canonicalEvent(activity(1, 'check one', 'warning'), 'a1'),
+      canonicalEvent(activity(2, 'check two', 'error'), 'a2'),
+      canonicalEvent(activity(3, 'check three'), 'a3'),
+    ]} streaming={false} sessionInfo={{ sessionId: 'activity-run' }} />);
+    expect(screen.getByRole('button', { name: /Diagnostic · 3/ }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('check three')).toBeTruthy();
+  });
+
   it('uses a distance-plus-viewport threshold distinct from the follow threshold', () => {
     expect(shouldShowJumpToLatest(79, 800)).toBe(false);
     expect(shouldShowJumpToLatest(800, 800)).toBe(false);

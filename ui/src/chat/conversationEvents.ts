@@ -1,4 +1,5 @@
 import type { ConversationBlock, ProviderLiveProjection } from '../api';
+import type { ChatItem } from '../../../src/parsers/types';
 import { classifyTranscriptBlock } from '../../../src/parsers/transcript-visibility';
 import type {
   AssistantEvent,
@@ -95,6 +96,14 @@ function parseMetadata(json: string): Record<string, unknown> {
   }
 }
 
+function canonicalChatItem(value: unknown): ChatItem | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<ChatItem>;
+  if (!['message', 'plan', 'tool-call', 'activity'].includes(String(candidate.type))) return null;
+  if (!candidate.identity || !candidate.provenance || !Array.isArray(candidate.parts)) return null;
+  return candidate as ChatItem;
+}
+
 export function conversationBlocksToStreamEvents(
   providerSessionId: string,
   blocks: Pick<ConversationBlock, 'id' | 'type' | 'content' | 'metadata_json' | 'timestamp' | 'dag_uuid'>[],
@@ -139,6 +148,19 @@ export function conversationBlocksToStreamEvents(
       dagUuid: block.dag_uuid ?? undefined,
     };
 
+    // Canonical normalized content is authoritative when present. A malformed
+    // canonical field fails closed instead of silently reverting to the
+    // provider-shaped compatibility projection below.
+    if (Object.prototype.hasOwnProperty.call(metadata, 'chat_item')) {
+      flushAssistant();
+      const item = canonicalChatItem(metadata.chat_item);
+      if (item) events.push({ type: 'chat:item', item, source });
+      continue;
+    }
+
+    // Temporary integration seam for live adapters that have not yet emitted
+    // `chat:item`. The live-adapter lane removes this path from the combined
+    // candidate once all live input carries the canonical contract.
     if (block.type === 'user_message') {
       flushAssistant();
       const providerMessageId = typeof metadata.provider_message_id === 'string'
