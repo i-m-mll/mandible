@@ -31,6 +31,17 @@ function chatItemText(item: MessageItem | PlanItem | ToolCallItem | ActivityItem
   return item.parts.map((part) => part.text).join('\n');
 }
 
+/** Empty Codex turn lifecycle records are useful transport facts, not Chat content. */
+export function isRoutineActivityStatus(item: ActivityItem): boolean {
+  if (item.activity_kind !== 'status'
+      || item.provenance.provider !== 'codex'
+      || !['task_started', 'task_complete'].includes(item.provenance.source_event_type)
+      || !['started', 'complete'].includes(item.status ?? '')
+      || (item.severity !== undefined && item.severity !== 'info')
+      || (item.execution_outcome !== undefined && item.execution_outcome !== 'unknown')) return false;
+  return item.parts.every((part) => part.text.trim() === '');
+}
+
 export function chatItemStableKey(item: ChatItem): string {
   const identity = item.identity;
   const native = identity.native_item_id ?? identity.native_tool_id;
@@ -210,6 +221,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
           else nodes.push({ kind: 'unmatched_tool_result', key, entity: 'system', result });
         }
       } else if (item.type === 'activity') {
+        if (isRoutineActivityStatus(item)) continue;
         flushPendingTurn();
         nodes.push({ kind: 'activity', key, entity: item.role, item, source });
       }
