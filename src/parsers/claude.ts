@@ -4,12 +4,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
+  ActivityKind,
   BlockMetadata,
+  ChatContentPart,
   ConversationBlock,
   ConversationParser,
   IncrementalParseInput,
   ParseResult,
 } from "./types.js";
+import { attachTranscriptChatItem } from "./types.js";
 import { normalizeClaudeTranscriptUsage } from "./context-usage.js";
 import { parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
 
@@ -51,6 +54,7 @@ interface ClaudeRecord {
   message?: ClaudeMessage;
   timestamp?: string;
   sessionId?: string;
+  session_id?: string;
   cwd?: string;
   gitBranch?: string;
   version?: string;
@@ -58,6 +62,29 @@ interface ClaudeRecord {
   isSidechain?: boolean;
   isSnapshotUpdate?: boolean;
   userType?: string;
+  subtype?: string;
+  content?: string;
+  level?: string;
+  toolUseID?: string | null;
+  parentToolUseID?: string | null;
+  precedingToolUseIDs?: string[];
+  preceding_tool_use_ids?: string[];
+  summary?: string;
+  tool_use_id?: string;
+  parent_tool_use_id?: string | null;
+  tool_name?: string;
+  elapsed_time_seconds?: number;
+  prevent_continuation?: boolean;
+  data?: {
+    type?: string;
+    message?: unknown;
+    tool_name?: string;
+    toolName?: string;
+    elapsed_time_seconds?: number;
+    elapsedTimeSeconds?: number;
+    hookName?: string;
+    hookEvent?: string;
+  };
 }
 
 interface SessionsIndexEntry {
@@ -162,6 +189,7 @@ export class ClaudeParser implements ConversationParser {
     return this.parseRecords(input.filePath, parseJsonlStringRecords<ClaudeRecord>(input.raw), {
       baseBlockCount: input.baseBlockCount,
       baseRecordCount: input.baseRecordCount ?? 0,
+      nativeSessionId: input.nativeSessionId,
       sourceHash: input.sourceHash,
       sourceMtime: input.sourceMtime,
     });
@@ -170,7 +198,7 @@ export class ClaudeParser implements ConversationParser {
   private async parseRecords(
     filePath: string,
     records: ClaudeRecord[],
-    options: { baseBlockCount: number; baseRecordCount: number; sourceHash: string; sourceMtime: number },
+    options: { baseBlockCount: number; baseRecordCount: number; nativeSessionId?: string; sourceHash: string; sourceMtime: number },
   ): Promise<ParseResult | null> {
     let hasSidechainRecord = false;
     for (const record of records) {
@@ -181,7 +209,7 @@ export class ClaudeParser implements ConversationParser {
     const subagentPath = parseClaudeSubagentPath(filePath);
 
     // Extract metadata from first non-snapshot record
-    let sessionId = "";
+    let sessionId = options.nativeSessionId ?? "";
     let cwd: string | null = null;
     let branch: string | null = null;
     let cliVersion: string | null = null;
@@ -201,7 +229,7 @@ export class ClaudeParser implements ConversationParser {
         if (candidate) customProviderTitle = candidate;
       }
       if (rec.type === "file-history-snapshot" || rec.isSnapshotUpdate) continue;
-      if (!sessionId && rec.sessionId) sessionId = rec.sessionId;
+      if (!sessionId && (rec.sessionId || rec.session_id)) sessionId = rec.sessionId || rec.session_id || "";
       if (!cwd && rec.cwd) cwd = rec.cwd;
       if (!branch && rec.gitBranch) branch = rec.gitBranch;
       if (!cliVersion && rec.version) cliVersion = rec.version;
@@ -271,13 +299,13 @@ export class ClaudeParser implements ConversationParser {
     // Map tool_use UUIDs to block positions for parent_id linking
     const toolUseMap = new Map<string, number>();
     const toolNameMap = new Map<string, string>();
+    const chatPartsByBlock = new Map<number, ChatContentPart[]>();
 
     for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
       const rec = records[recordIndex];
       const firstRecordBlock = blocks.length;
       // Skip non-content records
       if (rec.type === "file-history-snapshot" || rec.isSnapshotUpdate) continue;
-      if (rec.type === "progress") continue;
 
       const ts = rec.timestamp || startedAt || new Date().toISOString();
 
@@ -308,14 +336,15 @@ export class ClaudeParser implements ConversationParser {
               position: position++,
               timestamp: ts,
               parent_id: null,
-              metadata: {},
+              metadata: { source_event_type: "user" },
               dag_uuid: rec.uuid,
               dag_parent_uuid: rec.parentUuid ?? null,
             });
           }
         } else if (Array.isArray(content)) {
           // Array of content blocks (tool_results and text)
-          for (const block of content) {
+          for (let contentIndex = 0; contentIndex < content.length; contentIndex += 1) {
+            const block = content[contentIndex];
             if (block.type === "tool_result") {
               const toolOutput = typeof block.content === "string"
                 ? block.content
@@ -337,10 +366,15 @@ export class ClaudeParser implements ConversationParser {
                   tool_kind: "claude_tool_result",
                   tool_output: toolOutput.length > 1000 ? undefined : toolOutput,
                   visibility: "default_hidden",
+                  source_event_type: "tool_result",
+                  provider_content_index: contentIndex,
                 },
                 dag_uuid: rec.uuid,
                 dag_parent_uuid: rec.parentUuid ?? null,
               });
+              chatPartsByBlock.set(blocks.length - 1, toolOutput
+                ? [{ type: "text", text: toolOutput, native_index: contentIndex }]
+                : []);
             } else if (block.type === "text" && block.text) {
               blocks.push({
                 type: "user_message",
@@ -349,10 +383,11 @@ export class ClaudeParser implements ConversationParser {
                 position: position++,
                 timestamp: ts,
                 parent_id: null,
-                metadata: {},
+                metadata: { source_event_type: "user", provider_content_index: contentIndex },
                 dag_uuid: rec.uuid,
                 dag_parent_uuid: rec.parentUuid ?? null,
               });
+              chatPartsByBlock.set(blocks.length - 1, [{ type: "text", text: block.text, native_index: contentIndex }]);
             }
           }
         }
@@ -368,7 +403,7 @@ export class ClaudeParser implements ConversationParser {
               position: position++,
               timestamp: ts,
               parent_id: null,
-              metadata: buildAssistantMetadata(rec),
+              metadata: { ...buildAssistantMetadata(rec), source_event_type: "assistant" },
               dag_uuid: rec.uuid,
               dag_parent_uuid: rec.parentUuid ?? null,
             });
@@ -381,7 +416,8 @@ export class ClaudeParser implements ConversationParser {
         }
 
         // Array of content blocks
-        for (const block of content) {
+        for (let contentIndex = 0; contentIndex < content.length; contentIndex += 1) {
+          const block = content[contentIndex];
           if (block.type === "thinking" && block.thinking) {
             blocks.push({
               type: "thinking",
@@ -394,10 +430,13 @@ export class ClaudeParser implements ConversationParser {
                 ...buildAssistantMetadata(rec),
                 signature: block.signature || undefined,
                 visibility: "default_hidden",
+                source_event_type: "thinking",
+                provider_content_index: contentIndex,
               },
               dag_uuid: rec.uuid,
               dag_parent_uuid: rec.parentUuid ?? null,
             });
+            chatPartsByBlock.set(blocks.length - 1, [{ type: "text", text: block.thinking, native_index: contentIndex }]);
           } else if (block.type === "text" && block.text) {
             blocks.push({
               type: "assistant_message",
@@ -406,10 +445,15 @@ export class ClaudeParser implements ConversationParser {
               position: position++,
               timestamp: ts,
               parent_id: null,
-              metadata: buildAssistantMetadata(rec),
+              metadata: {
+                ...buildAssistantMetadata(rec),
+                source_event_type: "assistant",
+                provider_content_index: contentIndex,
+              },
               dag_uuid: rec.uuid,
               dag_parent_uuid: rec.parentUuid ?? null,
             });
+            chatPartsByBlock.set(blocks.length - 1, [{ type: "text", text: block.text, native_index: contentIndex }]);
           } else if (block.type === "tool_use") {
             const toolPos = position;
             toolUseMap.set(block.id || "", toolPos);
@@ -427,6 +471,8 @@ export class ClaudeParser implements ConversationParser {
                 tool_id: block.id || undefined,
                 tool_input: block.input,
                 visibility: "default_hidden",
+                source_event_type: "tool_use",
+                provider_content_index: contentIndex,
                 ...buildAssistantMetadata(rec),
               },
               dag_uuid: rec.uuid,
@@ -434,17 +480,70 @@ export class ClaudeParser implements ConversationParser {
             });
           }
         }
+      } else if (rec.type === "progress" || rec.type === "tool_progress") {
+        const progressType = rec.type === "tool_progress" ? "tool_progress" : rec.data?.type || "progress";
+        const text = typeof rec.data?.message === "string" ? rec.data.message : "";
+        blocks.push({
+          type: "event",
+          role: "system",
+          content: text,
+          position: position++,
+          timestamp: ts,
+          parent_id: null,
+          metadata: {
+            source_event_type: `progress.${progressType}`,
+            tool_id: rec.tool_use_id || rec.toolUseID || rec.parent_tool_use_id || rec.parentToolUseID || undefined,
+            tool_name: rec.tool_name ?? rec.data?.tool_name ?? rec.data?.toolName ?? rec.data?.hookName,
+          },
+          dag_uuid: rec.uuid,
+          dag_parent_uuid: rec.parentUuid ?? null,
+        });
+        if (text) chatPartsByBlock.set(blocks.length - 1, [{ type: "text", text }]);
+      } else if (rec.type === "tool_use_summary") {
+        const content = typeof rec.summary === "string" ? rec.summary : "";
+        blocks.push({
+          type: "event",
+          role: "system",
+          content,
+          position: position++,
+          timestamp: ts,
+          parent_id: null,
+          metadata: { source_event_type: "tool_use_summary" },
+          dag_uuid: rec.uuid,
+          dag_parent_uuid: rec.parentUuid ?? null,
+        });
+        if (content) chatPartsByBlock.set(blocks.length - 1, [{ type: "text", text: content }]);
       } else if (rec.type === "system") {
-        const content = extractTextFromContent(rec.message?.content);
+        const sourceEventType = rec.subtype || "system";
+        const content = typeof rec.content === "string"
+          ? rec.content
+          : extractTextFromContent(rec.message?.content);
         if (content) {
           blocks.push({
-            type: "system",
+            type: sourceEventType === "system" ? "system" : "event",
             role: "system",
             content,
             position: position++,
             timestamp: ts,
             parent_id: null,
-            metadata: { source_event_type: "system", visibility: "default_hidden" },
+            metadata: {
+              source_event_type: sourceEventType,
+              ...(sourceEventType === "system" ? { visibility: "default_hidden" as const } : {}),
+              tool_id: rec.tool_use_id || rec.toolUseID || undefined,
+            },
+            dag_uuid: rec.uuid,
+            dag_parent_uuid: rec.parentUuid ?? null,
+          });
+          chatPartsByBlock.set(blocks.length - 1, [{ type: "text", text: content }]);
+        } else if (sourceEventType === "tool_use_summary" || sourceEventType === "status") {
+          blocks.push({
+            type: "event",
+            role: "system",
+            content: "",
+            position: position++,
+            timestamp: ts,
+            parent_id: null,
+            metadata: { source_event_type: sourceEventType, tool_id: rec.tool_use_id || rec.toolUseID || undefined },
             dag_uuid: rec.uuid,
             dag_parent_uuid: rec.parentUuid ?? null,
           });
@@ -453,6 +552,38 @@ export class ClaudeParser implements ConversationParser {
       for (let index = firstRecordBlock; index < blocks.length; index += 1) {
         blocks[index].metadata.source_record_ordinal = options.baseRecordCount + recordIndex;
         blocks[index].metadata.source_sub_block_ordinal = index - firstRecordBlock;
+        const block = blocks[index];
+        const sourceEventType = block.metadata.source_event_type
+          ?? (block.type === "user_message" ? "user" : block.type);
+        const progress = sourceEventType.startsWith("progress.");
+        const activityKind: ActivityKind | undefined = block.type === "thinking" ? "thinking"
+          : sourceEventType === "tool_use_summary" ? "tool-summary"
+          : sourceEventType === "informational" ? "information"
+          : progress ? "tool-progress"
+          : block.type === "event" ? "diagnostic"
+          : undefined;
+        if (!["user_meta", "system"].includes(sourceEventType)) {
+          const elapsedSeconds = rec.elapsed_time_seconds
+            ?? rec.data?.elapsed_time_seconds
+            ?? rec.data?.elapsedTimeSeconds;
+          attachTranscriptChatItem(block, {
+            provider: "claude_code",
+            sessionId,
+            sourceEventType,
+            sourceRecordOrdinal: options.baseRecordCount + recordIndex,
+            sourceSubBlockOrdinal: index - firstRecordBlock,
+            ...(chatPartsByBlock.has(index) ? { parts: chatPartsByBlock.get(index)! } : {}),
+            ...(activityKind ? { activityKind } : {}),
+            ...(rec.level === "error" ? { severity: "error" as const }
+              : rec.level === "warning" ? { severity: "warning" as const }
+              : {}),
+            ...(progress ? { status: sourceEventType.slice("progress.".length) } : {}),
+            ...(typeof elapsedSeconds === "number" ? { elapsedMs: elapsedSeconds * 1000 } : {}),
+            ...((rec.precedingToolUseIDs ?? rec.preceding_tool_use_ids)?.length
+              ? { relatedToolIds: rec.precedingToolUseIDs ?? rec.preceding_tool_use_ids }
+              : {}),
+          });
+        }
       }
     }
 

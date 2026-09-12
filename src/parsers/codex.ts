@@ -12,11 +12,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
+  ActivityKind,
+  ChatContentPart,
   ConversationBlock,
   ConversationParser,
   IncrementalParseInput,
   ParseResult,
 } from "./types.js";
+import { attachTranscriptChatItem } from "./types.js";
 import { normalizeCodexTokenCount } from "./context-usage.js";
 import { findJsonlRecord, parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
 
@@ -47,7 +50,7 @@ interface CodexResponsePayload {
   type: string;
   id?: string;
   role?: string | null;
-  content?: CodexContentBlock[];
+  content?: CodexContentBlock[] | null;
   // function_call fields
   name?: string;
   call_id?: string | null;
@@ -58,7 +61,7 @@ interface CodexResponsePayload {
   // function_call_output fields
   output?: string;
   // reasoning fields
-  summary?: string;
+  summary?: string | CodexContentBlock[];
   encrypted_content?: string;
   internal_chat_message_metadata_passthrough?: {
     turn_id?: string;
@@ -85,6 +88,8 @@ interface CodexEventMsg {
   info?: unknown;
   rate_limits?: unknown;
   reason?: string;
+  turn_id?: string;
+  duration_ms?: number;
 }
 
 interface CodexRecord {
@@ -127,13 +132,30 @@ function extractResponseItemText(payload: CodexResponsePayload): string {
   return "";
 }
 
+function codexTextParts(blocks: CodexContentBlock[] | null | undefined): ChatContentPart[] {
+  if (!Array.isArray(blocks)) return [];
+  return blocks.flatMap((block, nativeIndex) => {
+    const text = block.text ?? block.input_text;
+    return typeof text === "string" && text.length > 0
+      ? [{ type: "text" as const, text, native_index: nativeIndex }]
+      : [];
+  });
+}
+
+function codexSummaryParts(summary: CodexResponsePayload["summary"]): ChatContentPart[] {
+  if (typeof summary === "string") {
+    return summary.trim() ? [{ type: "text", text: summary }] : [];
+  }
+  return codexTextParts(summary);
+}
+
 function providerTurnId(payload: CodexResponsePayload): string | undefined {
   const turnId = payload.internal_chat_message_metadata_passthrough?.turn_id;
   return typeof turnId === "string" && turnId ? turnId : undefined;
 }
 
 function isInjectedUserContext(payload: CodexResponsePayload): boolean {
-  if (!payload.content || payload.content.length < 2) return false;
+  if (!Array.isArray(payload.content) || payload.content.length < 2) return false;
   const prefixes = [
     "<recommended_plugins>",
     "# AGENTS.md instructions",
@@ -355,6 +377,7 @@ export class CodexParser implements ConversationParser {
     return this.parseRecords(input.filePath, parseJsonlStringRecords<CodexRecord>(input.raw), {
       baseBlockCount: input.baseBlockCount,
       baseRecordCount: input.baseRecordCount ?? 0,
+      nativeSessionId: input.nativeSessionId,
       sourceHash: input.sourceHash,
       sourceMtime: input.sourceMtime,
     });
@@ -363,10 +386,10 @@ export class CodexParser implements ConversationParser {
   private async parseRecords(
     filePath: string,
     records: CodexRecord[],
-    options: { baseBlockCount: number; baseRecordCount: number; sourceHash: string; sourceMtime: number },
+    options: { baseBlockCount: number; baseRecordCount: number; nativeSessionId?: string; sourceHash: string; sourceMtime: number },
   ): Promise<ParseResult | null> {
     // Extract session metadata
-    let sessionId = "";
+    let sessionId = options.nativeSessionId ?? "";
     let cwd: string | null = null;
     let branch: string | null = null;
     let cliVersion: string | null = null;
@@ -468,6 +491,7 @@ export class CodexParser implements ConversationParser {
     // Map call_id → position for linking function outputs to calls
     const callMap = new Map<string, number>();
     const callNameMap = new Map<string, string>();
+    const chatPartsByBlock = new Map<number, ChatContentPart[]>();
     let pendingUserBlockIndex: number | null = null;
 
     for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
@@ -482,6 +506,7 @@ export class CodexParser implements ConversationParser {
         if (payload.type === "message") {
           const text = extractResponseItemText(payload);
           if (!text) continue;
+          const messageParts = codexTextParts(payload.content);
 
           const role = payload.role;
           const turnId = providerTurnId(payload);
@@ -526,6 +551,7 @@ export class CodexParser implements ConversationParser {
               },
             });
             pendingUserBlockIndex = blocks.length - 1;
+            chatPartsByBlock.set(blocks.length - 1, messageParts);
           } else if (role === "assistant") {
             blocks.push({
               type: "assistant_message",
@@ -534,25 +560,45 @@ export class CodexParser implements ConversationParser {
               position: position++,
               timestamp: ts,
               parent_id: null,
-              metadata: { model: model || undefined },
+              metadata: { model: model || undefined, source_event_type: "assistant" },
             });
+            chatPartsByBlock.set(blocks.length - 1, messageParts);
           }
         } else if (payload.type === "reasoning") {
-          const text = typeof payload.summary === "string" ? payload.summary.trim() : "";
-          if (!text) continue;
-          blocks.push({
-            type: "thinking",
-            role: "assistant",
-            content: text,
-            position: position++,
-            timestamp: ts,
-            parent_id: null,
-            metadata: {
-              model: model || undefined,
-              visibility: "default_hidden",
-              source_event_type: "reasoning",
-            },
-          });
+          const summaryParts = codexSummaryParts(payload.summary);
+          if (summaryParts.length > 0) {
+            blocks.push({
+              type: "thinking",
+              role: "assistant",
+              content: summaryParts.map((part) => part.text).join("\n"),
+              position: position++,
+              timestamp: ts,
+              parent_id: null,
+              metadata: {
+                model: model || undefined,
+                visibility: "default_hidden",
+                source_event_type: "reasoning_summary",
+              },
+            });
+            chatPartsByBlock.set(blocks.length - 1, summaryParts);
+          }
+          const reasoningParts = codexTextParts(payload.content);
+          if (reasoningParts.length > 0) {
+            blocks.push({
+              type: "thinking",
+              role: "assistant",
+              content: reasoningParts.map((part) => part.text).join("\n"),
+              position: position++,
+              timestamp: ts,
+              parent_id: null,
+              metadata: {
+                model: model || undefined,
+                visibility: "default_hidden",
+                source_event_type: "reasoning_content",
+              },
+            });
+            chatPartsByBlock.set(blocks.length - 1, reasoningParts);
+          }
         } else if (payload.type === "function_call") {
           const toolPos = position;
           if (payload.call_id) callMap.set(payload.call_id, toolPos);
@@ -574,6 +620,7 @@ export class CodexParser implements ConversationParser {
                 tool_id: payload.call_id || undefined,
                 tool_input: parseToolArguments(payload.arguments),
                 visibility: "default_hidden",
+                source_event_type: "function_call",
               },
             });
         } else if (payload.type === "function_call_output") {
@@ -594,6 +641,7 @@ export class CodexParser implements ConversationParser {
               tool_kind: "function_call_output",
               tool_output: (payload.output || "").length > 1000 ? undefined : payload.output,
               visibility: "default_hidden",
+              source_event_type: "function_call_output",
             },
           });
         } else if (payload.type === "custom_tool_call") {
@@ -613,6 +661,7 @@ export class CodexParser implements ConversationParser {
                 tool_id: payload.call_id || undefined,
                 tool_input: payload.input ?? payload.arguments,
                 visibility: "default_hidden",
+                source_event_type: "custom_tool_call",
               },
             });
         } else if (payload.type === "custom_tool_call_output") {
@@ -629,6 +678,7 @@ export class CodexParser implements ConversationParser {
               tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
               tool_kind: "custom_tool_call_output",
               visibility: "default_hidden",
+              source_event_type: "custom_tool_call_output",
             },
           });
         }
@@ -657,9 +707,32 @@ export class CodexParser implements ConversationParser {
               },
             });
           }
+        } else if (evt.type === "task_started" || evt.type === "task_complete"
+          || evt.type === "turn_aborted" || evt.type === "context_compacted") {
+          blocks.push({
+            type: "event",
+            role: "system",
+            content: typeof evt.message === "string" ? evt.message : typeof evt.reason === "string" ? evt.reason : "",
+            position: position++,
+            timestamp: ts,
+            parent_id: null,
+            metadata: {
+              source_event_type: evt.type,
+              provider_turn_id: evt.turn_id,
+            },
+          });
+        } else if (!["agent_message", "agent_reasoning", "item_started", "item_completed", "thread_settings_applied"].includes(evt.type)) {
+          blocks.push({
+            type: "event",
+            role: "system",
+            content: typeof evt.message === "string" ? evt.message : typeof evt.reason === "string" ? evt.reason : "",
+            position: position++,
+            timestamp: ts,
+            parent_id: null,
+            metadata: { source_event_type: evt.type },
+          });
         }
-        // agent_reasoning, context_compacted, turn_aborted — skip
-        // user_message events only supply exact identity for their response_item mirror
+        // Mirror/delta and settings records remain provider bookkeeping.
       }
       for (let index = firstRecordBlock; index < blocks.length; index += 1) {
         blocks[index].metadata.source_record_ordinal = options.baseRecordCount + recordIndex;
@@ -670,6 +743,33 @@ export class CodexParser implements ConversationParser {
             blocks[index].metadata.provider_message_id = providerMessageId;
             blocks[index].dag_uuid = providerMessageId;
           }
+        }
+        const block = blocks[index];
+        const sourceEventType = block.metadata.source_event_type
+          ?? (block.type === "user_message" ? "user" : block.type);
+        const activityKind: ActivityKind | undefined = sourceEventType === "reasoning_summary"
+          ? "reasoning-summary"
+          : sourceEventType === "reasoning_content" ? "thinking"
+          : sourceEventType === "turn_aborted" ? "diagnostic"
+          : ["task_started", "task_complete", "context_compacted"].includes(sourceEventType) ? "status"
+          : block.type === "event" && sourceEventType !== "token_count" ? "diagnostic"
+          : undefined;
+        if (!["developer", "user_meta", "token_count"].includes(sourceEventType)) {
+          attachTranscriptChatItem(block, {
+            provider: "codex",
+            sessionId,
+            sourceEventType,
+            sourceRecordOrdinal: options.baseRecordCount + recordIndex,
+            sourceSubBlockOrdinal: index - firstRecordBlock,
+            ...(chatPartsByBlock.has(index) ? { parts: chatPartsByBlock.get(index)! } : {}),
+            ...(activityKind ? { activityKind } : {}),
+            ...(sourceEventType === "turn_aborted" ? { severity: "warning" as const, status: "aborted", executionOutcome: "cancelled" as const }
+              : sourceEventType === "task_started" ? { status: "started" }
+              : sourceEventType === "task_complete" ? { status: "complete" }
+              : sourceEventType === "context_compacted" ? { status: "compacted" }
+              : block.type === "event" ? { status: sourceEventType, severity: "warning" as const }
+              : {}),
+          });
         }
       }
     }

@@ -261,6 +261,85 @@ describe("ClaudeParser", () => {
     });
   });
 
+  it("preserves sibling identities and top-level activity in canonical Chat items", async () => {
+    const result = await new ClaudeParser().parseIncremental?.({
+      filePath: "/tmp/canonical-claude-items.jsonl",
+      raw: [
+        {
+          uuid: "assistant-record",
+          type: "assistant",
+          sessionId: "claude-canonical",
+          timestamp: "2026-09-11T00:00:00.000Z",
+          message: {
+            id: "message-1",
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "Consider the evidence", signature: "private-signature" },
+              { type: "text", text: "Visible answer" },
+              { type: "tool_use", id: "tool-1", name: "Read", input: { file: "a.ts" } },
+            ],
+          },
+        },
+        {
+          uuid: "progress-record",
+          type: "tool_progress",
+          session_id: "claude-canonical",
+          timestamp: "2026-09-11T00:00:01.000Z",
+          tool_use_id: "tool-1",
+          tool_name: "Read",
+          elapsed_time_seconds: 1.5,
+        },
+        {
+          uuid: "summary-record",
+          type: "tool_use_summary",
+          session_id: "claude-canonical",
+          timestamp: "2026-09-11T00:00:02.000Z",
+          summary: "Read the requested file",
+          preceding_tool_use_ids: ["tool-1"],
+        },
+        {
+          uuid: "information-record",
+          type: "system",
+          subtype: "informational",
+          sessionId: "claude-canonical",
+          timestamp: "2026-09-11T00:00:03.000Z",
+          content: "Provider notice",
+          level: "notice",
+        },
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n",
+      baseBlockCount: 0,
+      baseRecordCount: 10,
+      sourceHash: "claude-canonical",
+      sourceMtime: 1,
+    });
+
+    expect(result?.blocks).toHaveLength(6);
+    expect(result?.blocks.slice(0, 3).map((block) => block.metadata.chat_item?.identity)).toEqual([
+      expect.objectContaining({ native_item_id: "message-1", native_content_index: 0, source_sub_block_ordinal: 0 }),
+      expect.objectContaining({ native_item_id: "message-1", native_content_index: 1, source_sub_block_ordinal: 1 }),
+      expect.objectContaining({ native_item_id: "message-1", native_content_index: 2, native_tool_id: "tool-1", source_sub_block_ordinal: 2 }),
+    ]);
+    expect(result?.blocks[3].metadata.chat_item).toMatchObject({
+      type: "activity",
+      activity_kind: "tool-progress",
+      parts: [],
+      elapsed_ms: 1500,
+      tool_name: "Read",
+      tool_id: "tool-1",
+    });
+    expect(result?.blocks[4].metadata.chat_item).toMatchObject({
+      type: "activity",
+      activity_kind: "tool-summary",
+      parts: [{ text: "Read the requested file" }],
+      related_tool_ids: ["tool-1"],
+    });
+    expect(result?.blocks[5].metadata.chat_item).toMatchObject({
+      type: "activity",
+      activity_kind: "information",
+      parts: [{ text: "Provider notice" }],
+    });
+  });
+
   it("streams large transcripts and tolerates a truncated final row", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "mandible-claude-large-parser-"));
     tempRoots.push(root);

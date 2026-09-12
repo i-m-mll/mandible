@@ -176,6 +176,34 @@ describe("incremental tail ingestion", () => {
     ).toMatchObject({ byte_offset: fs.statSync(sessionPath).size, line_count: 4 });
   });
 
+  it("fully reindexes an unchanged source when the normalization epoch advances", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows(), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const conversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
+      .get(sessionPath) as { id: string };
+    db.prepare("UPDATE conversation_sources SET normalization_version = '1' WHERE conversation_id = ?")
+      .run(conversation.id);
+    db.prepare(`UPDATE conversation_source_versions SET normalization_version = '1'
+      WHERE source_id IN (SELECT id FROM conversation_sources WHERE conversation_id = ?)`)
+      .run(conversation.id);
+    const fullParse = vi.spyOn(CodexParser.prototype, "parse");
+
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    expect(fullParse).toHaveBeenCalledWith(sessionPath);
+    expect(db.prepare(`SELECT normalization_version FROM conversation_sources
+      WHERE conversation_id = ?`).get(conversation.id)).toEqual({ normalization_version: "2" });
+    const page = await new ConversationSourceReader(db).readPage(conversation.id, { limit: 10 });
+    expect(page.status).toBe("source");
+    if (page.status === "source") {
+      expect(JSON.parse(page.value.blocks[1].metadata_json).chat_item).toMatchObject({
+        type: "message",
+        identity: { provider: "codex", session_id: "tailtest" },
+      });
+    }
+  });
+
   it("does not read the full session file for steady-state appends", async () => {
     const sessionPath = await makeCodexSession();
     await writeWithMtime(sessionPath, `${initialCodexRows()}${assistantRow("before", 3)}`, 1);

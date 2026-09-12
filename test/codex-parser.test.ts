@@ -390,6 +390,72 @@ describe("CodexParser", () => {
     });
   });
 
+  it("normalizes ordered reasoning summaries and execution status as canonical Chat items", async () => {
+    const result = await new CodexParser().parseIncremental?.({
+      filePath: "/tmp/canonical-codex-items.jsonl",
+      raw: [
+        {
+          type: "session_meta",
+          payload: { id: "codex-canonical" },
+        },
+        {
+          type: "response_item",
+          timestamp: "2026-09-11T00:00:00.000Z",
+          payload: {
+            type: "reasoning",
+            id: "reasoning-1",
+            summary: [
+              { type: "summary_text", text: "First summary part" },
+              { type: "summary_text", text: "Second summary part" },
+            ],
+            content: [{ type: "reasoning_text", text: "Readable reasoning" }],
+            encrypted_content: "must-not-be-exposed",
+          },
+        },
+        {
+          type: "event_msg",
+          timestamp: "2026-09-11T00:00:01.000Z",
+          payload: { type: "turn_aborted", turn_id: "turn-1", reason: "Interrupted" },
+        },
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n",
+      baseBlockCount: 0,
+      baseRecordCount: 20,
+      sourceHash: "codex-canonical",
+      sourceMtime: 1,
+    });
+
+    expect(result?.blocks).toHaveLength(3);
+    expect(result?.blocks[0].metadata.chat_item).toMatchObject({
+      type: "activity",
+      activity_kind: "reasoning-summary",
+      identity: {
+        provider: "codex",
+        session_id: "codex-canonical",
+        native_item_id: "reasoning-1",
+        source_record_ordinal: 21,
+        source_sub_block_ordinal: 0,
+      },
+      parts: [
+        { type: "text", text: "First summary part", native_index: 0 },
+        { type: "text", text: "Second summary part", native_index: 1 },
+      ],
+      content_completion: "complete",
+    });
+    expect(result?.blocks[1].metadata.chat_item).toMatchObject({
+      type: "activity",
+      activity_kind: "thinking",
+      parts: [{ text: "Readable reasoning" }],
+    });
+    expect(JSON.stringify(result?.blocks)).not.toContain("must-not-be-exposed");
+    expect(result?.blocks[2].metadata.chat_item).toMatchObject({
+      type: "activity",
+      activity_kind: "diagnostic",
+      status: "aborted",
+      execution_outcome: "cancelled",
+      identity: { native_turn_id: "turn-1" },
+    });
+  });
+
   it("streams large transcripts and tolerates a truncated final row", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "mandible-codex-large-parser-"));
     tempRoots.push(root);

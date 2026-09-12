@@ -35,6 +35,8 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     },
     notes: [
       "Tool uses come from function_call/custom_tool_call response items.",
+      "Messages, plans, tools, and semantic activity expose metadata.chat_item using the shared provider-neutral contract.",
+      "Reasoning summary arrays preserve ordered provider-authored parts; readable reasoning content is separate and encrypted content is never normalized.",
       "Tool names are stored in metadata.tool_name.",
       "Function call outputs without call identity are provider transport records and remain only in the source rollout; identified but unpaired outputs remain transcript diagnostics.",
       "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
@@ -47,7 +49,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     source: "claude_code",
     display_name: "Claude Code",
     source_globs: ["~/.claude/projects/**/*.jsonl"],
-    block_types: ["user_message", "assistant_message", "thinking", "plan", "tool_use", "tool_result", "system"],
+    block_types: ["user_message", "assistant_message", "thinking", "plan", "tool_use", "tool_result", "system", "event"],
     roles: ["user", "assistant", "tool", "system"],
     tool_metadata: {
       tool_name: true,
@@ -59,6 +61,8 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     notes: [
       "Tool uses come from assistant content blocks with type tool_use.",
       "Tool results come from user content blocks with type tool_result.",
+      "Messages, tools, thinking, progress, summaries, and informational records expose metadata.chat_item using the shared provider-neutral contract.",
+      "Native content-block indexes preserve ordered siblings that share one Claude message identity.",
       "Task subagent transcripts under subagents/agent-*.jsonl are marked as sidechain conversations.",
       "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
       "Assistant usage blocks preserve message accounting but do not infer current context; authoritative occupancy comes only from Claude statusline telemetry.",
