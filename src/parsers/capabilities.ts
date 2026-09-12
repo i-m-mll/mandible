@@ -86,6 +86,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       tool_output: true,
     },
     notes: [
+      "Messages, plans, tools, and thinking expose metadata.chat_item using the shared provider-neutral contract.",
       "Tool-use support depends on Gemini logs containing toolCalls.",
       "Some Gemini logs only contain user and assistant messages.",
       "Gemini currently normalizes no system/event records; plans and thoughts remain typed assistant blocks.",

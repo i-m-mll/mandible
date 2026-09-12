@@ -119,7 +119,8 @@ import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { useIntrinsicOverflowGroup } from '../hooks/useIntrinsicOverflowGroup';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
-import { mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
+import { chatItemIdentityKey, mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
+import type { ChatItem } from '../../../src/parsers/types';
 import { useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
@@ -139,6 +140,27 @@ export type ConversationLoadFailure = {
 };
 
 const TRANSIENT_CONVERSATION_CODES = new Set(['provider_metadata_unavailable', 'freshness_pending', 'freshness_error']);
+
+function optimisticPromptItem(
+  intent: { id: string; message: string },
+  provider: ConversationSource,
+  sessionId: string,
+): ChatItem {
+  return {
+    type: 'message',
+    role: 'user',
+    identity: {
+      provider,
+      session_id: sessionId,
+      native_item_id: intent.id,
+      source_record_ordinal: 0,
+      source_sub_block_ordinal: 0,
+    },
+    provenance: { source: 'live-provider-event', provider, source_event_type: 'optimistic-user-prompt' },
+    parts: [{ type: 'text', text: intent.message }],
+    content_completion: 'complete',
+  };
+}
 
 export function conversationLoadFailure(error: unknown, transcriptLoaded: boolean): ConversationLoadFailure {
   const apiError = error instanceof ApiError ? error : null;
@@ -1465,21 +1487,8 @@ function ConversationDetail({
 
   const visibleBlocks = blocks;
   const historyEvents = useMemo(
-    () => {
-      const targetTurnId = conversation?.position_window.target.turn_id ?? null;
-      const leadingAssistantTurnId = targetTurnId
-        && visibleBlocks.length > 0
-        && visibleBlocks[0].type !== 'user_message'
-        && !visibleBlocks.some((block) => block.id === targetTurnId)
-        ? targetTurnId
-        : null;
-      return conversationBlocksToStreamEvents(
-        conversation?.session_id ?? conversationId,
-        visibleBlocks,
-        { leadingAssistantTurnId },
-      );
-    },
-    [conversation?.position_window.target.turn_id, conversation?.session_id, conversationId, visibleBlocks],
+    () => conversationBlocksToStreamEvents(conversation?.session_id ?? conversationId, visibleBlocks),
+    [conversation?.session_id, conversationId, visibleBlocks],
   );
   const chatEvents = useMemo(
     () => reconcileProviderProjection(historyEvents, liveProjection),
@@ -1687,22 +1696,27 @@ function ConversationDetail({
     permissionRunOption?.id, permissionRunOption?.currentValue]);
 
   const projectPendingIntent = useCallback((intent: { id: string; message: string }) => {
+    const provider = conversation?.source ?? creationReceipt?.request.provider;
+    const providerSessionId = conversation?.session_id
+      ?? creationReceipt?.provider_session_id
+      ?? creationReceipt?.native_session_id;
+    if (!provider || !providerSessionId) return;
+    const item = optimisticPromptItem(intent, provider, providerSessionId);
+    const identity = chatItemIdentityKey(item);
+    if (identity === null) return;
     setLiveProjection((current) => mergeProviderLiveProjection(current, {
       kind: 'provisional-content',
       conversation_id: conversationId,
-      provider_session_id: conversation?.session_id ?? '',
+      provider_session_id: providerSessionId,
       generation: control?.ownership.generation ?? creationReceipt?.attempt_count ?? 0,
       sequence: (current?.events.reduce((maximum, item) => Math.max(maximum, item.sequence), 0) ?? 0) + 1,
       observed_at: Date.now(),
-      identity: `message:${intent.id}`,
-      event: {
-        type: 'user',
-        uuid: intent.id,
-        session_id: conversation?.session_id ?? undefined,
-        message: { id: intent.id, role: 'user', content: [{ type: 'text', text: intent.message }] },
-      },
+      identity,
+      item,
     }));
-  }, [control?.ownership.generation, conversation?.session_id, conversationId, creationReceipt?.attempt_count]);
+  }, [control?.ownership.generation, conversation?.session_id, conversation?.source, conversationId,
+    creationReceipt?.attempt_count, creationReceipt?.native_session_id, creationReceipt?.provider_session_id,
+    creationReceipt?.request.provider]);
 
   const dispatchSubmitIntent = useCallback(async (intent: NonNullable<typeof submitIntent>) => {
     if (!control || submittingIntentRef.current === intent.id) return;
@@ -1729,16 +1743,25 @@ function ConversationDetail({
       const uncertain = apiError.controlError?.kind === 'delivery-uncertain';
       if (!uncertain) {
         setContinueDraft(intent.message);
-        setLiveProjection((current) => mergeProviderLiveProjection(current, {
-          kind: 'durable-reconciliation',
-          conversation_id: conversationId,
-          provider_session_id: conversation?.session_id ?? '',
-          generation: control.ownership.generation,
-          sequence: (current?.events.reduce((maximum, item) => Math.max(maximum, item.sequence), 0) ?? 0) + 1,
-          observed_at: Date.now(),
-          provider_event_id: `failed:${intent.id}`,
-          covered_identities: [`message:${intent.id}`],
-        }));
+        const provider = conversation?.source ?? creationReceipt?.request.provider;
+        const providerSessionId = conversation?.session_id
+          ?? creationReceipt?.provider_session_id
+          ?? creationReceipt?.native_session_id;
+        const optimisticIdentity = provider && providerSessionId
+          ? chatItemIdentityKey(optimisticPromptItem(intent, provider, providerSessionId))
+          : null;
+        if (providerSessionId && optimisticIdentity) {
+          setLiveProjection((current) => mergeProviderLiveProjection(current, {
+            kind: 'durable-reconciliation',
+            conversation_id: conversationId,
+            provider_session_id: providerSessionId,
+            generation: control.ownership.generation,
+            sequence: (current?.events.reduce((maximum, item) => Math.max(maximum, item.sequence), 0) ?? 0) + 1,
+            observed_at: Date.now(),
+            provider_event_id: `failed:${intent.id}`,
+            covered_identities: [optimisticIdentity],
+          }));
+        }
       }
       setSubmitIntent((current) => current?.id === intent.id
         ? { ...current, state: uncertain ? 'uncertain' : 'failed' }
@@ -1749,7 +1772,8 @@ function ConversationDetail({
       submittingIntentRef.current = null;
       setContinueBusy(false);
     }
-  }, [control, conversation?.session_id, conversationId, creationReceipt?.state]);
+  }, [control, conversation?.session_id, conversation?.source, conversationId, creationReceipt?.native_session_id,
+    creationReceipt?.provider_session_id, creationReceipt?.request.provider, creationReceipt?.state]);
 
   useEffect(() => {
     if (submitIntent?.state === 'waiting') void dispatchSubmitIntent(submitIntent);

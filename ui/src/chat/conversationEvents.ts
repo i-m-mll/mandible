@@ -1,11 +1,7 @@
 import type { ConversationBlock, ProviderLiveProjection } from '../api';
 import type { ChatItem } from '../../../src/parsers/types';
-import { classifyTranscriptBlock } from '../../../src/parsers/transcript-visibility';
-import type {
-  AssistantEvent,
-  StreamEvent,
-  ToolResultContentBlock,
-} from '../components/stream-renderer/types';
+import { chatItemIdentityKey } from '../../../src/conversation-control/provider-live';
+import type { AssistantEvent, StreamEvent } from '../components/stream-renderer/types';
 
 export function deriveStreamingState(events: StreamEvent[]): boolean {
   const last = events[events.length - 1];
@@ -54,6 +50,10 @@ export function computeLiveTail(
 }
 
 export function stableProviderEventIdentity(event: StreamEvent): string | null {
+  if (event.type === 'chat:item') {
+    const identity = chatItemIdentityKey((event as { type: 'chat:item'; item: ChatItem }).item, { allowTranscriptCoordinates: true });
+    return identity === null ? null : `chat-item:${identity}`;
+  }
   const record = event as StreamEvent & { uuid?: unknown; message?: { id?: unknown } };
   if (typeof record.message?.id === 'string' && record.message.id) return `message:${record.message.id}`;
   if (typeof record.uuid === 'string' && record.uuid) return `event:${record.uuid}`;
@@ -69,12 +69,11 @@ export function reconcileProviderProjection(
   const latest = new Map<string, Extract<ProviderLiveProjection['events'][number], { kind: 'provisional-content' }>>();
   for (const candidate of projection.events) {
     if (candidate.kind !== 'provisional-content') continue;
-    const durableProviderIdentity = candidate.correlation?.provider_message_id;
-    if (historyIds.has(candidate.identity)
-      || (durableProviderIdentity && (
-        historyIds.has(`message:${durableProviderIdentity}`)
-        || historyIds.has(`event:${durableProviderIdentity}`)
-      ))) continue;
+    const canonicalIdentity = chatItemIdentityKey(candidate.item);
+    if (canonicalIdentity === null
+      || canonicalIdentity !== candidate.identity
+      || candidate.item.provenance.source !== 'live-provider-event'
+      || historyIds.has(`chat-item:${candidate.identity}`)) continue;
     const prior = latest.get(candidate.identity);
     if (!prior
       || candidate.generation > prior.generation
@@ -84,7 +83,7 @@ export function reconcileProviderProjection(
   }
   const provisional = [...latest.values()]
     .sort((left, right) => left.generation - right.generation || left.sequence - right.sequence)
-    .map((candidate) => candidate.event as StreamEvent);
+    .map((candidate): StreamEvent => ({ type: 'chat:item', item: candidate.item }));
   return provisional.length > 0 ? [...historyEvents, ...provisional] : historyEvents;
 }
 
@@ -107,38 +106,8 @@ function canonicalChatItem(value: unknown): ChatItem | null {
 export function conversationBlocksToStreamEvents(
   providerSessionId: string,
   blocks: Pick<ConversationBlock, 'id' | 'type' | 'content' | 'metadata_json' | 'timestamp' | 'dag_uuid'>[],
-  options: { leadingAssistantTurnId?: string | null } = {},
 ): StreamEvent[] {
   const events: StreamEvent[] = [];
-  let assistantBlocks: Array<Record<string, unknown>> = [];
-  let assistantTurnStartId: string | null = options.leadingAssistantTurnId ?? null;
-  let assistantUsage: Record<string, unknown> | undefined;
-
-  const flushAssistant = () => {
-    if (assistantBlocks.length === 0) return;
-    events.push({
-      type: 'assistant',
-      uuid: assistantTurnStartId ?? undefined,
-      session_id: providerSessionId,
-      parent_tool_use_id: null,
-      message: {
-        id: assistantTurnStartId ?? undefined,
-        role: 'assistant',
-        content: assistantBlocks as Array<{ type: string; [key: string]: unknown }>,
-        usage: assistantUsage,
-      },
-    });
-    assistantBlocks = [];
-    assistantTurnStartId = null;
-    assistantUsage = undefined;
-  };
-
-  const pushAssistantBlock = (blockId: string, contentBlock: Record<string, unknown>) => {
-    if (!assistantTurnStartId) {
-      assistantTurnStartId = blockId;
-    }
-    assistantBlocks.push(contentBlock);
-  };
 
   for (const block of blocks) {
     const metadata = parseMetadata(block.metadata_json);
@@ -148,133 +117,17 @@ export function conversationBlocksToStreamEvents(
       dagUuid: block.dag_uuid ?? undefined,
     };
 
-    // Canonical normalized content is authoritative when present. A malformed
-    // canonical field fails closed instead of silently reverting to the
-    // provider-shaped compatibility projection below.
+    // Canonical normalized content is the sole transcript-to-Chat boundary.
+    // Missing or malformed items fail closed instead of being guessed from a
+    // provider-shaped block.
     if (Object.prototype.hasOwnProperty.call(metadata, 'chat_item')) {
-      flushAssistant();
       const item = canonicalChatItem(metadata.chat_item);
-      if (item) events.push({ type: 'chat:item', item, source });
-      continue;
-    }
-
-    // Temporary integration seam for live adapters that have not yet emitted
-    // `chat:item`. The live-adapter lane removes this path from the combined
-    // candidate once all live input carries the canonical contract.
-    if (block.type === 'user_message') {
-      flushAssistant();
-      const providerMessageId = typeof metadata.provider_message_id === 'string'
-        ? metadata.provider_message_id
-        : block.dag_uuid ?? block.id;
-      events.push({
-        type: 'user',
-        uuid: providerMessageId,
-        session_id: providerSessionId,
-        parent_tool_use_id: null,
-        message: {
-          id: providerMessageId,
-          role: 'user',
-          content: [{ type: 'text', text: block.content, source }],
-        },
-      });
-      continue;
-    }
-
-    if (block.type === 'assistant_message') {
-      const providerMessageId = typeof metadata.provider_message_id === 'string'
-        ? metadata.provider_message_id
-        : block.dag_uuid ?? block.id;
-      if (!assistantTurnStartId) assistantTurnStartId = providerMessageId;
-      if (!assistantUsage && metadata.token_usage && typeof metadata.token_usage === 'object') {
-        const tokenUsage = metadata.token_usage as Record<string, unknown>;
-        assistantUsage = {
-          input_tokens: tokenUsage.input ?? tokenUsage.input_tokens,
-          output_tokens: tokenUsage.output ?? tokenUsage.output_tokens,
-          cache_read_input_tokens: tokenUsage.cache_read ?? tokenUsage.cache_read_input_tokens,
-          cache_creation_input_tokens: tokenUsage.cache_creation ?? tokenUsage.cache_creation_input_tokens,
-        };
-      }
-      pushAssistantBlock(providerMessageId, { type: 'text', text: block.content, source });
-      continue;
-    }
-
-    if (block.type === 'thinking') {
-      pushAssistantBlock(block.id, { type: 'thinking', thinking: block.content, source });
-      continue;
-    }
-
-    if (block.type === 'plan') {
-      pushAssistantBlock(block.id, { type: 'plan', text: block.content, source });
-      continue;
-    }
-
-    if (block.type === 'tool_use') {
-      pushAssistantBlock(block.id, {
-        type: 'tool_use',
-        id: String(metadata.tool_id ?? `tool-${events.length}`),
-        name: String(metadata.tool_name ?? 'tool'),
-        input: (metadata.tool_input as Record<string, unknown> | undefined) ?? {},
-        source,
-      });
-      continue;
-    }
-
-    if (block.type === 'tool_result') {
-      // The request must precede its result in the event stream so the render
-      // model can pair them without reordering persisted history.
-      const continuingBlocks = [...assistantBlocks];
-      const continuingTurnId = assistantTurnStartId;
-      const continuingUsage = assistantUsage;
-      flushAssistant();
-      const toolResult: ToolResultContentBlock = {
-        type: 'tool_result',
-        tool_use_id: String(metadata.tool_id ?? ''),
-        content: block.content,
-        is_error: metadata.is_error === true || metadata.level === 'error',
-        source,
-      };
-      events.push({
-        type: 'user',
-        uuid: block.id,
-        session_id: providerSessionId,
-        parent_tool_use_id: null,
-        message: {
-          role: 'user',
-          content: [toolResult],
-        },
-      });
-      // Persisted parsers store the result between assistant blocks belonging
-      // to one logical turn. Emit the next assistant snapshot with the same id
-      // and accumulated content, matching live provider snapshot semantics.
-      assistantBlocks = continuingBlocks;
-      assistantTurnStartId = continuingTurnId;
-      assistantUsage = continuingUsage;
-      continue;
-    }
-
-    if (block.type === 'system' || block.type === 'event') {
-      if (classifyTranscriptBlock(block.type, metadata) === 'bookkeeping') {
-        continue;
-      }
-      flushAssistant();
-      events.push({
-        type: 'transcript:semantic',
-        uuid: block.id,
-        session_id: providerSessionId,
-        semantic_kind: block.type,
-        content: block.content,
-        label: typeof metadata.source_event_type === 'string'
-          ? metadata.source_event_type
-          : typeof metadata.event_type === 'string'
-            ? metadata.event_type
-            : undefined,
-        is_error: metadata.is_error === true || metadata.level === 'error',
-        source,
-      });
+      const identity = item && item.provenance.source === 'verified-provider-transcript'
+        ? chatItemIdentityKey(item, { allowTranscriptCoordinates: true })
+        : null;
+      if (item && identity) events.push({ type: 'chat:item', item, source });
     }
   }
-
-  flushAssistant();
 
   if (events.length > 0) {
     events.push({
