@@ -623,8 +623,13 @@ describe("authoritative conversation control", () => {
       correlation: { intent_id: "intent-1", delivery_id: submitted.value.delivery_id, turn_id: submitted.value.turn_id, provider_message_id: "provider-user-1" },
     };
     const assistantEvent = liveEvent(liveMessage("assistant-incomplete", "partial"), generation, 2);
+    const completeLiveOnly = liveEvent({
+      ...liveMessage("provider-complete-without-durable-id", "provider-only completion"),
+      content_completion: "complete" as const,
+    }, generation, 3);
     adapter.emitProvider(userEvent);
     adapter.emitProvider(assistantEvent);
+    adapter.emitProvider(completeLiveOnly);
     const durableUserItem = {
       ...userEvent.item,
       provenance: { source: "verified-provider-transcript", provider: "codex", source_event_type: "message" },
@@ -645,9 +650,13 @@ describe("authoritative conversation control", () => {
       ok: true,
       value: { events: [expect.objectContaining({ identity: assistantEvent.identity })] },
     });
-    expect(emitted.at(-1)).toMatchObject({ kind: "durable-reconciliation", covered_identities: [userEvent.identity] });
+    expect(emitted.at(-1)).toMatchObject({
+      kind: "durable-reconciliation",
+      covered_identities: [userEvent.identity],
+      terminal_retired_identities: [completeLiveOnly.identity],
+    });
     expect(diagnostics).toEqual([expect.objectContaining({
-      ingest_status: "ingested:fresh", retired_live_count: 1, retained_live_count: 1,
+      ingest_status: "ingested:fresh", retired_live_count: 2, retained_live_count: 1,
     })]);
     expect(JSON.stringify(diagnostics)).not.toContain("hello");
   });

@@ -664,7 +664,15 @@ export class ConversationControlService {
           && event.correlation.delivery_id === delivery.id);
         return exactTurnCoverage ? [event.identity] : [];
       });
-      if (coveredIdentities.length > 0) {
+      const terminalRetiredIdentities = status.endsWith(":fresh")
+        ? current.events.flatMap((event) => event.kind === "provisional-content"
+          && event.item.content_completion === "complete"
+          && !coveredIdentities.includes(event.identity)
+          ? [event.identity]
+          : [])
+        : [];
+      const retiredIdentities = new Set([...coveredIdentities, ...terminalRetiredIdentities]);
+      if (retiredIdentities.size > 0) {
         const sequence = current.events.reduce((maximum, event) => Math.max(maximum, event.sequence), 0) + 1;
         const event: ProviderAdapterEvent = {
           kind: "durable-reconciliation",
@@ -675,9 +683,13 @@ export class ConversationControlService {
           observed_at: Date.now(),
           provider_event_id: `turn:${turnId}`,
           covered_identities: [...new Set(coveredIdentities)],
+          ...(terminalRetiredIdentities.length > 0
+            ? { terminal_retired_identities: [...new Set(terminalRetiredIdentities)] }
+            : {}),
         };
         if (this.projectProviderEvent(event)) this.onProviderEvent?.(event);
       }
+      coveredIdentities = [...retiredIdentities];
     } catch {
       status = `${status}:projection_error`;
     }

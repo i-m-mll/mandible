@@ -199,7 +199,14 @@ export type ProviderDurableReconciliationEvent = {
   sequence: number;
   observed_at: number;
   provider_event_id: string;
+  /** Live identities proven to have exact durable Chat-item counterparts. */
   covered_identities: string[];
+  /**
+   * Provider-complete live items whose transient lifetime ends after a fresh
+   * terminal transcript is established, even when the provider exposes no
+   * cross-surface identity that could prove durable equivalence.
+   */
+  terminal_retired_identities?: string[];
 };
 
 export type ProviderLineageEvent = {

@@ -70,7 +70,10 @@ export function mergeProviderLiveProjection(
     };
   }
   if (event.kind === "durable-reconciliation") {
-    const covered = new Set(event.covered_identities);
+    const covered = new Set([
+      ...event.covered_identities,
+      ...(event.terminal_retired_identities ?? []),
+    ]);
     const events = generationBase.events.filter((candidate) => candidate.kind !== "provisional-content" || !covered.has(candidate.identity));
     return events.length === generationBase.events.length && !generationChanged ? generationBase : {
       conversation_id: event.conversation_id,
