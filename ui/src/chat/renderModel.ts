@@ -373,12 +373,20 @@ export function groupMessagesForDisplay(nodes: RenderNode[]): DisplayGroup[] {
 
 export type ActivityDisplayEntry =
   | { kind: 'node'; node: RenderNode }
-  | { kind: 'activity-group'; key: string; activityKind: ActivityItem['activity_kind']; nodes: Array<Extract<RenderNode, { kind: 'activity' }>> };
+  | { kind: 'activity-group'; key: string; nodes: Array<Extract<RenderNode, { kind: 'activity' }>> };
 
 function knownTurnBoundary(left: ActivityItem, right: ActivityItem): boolean {
   const leftTurn = left.identity.native_turn_id;
   const rightTurn = right.identity.native_turn_id;
   return Boolean(leftTurn && rightTurn && leftTurn !== rightTurn);
+}
+
+function sameActivityBoundary(left: ActivityItem, right: ActivityItem): boolean {
+  return left.identity.provider === right.identity.provider
+    && left.identity.session_id === right.identity.session_id
+    && left.role === right.role
+    && left.activity_kind === right.activity_kind
+    && !knownTurnBoundary(left, right);
 }
 
 /** Groups only maximal same-kind activity runs; every other item is a boundary. */
@@ -398,14 +406,12 @@ export function groupActivityItemsForDisplay(nodes: RenderNode[]): ActivityDispl
       const previous = nodes[end - 1];
       if (next.kind !== 'activity'
         || previous.kind !== 'activity'
-        || next.entity !== node.entity
-        || next.item.activity_kind !== node.item.activity_kind
-        || knownTurnBoundary(previous.item, next.item)) break;
+        || !sameActivityBoundary(previous.item, next.item)) break;
       end += 1;
     }
     const run = nodes.slice(index, end) as Array<Extract<RenderNode, { kind: 'activity' }>>;
     if (run.length < 2) entries.push({ kind: 'node', node });
-    else entries.push({ kind: 'activity-group', key: `activity-group:${node.key}`, activityKind: node.item.activity_kind, nodes: run });
+    else entries.push({ kind: 'activity-group', key: `activity:${node.key}`, nodes: run });
     index = end;
   }
   return entries;

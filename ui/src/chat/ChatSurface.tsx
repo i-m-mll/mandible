@@ -535,9 +535,14 @@ export function ChatSurface({
 
       case 'activity': {
         const source = node.source;
+        const disclosureKey = `activity:${node.key}`;
         return (
           <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
-            <ActivityRow item={node.item} />
+            <ActivityRow
+              item={node.item}
+              expanded={expandedBlocks[disclosureKey] ?? false}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+            />
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
@@ -612,15 +617,17 @@ export function ChatSurface({
         {groupActivityItemsForDisplay(group.nodes).map((entry) => {
           if (entry.kind === 'node') return renderNodeBody(entry.node);
           return (
-            <ActivityGroup
+            <div
               key={entry.key}
-              activityKind={entry.activityKind}
-              items={entry.nodes.map((node) => node.item)}
-              expanded={expandedBlocks[entry.key] ?? false}
-              onExpandedChange={(next) => setBlockExpanded(entry.key, next)}
+              className="message-block-wrapper"
+              data-member-refs={entry.nodes.map((node) => node.source?.blockId ?? node.key).join(' ')}
             >
-              {entry.nodes.map(renderNodeBody)}
-            </ActivityGroup>
+              <ActivityGroup
+                items={entry.nodes.map((node) => node.item)}
+                expanded={expandedBlocks[entry.key] ?? false}
+                onExpandedChange={(next) => setBlockExpanded(entry.key, next)}
+              />
+            </div>
           );
         })}
       </TurnGroup>

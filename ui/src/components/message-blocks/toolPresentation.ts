@@ -129,8 +129,8 @@ export function summarizeToolRun(
   return summary.charAt(0).toUpperCase() + summary.slice(1);
 }
 
-export function toolRunIcons(
+export function toolRunIcon(
   tools: ReadonlyArray<{ name: string; input: Record<string, unknown> | string }>,
-): string[] {
-  return Array.from(new Set(tools.map((tool) => DEFINITIONS[classifyTool(tool.name)].icon)));
+): string {
+  return DEFINITIONS[classifyTool(tools[0]?.name ?? '')].icon;
 }

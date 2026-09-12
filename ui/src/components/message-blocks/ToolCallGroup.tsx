@@ -1,28 +1,25 @@
 import type { ComponentChildren } from 'preact';
-import { ChatDisclosure } from '../shared/ChatDisclosure';
+import { CompactActivityRow } from '../shared/ChatDisclosure';
 import { ToolActivityIcon } from './ToolActivityIcon';
 
-export function ToolCallGroup({ summary, icons, expanded, onExpandedChange, children }: {
+export function ToolCallGroup({ summary, icon, expanded, onExpandedChange, children }: {
   summary: string;
-  icons: readonly string[];
+  icon: string;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
   children: ComponentChildren;
 }): JSX.Element {
   return (
-    <ChatDisclosure
+    <CompactActivityRow
       className="tool-call-group"
+      icon={<ToolActivityIcon icon={icon} />}
       summary={summary}
-      regionLabel={`${summary} details`}
-      expanded={expanded}
-      onExpandedChange={onExpandedChange}
-      leading={(
-        <span className="tool-call-group__icons">
-          {icons.map((icon) => <ToolActivityIcon key={icon} icon={icon} className="tool-call-group__icon" />)}
-        </span>
-      )}
-    >
-      <div className="tool-call-group__body">{children}</div>
-    </ChatDisclosure>
+      disclosure={{
+        content: <div className="tool-call-group__body">{children}</div>,
+        regionLabel: `${summary} details`,
+        expanded,
+        onExpandedChange,
+      }}
+    />
   );
 }

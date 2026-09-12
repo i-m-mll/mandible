@@ -1,10 +1,10 @@
-import type { ActivityItem, ActivityKind } from '../../../../src/parsers/types';
-import type { ComponentChildren } from 'preact';
-import { ChatDisclosure } from '../shared/ChatDisclosure';
+import type { ActivityItem, ActivityKind, ConversationSource } from '../../../../src/parsers/types';
+import { CompactActivityRow } from '../shared/ChatDisclosure';
+import { OfficialProviderMark } from '../shared/OfficialProviderMark';
 import { InfoIcon, IssuesIcon, MonitorIcon, TerminalIcon } from '../icons/TabIcons';
 
 const ACTIVITY_LABELS: Record<ActivityKind, string> = {
-  'reasoning-summary': 'Reasoning summary', thinking: 'Thinking',
+  'reasoning-summary': 'Reasoning', thinking: 'Thinking',
   'tool-progress': 'Tool progress', 'tool-summary': 'Tool summary',
   status: 'Status', information: 'Information', diagnostic: 'Diagnostic',
 };
@@ -37,73 +37,149 @@ function stripPairedMarker(value: string, marker: '**' | '__'): string {
   return output;
 }
 
-/** Remove balanced emphasis delimiters from inert compact-header text. */
 export function plainActivityHeader(value: string): string {
   return stripPairedMarker(stripPairedMarker(value, '**'), '__');
 }
 
-function itemText(item: ActivityItem): string {
-  return plainActivityHeader(item.parts.map((part) => part.text).join('\n'));
+export function plainActivityParts(item: ActivityItem): string[] {
+  return item.parts
+    .map((part) => plainActivityHeader(part.text).trim())
+    .filter(Boolean);
 }
 
-function itemState(item: ActivityItem): string[] {
-  const state: string[] = [];
-  if (item.severity && item.severity !== 'info') state.push(item.severity);
-  if (item.execution_outcome && item.execution_outcome !== 'unknown') state.push(item.execution_outcome);
-  if (item.status) state.push(item.status);
-  return state;
+function activityState(item: ActivityItem): string[] {
+  return [
+    item.severity && item.severity !== 'info' ? item.severity : undefined,
+    item.execution_outcome && item.execution_outcome !== 'unknown' ? item.execution_outcome : undefined,
+    item.status,
+  ].filter((value): value is string => Boolean(value));
 }
 
-function ActivityKindIcon({ kind }: { kind: ActivityKind }): JSX.Element {
-  if (kind === 'tool-progress' || kind === 'tool-summary') return <TerminalIcon />;
-  if (kind === 'information') return <InfoIcon />;
-  if (kind === 'diagnostic') return <IssuesIcon />;
+function activityDetails(item: ActivityItem, parts: readonly string[]): string[] {
+  const details = [...parts.slice(1)];
+  if (item.tool_name) details.push(`Tool: ${item.tool_name}`);
+  if (item.elapsed_ms !== undefined) details.push(`${item.elapsed_ms.toLocaleString()} ms`);
+  return details;
+}
+
+function activityItemSignature(item: ActivityItem): string {
+  return JSON.stringify({
+    provider: item.identity.provider,
+    session: item.identity.session_id,
+    speaker: item.role,
+    kind: item.activity_kind,
+    turn: item.identity.native_turn_id ?? null,
+    parts: plainActivityParts(item),
+    severity: item.severity ?? null,
+    outcome: item.execution_outcome ?? null,
+    status: item.status ?? null,
+    elapsed: item.elapsed_ms ?? null,
+    toolName: item.tool_name ?? null,
+    toolId: item.tool_id ?? null,
+    relatedToolIds: item.related_tool_ids ?? [],
+  });
+}
+
+export type ActivityPresentation = {
+  summary: string;
+  details: string[];
+  members: ActivityItem[];
+};
+
+/** Fold adjacent exact-visible duplicates without changing canonical membership. */
+export function presentActivityItems(items: readonly ActivityItem[]): ActivityPresentation[] {
+  const presentations: ActivityPresentation[] = [];
+  let previousSignature: string | undefined;
+  for (const item of items) {
+    const signature = activityItemSignature(item);
+    if (signature === previousSignature) {
+      presentations[presentations.length - 1].members.push(item);
+      continue;
+    }
+    const parts = plainActivityParts(item);
+    const state = activityState(item);
+    const base = parts[0] ?? ACTIVITY_LABELS[item.activity_kind];
+    presentations.push({
+      summary: [...new Set([base, ...state])].join(' · '),
+      details: activityDetails(item, parts),
+      members: [item],
+    });
+    previousSignature = signature;
+  }
+  return presentations;
+}
+
+function providerMark(provider: ConversationSource): JSX.Element | null {
+  if (provider === 'codex') return <OfficialProviderMark kind="openai" />;
+  if (provider === 'claude_code') return <OfficialProviderMark kind="anthropic" />;
+  return null;
+}
+
+function ActivityIcon({ item }: { item: ActivityItem }): JSX.Element {
+  if (item.activity_kind === 'reasoning-summary' || item.activity_kind === 'thinking') {
+    return providerMark(item.identity.provider) ?? <MonitorIcon />;
+  }
+  if (item.activity_kind === 'tool-progress' || item.activity_kind === 'tool-summary') return <TerminalIcon />;
+  if (item.activity_kind === 'information') return <InfoIcon />;
+  if (item.activity_kind === 'diagnostic') return <IssuesIcon />;
   return <MonitorIcon />;
 }
 
-export function ActivityRow({ item }: { item: ActivityItem }): JSX.Element {
-  const state = itemState(item);
-  const text = itemText(item);
+function activityDetailLines(presentations: readonly ActivityPresentation[]): string[] {
+  return presentations.flatMap((presentation, index) => (
+    index === 0 ? presentation.details : [presentation.summary, ...presentation.details]
+  ));
+}
+
+function ActivityDetails({ lines }: { lines: readonly string[] }): JSX.Element {
+  return <div className="activity-details">{lines.map((line, index) => <div key={index} className="activity-details__part">{line}</div>)}</div>;
+}
+
+export function ActivityRow({ item, expanded, onExpandedChange }: {
+  item: ActivityItem;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
+}): JSX.Element {
+  const presentation = presentActivityItems([item])[0];
+  const lines = activityDetailLines([presentation]);
+  const disclosure = lines.length > 0
+    ? {
+        content: <ActivityDetails lines={lines} />,
+        regionLabel: `${presentation.summary} details`,
+        expanded,
+        onExpandedChange,
+      }
+    : undefined;
   return (
-    <div className={`activity-row${item.severity ? ` activity-row--${item.severity}` : ''}`}>
-      <span className="activity-row__icon" aria-hidden="true"><ActivityKindIcon kind={item.activity_kind} /></span>
-      <span className="activity-row__label">{ACTIVITY_LABELS[item.activity_kind]}</span>
-      {text ? <span className="activity-row__text">{text}</span> : null}
-      {state.length > 0 ? <span className="activity-row__state">{state.join(' · ')}</span> : null}
-      {item.elapsed_ms !== undefined ? <span className="activity-row__elapsed">{item.elapsed_ms.toLocaleString()} ms</span> : null}
-    </div>
+    <CompactActivityRow
+      className={`activity-block${item.severity ? ` activity-block--${item.severity}` : ''}`}
+      icon={<ActivityIcon item={item} />}
+      summary={presentation.summary}
+      disclosure={disclosure}
+    />
   );
 }
 
-export function ActivityGroup({ activityKind, items, expanded, onExpandedChange, children }: {
-  activityKind: ActivityKind;
+export function ActivityGroup({ items, expanded, onExpandedChange }: {
   items: readonly ActivityItem[];
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
-  children?: ComponentChildren;
 }): JSX.Element {
-  const important = items.flatMap(itemState);
-  const warningCount = items.filter((item) => item.severity === 'warning').length;
-  const failureCount = items.filter((item) => item.severity === 'error' || item.execution_outcome === 'failed').length;
-  const stateSummary = [
-    failureCount > 0 ? 'failed' : '',
-    warningCount > 0 ? 'warning' : '',
-    ...new Set(important.filter((value) => !['warning', 'error', 'failed'].includes(value))),
-  ].filter(Boolean).join(' · ');
-  const label = ACTIVITY_LABELS[activityKind];
+  const presentations = presentActivityItems(items);
+  const state = [...new Set(items.flatMap(activityState))];
+  const summary = [...new Set([...presentations[0].summary.split(' · '), ...state])].join(' · ');
+  const lines = activityDetailLines(presentations);
   return (
-    <ChatDisclosure
+    <CompactActivityRow
       className="activity-group"
-      summary={label}
-      regionLabel={`${label} activity details`}
-      expanded={expanded}
-      onExpandedChange={onExpandedChange}
-      leading={<span className="activity-row__icon"><ActivityKindIcon kind={activityKind} /></span>}
-      trailing={stateSummary || undefined}
-    >
-      <div className="activity-group__body">
-        {children ?? items.map((item) => <ActivityRow key={`${item.identity.provider}:${item.identity.session_id}:${item.identity.native_item_id ?? item.identity.source_record_ordinal}:${item.identity.source_sub_block_ordinal}`} item={item} />)}
-      </div>
-    </ChatDisclosure>
+      icon={<ActivityIcon item={items[0]} />}
+      summary={summary}
+      disclosure={lines.length > 0 ? {
+        content: <ActivityDetails lines={lines} />,
+        regionLabel: `${summary} details`,
+        expanded,
+        onExpandedChange,
+      } : undefined}
+    />
   );
 }

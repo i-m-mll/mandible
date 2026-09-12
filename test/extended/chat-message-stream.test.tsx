@@ -12,7 +12,7 @@ import {
   serializeConversationToMarkdown,
 } from '../../ui/src/chat';
 import { ChatSurface, shouldShowJumpToLatest } from '../../ui/src/chat/ChatSurface';
-import { plainActivityHeader } from '../../ui/src/components/message-blocks/ActivityBlock';
+import { plainActivityHeader, presentActivityItems } from '../../ui/src/components/message-blocks/ActivityBlock';
 import { MessageActions } from '../../ui/src/components/shared/MessageActions';
 import { TextBlock } from '../../ui/src/components/message-blocks/TextBlock';
 import type { StreamEvent, ToolResultContentBlock } from '../../ui/src/components/stream-renderer/types';
@@ -226,6 +226,45 @@ describe('chat message stream render model', () => {
     ]);
   });
 
+  it('preserves distinct reasoning identities while folding exact-adjacent visible duplicates', () => {
+    const reasoning = (ordinal: number, nativeId: string): ActivityItem => {
+      const item = canonicalItem<ActivityItem>({
+        type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary', ordinal, turn: 't1',
+        parts: [
+          { type: 'text', text: 'Reviewing item identity handling', native_index: 0 },
+          { type: 'text', text: 'Refining missing identity error handling', native_index: 1 },
+        ],
+      });
+      item.identity.native_item_id = nativeId;
+      return item;
+    };
+    const items = [reasoning(644, 'reasoning-one'), reasoning(646, 'reasoning-two')];
+    const nodes = buildStreamState(items.map((item, index) => canonicalEvent(item, `reasoning-${index}`))).nodes;
+    expect(nodes.map((node) => node.key)).toEqual([
+      'codex:canonical-session:reasoning-one:item',
+      'codex:canonical-session:reasoning-two:item',
+    ]);
+    const entry = groupActivityItemsForDisplay(nodes)[0];
+    expect(entry).toMatchObject({ kind: 'activity-group', key: 'activity:codex:canonical-session:reasoning-one:item' });
+    const presentations = presentActivityItems(items);
+    expect(presentations).toHaveLength(1);
+    expect(presentations[0]).toMatchObject({
+      summary: 'Reviewing item identity handling',
+      details: ['Refining missing identity error handling'],
+    });
+    expect(presentations[0].members.map((item) => item.identity.native_item_id)).toEqual(['reasoning-one', 'reasoning-two']);
+
+    const changed = reasoning(647, 'reasoning-three');
+    changed.parts[1].text = 'Different detail';
+    expect(presentActivityItems([items[0], changed])).toHaveLength(2);
+    changed.parts[1].text = items[0].parts[1].text;
+    changed.severity = 'warning';
+    expect(presentActivityItems([items[0], changed])).toHaveLength(2);
+    changed.severity = undefined;
+    changed.identity.session_id = 'different-session';
+    expect(presentActivityItems([items[0], changed])).toHaveLength(2);
+  });
+
   it('hides only empty routine Codex start and completion status', () => {
     const status = (
       ordinal: number,
@@ -279,26 +318,26 @@ describe('ChatSurface stream behavior', () => {
       canonicalEvent(activity(1, 'check one', 'warning'), 'a1'),
       canonicalEvent(activity(2, 'check two', 'error'), 'a2'),
     ]} streaming={false} sessionInfo={{ sessionId: 'activity-run' }} />);
-    const summary = screen.getByRole('button', { name: /Diagnostic.*failed.*warning.*action required/i });
-    expect(summary.textContent).not.toMatch(/Diagnostic\s*[· ]\s*2/);
-    expect(summary.querySelector('.activity-row__icon svg')).toBeTruthy();
+    const summary = screen.getByRole('button', { name: /check one.*warning.*action required.*error.*failed/i });
+    expect(summary.textContent).not.toContain('Diagnostic');
+    expect(summary.querySelector('.compact-activity__icon svg')).toBeTruthy();
+    expect(summary.lastElementChild?.classList.contains('compact-activity__chevron')).toBe(true);
     expect(summary.getAttribute('aria-expanded')).toBe('false');
     const controlledRegion = summary.getAttribute('aria-controls');
     expect(controlledRegion).toBeTruthy();
-    expect(screen.queryByText('check one')).toBeNull();
+    expect(screen.queryByText('check two')).toBeNull();
     fireEvent.click(summary);
     expect(document.getElementById(controlledRegion!)?.getAttribute('role')).toBe('region');
-    expect(screen.getByText('check one')).toBeTruthy();
-    expect(document.querySelector('[data-block-id="a1"]')).toBeTruthy();
-    expect(document.querySelector('[data-block-id="a2"]')).toBeTruthy();
+    expect(screen.getByText(/check two/)).toBeTruthy();
+    expect(document.querySelector('[data-member-refs="a1 a2"]')).toBeTruthy();
 
     rerender(<ChatSurface events={[
       canonicalEvent(activity(1, 'check one', 'warning'), 'a1'),
       canonicalEvent(activity(2, 'check two', 'error'), 'a2'),
       canonicalEvent(activity(3, 'check three'), 'a3'),
     ]} streaming={false} sessionInfo={{ sessionId: 'activity-run' }} />);
-    expect(screen.getByRole('button', { name: /Diagnostic.*failed/ }).getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByText('check three')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /check one.*failed/ }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText(/check three/)).toBeTruthy();
   });
 
   it('renders provider formatting as inert plain activity text with a shared icon slot', () => {
@@ -310,10 +349,41 @@ describe('ChatSurface stream behavior', () => {
     expect(screen.getByText('Checked the typed status payload')).toBeTruthy();
     expect(view.container.textContent).not.toContain('**');
     expect(view.container.textContent).not.toContain('__');
-    expect(view.container.querySelector('.activity-row__icon svg')).toBeTruthy();
+    expect(view.container.querySelector('.compact-activity__icon svg')).toBeTruthy();
     expect(view.container.querySelector('strong')).toBeNull();
     expect(plainActivityHeader('**Header**\nMore **provider-authored words**')).toBe('Header\nMore provider-authored words');
     expect(plainActivityHeader('value__name__suffix and 2 ** 3')).toBe('value__name__suffix and 2 ** 3');
+  });
+
+  it('keeps activity expansion stable from a live singleton into a durable folded group', () => {
+    const reasoning = (ordinal: number, nativeId: string): ActivityItem => {
+      const item = canonicalItem<ActivityItem>({
+        type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary', ordinal, turn: 'turn-reasoning',
+        parts: [
+          { type: 'text', text: 'Reviewing item identity handling' },
+          { type: 'text', text: 'Refining missing identity error handling' },
+        ],
+      });
+      item.identity.native_item_id = nativeId;
+      return item;
+    };
+    const first = reasoning(0, 'reasoning-one');
+    const view = render(<ChatSurface
+      events={[canonicalEvent(first, 'live-one')]}
+      streaming
+      sessionInfo={{ sessionId: 'reasoning-growth' }}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: 'Reviewing item identity handling' }));
+    expect(screen.getByText('Refining missing identity error handling')).toBeTruthy();
+
+    view.rerender(<ChatSurface
+      events={[canonicalEvent(first, 'durable-one'), canonicalEvent(reasoning(1, 'reasoning-two'), 'durable-two')]}
+      streaming={false}
+      sessionInfo={{ sessionId: 'reasoning-growth' }}
+    />);
+    expect(screen.getByRole('button', { name: 'Reviewing item identity handling' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByText('Refining missing identity error handling')).toHaveLength(1);
+    expect(view.container.querySelector('[data-member-refs="durable-one durable-two"]')).toBeTruthy();
   });
 
   it('uses a distance-plus-viewport threshold distinct from the follow threshold', () => {
@@ -711,7 +781,8 @@ describe('ChatSurface stream behavior', () => {
     rerender(
       <ChatSurface events={[thinking, result()]} streaming={false} sessionInfo={{ sessionId: 'thinking' }} />,
     );
-    expect(screen.queryByText('Need to inspect state')).toBeNull();
+    expect(screen.getByText('Need to inspect state')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Need to inspect state' })).toBeNull();
   });
 
   it('keeps oversized tool output inside the expanded tool card scroll region', () => {
@@ -793,9 +864,9 @@ describe('ChatSurface stream behavior', () => {
     );
 
     expect(screen.getByText('System notice')).toBeTruthy();
-    expect(screen.getByText('Stream failed')).toBeTruthy();
+    expect(screen.getByText(/Stream failed · error · failed/)).toBeTruthy();
     expect(screen.getByText('Unmatched tool error')).toBeTruthy();
-    expect(screen.getByText('Diagnostic')).toBeTruthy();
+    expect(screen.queryByText('Diagnostic')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Read a file/ }));
     expect(document.querySelector('[data-block-id="tr-paired"]')).toBeTruthy();
     expect(screen.queryByText(/2026/)).toBeNull();
