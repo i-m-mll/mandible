@@ -66,6 +66,47 @@ describe('canonical detail pane header', () => {
     },
   );
 
+  it.each(['standard', 'versioned', 'compact'] as const)(
+    'keeps %s identity and actions but omits the app-sidebar slot in sidebar presentation',
+    (variant) => {
+      const descriptor: AppRightSidebarDescriptor = {
+        id: 'test-preview',
+        kind: 'panel',
+        title: 'Preview',
+        ariaLabel: 'Preview',
+        content: null,
+        open: false,
+        width: 360,
+        onOpenChange: () => undefined,
+        onWidthChange: () => undefined,
+      };
+      render(
+        <AppShellProvider value={{
+          active: true,
+          rightSidebar: descriptor,
+          registerRightSidebar: () => () => undefined,
+          updateRightSidebar: () => undefined,
+          setRightSidebarOpen: () => undefined,
+          setViewSidebarWidth: () => undefined,
+        }}>
+          <DetailPaneHeader
+            presentation="sidebar"
+            variant={variant}
+            identity={{ entityLabel: 'Issue', displayRef: '4fb8d9b', canonicalRef: 'mandible/4fb8d9b' }}
+            title="Responsive Chat detail"
+            actions={<button type="button">Meaningful action</button>}
+          />
+        </AppShellProvider>,
+      );
+      const header = document.querySelector('.detail-pane-header')!;
+      expect(header.getAttribute('data-detail-pane-presentation')).toBe('sidebar');
+      expect(within(header as HTMLElement).getByText('4fb8d9b')).toBeTruthy();
+      expect(within(header as HTMLElement).getByRole('button', { name: 'Meaningful action' })).toBeTruthy();
+      expect(within(header as HTMLElement).queryByRole('button', { name: 'Show Preview' })).toBeNull();
+      expect(header.querySelector('.detail-pane-header__right-sidebar-action-slot')).toBeNull();
+    },
+  );
+
   it('labels creation first and attributes only actors supplied for each event', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-02T16:00:00Z'));

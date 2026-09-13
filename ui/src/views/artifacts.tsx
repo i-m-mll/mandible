@@ -66,7 +66,7 @@ import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpa
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
-import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
 import { artifactLinkBadgeLabel } from '../lib/format';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -864,6 +864,7 @@ function sortArtifactSeries(
 }
 
 export type ArtifactDetailProps = {
+  presentation?: DetailPanePresentation;
   artifact: ArtifactRecord;
   detailError?: string | null;
   resolution: ArtifactResolveResult | null;
@@ -886,6 +887,7 @@ export type ArtifactDetailProps = {
 };
 
 export function ArtifactDetail({
+  presentation = 'main',
   artifact,
   detailError = null,
   resolution,
@@ -1341,6 +1343,7 @@ export function ArtifactDetail({
 
   return (
     <DetailPaneShell
+      presentation={presentation}
       className="artifact-detail"
       headerClassName="artifact-detail__header"
       bodyClassName={`artifact-detail__pane${metadataOpen ? ' artifact-detail__pane--metadata-open' : ''}`}
@@ -1348,6 +1351,7 @@ export function ArtifactDetail({
       ariaBusy={contentLoading}
       header={(
         <DetailPaneHeader
+          presentation={presentation}
           variant="versioned"
           identity={{
             displayRef: headerShortId,

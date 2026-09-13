@@ -9,17 +9,58 @@ type AppRightSidebarCommon = {
   width: number;
   minWidth?: number;
   maxWidth?: number;
+  /** Smallest width at which the owning main view remains usable beside the panel. */
+  mainMinWidth?: number;
   /** The owning view renders the closed-state toggle in its canonical header. */
   togglePlacement?: 'app-overlay' | 'detail-header';
   onOpenChange(open: boolean): void;
   onWidthChange(width: number): void;
 };
 
+export type AppRightSidebarPresentation = 'dock' | 'overlay-drawer';
+
+export type AppRightSidebarLayout = {
+  presentation: AppRightSidebarPresentation;
+  effectiveWidth: number;
+  minWidth: number;
+  maxWidth: number;
+};
+
+export const APP_RIGHT_SIDEBAR_DEFAULT_MIN_WIDTH = 300;
+export const APP_RIGHT_SIDEBAR_DEFAULT_MAX_WIDTH = 720;
+export const CHAT_DETAIL_PREVIEW_MIN_WIDTH = 360;
+export const CHAT_MAIN_MIN_WIDTH = 560;
+
+type HorizontalRect = Pick<DOMRect, 'left' | 'right'>;
+
+export function appRightSidebarAvailableWidths(
+  layout: HorizontalRect,
+  content: HorizontalRect,
+  viewSidebar: HorizontalRect | null,
+  viewSidebarEndMargin = 0,
+): { mainAndSidebarWidth: number; drawerWidth: number } {
+  const detailStart = viewSidebar
+    ? Math.max(content.left, viewSidebar.right + Math.max(0, viewSidebarEndMargin))
+    : content.left;
+  return {
+    mainAndSidebarWidth: Math.max(0, Math.floor(layout.right - detailStart)),
+    drawerWidth: Math.max(0, Math.floor(layout.right - content.left)),
+  };
+}
+
 export type AppRightSidebarDescriptor = AppRightSidebarCommon & (
   | { kind: 'panel'; title: string; icon?: ComponentChildren; content: ComponentChildren }
   | {
       kind: 'tabs';
-      tabs: readonly { id: string; label: string; tooltip: string; icon: ComponentChildren; content: ComponentChildren }[];
+      tabs: readonly {
+        id: string;
+        label: string;
+        tooltip: string;
+        icon: ComponentChildren;
+        content: ComponentChildren;
+        /** Detail content owns vertical scrolling; tabs and nested header remain anchored. */
+        scrollOwner?: 'sidebar' | 'detail';
+      }[];
       activeTab: string;
       onActiveTabChange(tab: string): void;
     }
@@ -88,9 +129,37 @@ export function appRightSidebarWidthBounds(
   maxWidth: number | undefined,
   viewportWidth: number,
 ): { min: number; max: number } {
-  const min = minWidth ?? 280;
-  const configuredMax = maxWidth ?? 720;
+  const min = minWidth ?? APP_RIGHT_SIDEBAR_DEFAULT_MIN_WIDTH;
+  const configuredMax = maxWidth ?? APP_RIGHT_SIDEBAR_DEFAULT_MAX_WIDTH;
   return { min, max: Math.max(min, Math.min(configuredMax, Math.floor(viewportWidth * 0.6))) };
+}
+
+export function resolveAppRightSidebarLayout(
+  descriptor: Pick<AppRightSidebarCommon, 'width' | 'minWidth' | 'maxWidth' | 'mainMinWidth'>,
+  mainAndSidebarWidth: number,
+  drawerWidth: number = mainAndSidebarWidth,
+): AppRightSidebarLayout {
+  const available = Math.max(0, Math.floor(mainAndSidebarWidth));
+  const drawerAvailable = Math.max(0, Math.floor(drawerWidth));
+  const bounds = appRightSidebarWidthBounds(descriptor.minWidth, descriptor.maxWidth, available);
+  const mainMinWidth = descriptor.mainMinWidth ?? 480;
+  const dockMax = Math.min(bounds.max, Math.max(0, available - mainMinWidth));
+  if (dockMax >= bounds.min) {
+    return {
+      presentation: 'dock',
+      effectiveWidth: Math.max(bounds.min, Math.min(dockMax, descriptor.width)),
+      minWidth: bounds.min,
+      maxWidth: dockMax,
+    };
+  }
+  const drawerMax = Math.min(descriptor.maxWidth ?? APP_RIGHT_SIDEBAR_DEFAULT_MAX_WIDTH, drawerAvailable);
+  const drawerMin = Math.min(bounds.min, drawerMax);
+  return {
+    presentation: 'overlay-drawer',
+    effectiveWidth: Math.max(drawerMin, Math.min(drawerMax, descriptor.width)),
+    minWidth: drawerMin,
+    maxWidth: drawerMax,
+  };
 }
 
 export function AppRightSidebarToggleButton({
@@ -127,19 +196,26 @@ export function AppRightSidebarSurface({
   descriptor,
   toggleRef,
   onOpenChange,
+  layout,
+  open = true,
 }: {
   descriptor: AppRightSidebarDescriptor;
   toggleRef?: Ref<HTMLButtonElement>;
   onOpenChange(open: boolean): void;
+  layout?: AppRightSidebarLayout;
+  open?: boolean;
 }): JSX.Element {
   const resizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   const viewportWidth = typeof window === 'undefined' ? 1280 : window.innerWidth;
-  const bounds = appRightSidebarWidthBounds(descriptor.minWidth, descriptor.maxWidth, viewportWidth);
+  const resolvedLayout = layout ?? resolveAppRightSidebarLayout(descriptor, viewportWidth);
+  const bounds = { min: resolvedLayout.minWidth, max: resolvedLayout.maxWidth };
+  const detailOwnsScroll = descriptor.kind === 'tabs'
+    && descriptor.tabs.find((tab) => tab.id === descriptor.activeTab)?.scrollOwner === 'detail';
   const startResize = useCallback((event: JSX.TargetedPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
-    resizeRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: descriptor.width };
+    resizeRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: resolvedLayout.effectiveWidth };
     event.currentTarget.setPointerCapture(event.pointerId);
-  }, [descriptor.width]);
+  }, [resolvedLayout.effectiveWidth]);
   const moveResize = useCallback((event: JSX.TargetedPointerEvent<HTMLDivElement>) => {
     const drag = resizeRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
@@ -158,14 +234,17 @@ export function AppRightSidebarSurface({
       ? bounds.min
       : event.key === 'End'
         ? bounds.max
-        : descriptor.width + (event.key === 'ArrowLeft' ? 16 : -16);
+        : resolvedLayout.effectiveWidth + (event.key === 'ArrowLeft' ? 16 : -16);
     descriptor.onWidthChange(Math.max(bounds.min, Math.min(bounds.max, next)));
-  }, [bounds.max, bounds.min, descriptor]);
+  }, [bounds.max, bounds.min, descriptor, resolvedLayout.effectiveWidth]);
   return (
     <aside
       id="app-right-sidebar"
-      className="app-right-sidebar"
+      className={`app-right-sidebar app-right-sidebar--${resolvedLayout.presentation}${detailOwnsScroll ? ' app-right-sidebar--detail-scroll' : ''}`}
       aria-label={descriptor.ariaLabel}
+      hidden={!open}
+      data-presentation={resolvedLayout.presentation}
+      style={{ '--app-right-sidebar-effective-width': `${resolvedLayout.effectiveWidth}px` } as JSX.CSSProperties}
       onKeyDown={(event) => {
         if (event.key !== 'Escape') return;
         event.preventDefault();
@@ -180,7 +259,7 @@ export function AppRightSidebarSurface({
         aria-label={`Resize ${descriptor.ariaLabel}`}
         aria-valuemin={bounds.min}
         aria-valuemax={bounds.max}
-        aria-valuenow={descriptor.width}
+        aria-valuenow={resolvedLayout.effectiveWidth}
         onPointerDown={startResize}
         onPointerMove={moveResize}
         onPointerUp={stopResize}
@@ -204,13 +283,15 @@ export function AppRightSidebarSurface({
             className="app-right-sidebar__tabs"
           />
         )}
-        <AppRightSidebarToggleButton
-          descriptor={descriptor}
-          buttonRef={toggleRef}
-          open
-          onOpenChange={onOpenChange}
-          className="app-right-sidebar__toggle"
-        />
+        {open ? (
+          <AppRightSidebarToggleButton
+            descriptor={descriptor}
+            buttonRef={toggleRef}
+            open
+            onOpenChange={onOpenChange}
+            className="app-right-sidebar__toggle"
+          />
+        ) : null}
       </header>
       <div className="app-right-sidebar__body">
         {descriptor.kind === 'panel' ? descriptor.content : descriptor.tabs.map((tab) => (

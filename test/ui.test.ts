@@ -2083,7 +2083,7 @@ describe('app shell', () => {
     expect(hideToggle.closest('.app-right-sidebar__header')).toBeTruthy();
     expect(hideToggle.getAttribute('aria-pressed')).toBe('true');
     const graphDetail = screen.getByLabelText('Graph detail');
-    expect(graphDetail.className).toBe('app-right-sidebar');
+    expect(graphDetail.classList.contains('app-right-sidebar')).toBe(true);
     await waitFor(() => expect(graphDetail.querySelector('.detail-pane-shell')).toBeTruthy());
     expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)

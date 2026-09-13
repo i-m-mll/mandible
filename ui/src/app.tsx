@@ -82,7 +82,10 @@ import {
   AppRightSidebarSurface,
   AppRightSidebarToggleButton,
   ViewSidebarIcon,
+  appRightSidebarAvailableWidths,
+  resolveAppRightSidebarLayout,
   type AppRightSidebarDescriptor,
+  type AppRightSidebarLayout,
   type AppShellContextValue,
 } from './app-shell';
 import { useAppRightSidebarState } from './right-sidebar-state';
@@ -668,7 +671,12 @@ function App(): JSX.Element {
     { open: false, width: 360 },
   );
   const rightSidebarOwnerRef = useRef<string | null>(null);
-  const [narrowRightSidebar, setNarrowRightSidebar] = useState(false);
+  const appLayoutRef = useRef<HTMLDivElement>(null);
+  const appContentRef = useRef<HTMLElement>(null);
+  const [rightSidebarSpace, setRightSidebarSpace] = useState(() => ({
+    mainAndSidebarWidth: typeof window === 'undefined' ? 1280 : window.innerWidth,
+    drawerWidth: typeof window === 'undefined' ? 1280 : window.innerWidth,
+  }));
   const rightSidebarToggleRef = useRef<HTMLButtonElement>(null);
   const rightSidebarFocusTransferRef = useRef(false);
   const [dashboardBadges, setDashboardBadges] = useState<DashboardBadgeCounts | null>(null);
@@ -740,14 +748,6 @@ function App(): JSX.Element {
     viewSidebarWidth,
     active: true,
   }), [rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
-
-  useEffect(() => {
-    const query = window.matchMedia('(max-width: 760px)');
-    const update = () => setNarrowRightSidebar(query.matches);
-    update();
-    query.addEventListener('change', update);
-    return () => query.removeEventListener('change', update);
-  }, []);
 
   const effectiveSettings = useMemo(() => (
     hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
@@ -2377,6 +2377,60 @@ function App(): JSX.Element {
   const viewSidebarAvailable = Boolean(viewSidebarGeometry);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
+  const rightSidebarLayout = useMemo<AppRightSidebarLayout>(() => (
+    resolveAppRightSidebarLayout(
+      rightSidebar!,
+      rightSidebarSpace.mainAndSidebarWidth,
+      rightSidebarSpace.drawerWidth,
+    )
+  ), [rightSidebar, rightSidebarSpace]);
+  const rightSidebarDocked = rightSidebarOpen && rightSidebarLayout.presentation === 'dock';
+  const rightSidebarOverlay = rightSidebarOpen && rightSidebarLayout.presentation === 'overlay-drawer';
+  useLayoutEffect(() => {
+    const layout = appLayoutRef.current;
+    const content = appContentRef.current;
+    if (!layout || !content) return undefined;
+    let activeSidebar = content.querySelector<HTMLElement>('.app-tab-panel:not([hidden]) .view-sidebar');
+    const measure = () => {
+      const sidebarRect = activeSidebar && activeSidebar.getClientRects().length > 0
+        ? activeSidebar.getBoundingClientRect()
+        : null;
+      const sidebarMargin = activeSidebar
+        ? Number.parseFloat(getComputedStyle(activeSidebar).marginRight) || 0
+        : 0;
+      const next = appRightSidebarAvailableWidths(
+        layout.getBoundingClientRect(),
+        content.getBoundingClientRect(),
+        sidebarRect,
+        sidebarMargin,
+      );
+      setRightSidebarSpace((current) => (
+        current.mainAndSidebarWidth === next.mainAndSidebarWidth && current.drawerWidth === next.drawerWidth
+          ? current
+          : next
+      ));
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(layout);
+    observer?.observe(content);
+    if (activeSidebar) observer?.observe(activeSidebar);
+    const mutationObserver = typeof MutationObserver === 'undefined' ? null : new MutationObserver(() => {
+      const nextSidebar = content.querySelector<HTMLElement>('.app-tab-panel:not([hidden]) .view-sidebar');
+      if (nextSidebar === activeSidebar) return;
+      if (activeSidebar) observer?.unobserve(activeSidebar);
+      activeSidebar = nextSidebar;
+      if (activeSidebar) observer?.observe(activeSidebar);
+      measure();
+    });
+    mutationObserver?.observe(content, { childList: true, subtree: true });
+    window.addEventListener('resize', measure);
+    return () => {
+      observer?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [route.tab, viewSidebarOpen, viewSidebarWidth]);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
   const appThemeMode = normalizeAppThemeMode(effectiveSettings.app_theme);
   const nextAppThemeMode = appThemeMode === 'system' ? 'light' : appThemeMode === 'light' ? 'dark' : 'system';
@@ -2478,7 +2532,7 @@ function App(): JSX.Element {
         className={`app-header${viewSidebarOpen ? '' : ' app-header--sidebar-hidden'}`}
         data-app-surface="chrome"
         data-tauri-drag-region
-        inert={narrowRightSidebar && rightSidebarOpen}
+        inert={rightSidebarOverlay}
       >
         <div className="app-header__identity" title={viewSidebarOpen ? undefined : 'Mandible'}>
           <span className="app-header__mark" aria-hidden="true">
@@ -2496,12 +2550,13 @@ function App(): JSX.Element {
       </header>
       <AppShellProvider value={appShellContext}>
         <div
-          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab} app-layout--right-sidebar-available${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
+          ref={appLayoutRef}
+          className={`app-layout app-layout--rail-${railDisplayMode} app-layout--route-${route.tab} app-layout--right-sidebar-available${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}${rightSidebarDocked ? ' app-layout--right-sidebar-docked' : ''}${rightSidebarOverlay ? ' app-layout--right-sidebar-overlay' : ''}`}
           style={rightSidebarOpen && rightSidebar ? {
-            '--app-right-sidebar-width': `${rightSidebar.width}px`,
+            '--app-right-sidebar-width': `${rightSidebarLayout.effectiveWidth}px`,
           } as JSX.CSSProperties : undefined}
         >
-          <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region inert={narrowRightSidebar && rightSidebarOpen}>
+          <aside className="app-rail" data-app-surface="chrome" data-tauri-drag-region inert={rightSidebarOverlay}>
               <nav
                 ref={railNavRef}
                 className="app-rail__nav"
@@ -2583,9 +2638,10 @@ function App(): JSX.Element {
               </nav>
           </aside>
         <main
+          ref={appContentRef}
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
           data-app-surface="main"
-          inert={narrowRightSidebar && rightSidebarOpen}
+          inert={rightSidebarOverlay}
         >
         {rightSidebarAvailable && !rightSidebarOpen ? (
           <AppRightSidebarToggleButton
@@ -2773,11 +2829,13 @@ function App(): JSX.Element {
           );
         })())}
         </main>
-          {rightSidebarOpen && rightSidebar ? (
+          {rightSidebar ? (
             <AppRightSidebarSurface
               descriptor={rightSidebar}
               toggleRef={rightSidebarToggleRef}
               onOpenChange={setRightSidebarOpen}
+              layout={rightSidebarLayout}
+              open={rightSidebarOpen}
             />
           ) : null}
         </div>
