@@ -158,7 +158,7 @@ describe("source-backed conversation storage preparation", () => {
 
     await expect(store.verifyAndPromoteConversationPayload("conversation-storage")).resolves.toMatchObject({
       promoted: false,
-      reason: "exact source read failed: no exact root-confined alias matches the recorded source version",
+      reason: "exact source read failed: This transcript changed after Mandible indexed it.",
     });
     expect(db.prepare(`
       SELECT COUNT(*) AS count FROM conversation_blocks
