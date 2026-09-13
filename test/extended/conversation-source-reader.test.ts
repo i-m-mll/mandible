@@ -249,7 +249,7 @@ describe("versioned conversation source reader", () => {
 
     const result = await new ConversationSourceReader(db).readPage("conversation-a", { limit: 20 });
     expect(result.status).toBe("stale");
-    if (result.status === "stale") expect(result.reason).toMatch(/no exact root-confined alias/);
+    if (result.status === "stale") expect(result.reason).toBe("This transcript changed after Mandible indexed it.");
     db.close();
   });
 
@@ -422,9 +422,12 @@ describe("versioned conversation source reader", () => {
 
     db.prepare("UPDATE conversation_source_versions SET parser_version = 'future' WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)")
       .run("conversation-a");
-    const future = await new ConversationSourceReader(db).readPage("conversation-a", { limit: 20 });
-    expect(future.status).toBe("legacy");
-    if (future.status === "legacy") expect(future.reason).toBe("unsupported");
+    const future = await new ConversationSourceReader(db, { legacyFallback: false })
+      .readPage("conversation-a", { limit: 20 });
+    expect(future.status).toBe("unsupported");
+    if (future.status === "unsupported") {
+      expect(future.reason).toBe("This conversation was indexed by an older Mandible version.");
+    }
     db.close();
   });
 
