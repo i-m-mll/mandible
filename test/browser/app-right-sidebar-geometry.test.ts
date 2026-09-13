@@ -4,6 +4,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import {
+  RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
+  VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
+} from '../../ui/src/app-shell';
+
 type Surface = 'chat' | 'graph' | 'timeline' | 'console';
 type Result = Record<string, unknown> & { surface: Surface; width: number; theme: string };
 
@@ -66,12 +71,17 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         throw new Error('Run options did not reconcile: '+JSON.stringify({composer:rect(composer),runtime:rect(inline.parentElement),inline:rect(inline),scrollWidth:inline.scrollWidth,visibility:getComputedStyle(inline).visibility,trigger:getComputedStyle(trigger).display,selects:Array.from(inline.querySelectorAll('select'),rect),actions:rect(actions),actionChildren:Array.from(actions.children,rect)}));
       };
       (async () => {
-        await wait();
+        await wait(); await wait();
         const root=document.querySelector('.native-fixture');
+        const toggles=()=>document.querySelectorAll('.app-right-sidebar-toggle');
+        const sidebar=document.querySelector('.app-right-sidebar');
+        const autoCollapsed={right:sidebar.hidden,view:!root.querySelector('.app-layout').classList.contains('app-layout--view-sidebar-open')};
+        if(sidebar.hidden){ toggles()[0].click(); await wait(); await wait(); }
+        if(!root.querySelector('.app-layout').classList.contains('app-layout--view-sidebar-open')){ root.querySelector('[data-view-sidebar-toggle]').click(); await wait(); }
         const body=document.querySelector('.app-right-sidebar__body');
         const header=document.querySelector('.app-right-sidebar__header');
-        const sidebar=document.querySelector('.app-right-sidebar');
-        const toggles=()=>document.querySelectorAll('.app-right-sidebar-toggle');
+        const reopenedLayout={right:!sidebar.hidden,view:root.querySelector('.app-layout').classList.contains('app-layout--view-sidebar-open'),mainWidth:rect(document.querySelector('main')).width,
+          presentation:sidebar.dataset.presentation,mainInert:document.querySelector('main').hasAttribute('inert'),railInert:document.querySelector('.app-rail').hasAttribute('inert')};
         const scrollOwner=root.classList.contains('native-fixture--chat')?(body.querySelector('.detail-pane-shell__body')||body):body;
         const scrollBefore=scrollOwner.scrollTop; scrollOwner.scrollTop=30;
         const initial={toggleCount:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),sidebar:rect(sidebar),header:rect(header),body:rect(body),scrollMoved:scrollOwner.scrollTop>scrollBefore,
@@ -119,7 +129,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
           submit:rect(submit),submitVisual:{width:parseFloat(submitVisual.width),height:parseFloat(submitVisual.height)},submitIcon:rect(submitIcon),submitLabel:submit.getAttribute('aria-label')}:null;
         const jumpControl=jump?{hit:rect(jump),visual:{width:parseFloat(jumpVisual.width),height:parseFloat(jumpVisual.height)},icon:rect(jumpIcon),label:jump.getAttribute('aria-label'),title:jump.getAttribute('title')}:null;
         const titleErrors=document.querySelector('[data-title-errors]');
-        document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,
+        document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',autoCollapsed,reopenedLayout,initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
           chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),overlayPointerEvents:getComputedStyle(overlayControl).pointerEvents,composer:composerRect,composerPointerEvents:getComputedStyle(composer).pointerEvents,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
           runOptions,jumpControl,preservedScrollTop,
@@ -144,16 +154,29 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
 
 describe('production app right sidebar geometry and interaction', () => {
   it('keeps the native shell coherent across all consumers, widths, and themes', () => {
-    const results = (['light', 'dark'] as const).flatMap((theme) => [1280, 760].flatMap((width) =>
+    const results = (['light', 'dark'] as const).flatMap((theme) => [1280, 962, 600].flatMap((width) =>
       (['chat', 'graph', 'timeline', 'console'] as const).map((surface) => renderCase(surface, width, theme))));
-    expect(results).toHaveLength(16);
+    expect(results).toHaveLength(24);
     for (const result of results) {
+      expect(result.autoCollapsed).toEqual({
+        right: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
+        view: result.width < VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
+      });
+      expect(result.reopenedLayout).toMatchObject({
+        right: true,
+        view: true,
+        presentation: 'dock',
+        mainInert: false,
+        railInert: false,
+      });
+      if (result.width === 600) {
+        expect((result.reopenedLayout as { mainWidth: number }).mainWidth).toBeLessThan(100);
+      }
       const initial = result.initial as Record<string, unknown>;
       expect(initial, `${result.surface}/${result.width}/${result.theme} initial sidebar`).toMatchObject({ toggleCount: 1, pressed: 'true', scrollMoved: true });
       expect(initial.bodyOverflow).toBe(result.surface === 'chat' ? 'hidden' : 'auto');
-      expect(initial.presentation).toBe(result.width === 760 ? 'overlay-drawer' : 'dock');
+      expect(initial.presentation).toBe('dock');
       const sidebarRect = initial.sidebar as { left: number; right: number; width: number };
-      expect(sidebarRect.right, `${result.surface}/${result.width}/${result.theme} sidebar right edge`).toBeCloseTo(result.width, 0);
       expect(sidebarRect.left, `${result.surface}/${result.width}/${result.theme} sidebar visible`).toBeGreaterThanOrEqual(0);
       expect((initial.header as { height: number }).height).toBe(48);
       expect((initial.header as { bottom: number }).bottom).toBe((initial.body as { top: number }).top);
@@ -161,13 +184,10 @@ describe('production app right sidebar geometry and interaction', () => {
       expect(result.reopened, `${result.surface}/${result.width}/${result.theme} reopened toggle`).toMatchObject({ count: 1, pressed: 'true', focused: true });
       expect((result.reopened as { scrollTop: number }).scrollTop, `${result.surface}/${result.width}/${result.theme} preserved scroll`)
         .toBe(result.preservedScrollTop);
-      expect(result.keyboardWidth).toBe(result.width === 760
-        ? 552
-        : result.surface === 'chat' ? 512 : 592);
-      expect(result.pointerWidth).toBeLessThan(result.keyboardWidth as number);
+      expect(result.keyboardWidth).toBe(Math.min(720, Math.floor(result.width * 0.6)));
+      expect(result.pointerWidth).toBeLessThanOrEqual(result.keyboardWidth as number);
       expect(result.stored).toContain('"width"');
-      if (result.width === 760) expect(initial).toMatchObject({ mainInert: true, railInert: true });
-      else expect(initial).toMatchObject({ mainInert: false, railInert: false });
+      expect(initial).toMatchObject({ mainInert: false, railInert: false });
       if (result.tabResult) {
         expect(result.tabResult).toMatchObject({ focused: result.surface === 'chat' ? 'Preview' : 'Message Info', selected: result.surface === 'chat' ? 'Preview' : 'Message Info' });
         expect((result.tabResult as { text: string[] }).text).toEqual(result.surface === 'chat' ? ['', '', ''] : ['', '']);
@@ -200,10 +220,12 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(geometry.composer.top).toBeGreaterThanOrEqual(geometry.overlayControl.top);
         expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.overlayControl.bottom);
         expect(geometry.composerPointerEvents).toBe('auto');
-        expect(geometry.composer.left).toBeGreaterThan(geometry.transcriptViewport.left);
-        expect(geometry.composer.right).toBeLessThan(geometry.transcriptViewport.right);
-        expect(geometry.transcriptViewport.left).toBeCloseTo(geometry.body.left, 0);
-        expect(geometry.transcriptViewport.right).toBeCloseTo(geometry.body.right, 0);
+        if (result.width >= RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH) {
+          expect(geometry.composer.left).toBeGreaterThan(geometry.transcriptViewport.left);
+          expect(geometry.composer.right).toBeLessThan(geometry.transcriptViewport.right);
+          expect(geometry.transcriptViewport.left).toBeCloseTo(geometry.body.left, 0);
+          expect(geometry.transcriptViewport.right).toBeCloseTo(geometry.body.right, 0);
+        }
         expect(geometry.transcriptViewport.top).toBeCloseTo(geometry.body.top, 0);
         expect(geometry.transcriptViewport.bottom).toBeCloseTo(geometry.body.bottom, 0);
         const composerHeight = geometry.composer.bottom - geometry.composer.top;
@@ -214,11 +236,13 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(geometry.transcriptScrollState.scrollTop).toBeCloseTo(transcriptMaxScroll, 5);
         expect(geometry.transcriptOuterState.scrollHeight).toBe(geometry.transcriptOuterState.clientHeight);
         expect(geometry.transcriptOuterState.scrollTop).toBe(0);
-        expect(geometry.finalContent.left).toBeCloseTo(geometry.composer.left, 0);
-        expect(geometry.finalContent.right).toBeCloseTo(geometry.composer.right, 0);
+        if (result.width >= RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH) {
+          expect(geometry.finalContent.left).toBeCloseTo(geometry.composer.left, 0);
+          expect(geometry.finalContent.right).toBeCloseTo(geometry.composer.right, 0);
+          expect(geometry.mask.left).toBeCloseTo(geometry.body.left, 0);
+          expect(geometry.mask.right).toBeCloseTo(geometry.composer.right, 0);
+        }
         expect(geometry.finalContent.bottom).toBeLessThanOrEqual(geometry.composer.top - composerBottomGap + 0.5);
-        expect(geometry.mask.left).toBeCloseTo(geometry.body.left, 0);
-        expect(geometry.mask.right).toBeCloseTo(geometry.composer.right, 0);
         expect(Math.abs(geometry.mask.top - (geometry.composer.top + ((geometry.composer.bottom - geometry.composer.top) / 2)))).toBeLessThanOrEqual(1);
         expect(geometry.mask.bottom).toBeCloseTo(geometry.overlayControl.bottom, 0);
         const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; inlineVisibility: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number }; submit: Rect; submitVisual: { width: number; height: number }; submitIcon: Rect; submitLabel: string };

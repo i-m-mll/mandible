@@ -2078,6 +2078,8 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
+    await waitFor(() => expect(screen.getByLabelText('Show Graph detail')).toBeTruthy());
+    fireEvent.click(screen.getByLabelText('Show Graph detail'));
     await waitFor(() => expect(screen.getByLabelText('Hide Graph detail')).toBeTruthy());
     const hideToggle = screen.getByLabelText('Hide Graph detail');
     expect(hideToggle.closest('.app-right-sidebar__header')).toBeTruthy();
@@ -2210,6 +2212,8 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
+    await waitFor(() => expect(screen.getByLabelText('Show Graph detail')).toBeTruthy());
+    fireEvent.click(screen.getByLabelText('Show Graph detail'));
     await waitFor(() => expect(
       within(screen.getByLabelText('Graph detail')).getByRole('heading', { name: 'alpha' }),
     ).toBeTruthy());

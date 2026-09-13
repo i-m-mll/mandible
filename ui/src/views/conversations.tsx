@@ -124,7 +124,6 @@ import { chatItemIdentityKey, mergeProviderLiveProjection } from '../../../src/c
 import type { ChatItem } from '../../../src/parsers/types';
 import {
   CHAT_DETAIL_PREVIEW_MIN_WIDTH,
-  CHAT_MAIN_MIN_WIDTH,
   useRegisterAppRightSidebar,
 } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
@@ -1513,7 +1512,6 @@ function ConversationDetail({
     width: rightSidebarState.width,
     minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH,
     maxWidth: 720,
-    mainMinWidth: CHAT_MAIN_MIN_WIDTH,
     togglePlacement: 'detail-header' as const,
     onOpenChange: (open: boolean) => updateRightSidebarState({ open }),
     onWidthChange: (width: number) => updateRightSidebarState({ width }),

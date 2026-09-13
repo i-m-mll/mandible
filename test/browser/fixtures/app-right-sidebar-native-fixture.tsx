@@ -6,7 +6,8 @@ import {
   AppRightSidebarSurface,
   AppRightSidebarToggleButton,
   CHAT_DETAIL_PREVIEW_MIN_WIDTH,
-  CHAT_MAIN_MIN_WIDTH,
+  WIDE_RESPONSIVE_SIDEBAR_STATE,
+  responsiveSidebarThresholdTransition,
   resolveAppRightSidebarLayout,
   type AppRightSidebarDescriptor,
 } from '../../../ui/src/app-shell';
@@ -116,6 +117,8 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   const [stored, updateStored] = useAppRightSidebarState(scope, { open: true, width: 380 });
   const [tab, setTab] = useState(surface === 'console' ? 'settings' : 'overview');
   const [streamRevision, setStreamRevision] = useState(0);
+  const [viewSidebarOpen, setViewSidebarOpen] = useState(true);
+  const responsiveState = useRef(WIDE_RESPONSIVE_SIDEBAR_STATE);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const transferFocus = useRef(false);
   const setOpen = (open: boolean) => {
@@ -133,10 +136,21 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [stored.open]);
+  useLayoutEffect(() => {
+    const reconcile = () => {
+      const transition = responsiveSidebarThresholdTransition(responsiveState.current, window.innerWidth);
+      responsiveState.current = transition.state;
+      if (transition.closeRight) updateStored({ open: false });
+      if (transition.closeView) setViewSidebarOpen(false);
+    };
+    reconcile();
+    window.addEventListener('resize', reconcile);
+    return () => window.removeEventListener('resize', reconcile);
+  }, [updateStored]);
   const descriptor = useMemo<AppRightSidebarDescriptor>(() => {
     if (surface === 'chat') return {
       id: scope, ariaLabel: 'Chat sidebar', kind: 'tabs', open: stored.open, width: stored.width,
-      minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH, maxWidth: 720, mainMinWidth: CHAT_MAIN_MIN_WIDTH,
+      minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH, maxWidth: 720,
       togglePlacement: 'detail-header',
       onOpenChange: setOpen, onWidthChange: (width) => updateStored({ width }), activeTab: tab,
       onActiveTabChange: setTab,
@@ -168,14 +182,14 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   }, [stored.open, stored.width, surface, tab, streamRevision]);
   const deterministic = conversationLoadFailure(new ApiError('raw', 409, 'provider_metadata_missing'), true);
   const transient = conversationLoadFailure(new ApiError('raw', 503, 'provider_metadata_unavailable'), true);
-  const availableWidth = window.innerWidth - 208;
-  const layout = resolveAppRightSidebarLayout(descriptor, availableWidth, availableWidth);
-  const overlay = stored.open && layout.presentation === 'overlay-drawer';
+  const layout = resolveAppRightSidebarLayout(descriptor, window.innerWidth);
   return (
     <div className={`app-shell native-fixture native-fixture--${surface}`}>
-      <div className={`app-layout app-layout--route-${surface}${stored.open ? ' app-layout--right-sidebar-open' : ''}${stored.open && layout.presentation === 'dock' ? ' app-layout--right-sidebar-docked' : ''}${overlay ? ' app-layout--right-sidebar-overlay' : ''}`} style={{ '--app-right-sidebar-width': `${layout.effectiveWidth}px` }}>
-        <aside className="app-rail" inert={overlay} />
-        <main className={`app-content app-content--${surface}`} inert={overlay}>
+      <div className={`app-layout app-layout--route-${surface}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${stored.open ? ' app-layout--right-sidebar-open app-layout--right-sidebar-docked' : ''}`} style={{ '--app-right-sidebar-width': `${layout.effectiveWidth}px` }}>
+        <aside className="app-rail">
+          <button type="button" data-view-sidebar-toggle aria-pressed={viewSidebarOpen} onClick={() => setViewSidebarOpen((open) => !open)}>View sidebar</button>
+        </aside>
+        <main className={`app-content app-content--${surface}`}>
           {surface === 'chat' ? <ChatMain descriptor={descriptor} toggleRef={toggleRef} setOpen={setOpen} /> : <div className="native-main">{surface} main</div>}
           {surface === 'console' ? <button type="button" data-stream-update onClick={() => setStreamRevision((value) => value + 1)}>Stream update {streamRevision}</button> : null}
           {surface === 'chat' ? <div data-title-errors data-deterministic-retry={String(deterministic.retryable)} data-transient-retry={String(transient.retryable)}>{deterministic.message}|{transient.message}</div> : null}

@@ -9,18 +9,14 @@ type AppRightSidebarCommon = {
   width: number;
   minWidth?: number;
   maxWidth?: number;
-  /** Smallest width at which the owning main view remains usable beside the panel. */
-  mainMinWidth?: number;
   /** The owning view renders the closed-state toggle in its canonical header. */
   togglePlacement?: 'app-overlay' | 'detail-header';
   onOpenChange(open: boolean): void;
   onWidthChange(width: number): void;
 };
 
-export type AppRightSidebarPresentation = 'dock' | 'overlay-drawer';
-
 export type AppRightSidebarLayout = {
-  presentation: AppRightSidebarPresentation;
+  presentation: 'dock';
   effectiveWidth: number;
   minWidth: number;
   maxWidth: number;
@@ -29,22 +25,42 @@ export type AppRightSidebarLayout = {
 export const APP_RIGHT_SIDEBAR_DEFAULT_MIN_WIDTH = 300;
 export const APP_RIGHT_SIDEBAR_DEFAULT_MAX_WIDTH = 720;
 export const CHAT_DETAIL_PREVIEW_MIN_WIDTH = 360;
-export const CHAT_MAIN_MIN_WIDTH = 560;
+export const RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH = 1100;
+export const VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH = 700;
 
-type HorizontalRect = Pick<DOMRect, 'left' | 'right'>;
+export type ResponsiveSidebarThresholdState = {
+  rightNarrow: boolean;
+  viewNarrow: boolean;
+};
 
-export function appRightSidebarAvailableWidths(
-  layout: HorizontalRect,
-  content: HorizontalRect,
-  viewSidebar: HorizontalRect | null,
-  viewSidebarEndMargin = 0,
-): { mainAndSidebarWidth: number; drawerWidth: number } {
-  const detailStart = viewSidebar
-    ? Math.max(content.left, viewSidebar.right + Math.max(0, viewSidebarEndMargin))
-    : content.left;
+export type ResponsiveSidebarThresholdTransition = {
+  state: ResponsiveSidebarThresholdState;
+  closeRight: boolean;
+  closeView: boolean;
+};
+
+export const WIDE_RESPONSIVE_SIDEBAR_STATE: ResponsiveSidebarThresholdState = {
+  rightNarrow: false,
+  viewNarrow: false,
+};
+
+export function responsiveSidebarThresholdTransition(
+  previous: ResponsiveSidebarThresholdState,
+  viewportWidth: number,
+  available: { right: boolean; view: boolean } = { right: true, view: true },
+): ResponsiveSidebarThresholdTransition {
+  const belowRightThreshold = viewportWidth < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH;
+  const belowViewThreshold = viewportWidth < VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH;
+  const rightNarrow = belowRightThreshold
+    ? available.right || previous.rightNarrow
+    : false;
+  const viewNarrow = belowViewThreshold
+    ? available.view || previous.viewNarrow
+    : false;
   return {
-    mainAndSidebarWidth: Math.max(0, Math.floor(layout.right - detailStart)),
-    drawerWidth: Math.max(0, Math.floor(layout.right - content.left)),
+    state: { rightNarrow, viewNarrow },
+    closeRight: belowRightThreshold && available.right && !previous.rightNarrow,
+    closeView: belowViewThreshold && available.view && !previous.viewNarrow,
   };
 }
 
@@ -135,30 +151,15 @@ export function appRightSidebarWidthBounds(
 }
 
 export function resolveAppRightSidebarLayout(
-  descriptor: Pick<AppRightSidebarCommon, 'width' | 'minWidth' | 'maxWidth' | 'mainMinWidth'>,
-  mainAndSidebarWidth: number,
-  drawerWidth: number = mainAndSidebarWidth,
+  descriptor: Pick<AppRightSidebarCommon, 'width' | 'minWidth' | 'maxWidth'>,
+  viewportWidth: number,
 ): AppRightSidebarLayout {
-  const available = Math.max(0, Math.floor(mainAndSidebarWidth));
-  const drawerAvailable = Math.max(0, Math.floor(drawerWidth));
-  const bounds = appRightSidebarWidthBounds(descriptor.minWidth, descriptor.maxWidth, available);
-  const mainMinWidth = descriptor.mainMinWidth ?? 480;
-  const dockMax = Math.min(bounds.max, Math.max(0, available - mainMinWidth));
-  if (dockMax >= bounds.min) {
-    return {
-      presentation: 'dock',
-      effectiveWidth: Math.max(bounds.min, Math.min(dockMax, descriptor.width)),
-      minWidth: bounds.min,
-      maxWidth: dockMax,
-    };
-  }
-  const drawerMax = Math.min(descriptor.maxWidth ?? APP_RIGHT_SIDEBAR_DEFAULT_MAX_WIDTH, drawerAvailable);
-  const drawerMin = Math.min(bounds.min, drawerMax);
+  const bounds = appRightSidebarWidthBounds(descriptor.minWidth, descriptor.maxWidth, viewportWidth);
   return {
-    presentation: 'overlay-drawer',
-    effectiveWidth: Math.max(drawerMin, Math.min(drawerMax, descriptor.width)),
-    minWidth: drawerMin,
-    maxWidth: drawerMax,
+    presentation: 'dock',
+    effectiveWidth: Math.max(bounds.min, Math.min(bounds.max, descriptor.width)),
+    minWidth: bounds.min,
+    maxWidth: bounds.max,
   };
 }
 

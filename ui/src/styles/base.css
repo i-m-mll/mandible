@@ -406,16 +406,6 @@ a {
   z-index: 61;
 }
 
-.app-right-sidebar--overlay-drawer {
-  grid-column: 1 / -1;
-  grid-row: 1;
-  position: absolute;
-  inset: 0 0 0 auto;
-  width: min(var(--app-right-sidebar-effective-width), 100%);
-  border-left: 1px solid var(--border-muted);
-  box-shadow: var(--shadow-soft);
-}
-
 .app-right-sidebar__resize {
   position: absolute;
   inset: 0 auto 0 -5px;
@@ -515,10 +505,6 @@ a {
     margin-left: 0;
   }
 
-}
-
-.app-right-sidebar--overlay-drawer .app-right-sidebar__resize {
-  display: none;
 }
 
 @media (max-width: 700px) {
