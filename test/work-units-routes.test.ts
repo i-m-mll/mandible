@@ -23,6 +23,165 @@ afterEach(() => {
 });
 
 describe("work unit routes", () => {
+  async function createBoundWorkUnit(
+    issueId: string,
+    branch: string,
+    authRequestId: string,
+    authStatus: "pending" | "withdrawn",
+  ): Promise<string> {
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      ambient_identity: { provider: "codex", provider_session_id: `${issueId}-worker-a` },
+      body: { issue_id: issueId, repo_id: "mandible", branch },
+    });
+    const id = (response.body as { id: string }).id;
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO auth_requests
+       (id, command, title, status, created_at, updated_at, expires_at, output)
+       VALUES (?, 'git merge', 'Bound request', ?, ?, ?, ?, '')`,
+    ).run(authRequestId, authStatus, now, now, now + 60_000);
+    db.prepare("UPDATE work_units SET auth_request_id = ? WHERE id = ?")
+      .run(authRequestId, id);
+    return id;
+  }
+
+  it("keeps a pending request on branch A when branch B activates", async () => {
+    const branchAId = await createBoundWorkUnit(
+      "pending-branches",
+      "feature/pending-a",
+      "auth-pending-a",
+      "pending",
+    );
+
+    const branchB = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      ambient_identity: { provider: "codex", provider_session_id: "pending-branches-worker-b" },
+      body: {
+        issue_id: "pending-branches",
+        repo_id: "mandible",
+        branch: "feature/pending-b",
+      },
+    });
+
+    expect(branchB.status).toBe(201);
+    expect((branchB.body as { id: string }).id).not.toBe(branchAId);
+    expect(db.prepare(
+      `SELECT branch, state, auth_request_id, provider_session_id
+       FROM work_units WHERE id = ?`,
+    ).get(branchAId)).toEqual({
+      branch: "feature/pending-a",
+      state: "committed",
+      auth_request_id: "auth-pending-a",
+      provider_session_id: "pending-branches-worker-a",
+    });
+  });
+
+  it("keeps withdrawn auth history on superseded branch A when replacement branch B activates", async () => {
+    const branchAId = await createBoundWorkUnit(
+      "withdrawn-branches",
+      "feature/superseded-a",
+      "auth-withdrawn-a",
+      "withdrawn",
+    );
+
+    const branchB = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      ambient_identity: { provider: "codex", provider_session_id: "withdrawn-branches-worker-b" },
+      body: {
+        issue_id: "withdrawn-branches",
+        repo_id: "mandible",
+        branch: "feature/replacement-b",
+      },
+    });
+
+    expect(branchB.status).toBe(201);
+    expect((branchB.body as { id: string }).id).not.toBe(branchAId);
+    expect(db.prepare(
+      `SELECT branch, auth_request_id FROM work_units WHERE id = ?`,
+    ).get(branchAId)).toEqual({
+      branch: "feature/superseded-a",
+      auth_request_id: "auth-withdrawn-a",
+    });
+  });
+
+  it("keeps exact same-branch claim and activation idempotent", async () => {
+    const id = await createBoundWorkUnit(
+      "same-branch",
+      "feature/same-branch",
+      "auth-same-branch",
+      "pending",
+    );
+
+    const claim = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/claim",
+      body: {
+        issue_id: "same-branch",
+        repo_id: "mandible",
+        branch: "feature/same-branch",
+      },
+    });
+
+    const activate = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      body: {
+        issue_id: "same-branch",
+        repo_id: "mandible",
+        branch: "feature/same-branch",
+      },
+    });
+
+    expect(claim.body).toMatchObject({ id, state: "committed", existing: true });
+    expect(activate.body).toMatchObject({ id, state: "committed" });
+    expect(db.prepare(
+      `SELECT COUNT(*) AS count, MIN(auth_request_id) AS auth_request_id
+       FROM work_units WHERE issue_id = 'same-branch'`,
+    ).get()).toEqual({ count: 1, auth_request_id: "auth-same-branch" });
+  });
+
+  it("adopts only an unbound null-branch unit and keeps later branches unique", async () => {
+    const branchless = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/claim",
+      body: { issue_id: "branch-adoption", repo_id: "mandible" },
+    });
+    const adoptedId = (branchless.body as { id: string }).id;
+
+    const adopted = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/claim",
+      body: {
+        issue_id: "branch-adoption",
+        repo_id: "mandible",
+        branch: "feature/adopted",
+      },
+    });
+    const sibling = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/claim",
+      body: {
+        issue_id: "branch-adoption",
+        repo_id: "mandible",
+        branch: "feature/sibling",
+      },
+    });
+
+    expect(adopted.body).toMatchObject({ id: adoptedId, existing: true });
+    expect(sibling.status).toBe(201);
+    expect((sibling.body as { id: string }).id).not.toBe(adoptedId);
+    expect(db.prepare(
+      `SELECT branch FROM work_units WHERE issue_id = 'branch-adoption' ORDER BY branch`,
+    ).all()).toEqual([
+      { branch: "feature/adopted" },
+      { branch: "feature/sibling" },
+    ]);
+  });
+
   it("canonicalizes project aliases across claim, activate, and find", async () => {
     const now = Date.now();
     db.prepare(
