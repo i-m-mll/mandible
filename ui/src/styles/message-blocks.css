@@ -21,6 +21,12 @@
 }
 
 :is(.turn-group__body, .message-group__content)
+  > .chat-boundary--ends-activity
+  + .chat-boundary--starts-activity {
+  margin-block-start: calc(var(--space-2) * -0.333333);
+}
+
+:is(.turn-group__body, .message-group__content)
   > .chat-boundary--ends-prose
   + .chat-boundary--starts-activity,
 :is(.turn-group__body, .message-group__content)
