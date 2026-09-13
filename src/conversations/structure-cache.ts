@@ -521,6 +521,32 @@ export class ConversationStructureCache {
     ) as { position: number | null }).position ?? position;
   }
 
+  /** First block that must be materialized to show the target's complete turn. */
+  turnWindowStart(
+    conversationId: string,
+    sourceVersionId: string,
+    position: number,
+  ): number | null {
+    const conversation = this.cachedConversation(conversationId, sourceVersionId);
+    if (!conversation) return null;
+    const userType = blockTypeCode("user_message");
+    const target = this.cache.prepare(`
+      SELECT type_code FROM cache_blocks
+       WHERE cache_conversation_id = ? AND position = ?
+    `).get(conversation.cache_id, position) as { type_code: number } | undefined;
+    if (!target) return null;
+    if (target.type_code === userType) return position;
+    const previousUser = this.cache.prepare(`
+      SELECT MAX(position) AS position FROM cache_blocks
+       WHERE cache_conversation_id = ? AND position <= ? AND type_code = ?
+    `).get(conversation.cache_id, position, userType) as { position: number | null };
+    if (previousUser.position !== null) return previousUser.position;
+    return (this.cache.prepare(`
+      SELECT MIN(position) AS position FROM cache_blocks
+       WHERE cache_conversation_id = ? AND position <= ?
+    `).get(conversation.cache_id, position) as { position: number | null }).position;
+  }
+
   findToolPosition(conversationId: string, toolId: string): number | null {
     const conversation = this.cache.prepare(
       "SELECT cache_id FROM cache_conversations WHERE conversation_id = ?",
