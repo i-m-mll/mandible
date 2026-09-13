@@ -8,7 +8,11 @@ import type {
   RenderNode,
   StreamRendererProps,
 } from '../components/stream-renderer/types';
-import { MessageGroup } from '../components/stream-renderer/MessageGroup';
+import {
+  assistantTurnBoundaryKinds,
+  chatBoundaryClasses,
+  MessageGroup,
+} from '../components/stream-renderer/MessageGroup';
 import { MessageActions } from '../components/shared/MessageActions';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
@@ -481,7 +485,7 @@ export function ChatSurface({
         return (
           <div
             key={node.key}
-            className="message-block-wrapper contextual-action-owner"
+            className={`message-block-wrapper contextual-action-owner ${chatBoundaryClasses('prose')}`}
             data-block-id={source?.blockId}
           >
             <UserBubble text={node.text} />
@@ -501,7 +505,7 @@ export function ChatSurface({
        case 'semantic_event': {
         const source = node.event.source;
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={source.blockId}>
+          <div key={node.key} className={`message-block-wrapper ${chatBoundaryClasses('activity')}`} data-block-id={source.blockId}>
             <SemanticEventBlock
               kind={node.event.semantic_kind}
               content={node.event.content}
@@ -521,7 +525,7 @@ export function ChatSurface({
       case 'unmatched_tool_result': {
         const source = node.result.source;
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
+          <div key={node.key} className={`message-block-wrapper ${chatBoundaryClasses('activity')}`} data-block-id={source?.blockId}>
             <UnmatchedToolResultBlock result={node.result} />
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
@@ -537,7 +541,7 @@ export function ChatSurface({
         const source = node.source;
         const disclosureKey = `activity:${node.key}`;
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
+          <div key={node.key} className={`message-block-wrapper ${chatBoundaryClasses('activity')}`} data-block-id={source?.blockId}>
             <ActivityRow
               item={node.item}
               expanded={expandedBlocks[disclosureKey] ?? false}
@@ -560,11 +564,13 @@ export function ChatSurface({
           isLastStreamingTurn &&
           turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
         const isSelected = selectedMessageId === turn.id;
+        const boundaries = assistantTurnBoundaryKinds(turn);
+        const boundaryClass = boundaries ? chatBoundaryClasses(boundaries.start, boundaries.end) : '';
 
         return (
           <div
             key={node.key}
-            className={isSelected ? 'stream-turn-node stream-turn--selected' : 'stream-turn-node'}
+            className={`${isSelected ? 'stream-turn-node stream-turn--selected' : 'stream-turn-node'}${boundaryClass ? ` ${boundaryClass}` : ''}`}
           >
             <MessageGroup
               turn={turn}
@@ -619,7 +625,7 @@ export function ChatSurface({
           return (
             <div
               key={entry.key}
-              className="message-block-wrapper"
+              className={`message-block-wrapper ${chatBoundaryClasses('activity')}`}
               data-member-refs={entry.nodes.map((node) => node.source?.blockId ?? node.key).join(' ')}
             >
               <ActivityGroup
