@@ -44,6 +44,51 @@ a {
   text-decoration: none;
 }
 
+.chat-circle-action {
+  position: relative;
+  width: var(--chat-circle-action-hit-size, 34px);
+  height: var(--chat-circle-action-hit-size, 34px);
+  flex: 0 0 var(--chat-circle-action-hit-size, 34px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  color: var(--chat-circle-action-fg);
+  cursor: pointer;
+}
+
+.chat-circle-action::before {
+  position: absolute;
+  width: var(--chat-circle-action-visual-size);
+  height: var(--chat-circle-action-visual-size);
+  border-radius: 50%;
+  background: var(--chat-circle-action-bg);
+  content: '';
+}
+
+.chat-circle-action > svg {
+  position: relative;
+  width: var(--chat-circle-action-icon-size);
+  height: var(--chat-circle-action-icon-size);
+}
+
+.chat-circle-action:hover:not(:disabled)::before {
+  filter: brightness(1.08);
+}
+
+.chat-circle-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.chat-circle-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .app-shell {
   --app-header-height: 48px;
   --app-left-boundary-width: 0px;

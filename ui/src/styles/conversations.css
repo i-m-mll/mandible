@@ -464,54 +464,18 @@
 }
 
 .conv-compose__send {
-  --conv-compose-send-hit-size: 34px;
-  --conv-compose-send-visual-size: 25.5px;
-  --conv-compose-send-icon-size: 17px;
-  position: relative;
-  width: var(--conv-compose-send-hit-size);
-  height: var(--conv-compose-send-hit-size);
-  flex: 0 0 var(--conv-compose-send-hit-size);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 50%;
-  padding: 0;
-  background: transparent;
-  color: var(--surface-app);
-  cursor: pointer;
+  --chat-circle-action-visual-size: 25.5px;
+  --chat-circle-action-icon-size: 17px;
+  --chat-circle-action-bg: var(--text-primary);
+  --chat-circle-action-fg: var(--surface-app);
   font-family: var(--font-sans);
   font-size: 17px;
   font-weight: 700;
   line-height: 1;
 }
 
-.conv-compose__send::before {
-  position: absolute;
-  width: var(--conv-compose-send-visual-size);
-  height: var(--conv-compose-send-visual-size);
-  border-radius: 50%;
-  background: var(--text-primary);
-  content: '';
-}
-
-.conv-compose__send > svg {
-  position: relative;
-  width: var(--conv-compose-send-icon-size);
-  height: var(--conv-compose-send-icon-size);
-}
-
 .conv-compose__send > span {
   position: relative;
-}
-
-.conv-compose__send:hover:not(:disabled)::before {
-  filter: brightness(1.08);
-}
-
-.conv-compose__send:disabled {
-  opacity: 0.45;
-  cursor: default;
 }
 
 .conv-compose__status {

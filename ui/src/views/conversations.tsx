@@ -108,6 +108,7 @@ import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { PreviewIcon } from '../components/icons/TabIcons';
+import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import {
   preferredProjectCheckout,
   reconcileShownProjects,
@@ -651,12 +652,7 @@ function HorizontalDotsIcon(): JSX.Element {
 }
 
 export function ChatComposerSubmitIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-      <path d="m6 12 6-6 6 6" />
-      <path d="M12 6v12" />
-    </svg>
-  );
+  return <VerticalArrowIcon direction="up" strokeWidth={1} />;
 }
 
 // ── Detail View ──
@@ -2126,7 +2122,7 @@ function ConversationDetail({
               <button
                 type="submit"
                 form={`conversation-compose-${conversation.id}`}
-                className="conv-compose__send"
+                className="chat-circle-action conv-compose__send"
                 disabled={continueBusy || Boolean(submitIntent) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || !continueDraft.trim()}
                 title={controlPresentation?.submitLabel ?? 'Send'}
                 aria-label={controlPresentation?.submitLabel ?? 'Send'}

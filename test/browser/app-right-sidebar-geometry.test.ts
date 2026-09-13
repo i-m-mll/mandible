@@ -107,14 +107,16 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const inline=document.querySelector('.conv-compose__run-options-inline'); const trigger=document.querySelector('.conv-compose__run-options-trigger');
         const selectRects=Array.from(inline?.querySelectorAll('select')||[],rect);
         const submit=document.querySelector('.conv-compose__send'); const submitVisual=submit?getComputedStyle(submit,'::before'):null; const submitIcon=submit?.querySelector('svg');
+        const jump=document.querySelector('.stream-renderer__scroll-btn'); const jumpVisual=jump?getComputedStyle(jump,'::before'):null; const jumpIcon=jump?.querySelector('svg');
         const runOptions=composer?{containerWidth:composer.clientWidth,inlineDisplay:getComputedStyle(inline).display,inlineVisibility:getComputedStyle(inline).visibility,triggerDisplay:getComputedStyle(trigger).display,
           triggerText:trigger.textContent.trim(),triggerHasSvg:Boolean(trigger.querySelector('svg')),selectRects,composer:composerRect,
           submit:rect(submit),submitVisual:{width:parseFloat(submitVisual.width),height:parseFloat(submitVisual.height)},submitIcon:rect(submitIcon),submitLabel:submit.getAttribute('aria-label')}:null;
+        const jumpControl=jump?{hit:rect(jump),visual:{width:parseFloat(jumpVisual.width),height:parseFloat(jumpVisual.height)},icon:rect(jumpIcon),label:jump.getAttribute('aria-label'),title:jump.getAttribute('title')}:null;
         const titleErrors=document.querySelector('[data-title-errors]');
         document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
           chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),overlayPointerEvents:getComputedStyle(overlayControl).pointerEvents,composer:composerRect,composerPointerEvents:getComputedStyle(composer).pointerEvents,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
-          runOptions,
+          runOptions,jumpControl,
           stored:localStorage.getItem('mandible_app_right_sidebar:native-${surface}:v1'),
           deterministicRetry:titleErrors?.dataset.deterministicRetry,transientRetry:titleErrors?.dataset.transientRetry,titleCopy:titleErrors?.textContent}));
       })().catch(error=>document.title='fixture-error:'+btoa(String(error?.stack||error)));
@@ -208,8 +210,14 @@ describe('production app right sidebar geometry and interaction', () => {
         expect(runOptions.triggerHasSvg).toBe(true);
         expect(runOptions.submit).toMatchObject({ width: 34, height: 34 });
         expect(runOptions.submitVisual).toEqual({ width: 25.5, height: 25.5 });
-        expect(runOptions.submitIcon).toMatchObject({ width: 25.5, height: 25.5 });
+        expect(runOptions.submitIcon).toMatchObject({ width: 17, height: 17 });
         expect(runOptions.submitLabel).toBe('Send');
+        const jumpControl = result.jumpControl as { hit: Rect; visual: { width: number; height: number }; icon: Rect; label: string; title: string };
+        expect(jumpControl.hit).toMatchObject({ width: 34, height: 34 });
+        expect(jumpControl.visual).toEqual({ width: 22, height: 22 });
+        expect(jumpControl.icon).toMatchObject({ width: 14, height: 14 });
+        expect(jumpControl.label).toBe('Jump to latest');
+        expect(jumpControl.title).toBe('Jump to latest');
         expect(runOptions.inlineDisplay).toBe('flex');
         expect(runOptions.selectRects).toHaveLength(3);
         expect(new Set(runOptions.selectRects.map((select) => select.right - select.left)).size).toBeGreaterThan(1);
