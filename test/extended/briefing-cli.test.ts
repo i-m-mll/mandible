@@ -102,9 +102,9 @@ describe("briefing CLI", () => {
 
   it("plans, applies, and inspects an installed destination-route manifest through the supported API", async () => {
     const manifest = {
-      schema: "mandible-briefing-destination-routes@2",
+      schema: "mandible-briefing-destination-routes@3",
       routes: [{ route_key: "digest.since-last-review",
-        logical_artifact_ref: "artifact:artifact-12345678", heading: "Since last review",
+        logical_artifact_ref: "artifact:artifact-12345678", publication_mode: "reviewed-document", heading: "Since last review",
         composer_kind: "agentic", template: { version: 1, contribution_template: "", slots: {} },
         limits: { max_contributions: 10, max_document_bytes: 100_000, max_directives: 0 } }],
     };
@@ -112,7 +112,8 @@ describe("briefing CLI", () => {
     fs.writeFileSync(manifestPath, JSON.stringify(manifest));
     const response = { schema: manifest.schema, changed: true, routes: [{
       route_key: "digest.since-last-review", action: "create", group_id: "group-12345678",
-      logical_artifact_id: "artifact-12345678", heading: "Since last review", composer_kind: "agentic",
+      logical_artifact_id: "artifact-12345678", publication_mode: "reviewed-document",
+      heading: "Since last review", composer_kind: "agentic",
       active_template_version: 1, template_action: "create",
       limits: { max_contributions: 10, max_document_bytes: 100_000, max_directives: 0 },
     }] };
@@ -137,6 +138,12 @@ describe("briefing CLI", () => {
       });
     expect(inspected.status).toBe(0);
     expect(JSON.parse(inspected.stdout)).toMatchObject({ routes: [{ route_key: "digest.since-last-review" }] });
+    const human = await runRpc(["briefing", "route", "inspect", "digest.since-last-review"],
+      () => ({ status: 200, body: { schema: manifest.schema, routes: [{
+        ...response.routes[0], templates: [{ version: 1, contribution_template: "", slots: {} }],
+      }] } }));
+    expect(human.status).toBe(0);
+    expect(human.stdout).toContain("reviewed-document");
   });
 
   it("posts the exact version and title through the supported API", async () => {

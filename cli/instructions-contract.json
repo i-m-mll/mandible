@@ -288,7 +288,7 @@
     },
     {
       "name": "mandible briefing route plan <manifest.json|-> [--json]",
-      "description": "Resolve and validate one mandible-briefing-destination-routes@2 manifest without mutation. Group ownership is derived from the logical Artifact destination map; identity, downgrade, and immutable-template drift fail closed."
+      "description": "Resolve and validate one mandible-briefing-destination-routes@3 manifest without mutation. Each route explicitly selects reviewed-document or published-report semantics. Group ownership is derived from the logical Artifact destination map; identity, downgrade, and immutable-template drift fail closed."
     },
     {
       "name": "mandible briefing route apply <manifest.json|-> [--json]",

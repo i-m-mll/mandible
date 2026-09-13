@@ -627,12 +627,14 @@ export function BriefingDocumentRenderer({
           title={title}
           titleTooltip={title}
           supportingMetadata={description ? <p className="briefing-detail__description">{description}</p> : undefined}
-          state={round && selectedIsNewest ? 'Latest' : undefined}
+          state={round && selectedIsNewest
+            ? (round.publication_mode === 'published-report' ? 'Current report' : 'Latest')
+            : undefined}
           selector={round ? {
-            label: 'Round occurrence',
+            label: round.publication_mode === 'published-report' ? 'Report history' : 'Round occurrence',
             control: (
               <select
-                aria-label="Round occurrence"
+                aria-label={round.publication_mode === 'published-report' ? 'Report history' : 'Round occurrence'}
                 value={round.selected_round_id}
                 onInput={(event) => onRoundChange?.(event.currentTarget.value === round.latest_round_id ? null : event.currentTarget.value)}
               >

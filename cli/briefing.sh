@@ -51,7 +51,10 @@ never resolves a logical artifact or series to latest.
 A Briefing bundle is only a named, manually ordered association. Creating or
 adding to one does not change member Briefings, rounds, artifacts, or review data.
 
-A destination-route manifest uses schema mandible-briefing-destination-routes@2.
+A destination-route manifest uses schema mandible-briefing-destination-routes@3.
+Each route declares `publication_mode`: reviewed-document creates a Base-relative
+proposal for configured-human disposition; published-report appends an immutable
+round to the already-placed Briefing and advances Current without changing group Base.
 Plan resolves each logical Artifact through its active destination owner without writing.
 Apply atomically creates or upgrades the declared routes. Exact replay is
 unchanged; ownership, identity, template downgrade, and same-version template
@@ -613,7 +616,7 @@ cmd_route_inspect() {
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | api_jq_human \
-      '.routes[] | "\(.route_key)  group=\(.group_id | mandible_short_id)  artifact=\(.logical_artifact_id | mandible_short_id)  \(.composer_kind)  template=v\(.active_template_version)"'
+      '.routes[] | "\(.route_key)  group=\(.group_id | mandible_short_id)  artifact=\(.logical_artifact_id | mandible_short_id)  \(.publication_mode)  \(.composer_kind)  template=v\(.active_template_version)"'
   fi
 }
 

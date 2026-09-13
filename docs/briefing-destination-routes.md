@@ -9,11 +9,12 @@ The manifest is JSON:
 
 ```json
 {
-  "schema": "mandible-briefing-destination-routes@2",
+  "schema": "mandible-briefing-destination-routes@3",
   "routes": [
     {
       "route_key": "projects.example.maintenance",
       "logical_artifact_ref": "artifact:01ABCDEFGH",
+      "publication_mode": "reviewed-document",
       "heading": "Maintenance",
       "composer_kind": "deterministic",
       "template": {
@@ -38,6 +39,13 @@ version, blob, title, or external path is not accepted. That Artifact must have
 one active destination owner, and the owner's Base must contain exactly one
 active Briefing for it. Archived groups never satisfy key or destination
 resolution.
+
+`publication_mode` is destination policy, not publisher input. A
+`reviewed-document` route preserves the Base-relative proposal and configured-human
+accept/reject lifecycle. A `published-report` route reuses the one placed logical
+Briefing and atomically appends each successful publication as its new Current
+round. Report publication changes neither group Base nor membership and does not
+mean that a human endorsed the report. Quiet runs record health without a round.
 
 ## Bootstrap order
 

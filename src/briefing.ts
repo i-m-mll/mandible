@@ -12,14 +12,12 @@ export const DEFAULT_BRIEFING_PUBLISHERS: Readonly<Record<string, readonly Reado
   "agent-schedule": Object.freeze([
     Object.freeze({ task_identity: "agent-schedule/daily-digest", sources: Object.freeze(["arxiv-scan"]) }),
     Object.freeze({ task_identity: "agent-schedule/task-health", sources: Object.freeze(["task-health"]) }),
+    Object.freeze({ task_identity: "agent-schedule/repo-janitor", sources: Object.freeze(["repo-janitor"]) }),
   ]),
 });
 
-/** Independent code-owned gate; publisher configuration cannot widen task identity. */
-export const BRIEFING_PUBLISHER_TASK_GATE: readonly string[] = Object.freeze([
-  "agent-schedule/daily-digest",
-  "agent-schedule/task-health",
-]);
+/** Independent code-owned gate; publisher configuration can only narrow these exact tuples. */
+export const BRIEFING_PUBLISHER_GATE = DEFAULT_BRIEFING_PUBLISHERS;
 
 export function readBriefingPublisherBindings(db: Db): Record<string, BriefingPublisherBinding[]> {
   const raw = getSetting(db, BRIEFING_PUBLISHERS_KEY);
@@ -56,7 +54,9 @@ export function readBriefingPublisherBindings(db: Db): Record<string, BriefingPu
 }
 
 export function publisherMayIngest(db: Db, slug: string, taskIdentity: string, sources: readonly string[]): boolean {
-  if (!BRIEFING_PUBLISHER_TASK_GATE.includes(taskIdentity)) return false;
+  const codeBinding = BRIEFING_PUBLISHER_GATE[slug]
+    ?.find((candidate) => candidate.task_identity === taskIdentity);
+  if (!codeBinding || !sources.every((source) => codeBinding.sources.includes(source))) return false;
   const binding = readBriefingPublisherBindings(db)[slug]
     ?.find((candidate) => candidate.task_identity === taskIdentity);
   return Boolean(binding && sources.every((source) => binding.sources.includes(source)));

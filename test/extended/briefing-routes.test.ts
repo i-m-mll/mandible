@@ -96,9 +96,9 @@ describe("plural Briefing routes", () => {
       status: 201, body: { group: { destinations: [{ logical_artifact_id: logical.artifact_id }] } },
     });
     const manifest = {
-      schema: "mandible-briefing-destination-routes@2",
+      schema: "mandible-briefing-destination-routes@3",
       routes: [{ route_key: "digest.since-last-review",
-        logical_artifact_ref: logical.artifact_id, heading: "Since last review",
+        logical_artifact_ref: logical.artifact_id, publication_mode: "reviewed-document", heading: "Since last review",
         composer_kind: "agentic", template: { version: 1, contribution_template: "", slots: {} },
         limits: { max_contributions: 10, max_document_bytes: 100_000, max_directives: 0 } }],
     };
@@ -704,17 +704,18 @@ describe("plural Briefing routes", () => {
       { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer);
     registerBriefingDestinationRoute(db, { route_key: "projects.example.maintenance",
       logical_artifact_id: logical.artifact_id, heading: "Maintenance", composer_kind: "deterministic",
+      publication_mode: "reviewed-document",
       template_version: 1, contribution_template: "- {{summary}} ([evidence]({{evidence_ref}}))",
       slots: { summary: { type: "string", required: true, max_length: 200 } },
       limits: { max_contributions: 10, max_document_bytes: 10_000, max_directives: 0 } });
     const body = {
-      schema: "mandible-briefing-composition@1", task_identity: "agent-schedule/daily-digest",
+      schema: "mandible-briefing-composition@2", task_identity: "agent-schedule/daily-digest",
       run_id: "composition-run", run_key: "composition-key",
       source: { key: "repo-maintenance", cursor: "cursor-1" },
       source_health: { source: "arxiv-scan", status: "healthy", detail: null, observed_at: 1 },
       responder_user_ids: [humanId], quiet_reason: null,
       inputs: [{ route_key: "projects.example.maintenance",
-        expected_base_artifact_version_ref: artifact.version.id, agentic_markdown: null }],
+        expected_artifact_version_ref: artifact.version.id, agentic_markdown: null }],
       contributions: [{ route_key: "projects.example.maintenance", change_id: "change-1",
         evidence_ref: "issue:abc1234", evidence_digest: "a".repeat(64), occurred_at: 1,
         slots: { summary: "Prune stale branches" } }],
@@ -770,6 +771,72 @@ describe("plural Briefing routes", () => {
       proposal_bundle_id: proposalBundleId,
       prior_base_bundle_id: bundle.id,
       review_binding_digest: candidate.binding_digest,
+    });
+  });
+
+  it("publishes the repository-maintenance destination as a stable report round over HTTP", async () => {
+    setSetting(db, "user.operator_id", humanId);
+    const artifact = recordArtifactVersion(db, { source_kind: "managed",
+      content: "# Repository maintenance\n\n## Findings\n\nNo findings.\n",
+      series_key: "test:repository-maintenance", logical_name: "Repository maintenance.md",
+      role: "briefing-document", media_type: "text/markdown" });
+    const published = publishBriefingFromArtifactVersion(db, { briefing_key: "repository-maintenance",
+      title: "Repository maintenance", artifact_version_ref: artifact.version.id,
+      profile: "mandible-briefing.v3", responder_user_ids: [humanId] });
+    if (published.outcome === "active_candidates") throw new Error("report fixture unexpectedly conflicted");
+    const logical = db.prepare("SELECT artifact_id FROM artifact_version WHERE id = ?")
+      .get(artifact.version.id) as { artifact_id: string };
+    const viewer = { userId: humanId, operator: true };
+    const bundle = createBriefingBundle(db, { name: "Digest Base",
+      briefingRefs: [published.briefing_id], viewer });
+    const group = createBriefingGroup(db, { key: "digest-report", name: "Digest report",
+      currentBundleRef: bundle.id, bundleRefs: [], viewer });
+    bindBriefingDestinationOwner(db, { logicalArtifactRef: logical.artifact_id, groupRef: group.id },
+      { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer);
+    registerBriefingDestinationRoute(db, { route_key: "digest.repository-maintenance",
+      logical_artifact_id: logical.artifact_id, publication_mode: "published-report", heading: "Findings",
+      composer_kind: "agentic", template_version: 1, contribution_template: "", slots: {},
+      limits: { max_contributions: 20, max_document_bytes: 20_000, max_directives: 0 } });
+    const bypassArtifact = recordArtifactVersion(db, { source_kind: "managed",
+      content: "# Repository maintenance\n\n## Findings\n\nGeneric bypass.\n",
+      series_key: artifact.series.series_key, logical_name: "Repository maintenance.md",
+      role: "briefing-document", media_type: "text/markdown" });
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { target_briefing_ref: published.briefing_id, title: "Repository maintenance",
+        artifact_version_ref: bypassArtifact.version.id } })).toMatchObject({ status: 409,
+      body: { code: "briefing_report_publication_required" } });
+    const body = {
+      schema: "mandible-briefing-composition@2", task_identity: "agent-schedule/repo-janitor",
+      run_id: "report-run", run_key: "report-key",
+      source: { key: "repo-janitor", cursor: "cursor-1" },
+      source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 1 },
+      responder_user_ids: [humanId], quiet_reason: null,
+      inputs: [{ route_key: "digest.repository-maintenance",
+        expected_artifact_version_ref: artifact.version.id,
+        expected_current_round_id: published.round_id,
+        agentic_markdown: "# Repository maintenance\n\n## Findings\n\n- Stale branch (evidence-abc1234).\n" }],
+      contributions: [{ route_key: "digest.repository-maintenance", change_id: "finding-1",
+        evidence_ref: "evidence-abc1234", evidence_digest: "a".repeat(64), occurred_at: 1, slots: {} }],
+    };
+
+    expect(await router.invoke({ method: "POST", url: "/api/briefings/runs", body,
+      credential: "human" })).toMatchObject({ status: 403,
+      body: { code: "briefing_publisher_agent_required" } });
+    const first = await router.invoke({ method: "POST", url: "/api/briefings/runs", body,
+      credential: "agent-schedule" });
+    expect(first).toMatchObject({ status: 200, body: { quiet: false,
+      targets: [{ publication_mode: "published-report", briefing_id: published.briefing_id,
+        outcome: "published", previous_round_id: published.round_id,
+        current_round_id: expect.any(String) }] } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefings/runs", body,
+      credential: "agent-schedule" })).toEqual(first);
+    expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?").get(group.id))
+      .toEqual({ current_bundle_id: bundle.id });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_group_updates WHERE group_id = ?").get(group.id))
+      .toEqual({ n: 0 });
+    expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:round-published", {
+      briefing_id: published.briefing_id,
+      round_id: expect.any(String),
     });
   });
 

@@ -357,6 +357,33 @@ describe('artifact-backed Briefing rounds', () => {
     expect(css).toMatch(/\.briefing-submission-shelf--inactive\s*\{[^}]*padding:\s*var\(--space-2\)\s+var\(--space-5\);/s);
   });
 
+  it('presents a published report as Current with report history', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/briefings/briefing-1') {
+        const payload = detail(ROUND_TWO) as any;
+        payload.briefing.publication_mode = 'published-report';
+        return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/api/artifacts/') && url.endsWith('/content')) return new Response(JSON.stringify({ content: {
+        artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown',
+        size_bytes: new TextEncoder().encode(source.replace('Intro', 'Later')).byteLength, source: null,
+        preview: { encoding: 'utf-8', text: source.replace('Intro', 'Later'), raw_text: source.replace('Intro', 'Later'), truncated: false },
+        download: { available: true, media_type: 'text/markdown', size_bytes: source.length, filename: 'briefing.md' },
+      } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      <BriefingDocumentRenderer briefingId="briefing-1" instance={PRODUCTION_ALLOW_INSTANCE} />
+    </AppShellProvider>);
+
+    expect(await screen.findByText('Current report', { selector: '.detail-pane-header__state' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Report history' })).toBeTruthy();
+    expect(screen.queryByRole('combobox', { name: 'Round occurrence' })).toBeNull();
+  });
+
   it('normalizes ordered v3 text variants with exact Markdown bodies and ranges', () => {
     const variantSource = ':::spec-item{key="wording" type="text_variant"}\n::alternative[Short]{key="short"}\nShort.\n::alternative[Long]{key="long"}\nLonger wording.\n:::';
     const start = variantSource.indexOf(':::');

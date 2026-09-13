@@ -23,6 +23,8 @@ export function BriefingGroupDetail({
   const baseName = group.current?.name === 'Original' ? 'Base' : group.current?.name;
   const selectedProposal = group.updates.find((update) => update.id === selectedUpdateId) ?? null;
   const reviewCandidate = group.reviewCandidates?.find((candidate) => candidate.proposalBundleId === selectedUpdateId) ?? null;
+  const publishedReportCount = group.destinations.filter((destination) => destination.publicationMode === 'published-report').length;
+  const reviewedDocumentCount = group.destinations.filter((destination) => destination.publicationMode === 'reviewed-document').length;
   const disposition = async (decision: 'accepted' | 'rejected') => {
     if (!selectedProposal || !group.current || !reviewCandidate?.ready || !reviewCandidate.bindingDigest || busy) return;
     const verb = decision === 'accepted' ? 'accept' : 'reject';
@@ -69,7 +71,13 @@ export function BriefingGroupDetail({
           <p className="briefing-empty" role="status">Archived collection. Its bundles, Briefings, and review history remain intact.</p>
         ) : null}
         {group.destinations.length > 0 ? (
-          <p className="briefing-empty">Owns {group.destinations.length} recurring destination{group.destinations.length === 1 ? '' : 's'}.</p>
+          <p className="briefing-empty">
+            Owns {group.destinations.length} recurring destination{group.destinations.length === 1 ? '' : 's'}
+            {publishedReportCount > 0 ? `: ${publishedReportCount} published report${publishedReportCount === 1 ? '' : 's'}` : ''}
+            {publishedReportCount > 0 && reviewedDocumentCount > 0 ? ' and ' : ''}
+            {reviewedDocumentCount > 0 ? `${reviewedDocumentCount} reviewed document${reviewedDocumentCount === 1 ? '' : 's'}` : ''}.
+            Published reports advance Current without Accept or Reject and do not imply human endorsement.
+          </p>
         ) : null}
         <section className="briefing-group-detail__current" aria-labelledby="briefing-group-current-title">
           <div className="briefing-group-detail__intro">

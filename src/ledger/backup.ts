@@ -171,11 +171,13 @@ export const METADATA_BACKUP_TABLES = [
   // provenance so review receipts restore with every referenced parent.
   "briefing_destination_owners",
   "briefing_destination_routes",
+  "briefing_destination_policies",
   "briefing_destination_templates",
   "briefing_composition_runs",
   "briefing_composition_inputs",
   "briefing_composition_contributions",
   "briefing_composition_targets",
+  "briefing_composition_report_publications",
   "briefing_group_review_dispositions",
   "briefing_group_review_disposition_items",
   "briefing_group_review_destination_items",

@@ -268,6 +268,12 @@ export const BRIEFING_COMPOSER_SCHEMA_SQL: readonly string[] = [
     created_at INTEGER NOT NULL,
     PRIMARY KEY(route_key, version)
   )`,
+  `CREATE TABLE IF NOT EXISTS briefing_destination_policies (
+    route_key TEXT PRIMARY KEY REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
+    publication_mode TEXT NOT NULL CHECK(publication_mode IN ('reviewed-document','published-report')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS briefing_composition_runs (
     id TEXT PRIMARY KEY,
     publisher_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -289,6 +295,7 @@ export const BRIEFING_COMPOSER_SCHEMA_SQL: readonly string[] = [
     route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
     expected_base_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
     agentic_markdown TEXT,
+    expected_current_round_id TEXT REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
     PRIMARY KEY(run_id, route_key)
   )`,
   `CREATE TABLE IF NOT EXISTS briefing_composition_contributions (
@@ -320,7 +327,39 @@ export const BRIEFING_COMPOSER_SCHEMA_SQL: readonly string[] = [
     CHECK((outcome = 'proposed' AND proposal_bundle_id IS NOT NULL)
       OR (outcome != 'proposed' AND proposal_bundle_id IS NULL))
   )`,
+  `CREATE TABLE IF NOT EXISTS briefing_composition_report_publications (
+    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+    group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+    briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE RESTRICT,
+    outcome TEXT NOT NULL CHECK(outcome IN ('unchanged','published')),
+    previous_round_id TEXT NOT NULL REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
+    current_round_id TEXT NOT NULL REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
+    previous_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    current_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(run_id, logical_artifact_id),
+    CHECK((outcome = 'unchanged' AND previous_round_id = current_round_id
+      AND previous_artifact_version_id = current_artifact_version_id)
+      OR (outcome = 'published' AND previous_round_id != current_round_id))
+  )`,
 ];
+
+const BRIEFING_COMPOSITION_INPUTS_SCHEMA_V171_SQL = `CREATE TABLE IF NOT EXISTS briefing_composition_inputs (
+    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
+    expected_base_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    agentic_markdown TEXT,
+    PRIMARY KEY(run_id, route_key)
+  )`;
+
+/** Frozen v171 migration grammar, before report policy, receipts, and round-level compare-and-swap. */
+export const BRIEFING_COMPOSER_SCHEMA_V171_SQL: readonly string[] =
+  BRIEFING_COMPOSER_SCHEMA_SQL.filter((statement) =>
+    !statement.includes("briefing_destination_policies")
+    && !statement.includes("briefing_composition_report_publications"))
+    .map((statement) => statement.includes("CREATE TABLE IF NOT EXISTS briefing_composition_inputs")
+      ? BRIEFING_COMPOSITION_INPUTS_SCHEMA_V171_SQL : statement);
 
 /** Frozen v165 migration grammar. Historical migrations must not inherit head-schema edits. */
 export const BRIEFING_COMPOSER_SCHEMA_V165_SQL: readonly string[] = [
@@ -338,7 +377,7 @@ export const BRIEFING_COMPOSER_SCHEMA_V165_SQL: readonly string[] = [
     updated_at INTEGER NOT NULL,
     UNIQUE(group_id, logical_artifact_id, heading)
   )`,
-  ...BRIEFING_COMPOSER_SCHEMA_SQL.slice(1),
+  ...BRIEFING_COMPOSER_SCHEMA_V171_SQL.slice(1),
 ];
 
 /** Frozen v167 migration grammar. Historical migrations must not inherit head-schema edits. */

@@ -1286,6 +1286,7 @@ export type BriefingGroup = {
 export type BriefingGroupDestination = {
   logical_artifact_id: string;
   group_id: string;
+  publication_mode: "reviewed-document" | "published-report" | null;
   created_at: number;
   updated_at: number;
 };
