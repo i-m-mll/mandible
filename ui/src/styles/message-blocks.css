@@ -298,6 +298,14 @@
   cursor: default;
 }
 
+.compact-activity__row--no-icon {
+  grid-template-columns: minmax(0, 1fr) 16px;
+}
+
+.compact-activity__row--inert.compact-activity__row--no-icon {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .compact-activity__row:not(.compact-activity__row--inert):hover,
 .compact-activity__row:focus-visible {
   color: var(--text-primary);
@@ -328,13 +336,13 @@
 .compact-activity__details {
   width: 100%;
   box-sizing: border-box;
-  margin-top: 2px;
-  border: 1px solid var(--tool-activity-border);
-  border-radius: 6px;
-  background: var(--tool-activity-background);
-  padding: 3px 10px;
+  margin-top: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
   color: var(--tool-activity-box-text);
-  --overflow-fade-color: var(--tool-activity-background);
+  --overflow-fade-color: var(--surface-app);
 }
 
 .plan-card__icon,
@@ -431,14 +439,6 @@
 .tool-call-group {
   width: 100%;
   margin: 0;
-}
-
-/* Give complete tool runs a small amount of breathing room between prose
- * blocks without loosening the compact rows inside a multi-tool run. */
-.message-group__content > .tool-call-group,
-.message-group__content > .message-block-wrapper:has(> .tool-card) {
-  margin-block: 0;
-  padding-block: 3px;
 }
 
 .tool-call-group__body > .message-block-wrapper {

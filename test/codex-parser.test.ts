@@ -239,6 +239,59 @@ describe("CodexParser", () => {
     });
   });
 
+  it("normalizes structured custom tool output and preserves same-batch pairing", async () => {
+    const parser = new CodexParser();
+    const rows = [
+      {
+        type: "response_item",
+        timestamp: "2026-05-16T00:00:06.000Z",
+        payload: { type: "custom_tool_call", name: "exec", call_id: "custom-structured", input: "opaque" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-05-16T00:00:07.000Z",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "custom-structured",
+          output: [
+            { type: "input_text", text: "first line" },
+            { type: "input_text", text: "second line" },
+          ],
+        },
+      },
+    ];
+    const result = await parser.parseIncremental?.({
+      filePath: "/tmp/custom-tool-output.jsonl",
+      raw: `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      nativeSessionId: "structured-output-session",
+      baseBlockCount: 10,
+      baseRecordCount: 30,
+      sourceHash: "append:custom-output",
+      sourceMtime: 42,
+    });
+
+    expect(result?.blocks).toHaveLength(2);
+    expect(result?.blocks[1]).toMatchObject({
+      type: "tool_result",
+      content: "first line\nsecond line",
+      parent_id: "10",
+      metadata: {
+        tool_id: "custom-structured",
+        tool_name: "exec",
+        tool_kind: "custom_tool_call_output",
+        tool_output: "first line\nsecond line",
+        source_record_ordinal: 31,
+      },
+    });
+    expect(result?.blocks[1].metadata.chat_item).toMatchObject({
+      type: "tool-call",
+      phase: "result",
+      tool_id: "custom-structured",
+      output: "first line\nsecond line",
+      parts: [{ type: "text", text: "first line\nsecond line" }],
+    });
+  });
+
   it("parses appended records at the requested base position", async () => {
     const parser = new CodexParser();
     const sessionPath = await makeCodexSession("session-incremental");

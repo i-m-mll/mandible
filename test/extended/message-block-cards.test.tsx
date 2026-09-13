@@ -150,7 +150,8 @@ describe('message action cards', () => {
     expect(css).toMatch(/\.compact-activity__row\s*\{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\) 16px;[^}]*gap:\s*6px;[^}]*min-height:\s*22px;[^}]*padding:\s*1px 0;[^}]*font:\s*400 var\(--text-lg\)\/1\.15 var\(--font-sans\);/s);
     expect(css).toMatch(/\.compact-activity__row--inert\s*\{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\);/s);
     expect(css).toMatch(/\.msg-text-block\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);/s);
-    expect(css).toMatch(/\.compact-activity__details\s*\{[^}]*border:\s*1px solid var\(--tool-activity-border\);[^}]*background:\s*var\(--tool-activity-background\);/s);
+    expect(css).toMatch(/\.compact-activity__details\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;[^}]*background:\s*transparent;[^}]*padding:\s*0;/s);
+    expect(css).not.toContain('.message-group__content > .message-block-wrapper:has(> .tool-card)');
     expect(css).toMatch(/\.tool-card__input,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?color:\s*var\(--tool-activity-box-text\);/);
     expect(css).toMatch(/\.tool-card__input pre,[\s\S]*?font-size:\s*var\(--text-lg\);/);
@@ -197,6 +198,18 @@ describe('message action cards', () => {
     detailAction.focus();
     view.rerender(<CompactActivityRow icon={<span>·</span>} summary="Shared summary" disclosure={disclosure(false)} />);
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Shared summary' }));
+  });
+
+  it('does not reserve an icon column when a compact activity has no icon', () => {
+    const view = render(<CompactActivityRow summary="Flush-left reasoning" disclosure={{
+      content: <span>Detail</span>,
+      regionLabel: 'Reasoning details',
+      expanded: false,
+    }} />);
+    const row = screen.getByRole('button', { name: 'Flush-left reasoning' });
+    expect(row.classList.contains('compact-activity__row--no-icon')).toBe(true);
+    expect(view.container.querySelector('.compact-activity__icon')).toBeNull();
+    expect(row.lastElementChild?.classList.contains('compact-activity__chevron')).toBe(true);
   });
 
   it('wins the real light-theme pre fill without changing general code surfaces', () => {

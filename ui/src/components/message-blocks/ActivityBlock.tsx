@@ -1,6 +1,5 @@
-import type { ActivityItem, ActivityKind, ConversationSource } from '../../../../src/parsers/types';
+import type { ActivityItem, ActivityKind } from '../../../../src/parsers/types';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
-import { OfficialProviderMark } from '../shared/OfficialProviderMark';
 import { InfoIcon, IssuesIcon, MonitorIcon, TerminalIcon } from '../icons/TabIcons';
 
 const ACTIVITY_LABELS: Record<ActivityKind, string> = {
@@ -109,15 +108,9 @@ export function presentActivityItems(items: readonly ActivityItem[]): ActivityPr
   return presentations;
 }
 
-function providerMark(provider: ConversationSource): JSX.Element | null {
-  if (provider === 'codex') return <OfficialProviderMark kind="openai" />;
-  if (provider === 'claude_code') return <OfficialProviderMark kind="anthropic" />;
-  return null;
-}
-
-function ActivityIcon({ item }: { item: ActivityItem }): JSX.Element {
+function activityIcon(item: ActivityItem): JSX.Element | undefined {
   if (item.activity_kind === 'reasoning-summary' || item.activity_kind === 'thinking') {
-    return providerMark(item.identity.provider) ?? <MonitorIcon />;
+    return undefined;
   }
   if (item.activity_kind === 'tool-progress' || item.activity_kind === 'tool-summary') return <TerminalIcon />;
   if (item.activity_kind === 'information') return <InfoIcon />;
@@ -153,7 +146,7 @@ export function ActivityRow({ item, expanded, onExpandedChange }: {
   return (
     <CompactActivityRow
       className={`activity-block${item.severity ? ` activity-block--${item.severity}` : ''}`}
-      icon={<ActivityIcon item={item} />}
+      icon={activityIcon(item)}
       summary={presentation.summary}
       disclosure={disclosure}
     />
@@ -172,7 +165,7 @@ export function ActivityGroup({ items, expanded, onExpandedChange }: {
   return (
     <CompactActivityRow
       className="activity-group"
-      icon={<ActivityIcon item={items[0]} />}
+      icon={activityIcon(items[0])}
       summary={summary}
       disclosure={lines.length > 0 ? {
         content: <ActivityDetails lines={lines} />,

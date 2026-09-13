@@ -1,5 +1,4 @@
 import { CompactActivityRow } from '../shared/ChatDisclosure';
-import { OfficialProviderMark } from '../shared/OfficialProviderMark';
 import { plainActivityHeader } from './ActivityBlock';
 
 export type ThinkingBlockProps = {
@@ -21,7 +20,6 @@ export function ThinkingBlock({
   return (
     <CompactActivityRow
       className="thinking-block"
-      icon={<OfficialProviderMark kind="anthropic" />}
       summary={summary}
       disclosure={remaining.length > 0 ? {
         content: <div className="thinking-block__body"><pre>{remaining.join('\n')}</pre></div>,

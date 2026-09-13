@@ -340,7 +340,7 @@ describe('ChatSurface stream behavior', () => {
     expect(screen.getByText(/check three/)).toBeTruthy();
   });
 
-  it('renders provider formatting as inert plain activity text with a shared icon slot', () => {
+  it('renders provider formatting as inert flush-left reasoning text without a provider mark', () => {
     const item = canonicalItem<ActivityItem>({
       type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary',
       parts: [{ type: 'text', text: '**Checked** the __typed__ status payload' }], ordinal: 0,
@@ -349,7 +349,8 @@ describe('ChatSurface stream behavior', () => {
     expect(screen.getByText('Checked the typed status payload')).toBeTruthy();
     expect(view.container.textContent).not.toContain('**');
     expect(view.container.textContent).not.toContain('__');
-    expect(view.container.querySelector('.compact-activity__icon svg')).toBeTruthy();
+    expect(view.container.querySelector('.compact-activity__icon')).toBeNull();
+    expect(view.container.querySelector('.compact-activity__row--no-icon')).toBeTruthy();
     expect(view.container.querySelector('strong')).toBeNull();
     expect(plainActivityHeader('**Header**\nMore **provider-authored words**')).toBe('Header\nMore provider-authored words');
     expect(plainActivityHeader('value__name__suffix and 2 ** 3')).toBe('value__name__suffix and 2 ** 3');

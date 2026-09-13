@@ -143,6 +143,26 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
     }
   }
 
+  function attachResultToPriorTurn(
+    toolId: string,
+    result: ToolResultContentBlock,
+    parentBlockId?: string,
+  ): boolean {
+    for (let index = nodes.length - 1; index >= 0; index -= 1) {
+      const node = nodes[index];
+      if (node.kind !== 'assistant_turn') continue;
+      const hasCall = node.turn.assistantEvent.message.content.some(
+        (block) => block.type === 'tool_use'
+          && block.id === toolId
+          && (!parentBlockId || block.source?.blockId === parentBlockId),
+      );
+      if (!hasCall) continue;
+      node.turn.toolResults.set(toolId, result);
+      return true;
+    }
+    return false;
+  }
+
   for (const event of events) {
     if (event.type === 'chat:item') {
       const canonical = event as CanonicalChatItemEvent;
@@ -218,7 +238,15 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
             source,
           });
           if (pendingAssistant) pendingResults.set(toolId, result);
-          else nodes.push({ kind: 'unmatched_tool_result', key, entity: 'system', result });
+          else if (attachResultToPriorTurn(toolId, result, source?.parentBlockId)) {
+            // Exact tool identity repairs results separated from their call by
+            // an intervening activity item without changing transcript order.
+          } else if (source?.parentBlockId) {
+            // The verified parent is outside this bounded retained window.
+            // Loading the preceding window materializes the complete pair.
+          } else {
+            nodes.push({ kind: 'unmatched_tool_result', key, entity: 'system', result });
+          }
         }
       } else if (item.type === 'activity') {
         if (isRoutineActivityStatus(item)) continue;
