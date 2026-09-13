@@ -26,7 +26,7 @@ import { LedgerRenderedBody } from './LedgerRenderedBody';
 import { AttributionIdentity } from '../shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../shared/DetailPaneHeader';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
-import { DetailPaneShell } from '../shared/DetailPaneShell';
+import { DetailPaneShell, type DetailPanePresentation } from '../shared/DetailPaneShell';
 import { CollapsiblePanel } from '../shared/CollapsiblePanel';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 
@@ -104,6 +104,7 @@ export function partitionUmbrellaChildren(detail: LedgerIssueDetailProjection): 
 export type LedgerIssueDetailProps = {
   detail: LedgerIssueDetailProjection;
   compact?: boolean;
+  presentation?: DetailPanePresentation;
   hydrating?: boolean;
   fullLoadFailed?: boolean;
   actionInFlight?: boolean;
@@ -124,6 +125,7 @@ export type LedgerIssueDetailProps = {
 export function LedgerIssueDetail({
   detail,
   compact = false,
+  presentation = 'main',
   hydrating = false,
   fullLoadFailed = false,
   actionInFlight = false,
@@ -241,6 +243,7 @@ export function LedgerIssueDetail({
 
   return (
     <DetailPaneShell
+      presentation={presentation}
       className={`ledger-issue-detail${compact ? ' ledger-issue-detail--compact' : ''}`}
       headerClassName="ledger-issue-detail__header"
       headerPrimaryClassName="ledger-issue-detail__header-primary"
@@ -248,6 +251,7 @@ export function LedgerIssueDetail({
       headerRef={headerRef}
       header={(
         <DetailPaneHeader
+          presentation={presentation}
           variant="standard"
           identity={{
             entityLabel: detail.project.repo_name ?? detail.project.display_name,

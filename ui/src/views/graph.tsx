@@ -34,7 +34,7 @@ import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
-import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
 import { shortRouteId } from '../routing';
 import { PreviewIcon } from '../components/icons/TabIcons';
 
@@ -702,10 +702,12 @@ export function GraphDetailPane({
   node,
   edges,
   onNavigate,
+  presentation = 'main',
 }: {
   node: GraphNode | null
   edges: GraphEdge[]
   onNavigate: (type: GraphNodeType, id: string, repoId?: string) => void
+  presentation?: DetailPanePresentation
 }): JSX.Element {
   const ledgerIssueId = node?.type === 'issue' && typeof node.detail?.ledger_issue_id === 'string'
     ? node.detail.ledger_issue_id
@@ -744,9 +746,10 @@ export function GraphDetailPane({
   if (!node) {
     return (
       <DetailPaneShell
+        presentation={presentation}
         as="aside"
         className="graph-detail-pane"
-        header={<DetailPaneHeader variant="compact" title="Graph detail" />}
+        header={<DetailPaneHeader presentation={presentation} variant="compact" title="Graph detail" />}
       >
         <div className="graph-detail-pane__empty">Select a node</div>
       </DetailPaneShell>
@@ -777,6 +780,7 @@ export function GraphDetailPane({
           <>
             <LedgerIssueDetail
               compact
+              presentation={presentation}
               detail={ledgerDetail}
               onOpenEntity={openLedgerEntity}
               onAddComment={async (body) => {
@@ -845,11 +849,13 @@ export function GraphDetailPane({
   ) : undefined;
   return (
     <DetailPaneShell
+      presentation={presentation}
       as="aside"
       className="graph-detail-pane"
       bodyClassName="graph-detail-pane__body"
       header={(
         <DetailPaneHeader
+          presentation={presentation}
           variant="standard"
           identity={{
             entityLabel: typeLabel(node.type),
@@ -1109,7 +1115,7 @@ export function GraphView({
   );
 
   const detailPanelContent = useMemo(() => (
-    <GraphDetailPane node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
+    <GraphDetailPane presentation="sidebar" node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
   ), [onNavigate, selectedNode, visibleEdges]);
 
   const detailPanelDescriptor = useMemo(() => ({

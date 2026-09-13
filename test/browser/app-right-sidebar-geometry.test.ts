@@ -70,11 +70,13 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const root=document.querySelector('.native-fixture');
         const body=document.querySelector('.app-right-sidebar__body');
         const header=document.querySelector('.app-right-sidebar__header');
+        const sidebar=document.querySelector('.app-right-sidebar');
         const toggles=()=>document.querySelectorAll('.app-right-sidebar-toggle');
-        const scrollBefore=body.scrollTop; body.scrollTop=30;
-        const initial={toggleCount:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),header:rect(header),body:rect(body),scrollMoved:body.scrollTop>scrollBefore,
+        const scrollOwner=root.classList.contains('native-fixture--chat')?(body.querySelector('.detail-pane-shell__body')||body):body;
+        const scrollBefore=scrollOwner.scrollTop; scrollOwner.scrollTop=30;
+        const initial={toggleCount:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),sidebar:rect(sidebar),header:rect(header),body:rect(body),scrollMoved:scrollOwner.scrollTop>scrollBefore,
           bodyOverflow:getComputedStyle(body).overflowY, nestedVerticalScroll:Array.from(body.querySelectorAll('*')).filter(n=>['auto','scroll'].includes(getComputedStyle(n).overflowY)).length,
-          mainInert:document.querySelector('main').hasAttribute('inert'),railInert:document.querySelector('.app-rail').hasAttribute('inert')};
+          presentation:sidebar.dataset.presentation,mainInert:document.querySelector('main').hasAttribute('inert'),railInert:document.querySelector('.app-rail').hasAttribute('inert')};
         const tabs=Array.from(document.querySelectorAll('[role=tab]'));
         let tabResult=null;
         if(tabs.length){ tabs[0].focus(); tabs[0].dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); await wait(); tabResult={selected:document.querySelector('[role=tab][aria-selected=true]').getAttribute('aria-label'),focused:document.activeElement.getAttribute('aria-label'),tooltips:tabs.map(n=>n.title),text:tabs.map(n=>n.textContent.trim())}; }
@@ -88,13 +90,17 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const beforeStream=document.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-label');
         document.querySelector('[data-stream-update]')?.click(); await wait();
         const afterStream=document.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-label');
+        const preservedScrollOwner=root.classList.contains('native-fixture--chat')?(document.querySelector('.app-right-sidebar__body .detail-pane-shell__body')||document.querySelector('.app-right-sidebar__body')):document.querySelector('.app-right-sidebar__body');
+        preservedScrollOwner.scrollTop=31;
+        const preservedScrollTop=preservedScrollOwner.scrollTop;
         toggles()[0].click(); await wait(); await wait();
         const closedToggle=toggles()[0]; const closedHeader=closedToggle.closest('.detail-pane-header--compact');
         const closed={count:toggles().length,pressed:closedToggle.getAttribute('aria-pressed'),focused:document.activeElement===closedToggle,
           inHeader:Boolean(closedHeader),rightmost:closedHeader?closedHeader.querySelector('.detail-pane-header__main')?.lastElementChild?.contains(closedToggle):false,
           header:closedHeader?rect(closedHeader):null,toggle:rect(closedToggle),mainInert:document.querySelector('main').hasAttribute('inert')};
         toggles()[0].click(); await wait(); await wait(); await waitForRunOptions();
-        const reopened={count:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),focused:document.activeElement===toggles()[0]};
+        const reopenedScrollOwner=root.classList.contains('native-fixture--chat')?(document.querySelector('.app-right-sidebar__body .detail-pane-shell__body')||document.querySelector('.app-right-sidebar__body')):document.querySelector('.app-right-sidebar__body');
+        const reopened={count:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),focused:document.activeElement===toggles()[0],scrollTop:reopenedScrollOwner.scrollTop};
         const chat=document.querySelector('.chat-detail-frame'); const composer=document.querySelector('.conv-compose'); const transcript=document.querySelector('.conv-transcript');
         const transcriptScroll=document.querySelector('.stream-renderer__scroll'); const finalContent=document.querySelector('[data-transcript-final-content]');
         if(transcriptScroll) transcriptScroll.scrollTop=transcriptScroll.scrollHeight;
@@ -116,12 +122,12 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
           chatGeometry:chat?{header:rect(chat.querySelector('.detail-pane-shell__header')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),overlayPointerEvents:getComputedStyle(overlayControl).pointerEvents,composer:composerRect,composerPointerEvents:getComputedStyle(composer).pointerEvents,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
-          runOptions,jumpControl,
+          runOptions,jumpControl,preservedScrollTop,
           stored:localStorage.getItem('mandible_app_right_sidebar:native-${surface}:v1'),
           deterministicRetry:titleErrors?.dataset.deterministicRetry,transientRetry:titleErrors?.dataset.transientRetry,titleCopy:titleErrors?.textContent}));
       })().catch(error=>document.title='fixture-error:'+btoa(String(error?.stack||error)));
     `;
-    const html = `<!doctype html><html data-theme="${theme}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell,.app-layout{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{grid-column:2;grid-row:1;min-width:0}.native-fixture .app-rail{grid-column:1;grid-row:1}.native-fixture .conv-detail{height:100%}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
+    const html = `<!doctype html><html data-theme="${theme}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell,.app-layout{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{grid-column:2;grid-row:1;min-width:0}.native-fixture .app-rail{grid-column:1;grid-row:1}.native-fixture .conv-detail{height:100%}.native-fixture--chat .chat-right-sidebar__content::after{content:'';display:block;height:900px}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
     const path = join(directory, 'fixture.html');
     writeFileSync(path, html);
     const rendered = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-sandbox', '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--window-size=${width},600`, `file://${path}?surface=${surface}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
@@ -143,15 +149,25 @@ describe('production app right sidebar geometry and interaction', () => {
     expect(results).toHaveLength(16);
     for (const result of results) {
       const initial = result.initial as Record<string, unknown>;
-      expect(initial).toMatchObject({ toggleCount: 1, pressed: 'true', scrollMoved: true, bodyOverflow: 'auto' });
+      expect(initial, `${result.surface}/${result.width}/${result.theme} initial sidebar`).toMatchObject({ toggleCount: 1, pressed: 'true', scrollMoved: true });
+      expect(initial.bodyOverflow).toBe(result.surface === 'chat' ? 'hidden' : 'auto');
+      expect(initial.presentation).toBe(result.width === 760 ? 'overlay-drawer' : 'dock');
+      const sidebarRect = initial.sidebar as { left: number; right: number; width: number };
+      expect(sidebarRect.right, `${result.surface}/${result.width}/${result.theme} sidebar right edge`).toBeCloseTo(result.width, 0);
+      expect(sidebarRect.left, `${result.surface}/${result.width}/${result.theme} sidebar visible`).toBeGreaterThanOrEqual(0);
       expect((initial.header as { height: number }).height).toBe(48);
       expect((initial.header as { bottom: number }).bottom).toBe((initial.body as { top: number }).top);
       expect(result.closed, `${result.surface}/${result.width}/${result.theme} closed toggle`).toMatchObject({ count: 1, pressed: 'false', focused: true, mainInert: false });
       expect(result.reopened, `${result.surface}/${result.width}/${result.theme} reopened toggle`).toMatchObject({ count: 1, pressed: 'true', focused: true });
-      expect(result.keyboardWidth).toBe(result.width === 760 ? 456 : 720);
+      expect((result.reopened as { scrollTop: number }).scrollTop, `${result.surface}/${result.width}/${result.theme} preserved scroll`)
+        .toBe(result.preservedScrollTop);
+      expect(result.keyboardWidth).toBe(result.width === 760
+        ? 552
+        : result.surface === 'chat' ? 512 : 592);
       expect(result.pointerWidth).toBeLessThan(result.keyboardWidth as number);
       expect(result.stored).toContain('"width"');
       if (result.width === 760) expect(initial).toMatchObject({ mainInert: true, railInert: true });
+      else expect(initial).toMatchObject({ mainInert: false, railInert: false });
       if (result.tabResult) {
         expect(result.tabResult).toMatchObject({ focused: result.surface === 'chat' ? 'Preview' : 'Message Info', selected: result.surface === 'chat' ? 'Preview' : 'Message Info' });
         expect((result.tabResult as { text: string[] }).text).toEqual(result.surface === 'chat' ? ['', '', ''] : ['', '']);

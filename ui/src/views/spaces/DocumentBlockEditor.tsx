@@ -64,10 +64,10 @@ import {
 import { EMPTY_DOCUMENT_VIEW_STATE } from './documentViewState';
 import { SpaceItemPicker } from './SpaceItemPicker';
 import {
-  SpaceReferenceDetailContent,
-  detailTargetFromResourceRef,
-  type SpaceReferenceDetailTarget,
-} from './SpaceReferenceDetailPanel';
+  ReferenceDetailContent,
+  referenceDetailTargetFromResourceRef,
+  type ReferenceDetailTarget,
+} from '../reference-detail';
 import {
   MarkdownSourceEditor,
   type MarkdownSourceBoundaryDirection,
@@ -308,7 +308,7 @@ export function DocumentBlockEditor({
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
-  const [inspector, setInspector] = useState<SpaceReferenceDetailTarget | null>(null);
+  const [inspector, setInspector] = useState<ReferenceDetailTarget | null>(null);
   const [inspectorHeight, setInspectorHeight] = useState<number | null>(null);
   const [pendingEmbedDelete, setPendingEmbedDelete] = useState<EmbedDeleteDecision | null>(null);
   const fetchRef = useRef(fetchImpl);
@@ -849,7 +849,7 @@ export function DocumentBlockEditor({
   const openReferenceInspector = useCallback(
     (ref: string) => {
       if (!ref.trim()) return;
-      setInspector(detailTargetFromResourceRef(ref));
+      setInspector(referenceDetailTargetFromResourceRef(ref));
     },
     [],
   );
@@ -1189,7 +1189,7 @@ function ReferenceInspector({
   onResizeStart,
   onClose,
 }: {
-  target: SpaceReferenceDetailTarget;
+  target: ReferenceDetailTarget;
   height: number | null;
   onResizeStart: (
     event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>,
@@ -1221,7 +1221,7 @@ function ReferenceInspector({
         </button>
       </header>
       <div className="spaces-block-editor__inspector-body">
-        <SpaceReferenceDetailContent target={target} />
+        <ReferenceDetailContent target={target} />
       </div>
     </aside>
   );

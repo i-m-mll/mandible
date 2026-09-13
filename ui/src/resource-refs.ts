@@ -37,13 +37,20 @@ export interface ParsedResourceRef {
   display: string;
 }
 
-export type PreviewableResourceRef = {
-  kind: 'issue';
-  ref: string;
-  repoId?: string;
-  href: string;
-  label: string;
-};
+export type PreviewableResourceRef =
+  | {
+      kind: 'issue';
+      ref: string;
+      repoId?: string;
+      href: string;
+      label: string;
+    }
+  | {
+      kind: 'artifact';
+      ref: string;
+      href: string;
+      label: string;
+    };
 
 const DIRECT_NAV_SCHEMES = new Set(['http', 'https', 'mailto']);
 
@@ -298,14 +305,13 @@ export function issueAuthorityFromResourceRef(value: string): { ref: string; rep
  */
 export function previewableResourceFromAnchor(anchor: HTMLAnchorElement): PreviewableResourceRef | null {
   const wrapped = anchor.closest<HTMLElement>('[data-resource-ref]')?.dataset.resourceRef;
-  const wrappedIssue = wrapped ? issueAuthorityFromResourceRef(wrapped) : null;
-  if (wrappedIssue) {
-    return {
-      kind: 'issue',
-      ...wrappedIssue,
-      href: anchor.getAttribute('href') ?? anchor.href,
-      label: anchor.textContent?.trim() || wrappedIssue.ref,
-    };
+  if (wrapped) {
+    const parsed = parseResourceRef(wrapped);
+    const href = anchor.getAttribute('href') ?? anchor.href;
+    const label = anchor.textContent?.trim() || parsed?.display || wrapped;
+    const wrappedIssue = issueAuthorityFromResourceRef(wrapped);
+    if (wrappedIssue) return { kind: 'issue', ...wrappedIssue, href, label };
+    if (parsed?.kind === 'artifact') return { kind: 'artifact', ref: parsed.canonical, href, label };
   }
 
   const rawHref = anchor.getAttribute('href') ?? '';
@@ -321,16 +327,27 @@ export function previewableResourceFromAnchor(anchor: HTMLAnchorElement): Previe
   try {
     const url = new URL(rawHref, window.location.href);
     const [path, query = ''] = url.hash.replace(/^#/, '').split('?');
-    if (path.replace(/^\//, '') !== 'issues') return null;
+    const route = path.replace(/^\//, '');
     const params = new URLSearchParams(query);
-    const ref = params.get('issue');
+    if (route === 'issues') {
+      const ref = params.get('issue');
+      if (!ref) return null;
+      return {
+        kind: 'issue',
+        ref,
+        repoId: params.get('repo') ?? undefined,
+        href: rawHref,
+        label: anchor.textContent?.trim() || ref,
+      };
+    }
+    if (route !== 'artifacts') return null;
+    const ref = params.get('ref') ?? params.get('series') ?? params.get('artifact');
     if (!ref) return null;
     return {
-      kind: 'issue',
+      kind: 'artifact',
       ref,
-      repoId: params.get('repo') ?? undefined,
       href: rawHref,
-      label: anchor.textContent?.trim() || ref,
+      label: anchor.textContent?.trim() || displayResourceRef(ref),
     };
   } catch {
     return null;

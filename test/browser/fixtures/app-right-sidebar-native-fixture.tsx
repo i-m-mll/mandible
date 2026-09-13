@@ -5,6 +5,9 @@ import { ApiError } from '../../../ui/src/api';
 import {
   AppRightSidebarSurface,
   AppRightSidebarToggleButton,
+  CHAT_DETAIL_PREVIEW_MIN_WIDTH,
+  CHAT_MAIN_MIN_WIDTH,
+  resolveAppRightSidebarLayout,
   type AppRightSidebarDescriptor,
 } from '../../../ui/src/app-shell';
 import { ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRightSidebar';
@@ -133,13 +136,14 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   const descriptor = useMemo<AppRightSidebarDescriptor>(() => {
     if (surface === 'chat') return {
       id: scope, ariaLabel: 'Chat sidebar', kind: 'tabs', open: stored.open, width: stored.width,
+      minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH, maxWidth: 720, mainMinWidth: CHAT_MAIN_MIN_WIDTH,
       togglePlacement: 'detail-header',
       onOpenChange: setOpen, onWidthChange: (width) => updateStored({ width }), activeTab: tab,
       onActiveTabChange: setTab,
       tabs: [
-        { id: 'overview', label: 'Session Overview', tooltip: 'Session Overview', icon: <TestIcon kind="overview" />, content: <><ChatSessionOverview providerSessionId={null} conversationId="native" /><ScrollFill /></> },
-        { id: 'preview', label: 'Preview', tooltip: 'Preview', icon: <TestIcon kind="preview" />, content: <><ChatPreview target={null} /><ScrollFill /></> },
-        { id: 'activity', label: 'Activity', tooltip: 'Subagents and workflow runs', icon: <TestIcon kind="activity" />, content: <ScrollFill /> },
+        { id: 'overview', label: 'Session Overview', tooltip: 'Session Overview', icon: <TestIcon kind="overview" />, scrollOwner: 'detail', content: <ChatSessionOverview providerSessionId={null} conversationId="native" /> },
+        { id: 'preview', label: 'Preview', tooltip: 'Preview', icon: <TestIcon kind="preview" />, scrollOwner: 'detail', content: <ChatPreview target={null} /> },
+        { id: 'activity', label: 'Activity', tooltip: 'Subagents and workflow runs', icon: <TestIcon kind="activity" />, scrollOwner: 'detail', content: <ScrollFill /> },
       ],
     };
     if (surface === 'graph') return {
@@ -164,17 +168,20 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   }, [stored.open, stored.width, surface, tab, streamRevision]);
   const deterministic = conversationLoadFailure(new ApiError('raw', 409, 'provider_metadata_missing'), true);
   const transient = conversationLoadFailure(new ApiError('raw', 503, 'provider_metadata_unavailable'), true);
-  const narrow = window.innerWidth <= 760;
+  const availableWidth = window.innerWidth - 208;
+  const layout = resolveAppRightSidebarLayout(descriptor, availableWidth, availableWidth);
+  const overlay = stored.open && layout.presentation === 'overlay-drawer';
   return (
     <div className={`app-shell native-fixture native-fixture--${surface}`}>
-      <div className={`app-layout app-layout--route-${surface}${stored.open ? ' app-layout--right-sidebar-open' : ''}`} style={{ '--app-right-sidebar-width': `${stored.width}px` }}>
-        <aside className="app-rail" inert={narrow && stored.open} />
-        <main className={`app-content app-content--${surface}`} inert={narrow && stored.open}>
+      <div className={`app-layout app-layout--route-${surface}${stored.open ? ' app-layout--right-sidebar-open' : ''}${stored.open && layout.presentation === 'dock' ? ' app-layout--right-sidebar-docked' : ''}${overlay ? ' app-layout--right-sidebar-overlay' : ''}`} style={{ '--app-right-sidebar-width': `${layout.effectiveWidth}px` }}>
+        <aside className="app-rail" inert={overlay} />
+        <main className={`app-content app-content--${surface}`} inert={overlay}>
           {surface === 'chat' ? <ChatMain descriptor={descriptor} toggleRef={toggleRef} setOpen={setOpen} /> : <div className="native-main">{surface} main</div>}
           {surface === 'console' ? <button type="button" data-stream-update onClick={() => setStreamRevision((value) => value + 1)}>Stream update {streamRevision}</button> : null}
           {surface === 'chat' ? <div data-title-errors data-deterministic-retry={String(deterministic.retryable)} data-transient-retry={String(transient.retryable)}>{deterministic.message}|{transient.message}</div> : null}
         </main>
-        {stored.open ? <AppRightSidebarSurface descriptor={descriptor} toggleRef={toggleRef} onOpenChange={setOpen} /> : surface !== 'chat' ? (
+        <AppRightSidebarSurface descriptor={descriptor} toggleRef={toggleRef} onOpenChange={setOpen} layout={layout} open={stored.open} />
+        {!stored.open && surface !== 'chat' ? (
           <AppRightSidebarToggleButton descriptor={descriptor} buttonRef={toggleRef} open={false} onOpenChange={setOpen} className="app-content__right-sidebar-toggle" />
         ) : null}
       </div>

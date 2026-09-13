@@ -15,27 +15,28 @@ import {
   type ArtifactVersionRecord,
   type KnowledgeBackrefRecord,
   type LedgerIssueDetailProjection,
-} from '../../api';
-import { LedgerIssueDetail } from '../../components/ledger/IssueDetail';
-import { parseResourceRef, type ParsedResourceRef } from '../../resource-refs';
-import { shortRouteId } from '../../routing';
-import { ArtifactDetail } from '../artifacts';
-import { LoadingSkeleton } from '../../components/LoadingSkeleton';
-import { detailRequestKey } from '../../detail-cache';
-import { useKeyedAsyncDetail } from '../../hooks/useKeyedAsyncDetail';
+} from '../api';
+import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
+import { parseResourceRef, type ParsedResourceRef } from '../resource-refs';
+import { shortRouteId } from '../routing';
+import { ArtifactDetail } from './artifacts';
+import { LoadingSkeleton } from '../components/LoadingSkeleton';
+import { detailRequestKey } from '../detail-cache';
+import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
+import type { DetailPanePresentation } from '../components/shared/DetailPaneShell';
 
-export type SpaceReferenceDetailTarget =
-  | { kind: 'issue'; ref: string }
+export type ReferenceDetailTarget =
+  | { kind: 'issue'; ref: string; repoId?: string }
   | { kind: 'artifact'; ref: string }
   | { kind: 'unsupported'; ref: string; label?: string };
 
-export function detailTargetFromResourceRef(ref: string): SpaceReferenceDetailTarget {
+export function referenceDetailTargetFromResourceRef(ref: string): ReferenceDetailTarget {
   const parsed = parseResourceRef(ref);
   if (!parsed) return { kind: 'unsupported', ref };
   return detailTargetFromParsedRef(parsed);
 }
 
-function detailTargetFromParsedRef(parsed: ParsedResourceRef): SpaceReferenceDetailTarget {
+function detailTargetFromParsedRef(parsed: ParsedResourceRef): ReferenceDetailTarget {
   if (parsed.kind === 'issue') {
     return { kind: 'issue', ref: parsed.canonical.replace(/^issue:/i, '') };
   }
@@ -45,13 +46,15 @@ function detailTargetFromParsedRef(parsed: ParsedResourceRef): SpaceReferenceDet
   return { kind: 'unsupported', ref: parsed.canonical, label: parsed.display };
 }
 
-export function SpaceReferenceDetailContent({
+export function ReferenceDetailContent({
   target,
+  presentation = 'main',
 }: {
-  target: SpaceReferenceDetailTarget;
+  target: ReferenceDetailTarget;
+  presentation?: DetailPanePresentation;
 }): JSX.Element {
-  if (target.kind === 'issue') return <IssueReferenceDetail issueRef={target.ref} />;
-  if (target.kind === 'artifact') return <ArtifactReferenceDetail artifactRef={target.ref} />;
+  if (target.kind === 'issue') return <IssueReferenceDetail issueRef={target.ref} repoId={target.repoId} presentation={presentation} />;
+  if (target.kind === 'artifact') return <ArtifactReferenceDetail artifactRef={target.ref} presentation={presentation} />;
   return (
     <div className="space-reference-detail__unsupported">
       No detail panel is available for {target.label ?? target.ref}.
@@ -59,7 +62,15 @@ export function SpaceReferenceDetailContent({
   );
 }
 
-export function IssueReferenceDetail({ issueRef, repoId }: { issueRef: string; repoId?: string }): JSX.Element {
+export function IssueReferenceDetail({
+  issueRef,
+  repoId,
+  presentation = 'main',
+}: {
+  issueRef: string;
+  repoId?: string;
+  presentation?: DetailPanePresentation;
+}): JSX.Element {
   const loadDetail = useCallback(
     (_signal: AbortSignal) => repoId
       ? getLedgerIssueDetailByRef(repoId, issueRef)
@@ -83,6 +94,7 @@ export function IssueReferenceDetail({ issueRef, repoId }: { issueRef: string; r
     <LedgerIssueDetail
       detail={detail}
       compact
+      presentation={presentation}
       hydrating={loading}
       onOpenEntity={(type, id, repoId) => {
         if (type === 'issue') {
@@ -99,7 +111,13 @@ export function IssueReferenceDetail({ issueRef, repoId }: { issueRef: string; r
   );
 }
 
-export function ArtifactReferenceDetail({ artifactRef }: { artifactRef: string }): JSX.Element {
+export function ArtifactReferenceDetail({
+  artifactRef,
+  presentation = 'main',
+}: {
+  artifactRef: string;
+  presentation?: DetailPanePresentation;
+}): JSX.Element {
   const [resolution, setResolution] = useState<ArtifactResolveResult | null>(null);
   const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
   const [versionHistory, setVersionHistory] = useState<ArtifactVersionHistory | null>(null);
@@ -227,6 +245,7 @@ export function ArtifactReferenceDetail({ artifactRef }: { artifactRef: string }
       knowledgeBackrefs={knowledgeBackrefs}
       knowledgeLoading={knowledgeLoading}
       knowledgeError={knowledgeError}
+      presentation={presentation}
     />
   );
 }

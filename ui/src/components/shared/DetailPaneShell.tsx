@@ -3,6 +3,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'preact/
 
 type DetailPaneShellAs = 'article' | 'section' | 'div' | 'aside';
 export type DetailPaneShellVariant = 'default' | 'compact';
+export type DetailPanePresentation = 'main' | 'sidebar';
 
 /**
  * Content for the shell's one anchored footer slot. `content` may be a
@@ -19,6 +20,7 @@ export type DetailPaneShellFooter = {
 export type DetailPaneShellProps = {
   as?: DetailPaneShellAs;
   variant?: DetailPaneShellVariant;
+  presentation?: DetailPanePresentation;
   className?: string;
   headerClassName?: string;
   headerPrimaryClassName?: string;
@@ -70,6 +72,7 @@ function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void {
 export function DetailPaneShell({
   as: Element = 'article',
   variant = 'default',
+  presentation = 'main',
   className,
   headerClassName,
   headerPrimaryClassName,
@@ -154,12 +157,14 @@ export function DetailPaneShell({
         className={classNames(
           'detail-pane-shell',
           variant === 'compact' ? 'detail-pane-shell--compact' : undefined,
+          `detail-pane-shell--${presentation}`,
           footer?.mode === 'overlay' ? 'detail-pane-shell--overlay-footer' : undefined,
           overlayControl ? 'detail-pane-shell--overlay-control' : undefined,
           className,
         )}
         ref={(node: HTMLElement | null) => { shellRef.current = node; }}
-        data-app-surface="main"
+        data-app-surface={presentation === 'main' ? 'main' : undefined}
+        data-detail-pane-presentation={presentation}
         aria-busy={ariaBusy === undefined ? undefined : ariaBusy ? 'true' : 'false'}
       >
         <header

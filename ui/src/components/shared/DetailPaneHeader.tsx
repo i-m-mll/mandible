@@ -2,6 +2,7 @@ import type { ComponentChildren } from 'preact';
 import { shortIdentityRef } from '../../identity-refs';
 import { CopyRefButton, DetailHeaderIdentity } from './DetailHeaderIdentity';
 import { AppRightSidebarToggleButton, useAppShell } from '../../app-shell';
+import type { DetailPanePresentation } from './DetailPaneShell';
 
 export type DetailPaneHeaderVariant = 'standard' | 'compact' | 'versioned';
 
@@ -30,6 +31,7 @@ export type DetailPaneHeaderSelector = {
 };
 
 type DetailPaneHeaderBaseProps = {
+  presentation?: DetailPanePresentation;
   title: ComponentChildren;
   titleId?: string;
   titleTooltip?: string;
@@ -118,6 +120,7 @@ function renderIdentity(identity: DetailPaneHeaderIdentity): JSX.Element {
  */
 export function DetailPaneHeader({
   variant,
+  presentation = 'main',
   identity,
   title,
   titleId,
@@ -135,7 +138,8 @@ export function DetailPaneHeader({
   className,
 }: DetailPaneHeaderProps): JSX.Element {
   const { active, rightSidebar, setRightSidebarOpen } = useAppShell();
-  const automaticRightSidebarAction = active
+  const automaticRightSidebarAction = presentation === 'main'
+    && active
     && rightSidebar
     && !rightSidebar.open
     ? (
@@ -146,7 +150,7 @@ export function DetailPaneHeader({
         />
       )
     : null;
-  const rightSidebarActionSlot = active && rightSidebar
+  const rightSidebarActionSlot = presentation === 'main' && active && rightSidebar
     ? automaticRightSidebarAction ?? (
       <span
         className="detail-pane-header__right-sidebar-action-slot"
@@ -159,6 +163,7 @@ export function DetailPaneHeader({
       <div
         className={classNames('detail-pane-header', 'detail-pane-header--compact', className)}
         data-detail-pane-header-variant="compact"
+        data-detail-pane-presentation={presentation}
       >
         <div className="detail-pane-header__main">
           <div className="detail-pane-header__title-row">
@@ -219,6 +224,7 @@ export function DetailPaneHeader({
         className,
       )}
       data-detail-pane-header-variant={variant}
+      data-detail-pane-presentation={presentation}
     >
       <div className="detail-pane-header__main">
         {(identity || (toplineState !== undefined && toplineState !== null) || selector || rightSidebarActionSlot) && (

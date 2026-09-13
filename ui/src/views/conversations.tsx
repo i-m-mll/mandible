@@ -122,7 +122,11 @@ import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
 import { chatItemIdentityKey, mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
 import type { ChatItem } from '../../../src/parsers/types';
-import { useRegisterAppRightSidebar } from '../app-shell';
+import {
+  CHAT_DETAIL_PREVIEW_MIN_WIDTH,
+  CHAT_MAIN_MIN_WIDTH,
+  useRegisterAppRightSidebar,
+} from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 import { subscribeClientAuthSessionState } from '../client-auth-token';
@@ -1507,8 +1511,9 @@ function ConversationDetail({
     ariaLabel: 'Chat sidebar',
     open: rightSidebarState.open,
     width: rightSidebarState.width,
-    minWidth: 300,
+    minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH,
     maxWidth: 720,
+    mainMinWidth: CHAT_MAIN_MIN_WIDTH,
     togglePlacement: 'detail-header' as const,
     onOpenChange: (open: boolean) => updateRightSidebarState({ open }),
     onWidthChange: (width: number) => updateRightSidebarState({ width }),
@@ -1523,6 +1528,7 @@ function ConversationDetail({
         label: 'Session Overview',
         tooltip: 'Session Overview',
         icon: <OverviewTabIcon />,
+        scrollOwner: 'detail' as const,
         content: <ChatSessionOverview providerSessionId={conversation.session_id ?? null} conversationId={conversationId} />,
       },
       {
@@ -1530,6 +1536,7 @@ function ConversationDetail({
         label: 'Preview',
         tooltip: 'Preview',
         icon: <PreviewTabIcon />,
+        scrollOwner: 'detail' as const,
         content: <ChatPreview target={currentRightSidebarViewState.previewTarget} />,
       },
       {
@@ -1537,6 +1544,7 @@ function ConversationDetail({
         label: 'Activity',
         tooltip: 'Subagents and workflow runs',
         icon: <ActivityTabIcon />,
+        scrollOwner: 'detail' as const,
         content: <ChatActivity items={activityItems} />,
       },
     ],
