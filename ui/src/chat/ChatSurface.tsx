@@ -16,6 +16,7 @@ import { UserBubble } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
 import { ActivityGroup, ActivityRow } from '../components/message-blocks/ActivityBlock';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
+import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import { openMarkdownDocument } from './markdownActions';
 import {
   deriveLiveLabel,
@@ -689,14 +690,22 @@ export function ChatSurface({
         )}
       </div>
       {showJumpToLatest && (
-        <button
-          type="button"
-          className="stream-renderer__scroll-btn"
-          onClick={handleJumpToBottom}
-          disabled={jumpingToLatest}
-        >
-          {jumpingToLatest ? 'Loading latest…' : 'Jump to latest'}
-        </button>
+        <>
+          <button
+            type="button"
+            className="chat-circle-action stream-renderer__scroll-btn"
+            onClick={handleJumpToBottom}
+            disabled={jumpingToLatest}
+            aria-label="Jump to latest"
+            aria-busy={jumpingToLatest ? 'true' : 'false'}
+            title="Jump to latest"
+          >
+            <VerticalArrowIcon direction="down" />
+          </button>
+          {jumpingToLatest && (
+            <span className="sr-only" role="status" aria-live="polite">Loading latest…</span>
+          )}
+        </>
       )}
     </div>
   );

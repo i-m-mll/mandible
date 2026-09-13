@@ -10,6 +10,7 @@ import {
 import { ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRightSidebar';
 import { MessageInfoPanel } from '../../../ui/src/components/console/MessageInfoPanel';
 import { SessionControls } from '../../../ui/src/components/console/SessionControls';
+import { VerticalArrowIcon } from '../../../ui/src/components/icons/VerticalArrowIcon';
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
 import { useIntrinsicOverflowGroup } from '../../../ui/src/hooks/useIntrinsicOverflowGroup';
 import { useAppRightSidebarState } from '../../../ui/src/right-sidebar-state';
@@ -56,7 +57,7 @@ function NativeComposer({ layoutKey }: { layoutKey: string }): JSX.Element {
           <span ref={geometry.fixedRef} className="conv-compose__runtime-actions">
             <button type="button" className="btn btn--ghost btn--sm conv-compose__run-options-trigger" data-overflow-trigger aria-label="Run options" title="Run options"><DotsIcon /></button>
             <span className="context-usage">42%</span>
-            <button type="button" className="conv-compose__send" aria-label="Send"><ChatComposerSubmitIcon /></button>
+            <button type="button" className="chat-circle-action conv-compose__send" aria-label="Send"><ChatComposerSubmitIcon /></button>
           </span>
         </div>
       </div>
@@ -73,6 +74,9 @@ function NativeTranscript(): JSX.Element {
             <div style={{ height: 900 }} />
             <div data-transcript-final-content style={{ height: 24 }}>Final transcript line</div>
           </div>
+          <button type="button" className="chat-circle-action stream-renderer__scroll-btn" aria-label="Jump to latest" title="Jump to latest">
+            <VerticalArrowIcon direction="down" />
+          </button>
         </div>
       </div>
     </div>

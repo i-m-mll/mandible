@@ -620,9 +620,9 @@ describe('ChatSurface stream behavior', () => {
     expect(document.querySelectorAll('.turn-group').length).toBeLessThan(40);
   });
 
-  it('keeps Jump keyboard activation native and delegates true-end loading', () => {
+  it('keeps the icon-only Jump control accessible and delegates true-end loading', () => {
     const jump = vi.fn();
-    render(
+    const { rerender } = render(
       <ChatSurface
         events={[user('prompt', 'u1')]}
         streaming={false}
@@ -633,8 +633,31 @@ describe('ChatSurface stream behavior', () => {
     );
     const button = screen.getByRole('button', { name: /jump to latest/i });
     expect(button.getAttribute('type')).toBe('button');
+    expect(button.getAttribute('aria-label')).toBe('Jump to latest');
+    expect(button.getAttribute('aria-busy')).toBe('false');
+    expect(button.getAttribute('title')).toBe('Jump to latest');
+    expect(button.classList.contains('chat-circle-action')).toBe(true);
+    const icon = button.querySelector('svg');
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
+    expect(icon?.getAttribute('focusable')).toBe('false');
+    expect(button.textContent).toBe('');
     button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
     expect(jump).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ChatSurface
+        events={[user('prompt', 'u1')]}
+        streaming={false}
+        unmaterializedAfterCount={10}
+        onJumpToLatest={jump}
+        jumpingToLatest
+        sessionInfo={{ sessionId: 'jump-keyboard' }}
+      />,
+    );
+    const loadingButton = screen.getByRole('button', { name: 'Jump to latest' });
+    expect(loadingButton.getAttribute('aria-busy')).toBe('true');
+    expect(loadingButton).toHaveProperty('disabled', true);
+    expect(screen.getByRole('status').textContent).toBe('Loading latest…');
   });
 
   it('expands thinking while streaming and collapses it after resolution by default', () => {

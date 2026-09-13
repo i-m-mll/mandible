@@ -941,25 +941,16 @@
 
 /* Jump-to-bottom floating button */
 .stream-renderer__scroll-btn {
+  --chat-circle-action-visual-size: 22px;
+  --chat-circle-action-icon-size: 14px;
+  --chat-circle-action-bg: #5f6368;
+  --chat-circle-action-fg: #fff;
   position: absolute;
   bottom: var(--space-3);
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;
-  background: #5f6368;
-  border: 1px solid #73777c;
-  color: #fff;
-  border-radius: 999px;
-  padding: 3px var(--space-3);
-  font-size: var(--text-xs);
-  font-family: var(--font-sans);
-  cursor: pointer;
   opacity: 1;
-  transition: background 0.2s ease;
-}
-
-.stream-renderer__scroll-btn:hover {
-  background: #4d5156;
 }
 
 /* Bug: db5e986 — optimistic user prompt bubble shown immediately after submission */
