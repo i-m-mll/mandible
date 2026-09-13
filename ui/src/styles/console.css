@@ -894,10 +894,6 @@
 /* Bug: a654b69 — P4: individual nodes within a grouped turn */
 .stream-turn-node {
   width: 100%;
-  margin-bottom: var(--space-2);
-}
-.stream-turn-node:last-child {
-  margin-bottom: 0;
 }
 
 .stream-live-indicator {
