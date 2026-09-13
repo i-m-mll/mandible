@@ -75,7 +75,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const root=document.querySelector('.native-fixture');
         const toggles=()=>document.querySelectorAll('.app-right-sidebar-toggle');
         const sidebar=document.querySelector('.app-right-sidebar');
-        const autoCollapsed={right:sidebar.hidden,view:!root.querySelector('.app-layout').classList.contains('app-layout--view-sidebar-open')};
+        const autoCollapsed={right:sidebar.hidden,rightDisplay:getComputedStyle(sidebar).display,view:!root.querySelector('.app-layout').classList.contains('app-layout--view-sidebar-open')};
         if(sidebar.hidden){ toggles()[0].click(); await wait(); await wait(); }
         if(!root.querySelector('.app-layout').classList.contains('app-layout--view-sidebar-open')){ root.querySelector('[data-view-sidebar-toggle]').click(); await wait(); }
         const body=document.querySelector('.app-right-sidebar__body');
@@ -107,7 +107,8 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const closedToggle=toggles()[0]; const closedHeader=closedToggle.closest('.detail-pane-header--compact');
         const closed={count:toggles().length,pressed:closedToggle.getAttribute('aria-pressed'),focused:document.activeElement===closedToggle,
           inHeader:Boolean(closedHeader),rightmost:closedHeader?closedHeader.querySelector('.detail-pane-header__main')?.lastElementChild?.contains(closedToggle):false,
-          header:closedHeader?rect(closedHeader):null,toggle:rect(closedToggle),mainInert:document.querySelector('main').hasAttribute('inert')};
+          header:closedHeader?rect(closedHeader):null,toggle:rect(closedToggle),sidebar:rect(sidebar),display:getComputedStyle(sidebar).display,
+          mainInert:document.querySelector('main').hasAttribute('inert')};
         toggles()[0].click(); await wait(); await wait(); await waitForRunOptions();
         const reopenedScrollOwner=root.classList.contains('native-fixture--chat')?(document.querySelector('.app-right-sidebar__body .detail-pane-shell__body')||document.querySelector('.app-right-sidebar__body')):document.querySelector('.app-right-sidebar__body');
         const reopened={count:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),focused:document.activeElement===toggles()[0],scrollTop:reopenedScrollOwner.scrollTop};
@@ -160,6 +161,7 @@ describe('production app right sidebar geometry and interaction', () => {
     for (const result of results) {
       expect(result.autoCollapsed).toEqual({
         right: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
+        rightDisplay: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH ? 'none' : 'grid',
         view: result.width < VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
       });
       expect(result.reopenedLayout).toMatchObject({
@@ -180,7 +182,14 @@ describe('production app right sidebar geometry and interaction', () => {
       expect(sidebarRect.left, `${result.surface}/${result.width}/${result.theme} sidebar visible`).toBeGreaterThanOrEqual(0);
       expect((initial.header as { height: number }).height).toBe(48);
       expect((initial.header as { bottom: number }).bottom).toBe((initial.body as { top: number }).top);
-      expect(result.closed, `${result.surface}/${result.width}/${result.theme} closed toggle`).toMatchObject({ count: 1, pressed: 'false', focused: true, mainInert: false });
+      expect(result.closed, `${result.surface}/${result.width}/${result.theme} closed toggle`).toMatchObject({
+        count: 1,
+        pressed: 'false',
+        focused: true,
+        display: 'none',
+        sidebar: { width: 0 },
+        mainInert: false,
+      });
       expect(result.reopened, `${result.surface}/${result.width}/${result.theme} reopened toggle`).toMatchObject({ count: 1, pressed: 'true', focused: true });
       expect((result.reopened as { scrollTop: number }).scrollTop, `${result.surface}/${result.width}/${result.theme} preserved scroll`)
         .toBe(result.preservedScrollTop);

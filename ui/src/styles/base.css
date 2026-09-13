@@ -406,6 +406,10 @@ a {
   z-index: 61;
 }
 
+.app-right-sidebar[hidden] {
+  display: none;
+}
+
 .app-right-sidebar__resize {
   position: absolute;
   inset: 0 auto 0 -5px;
