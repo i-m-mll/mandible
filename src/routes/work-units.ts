@@ -718,13 +718,13 @@ function findExistingClaimWorkUnit(
         `SELECT id, state, branch, ledger_issue_id, assigned_session_id
          FROM work_units
          WHERE ${lookup.identity}
-           AND (branch = ? OR branch IS NULL)
+           AND (branch = ? OR (branch IS NULL AND auth_request_id IS NULL))
            AND state IN ('open', 'committed')
          ORDER BY CASE WHEN branch = ? THEN 0 ELSE 1 END, created_at DESC
          LIMIT 1`
       )
       .get(...lookup.params, branch, branch) as ExistingWorkUnit | undefined;
-    if (byBranch) return byBranch;
+    return byBranch;
   }
 
   return db
@@ -752,13 +752,13 @@ function findExistingActivateWorkUnit(
         `SELECT id, state, branch, ledger_issue_id, assigned_session_id
          FROM work_units
          WHERE ${lookup.identity}
-           AND (branch = ? OR branch IS NULL)
+           AND (branch = ? OR (branch IS NULL AND auth_request_id IS NULL))
            AND state IN ('open', 'committed', 'abandoned')
          ORDER BY CASE WHEN branch = ? THEN 0 ELSE 1 END, created_at DESC
          LIMIT 1`
       )
       .get(...lookup.params, branch, branch) as ExistingWorkUnit | undefined;
-    if (byBranch) return byBranch;
+    return byBranch;
   }
 
   return db
