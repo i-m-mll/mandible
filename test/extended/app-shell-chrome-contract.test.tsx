@@ -117,7 +117,9 @@ describe('shared app-shell chrome contract', () => {
     expect(appSource).not.toContain('rightSidebar.layout');
 
     expect(ruleBody(base, '.app-right-sidebar')).toContain('grid-column: 3');
-    expect(ruleBody(base, '.app-right-sidebar--overlay-drawer')).toContain('position: absolute');
+    expect(base).not.toContain('overlay-drawer');
+    expect(appShellSource).not.toContain('mainMinWidth');
+    expect(appSource).toContain('responsiveSidebarThresholdTransition');
     expect(ruleBody(base, '.app-right-sidebar')).toContain('grid-template-rows: var(--app-header-height)');
     expect(base).toMatch(/\.app-right-sidebar__body\s*\{[^}]*overflow:\s*auto/s);
     expect(base).not.toContain('.app-right-sidebar--anchored-detail');

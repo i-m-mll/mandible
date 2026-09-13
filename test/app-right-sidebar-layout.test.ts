@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CHAT_DETAIL_PREVIEW_MIN_WIDTH,
-  CHAT_MAIN_MIN_WIDTH,
-  appRightSidebarAvailableWidths,
+  RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
+  VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
+  WIDE_RESPONSIVE_SIDEBAR_STATE,
+  responsiveSidebarThresholdTransition,
   resolveAppRightSidebarLayout,
 } from '../ui/src/app-shell';
 
@@ -11,55 +13,78 @@ const chatSidebar = {
   width: 420,
   minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH,
   maxWidth: 720,
-  mainMinWidth: CHAT_MAIN_MIN_WIDTH,
 };
 
 describe('app right-sidebar layout', () => {
-  it('docks only when both calibrated Chat and preview widths fit', () => {
-    expect(resolveAppRightSidebarLayout(chatSidebar, 1072)).toEqual({
+  it('always uses the ordinary docked grid without a main-width constraint', () => {
+    expect(resolveAppRightSidebarLayout(chatSidebar, 1280)).toEqual({
       presentation: 'dock',
-      effectiveWidth: 420,
-      minWidth: 360,
-      maxWidth: 512,
-    });
-    expect(resolveAppRightSidebarLayout(chatSidebar, 900, 1072)).toEqual({
-      presentation: 'overlay-drawer',
       effectiveWidth: 420,
       minWidth: 360,
       maxWidth: 720,
     });
-  });
-
-  it('clamps only effective geometry and keeps a usable drawer on narrower content', () => {
-    expect(resolveAppRightSidebarLayout({ ...chatSidebar, width: 700 }, 1200)).toMatchObject({
+    expect(resolveAppRightSidebarLayout(chatSidebar, 600)).toEqual({
       presentation: 'dock',
-      effectiveWidth: 640,
-    });
-    expect(resolveAppRightSidebarLayout(chatSidebar, 500, 320)).toEqual({
-      presentation: 'overlay-drawer',
-      effectiveWidth: 320,
-      minWidth: 320,
-      maxWidth: 320,
+      effectiveWidth: 360,
+      minWidth: 360,
+      maxWidth: 360,
     });
     expect(chatSidebar.width).toBe(420);
   });
 
-  it('derives stable available widths from physical edges, independent of dock history', () => {
-    const layout = { left: 0, right: 1280 } as DOMRect;
-    const viewSidebar = { left: 208, right: 528 } as DOMRect;
-    const beforeDock = appRightSidebarAvailableWidths(
-      layout,
-      { left: 208, right: 1280 } as DOMRect,
-      viewSidebar,
-      8,
+  it('closes the right sidebar once on threshold entry', () => {
+    const entered = responsiveSidebarThresholdTransition(
+      WIDE_RESPONSIVE_SIDEBAR_STATE,
+      RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH - 1,
     );
-    const afterDock = appRightSidebarAvailableWidths(
-      layout,
-      { left: 208, right: 860 } as DOMRect,
-      viewSidebar,
-      8,
+    expect(entered).toMatchObject({ closeRight: true, closeView: false });
+    expect(responsiveSidebarThresholdTransition(entered.state, RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH - 50))
+      .toMatchObject({ closeRight: false, closeView: false });
+    expect(responsiveSidebarThresholdTransition(WIDE_RESPONSIVE_SIDEBAR_STATE, 962))
+      .toMatchObject({ closeRight: true, closeView: false });
+  });
+
+  it('defers threshold consumption until the active sidebar owner is available', () => {
+    const pending = responsiveSidebarThresholdTransition(
+      WIDE_RESPONSIVE_SIDEBAR_STATE,
+      RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH - 1,
+      { right: false, view: false },
     );
-    expect(beforeDock).toEqual({ mainAndSidebarWidth: 744, drawerWidth: 1072 });
-    expect(afterDock).toEqual(beforeDock);
+    expect(pending).toMatchObject({
+      state: WIDE_RESPONSIVE_SIDEBAR_STATE,
+      closeRight: false,
+      closeView: false,
+    });
+    expect(responsiveSidebarThresholdTransition(
+      pending.state,
+      RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH - 1,
+      { right: true, view: false },
+    )).toMatchObject({ closeRight: true, closeView: false });
+  });
+
+  it('respects manual reopening until exit re-arms the threshold', () => {
+    const entered = responsiveSidebarThresholdTransition(
+      WIDE_RESPONSIVE_SIDEBAR_STATE,
+      RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH - 1,
+    );
+    const afterManualReopen = responsiveSidebarThresholdTransition(
+      entered.state,
+      RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH - 20,
+    );
+    expect(afterManualReopen.closeRight).toBe(false);
+    const exited = responsiveSidebarThresholdTransition(
+      afterManualReopen.state,
+      RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
+    );
+    expect(exited.closeRight).toBe(false);
+    expect(responsiveSidebarThresholdTransition(exited.state, RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH - 1).closeRight)
+      .toBe(true);
+  });
+
+  it('collapses both sidebars together on first entry below the narrower threshold', () => {
+    expect(responsiveSidebarThresholdTransition(
+      WIDE_RESPONSIVE_SIDEBAR_STATE,
+      VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH - 1,
+    )).toMatchObject({ closeRight: true, closeView: true });
   });
 });
