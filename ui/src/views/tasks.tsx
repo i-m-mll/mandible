@@ -55,6 +55,18 @@ import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
+import { usePersistedViewState } from '../hooks/usePersistedViewState';
+
+const TASKS_SELECTION_STATE_KEY = 'mandible.tasks.selection:v1';
+
+function normalizeTasksSelectionState(value: unknown): { selectedKey: string | null } {
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    selectedKey: typeof record.selectedKey === 'string' && record.selectedKey.trim()
+      ? record.selectedKey
+      : null,
+  };
+}
 
 /** Poll cadence while the route is visible. Generations arrive ~hourly. */
 export const TASKS_POLL_INTERVAL_MS = 60_000;
@@ -836,6 +848,11 @@ function taskSearchText(item: TaskInventoryItem): string {
 }
 
 export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JSX.Element {
+  const [selectionState, setSelectionState] = usePersistedViewState(
+    TASKS_SELECTION_STATE_KEY,
+    normalizeTasksSelectionState,
+    { selectedKey: null },
+  );
   const [inventory, setInventory] = useState<TaskInventory | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -845,7 +862,9 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const [v2Busy, setV2Busy] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [activeIntent, setActiveIntent] = useState<CommandIntent | null>(null);
-  const [selectedKey, setSelectedKey] = useState<string | null>(initialTaskKey ?? null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(
+    initialTaskKey ?? selectionState.selectedKey,
+  );
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState<TaskSourceFilter>('all');
   const [freshnessFilter, setFreshnessFilter] = useState<TaskFreshnessFilter>('all');
@@ -900,6 +919,15 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     () => tasks.find((item) => item.key === selectedKey) ?? tasks[0] ?? null,
     [tasks, selectedKey],
   );
+  useEffect(() => {
+    if (loading && !inventory) return;
+    if (error && !inventory) return;
+    const nextKey = selected?.key ?? null;
+    if (nextKey !== selectedKey) setSelectedKey(nextKey);
+    setSelectionState((current) => current.selectedKey === nextKey
+      ? current
+      : { selectedKey: nextKey });
+  }, [error, inventory, loading, selected, selectedKey, setSelectionState]);
   const selectedExecutorTask = selected?.source_kind === 'executor' ? selected : null;
   const selectedExecutor = useMemo(
     () => executors.find((entry) => entry.name === selectedExecutorTask?.executor) ?? null,

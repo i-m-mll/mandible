@@ -5,11 +5,16 @@ import { ApiError } from '../../../ui/src/api';
 import {
   AppRightSidebarSurface,
   AppRightSidebarToggleButton,
+  CHAT_DETAIL_PREVIEW_MIN_WIDTH,
+  WIDE_RESPONSIVE_SIDEBAR_STATE,
+  responsiveSidebarThresholdTransition,
+  resolveAppRightSidebarLayout,
   type AppRightSidebarDescriptor,
 } from '../../../ui/src/app-shell';
 import { ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRightSidebar';
 import { MessageInfoPanel } from '../../../ui/src/components/console/MessageInfoPanel';
 import { SessionControls } from '../../../ui/src/components/console/SessionControls';
+import { VerticalArrowIcon } from '../../../ui/src/components/icons/VerticalArrowIcon';
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
 import { useIntrinsicOverflowGroup } from '../../../ui/src/hooks/useIntrinsicOverflowGroup';
 import { useAppRightSidebarState } from '../../../ui/src/right-sidebar-state';
@@ -56,7 +61,7 @@ function NativeComposer({ layoutKey }: { layoutKey: string }): JSX.Element {
           <span ref={geometry.fixedRef} className="conv-compose__runtime-actions">
             <button type="button" className="btn btn--ghost btn--sm conv-compose__run-options-trigger" data-overflow-trigger aria-label="Run options" title="Run options"><DotsIcon /></button>
             <span className="context-usage">42%</span>
-            <button type="button" className="conv-compose__send" aria-label="Send"><ChatComposerSubmitIcon /></button>
+            <button type="button" className="chat-circle-action conv-compose__send" aria-label="Send"><ChatComposerSubmitIcon /></button>
           </span>
         </div>
       </div>
@@ -73,6 +78,9 @@ function NativeTranscript(): JSX.Element {
             <div style={{ height: 900 }} />
             <div data-transcript-final-content style={{ height: 24 }}>Final transcript line</div>
           </div>
+          <button type="button" className="chat-circle-action stream-renderer__scroll-btn" aria-label="Jump to latest" title="Jump to latest">
+            <VerticalArrowIcon direction="down" />
+          </button>
         </div>
       </div>
     </div>
@@ -109,6 +117,8 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   const [stored, updateStored] = useAppRightSidebarState(scope, { open: true, width: 380 });
   const [tab, setTab] = useState(surface === 'console' ? 'settings' : 'overview');
   const [streamRevision, setStreamRevision] = useState(0);
+  const [viewSidebarOpen, setViewSidebarOpen] = useState(true);
+  const responsiveState = useRef(WIDE_RESPONSIVE_SIDEBAR_STATE);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const transferFocus = useRef(false);
   const setOpen = (open: boolean) => {
@@ -126,16 +136,28 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [stored.open]);
+  useLayoutEffect(() => {
+    const reconcile = () => {
+      const transition = responsiveSidebarThresholdTransition(responsiveState.current, window.innerWidth);
+      responsiveState.current = transition.state;
+      if (transition.closeRight) updateStored({ open: false });
+      if (transition.closeView) setViewSidebarOpen(false);
+    };
+    reconcile();
+    window.addEventListener('resize', reconcile);
+    return () => window.removeEventListener('resize', reconcile);
+  }, [updateStored]);
   const descriptor = useMemo<AppRightSidebarDescriptor>(() => {
     if (surface === 'chat') return {
       id: scope, ariaLabel: 'Chat sidebar', kind: 'tabs', open: stored.open, width: stored.width,
+      minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH, maxWidth: 720,
       togglePlacement: 'detail-header',
       onOpenChange: setOpen, onWidthChange: (width) => updateStored({ width }), activeTab: tab,
       onActiveTabChange: setTab,
       tabs: [
-        { id: 'overview', label: 'Session Overview', tooltip: 'Session Overview', icon: <TestIcon kind="overview" />, content: <><ChatSessionOverview providerSessionId={null} conversationId="native" /><ScrollFill /></> },
-        { id: 'preview', label: 'Preview', tooltip: 'Preview', icon: <TestIcon kind="preview" />, content: <><ChatPreview target={null} /><ScrollFill /></> },
-        { id: 'activity', label: 'Activity', tooltip: 'Subagents and workflow runs', icon: <TestIcon kind="activity" />, content: <ScrollFill /> },
+        { id: 'overview', label: 'Session Overview', tooltip: 'Session Overview', icon: <TestIcon kind="overview" />, scrollOwner: 'detail', content: <ChatSessionOverview providerSessionId={null} conversationId="native" /> },
+        { id: 'preview', label: 'Preview', tooltip: 'Preview', icon: <TestIcon kind="preview" />, scrollOwner: 'detail', content: <ChatPreview target={null} /> },
+        { id: 'activity', label: 'Activity', tooltip: 'Subagents and workflow runs', icon: <TestIcon kind="activity" />, scrollOwner: 'detail', content: <ScrollFill /> },
       ],
     };
     if (surface === 'graph') return {
@@ -160,17 +182,20 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   }, [stored.open, stored.width, surface, tab, streamRevision]);
   const deterministic = conversationLoadFailure(new ApiError('raw', 409, 'provider_metadata_missing'), true);
   const transient = conversationLoadFailure(new ApiError('raw', 503, 'provider_metadata_unavailable'), true);
-  const narrow = window.innerWidth <= 760;
+  const layout = resolveAppRightSidebarLayout(descriptor, window.innerWidth);
   return (
     <div className={`app-shell native-fixture native-fixture--${surface}`}>
-      <div className={`app-layout app-layout--route-${surface}${stored.open ? ' app-layout--right-sidebar-open' : ''}`} style={{ '--app-right-sidebar-width': `${stored.width}px` }}>
-        <aside className="app-rail" inert={narrow && stored.open} />
-        <main className={`app-content app-content--${surface}`} inert={narrow && stored.open}>
+      <div className={`app-layout app-layout--route-${surface}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${stored.open ? ' app-layout--right-sidebar-open app-layout--right-sidebar-docked' : ''}`} style={{ '--app-right-sidebar-width': `${layout.effectiveWidth}px` }}>
+        <aside className="app-rail">
+          <button type="button" data-view-sidebar-toggle aria-pressed={viewSidebarOpen} onClick={() => setViewSidebarOpen((open) => !open)}>View sidebar</button>
+        </aside>
+        <main className={`app-content app-content--${surface}`}>
           {surface === 'chat' ? <ChatMain descriptor={descriptor} toggleRef={toggleRef} setOpen={setOpen} /> : <div className="native-main">{surface} main</div>}
           {surface === 'console' ? <button type="button" data-stream-update onClick={() => setStreamRevision((value) => value + 1)}>Stream update {streamRevision}</button> : null}
           {surface === 'chat' ? <div data-title-errors data-deterministic-retry={String(deterministic.retryable)} data-transient-retry={String(transient.retryable)}>{deterministic.message}|{transient.message}</div> : null}
         </main>
-        {stored.open ? <AppRightSidebarSurface descriptor={descriptor} toggleRef={toggleRef} onOpenChange={setOpen} /> : surface !== 'chat' ? (
+        <AppRightSidebarSurface descriptor={descriptor} toggleRef={toggleRef} onOpenChange={setOpen} layout={layout} open={stored.open} />
+        {!stored.open && surface !== 'chat' ? (
           <AppRightSidebarToggleButton descriptor={descriptor} buttonRef={toggleRef} open={false} onOpenChange={setOpen} className="app-content__right-sidebar-toggle" />
         ) : null}
       </div>

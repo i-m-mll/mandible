@@ -66,7 +66,7 @@ import { SpaceItemPicker } from './SpaceItemPicker';
 import {
   ArtifactReferenceDetail,
   IssueReferenceDetail,
-} from './SpaceReferenceDetailPanel';
+} from '../reference-detail';
 import { SpaceTypeIndicator } from './SpaceTypeIndicator';
 import {
   LEDGER_LINK_TYPES,

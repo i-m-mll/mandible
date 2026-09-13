@@ -409,7 +409,7 @@ export class ConversationSourceReader {
       || snapshot.version.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
       || snapshot.version.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
     ) {
-      return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "unsupported", "recorded parser epoch is unavailable");
+      return this.legacyPage(conversationId, fallbackOffset, rows.length, fallbackTypes, "unsupported", "This conversation was indexed by an older Mandible version.");
     }
     const rowsByRecord = new Map<string, StructuralRow[]>();
     for (const row of contextRows) {
@@ -739,7 +739,7 @@ export class ConversationSourceReader {
         // Try another durable alias (for example Codex active/archive relocation).
       }
     }
-    return { ok: false, kind: "stale", reason: "no exact root-confined alias matches the recorded source version" };
+    return { ok: false, kind: "stale", reason: "This transcript changed after Mandible indexed it." };
   }
 }
 

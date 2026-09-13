@@ -64,8 +64,10 @@ describe('Chat project preference migration', () => {
     expect(update).toHaveBeenCalledWith(legacy, 0);
     expect(JSON.parse(screen.getByRole('status').textContent ?? '[]')).toEqual(legacy);
     expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}')).toEqual({
+      conversationLifecycle: 'active',
       pinnedConversationIds: ['conversation-1'],
       previewPinOverrides: { 'conversation-2': false },
+      lastSelection: null,
     });
     expect(screen.getByRole('status').getAttribute('data-notice')).toContain('Imported');
   });

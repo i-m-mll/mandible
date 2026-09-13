@@ -8,9 +8,11 @@ import {
   conversationBlocksToStreamEvents,
   groupActivityItemsForDisplay,
   groupMessagesForDisplay,
+  isRoutineActivityStatus,
   serializeConversationToMarkdown,
 } from '../../ui/src/chat';
 import { ChatSurface, shouldShowJumpToLatest } from '../../ui/src/chat/ChatSurface';
+import { plainActivityHeader, presentActivityItems } from '../../ui/src/components/message-blocks/ActivityBlock';
 import { MessageActions } from '../../ui/src/components/shared/MessageActions';
 import { TextBlock } from '../../ui/src/components/message-blocks/TextBlock';
 import type { StreamEvent, ToolResultContentBlock } from '../../ui/src/components/stream-renderer/types';
@@ -223,9 +225,135 @@ describe('chat message stream render model', () => {
       'activity-group', 'node', 'node',
     ]);
   });
+
+  it('preserves distinct reasoning identities while folding exact-adjacent visible duplicates', () => {
+    const reasoning = (ordinal: number, nativeId: string): ActivityItem => {
+      const item = canonicalItem<ActivityItem>({
+        type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary', ordinal, turn: 't1',
+        parts: [
+          { type: 'text', text: 'Reviewing item identity handling', native_index: 0 },
+          { type: 'text', text: 'Refining missing identity error handling', native_index: 1 },
+        ],
+      });
+      item.identity.native_item_id = nativeId;
+      return item;
+    };
+    const items = [reasoning(644, 'reasoning-one'), reasoning(646, 'reasoning-two')];
+    const nodes = buildStreamState(items.map((item, index) => canonicalEvent(item, `reasoning-${index}`))).nodes;
+    expect(nodes.map((node) => node.key)).toEqual([
+      'codex:canonical-session:reasoning-one:item',
+      'codex:canonical-session:reasoning-two:item',
+    ]);
+    const entry = groupActivityItemsForDisplay(nodes)[0];
+    expect(entry).toMatchObject({ kind: 'activity-group', key: 'activity:codex:canonical-session:reasoning-one:item' });
+    const presentations = presentActivityItems(items);
+    expect(presentations).toHaveLength(1);
+    expect(presentations[0]).toMatchObject({
+      summary: 'Reviewing item identity handling',
+      details: ['Refining missing identity error handling'],
+    });
+    expect(presentations[0].members.map((item) => item.identity.native_item_id)).toEqual(['reasoning-one', 'reasoning-two']);
+
+    const changed = reasoning(647, 'reasoning-three');
+    changed.parts[1].text = 'Different detail';
+    expect(presentActivityItems([items[0], changed])).toHaveLength(2);
+    changed.parts[1].text = items[0].parts[1].text;
+    changed.severity = 'warning';
+    expect(presentActivityItems([items[0], changed])).toHaveLength(2);
+    changed.severity = undefined;
+    changed.identity.session_id = 'different-session';
+    expect(presentActivityItems([items[0], changed])).toHaveLength(2);
+  });
+
+  it('hides only empty routine Codex start and completion status', () => {
+    const status = (
+      ordinal: number,
+      sourceEventType: string,
+      value: string,
+      text = '',
+      fields: Partial<Pick<ActivityItem, 'severity' | 'execution_outcome'>> = {},
+    ): ActivityItem => {
+      const item = canonicalItem<ActivityItem>({
+        type: 'activity', role: 'system', activity_kind: 'status', status: value,
+        parts: text ? [{ type: 'text', text }] : [], ordinal, turn: `t${ordinal}`, ...fields,
+      });
+      item.provenance.source_event_type = sourceEventType;
+      return item;
+    };
+    const routineStart = status(0, 'task_started', 'started');
+    const routineComplete = status(1, 'task_complete', 'complete');
+    const authoredStart = status(2, 'task_started', 'started', 'Preparing the workspace');
+    const warningComplete = status(3, 'task_complete', 'complete', '', { severity: 'warning' });
+    const failedComplete = status(4, 'task_complete', 'complete', '', { execution_outcome: 'failed' });
+    const compacted = status(5, 'context_compacted', 'compacted');
+    const claudeStatus = status(6, 'status', 'complete');
+    claudeStatus.provenance.provider = 'claude_code';
+    claudeStatus.identity.provider = 'claude_code';
+
+    expect(isRoutineActivityStatus(routineStart)).toBe(true);
+    expect(isRoutineActivityStatus(routineComplete)).toBe(true);
+    expect([authoredStart, warningComplete, failedComplete, compacted, claudeStatus]
+      .every((item) => !isRoutineActivityStatus(item))).toBe(true);
+    expect(buildStreamState([
+      routineStart, routineComplete, authoredStart, warningComplete, failedComplete, compacted, claudeStatus,
+    ].map((item, index) => canonicalEvent(item, `status-${index}`))).nodes).toHaveLength(5);
+  });
 });
 
 describe('ChatSurface stream behavior', () => {
+  it('uses semantic direct-sibling boundaries for mixed prose and activity rhythm', () => {
+    const mixedTurn: StreamEvent = {
+      type: 'assistant',
+      uuid: 'mixed-turn',
+      session_id: 's1',
+      parent_tool_use_id: null,
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Prose before activity' },
+          { type: 'thinking', thinking: 'Reasoning activity' },
+          { type: 'tool_use', id: 'tool-1', name: 'Read', input: { path: '/tmp/a' } },
+          { type: 'tool_use', id: 'tool-2', name: 'Read', input: { path: '/tmp/b' } },
+          { type: 'text', text: 'Prose after activity' },
+        ],
+      },
+    };
+    const activity = (ordinal: number, text: string): ActivityItem => canonicalItem<ActivityItem>({
+      type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary',
+      parts: [{ type: 'text', text }], ordinal, turn: `activity-${ordinal}`,
+    });
+    const view = render(<ChatSurface events={[
+      mixedTurn,
+      canonicalEvent(activity(0, 'Outer activity before prose'), 'outer-activity-1'),
+      assistantText('Outer prose', 'outer-prose'),
+      canonicalEvent(activity(1, 'Outer activity after prose'), 'outer-activity-2'),
+    ]} streaming={false} sessionInfo={{ sessionId: 'mixed-boundaries' }} />);
+
+    const outer = view.container.querySelector('.turn-group--assistant > .turn-group__body')!;
+    const outerBoundaries = Array.from(outer.children)
+      .filter((child) => child.className.includes('chat-boundary--'))
+      .map((child) => child.className);
+    expect(outerBoundaries).toEqual([
+      expect.stringContaining('chat-boundary--starts-prose chat-boundary--ends-prose'),
+      expect.stringContaining('chat-boundary--starts-activity chat-boundary--ends-activity'),
+      expect.stringContaining('chat-boundary--starts-prose chat-boundary--ends-prose'),
+      expect.stringContaining('chat-boundary--starts-activity chat-boundary--ends-activity'),
+    ]);
+
+    const inner = view.container.querySelector('.message-group__content')!;
+    const innerBoundaries = Array.from(inner.children).map((child) => child.className);
+    expect(innerBoundaries).toEqual([
+      expect.stringContaining('chat-boundary--starts-prose chat-boundary--ends-prose'),
+      expect.stringContaining('chat-boundary--starts-activity chat-boundary--ends-activity'),
+      expect.stringContaining('tool-call-group chat-boundary--starts-activity chat-boundary--ends-activity'),
+      expect.stringContaining('chat-boundary--starts-prose chat-boundary--ends-prose'),
+    ]);
+
+    const css = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
+    expect(css).toMatch(/:is\(\.turn-group__body, \.message-group__content\)[\s\S]*?> \.chat-boundary--ends-activity[\s\S]*?\+ \.chat-boundary--starts-activity\s*\{[^}]*margin-block-start:\s*calc\(var\(--space-2\) \* -0\.333333\);/s);
+    expect(css).toMatch(/:is\(\.turn-group__body, \.message-group__content\)[\s\S]*?> \.chat-boundary--ends-prose[\s\S]*?\+ \.chat-boundary--starts-activity,[\s\S]*?:is\(\.turn-group__body, \.message-group__content\)[\s\S]*?> \.chat-boundary--ends-activity[\s\S]*?\+ \.chat-boundary--starts-prose\s*\{[^}]*margin-block-start:\s*calc\(var\(--space-2\) \* 0\.5\);/s);
+  });
+
   it('renders one compact activity row and an accessible stable disclosure for a run', () => {
     const activity = (ordinal: number, text: string, severity?: ActivityItem['severity']): ActivityItem => canonicalItem<ActivityItem>({
       type: 'activity', role: 'assistant', activity_kind: 'diagnostic', severity,
@@ -243,24 +371,73 @@ describe('ChatSurface stream behavior', () => {
       canonicalEvent(activity(1, 'check one', 'warning'), 'a1'),
       canonicalEvent(activity(2, 'check two', 'error'), 'a2'),
     ]} streaming={false} sessionInfo={{ sessionId: 'activity-run' }} />);
-    const summary = screen.getByRole('button', { name: /Diagnostic · 2.*failed.*warning.*action required/i });
+    const summary = screen.getByRole('button', { name: /check one.*warning.*action required.*error.*failed/i });
+    expect(summary.textContent).not.toContain('Diagnostic');
+    expect(summary.querySelector('.compact-activity__icon svg')).toBeTruthy();
+    expect(summary.lastElementChild?.classList.contains('compact-activity__chevron')).toBe(true);
     expect(summary.getAttribute('aria-expanded')).toBe('false');
     const controlledRegion = summary.getAttribute('aria-controls');
     expect(controlledRegion).toBeTruthy();
-    expect(screen.queryByText('check one')).toBeNull();
+    expect(screen.queryByText('check two')).toBeNull();
     fireEvent.click(summary);
     expect(document.getElementById(controlledRegion!)?.getAttribute('role')).toBe('region');
-    expect(screen.getByText('check one')).toBeTruthy();
-    expect(document.querySelector('[data-block-id="a1"]')).toBeTruthy();
-    expect(document.querySelector('[data-block-id="a2"]')).toBeTruthy();
+    expect(screen.getByText(/check two/)).toBeTruthy();
+    expect(document.querySelector('[data-member-refs="a1 a2"]')).toBeTruthy();
 
     rerender(<ChatSurface events={[
       canonicalEvent(activity(1, 'check one', 'warning'), 'a1'),
       canonicalEvent(activity(2, 'check two', 'error'), 'a2'),
       canonicalEvent(activity(3, 'check three'), 'a3'),
     ]} streaming={false} sessionInfo={{ sessionId: 'activity-run' }} />);
-    expect(screen.getByRole('button', { name: /Diagnostic · 3/ }).getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByText('check three')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /check one.*failed/ }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText(/check three/)).toBeTruthy();
+  });
+
+  it('renders provider formatting as inert flush-left reasoning text without a provider mark', () => {
+    const item = canonicalItem<ActivityItem>({
+      type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary',
+      parts: [{ type: 'text', text: '**Checked** the __typed__ status payload' }], ordinal: 0,
+    });
+    const view = render(<ChatSurface events={[canonicalEvent(item, 'plain-activity')]} streaming={false} sessionInfo={{ sessionId: 'plain-activity' }} />);
+    expect(screen.getByText('Checked the typed status payload')).toBeTruthy();
+    expect(view.container.textContent).not.toContain('**');
+    expect(view.container.textContent).not.toContain('__');
+    expect(view.container.querySelector('.compact-activity__icon')).toBeNull();
+    expect(view.container.querySelector('.compact-activity__row--no-icon')).toBeTruthy();
+    expect(view.container.querySelector('strong')).toBeNull();
+    expect(plainActivityHeader('**Header**\nMore **provider-authored words**')).toBe('Header\nMore provider-authored words');
+    expect(plainActivityHeader('value__name__suffix and 2 ** 3')).toBe('value__name__suffix and 2 ** 3');
+  });
+
+  it('keeps activity expansion stable from a live singleton into a durable folded group', () => {
+    const reasoning = (ordinal: number, nativeId: string): ActivityItem => {
+      const item = canonicalItem<ActivityItem>({
+        type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary', ordinal, turn: 'turn-reasoning',
+        parts: [
+          { type: 'text', text: 'Reviewing item identity handling' },
+          { type: 'text', text: 'Refining missing identity error handling' },
+        ],
+      });
+      item.identity.native_item_id = nativeId;
+      return item;
+    };
+    const first = reasoning(0, 'reasoning-one');
+    const view = render(<ChatSurface
+      events={[canonicalEvent(first, 'live-one')]}
+      streaming
+      sessionInfo={{ sessionId: 'reasoning-growth' }}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: 'Reviewing item identity handling' }));
+    expect(screen.getByText('Refining missing identity error handling')).toBeTruthy();
+
+    view.rerender(<ChatSurface
+      events={[canonicalEvent(first, 'durable-one'), canonicalEvent(reasoning(1, 'reasoning-two'), 'durable-two')]}
+      streaming={false}
+      sessionInfo={{ sessionId: 'reasoning-growth' }}
+    />);
+    expect(screen.getByRole('button', { name: 'Reviewing item identity handling' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByText('Refining missing identity error handling')).toHaveLength(1);
+    expect(view.container.querySelector('[data-member-refs="durable-one durable-two"]')).toBeTruthy();
   });
 
   it('uses a distance-plus-viewport threshold distinct from the follow threshold', () => {
@@ -620,9 +797,9 @@ describe('ChatSurface stream behavior', () => {
     expect(document.querySelectorAll('.turn-group').length).toBeLessThan(40);
   });
 
-  it('keeps Jump keyboard activation native and delegates true-end loading', () => {
+  it('keeps the icon-only Jump control accessible and delegates true-end loading', () => {
     const jump = vi.fn();
-    render(
+    const { rerender } = render(
       <ChatSurface
         events={[user('prompt', 'u1')]}
         streaming={false}
@@ -633,8 +810,31 @@ describe('ChatSurface stream behavior', () => {
     );
     const button = screen.getByRole('button', { name: /jump to latest/i });
     expect(button.getAttribute('type')).toBe('button');
+    expect(button.getAttribute('aria-label')).toBe('Jump to latest');
+    expect(button.getAttribute('aria-busy')).toBe('false');
+    expect(button.getAttribute('title')).toBe('Jump to latest');
+    expect(button.classList.contains('chat-circle-action')).toBe(true);
+    const icon = button.querySelector('svg');
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
+    expect(icon?.getAttribute('focusable')).toBe('false');
+    expect(button.textContent).toBe('');
     button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
     expect(jump).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ChatSurface
+        events={[user('prompt', 'u1')]}
+        streaming={false}
+        unmaterializedAfterCount={10}
+        onJumpToLatest={jump}
+        jumpingToLatest
+        sessionInfo={{ sessionId: 'jump-keyboard' }}
+      />,
+    );
+    const loadingButton = screen.getByRole('button', { name: 'Jump to latest' });
+    expect(loadingButton.getAttribute('aria-busy')).toBe('true');
+    expect(loadingButton).toHaveProperty('disabled', true);
+    expect(screen.getByRole('status').textContent).toBe('Loading latest…');
   });
 
   it('expands thinking while streaming and collapses it after resolution by default', () => {
@@ -658,7 +858,8 @@ describe('ChatSurface stream behavior', () => {
     rerender(
       <ChatSurface events={[thinking, result()]} streaming={false} sessionInfo={{ sessionId: 'thinking' }} />,
     );
-    expect(screen.queryByText('Need to inspect state')).toBeNull();
+    expect(screen.getByText('Need to inspect state')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Need to inspect state' })).toBeNull();
   });
 
   it('keeps oversized tool output inside the expanded tool card scroll region', () => {
@@ -740,9 +941,9 @@ describe('ChatSurface stream behavior', () => {
     );
 
     expect(screen.getByText('System notice')).toBeTruthy();
-    expect(screen.getByText('Stream failed')).toBeTruthy();
+    expect(screen.getByText(/Stream failed · error · failed/)).toBeTruthy();
     expect(screen.getByText('Unmatched tool error')).toBeTruthy();
-    expect(screen.getByText('Diagnostic')).toBeTruthy();
+    expect(screen.queryByText('Diagnostic')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Read a file/ }));
     expect(document.querySelector('[data-block-id="tr-paired"]')).toBeTruthy();
     expect(screen.queryByText(/2026/)).toBeNull();

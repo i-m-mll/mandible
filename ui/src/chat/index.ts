@@ -39,6 +39,7 @@ export {
   formatElapsed,
   groupActivityItemsForDisplay,
   groupMessagesForDisplay,
+  isRoutineActivityStatus,
   chatItemStableKey,
   serializeConversationToMarkdown,
   serializeDisplayGroupToMarkdown,

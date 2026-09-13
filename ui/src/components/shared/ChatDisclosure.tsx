@@ -1,71 +1,87 @@
-import type { ComponentChildren } from 'preact';
+import type { ComponentChildren, JSX } from 'preact';
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
 import { DisclosureChevronIcon } from './DisclosureChevronIcon';
 
-export type ChatDisclosureProps = {
-  summary: ComponentChildren;
-  children: ComponentChildren;
+export type CompactActivityDisclosure = {
+  content: ComponentChildren;
   regionLabel: string;
   expanded?: boolean;
   defaultExpanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
-  leading?: ComponentChildren;
-  trailing?: ComponentChildren;
+};
+
+export type CompactActivityRowProps = {
+  icon?: JSX.Element;
+  summary: string;
+  disclosure?: CompactActivityDisclosure;
   className?: string;
 };
 
-/** Shared accessible disclosure for compact rows in Chat and History. */
-export function ChatDisclosure({
+/** The sole compact row geometry for tool and provider activity. */
+export function CompactActivityRow({
+  icon,
   summary,
-  children,
-  regionLabel,
-  expanded,
-  defaultExpanded = false,
-  onExpandedChange,
-  leading,
-  trailing,
+  disclosure,
   className = '',
-}: ChatDisclosureProps): JSX.Element {
-  const [localExpanded, setLocalExpanded] = useState(defaultExpanded);
-  const isExpanded = expanded ?? localExpanded;
+}: CompactActivityRowProps): JSX.Element {
+  const [localExpanded, setLocalExpanded] = useState(disclosure?.defaultExpanded ?? false);
+  const isExpanded = disclosure?.expanded ?? localExpanded;
   const bodyId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const previousExpanded = useRef(isExpanded);
+  const restoreFocusAfterCollapse = previousExpanded.current
+    && !isExpanded
+    && Boolean(bodyRef.current?.contains(document.activeElement));
 
   useEffect(() => {
-    if (previousExpanded.current && !isExpanded && bodyRef.current?.contains(document.activeElement)) {
+    if (restoreFocusAfterCollapse) {
       buttonRef.current?.focus();
     }
     previousExpanded.current = isExpanded;
-  }, [isExpanded]);
+  }, [isExpanded, restoreFocusAfterCollapse]);
+
+  const rootClass = `compact-activity${isExpanded ? ' compact-activity--expanded' : ''}${className ? ` ${className}` : ''}`;
+  const rowClass = `compact-activity__row${disclosure ? '' : ' compact-activity__row--inert'}${icon ? '' : ' compact-activity__row--no-icon'}`;
+  const rowContent = (
+    <>
+      {icon ? <span className="compact-activity__icon" aria-hidden="true">{icon}</span> : null}
+      <span className="compact-activity__summary" title={summary}>{summary}</span>
+      {disclosure ? (
+        <span className="compact-activity__chevron" aria-hidden="true">
+          <DisclosureChevronIcon expanded={isExpanded} />
+        </span>
+      ) : null}
+    </>
+  );
+
+  if (!disclosure) {
+    return <div className={rootClass}><div className={rowClass}>{rowContent}</div></div>;
+  }
 
   const toggle = (): void => {
     const next = !isExpanded;
-    if (expanded === undefined) setLocalExpanded(next);
-    onExpandedChange?.(next);
+    if (disclosure.expanded === undefined) setLocalExpanded(next);
+    disclosure.onExpandedChange?.(next);
   };
 
   return (
-    <section className={`chat-disclosure${isExpanded ? ' chat-disclosure--expanded' : ''}${className ? ` ${className}` : ''}`}>
+    <div className={rootClass}>
       <button
         ref={buttonRef}
         type="button"
-        className="chat-disclosure__summary"
+        className={rowClass}
         aria-expanded={isExpanded}
         aria-controls={bodyId}
         onClick={toggle}
       >
-        <span className="chat-disclosure__chevron"><DisclosureChevronIcon expanded={isExpanded} /></span>
-        {leading ? <span className="chat-disclosure__leading" aria-hidden="true">{leading}</span> : null}
-        <span className="chat-disclosure__summary-text">{summary}</span>
-        {trailing ? <span className="chat-disclosure__trailing">{trailing}</span> : null}
+        {rowContent}
       </button>
       {isExpanded ? (
-        <div ref={bodyRef} id={bodyId} role="region" aria-label={regionLabel} className="chat-disclosure__body">
-          {children}
+        <div ref={bodyRef} id={bodyId} role="region" aria-label={disclosure.regionLabel} className="compact-activity__details">
+          {disclosure.content}
         </div>
       ) : null}
-    </section>
+    </div>
   );
 }

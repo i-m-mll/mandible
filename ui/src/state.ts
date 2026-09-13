@@ -718,7 +718,7 @@ function withoutLegacyAppRailOrder(settings: Record<string, string> | undefined)
 type CachedFields = Pick<
   AppState,
   'authQueue' | 'authHistory' | 'workRepos' | 'workBranches' | 'issueRepos'
-  | 'inboxData' | 'consoleSessions' | 'settings'
+  | 'inboxData' | 'consoleSessions' | 'settings' | 'selectedAuthId' | 'selectedInboxItemId'
 >;
 
 // Bug: 9860b1c, b794add — Filter stale resolved auth items on cache load so they
@@ -793,10 +793,12 @@ function saveCachedState(state: AppState): void {
     const toCache: CachedFields = {
       authQueue: state.authQueue,
       authHistory: state.authHistory,
+      selectedAuthId: state.selectedAuthId,
       workRepos: state.workRepos,
       workBranches: state.workBranches,
       issueRepos: state.issueRepos,
       inboxData: state.inboxData,
+      selectedInboxItemId: state.selectedInboxItemId,
       consoleSessions: state.consoleSessions,
       settings: withoutLegacyAppRailOrder(state.settings),
     };

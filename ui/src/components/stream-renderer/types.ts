@@ -6,6 +6,8 @@ import type { ActivityItem, ChatItem } from '../../../../src/parsers/types';
 
 export type PersistedBlockSource = {
   blockId: string;
+  /** Exact persisted parent link; a present value proves a result is not orphaned. */
+  parentBlockId?: string;
   timestamp?: string;
   dagUuid?: string;
 };

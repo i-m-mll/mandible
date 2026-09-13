@@ -516,7 +516,7 @@ describe('compact detail pane shell', () => {
     expect(shell?.classList.contains('chat-detail-frame--no-selection')).toBe(true);
     expect(header?.querySelector('[data-detail-pane-header-variant="compact"]')).toBeTruthy();
     expect(header?.textContent).toBe('Chat');
-    expect(body?.textContent).toContain('Select a conversation to view it');
+    expect(body?.textContent).toContain('No chats in this view');
     expect(detail?.querySelector(':scope > .chat-history-detail__empty')).toBeNull();
   });
 

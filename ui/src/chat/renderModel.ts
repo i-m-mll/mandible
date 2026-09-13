@@ -31,6 +31,17 @@ function chatItemText(item: MessageItem | PlanItem | ToolCallItem | ActivityItem
   return item.parts.map((part) => part.text).join('\n');
 }
 
+/** Empty Codex turn lifecycle records are useful transport facts, not Chat content. */
+export function isRoutineActivityStatus(item: ActivityItem): boolean {
+  if (item.activity_kind !== 'status'
+      || item.provenance.provider !== 'codex'
+      || !['task_started', 'task_complete'].includes(item.provenance.source_event_type)
+      || !['started', 'complete'].includes(item.status ?? '')
+      || (item.severity !== undefined && item.severity !== 'info')
+      || (item.execution_outcome !== undefined && item.execution_outcome !== 'unknown')) return false;
+  return item.parts.every((part) => part.text.trim() === '');
+}
+
 export function chatItemStableKey(item: ChatItem): string {
   const identity = item.identity;
   const native = identity.native_item_id ?? identity.native_tool_id;
@@ -132,6 +143,26 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
     }
   }
 
+  function attachResultToPriorTurn(
+    toolId: string,
+    result: ToolResultContentBlock,
+    parentBlockId?: string,
+  ): boolean {
+    for (let index = nodes.length - 1; index >= 0; index -= 1) {
+      const node = nodes[index];
+      if (node.kind !== 'assistant_turn') continue;
+      const hasCall = node.turn.assistantEvent.message.content.some(
+        (block) => block.type === 'tool_use'
+          && block.id === toolId
+          && (!parentBlockId || block.source?.blockId === parentBlockId),
+      );
+      if (!hasCall) continue;
+      node.turn.toolResults.set(toolId, result);
+      return true;
+    }
+    return false;
+  }
+
   for (const event of events) {
     if (event.type === 'chat:item') {
       const canonical = event as CanonicalChatItemEvent;
@@ -207,9 +238,18 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
             source,
           });
           if (pendingAssistant) pendingResults.set(toolId, result);
-          else nodes.push({ kind: 'unmatched_tool_result', key, entity: 'system', result });
+          else if (attachResultToPriorTurn(toolId, result, source?.parentBlockId)) {
+            // Exact tool identity repairs results separated from their call by
+            // an intervening activity item without changing transcript order.
+          } else if (source?.parentBlockId) {
+            // The verified parent is outside this bounded retained window.
+            // Loading the preceding window materializes the complete pair.
+          } else {
+            nodes.push({ kind: 'unmatched_tool_result', key, entity: 'system', result });
+          }
         }
       } else if (item.type === 'activity') {
+        if (isRoutineActivityStatus(item)) continue;
         flushPendingTurn();
         nodes.push({ kind: 'activity', key, entity: item.role, item, source });
       }
@@ -361,12 +401,20 @@ export function groupMessagesForDisplay(nodes: RenderNode[]): DisplayGroup[] {
 
 export type ActivityDisplayEntry =
   | { kind: 'node'; node: RenderNode }
-  | { kind: 'activity-group'; key: string; activityKind: ActivityItem['activity_kind']; nodes: Array<Extract<RenderNode, { kind: 'activity' }>> };
+  | { kind: 'activity-group'; key: string; nodes: Array<Extract<RenderNode, { kind: 'activity' }>> };
 
 function knownTurnBoundary(left: ActivityItem, right: ActivityItem): boolean {
   const leftTurn = left.identity.native_turn_id;
   const rightTurn = right.identity.native_turn_id;
   return Boolean(leftTurn && rightTurn && leftTurn !== rightTurn);
+}
+
+function sameActivityBoundary(left: ActivityItem, right: ActivityItem): boolean {
+  return left.identity.provider === right.identity.provider
+    && left.identity.session_id === right.identity.session_id
+    && left.role === right.role
+    && left.activity_kind === right.activity_kind
+    && !knownTurnBoundary(left, right);
 }
 
 /** Groups only maximal same-kind activity runs; every other item is a boundary. */
@@ -386,14 +434,12 @@ export function groupActivityItemsForDisplay(nodes: RenderNode[]): ActivityDispl
       const previous = nodes[end - 1];
       if (next.kind !== 'activity'
         || previous.kind !== 'activity'
-        || next.entity !== node.entity
-        || next.item.activity_kind !== node.item.activity_kind
-        || knownTurnBoundary(previous.item, next.item)) break;
+        || !sameActivityBoundary(previous.item, next.item)) break;
       end += 1;
     }
     const run = nodes.slice(index, end) as Array<Extract<RenderNode, { kind: 'activity' }>>;
     if (run.length < 2) entries.push({ kind: 'node', node });
-    else entries.push({ kind: 'activity-group', key: `activity-group:${node.key}`, activityKind: node.item.activity_kind, nodes: run });
+    else entries.push({ kind: 'activity-group', key: `activity:${node.key}`, nodes: run });
     index = end;
   }
   return entries;

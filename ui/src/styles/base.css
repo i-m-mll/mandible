@@ -44,6 +44,51 @@ a {
   text-decoration: none;
 }
 
+.chat-circle-action {
+  position: relative;
+  width: var(--chat-circle-action-hit-size, 34px);
+  height: var(--chat-circle-action-hit-size, 34px);
+  flex: 0 0 var(--chat-circle-action-hit-size, 34px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  color: var(--chat-circle-action-fg);
+  cursor: pointer;
+}
+
+.chat-circle-action::before {
+  position: absolute;
+  width: var(--chat-circle-action-visual-size);
+  height: var(--chat-circle-action-visual-size);
+  border-radius: 50%;
+  background: var(--chat-circle-action-bg);
+  content: '';
+}
+
+.chat-circle-action > svg {
+  position: relative;
+  width: var(--chat-circle-action-icon-size);
+  height: var(--chat-circle-action-icon-size);
+}
+
+.chat-circle-action:hover:not(:disabled)::before {
+  filter: brightness(1.08);
+}
+
+.chat-circle-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.chat-circle-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .app-shell {
   --app-header-height: 48px;
   --app-left-boundary-width: 0px;
@@ -338,11 +383,11 @@ a {
   box-shadow: none;
 }
 
-.app-layout--right-sidebar-open {
+.app-layout--right-sidebar-docked {
   grid-template-columns: calc(var(--app-left-boundary-width) + var(--app-rail-outer-width)) minmax(0, 1fr) var(--app-right-sidebar-width, 360px);
 }
 
-.app-layout--view-sidebar-open.app-layout--right-sidebar-open {
+.app-layout--view-sidebar-open.app-layout--right-sidebar-docked {
   grid-template-columns: calc(var(--app-left-boundary-width) + var(--app-rail-width)) minmax(0, 1fr) var(--app-right-sidebar-width, 360px);
 }
 
@@ -359,6 +404,10 @@ a {
   background: var(--surface-main);
   box-shadow: none;
   z-index: 61;
+}
+
+.app-right-sidebar[hidden] {
+  display: none;
 }
 
 .app-right-sidebar__resize {
@@ -427,6 +476,22 @@ a {
   min-height: 100%;
 }
 
+.app-right-sidebar--detail-scroll .app-right-sidebar__body {
+  overflow: hidden;
+}
+
+.app-right-sidebar--detail-scroll .app-right-sidebar__body > [role='tabpanel']:not([hidden]) {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-right-sidebar--detail-scroll .app-right-sidebar__body > [role='tabpanel'] > .detail-pane-shell {
+  flex: 1;
+  height: 100%;
+}
+
 @media (max-width: 800px) {
   .app-header__text {
     padding-inline: 10px;
@@ -444,28 +509,6 @@ a {
     margin-left: 0;
   }
 
-}
-
-@media (max-width: 760px) {
-  .app-layout--right-sidebar-open,
-  .app-layout--view-sidebar-open.app-layout--right-sidebar-open {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .app-layout--right-sidebar-open > :is(.app-rail, .app-content) {
-    visibility: hidden;
-    pointer-events: none;
-  }
-
-  .app-right-sidebar {
-    grid-column: 1;
-    width: 100%;
-    border-left: 0;
-  }
-
-  .app-right-sidebar__resize {
-    display: none;
-  }
 }
 
 @media (max-width: 700px) {

@@ -66,7 +66,7 @@ import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpa
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
-import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
 import { artifactLinkBadgeLabel } from '../lib/format';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -100,6 +100,8 @@ type ArtifactListViewState = {
   filters: ArtifactFilters;
   sortField: ArtifactSortField;
   sortDirection: ArtifactSortDirection;
+  selectedSeriesRef: string | null;
+  selectedVersionNo: number | null;
 };
 
 const EMPTY_FILTERS: ArtifactFilters = {
@@ -117,6 +119,8 @@ const DEFAULT_ARTIFACT_LIST_STATE: ArtifactListViewState = {
   filters: EMPTY_FILTERS,
   sortField: 'updated',
   sortDirection: 'desc',
+  selectedSeriesRef: null,
+  selectedVersionNo: null,
 };
 
 const ARTIFACT_LIST_STATE_KEY = 'mandible:artifacts:list-controls:v1';
@@ -136,6 +140,12 @@ function normalizeArtifactListViewState(value: unknown): ArtifactListViewState {
       ? record.sortField as ArtifactSortField
       : 'updated',
     sortDirection: record.sortDirection === 'asc' ? 'asc' : 'desc',
+    selectedSeriesRef: typeof record.selectedSeriesRef === 'string' && record.selectedSeriesRef.trim()
+      ? record.selectedSeriesRef
+      : null,
+    selectedVersionNo: typeof record.selectedVersionNo === 'number' && Number.isInteger(record.selectedVersionNo)
+      ? record.selectedVersionNo
+      : null,
   };
 }
 
@@ -196,10 +206,16 @@ export function ArtifactsView({
   const { filters, sortField, sortDirection } = listViewState;
   const [series, setSeries] = useState<ArtifactSeriesSummary[]>([]);
   const [selectedSeriesRef, setSelectedSeriesRef] = useState<string | null>(
-    initialSeriesSelection,
+    initialArtifactId || initialRef
+      ? null
+      : initialSeriesSelection ?? listViewState.selectedSeriesRef,
   );
   const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(
-    initialSeriesRef && !initialSeriesSelection ? null : initialVersionNo,
+    initialArtifactId || initialRef || (initialSeriesRef && !initialSeriesSelection)
+      ? null
+      : initialSeriesSelection
+        ? initialVersionNo
+        : listViewState.selectedVersionNo,
   );
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(initialArtifactId ?? null);
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
@@ -484,7 +500,16 @@ export function ArtifactsView({
         if (isAbortError(err)) return;
         if (versionsRequestIdRef.current === requestId) {
           setVersionHistory(null);
-          setError(err instanceof Error ? err.message : String(err));
+          if (isApiErrorStatus(err, 404) && !deepLinkActiveRef.current) {
+            setSelectedSeriesRef(null);
+            setSelectedVersionNo(null);
+            setSelectedArtifactId(null);
+            setSelectedArtifact(null);
+            setResolution(null);
+            setError(null);
+          } else {
+            setError(err instanceof Error ? err.message : String(err));
+          }
         }
       })
       .finally(() => {
@@ -610,6 +635,16 @@ export function ArtifactsView({
   const selectedSeries = useMemo(() => (
     series.find((entry) => seriesRef(entry) === selectedSeriesRef) ?? null
   ), [selectedSeriesRef, series]);
+  useEffect(() => {
+    if (selectedSeriesRef || deepLinkActiveRef.current) return;
+    const fallback = series[0];
+    if (!fallback) return;
+    setSelectedSeriesRef(seriesRef(fallback));
+    setSelectedVersionNo(null);
+    setSelectedArtifactId(fallback.latest_version?.artifact_id ?? null);
+    setSelectedArtifact(fallback.latest_artifact);
+    setResolution(null);
+  }, [selectedSeriesRef, series]);
   const coherentSelectedArtifact = selectedArtifact?.id === selectedArtifactId ? selectedArtifact : null;
   const coherentArtifactContent = artifactContent?.artifact_id === coherentSelectedArtifact?.id ? artifactContent : null;
   const coherentContentLoading = Boolean(
@@ -628,6 +663,15 @@ export function ArtifactsView({
     setResolution(null);
     writeArtifactHash(ref, null, lastWrittenHashRef);
   }, []);
+
+  useEffect(() => {
+    if (!selectedSeriesRef) return;
+    setListViewState((current) => (
+      current.selectedSeriesRef === selectedSeriesRef && current.selectedVersionNo === selectedVersionNo
+        ? current
+        : { ...current, selectedSeriesRef, selectedVersionNo }
+    ));
+  }, [selectedSeriesRef, selectedVersionNo, setListViewState]);
 
   const artifactListNavigation = useSidebarListNavigation({
     items: series,
@@ -686,7 +730,11 @@ export function ArtifactsView({
   };
 
   const clearFilters = () => {
-    setListViewState(DEFAULT_ARTIFACT_LIST_STATE);
+    setListViewState((current) => ({
+      ...DEFAULT_ARTIFACT_LIST_STATE,
+      selectedSeriesRef: current.selectedSeriesRef,
+      selectedVersionNo: current.selectedVersionNo,
+    }));
   };
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length
@@ -786,7 +834,7 @@ export function ArtifactsView({
           <LoadingSkeleton variant="detail" label="Loading artifact..." />
         )}
         {!detailLoading && !detailPending && !coherentSelectedArtifact && !resolution && (
-          <div className="artifacts-empty">Select an artifact or open an artifact URI.</div>
+          <div className="artifacts-empty">No artifacts in this view.</div>
         )}
         {!detailLoading && !detailPending && resolution?.target_type === 'artifact_blob' && (
           <UnsupportedArtifactBlob resolution={resolution} />
@@ -864,6 +912,7 @@ function sortArtifactSeries(
 }
 
 export type ArtifactDetailProps = {
+  presentation?: DetailPanePresentation;
   artifact: ArtifactRecord;
   detailError?: string | null;
   resolution: ArtifactResolveResult | null;
@@ -886,6 +935,7 @@ export type ArtifactDetailProps = {
 };
 
 export function ArtifactDetail({
+  presentation = 'main',
   artifact,
   detailError = null,
   resolution,
@@ -1341,6 +1391,7 @@ export function ArtifactDetail({
 
   return (
     <DetailPaneShell
+      presentation={presentation}
       className="artifact-detail"
       headerClassName="artifact-detail__header"
       bodyClassName={`artifact-detail__pane${metadataOpen ? ' artifact-detail__pane--metadata-open' : ''}`}
@@ -1348,6 +1399,7 @@ export function ArtifactDetail({
       ariaBusy={contentLoading}
       header={(
         <DetailPaneHeader
+          presentation={presentation}
           variant="versioned"
           identity={{
             displayRef: headerShortId,

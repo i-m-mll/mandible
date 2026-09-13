@@ -108,6 +108,7 @@ import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { PreviewIcon } from '../components/icons/TabIcons';
+import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import {
   preferredProjectCheckout,
   reconcileShownProjects,
@@ -121,7 +122,10 @@ import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationControlPresentation } from '../chat/conversationControl';
 import { chatItemIdentityKey, mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
 import type { ChatItem } from '../../../src/parsers/types';
-import { useRegisterAppRightSidebar } from '../app-shell';
+import {
+  CHAT_DETAIL_PREVIEW_MIN_WIDTH,
+  useRegisterAppRightSidebar,
+} from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 import { subscribeClientAuthSessionState } from '../client-auth-token';
@@ -651,12 +655,7 @@ function HorizontalDotsIcon(): JSX.Element {
 }
 
 export function ChatComposerSubmitIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-      <path d="m6 12 6-6 6 6" />
-      <path d="M12 6v12" />
-    </svg>
-  );
+  return <VerticalArrowIcon direction="up" strokeWidth={1} />;
 }
 
 // ── Detail View ──
@@ -1018,6 +1017,7 @@ function ConversationDetail({
   chatEntityLinkAction,
   creationReceipt,
   onRetryCreation,
+  onUnavailable,
   externalNotice,
 }: {
   conversationId: string;
@@ -1029,6 +1029,7 @@ function ConversationDetail({
   chatEntityLinkAction: ChatEntityClickAction;
   creationReceipt?: ConversationSpawnReceipt | null;
   onRetryCreation?: () => void;
+  onUnavailable?: (conversationId: string) => void;
   externalNotice?: ComponentChildren;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
@@ -1044,6 +1045,9 @@ function ConversationDetail({
   const [loadNonce, setLoadNonce] = useState(0);
   const requestGenerationRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (notFound) onUnavailable?.(conversationId);
+  }, [conversationId, notFound, onUnavailable]);
   const retryingLoadRef = useRef(false);
   const skipNextWindowLoadRef = useRef(false);
   const latestRevisionRef = useRef(initialConversation?.block_count ?? 0);
@@ -1511,7 +1515,7 @@ function ConversationDetail({
     ariaLabel: 'Chat sidebar',
     open: rightSidebarState.open,
     width: rightSidebarState.width,
-    minWidth: 300,
+    minWidth: CHAT_DETAIL_PREVIEW_MIN_WIDTH,
     maxWidth: 720,
     togglePlacement: 'detail-header' as const,
     onOpenChange: (open: boolean) => updateRightSidebarState({ open }),
@@ -1527,6 +1531,7 @@ function ConversationDetail({
         label: 'Session Overview',
         tooltip: 'Session Overview',
         icon: <OverviewTabIcon />,
+        scrollOwner: 'detail' as const,
         content: <ChatSessionOverview providerSessionId={conversation.session_id ?? null} conversationId={conversationId} />,
       },
       {
@@ -1534,6 +1539,7 @@ function ConversationDetail({
         label: 'Preview',
         tooltip: 'Preview',
         icon: <PreviewTabIcon />,
+        scrollOwner: 'detail' as const,
         content: <ChatPreview target={currentRightSidebarViewState.previewTarget} />,
       },
       {
@@ -1541,6 +1547,7 @@ function ConversationDetail({
         label: 'Activity',
         tooltip: 'Subagents and workflow runs',
         icon: <ActivityTabIcon />,
+        scrollOwner: 'detail' as const,
         content: <ChatActivity items={activityItems} />,
       },
     ],
@@ -2126,7 +2133,7 @@ function ConversationDetail({
               <button
                 type="submit"
                 form={`conversation-compose-${conversation.id}`}
-                className="conv-compose__send"
+                className="chat-circle-action conv-compose__send"
                 disabled={continueBusy || Boolean(submitIntent) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || !continueDraft.trim()}
                 title={controlPresentation?.submitLabel ?? 'Send'}
                 aria-label={controlPresentation?.submitLabel ?? 'Send'}
@@ -2517,7 +2524,14 @@ export function ConversationsView({
   onSelectSession,
   onNewConversation,
 }: ConversationsViewProps): JSX.Element {
-  const [selection, setSelection] = useState<ChatSelection>(null);
+  const [chatViewState, setChatViewState] = useChatViewState();
+  const [selection, setSelection] = useState<ChatSelection>(() => (
+    initialConversationId
+      ? { type: 'conversation', id: initialConversationId }
+      : initialSessionId
+        ? { type: 'session', id: initialSessionId }
+        : chatViewState.lastSelection
+  ));
   const handleNavigateConversation = useCallback((conversationId: string) => {
     setSelection((current) => current?.type === 'conversation' && current.id === conversationId
       ? current
@@ -2540,7 +2554,6 @@ export function ConversationsView({
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
-  const [chatViewState, setChatViewState] = useChatViewState();
   const conversationLifecycle = chatViewState.conversationLifecycle;
   const [retainedSelection, setRetainedSelection] = useState<ConversationSidebarConversation | null>(null);
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
@@ -2677,6 +2690,15 @@ export function ConversationsView({
     if (!initialConversationId) return;
     setSelection({ type: 'conversation', id: initialConversationId });
   }, [initialConversationId]);
+
+  useEffect(() => {
+    if (!selection || selection.type === 'draft') return;
+    setChatViewState((current) => (
+      current.lastSelection?.type === selection.type && current.lastSelection.id === selection.id
+        ? current
+        : { ...current, lastSelection: selection }
+    ));
+  }, [selection, setChatViewState]);
 
   useEffect(() => {
     let active = true;
@@ -3168,6 +3190,12 @@ export function ConversationsView({
     chatSections.projects[0]?.entries[0] ??
     chatSections.chats?.entries[0] ??
     null;
+  const handleUnavailableConversation = useCallback((conversationId: string) => {
+    if (initialConversationId) return;
+    setSelection((current) => (
+      current?.type === 'conversation' && current.id === conversationId ? null : current
+    ));
+  }, [initialConversationId]);
   const activeFilterCount = [
     sourceFilter !== 'all',
     starredOnly,
@@ -3864,6 +3892,7 @@ export function ConversationsView({
             sidebarCollapsed={false}
             chatEntityLinkAction={chatEntityLinkAction}
             creationReceipt={selectedConversationSummary?.spawn ?? null}
+            onUnavailable={handleUnavailableConversation}
             onRetryCreation={selectedConversationSummary?.spawn?.error?.retryable ? () => {
               const spawn = selectedConversationSummary.spawn!;
               void retryProviderChat(spawn.reservation_id, spawn.attempt_count)
@@ -3881,7 +3910,7 @@ export function ConversationsView({
             header={<DetailPaneHeader variant="compact" title="Chat" />}
           >
             <div className="chat-history-detail__empty">
-              Select a conversation to view it
+              No chats in this view
             </div>
           </ChatDetailFrame>
         )}

@@ -218,6 +218,62 @@ describe("CodexParser", () => {
     });
   });
 
+  it("projects the strict create_thread delegation input as the visible launch prompt", async () => {
+    const parser = new CodexParser();
+    const result = await parser.parseIncremental?.({
+      filePath: "/tmp/delegated-task.jsonl",
+      raw: [
+        {
+          type: "response_item",
+          timestamp: "2026-09-13T00:00:00.000Z",
+          payload: {
+            type: "function_call_output",
+            name: "create_thread",
+            call_id: null,
+            output: [
+              "<codex_delegation>",
+              "  <source_thread_id>parent-task</source_thread_id>",
+              "  <input>Repair the stream &amp; preserve &lt;exact&gt; content.</input>",
+              "</codex_delegation>",
+            ].join("\n"),
+          },
+        },
+        {
+          type: "response_item",
+          timestamp: "2026-09-13T00:00:00.001Z",
+          payload: {
+            type: "function_call_output",
+            name: "create_thread",
+            call_id: null,
+            output: "unstructured provider receipt",
+          },
+        },
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n",
+      baseBlockCount: 0,
+      baseRecordCount: 8,
+      sourceHash: "append:delegated-task",
+      sourceMtime: 42,
+    });
+
+    expect(result?.blocks).toHaveLength(1);
+    expect(result?.blocks[0]).toMatchObject({
+      type: "user_message",
+      role: "user",
+      content: "Repair the stream & preserve <exact> content.",
+      position: 0,
+      metadata: {
+        source_event_type: "codex_delegation",
+        source_record_ordinal: 8,
+        source_sub_block_ordinal: 0,
+        chat_item: {
+          type: "message",
+          role: "user",
+          parts: [{ type: "text", text: "Repair the stream & preserve <exact> content." }],
+        },
+      },
+    });
+  });
+
   it("preserves opaque custom tool input byte-for-byte", async () => {
     const parser = new CodexParser();
     const rawInput = '{"path":"a\\nb","literal":"  x  ","shell":"$(never-run)"}';
@@ -236,6 +292,59 @@ describe("CodexParser", () => {
     expect(result?.blocks[0]?.metadata).toMatchObject({
       tool_kind: "custom_tool_call",
       tool_input: rawInput,
+    });
+  });
+
+  it("normalizes structured custom tool output and preserves same-batch pairing", async () => {
+    const parser = new CodexParser();
+    const rows = [
+      {
+        type: "response_item",
+        timestamp: "2026-05-16T00:00:06.000Z",
+        payload: { type: "custom_tool_call", name: "exec", call_id: "custom-structured", input: "opaque" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-05-16T00:00:07.000Z",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "custom-structured",
+          output: [
+            { type: "input_text", text: "first line" },
+            { type: "input_text", text: "second line" },
+          ],
+        },
+      },
+    ];
+    const result = await parser.parseIncremental?.({
+      filePath: "/tmp/custom-tool-output.jsonl",
+      raw: `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      nativeSessionId: "structured-output-session",
+      baseBlockCount: 10,
+      baseRecordCount: 30,
+      sourceHash: "append:custom-output",
+      sourceMtime: 42,
+    });
+
+    expect(result?.blocks).toHaveLength(2);
+    expect(result?.blocks[1]).toMatchObject({
+      type: "tool_result",
+      content: "first line\nsecond line",
+      parent_id: "10",
+      metadata: {
+        tool_id: "custom-structured",
+        tool_name: "exec",
+        tool_kind: "custom_tool_call_output",
+        tool_output: "first line\nsecond line",
+        source_record_ordinal: 31,
+      },
+    });
+    expect(result?.blocks[1].metadata.chat_item).toMatchObject({
+      type: "tool-call",
+      phase: "result",
+      tool_id: "custom-structured",
+      output: "first line\nsecond line",
+      parts: [{ type: "text", text: "first line\nsecond line" }],
     });
   });
 

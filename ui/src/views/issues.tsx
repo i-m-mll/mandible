@@ -19,6 +19,7 @@ import { shortRouteId } from '../routing';
 import { renderInlineMarkdown } from '../lib/markdown';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
+import { useAppShell } from '../app-shell';
 
 // --- Types ---
 
@@ -401,6 +402,8 @@ type IssuesViewState = {
   filter: string;
   filterEdited: boolean;
   parentFilter: string | null;
+  selectedRepoId: string | null;
+  selectedIssueId: string | null;
 };
 
 function normalizeIssueDefaultFilter(value: string | null | undefined): string {
@@ -423,6 +426,12 @@ function normalizeIssuesViewState(value: unknown, defaults: Readonly<IssuesViewS
     parentFilter: stored.parentFilter === null || typeof stored.parentFilter === 'string'
       ? stored.parentFilter
       : defaults.parentFilter,
+    selectedRepoId: typeof stored.selectedRepoId === 'string' && stored.selectedRepoId.trim()
+      ? stored.selectedRepoId
+      : null,
+    selectedIssueId: typeof stored.selectedIssueId === 'string' && stored.selectedIssueId.trim()
+      ? stored.selectedIssueId
+      : null,
   };
 }
 
@@ -435,6 +444,7 @@ export function IssuesView({
   defaultFilter,
   sidebarHidden = false,
 }: IssuesViewProps): JSX.Element {
+  const appShell = useAppShell();
   const normalizedDefaultFilter = useMemo(
     () => normalizeIssueDefaultFilter(defaultFilter),
     [defaultFilter],
@@ -443,6 +453,8 @@ export function IssuesView({
     filter: normalizedDefaultFilter,
     filterEdited: false,
     parentFilter: null,
+    selectedRepoId: null,
+    selectedIssueId: null,
   }), [normalizedDefaultFilter]);
   const [viewState, setViewState] = usePersistedViewState(
     ISSUES_VIEW_STATE_STORAGE_KEY,
@@ -451,8 +463,12 @@ export function IssuesView({
   );
   const { filter, parentFilter } = viewState;
   // Local state
-  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
-  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
+  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(
+    initialRepoId ?? viewState.selectedRepoId,
+  );
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(
+    initialIssueId ?? viewState.selectedIssueId,
+  );
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   type SortField = 'created_at';
   const [sortField] = useState<SortField>('created_at');
@@ -799,6 +815,22 @@ export function IssuesView({
     setSelectedIssueId(issueId);
   }, [repos]);
 
+  useEffect(() => {
+    if (!selectedRepoId || !selectedIssueId) return;
+    setViewState((current) => (
+      current.selectedRepoId === selectedRepoId && current.selectedIssueId === selectedIssueId
+        ? current
+        : { ...current, selectedRepoId, selectedIssueId }
+    ));
+  }, [selectedIssueId, selectedRepoId, setViewState]);
+
+  useEffect(() => {
+    if (!appShell.active || initialIssueId || selectedIssueSummary || items.length === 0) return;
+    const first = items[0];
+    setSelectedRepoId(first.repo.repo_id);
+    setSelectedIssueId(first.issue.id);
+  }, [appShell.active, initialIssueId, items, selectedIssueSummary]);
+
   const issueListNavigation = useSidebarListNavigation({
     items,
     getKey: (item) => `${item.repo.repo_id}:${item.issue.id}`,
@@ -1100,7 +1132,7 @@ export function IssuesView({
       <div className="issues-detail">
         {!selectedIssueId ? (
           <div className="issues-detail__empty">
-            <p className="text-muted">Select an issue to view details</p>
+            <p className="text-muted">No issues in this view</p>
           </div>
         ) : visibleLedgerIssueDetail ? (
           <div className="issues-detail__content" ref={issueDetailScrollRef}>

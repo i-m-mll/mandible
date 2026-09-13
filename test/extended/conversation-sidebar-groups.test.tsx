@@ -222,7 +222,17 @@ describe('conversation sidebar groups', () => {
       ],
       pinnedConversationIds: [],
       previewPinOverrides: {},
+      lastSelection: null,
     });
+  });
+
+  it('normalizes the last durable Chat selection without persisting drafts', () => {
+    expect(normalizeChatViewState({
+      lastSelection: { type: 'conversation', id: ' conversation-1 ' },
+    }).lastSelection).toEqual({ type: 'conversation', id: 'conversation-1' });
+    expect(normalizeChatViewState({
+      lastSelection: { type: 'draft', id: 'draft-1' },
+    }).lastSelection).toBeNull();
   });
 
   it('preserves selected projects when their checkout identity changes', () => {

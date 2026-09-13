@@ -1,5 +1,8 @@
+import type { ComponentChildren } from 'preact';
+import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { SessionOverviewView } from '../views/session-overview';
-import { IssueReferenceDetail } from '../views/spaces/SpaceReferenceDetailPanel';
+import { ReferenceDetailContent } from '../views/reference-detail';
 import type { ChatPreviewTarget } from './ChatEntityLinkBoundary';
 
 export type ChatActivityItemStatus = 'active' | 'finished' | 'waiting' | 'error';
@@ -13,35 +16,48 @@ export type ChatActivityItem = {
   onActivate(): void;
 };
 
+function ChatSidebarDetail({ title, children }: { title: string; children: ComponentChildren }): JSX.Element {
+  return (
+    <DetailPaneShell
+      as="section"
+      variant="compact"
+      presentation="sidebar"
+      className="chat-right-sidebar__detail"
+      bodyClassName="chat-right-sidebar__content"
+      header={<DetailPaneHeader variant="compact" presentation="sidebar" title={title} />}
+    >
+      {children}
+    </DetailPaneShell>
+  );
+}
+
 export function ChatSessionOverview({ providerSessionId, conversationId }: { providerSessionId: string | null; conversationId: string }): JSX.Element {
   return (
-    <div className="chat-right-sidebar__content">
+    <ChatSidebarDetail title="Session Overview">
       {providerSessionId ? (
         <SessionOverviewView key={conversationId} initialSessionId={null} agentBinding={providerSessionId} embedded />
       ) : (
         <div className="chat-right-sidebar__empty">No Session Overview is available for this conversation.</div>
       )}
-    </div>
+    </ChatSidebarDetail>
   );
 }
 
 export function ChatPreview({ target }: { target: ChatPreviewTarget | null }): JSX.Element {
+  if (target) {
+    return <ReferenceDetailContent target={target} presentation="sidebar" />;
+  }
   return (
-    <div className="chat-right-sidebar__content">
-      {target ? (
-        <div className="chat-right-sidebar__preview">
-          <IssueReferenceDetail issueRef={target.ref} repoId={target.repoId} />
-        </div>
-      ) : (
+    <ChatSidebarDetail title="Preview">
         <div className="chat-right-sidebar__empty">Nothing selected for preview.</div>
-      )}
-    </div>
+    </ChatSidebarDetail>
   );
 }
 
 export function ChatActivity({ items }: { items: ChatActivityItem[] }): JSX.Element {
   return (
-    <div className="chat-right-sidebar__content chat-right-sidebar__activity">
+    <ChatSidebarDetail title="Activity">
+      <div className="chat-right-sidebar__activity">
       {items.length > 0 ? (
         <ul className="chat-activity" aria-label="Conversation activity">
           {items.map((item) => (
@@ -68,6 +84,7 @@ export function ChatActivity({ items }: { items: ChatActivityItem[] }): JSX.Elem
       ) : (
         <div className="chat-right-sidebar__empty">No subagents or workflow runs.</div>
       )}
-    </div>
+      </div>
+    </ChatSidebarDetail>
   );
 }

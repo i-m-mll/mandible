@@ -1210,7 +1210,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     const useSourceReader = sourceBacked
       || query.source_backed === "true" || query.source_backed === "1";
     const requestedLimit = Math.max(1, parseInt(query.limit || "160", 10) || 160);
-    const limit = Math.min(500, requestedLimit);
+    let limit = Math.min(500, requestedLimit);
     if (query.target && query.target !== "initial" && query.target !== "latest") {
       sendJson(res, 400, { error: "target must be initial or latest" });
       return;
@@ -1268,6 +1268,14 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       // ordinals within the retained representation, not global block positions.
       const retainedTotal = Math.max(cachedTotal ?? 0, retainedStructuralTotal, retainedLegacyTotal);
       if (cachedTotal !== null) total = cachedTotal;
+      if (query.limit === undefined && (targetKind === "initial" || targetKind === "latest")
+          && source && cachedTotal !== null && cachedTotal === retainedTotal && total > 0) {
+        const turnStart = structureCache.turnWindowStart(id, source.current_version_id, total - 1);
+        const completeTurnSize = turnStart === null ? null : total - turnStart;
+        if (completeTurnSize !== null && completeTurnSize <= 500) {
+          limit = Math.max(limit, completeTurnSize);
+        }
+      }
       let anchorPosition = targetKind === "initial" || targetKind === "latest"
         ? null
         : total > 0 ? total - 1 : null;
@@ -1352,6 +1360,23 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       resolvedTurnId = resolved.turnId;
       if (resolved.block) {
         if (targetKind === "initial" || targetKind === "latest") {
+          if (query.limit === undefined) {
+            const turnStart = db.prepare(`
+              SELECT MAX(position) AS position FROM conversation_blocks
+               WHERE conversation_id = ? AND position <= ? AND type = 'user_message'
+            `).get(id, resolved.block.position) as { position: number | null };
+            const firstPosition = turnStart.position ?? (db.prepare(`
+              SELECT MIN(position) AS position FROM conversation_blocks
+               WHERE conversation_id = ? AND position <= ?
+            `).get(id, resolved.block.position) as { position: number | null }).position;
+            const completeTurnSize = firstPosition === null ? null : (db.prepare(`
+              SELECT COUNT(*) AS total FROM conversation_blocks
+               WHERE conversation_id = ? AND position >= ? AND position <= ?
+            `).get(id, firstPosition, resolved.block.position) as { total: number }).total;
+            if (completeTurnSize !== null && completeTurnSize <= 500) {
+              limit = Math.max(limit, completeTurnSize);
+            }
+          }
           blocks = db.prepare(
             `SELECT * FROM (
                SELECT * FROM conversation_blocks

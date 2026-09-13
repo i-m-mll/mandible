@@ -59,7 +59,7 @@ interface CodexResponsePayload {
   // and must not be parsed or normalized.
   input?: string;
   // function_call_output fields
-  output?: string;
+  output?: string | CodexContentBlock[];
   // reasoning fields
   summary?: string | CodexContentBlock[];
   encrypted_content?: string;
@@ -149,6 +149,11 @@ function codexSummaryParts(summary: CodexResponsePayload["summary"]): ChatConten
   return codexTextParts(summary);
 }
 
+function codexToolOutputText(output: CodexResponsePayload["output"]): string {
+  if (typeof output === "string") return output;
+  return codexTextParts(output).map((part) => part.text).join("\n");
+}
+
 function providerTurnId(payload: CodexResponsePayload): string | undefined {
   const turnId = payload.internal_chat_message_metadata_passthrough?.turn_id;
   return typeof turnId === "string" && turnId ? turnId : undefined;
@@ -178,6 +183,33 @@ function parseToolArguments(argumentsText: string | undefined): unknown {
   } catch {
     return argumentsText;
   }
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * Codex records a delegated task's real launch prompt in the successful
+ * create_thread transport receipt rather than as a normal user response item.
+ * Recognize only that exact envelope; all other identity-less transport output
+ * remains provider bookkeeping and stays out of the transcript.
+ */
+function delegatedTaskPrompt(payload: CodexResponsePayload): string | null {
+  if (payload.name !== "create_thread" || typeof payload.output !== "string") return null;
+  const envelope = payload.output.trim();
+  if (!envelope.startsWith("<codex_delegation>") || !envelope.endsWith("</codex_delegation>")) {
+    return null;
+  }
+  const match = envelope.match(/<input>([\s\S]*?)<\/input>/);
+  if (!match) return null;
+  const prompt = decodeXmlText(match[1]).trim();
+  return prompt || null;
 }
 
 type CodexFunctionCallOutputClassification =
@@ -625,25 +657,39 @@ export class CodexParser implements ConversationParser {
             });
         } else if (payload.type === "function_call_output") {
           if (classifyFunctionCallOutput(payload) === "provider_transport") {
-            continue;
+            const prompt = delegatedTaskPrompt(payload);
+            if (!prompt) continue;
+            blocks.push({
+              type: "user_message",
+              role: "user",
+              content: prompt,
+              position: position++,
+              timestamp: ts,
+              parent_id: null,
+              metadata: { source_event_type: "codex_delegation" },
+            });
+            pendingUserBlockIndex = blocks.length - 1;
+            chatPartsByBlock.set(blocks.length - 1, [{ type: "text", text: prompt }]);
+          } else {
+            const output = codexToolOutputText(payload.output);
+            const parentPos = payload.call_id ? callMap.get(payload.call_id) : undefined;
+            blocks.push({
+              type: "tool_result",
+              role: "tool",
+              content: output,
+              position: position++,
+              timestamp: ts,
+              parent_id: parentPos !== undefined ? String(parentPos) : null,
+              metadata: {
+                tool_id: payload.call_id || undefined,
+                tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
+                tool_kind: "function_call_output",
+                tool_output: output.length > 1000 ? undefined : output,
+                visibility: "default_hidden",
+                source_event_type: "function_call_output",
+              },
+            });
           }
-          const parentPos = payload.call_id ? callMap.get(payload.call_id) : undefined;
-          blocks.push({
-            type: "tool_result",
-            role: "tool",
-            content: payload.output || "",
-            position: position++,
-            timestamp: ts,
-            parent_id: parentPos !== undefined ? String(parentPos) : null,
-            metadata: {
-              tool_id: payload.call_id || undefined,
-              tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
-              tool_kind: "function_call_output",
-              tool_output: (payload.output || "").length > 1000 ? undefined : payload.output,
-              visibility: "default_hidden",
-              source_event_type: "function_call_output",
-            },
-          });
         } else if (payload.type === "custom_tool_call") {
           const toolPos = position;
           if (payload.call_id) callMap.set(payload.call_id, toolPos);
@@ -665,11 +711,12 @@ export class CodexParser implements ConversationParser {
               },
             });
         } else if (payload.type === "custom_tool_call_output") {
+          const output = codexToolOutputText(payload.output);
           const parentPos = payload.call_id ? callMap.get(payload.call_id) : undefined;
           blocks.push({
             type: "tool_result",
             role: "tool",
-            content: payload.output || "",
+            content: output,
             position: position++,
             timestamp: ts,
             parent_id: parentPos !== undefined ? String(parentPos) : null,
@@ -677,6 +724,7 @@ export class CodexParser implements ConversationParser {
               tool_id: payload.call_id || undefined,
               tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
               tool_kind: "custom_tool_call_output",
+              tool_output: output.length > 1000 ? undefined : output,
               visibility: "default_hidden",
               source_event_type: "custom_tool_call_output",
             },

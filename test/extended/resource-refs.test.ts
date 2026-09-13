@@ -192,6 +192,16 @@ describe('issue navigation and preview authority', () => {
       kind: 'issue', ref: '5096e37', repoId: 'mandible', href,
     });
   });
+
+  it('derives artifact previews from the same wrapped resource grammar', () => {
+    const href = resourceRefHref('artifact-version:1234567');
+    const host = document.createElement('div');
+    host.innerHTML = linkifyResourceRefs('<p>[artifact-version:1234567]</p>');
+    const anchor = host.querySelector('a')!;
+    expect(previewableResourceFromAnchor(anchor)).toMatchObject({
+      kind: 'artifact', ref: 'artifact-version:1234567', href,
+    });
+  });
 });
 
 describe('artifact nav hrefs', () => {

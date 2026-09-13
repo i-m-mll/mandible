@@ -123,6 +123,22 @@ describe("conversation blocks route pagination", () => {
 });
 
 describe("indexed conversation position window", () => {
+  it("expands the default tail to include the complete latest turn within the cap", async () => {
+    insertIndexedConversation(260);
+    db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = 'conv-indexed' AND type = 'user_message' AND position > 1").run();
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const response = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed" });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      total: 235,
+      window: { start_position: 1, end_position: 260, has_before: false, has_after: false, limit: 235 },
+    });
+    expect((response.body as { blocks: Array<{ position: number }> }).blocks[0]?.position).toBe(1);
+  });
+
   it("loads the retained tail when a source-backed projection keeps sparse positions", async () => {
     const now = "2026-07-08T12:00:00.000Z";
     db.prepare(

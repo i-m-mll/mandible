@@ -11,6 +11,11 @@
   box-shadow: none;
 }
 
+.detail-pane-shell--sidebar {
+  --detail-content-inline-inset: 16px;
+  height: 100%;
+}
+
 .detail-pane-shell__header,
 .detail-pane-shell__header-primary,
 .detail-pane-shell__subheader,

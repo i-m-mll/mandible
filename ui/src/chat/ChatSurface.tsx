@@ -8,7 +8,11 @@ import type {
   RenderNode,
   StreamRendererProps,
 } from '../components/stream-renderer/types';
-import { MessageGroup } from '../components/stream-renderer/MessageGroup';
+import {
+  assistantTurnBoundaryKinds,
+  chatBoundaryClasses,
+  MessageGroup,
+} from '../components/stream-renderer/MessageGroup';
 import { MessageActions } from '../components/shared/MessageActions';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
@@ -16,6 +20,7 @@ import { UserBubble } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
 import { ActivityGroup, ActivityRow } from '../components/message-blocks/ActivityBlock';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
+import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import { openMarkdownDocument } from './markdownActions';
 import {
   deriveLiveLabel,
@@ -481,7 +486,7 @@ export function ChatSurface({
         return (
           <div
             key={node.key}
-            className="message-block-wrapper contextual-action-owner"
+            className={`message-block-wrapper contextual-action-owner ${chatBoundaryClasses('prose')}`}
             data-block-id={source?.blockId}
           >
             <UserBubble text={node.text} />
@@ -501,7 +506,7 @@ export function ChatSurface({
        case 'semantic_event': {
         const source = node.event.source;
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={source.blockId}>
+          <div key={node.key} className={`message-block-wrapper ${chatBoundaryClasses('activity')}`} data-block-id={source.blockId}>
             <SemanticEventBlock
               kind={node.event.semantic_kind}
               content={node.event.content}
@@ -521,7 +526,7 @@ export function ChatSurface({
       case 'unmatched_tool_result': {
         const source = node.result.source;
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
+          <div key={node.key} className={`message-block-wrapper ${chatBoundaryClasses('activity')}`} data-block-id={source?.blockId}>
             <UnmatchedToolResultBlock result={node.result} />
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
@@ -535,9 +540,14 @@ export function ChatSurface({
 
       case 'activity': {
         const source = node.source;
+        const disclosureKey = `activity:${node.key}`;
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
-            <ActivityRow item={node.item} />
+          <div key={node.key} className={`message-block-wrapper ${chatBoundaryClasses('activity')}`} data-block-id={source?.blockId}>
+            <ActivityRow
+              item={node.item}
+              expanded={expandedBlocks[disclosureKey] ?? false}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+            />
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
@@ -555,11 +565,13 @@ export function ChatSurface({
           isLastStreamingTurn &&
           turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
         const isSelected = selectedMessageId === turn.id;
+        const boundaries = assistantTurnBoundaryKinds(turn);
+        const boundaryClass = boundaries ? chatBoundaryClasses(boundaries.start, boundaries.end) : '';
 
         return (
           <div
             key={node.key}
-            className={isSelected ? 'stream-turn-node stream-turn--selected' : 'stream-turn-node'}
+            className={`${isSelected ? 'stream-turn-node stream-turn--selected' : 'stream-turn-node'}${boundaryClass ? ` ${boundaryClass}` : ''}`}
           >
             <MessageGroup
               turn={turn}
@@ -612,15 +624,17 @@ export function ChatSurface({
         {groupActivityItemsForDisplay(group.nodes).map((entry) => {
           if (entry.kind === 'node') return renderNodeBody(entry.node);
           return (
-            <ActivityGroup
+            <div
               key={entry.key}
-              activityKind={entry.activityKind}
-              items={entry.nodes.map((node) => node.item)}
-              expanded={expandedBlocks[entry.key] ?? false}
-              onExpandedChange={(next) => setBlockExpanded(entry.key, next)}
+              className={`message-block-wrapper ${chatBoundaryClasses('activity')}`}
+              data-member-refs={entry.nodes.map((node) => node.source?.blockId ?? node.key).join(' ')}
             >
-              {entry.nodes.map(renderNodeBody)}
-            </ActivityGroup>
+              <ActivityGroup
+                items={entry.nodes.map((node) => node.item)}
+                expanded={expandedBlocks[entry.key] ?? false}
+                onExpandedChange={(next) => setBlockExpanded(entry.key, next)}
+              />
+            </div>
           );
         })}
       </TurnGroup>
@@ -689,14 +703,22 @@ export function ChatSurface({
         )}
       </div>
       {showJumpToLatest && (
-        <button
-          type="button"
-          className="stream-renderer__scroll-btn"
-          onClick={handleJumpToBottom}
-          disabled={jumpingToLatest}
-        >
-          {jumpingToLatest ? 'Loading latest…' : 'Jump to latest'}
-        </button>
+        <>
+          <button
+            type="button"
+            className="chat-circle-action stream-renderer__scroll-btn"
+            onClick={handleJumpToBottom}
+            disabled={jumpingToLatest}
+            aria-label="Jump to latest"
+            aria-busy={jumpingToLatest ? 'true' : 'false'}
+            title="Jump to latest"
+          >
+            <VerticalArrowIcon direction="down" />
+          </button>
+          {jumpingToLatest && (
+            <span className="sr-only" role="status" aria-live="polite">Loading latest…</span>
+          )}
+        </>
       )}
     </div>
   );
