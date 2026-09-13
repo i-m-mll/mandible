@@ -89,7 +89,8 @@ export type BriefingCompositionRequest = {
   source_health: { source: string; status: "healthy" | "degraded" | "unavailable"; detail: string | null; observed_at: number };
   responder_user_ids: string[];
   quiet_reason: string | null;
-  inputs: Array<{ route_key: string; expected_artifact_version_ref: string; agentic_markdown: string | null }>;
+  inputs: Array<{ route_key: string; expected_artifact_version_ref: string;
+    expected_current_round_id: string | null; agentic_markdown: string | null }>;
   contributions: Array<{
     route_key: string; change_id: string; evidence_ref: string; evidence_digest: string;
     occurred_at: number; slots: Record<string, unknown>;
@@ -194,11 +195,14 @@ export function parseBriefingCompositionRequest(value: unknown): BriefingComposi
   if (!Array.isArray(body.inputs)) throw new BriefingStoreError("inputs must be an array");
   const inputs = body.inputs.map((raw, index) => {
     const input = object(raw, `inputs[${index}]`);
-    only(input, ["route_key", "expected_artifact_version_ref", "agentic_markdown"], `inputs[${index}]`);
+    only(input, ["route_key", "expected_artifact_version_ref", "expected_current_round_id", "agentic_markdown"],
+      `inputs[${index}]`);
     return {
       route_key: nonblank(input.route_key, `inputs[${index}].route_key`),
       expected_artifact_version_ref: nonblank(input.expected_artifact_version_ref,
         `inputs[${index}].expected_artifact_version_ref`),
+      expected_current_round_id: input.expected_current_round_id === undefined || input.expected_current_round_id === null
+        ? null : nonblank(input.expected_current_round_id, `inputs[${index}].expected_current_round_id`),
       agentic_markdown: input.agentic_markdown === null || input.agentic_markdown === undefined
         ? null : exactNonblank(input.agentic_markdown, `inputs[${index}].agentic_markdown`),
     };
@@ -772,6 +776,21 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
           : "briefing_destination_base_drift",
         { route_key: route.route_key, expected_artifact_version_id: expected,
           current_artifact_version_id: base.artifactVersionId });
+      const expectedRoundId = inputs.get(route.route_key)!.expected_current_round_id;
+      if (route.publication_mode === "published-report") {
+        if (expectedRoundId === null) throw new BriefingStoreError(
+          `published-report route '${route.route_key}' requires expected_current_round_id`, 400,
+          "briefing_destination_current_round_required");
+        if (expectedRoundId !== base.latestRoundId) throw new BriefingStoreError(
+          `Current round drifted for destination route '${route.route_key}'`, 409,
+          "briefing_destination_current_drift", { route_key: route.route_key,
+            expected_current_round_id: expectedRoundId, current_round_id: base.latestRoundId,
+            expected_artifact_version_id: expected, current_artifact_version_id: base.artifactVersionId });
+      } else if (expectedRoundId !== null) {
+        throw new BriefingStoreError(
+          `reviewed-document route '${route.route_key}' must not carry expected_current_round_id`, 400,
+          "briefing_destination_current_round_forbidden");
+      }
       if ((request.quiet_reason !== null || route.composer_kind === "deterministic")
           && inputs.get(route.route_key)!.agentic_markdown !== null) {
         throw new BriefingStoreError(`route '${route.route_key}' must not carry agentic_markdown for this run`);
@@ -789,11 +808,13 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         request.source.key, request.source.cursor, canonicalJson(request.source_health), request.quiet_reason === null ? 0 : 1,
         request.quiet_reason, now);
     const insertInput = db.prepare(`INSERT INTO briefing_composition_inputs
-      (run_id, route_key, expected_base_artifact_version_id, agentic_markdown) VALUES (?, ?, ?, ?)`);
+      (run_id, route_key, expected_base_artifact_version_id, expected_current_round_id, agentic_markdown)
+      VALUES (?, ?, ?, ?, ?)`);
     for (const input of request.inputs) {
       const route = routes.get(input.route_key)!;
       const base = bases.get(`${route.group_id}:${route.logical_artifact_id}`)!;
-      insertInput.run(receiptId, input.route_key, base.artifactVersionId, input.agentic_markdown);
+      insertInput.run(receiptId, input.route_key, base.artifactVersionId,
+        input.expected_current_round_id, input.agentic_markdown);
     }
     const insertContribution = db.prepare(`INSERT OR IGNORE INTO briefing_composition_contributions
       (id, run_id, publisher_user_id, source_key, route_key, change_id, evidence_ref, evidence_digest,
@@ -872,23 +893,19 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         }
       }
       const contributionIds = contributions.map((entry) => String(entry.id));
-      let currentRoundId = current.latestRoundId;
-      let currentVersionId = current.artifactVersionId;
-      let outcome: "unchanged" | "published" = "unchanged";
-      if (markdown !== current.source) {
-        const artifact = recordArtifactVersion(db, { source_kind: "managed", content: markdown,
-          series_key: current.seriesKey, logical_name: current.logicalName, title: current.title,
-          role: "briefing-document", media_type: "text/markdown",
-          metadata: { composer: BRIEFING_COMPOSITION_SCHEMA,
-            previous_current_artifact_version_id: current.artifactVersionId } }, now);
-        const published = publishBriefingReportRound(db, { briefing_id: current.briefingId,
-          artifact_version_ref: artifact.version.id,
-          expected_current_artifact_version_ref: current.artifactVersionId,
-          responder_user_ids: request.responder_user_ids }, now);
-        currentRoundId = published.round_id;
-        currentVersionId = published.artifact_version_id;
-        outcome = "published";
-      }
+      const artifact = recordArtifactVersion(db, { source_kind: "managed", content: markdown,
+        series_key: current.seriesKey, logical_name: current.logicalName, title: current.title,
+        role: "briefing-document", media_type: "text/markdown",
+        metadata: { composer: BRIEFING_COMPOSITION_SCHEMA,
+          previous_current_artifact_version_id: current.artifactVersionId } }, now);
+      const published = publishBriefingReportRound(db, { briefing_id: current.briefingId,
+        artifact_version_ref: artifact.version.id,
+        expected_current_round_id: inputs.get(documentRoutes[0].route_key)!.expected_current_round_id!,
+        expected_current_artifact_version_ref: current.artifactVersionId,
+        responder_user_ids: request.responder_user_ids }, now);
+      const currentRoundId = published.round_id;
+      const currentVersionId = published.artifact_version_id;
+      const outcome = "published" as const;
       if (contributionIds.length) {
         db.prepare(`UPDATE briefing_composition_contributions SET state = 'composed'
           WHERE id IN (${contributionIds.map(() => "?").join(",")})`).run(...contributionIds);

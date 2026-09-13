@@ -291,8 +291,19 @@ describe("Base-relative Briefing destination composer", () => {
     const agentScheduleId = createUser(db, {
       slug: "agent-schedule", kind: "agent", display_name: "Agent schedule",
     }).id;
+    const genericAdvance = recordDocument("Generic advance.md", `${reportSource}\nBypass attempt.\n`,
+      destination.artifact.series.series_key, destination.artifact.version.id);
+    expect(() => publishBriefingFromArtifactVersion(db, {
+      target_briefing_ref: destination.published.briefing_id,
+      viewer,
+      title: "Repository maintenance.md",
+      artifact_version_ref: genericAdvance.version.id,
+      profile: "mandible-briefing.v3",
+      responder_user_ids: [humanId],
+    }, 150)).toThrowError(expect.objectContaining({ code: "briefing_report_publication_required" }));
+
     const firstMarkdown = "# Repository maintenance\n\n## Findings\n\n- Stale branch (evidence-abc1234).\n";
-    const firstRequest = request("digest.repository-maintenance", destination.artifact.version.id, {
+    const missingRoundRequest = request("digest.repository-maintenance", destination.artifact.version.id, {
       task_identity: "agent-schedule/repo-janitor",
       source: { key: "repo-janitor", cursor: "cursor-1" },
       source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 10 },
@@ -300,6 +311,11 @@ describe("Base-relative Briefing destination composer", () => {
         expected_artifact_version_ref: destination.artifact.version.id, agentic_markdown: firstMarkdown }],
       contributions: [{ route_key: "digest.repository-maintenance", change_id: "finding-1",
         evidence_ref: "evidence-abc1234", evidence_digest: sha("a"), occurred_at: 9, slots: {} }],
+    });
+    expect(() => publishBriefingCompositionRun(db, missingRoundRequest, agentScheduleId, 190))
+      .toThrowError(expect.objectContaining({ code: "briefing_destination_current_round_required" }));
+    const firstRequest = parseBriefingCompositionRequest({ ...missingRoundRequest,
+      inputs: [{ ...missingRoundRequest.inputs[0], expected_current_round_id: destination.published.round_id }],
     });
     const first = publishBriefingCompositionRun(db, firstRequest, agentScheduleId, 200);
     expect(first).toMatchObject({ quiet: false, targets: [{ publication_mode: "published-report",
@@ -322,33 +338,55 @@ describe("Base-relative Briefing destination composer", () => {
         { id: firstTarget.current_round_id, ordinal: 2 },
       ]);
 
-    const secondMarkdown = `${firstMarkdown}\n- Obsolete worktree (evidence-def5678).\n`;
     const secondRequest = request("digest.repository-maintenance", firstTarget.current_artifact_version_id, {
       task_identity: "agent-schedule/repo-janitor", run_id: "run-2", run_key: "run-key-2",
       source: { key: "repo-janitor", cursor: "cursor-2" },
       source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 20 },
       inputs: [{ route_key: "digest.repository-maintenance",
-        expected_artifact_version_ref: firstTarget.current_artifact_version_id, agentic_markdown: secondMarkdown }],
+        expected_artifact_version_ref: firstTarget.current_artifact_version_id,
+        expected_current_round_id: firstTarget.current_round_id, agentic_markdown: firstMarkdown }],
       contributions: [{ route_key: "digest.repository-maintenance", change_id: "finding-2",
-        evidence_ref: "evidence-def5678", evidence_digest: sha("b"), occurred_at: 19, slots: {} }],
+        evidence_ref: "evidence-abc1234", evidence_digest: sha("b"), occurred_at: 19, slots: {} }],
     });
     const second = publishBriefingCompositionRun(db, secondRequest, agentScheduleId, 300);
     const secondTarget = second.targets[0];
     if (secondTarget.publication_mode !== "published-report") throw new Error("report target expected");
     expect(secondTarget).toMatchObject({ outcome: "published", briefing_id: destination.published.briefing_id,
       previous_round_id: firstTarget.current_round_id, previous_artifact_version_id: firstTarget.current_artifact_version_id });
+    expect(secondTarget.current_round_id).not.toBe(firstTarget.current_round_id);
+    expect(secondTarget.current_artifact_version_id).toBe(firstTarget.current_artifact_version_id);
     expect(() => publishBriefingCompositionRun(db, { ...secondRequest, run_id: "changed" }, agentScheduleId, 301))
       .toThrowError(expect.objectContaining({ code: "run_replay_conflict" }));
+
+    const returnToOriginal = request("digest.repository-maintenance", secondTarget.current_artifact_version_id, {
+      task_identity: "agent-schedule/repo-janitor", run_id: "run-3", run_key: "run-key-3",
+      source: { key: "repo-janitor", cursor: "cursor-3" },
+      source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 30 },
+      inputs: [{ route_key: "digest.repository-maintenance",
+        expected_artifact_version_ref: secondTarget.current_artifact_version_id,
+        expected_current_round_id: secondTarget.current_round_id, agentic_markdown: reportSource }],
+      contributions: [{ route_key: "digest.repository-maintenance", change_id: "finding-3",
+        evidence_ref: "No findings", evidence_digest: sha("c"), occurred_at: 29, slots: {} }],
+    });
+    const third = publishBriefingCompositionRun(db, returnToOriginal, agentScheduleId, 350);
+    const thirdTarget = third.targets[0];
+    if (thirdTarget.publication_mode !== "published-report") throw new Error("report target expected");
+    expect(thirdTarget).toMatchObject({ previous_round_id: secondTarget.current_round_id,
+      current_artifact_version_id: destination.artifact.version.id });
+
     expect(() => publishBriefingCompositionRun(db, request("digest.repository-maintenance",
-      firstTarget.current_artifact_version_id, {
-        task_identity: "agent-schedule/repo-janitor", run_id: "run-3", run_key: "run-key-3",
-        source: { key: "repo-janitor", cursor: "cursor-3" },
-        source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 30 },
+      destination.artifact.version.id, {
+        task_identity: "agent-schedule/repo-janitor", run_id: "run-stale", run_key: "run-key-stale",
+        source: { key: "repo-janitor", cursor: "cursor-stale" },
+        source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 40 },
         inputs: [{ route_key: "digest.repository-maintenance",
-          expected_artifact_version_ref: firstTarget.current_artifact_version_id, agentic_markdown: secondMarkdown }],
+          expected_artifact_version_ref: destination.artifact.version.id,
+          expected_current_round_id: destination.published.round_id, agentic_markdown: reportSource }],
+        contributions: [{ route_key: "digest.repository-maintenance", change_id: "finding-stale",
+          evidence_ref: "No findings", evidence_digest: sha("d"), occurred_at: 39, slots: {} }],
       }), agentScheduleId, 400)).toThrowError(expect.objectContaining({ code: "briefing_destination_current_drift" }));
     expect(db.prepare("SELECT latest_round_id FROM briefings WHERE id = ?").get(destination.published.briefing_id))
-      .toEqual({ latest_round_id: secondTarget.current_round_id });
+      .toEqual({ latest_round_id: thirdTarget.current_round_id });
 
     const quiet = parseBriefingCompositionRequest({
       schema: "mandible-briefing-composition@2", task_identity: "agent-schedule/repo-janitor",
@@ -357,15 +395,16 @@ describe("Base-relative Briefing destination composer", () => {
       source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 40 },
       responder_user_ids: [humanId], quiet_reason: "No findings changed",
       inputs: [{ route_key: "digest.repository-maintenance",
-        expected_artifact_version_ref: secondTarget.current_artifact_version_id, agentic_markdown: null }],
+        expected_artifact_version_ref: thirdTarget.current_artifact_version_id,
+        expected_current_round_id: thirdTarget.current_round_id, agentic_markdown: null }],
       contributions: [],
     });
     const quietReceipt = publishBriefingCompositionRun(db, quiet, agentScheduleId, 500);
     expect(quietReceipt).toMatchObject({ quiet: true, targets: [{ publication_mode: "published-report",
-      outcome: "unchanged", previous_round_id: secondTarget.current_round_id,
-      current_round_id: secondTarget.current_round_id }] });
+      outcome: "unchanged", previous_round_id: thirdTarget.current_round_id,
+      current_round_id: thirdTarget.current_round_id }] });
     expect(db.prepare("SELECT round_count FROM briefings WHERE id = ?").get(destination.published.briefing_id))
-      .toEqual({ round_count: 3 });
+      .toEqual({ round_count: 4 });
 
     expect(() => publishBriefingCompositionRun(db, firstRequest, publisherId, 600))
       .toThrowError(expect.objectContaining({ code: "briefing_destination_publisher_forbidden" }));

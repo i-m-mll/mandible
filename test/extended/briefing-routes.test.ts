@@ -797,6 +797,14 @@ describe("plural Briefing routes", () => {
       logical_artifact_id: logical.artifact_id, publication_mode: "published-report", heading: "Findings",
       composer_kind: "agentic", template_version: 1, contribution_template: "", slots: {},
       limits: { max_contributions: 20, max_document_bytes: 20_000, max_directives: 0 } });
+    const bypassArtifact = recordArtifactVersion(db, { source_kind: "managed",
+      content: "# Repository maintenance\n\n## Findings\n\nGeneric bypass.\n",
+      series_key: artifact.series.series_key, logical_name: "Repository maintenance.md",
+      role: "briefing-document", media_type: "text/markdown" });
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
+      body: { target_briefing_ref: published.briefing_id, title: "Repository maintenance",
+        artifact_version_ref: bypassArtifact.version.id } })).toMatchObject({ status: 409,
+      body: { code: "briefing_report_publication_required" } });
     const body = {
       schema: "mandible-briefing-composition@2", task_identity: "agent-schedule/repo-janitor",
       run_id: "report-run", run_key: "report-key",
@@ -805,6 +813,7 @@ describe("plural Briefing routes", () => {
       responder_user_ids: [humanId], quiet_reason: null,
       inputs: [{ route_key: "digest.repository-maintenance",
         expected_artifact_version_ref: artifact.version.id,
+        expected_current_round_id: published.round_id,
         agentic_markdown: "# Repository maintenance\n\n## Findings\n\n- Stale branch (evidence-abc1234).\n" }],
       contributions: [{ route_key: "digest.repository-maintenance", change_id: "finding-1",
         evidence_ref: "evidence-abc1234", evidence_digest: "a".repeat(64), occurred_at: 1, slots: {} }],

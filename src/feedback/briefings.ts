@@ -576,6 +576,17 @@ export function publishBriefingFromArtifactVersion(
         "SELECT id, latest_round_id, round_count, logical_artifact_id FROM briefings WHERE id = ?",
       ).get(targetId) as BriefingIdentityRow | undefined;
     }
+    if (briefing && db.prepare(`SELECT 1
+        FROM briefing_destination_routes route
+        JOIN briefing_destination_policies policy ON policy.route_key = route.route_key
+       WHERE route.logical_artifact_id = ? AND policy.publication_mode = 'published-report'
+       LIMIT 1`).get(briefing.logical_artifact_id)) {
+      throw new BriefingStoreError(
+        "governed published-report Briefings can only advance through composition publication",
+        409,
+        "briefing_report_publication_required",
+      );
+    }
     let outcome: "created" | "created_distinct" | "round_added" | "round_reused";
     let overrideReceiptId: string | null = null;
     if (!briefing) {
@@ -715,10 +726,11 @@ export type BriefingReportRoundResult = {
   previous_artifact_version_id: string;
 };
 
-/** Append one published-report round and advance Current only from the exact producer-observed version. */
+/** Append one published-report round and advance Current only from the exact producer-observed round and version. */
 export function publishBriefingReportRound(db: Db, input: {
   briefing_id: string;
   artifact_version_ref: string;
+  expected_current_round_id: string;
   expected_current_artifact_version_ref: string;
   responder_user_ids: readonly string[];
 }, now = Date.now()): BriefingReportRoundResult {
@@ -754,9 +766,12 @@ export function publishBriefingReportRound(db: Db, input: {
     }
     const current = db.prepare("SELECT artifact_version_id FROM briefing_rounds WHERE id = ? AND briefing_id = ?")
       .get(briefing.latest_round_id, briefing.id) as { artifact_version_id: string } | undefined;
-    if (!current || current.artifact_version_id !== expectedVersionId) {
+    if (briefing.latest_round_id !== input.expected_current_round_id
+        || !current || current.artifact_version_id !== expectedVersionId) {
       throw new BriefingStoreError("published report Current changed after the producer observed it", 409,
         "briefing_destination_current_drift", {
+          expected_current_round_id: input.expected_current_round_id,
+          current_round_id: briefing.latest_round_id,
           expected_current_artifact_version_id: expectedVersionId,
           current_artifact_version_id: current?.artifact_version_id ?? null,
         });

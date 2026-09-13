@@ -295,6 +295,7 @@ export const BRIEFING_COMPOSER_SCHEMA_SQL: readonly string[] = [
     route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
     expected_base_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
     agentic_markdown TEXT,
+    expected_current_round_id TEXT REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
     PRIMARY KEY(run_id, route_key)
   )`,
   `CREATE TABLE IF NOT EXISTS briefing_composition_contributions (
@@ -344,11 +345,21 @@ export const BRIEFING_COMPOSER_SCHEMA_SQL: readonly string[] = [
   )`,
 ];
 
-/** Frozen v171 migration grammar, before destination policy and report-publication receipts. */
+const BRIEFING_COMPOSITION_INPUTS_SCHEMA_V171_SQL = `CREATE TABLE IF NOT EXISTS briefing_composition_inputs (
+    run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    route_key TEXT NOT NULL REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
+    expected_base_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+    agentic_markdown TEXT,
+    PRIMARY KEY(run_id, route_key)
+  )`;
+
+/** Frozen v171 migration grammar, before report policy, receipts, and round-level compare-and-swap. */
 export const BRIEFING_COMPOSER_SCHEMA_V171_SQL: readonly string[] =
   BRIEFING_COMPOSER_SCHEMA_SQL.filter((statement) =>
     !statement.includes("briefing_destination_policies")
-    && !statement.includes("briefing_composition_report_publications"));
+    && !statement.includes("briefing_composition_report_publications"))
+    .map((statement) => statement.includes("CREATE TABLE IF NOT EXISTS briefing_composition_inputs")
+      ? BRIEFING_COMPOSITION_INPUTS_SCHEMA_V171_SQL : statement);
 
 /** Frozen v165 migration grammar. Historical migrations must not inherit head-schema edits. */
 export const BRIEFING_COMPOSER_SCHEMA_V165_SQL: readonly string[] = [

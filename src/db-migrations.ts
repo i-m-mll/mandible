@@ -1045,6 +1045,13 @@ export const MIGRATIONS: readonly Migration[] = [
       )`,
     ],
   },
+  {
+    version: 180,
+    name: "briefing_report_round_compare_and_swap",
+    statements: [
+      "ALTER TABLE briefing_composition_inputs ADD COLUMN expected_current_round_id TEXT REFERENCES briefing_rounds(id) ON DELETE RESTRICT",
+    ],
+  },
 ];
 
 /**
