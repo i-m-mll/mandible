@@ -350,8 +350,8 @@ describe('ChatSurface stream behavior', () => {
     ]);
 
     const css = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
+    expect(css).toMatch(/:is\(\.turn-group__body, \.message-group__content\)[\s\S]*?> \.chat-boundary--ends-activity[\s\S]*?\+ \.chat-boundary--starts-activity\s*\{[^}]*margin-block-start:\s*calc\(var\(--space-2\) \* -0\.333333\);/s);
     expect(css).toMatch(/:is\(\.turn-group__body, \.message-group__content\)[\s\S]*?> \.chat-boundary--ends-prose[\s\S]*?\+ \.chat-boundary--starts-activity,[\s\S]*?:is\(\.turn-group__body, \.message-group__content\)[\s\S]*?> \.chat-boundary--ends-activity[\s\S]*?\+ \.chat-boundary--starts-prose\s*\{[^}]*margin-block-start:\s*calc\(var\(--space-2\) \* 0\.5\);/s);
-    expect(css).not.toMatch(/chat-boundary--ends-activity\s*\+\s*\.chat-boundary--starts-activity/);
   });
 
   it('renders one compact activity row and an accessible stable disclosure for a run', () => {

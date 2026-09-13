@@ -43,8 +43,9 @@ describe('chat turn presentation', () => {
     expect(messageBlocksCss).toMatch(/:root\[data-theme='light'\] \.user-bubble__text\s*{[^}]*background: #F3F3F4;/s);
   });
 
-  it('gives tool and reasoning siblings one symmetric parent-owned gap', () => {
+  it('gives tool and reasoning siblings one symmetric compact parent-owned gap', () => {
     expect(messageBlocksCss).toMatch(/\.turn-group__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*var\(--space-2\);/s);
+    expect(messageBlocksCss).toMatch(/:is\(\.turn-group__body, \.message-group__content\)[\s\S]*?> \.chat-boundary--ends-activity[\s\S]*?\+ \.chat-boundary--starts-activity\s*\{[^}]*margin-block-start:\s*calc\(var\(--space-2\) \* -0\.333333\);/s);
     const turnNodeRule = consoleCss.match(/\.stream-turn-node\s*\{[^}]*\}/s)?.[0];
     expect(turnNodeRule).toBeTruthy();
     expect(turnNodeRule).not.toMatch(/margin(?:-bottom)?:/);
