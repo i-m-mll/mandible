@@ -43,6 +43,14 @@ describe('chat turn presentation', () => {
     expect(messageBlocksCss).toMatch(/:root\[data-theme='light'\] \.user-bubble__text\s*{[^}]*background: #F3F3F4;/s);
   });
 
+  it('gives tool and reasoning siblings one symmetric parent-owned gap', () => {
+    expect(messageBlocksCss).toMatch(/\.turn-group__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*var\(--space-2\);/s);
+    const turnNodeRule = consoleCss.match(/\.stream-turn-node\s*\{[^}]*\}/s)?.[0];
+    expect(turnNodeRule).toBeTruthy();
+    expect(turnNodeRule).not.toMatch(/margin(?:-bottom)?:/);
+    expect(consoleCss).not.toMatch(/\.stream-turn-node:last-child/);
+  });
+
   it('scopes pointer reveal to owner hover without retaining pointer focus', () => {
     expect(consoleCss).not.toContain('*:hover > .message-actions');
     expect(contextualActionCss).toContain('.contextual-action-owner:hover > .contextual-action-group');
