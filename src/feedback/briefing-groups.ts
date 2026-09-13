@@ -379,8 +379,13 @@ export function readBriefingGroup(db: Db, groupRef: string, viewer: BriefingBund
     ...projection,
     current: currentBundleId === null ? null : readBriefingBundle(db, currentBundleId, viewer),
     updates: updateIds(db, id).map((bundleId) => readBriefingBundle(db, bundleId, viewer)),
-    destinations: db.prepare(`SELECT logical_artifact_id, group_id, created_at, updated_at
-      FROM briefing_destination_owners WHERE group_id = ? ORDER BY logical_artifact_id`).all(id) as BriefingGroup["destinations"],
+    destinations: db.prepare(`SELECT owner.logical_artifact_id, owner.group_id,
+        MIN(policy.publication_mode) AS publication_mode, owner.created_at, owner.updated_at
+      FROM briefing_destination_owners owner
+      LEFT JOIN briefing_destination_routes route ON route.logical_artifact_id = owner.logical_artifact_id
+      LEFT JOIN briefing_destination_policies policy ON policy.route_key = route.route_key
+      WHERE owner.group_id = ? GROUP BY owner.logical_artifact_id, owner.group_id
+      ORDER BY owner.logical_artifact_id`).all(id) as BriefingGroup["destinations"],
     review_candidates: viewer.humanReviewOperator === true
       ? updateIds(db, id).map((proposalBundleId) => humanReviewCandidate(db, {
       groupId: id, expectedBaseBundleId: currentBundleId, proposalBundleId, operatorUserId: viewer.userId,

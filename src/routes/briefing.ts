@@ -834,6 +834,11 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
                 group_id: target.group_id, bundle_id: target.proposal_bundle_id,
               });
             }
+            if (target.publication_mode === "published-report" && target.outcome === "published") {
+              broadcast(BRIEFING_EVENTS.roundPublished, {
+                briefing_id: target.briefing_id, round_id: target.current_round_id,
+              });
+            }
           }
         }
         sendJson(res, 200, receipt);

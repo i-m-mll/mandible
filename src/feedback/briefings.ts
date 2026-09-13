@@ -707,6 +707,101 @@ export function publishBriefingFromArtifactVersion(
   }).immediate();
 }
 
+export type BriefingReportRoundResult = {
+  briefing_id: string;
+  round_id: string;
+  artifact_version_id: string;
+  previous_round_id: string;
+  previous_artifact_version_id: string;
+};
+
+/** Append one published-report round and advance Current only from the exact producer-observed version. */
+export function publishBriefingReportRound(db: Db, input: {
+  briefing_id: string;
+  artifact_version_ref: string;
+  expected_current_artifact_version_ref: string;
+  responder_user_ids: readonly string[];
+}, now = Date.now()): BriefingReportRoundResult {
+  const versionId = resolveExactArtifactVersion(db, input.artifact_version_ref, "artifact_version_ref");
+  const expectedVersionId = resolveExactArtifactVersion(
+    db, input.expected_current_artifact_version_ref, "expected_current_artifact_version_ref",
+  );
+  const logicalArtifactId = logicalArtifactForVersion(db, versionId);
+  if (logicalArtifactForVersion(db, expectedVersionId) !== logicalArtifactId) {
+    throw new BriefingStoreError("published report version is outside the destination lineage", 409,
+      "briefing_report_lineage_mismatch");
+  }
+  const document = pinnedRoundDocument(db, versionId);
+  let directives: BriefingDirective[];
+  try { directives = parseBriefingDirectives(document.source, BRIEFING_PROFILE_V3, { allowEmpty: true }); }
+  catch (error) { throw new BriefingStoreError(error instanceof Error ? error.message : String(error), 400,
+    "invalid_briefing_document"); }
+  for (const responder of input.responder_user_ids) {
+    const user = db.prepare("SELECT kind, status FROM users WHERE id = ?").get(responder) as
+      { kind: string; status: string } | undefined;
+    if (!user || user.kind !== "human" || user.status !== "active") {
+      throw new BriefingStoreError(`responder '${responder}' is not an active human`);
+    }
+  }
+  return db.transaction(() => {
+    const briefing = db.prepare(`SELECT id, logical_artifact_id, latest_round_id, round_count
+      FROM briefings WHERE id = ? AND archived_at IS NULL`).get(input.briefing_id) as {
+        id: string; logical_artifact_id: string | null; latest_round_id: string | null; round_count: number;
+      } | undefined;
+    if (!briefing || briefing.logical_artifact_id !== logicalArtifactId || !briefing.latest_round_id) {
+      throw new BriefingStoreError("published report destination Briefing is unavailable", 409,
+        "briefing_report_destination_unavailable");
+    }
+    const current = db.prepare("SELECT artifact_version_id FROM briefing_rounds WHERE id = ? AND briefing_id = ?")
+      .get(briefing.latest_round_id, briefing.id) as { artifact_version_id: string } | undefined;
+    if (!current || current.artifact_version_id !== expectedVersionId) {
+      throw new BriefingStoreError("published report Current changed after the producer observed it", 409,
+        "briefing_destination_current_drift", {
+          expected_current_artifact_version_id: expectedVersionId,
+          current_artifact_version_id: current?.artifact_version_id ?? null,
+        });
+    }
+    for (const responder of input.responder_user_ids) db.prepare(
+      "INSERT OR IGNORE INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, ?)",
+    ).run(briefing.id, responder, now);
+    const roundId = randomUUID();
+    db.prepare(`INSERT INTO briefing_rounds
+      (id, briefing_id, ordinal, artifact_version_id, comparison_base_artifact_version_id,
+       previous_round_id, profile, binding_digest, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(roundId, briefing.id, briefing.round_count + 1, versionId,
+      expectedVersionId, briefing.latest_round_id, BRIEFING_PROFILE_V3, roundBindingDigest(directives), now);
+    directives.forEach((directive, position) => {
+      let definition = db.prepare(`SELECT id FROM briefing_directive_definitions
+        WHERE artifact_version_id = ? AND directive_key = ? AND definition_digest = ?`)
+        .get(versionId, directive.key, directive.definition_digest) as { id: string } | undefined;
+      if (!definition) {
+        definition = { id: randomUUID() };
+        db.prepare(`INSERT INTO briefing_directive_definitions
+          (id, artifact_version_id, directive_key, definition_digest, response_type, required, prompt,
+           options_json, variants_json, start_offset, end_offset, body_start_offset, body_end_offset, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(definition.id, versionId, directive.key,
+          directive.definition_digest, directive.type, directive.required ? 1 : 0, directive.body,
+          canonicalJson(directive.options), canonicalJson(directive.variants), directive.start_offset,
+          directive.end_offset, directive.body_start_offset, directive.body_end_offset, now);
+      }
+      db.prepare(`INSERT INTO briefing_directive_instances
+        (id, round_id, briefing_id, artifact_version_id, definition_id, directive_key, position, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(randomUUID(), roundId, briefing.id, versionId,
+        definition.id, directive.key, position, now);
+    });
+    const updated = db.prepare(`UPDATE briefings SET latest_round_id = ?, round_count = round_count + 1,
+      updated_at = ? WHERE id = ? AND latest_round_id = ? AND round_count = ?`)
+      .run(roundId, now, briefing.id, briefing.latest_round_id, briefing.round_count);
+    if (updated.changes !== 1) throw new BriefingStoreError(
+      "published report Current changed during publication", 409, "briefing_destination_current_drift");
+    const verified = verifyBriefingRoundBinding(db, roundId);
+    if (!verified.valid) throw new BriefingStoreError(`published round binding is invalid: ${verified.reason}`,
+      409, "invalid_round_binding");
+    return { briefing_id: briefing.id, round_id: roundId, artifact_version_id: versionId,
+      previous_round_id: briefing.latest_round_id, previous_artifact_version_id: expectedVersionId };
+  }).immediate();
+}
+
 export function briefingMemberAllows(db: Db, briefingId: string, actorUserId: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM briefing_members WHERE briefing_id = ? AND user_id = ?")
     .get(briefingId, actorUserId));
@@ -716,6 +811,10 @@ export function listBriefings(db: Db, viewer: { userId: string; operator: boolea
   return db.prepare(
     `SELECT b.id, b.briefing_key, b.logical_artifact_id, b.title, b.description,
             b.latest_round_id, b.round_count, b.archived_at,
+            (SELECT MIN(policy.publication_mode)
+               FROM briefing_destination_routes route
+               JOIN briefing_destination_policies policy ON policy.route_key = route.route_key
+              WHERE route.logical_artifact_id = b.logical_artifact_id) AS publication_mode,
             b.created_at, b.updated_at,
             CASE WHEN EXISTS (
               SELECT 1 FROM users actor
@@ -974,19 +1073,32 @@ export function readBriefing(
   },
 ) {
   const briefing = db.prepare(
-    `SELECT id, briefing_key, logical_artifact_id, title, description, latest_round_id,
-            round_count, archived_at, created_at, updated_at
-       FROM briefings WHERE id = ?`,
+    `SELECT b.id, b.briefing_key, b.logical_artifact_id, b.title, b.description, b.latest_round_id,
+            b.round_count, b.archived_at, b.created_at, b.updated_at,
+            (SELECT MIN(policy.publication_mode)
+               FROM briefing_destination_routes route
+               JOIN briefing_destination_policies policy ON policy.route_key = route.route_key
+              WHERE route.logical_artifact_id = b.logical_artifact_id) AS publication_mode
+       FROM briefings b WHERE b.id = ?`,
   ).get(briefingId) as Record<string, unknown> | undefined;
   if (!briefing || (!options.operator && !briefingMemberAllows(db, briefingId, options.actorUserId))) return null;
   const roundRows = db.prepare(
     `SELECT r.id, r.ordinal, r.artifact_version_id, r.comparison_base_artifact_version_id,
             r.previous_round_id, r.profile,
             r.binding_digest, r.created_at,
-            (SELECT json_extract(run.source_health_json, '$.source')
-               FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1) AS origin_source,
-            (SELECT run.run_id FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1) AS origin_run_id,
-            (SELECT run.task_identity FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1) AS origin_task_identity
+            COALESCE((SELECT json_extract(run.source_health_json, '$.source')
+               FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1),
+              (SELECT composition.source_key FROM briefing_composition_report_publications publication
+               JOIN briefing_composition_runs composition ON composition.id = publication.run_id
+               WHERE publication.current_round_id = r.id LIMIT 1)) AS origin_source,
+            COALESCE((SELECT run.run_id FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1),
+              (SELECT composition.run_id FROM briefing_composition_report_publications publication
+               JOIN briefing_composition_runs composition ON composition.id = publication.run_id
+               WHERE publication.current_round_id = r.id LIMIT 1)) AS origin_run_id,
+            COALESCE((SELECT run.task_identity FROM briefing_runs run WHERE run.round_id = r.id LIMIT 1),
+              (SELECT composition.task_identity FROM briefing_composition_report_publications publication
+               JOIN briefing_composition_runs composition ON composition.id = publication.run_id
+               WHERE publication.current_round_id = r.id LIMIT 1)) AS origin_task_identity
        FROM briefing_rounds r WHERE r.briefing_id = ? ORDER BY r.ordinal DESC`,
   ).all(briefingId) as Array<{
     id: string; ordinal: number; artifact_version_id: string; comparison_base_artifact_version_id: string | null;

@@ -62,7 +62,7 @@ function publishBase(name: string, source: string) {
 
 function request(routeKey: string, baseVersionId: string, overrides: Record<string, unknown> = {}) {
   return parseBriefingCompositionRequest({
-    schema: "mandible-briefing-composition@1",
+    schema: "mandible-briefing-composition@2",
     task_identity: "agent-schedule/daily-digest",
     run_id: "run-1",
     run_key: "run-key-1",
@@ -70,7 +70,7 @@ function request(routeKey: string, baseVersionId: string, overrides: Record<stri
     source_health: { source: "arxiv-scan", status: "healthy", detail: null, observed_at: 10 },
     responder_user_ids: [humanId],
     quiet_reason: null,
-    inputs: [{ route_key: routeKey, expected_base_artifact_version_ref: baseVersionId,
+    inputs: [{ route_key: routeKey, expected_artifact_version_ref: baseVersionId,
       agentic_markdown: null }],
     contributions: [{ route_key: routeKey, change_id: "change-1", evidence_ref: "issue:abc1234",
       evidence_digest: sha("a"), occurred_at: 9, slots: { summary: "Prune stale branches" } }],
@@ -104,10 +104,11 @@ describe("Base-relative Briefing destination composer", () => {
       { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer, 115);
     const manifest = (version: number, contributionTemplate = "- {{summary}} ({{evidence_ref}})") =>
       parseBriefingDestinationRouteManifest({
-        schema: "mandible-briefing-destination-routes@2",
+        schema: "mandible-briefing-destination-routes@3",
         routes: [{
           route_key: "managed.changes",
           logical_artifact_ref: destination.logicalArtifactId,
+          publication_mode: "reviewed-document",
           heading: "Changes",
           composer_kind: "deterministic",
           template: { version, contribution_template: contributionTemplate,
@@ -158,6 +159,7 @@ describe("Base-relative Briefing destination composer", () => {
     registerBriefingDestinationRoute(db, {
       route_key: "projects.example.maintenance",
       logical_artifact_id: destination.logicalArtifactId,
+      publication_mode: "reviewed-document",
       heading: "Maintenance",
       composer_kind: "deterministic",
       template_version: 1,
@@ -199,7 +201,8 @@ describe("Base-relative Briefing destination composer", () => {
           evidence_ref: "issue:def5678", evidence_digest: sha("b"), occurred_at: 20,
           slots: { summary: "Remove obsolete worktree" } }],
       }), publisherId, 300);
-    expect(queued.targets).toEqual([{ group_id: group.id, outcome: "queued", base_bundle_id: base.id,
+    expect(queued.targets).toEqual([{ publication_mode: "reviewed-document",
+      group_id: group.id, outcome: "queued", base_bundle_id: base.id,
       proposal_bundle_id: null }]);
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_group_updates WHERE group_id = ?").get(group.id))
       .toEqual({ n: 1 });
@@ -218,6 +221,7 @@ describe("Base-relative Briefing destination composer", () => {
     registerBriefingDestinationRoute(db, {
       route_key: "digest.since-last-review",
       logical_artifact_id: destination.logicalArtifactId,
+      publication_mode: "reviewed-document",
       heading: "Since last review",
       composer_kind: "agentic",
       template_version: 1,
@@ -228,7 +232,7 @@ describe("Base-relative Briefing destination composer", () => {
     const artifactCount = db.prepare("SELECT COUNT(*) AS n FROM artifact_version").get();
     const identical = request("digest.since-last-review", destination.artifact.version.id, {
       inputs: [{ route_key: "digest.since-last-review",
-        expected_base_artifact_version_ref: destination.artifact.version.id, agentic_markdown: baseSource }],
+        expected_artifact_version_ref: destination.artifact.version.id, agentic_markdown: baseSource }],
       contributions: [{ route_key: "digest.since-last-review", change_id: "change-1",
         evidence_ref: "evidence-abc1234", evidence_digest: sha("a"), occurred_at: 9, slots: {} }],
     });
@@ -254,12 +258,116 @@ describe("Base-relative Briefing destination composer", () => {
       destination.artifact.version.id, {
         run_id: "run-2", run_key: "run-key-2",
         inputs: [{ route_key: "digest.since-last-review",
-          expected_base_artifact_version_ref: destination.artifact.version.id,
+          expected_artifact_version_ref: destination.artifact.version.id,
           agentic_markdown: `${baseSource}\nStale candidate.\n` }],
         contributions: [{ route_key: "digest.since-last-review", change_id: "change-2",
           evidence_ref: "issue:def5678", evidence_digest: sha("b"), occurred_at: 20, slots: {} }],
       }), publisherId, 400)).toThrowError(expect.objectContaining({ code: "briefing_destination_base_drift" }));
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_composition_runs WHERE run_key = 'run-key-2'").get())
       .toEqual({ n: 0 });
+  });
+
+  it("publishes repository maintenance as stable Current report rounds without changing group Base", () => {
+    const reportSource = "# Repository maintenance\n\n## Findings\n\nNo findings.\n";
+    const destination = publishBase("Repository maintenance.md", reportSource);
+    const viewer = { userId: humanId, operator: true };
+    const bundle = createBriefingBundle(db, { name: "Digest Base",
+      briefingRefs: [destination.published.briefing_id], viewer }, 100);
+    const group = createBriefingGroup(db, { key: "digest", name: "Digest", currentBundleRef: bundle.id,
+      bundleRefs: [], viewer }, 110);
+    bindBriefingDestinationOwner(db, { logicalArtifactRef: destination.logicalArtifactId, groupRef: group.id },
+      { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer, 115);
+    registerBriefingDestinationRoute(db, {
+      route_key: "digest.repository-maintenance",
+      logical_artifact_id: destination.logicalArtifactId,
+      publication_mode: "published-report",
+      heading: "Findings",
+      composer_kind: "agentic",
+      template_version: 1,
+      contribution_template: "",
+      slots: {},
+      limits: { max_contributions: 20, max_document_bytes: 20_000, max_directives: 0 },
+    }, 120);
+    const agentScheduleId = createUser(db, {
+      slug: "agent-schedule", kind: "agent", display_name: "Agent schedule",
+    }).id;
+    const firstMarkdown = "# Repository maintenance\n\n## Findings\n\n- Stale branch (evidence-abc1234).\n";
+    const firstRequest = request("digest.repository-maintenance", destination.artifact.version.id, {
+      task_identity: "agent-schedule/repo-janitor",
+      source: { key: "repo-janitor", cursor: "cursor-1" },
+      source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 10 },
+      inputs: [{ route_key: "digest.repository-maintenance",
+        expected_artifact_version_ref: destination.artifact.version.id, agentic_markdown: firstMarkdown }],
+      contributions: [{ route_key: "digest.repository-maintenance", change_id: "finding-1",
+        evidence_ref: "evidence-abc1234", evidence_digest: sha("a"), occurred_at: 9, slots: {} }],
+    });
+    const first = publishBriefingCompositionRun(db, firstRequest, agentScheduleId, 200);
+    expect(first).toMatchObject({ quiet: false, targets: [{ publication_mode: "published-report",
+      group_id: group.id, logical_artifact_id: destination.logicalArtifactId,
+      briefing_id: destination.published.briefing_id, outcome: "published",
+      previous_round_id: destination.published.round_id, current_round_id: expect.any(String),
+      previous_artifact_version_id: destination.artifact.version.id,
+      current_artifact_version_id: expect.any(String) }] });
+    const firstTarget = first.targets[0];
+    if (firstTarget.publication_mode !== "published-report") throw new Error("report target expected");
+    expect(firstTarget.current_round_id).not.toBe(destination.published.round_id);
+    expect(publishBriefingCompositionRun(db, firstRequest, agentScheduleId, 201)).toEqual(first);
+    expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?").get(group.id))
+      .toEqual({ current_bundle_id: bundle.id });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_group_updates WHERE group_id = ?").get(group.id))
+      .toEqual({ n: 0 });
+    expect(db.prepare("SELECT id, ordinal FROM briefing_rounds WHERE briefing_id = ? ORDER BY ordinal")
+      .all(destination.published.briefing_id)).toMatchObject([
+        { id: destination.published.round_id, ordinal: 1 },
+        { id: firstTarget.current_round_id, ordinal: 2 },
+      ]);
+
+    const secondMarkdown = `${firstMarkdown}\n- Obsolete worktree (evidence-def5678).\n`;
+    const secondRequest = request("digest.repository-maintenance", firstTarget.current_artifact_version_id, {
+      task_identity: "agent-schedule/repo-janitor", run_id: "run-2", run_key: "run-key-2",
+      source: { key: "repo-janitor", cursor: "cursor-2" },
+      source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 20 },
+      inputs: [{ route_key: "digest.repository-maintenance",
+        expected_artifact_version_ref: firstTarget.current_artifact_version_id, agentic_markdown: secondMarkdown }],
+      contributions: [{ route_key: "digest.repository-maintenance", change_id: "finding-2",
+        evidence_ref: "evidence-def5678", evidence_digest: sha("b"), occurred_at: 19, slots: {} }],
+    });
+    const second = publishBriefingCompositionRun(db, secondRequest, agentScheduleId, 300);
+    const secondTarget = second.targets[0];
+    if (secondTarget.publication_mode !== "published-report") throw new Error("report target expected");
+    expect(secondTarget).toMatchObject({ outcome: "published", briefing_id: destination.published.briefing_id,
+      previous_round_id: firstTarget.current_round_id, previous_artifact_version_id: firstTarget.current_artifact_version_id });
+    expect(() => publishBriefingCompositionRun(db, { ...secondRequest, run_id: "changed" }, agentScheduleId, 301))
+      .toThrowError(expect.objectContaining({ code: "run_replay_conflict" }));
+    expect(() => publishBriefingCompositionRun(db, request("digest.repository-maintenance",
+      firstTarget.current_artifact_version_id, {
+        task_identity: "agent-schedule/repo-janitor", run_id: "run-3", run_key: "run-key-3",
+        source: { key: "repo-janitor", cursor: "cursor-3" },
+        source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 30 },
+        inputs: [{ route_key: "digest.repository-maintenance",
+          expected_artifact_version_ref: firstTarget.current_artifact_version_id, agentic_markdown: secondMarkdown }],
+      }), agentScheduleId, 400)).toThrowError(expect.objectContaining({ code: "briefing_destination_current_drift" }));
+    expect(db.prepare("SELECT latest_round_id FROM briefings WHERE id = ?").get(destination.published.briefing_id))
+      .toEqual({ latest_round_id: secondTarget.current_round_id });
+
+    const quiet = parseBriefingCompositionRequest({
+      schema: "mandible-briefing-composition@2", task_identity: "agent-schedule/repo-janitor",
+      run_id: "run-quiet", run_key: "run-key-quiet",
+      source: { key: "repo-janitor", cursor: "cursor-quiet" },
+      source_health: { source: "repo-janitor", status: "healthy", detail: null, observed_at: 40 },
+      responder_user_ids: [humanId], quiet_reason: "No findings changed",
+      inputs: [{ route_key: "digest.repository-maintenance",
+        expected_artifact_version_ref: secondTarget.current_artifact_version_id, agentic_markdown: null }],
+      contributions: [],
+    });
+    const quietReceipt = publishBriefingCompositionRun(db, quiet, agentScheduleId, 500);
+    expect(quietReceipt).toMatchObject({ quiet: true, targets: [{ publication_mode: "published-report",
+      outcome: "unchanged", previous_round_id: secondTarget.current_round_id,
+      current_round_id: secondTarget.current_round_id }] });
+    expect(db.prepare("SELECT round_count FROM briefings WHERE id = ?").get(destination.published.briefing_id))
+      .toEqual({ round_count: 3 });
+
+    expect(() => publishBriefingCompositionRun(db, firstRequest, publisherId, 600))
+      .toThrowError(expect.objectContaining({ code: "briefing_destination_publisher_forbidden" }));
   });
 });

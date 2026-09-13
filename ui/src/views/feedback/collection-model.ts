@@ -5,6 +5,7 @@ export type FeedbackCollection = {
   collectionId: string;
   label: string;
   description: string | null;
+  publicationMode: 'reviewed-document' | 'published-report' | null;
   unansweredDirectiveCount: number;
   latestRoundId: string;
   createdAt: number;

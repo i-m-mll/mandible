@@ -460,6 +460,7 @@ describe("artifact-backed Briefing rounds", () => {
       { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer, 1_230);
     registerBriefingDestinationRoute(db, {
       route_key: "policy.destination", logical_artifact_id: artifact.logical_artifact_id,
+      publication_mode: "reviewed-document",
       heading: "Policy", composer_kind: "deterministic", template_version: 1,
       contribution_template: "- {{evidence_ref}}", slots: {},
       limits: { max_contributions: 5, max_document_bytes: 10_000, max_directives: 10 },

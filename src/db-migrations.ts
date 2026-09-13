@@ -12,8 +12,8 @@ import {
   CONVERSATION_SPAWN_SCHEMA_V1_SQL,
 } from "./conversation-spawn/schema.js";
 import {
-  BRIEFING_COMPOSER_SCHEMA_SQL,
   BRIEFING_COMPOSER_SCHEMA_V165_SQL,
+  BRIEFING_COMPOSER_SCHEMA_V171_SQL,
   BRIEFING_GROUP_REVIEW_SCHEMA_V167_SQL,
   BRIEFING_GROUP_SCHEMA_SQL,
 } from "./feedback/schema.js";
@@ -660,7 +660,7 @@ export const MIGRATIONS: readonly Migration[] = [
       "ALTER TABLE briefing_destination_routes RENAME TO briefing_destination_routes_v170",
       "ALTER TABLE briefing_groups RENAME TO briefing_groups_v170",
       ...BRIEFING_GROUP_SCHEMA_SQL,
-      ...BRIEFING_COMPOSER_SCHEMA_SQL,
+      ...BRIEFING_COMPOSER_SCHEMA_V171_SQL,
       `WITH RECURSIVE normalized (
           id, name, current_bundle_id, created_at, updated_at, archived_at, position, candidate
         ) AS (
@@ -1012,6 +1012,36 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE TABLE conversation_archive_states (
         conversation_id TEXT PRIMARY KEY,
         archived_at INTEGER NOT NULL CHECK(archived_at > 0)
+      )`,
+    ],
+  },
+  {
+    version: 179,
+    name: "briefing_destination_publication_modes",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS briefing_destination_policies (
+        route_key TEXT PRIMARY KEY REFERENCES briefing_destination_routes(route_key) ON DELETE RESTRICT,
+        publication_mode TEXT NOT NULL CHECK(publication_mode IN ('reviewed-document','published-report')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `INSERT INTO briefing_destination_policies (route_key, publication_mode, created_at, updated_at)
+       SELECT route_key, 'reviewed-document', created_at, updated_at FROM briefing_destination_routes`,
+      `CREATE TABLE IF NOT EXISTS briefing_composition_report_publications (
+        run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+        logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+        group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
+        briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE RESTRICT,
+        outcome TEXT NOT NULL CHECK(outcome IN ('unchanged','published')),
+        previous_round_id TEXT NOT NULL REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
+        current_round_id TEXT NOT NULL REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
+        previous_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+        current_artifact_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(run_id, logical_artifact_id),
+        CHECK((outcome = 'unchanged' AND previous_round_id = current_round_id
+          AND previous_artifact_version_id = current_artifact_version_id)
+          OR (outcome = 'published' AND previous_round_id != current_round_id))
       )`,
     ],
   },

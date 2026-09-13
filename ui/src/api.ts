@@ -3982,6 +3982,7 @@ export type BriefingProjection = BriefingRoundProjection & {
   briefing_id: string;
   title: string;
   description: string | null;
+  publication_mode: 'reviewed-document' | 'published-report' | null;
   latest_round_id: string;
   selected_round_id: string;
   rounds: BriefingRoundSummary[];
@@ -4401,11 +4402,15 @@ export function normalizeBriefings(payload: unknown): FeedbackCollection[] {
   return rows.map((entry) => {
     const row = briefingRecord(entry);
     const id = briefingString(row.id);
+    const publicationMode: FeedbackCollection['publicationMode'] =
+      row.publication_mode === 'reviewed-document' || row.publication_mode === 'published-report'
+        ? row.publication_mode : null;
     return {
       id: feedbackCollectionIdentity(id),
       collectionId: id,
       label: briefingString(row.title, `Briefing ${id.slice(0, 8)}`),
       description: briefingOptionalString(row.description),
+      publicationMode,
       unansweredDirectiveCount: briefingOptionalNumber(row.unanswered_directive_count) ?? 0,
       latestRoundId: briefingString(row.latest_round_id),
       createdAt: briefingOptionalNumber(row.created_at) ?? 0,
@@ -4440,7 +4445,7 @@ export type BriefingGroup = {
   archivedAt?: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
-  destinations: Array<{ logicalArtifactId: string }>;
+  destinations: Array<{ logicalArtifactId: string; publicationMode: 'reviewed-document' | 'published-report' | null }>;
   reviewCandidates?: BriefingGroupReviewCandidate[];
   history?: BriefingGroupDisposition[];
 };
@@ -4646,9 +4651,15 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
       } : null;
     }).filter((entry): entry is BriefingGroupDisposition => entry !== null);
     const destinations = (Array.isArray(group.destinations) ? group.destinations : [])
-      .map((entry) => briefingString(briefingRecord(entry).logical_artifact_id))
-      .filter(Boolean)
-      .map((logicalArtifactId) => ({ logicalArtifactId }));
+      .map((entry) => {
+        const row = briefingRecord(entry);
+        const logicalArtifactId = briefingString(row.logical_artifact_id);
+        const publicationMode: BriefingGroup['destinations'][number]['publicationMode'] =
+          row.publication_mode === 'reviewed-document' || row.publication_mode === 'published-report'
+            ? row.publication_mode : null;
+        return logicalArtifactId ? { logicalArtifactId, publicationMode } : null;
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
     return id && key && name ? {
       id,
       key,
@@ -4920,6 +4931,8 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
     briefing_id: briefingId,
     title: briefingString(briefing.title),
     description: briefingOptionalString(briefing.description),
+    publication_mode: briefing.publication_mode === 'reviewed-document' || briefing.publication_mode === 'published-report'
+      ? briefing.publication_mode : null,
     latest_round_id: latestRoundId,
     selected_round_id: selectedRoundId,
     rounds,

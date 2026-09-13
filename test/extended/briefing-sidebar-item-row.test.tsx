@@ -279,6 +279,21 @@ describe('Briefing sidebar row actions', () => {
     expect(screen.queryByRole('button', { name: /Preview proposed update/ })).toBeNull();
   });
 
+  it('describes published-report destinations without human review actions', () => {
+    const group: BriefingGroup = {
+      ...groupedUpdates,
+      destinations: [{ logicalArtifactId: 'digest-report', publicationMode: 'published-report' }],
+      updates: [],
+      reviewCandidates: [],
+    };
+    render(<BriefingGroupDetail group={group} selectedUpdateId={null} onSelectUpdate={() => undefined} />);
+
+    expect(screen.getByText(/1 published report/)).toBeTruthy();
+    expect(screen.getByText(/advance Current without Accept or Reject/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Accept as Base' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reject proposal' })).toBeNull();
+  });
+
   it('shows operator actions only for an exact frozen human-review candidate', () => {
     const selected = groupedUpdates.updates[0];
     const readyGroup: BriefingGroup = {

@@ -6,10 +6,11 @@ import type { Db } from "../db.js";
 import { recordArtifactVersion, resolveArtifactRefReadonlyFull } from "../provider-artifacts.js";
 import { enforceActivePlacement } from "./briefing-placement.js";
 import { parseBriefingDirectives } from "./briefing-directives.js";
-import { BriefingStoreError, publishBriefingFromArtifactVersion } from "./briefings.js";
+import { BriefingStoreError, publishBriefingFromArtifactVersion, publishBriefingReportRound } from "./briefings.js";
 
-export const BRIEFING_COMPOSITION_SCHEMA = "mandible-briefing-composition@1" as const;
-export const BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA = "mandible-briefing-destination-routes@2" as const;
+export const BRIEFING_COMPOSITION_SCHEMA = "mandible-briefing-composition@2" as const;
+export const BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA = "mandible-briefing-destination-routes@3" as const;
+export type BriefingDestinationPublicationMode = "reviewed-document" | "published-report";
 
 type SlotType = "string" | "string_array" | "number" | "boolean";
 export type DestinationSlot = { type: SlotType; required?: boolean; max_length?: number; max_items?: number };
@@ -17,6 +18,7 @@ export type DestinationSlot = { type: SlotType; required?: boolean; max_length?:
 export type BriefingDestinationRouteInput = {
   route_key: string;
   logical_artifact_id: string;
+  publication_mode: BriefingDestinationPublicationMode;
   heading: string;
   composer_kind: "deterministic" | "agentic";
   template_version: number;
@@ -48,6 +50,7 @@ export type BriefingDestinationRoutePlan = {
   routes: Array<{
     route_key: string;
     action: "create" | "update" | "unchanged";
+    publication_mode: BriefingDestinationPublicationMode;
     group_id: string;
     logical_artifact_id: string;
     heading: string;
@@ -62,6 +65,7 @@ export type BriefingDestinationRouteInspection = {
   schema: typeof BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA;
   routes: Array<{
     route_key: string;
+    publication_mode: BriefingDestinationPublicationMode;
     group_id: string;
     logical_artifact_id: string;
     heading: string;
@@ -85,7 +89,7 @@ export type BriefingCompositionRequest = {
   source_health: { source: string; status: "healthy" | "degraded" | "unavailable"; detail: string | null; observed_at: number };
   responder_user_ids: string[];
   quiet_reason: string | null;
-  inputs: Array<{ route_key: string; expected_base_artifact_version_ref: string; agentic_markdown: string | null }>;
+  inputs: Array<{ route_key: string; expected_artifact_version_ref: string; agentic_markdown: string | null }>;
   contributions: Array<{
     route_key: string; change_id: string; evidence_ref: string; evidence_digest: string;
     occurred_at: number; slots: Record<string, unknown>;
@@ -96,14 +100,18 @@ export type BriefingCompositionReceipt = {
   receipt_id: string;
   run_id: string;
   quiet: boolean;
-  targets: Array<{
-    group_id: string; outcome: "queued" | "unchanged" | "proposed";
-    base_bundle_id: string; proposal_bundle_id: string | null;
-  }>;
+  targets: Array<
+    { publication_mode: "reviewed-document"; group_id: string; outcome: "queued" | "unchanged" | "proposed";
+      base_bundle_id: string; proposal_bundle_id: string | null }
+    | { publication_mode: "published-report"; group_id: string; logical_artifact_id: string;
+      briefing_id: string; outcome: "unchanged" | "published"; previous_round_id: string; current_round_id: string;
+      previous_artifact_version_id: string; current_artifact_version_id: string }
+  >;
 };
 
 type RouteRow = {
   route_key: string; group_id: string; logical_artifact_id: string; heading: string;
+  publication_mode: BriefingDestinationPublicationMode;
   composer_kind: "deterministic" | "agentic"; active_template_version: number;
   max_contributions: number; max_document_bytes: number; max_directives: number;
   contribution_template: string; slots_json: string;
@@ -111,7 +119,8 @@ type RouteRow = {
 
 type BaseDocument = {
   groupId: string; groupName: string; baseBundleId: string; briefingId: string; title: string;
-  logicalArtifactId: string; artifactVersionId: string; source: string; seriesKey: string; logicalName: string;
+  briefingKey: string; latestRoundId: string; logicalArtifactId: string; artifactVersionId: string;
+  source: string; seriesKey: string; logicalName: string;
 };
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -185,11 +194,11 @@ export function parseBriefingCompositionRequest(value: unknown): BriefingComposi
   if (!Array.isArray(body.inputs)) throw new BriefingStoreError("inputs must be an array");
   const inputs = body.inputs.map((raw, index) => {
     const input = object(raw, `inputs[${index}]`);
-    only(input, ["route_key", "expected_base_artifact_version_ref", "agentic_markdown"], `inputs[${index}]`);
+    only(input, ["route_key", "expected_artifact_version_ref", "agentic_markdown"], `inputs[${index}]`);
     return {
       route_key: nonblank(input.route_key, `inputs[${index}].route_key`),
-      expected_base_artifact_version_ref: nonblank(input.expected_base_artifact_version_ref,
-        `inputs[${index}].expected_base_artifact_version_ref`),
+      expected_artifact_version_ref: nonblank(input.expected_artifact_version_ref,
+        `inputs[${index}].expected_artifact_version_ref`),
       agentic_markdown: input.agentic_markdown === null || input.agentic_markdown === undefined
         ? null : exactNonblank(input.agentic_markdown, `inputs[${index}].agentic_markdown`),
     };
@@ -211,9 +220,9 @@ export function parseBriefingCompositionRequest(value: unknown): BriefingComposi
       slots: object(contribution.slots, `contributions[${index}].slots`),
     };
   });
-  const routeKeys = new Set(contributions.map((contribution) => contribution.route_key));
-  if (quietReason !== null ? contributions.length !== 0 || inputs.length !== 0 : contributions.length === 0) {
-    throw new BriefingStoreError("quiet runs require no inputs or contributions; non-quiet runs require contributions");
+  const routeKeys = new Set((quietReason === null ? contributions : inputs).map((entry) => entry.route_key));
+  if (quietReason !== null ? contributions.length !== 0 || inputs.length === 0 : contributions.length === 0) {
+    throw new BriefingStoreError("quiet runs require destination inputs and no contributions; non-quiet runs require contributions");
   }
   if (quietReason === null && (inputs.length !== routeKeys.size || inputs.some((input) => !routeKeys.has(input.route_key)))) {
     throw new BriefingStoreError("inputs must match the contribution route keys exactly");
@@ -263,8 +272,11 @@ export function parseBriefingDestinationRouteManifest(value: unknown): BriefingD
   }
   const routes = manifest.routes.map((raw, index) => {
     const route = object(raw, `routes[${index}]`);
-    only(route, ["route_key", "logical_artifact_ref", "heading", "composer_kind", "template", "limits"],
+    only(route, ["route_key", "logical_artifact_ref", "publication_mode", "heading", "composer_kind", "template", "limits"],
       `routes[${index}]`);
+    if (route.publication_mode !== "reviewed-document" && route.publication_mode !== "published-report") {
+      throw new BriefingStoreError(`routes[${index}].publication_mode must be reviewed-document or published-report`);
+    }
     if (route.composer_kind !== "deterministic" && route.composer_kind !== "agentic") {
       throw new BriefingStoreError(`routes[${index}].composer_kind must be deterministic or agentic`);
     }
@@ -278,6 +290,7 @@ export function parseBriefingDestinationRouteManifest(value: unknown): BriefingD
     return {
       route_key: nonblank(route.route_key, `routes[${index}].route_key`),
       logical_artifact_ref: nonblank(route.logical_artifact_ref, `routes[${index}].logical_artifact_ref`),
+      publication_mode: route.publication_mode,
       heading: nonblank(route.heading, `routes[${index}].heading`),
       composer_kind: route.composer_kind,
       template: {
@@ -305,7 +318,7 @@ function currentBaseDocument(db: Db, route: Pick<RouteRow, "group_id" | "logical
     throw new BriefingStoreError("destination route requires an active Briefing group with a Base bundle", 409,
       "briefing_destination_base_unavailable");
   }
-  const rows = db.prepare(`SELECT b.id AS briefing_id, b.title, b.latest_round_id,
+  const rows = db.prepare(`SELECT b.id AS briefing_id, b.briefing_key, b.title, b.latest_round_id,
       r.artifact_version_id, a.identity_key, a.logical_name
     FROM briefing_bundle_members bm
     JOIN briefings b ON b.id = bm.briefing_id
@@ -313,7 +326,7 @@ function currentBaseDocument(db: Db, route: Pick<RouteRow, "group_id" | "logical
     JOIN artifact a ON a.id = b.logical_artifact_id
     WHERE bm.bundle_id = ? AND b.logical_artifact_id = ? AND b.archived_at IS NULL`)
     .all(group.current_bundle_id, route.logical_artifact_id) as Array<{
-      briefing_id: string; title: string; latest_round_id: string;
+      briefing_id: string; briefing_key: string; title: string; latest_round_id: string;
       artifact_version_id: string; identity_key: string; logical_name: string | null;
     }>;
   if (rows.length !== 1) {
@@ -324,15 +337,17 @@ function currentBaseDocument(db: Db, route: Pick<RouteRow, "group_id" | "logical
   if (!bytes.ok) throw new BriefingStoreError(`Base document bytes are unavailable: ${bytes.reason}`, 409,
     "briefing_destination_base_unavailable");
   return { groupId: group.id, groupName: group.name, baseBundleId: group.current_bundle_id,
-    briefingId: rows[0].briefing_id, title: rows[0].title, logicalArtifactId: route.logical_artifact_id,
+    briefingId: rows[0].briefing_id, briefingKey: rows[0].briefing_key, latestRoundId: rows[0].latest_round_id,
+    title: rows[0].title, logicalArtifactId: route.logical_artifact_id,
     artifactVersionId: rows[0].artifact_version_id, source: bytes.bytes.toString("utf8"), seriesKey: rows[0].identity_key,
     logicalName: rows[0].logical_name ?? `${rows[0].title}.md` };
 }
 
 function routeRow(db: Db, routeKey: string): RouteRow {
-  const row = db.prepare(`SELECT r.*, owner.group_id, t.contribution_template, t.slots_json
+  const row = db.prepare(`SELECT r.*, policy.publication_mode, owner.group_id, t.contribution_template, t.slots_json
     FROM briefing_destination_routes r JOIN briefing_destination_templates t
       ON t.route_key = r.route_key AND t.version = r.active_template_version
+    JOIN briefing_destination_policies policy ON policy.route_key = r.route_key
     JOIN briefing_destination_owners owner ON owner.logical_artifact_id = r.logical_artifact_id
     WHERE r.route_key = ?`).get(routeKey) as RouteRow | undefined;
   if (!row) throw new BriefingStoreError(`unknown destination route '${routeKey}'`, 409, "briefing_destination_unknown");
@@ -341,6 +356,7 @@ function routeRow(db: Db, routeKey: string): RouteRow {
 
 type ResolvedRouteDeclaration = {
   route_key: string;
+  publication_mode: BriefingDestinationPublicationMode;
   group_id: string;
   logical_artifact_id: string;
   heading: string;
@@ -377,6 +393,7 @@ function resolveRouteDeclaration(db: Db, input: BriefingDestinationRouteDeclarat
   if (unknown) throw new BriefingStoreError(`contribution template references unknown slot '${unknown}'`);
   return {
     route_key: input.route_key,
+    publication_mode: input.publication_mode,
     group_id: owner.group_id,
     logical_artifact_id: logical.target_id,
     heading: input.heading,
@@ -392,10 +409,12 @@ function planResolvedRoute(
   db: Db,
   route: ResolvedRouteDeclaration,
 ): BriefingDestinationRoutePlan["routes"][number] {
-  const existing = db.prepare(`SELECT logical_artifact_id, heading, composer_kind,
+  const existing = db.prepare(`SELECT r.logical_artifact_id, r.heading, r.composer_kind, policy.publication_mode,
       active_template_version, max_contributions, max_document_bytes, max_directives
-    FROM briefing_destination_routes WHERE route_key = ?`).get(route.route_key) as {
+    FROM briefing_destination_routes r JOIN briefing_destination_policies policy ON policy.route_key = r.route_key
+    WHERE r.route_key = ?`).get(route.route_key) as {
       logical_artifact_id: string; heading: string; composer_kind: string;
+      publication_mode: BriefingDestinationPublicationMode;
       active_template_version: number; max_contributions: number; max_document_bytes: number; max_directives: number;
     } | undefined;
   if (existing && (existing.logical_artifact_id !== route.logical_artifact_id
@@ -411,12 +430,14 @@ function planResolvedRoute(
     throw new BriefingStoreError("destination document heading is already owned by another stable route", 409,
       "briefing_destination_route_conflict");
   }
-  const existingKind = db.prepare(`SELECT composer_kind FROM briefing_destination_routes
-    WHERE logical_artifact_id = ? LIMIT 1`).get(route.logical_artifact_id) as
-    { composer_kind: string } | undefined;
-  if (existingKind && existingKind.composer_kind !== route.composer_kind) {
-    throw new BriefingStoreError("all routes for one destination document must use one composer kind", 409,
-      "briefing_destination_composer_conflict");
+  const existingKind = db.prepare(`SELECT r.composer_kind, policy.publication_mode
+    FROM briefing_destination_routes r JOIN briefing_destination_policies policy ON policy.route_key = r.route_key
+    WHERE r.logical_artifact_id = ? AND r.route_key != ? LIMIT 1`).get(route.logical_artifact_id, route.route_key) as
+    { composer_kind: string; publication_mode: BriefingDestinationPublicationMode } | undefined;
+  if (existingKind && (existingKind.composer_kind !== route.composer_kind
+      || existingKind.publication_mode !== route.publication_mode)) {
+    throw new BriefingStoreError("all routes for one destination document must use one composer kind and publication mode", 409,
+      "briefing_destination_policy_conflict");
   }
   if (existing && route.template_version < existing.active_template_version) {
     throw new BriefingStoreError("active template version cannot move backwards", 409,
@@ -431,12 +452,14 @@ function planResolvedRoute(
     throw new BriefingStoreError("template versions are immutable", 409, "briefing_destination_template_conflict");
   }
   currentBaseDocument(db, { group_id: route.group_id, logical_artifact_id: route.logical_artifact_id });
-  const changed = !existing || existing.active_template_version !== route.template_version
+  const changed = !existing || existing.publication_mode !== route.publication_mode
+    || existing.active_template_version !== route.template_version
     || existing.max_contributions !== route.limits.max_contributions
     || existing.max_document_bytes !== route.limits.max_document_bytes
     || existing.max_directives !== route.limits.max_directives;
   return {
     route_key: route.route_key,
+    publication_mode: route.publication_mode,
     action: !existing ? "create" : changed ? "update" : "unchanged",
     group_id: route.group_id,
     logical_artifact_id: route.logical_artifact_id,
@@ -454,12 +477,13 @@ function resolveAndPlanBriefingDestinationRoutes(
 ): { plan: BriefingDestinationRoutePlan; resolved: ResolvedRouteDeclaration[] } {
   const resolved = manifest.routes.map((route) => resolveRouteDeclaration(db, route))
     .sort((left, right) => left.route_key.localeCompare(right.route_key));
-  const ownership = new Map<string, { composerKind: string; headings: Map<string, string> }>();
+  const ownership = new Map<string, { composerKind: string; publicationMode: BriefingDestinationPublicationMode;
+    headings: Map<string, string> }>();
   for (const route of resolved) {
     const key = `${route.group_id}\0${route.logical_artifact_id}`;
     const prior = ownership.get(key);
-    if (prior && prior.composerKind !== route.composer_kind) {
-      throw new BriefingStoreError("all routes for one destination document must use one composer kind", 409,
+    if (prior && (prior.composerKind !== route.composer_kind || prior.publicationMode !== route.publication_mode)) {
+      throw new BriefingStoreError("all routes for one destination document must use one composer kind and publication mode", 409,
         "briefing_destination_composer_conflict");
     }
     const priorRouteKey = prior?.headings.get(route.heading);
@@ -468,7 +492,8 @@ function resolveAndPlanBriefingDestinationRoutes(
         "briefing_destination_route_conflict");
     }
     if (prior) prior.headings.set(route.heading, route.route_key);
-    else ownership.set(key, { composerKind: route.composer_kind, headings: new Map([[route.heading, route.route_key]]) });
+    else ownership.set(key, { composerKind: route.composer_kind, publicationMode: route.publication_mode,
+      headings: new Map([[route.heading, route.route_key]]) });
   }
   const routes = resolved.map((route) => planResolvedRoute(db, route));
   return { resolved, plan: { schema: BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA,
@@ -506,6 +531,10 @@ export function reconcileBriefingDestinationRoutes(
       db.prepare(`INSERT OR IGNORE INTO briefing_destination_templates
         (route_key, version, contribution_template, slots_json, created_at) VALUES (?, ?, ?, ?, ?)`)
         .run(route.route_key, route.template_version, route.contribution_template, canonicalJson(route.slots), now);
+      db.prepare(`INSERT INTO briefing_destination_policies (route_key, publication_mode, created_at, updated_at)
+        VALUES (?, ?, ?, ?) ON CONFLICT(route_key) DO UPDATE SET
+          publication_mode = excluded.publication_mode, updated_at = excluded.updated_at`)
+        .run(route.route_key, route.publication_mode, now, now);
     }
     return plan;
   }).immediate();
@@ -513,13 +542,16 @@ export function reconcileBriefingDestinationRoutes(
 
 export function inspectBriefingDestinationRoutes(db: Db, routeKey?: string): BriefingDestinationRouteInspection {
   return db.transaction(() => {
-    const rows = db.prepare(`SELECT r.route_key, owner.group_id, r.logical_artifact_id, r.heading, r.composer_kind,
+    const rows = db.prepare(`SELECT r.route_key, policy.publication_mode, owner.group_id,
+        r.logical_artifact_id, r.heading, r.composer_kind,
         active_template_version, max_contributions, max_document_bytes, max_directives
       FROM briefing_destination_routes r
+      JOIN briefing_destination_policies policy ON policy.route_key = r.route_key
       JOIN briefing_destination_owners owner ON owner.logical_artifact_id = r.logical_artifact_id
       ${routeKey === undefined ? "" : "WHERE r.route_key = ?"}
       ORDER BY r.route_key`).all(...(routeKey === undefined ? [] : [nonblank(routeKey, "route_key")])) as Array<{
-        route_key: string; group_id: string; logical_artifact_id: string; heading: string;
+        route_key: string; publication_mode: BriefingDestinationPublicationMode;
+        group_id: string; logical_artifact_id: string; heading: string;
         composer_kind: "deterministic" | "agentic"; active_template_version: number;
         max_contributions: number; max_document_bytes: number; max_directives: number;
       }>;
@@ -530,6 +562,7 @@ export function inspectBriefingDestinationRoutes(db: Db, routeKey?: string): Bri
       FROM briefing_destination_templates WHERE route_key = ? ORDER BY version`);
     return { schema: BRIEFING_DESTINATION_ROUTE_MANIFEST_SCHEMA, routes: rows.map((route) => ({
       route_key: route.route_key,
+      publication_mode: route.publication_mode,
       group_id: route.group_id,
       logical_artifact_id: route.logical_artifact_id,
       heading: route.heading,
@@ -551,6 +584,7 @@ export function registerBriefingDestinationRoute(db: Db, input: BriefingDestinat
     routes: [{
       route_key: input.route_key,
       logical_artifact_ref: input.logical_artifact_id,
+      publication_mode: input.publication_mode,
       heading: input.heading,
       composer_kind: input.composer_kind,
       template: { version: input.template_version, contribution_template: input.contribution_template,
@@ -563,7 +597,7 @@ export function registerBriefingDestinationRoute(db: Db, input: BriefingDestinat
 function exactVersionId(db: Db, ref: string): string {
   const resolved = resolveArtifactRefReadonlyFull(db, ref);
   if (resolved.status !== "resolved" || resolved.target_type !== "artifact_version" || !resolved.target_id) {
-    throw new BriefingStoreError("expected_base_artifact_version_ref must resolve to one exact artifact version", 404,
+    throw new BriefingStoreError("expected_artifact_version_ref must resolve to one exact artifact version", 404,
       "artifact_version_not_found");
   }
   return resolved.target_id;
@@ -658,9 +692,16 @@ function validateDocument(route: RouteRow, markdown: string, evidenceRefs: reado
 }
 
 function receiptForRun(db: Db, row: { id: string; run_id: string; quiet: number }): BriefingCompositionReceipt {
-  const targets = db.prepare(`SELECT group_id, outcome, base_bundle_id, proposal_bundle_id
-    FROM briefing_composition_targets WHERE run_id = ? ORDER BY group_id`).all(row.id) as BriefingCompositionReceipt["targets"];
-  return { receipt_id: row.id, run_id: row.run_id, quiet: row.quiet === 1, targets };
+  const reviewed = db.prepare(`SELECT 'reviewed-document' AS publication_mode,
+      group_id, outcome, base_bundle_id, proposal_bundle_id
+    FROM briefing_composition_targets WHERE run_id = ? ORDER BY group_id`).all(row.id) as
+    Extract<BriefingCompositionReceipt["targets"][number], { publication_mode: "reviewed-document" }>[];
+  const reports = db.prepare(`SELECT 'published-report' AS publication_mode, group_id, logical_artifact_id,
+      briefing_id, outcome, previous_round_id, current_round_id,
+      previous_artifact_version_id, current_artifact_version_id
+    FROM briefing_composition_report_publications WHERE run_id = ? ORDER BY logical_artifact_id`).all(row.id) as
+    Extract<BriefingCompositionReceipt["targets"][number], { publication_mode: "published-report" }>[];
+  return { receipt_id: row.id, run_id: row.run_id, quiet: row.quiet === 1, targets: [...reviewed, ...reports] };
 }
 
 function cloneBaseBundle(db: Db, base: BaseDocument, replacements: ReadonlyMap<string, string>, now: number): string {
@@ -706,40 +747,47 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
   }
   return db.transaction(() => {
     const receiptId = randomUUID();
-    if (request.quiet_reason !== null) {
-      db.prepare(`INSERT INTO briefing_composition_runs
-        (id, publisher_user_id, task_identity, run_id, run_key, request_digest, source_key, source_cursor,
-         source_health_json, quiet, quiet_reason, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
-        .run(receiptId, publisherUserId, request.task_identity, request.run_id, request.run_key, requestDigest,
-          request.source.key, request.source.cursor, canonicalJson(request.source_health), request.quiet_reason, now);
-      return { receipt_id: receiptId, run_id: request.run_id, quiet: true, targets: [] };
-    }
-    const routes = new Map(request.contributions.map((contribution) => {
-      const route = routeRow(db, contribution.route_key);
+    const routes = new Map(request.inputs.map((input) => {
+      const route = routeRow(db, input.route_key);
       return [route.route_key, route] as const;
     }));
+    const publisher = db.prepare("SELECT slug FROM users WHERE id = ? AND kind = 'agent' AND status = 'active'")
+      .get(publisherUserId) as { slug: string } | undefined;
+    if (!publisher) throw new BriefingStoreError("composition publisher is not an active agent", 403,
+      "briefing_publisher_agent_required");
+    if (routes.has("digest.repository-maintenance") && (publisher.slug !== "agent-schedule"
+        || request.task_identity !== "agent-schedule/repo-janitor"
+        || request.source.key !== "repo-janitor" || request.source_health.source !== "repo-janitor")) {
+      throw new BriefingStoreError("digest.repository-maintenance requires the exact agent-schedule repo-janitor publisher binding",
+        403, "briefing_destination_publisher_forbidden");
+    }
     const inputs = new Map(request.inputs.map((input) => [input.route_key, input]));
     const bases = new Map<string, BaseDocument>();
     for (const route of routes.values()) {
       const base = currentBaseDocument(db, route);
-      const expected = exactVersionId(db, inputs.get(route.route_key)!.expected_base_artifact_version_ref);
+      const expected = exactVersionId(db, inputs.get(route.route_key)!.expected_artifact_version_ref);
       if (expected !== base.artifactVersionId) throw new BriefingStoreError(
-        `Base drifted for destination route '${route.route_key}'`, 409, "briefing_destination_base_drift",
-        { route_key: route.route_key, expected_base_artifact_version_id: expected,
-          current_base_artifact_version_id: base.artifactVersionId });
-      if (route.composer_kind === "deterministic" && inputs.get(route.route_key)!.agentic_markdown !== null) {
-        throw new BriefingStoreError(`deterministic route '${route.route_key}' must not carry agentic_markdown`);
+        `${route.publication_mode === "published-report" ? "Current" : "Base"} drifted for destination route '${route.route_key}'`,
+        409, route.publication_mode === "published-report" ? "briefing_destination_current_drift"
+          : "briefing_destination_base_drift",
+        { route_key: route.route_key, expected_artifact_version_id: expected,
+          current_artifact_version_id: base.artifactVersionId });
+      if ((request.quiet_reason !== null || route.composer_kind === "deterministic")
+          && inputs.get(route.route_key)!.agentic_markdown !== null) {
+        throw new BriefingStoreError(`route '${route.route_key}' must not carry agentic_markdown for this run`);
       }
-      if (route.composer_kind === "agentic" && inputs.get(route.route_key)!.agentic_markdown === null) {
+      if (request.quiet_reason === null && route.composer_kind === "agentic"
+          && inputs.get(route.route_key)!.agentic_markdown === null) {
         throw new BriefingStoreError(`agentic route '${route.route_key}' requires agentic_markdown`);
       }
       bases.set(`${base.groupId}:${base.logicalArtifactId}`, base);
     }
     db.prepare(`INSERT INTO briefing_composition_runs
       (id, publisher_user_id, task_identity, run_id, run_key, request_digest, source_key, source_cursor,
-       source_health_json, quiet, quiet_reason, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)`)
+       source_health_json, quiet, quiet_reason, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(receiptId, publisherUserId, request.task_identity, request.run_id, request.run_key, requestDigest,
-        request.source.key, request.source.cursor, canonicalJson(request.source_health), now);
+        request.source.key, request.source.cursor, canonicalJson(request.source_health), request.quiet_reason === null ? 0 : 1,
+        request.quiet_reason, now);
     const insertInput = db.prepare(`INSERT INTO briefing_composition_inputs
       (run_id, route_key, expected_base_artifact_version_id, agentic_markdown) VALUES (?, ?, ?, ?)`);
     for (const input of request.inputs) {
@@ -758,8 +806,108 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         contribution.change_id, contribution.evidence_ref, contribution.evidence_digest, contribution.occurred_at,
         canonicalJson(validateSlots(route, contribution.slots)), base.artifactVersionId, now);
     }
-    const groupIds = [...new Set([...routes.values()].map((route) => route.group_id))].sort();
     const targets: BriefingCompositionReceipt["targets"] = [];
+    if (request.quiet_reason !== null) {
+      const reportDocuments = new Map([...routes.values()].filter((route) => route.publication_mode === "published-report")
+        .map((route) => [route.logical_artifact_id, route]));
+      for (const route of reportDocuments.values()) {
+        const current = bases.get(`${route.group_id}:${route.logical_artifact_id}`)!;
+        db.prepare(`INSERT INTO briefing_composition_report_publications
+          (run_id, logical_artifact_id, group_id, briefing_id, outcome, previous_round_id, current_round_id,
+           previous_artifact_version_id, current_artifact_version_id, created_at)
+          VALUES (?, ?, ?, ?, 'unchanged', ?, ?, ?, ?, ?)`).run(receiptId, current.logicalArtifactId,
+          current.groupId, current.briefingId, current.latestRoundId, current.latestRoundId,
+          current.artifactVersionId, current.artifactVersionId, now);
+        targets.push({ publication_mode: "published-report", group_id: current.groupId,
+          logical_artifact_id: current.logicalArtifactId, briefing_id: current.briefingId, outcome: "unchanged",
+          previous_round_id: current.latestRoundId, current_round_id: current.latestRoundId,
+          previous_artifact_version_id: current.artifactVersionId,
+          current_artifact_version_id: current.artifactVersionId });
+      }
+      for (const groupId of [...new Set([...routes.values()].filter((route) => route.publication_mode === "reviewed-document")
+        .map((route) => route.group_id))].sort()) {
+        const route = [...routes.values()].find((candidate) => candidate.group_id === groupId)!;
+        const base = bases.get(`${route.group_id}:${route.logical_artifact_id}`)!;
+        db.prepare(`INSERT INTO briefing_composition_targets
+          (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'unchanged', ?, NULL)`)
+          .run(receiptId, groupId, base.baseBundleId);
+        targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "unchanged",
+          base_bundle_id: base.baseBundleId, proposal_bundle_id: null });
+      }
+      return { receipt_id: receiptId, run_id: request.run_id, quiet: true, targets };
+    }
+
+    const reportRoutes = [...routes.values()].filter((route) => route.publication_mode === "published-report");
+    const reportDocumentIds = [...new Set(reportRoutes.map((route) => route.logical_artifact_id))].sort();
+    for (const logicalArtifactId of reportDocumentIds) {
+      const documentRoutes = reportRoutes.filter((route) => route.logical_artifact_id === logicalArtifactId)
+        .sort((left, right) => left.route_key.localeCompare(right.route_key));
+      const current = bases.get(`${documentRoutes[0].group_id}:${logicalArtifactId}`)!;
+      const contributions = db.prepare(`SELECT c.* FROM briefing_composition_contributions c
+        WHERE c.run_id = ? AND c.route_key IN (${documentRoutes.map(() => "?").join(",")})
+        ORDER BY c.created_at, c.id`).all(receiptId, ...documentRoutes.map((route) => route.route_key)) as
+        Array<Record<string, unknown>>;
+      let markdown = current.source;
+      if (documentRoutes[0].composer_kind === "agentic") {
+        const candidates = [...new Set(documentRoutes.map((route) => inputs.get(route.route_key)?.agentic_markdown)
+          .filter((value): value is string => typeof value === "string"))];
+        if (candidates.length !== 1) throw new BriefingStoreError(
+          "agentic routes for one report must provide one identical complete document", 409,
+          "briefing_destination_agentic_conflict");
+        markdown = candidates[0];
+        for (const route of documentRoutes) {
+          const routed = contributions.filter((entry) => entry.route_key === route.route_key);
+          if (routed.length > route.max_contributions) throw new BriefingStoreError(
+            `route '${route.route_key}' exceeds its contribution limit`, 413, "briefing_contribution_limit");
+          assertExactHeading(markdown, route.heading);
+          validateDocument(route, markdown, routed.map((entry) => String(entry.evidence_ref)));
+        }
+      } else {
+        for (const route of documentRoutes) {
+          const routed = contributions.filter((entry) => entry.route_key === route.route_key);
+          if (routed.length > route.max_contributions) throw new BriefingStoreError(
+            `route '${route.route_key}' exceeds its contribution limit`, 413, "briefing_contribution_limit");
+          markdown = insertUnderHeading(markdown, route.heading, routed.map((entry) => renderContribution(route, entry)));
+          validateDocument(route, markdown, routed.map((entry) => String(entry.evidence_ref)));
+        }
+      }
+      const contributionIds = contributions.map((entry) => String(entry.id));
+      let currentRoundId = current.latestRoundId;
+      let currentVersionId = current.artifactVersionId;
+      let outcome: "unchanged" | "published" = "unchanged";
+      if (markdown !== current.source) {
+        const artifact = recordArtifactVersion(db, { source_kind: "managed", content: markdown,
+          series_key: current.seriesKey, logical_name: current.logicalName, title: current.title,
+          role: "briefing-document", media_type: "text/markdown",
+          metadata: { composer: BRIEFING_COMPOSITION_SCHEMA,
+            previous_current_artifact_version_id: current.artifactVersionId } }, now);
+        const published = publishBriefingReportRound(db, { briefing_id: current.briefingId,
+          artifact_version_ref: artifact.version.id,
+          expected_current_artifact_version_ref: current.artifactVersionId,
+          responder_user_ids: request.responder_user_ids }, now);
+        currentRoundId = published.round_id;
+        currentVersionId = published.artifact_version_id;
+        outcome = "published";
+      }
+      if (contributionIds.length) {
+        db.prepare(`UPDATE briefing_composition_contributions SET state = 'composed'
+          WHERE id IN (${contributionIds.map(() => "?").join(",")})`).run(...contributionIds);
+      }
+      db.prepare(`INSERT INTO briefing_composition_report_publications
+        (run_id, logical_artifact_id, group_id, briefing_id, outcome, previous_round_id, current_round_id,
+         previous_artifact_version_id, current_artifact_version_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(receiptId, current.logicalArtifactId, current.groupId,
+        current.briefingId, outcome, current.latestRoundId, currentRoundId, current.artifactVersionId,
+        currentVersionId, now);
+      targets.push({ publication_mode: "published-report", group_id: current.groupId,
+        logical_artifact_id: current.logicalArtifactId, briefing_id: current.briefingId, outcome,
+        previous_round_id: current.latestRoundId, current_round_id: currentRoundId,
+        previous_artifact_version_id: current.artifactVersionId,
+        current_artifact_version_id: currentVersionId });
+    }
+
+    const groupIds = [...new Set([...routes.values()].filter((route) => route.publication_mode === "reviewed-document")
+      .map((route) => route.group_id))].sort();
     for (const groupId of groupIds) {
       const anyRoute = [...routes.values()].find((route) => route.group_id === groupId)!;
       const anyBase = currentBaseDocument(db, anyRoute);
@@ -771,19 +919,21 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         db.prepare(`INSERT INTO briefing_composition_targets
           (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'queued', ?, NULL)`)
           .run(receiptId, groupId, anyBase.baseBundleId);
-        targets.push({ group_id: groupId, outcome: "queued", base_bundle_id: anyBase.baseBundleId,
+      targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "queued", base_bundle_id: anyBase.baseBundleId,
           proposal_bundle_id: null });
         continue;
       }
       const pending = db.prepare(`SELECT c.* FROM briefing_composition_contributions c
         JOIN briefing_destination_routes r ON r.route_key = c.route_key
+        JOIN briefing_destination_policies policy ON policy.route_key = r.route_key
         JOIN briefing_destination_owners owner ON owner.logical_artifact_id = r.logical_artifact_id
-        WHERE owner.group_id = ? AND c.state = 'pending' ORDER BY c.created_at, c.id`).all(groupId) as Array<Record<string, unknown>>;
+        WHERE owner.group_id = ? AND policy.publication_mode = 'reviewed-document'
+          AND c.state = 'pending' ORDER BY c.created_at, c.id`).all(groupId) as Array<Record<string, unknown>>;
       if (pending.length === 0) {
         db.prepare(`INSERT INTO briefing_composition_targets
           (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'unchanged', ?, NULL)`)
           .run(receiptId, groupId, anyBase.baseBundleId);
-        targets.push({ group_id: groupId, outcome: "unchanged", base_bundle_id: anyBase.baseBundleId,
+        targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "unchanged", base_bundle_id: anyBase.baseBundleId,
           proposal_bundle_id: null });
         continue;
       }
@@ -805,7 +955,7 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         db.prepare(`INSERT INTO briefing_composition_targets
           (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'queued', ?, NULL)`)
           .run(receiptId, groupId, anyBase.baseBundleId);
-        targets.push({ group_id: groupId, outcome: "queued", base_bundle_id: anyBase.baseBundleId,
+        targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "queued", base_bundle_id: anyBase.baseBundleId,
           proposal_bundle_id: null });
         continue;
       }
@@ -868,7 +1018,7 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         db.prepare(`INSERT INTO briefing_composition_targets
           (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'unchanged', ?, NULL)`)
           .run(receiptId, groupId, anyBase.baseBundleId);
-        targets.push({ group_id: groupId, outcome: "unchanged", base_bundle_id: anyBase.baseBundleId,
+        targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "unchanged", base_bundle_id: anyBase.baseBundleId,
           proposal_bundle_id: null });
         continue;
       }
@@ -879,7 +1029,7 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
       db.prepare(`INSERT INTO briefing_composition_targets
         (run_id, group_id, outcome, base_bundle_id, proposal_bundle_id) VALUES (?, ?, 'proposed', ?, ?)`)
         .run(receiptId, groupId, anyBase.baseBundleId, proposalBundleId);
-      targets.push({ group_id: groupId, outcome: "proposed", base_bundle_id: anyBase.baseBundleId,
+      targets.push({ publication_mode: "reviewed-document", group_id: groupId, outcome: "proposed", base_bundle_id: anyBase.baseBundleId,
         proposal_bundle_id: proposalBundleId });
     }
     const quiet = targets.every((target) => target.outcome === "unchanged");
