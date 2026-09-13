@@ -183,6 +183,10 @@ describe('message action cards', () => {
     const css = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
     expect(css).toMatch(/\.compact-activity__details\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;[^}]*background:\s*transparent;[^}]*padding:\s*0;/s);
     expect(css).toMatch(/\.tool-card__body\s*\{[^}]*border:\s*1px solid var\(--tool-activity-border\);[^}]*border-radius:\s*6px;[^}]*background:\s*var\(--tool-activity-background\);[^}]*padding:\s*3px 10px;[^}]*--overflow-fade-color:\s*var\(--tool-activity-background\);/s);
+    const resultBoundaryRule = css.match(/\.tool-card__body > \.tool-card__result-wrapper\s*\{[^}]*\}/s)?.[0];
+    expect(resultBoundaryRule).toMatch(/border-block-start:\s*1px solid var\(--tool-activity-border\);/);
+    expect(resultBoundaryRule).toMatch(/padding-block-start:\s*3px;/);
+    expect(resultBoundaryRule).not.toMatch(/background|border-radius/);
     expect(css).not.toMatch(/\.tool-call-group__body\s*\{[^}]*(?:border|background|padding):/s);
 
     const tool = render(<ToolUseBlock
@@ -191,7 +195,9 @@ describe('message action cards', () => {
       result={{ type: 'tool_result', tool_use_id: 'tool-1', content: 'payload' }}
       defaultExpanded
     />);
-    expect(tool.container.querySelector('.tool-card > .compact-activity > .compact-activity__details > .tool-card__body')).toBeTruthy();
+    const payload = tool.container.querySelector('.tool-card > .compact-activity > .compact-activity__details > .tool-card__body')!;
+    expect(payload.querySelector(':scope > .tool-card__input')).toBeTruthy();
+    expect(payload.querySelector(':scope > .tool-card__result-wrapper')).toBeTruthy();
     tool.unmount();
 
     const group = render(<MessageGroup turn={{
