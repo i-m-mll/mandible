@@ -126,6 +126,42 @@ function positionWindow(row: Conversation) {
 }
 
 describe('conversation sidebar labeled-item rows', () => {
+  it('restores the last selected conversation when Chat is reopened without a deep link', async () => {
+    const laterConversation = {
+      ...conversation,
+      id: 'conv-later-selection',
+      title: 'The conversation I last viewed',
+      session_id: 'session-later-selection',
+    };
+    const serverRows = [conversation, laterConversation];
+    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue(sidebarResponse(serverRows));
+    vi.spyOn(api, 'getConversationWindow').mockImplementation(async (id) => (
+      positionWindow(serverRows.find((row) => row.id === id) ?? conversation)
+    ));
+    vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
+    vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
+
+    const renderView = () => render(
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={null}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewConversation={() => undefined}
+      />,
+    );
+
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: `Open conversation ${laterConversation.title}` }));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}').lastSelection)
+      .toEqual({ type: 'conversation', id: laterConversation.id }));
+
+    cleanup();
+    renderView();
+    await waitFor(() => expect(screen.getByRole('button', { name: `Open conversation ${laterConversation.title}` })
+      .getAttribute('aria-current')).toBe('true'));
+  });
+
   it('persists the lifecycle filter and archives and restores through the mounted sidebar', async () => {
     let serverRow: ConversationSidebarConversation = { ...conversation, archived_at: null };
     vi.spyOn(api, 'getConversationSidebar').mockImplementation(async (params) => {

@@ -1724,10 +1724,12 @@ function App(): JSX.Element {
   }, [
     state.authQueue,
     state.authHistory,
+    state.selectedAuthId,
     state.workRepos,
     state.workBranches,
     state.issueRepos,
     state.inboxData,
+    state.selectedInboxItemId,
     state.consoleSessions,
     state.settings,
   ]);

@@ -1017,6 +1017,7 @@ function ConversationDetail({
   chatEntityLinkAction,
   creationReceipt,
   onRetryCreation,
+  onUnavailable,
   externalNotice,
 }: {
   conversationId: string;
@@ -1028,6 +1029,7 @@ function ConversationDetail({
   chatEntityLinkAction: ChatEntityClickAction;
   creationReceipt?: ConversationSpawnReceipt | null;
   onRetryCreation?: () => void;
+  onUnavailable?: (conversationId: string) => void;
   externalNotice?: ComponentChildren;
 }): JSX.Element {
   const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
@@ -1043,6 +1045,9 @@ function ConversationDetail({
   const [loadNonce, setLoadNonce] = useState(0);
   const requestGenerationRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (notFound) onUnavailable?.(conversationId);
+  }, [conversationId, notFound, onUnavailable]);
   const retryingLoadRef = useRef(false);
   const skipNextWindowLoadRef = useRef(false);
   const latestRevisionRef = useRef(initialConversation?.block_count ?? 0);
@@ -2519,7 +2524,14 @@ export function ConversationsView({
   onSelectSession,
   onNewConversation,
 }: ConversationsViewProps): JSX.Element {
-  const [selection, setSelection] = useState<ChatSelection>(null);
+  const [chatViewState, setChatViewState] = useChatViewState();
+  const [selection, setSelection] = useState<ChatSelection>(() => (
+    initialConversationId
+      ? { type: 'conversation', id: initialConversationId }
+      : initialSessionId
+        ? { type: 'session', id: initialSessionId }
+        : chatViewState.lastSelection
+  ));
   const handleNavigateConversation = useCallback((conversationId: string) => {
     setSelection((current) => current?.type === 'conversation' && current.id === conversationId
       ? current
@@ -2542,7 +2554,6 @@ export function ConversationsView({
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
-  const [chatViewState, setChatViewState] = useChatViewState();
   const conversationLifecycle = chatViewState.conversationLifecycle;
   const [retainedSelection, setRetainedSelection] = useState<ConversationSidebarConversation | null>(null);
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
@@ -2679,6 +2690,15 @@ export function ConversationsView({
     if (!initialConversationId) return;
     setSelection({ type: 'conversation', id: initialConversationId });
   }, [initialConversationId]);
+
+  useEffect(() => {
+    if (!selection || selection.type === 'draft') return;
+    setChatViewState((current) => (
+      current.lastSelection?.type === selection.type && current.lastSelection.id === selection.id
+        ? current
+        : { ...current, lastSelection: selection }
+    ));
+  }, [selection, setChatViewState]);
 
   useEffect(() => {
     let active = true;
@@ -3170,6 +3190,12 @@ export function ConversationsView({
     chatSections.projects[0]?.entries[0] ??
     chatSections.chats?.entries[0] ??
     null;
+  const handleUnavailableConversation = useCallback((conversationId: string) => {
+    if (initialConversationId) return;
+    setSelection((current) => (
+      current?.type === 'conversation' && current.id === conversationId ? null : current
+    ));
+  }, [initialConversationId]);
   const activeFilterCount = [
     sourceFilter !== 'all',
     starredOnly,
@@ -3866,6 +3892,7 @@ export function ConversationsView({
             sidebarCollapsed={false}
             chatEntityLinkAction={chatEntityLinkAction}
             creationReceipt={selectedConversationSummary?.spawn ?? null}
+            onUnavailable={handleUnavailableConversation}
             onRetryCreation={selectedConversationSummary?.spawn?.error?.retryable ? () => {
               const spawn = selectedConversationSummary.spawn!;
               void retryProviderChat(spawn.reservation_id, spawn.attempt_count)
@@ -3883,7 +3910,7 @@ export function ConversationsView({
             header={<DetailPaneHeader variant="compact" title="Chat" />}
           >
             <div className="chat-history-detail__empty">
-              Select a conversation to view it
+              No chats in this view
             </div>
           </ChatDetailFrame>
         )}

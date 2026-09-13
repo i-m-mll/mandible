@@ -55,6 +55,8 @@ const TOP_LEVEL_GROUP_ID = '__top_level__';
 export type SpacesSidebarProps = {
   /** Hide the whole sidebar (the shared view-sidebar toggle). */
   hidden?: boolean;
+  /** Reconcile route selection only while the owning Spaces view is active. */
+  selectionActive?: boolean;
   /** Currently selected space id (URL-canonical), or null. */
   selectedSpaceId?: string | null;
   /**
@@ -247,6 +249,7 @@ const PlusIcon = (): JSX.Element => (
 
 export function SpacesSidebar({
   hidden = false,
+  selectionActive = true,
   selectedSpaceId = null,
   onSelectSpace,
   loadGroups = listSpacesGrouped,
@@ -257,6 +260,7 @@ export function SpacesSidebar({
 }: SpacesSidebarProps): JSX.Element | null {
   const [groups, setGroups] = useState<SpaceGroup[]>(() => loadCachedGroups());
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
@@ -282,10 +286,10 @@ export function SpacesSidebar({
   const chooserProjectKeyRef = useRef<string | null>(null);
 
   const containerRef = useRef<HTMLElement>(null);
+  const lastFallbackSelectionRef = useRef<string | null>(null);
 
   // --- data load (grouped read) ---
   useEffect(() => {
-    if (hidden) return undefined;
     let active = true;
     setLoading(true);
     setLoadError(null);
@@ -294,6 +298,7 @@ export function SpacesSidebar({
         if (active) {
           setGroups(next);
           persistGroups(next);
+          setLoaded(true);
         }
       })
       .catch((error: unknown) => {
@@ -305,7 +310,7 @@ export function SpacesSidebar({
     return () => {
       active = false;
     };
-  }, [hidden, loadGroups, refreshToken, internalRefresh]);
+  }, [loadGroups, refreshToken, internalRefresh]);
 
   const refresh = useCallback(() => setInternalRefresh((n) => n + 1), []);
 
@@ -358,6 +363,34 @@ export function SpacesSidebar({
     () => applyOrder(projectGroups, order),
     [projectGroups, order],
   );
+
+  useEffect(() => {
+    if (!loaded || !selectionActive) return;
+    const allSpaces = [
+      ...(topLevelGroup?.spaces ?? []),
+      ...orderedProjectGroups.flatMap(({ group }) => group.spaces),
+    ];
+    const selectionExists = selectedSpaceId && allSpaces.some((space) => (
+      space.id === selectedSpaceId || space.id.startsWith(selectedSpaceId)
+    ));
+    if (selectionExists) {
+      lastFallbackSelectionRef.current = null;
+      return;
+    }
+    if (allSpaces.length === 0) return;
+    const fallback = allSpaces[0];
+    if (lastFallbackSelectionRef.current === fallback.id) return;
+    lastFallbackSelectionRef.current = fallback.id;
+    const owner = fallback.project_id === null
+      ? null
+      : orderedProjectGroups.find(({ group }) => group.project_id === fallback.project_id)?.group ?? null;
+    onSelectSpace({
+      projectId: fallback.project_id,
+      projectKey: owner?.project_key ?? null,
+      spaceId: fallback.id,
+      renderer: null,
+    });
+  }, [loaded, onSelectSpace, orderedProjectGroups, selectedSpaceId, selectionActive, topLevelGroup]);
 
   // --- live filter (case-insensitive substring over project + space names) ---
   const needle = filter.trim().toLowerCase();

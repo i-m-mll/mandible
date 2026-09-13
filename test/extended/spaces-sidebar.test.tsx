@@ -150,11 +150,11 @@ describe('SpacesSidebar render + grouping', () => {
     expect(spacesSidebarStylesheet).not.toMatch(/spaces-tree__global-actions|spaces-tree__group-drag-target/);
   });
 
-  it('renders nothing when hidden', () => {
+  it('renders nothing when hidden while still resolving the required selection', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
     const { container } = render(<SpacesSidebar hidden onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
     expect(container.querySelector('[data-testid="spaces-sidebar"]')).toBeNull();
-    expect(loadGroups).not.toHaveBeenCalled();
+    await waitFor(() => expect(loadGroups).toHaveBeenCalledTimes(1));
   });
 
   it('renders cached groups immediately while the backend refresh is still pending', async () => {
@@ -555,6 +555,33 @@ describe('SpacesSidebar create popover outside-click (containerRef)', () => {
 });
 
 describe('SpacesSidebar selection', () => {
+  it('does not rewrite the route while its owning view is inactive', async () => {
+    const onSelectSpace = vi.fn();
+    render(
+      <SpacesSidebar
+        selectionActive={false}
+        selectedSpaceId="missing"
+        onSelectSpace={onSelectSpace}
+        loadGroups={vi.fn().mockResolvedValue(sampleGroups())}
+      />,
+    );
+
+    await screen.findByText('Global notes');
+    expect(onSelectSpace).not.toHaveBeenCalled();
+  });
+
+  it('opens the first ordered space when the route has no valid selection', async () => {
+    const onSelectSpace = vi.fn();
+    render(<SpacesSidebar selectedSpaceId="missing" onSelectSpace={onSelectSpace} loadGroups={vi.fn().mockResolvedValue(sampleGroups())} />);
+
+    await waitFor(() => expect(onSelectSpace).toHaveBeenCalledWith({
+      projectId: null,
+      projectKey: null,
+      spaceId: 't1',
+      renderer: null,
+    }));
+  });
+
   it('marks the active space and navigates on click without emitting renderer=', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
     const onSelectSpace = vi.fn();

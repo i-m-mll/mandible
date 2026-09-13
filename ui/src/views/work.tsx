@@ -1408,7 +1408,7 @@ export function WorkOverviewView({
         </ViewSidebar>
         <section className="work-detail" data-app-surface="main" aria-label="Repository details">
           {selectedRepo === null ? (
-            <div className="empty-state">Select a repository to inspect branch and worktree status.</div>
+            <div className="empty-state">No projects in this view.</div>
           ) : (() => {
             const { repo, repoId, repoTitle, branches, sortKey } = selectedRepo;
             const repoPath = getRepoPath(repo);

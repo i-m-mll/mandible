@@ -4086,7 +4086,7 @@ describe('issue deep links', () => {
     expect(detailFetchCount()).toBe(2);
   });
 
-  it('restores and writes only browser-local issue filters', async () => {
+  it('restores browser-local issue filters and the last valid selection', async () => {
     const storageKey = 'mandible_issues_view_state:v1';
     stubIssuesLocalStorage({
       [storageKey]: JSON.stringify({
@@ -4105,7 +4105,6 @@ describe('issue deep links', () => {
 
     expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value).toBe('daemon mandible');
     expect(screen.queryByPlaceholderText('Filter by repo...')).toBeNull();
-
     fireEvent.input(screen.getByLabelText('Filter issues'), { target: { value: 'toast' } });
     await waitFor(() => {
       const stored = JSON.parse(String(window.localStorage.getItem(storageKey)));
@@ -4113,9 +4112,9 @@ describe('issue deep links', () => {
         filter: 'toast',
         filterEdited: true,
         parentFilter: null,
+        selectedRepoId: 'mandible',
+        selectedIssueId: '4c26383',
       });
-      expect(stored).not.toHaveProperty('selectedRepoId');
-      expect(stored).not.toHaveProperty('selectedIssueId');
     });
 
     cleanup();
@@ -4126,6 +4125,28 @@ describe('issue deep links', () => {
     }));
     expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value).toBe('toast');
     expect(screen.queryByPlaceholderText('Filter by repo...')).toBeNull();
+  });
+
+  it('replaces a removed saved issue with the first available issue', async () => {
+    const storageKey = 'mandible_issues_view_state:v1';
+    stubIssuesLocalStorage({
+      [storageKey]: JSON.stringify({
+        filter: '',
+        filterEdited: false,
+        parentFilter: null,
+        selectedRepoId: 'removed-repo',
+        selectedIssueId: 'removed-issue',
+      }),
+    });
+
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+    }));
+
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Daemon reload toast link' }).getAttribute('aria-current'),
+    ).toBe('true'));
   });
 
   it('matches repository identity through the view-wide issue filter', () => {
@@ -5414,6 +5435,59 @@ function jsonResponse(body: unknown): Promise<Response> {
 }
 
 describe('ArtifactsView', () => {
+  it('replaces a removed saved series with the first available artifact', async () => {
+    const artifact = makeArtifactFixture('e', 'available-report.md');
+    const artifactSeries = makeArtifactSeries('available-report', [artifact], 'available-report.md');
+    installMemoryLocalStorage({
+      'mandible:artifacts:list-controls:v1': JSON.stringify({
+        filters: {},
+        sortField: 'updated',
+        sortDirection: 'desc',
+        selectedSeriesRef: 'artifact-series:removed',
+        selectedVersionNo: null,
+      }),
+    });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [artifactSeries.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) {
+        const ref = new URLSearchParams(url.split('?')[1] ?? '').get('ref');
+        if (ref === 'artifact-series:removed') {
+          return Promise.resolve(new Response(JSON.stringify({ error: 'not found' }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+        return jsonResponse({ history: artifactSeries.history });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.endsWith('/content')) {
+        return jsonResponse({
+          content: {
+            artifact_id: artifact.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: 'text/markdown',
+            size_bytes: 0,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        });
+      }
+      if (url.includes(encodeURIComponent(artifact.id))) return jsonResponse({ artifact });
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    expect(await screen.findByRole('heading', { name: 'available-report.md' })).toBeTruthy();
+    await waitFor(() => expect(JSON.parse(String(window.localStorage.getItem(
+      'mandible:artifacts:list-controls:v1',
+    ))).selectedSeriesRef).toBe(artifactSeries.summary.ref));
+  });
+
   it('shows artifact load failures once below the detail header', async () => {
     const artifact = makeArtifactFixture('d', 'failed-detail.md', {
       id: 'artifact:dddddddddddd',
@@ -6853,7 +6927,7 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(screen.getByText(`Invalid series reference: ${invalidSeriesRef}`)).toBeTruthy());
     expect(versionRequests).toEqual([]);
-    expect(screen.getByText('Select an artifact or open an artifact URI.')).toBeTruthy();
+    expect(screen.getByText('No artifacts in this view.')).toBeTruthy();
   });
 
   it('ignores delayed version history after navigation clears the selected series', async () => {
@@ -7137,7 +7211,7 @@ describe('ArtifactsView', () => {
     });
 
     expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v2.md');
-    expect(screen.queryByText('Select an artifact or open an artifact URI.')).toBeNull();
+    expect(screen.queryByText('No artifacts in this view.')).toBeNull();
 
     rerender(h(ArtifactsView, { initialSeriesRef: firstSeries.summary.ref, initialVersionNo: 1 }));
 
