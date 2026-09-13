@@ -11,7 +11,7 @@ export type CompactActivityDisclosure = {
 };
 
 export type CompactActivityRowProps = {
-  icon: JSX.Element;
+  icon?: JSX.Element;
   summary: string;
   disclosure?: CompactActivityDisclosure;
   className?: string;
@@ -42,9 +42,10 @@ export function CompactActivityRow({
   }, [isExpanded, restoreFocusAfterCollapse]);
 
   const rootClass = `compact-activity${isExpanded ? ' compact-activity--expanded' : ''}${className ? ` ${className}` : ''}`;
+  const rowClass = `compact-activity__row${disclosure ? '' : ' compact-activity__row--inert'}${icon ? '' : ' compact-activity__row--no-icon'}`;
   const rowContent = (
     <>
-      <span className="compact-activity__icon" aria-hidden="true">{icon}</span>
+      {icon ? <span className="compact-activity__icon" aria-hidden="true">{icon}</span> : null}
       <span className="compact-activity__summary" title={summary}>{summary}</span>
       {disclosure ? (
         <span className="compact-activity__chevron" aria-hidden="true">
@@ -55,7 +56,7 @@ export function CompactActivityRow({
   );
 
   if (!disclosure) {
-    return <div className={rootClass}><div className="compact-activity__row compact-activity__row--inert">{rowContent}</div></div>;
+    return <div className={rootClass}><div className={rowClass}>{rowContent}</div></div>;
   }
 
   const toggle = (): void => {
@@ -69,7 +70,7 @@ export function CompactActivityRow({
       <button
         ref={buttonRef}
         type="button"
-        className="compact-activity__row"
+        className={rowClass}
         aria-expanded={isExpanded}
         aria-controls={bodyId}
         onClick={toggle}

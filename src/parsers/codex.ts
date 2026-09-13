@@ -59,7 +59,7 @@ interface CodexResponsePayload {
   // and must not be parsed or normalized.
   input?: string;
   // function_call_output fields
-  output?: string;
+  output?: string | CodexContentBlock[];
   // reasoning fields
   summary?: string | CodexContentBlock[];
   encrypted_content?: string;
@@ -147,6 +147,11 @@ function codexSummaryParts(summary: CodexResponsePayload["summary"]): ChatConten
     return summary.trim() ? [{ type: "text", text: summary }] : [];
   }
   return codexTextParts(summary);
+}
+
+function codexToolOutputText(output: CodexResponsePayload["output"]): string {
+  if (typeof output === "string") return output;
+  return codexTextParts(output).map((part) => part.text).join("\n");
 }
 
 function providerTurnId(payload: CodexResponsePayload): string | undefined {
@@ -627,11 +632,12 @@ export class CodexParser implements ConversationParser {
           if (classifyFunctionCallOutput(payload) === "provider_transport") {
             continue;
           }
+          const output = codexToolOutputText(payload.output);
           const parentPos = payload.call_id ? callMap.get(payload.call_id) : undefined;
           blocks.push({
             type: "tool_result",
             role: "tool",
-            content: payload.output || "",
+            content: output,
             position: position++,
             timestamp: ts,
             parent_id: parentPos !== undefined ? String(parentPos) : null,
@@ -639,7 +645,7 @@ export class CodexParser implements ConversationParser {
               tool_id: payload.call_id || undefined,
               tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
               tool_kind: "function_call_output",
-              tool_output: (payload.output || "").length > 1000 ? undefined : payload.output,
+              tool_output: output.length > 1000 ? undefined : output,
               visibility: "default_hidden",
               source_event_type: "function_call_output",
             },
@@ -665,11 +671,12 @@ export class CodexParser implements ConversationParser {
               },
             });
         } else if (payload.type === "custom_tool_call_output") {
+          const output = codexToolOutputText(payload.output);
           const parentPos = payload.call_id ? callMap.get(payload.call_id) : undefined;
           blocks.push({
             type: "tool_result",
             role: "tool",
-            content: payload.output || "",
+            content: output,
             position: position++,
             timestamp: ts,
             parent_id: parentPos !== undefined ? String(parentPos) : null,
@@ -677,6 +684,7 @@ export class CodexParser implements ConversationParser {
               tool_id: payload.call_id || undefined,
               tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
               tool_kind: "custom_tool_call_output",
+              tool_output: output.length > 1000 ? undefined : output,
               visibility: "default_hidden",
               source_event_type: "custom_tool_call_output",
             },

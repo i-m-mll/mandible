@@ -117,6 +117,40 @@ describe("chat render orchestration", () => {
     ]);
   });
 
+  it("uses exact retained parent evidence without hiding genuine orphan results", () => {
+    const call = item("codex", "s1", "split-call", {
+      type: "tool-call", role: "assistant", phase: "call", tool_id: "split", tool_name: "exec", input: "opaque", parts: [],
+    });
+    const result = item("codex", "s1", "split-result", {
+      type: "tool-call", role: "tool", phase: "result", tool_id: "split", output: "done", parts: [],
+    });
+    const activity = item("codex", "s1", "between", {
+      type: "activity", role: "assistant", activity_kind: "reasoning-summary", parts: [{ type: "text", text: "Checking" }],
+    });
+
+    const separated = conversationBlocksToStreamEvents("s1", [
+      { ...block("call-block", call), parent_id: null },
+      { ...block("activity-block", activity), parent_id: null },
+      { ...block("result-block", result), parent_id: "call-block" },
+    ]);
+    const separatedNodes = buildStreamState(separated).nodes;
+    expect(separatedNodes.map((node) => node.kind)).toEqual(["assistant_turn", "activity"]);
+    expect(separatedNodes[0]).toMatchObject({ kind: "assistant_turn" });
+    if (separatedNodes[0].kind === "assistant_turn") {
+      expect(separatedNodes[0].turn.toolResults.get("split")?.content).toBe("done");
+    }
+
+    const offWindow = conversationBlocksToStreamEvents("s1", [
+      { ...block("result-only", result), parent_id: "call-outside-window" },
+    ]);
+    expect(buildStreamState(offWindow).nodes).toEqual([]);
+
+    const orphan = conversationBlocksToStreamEvents("s1", [
+      { ...block("genuine-orphan", result), parent_id: null },
+    ]);
+    expect(buildStreamState(orphan).nodes).toMatchObject([{ kind: "unmatched_tool_result" }]);
+  });
+
   it("keeps only the raw-console live tail after persisted history", () => {
     const historyEvents = [{
       type: "assistant", uuid: "assistant-tail-anchor", session_id: "s1", parent_tool_use_id: null,
