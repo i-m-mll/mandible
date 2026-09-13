@@ -409,6 +409,11 @@
   width: 100%;
 }
 
+.tool-card__body > .tool-card__result-wrapper {
+  border-block-start: 1px solid var(--tool-activity-border);
+  padding-block-start: 3px;
+}
+
 .tool-card__input,
 .tool-card__terminal,
 .tool-card__result {
