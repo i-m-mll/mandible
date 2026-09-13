@@ -218,6 +218,62 @@ describe("CodexParser", () => {
     });
   });
 
+  it("projects the strict create_thread delegation input as the visible launch prompt", async () => {
+    const parser = new CodexParser();
+    const result = await parser.parseIncremental?.({
+      filePath: "/tmp/delegated-task.jsonl",
+      raw: [
+        {
+          type: "response_item",
+          timestamp: "2026-09-13T00:00:00.000Z",
+          payload: {
+            type: "function_call_output",
+            name: "create_thread",
+            call_id: null,
+            output: [
+              "<codex_delegation>",
+              "  <source_thread_id>parent-task</source_thread_id>",
+              "  <input>Repair the stream &amp; preserve &lt;exact&gt; content.</input>",
+              "</codex_delegation>",
+            ].join("\n"),
+          },
+        },
+        {
+          type: "response_item",
+          timestamp: "2026-09-13T00:00:00.001Z",
+          payload: {
+            type: "function_call_output",
+            name: "create_thread",
+            call_id: null,
+            output: "unstructured provider receipt",
+          },
+        },
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n",
+      baseBlockCount: 0,
+      baseRecordCount: 8,
+      sourceHash: "append:delegated-task",
+      sourceMtime: 42,
+    });
+
+    expect(result?.blocks).toHaveLength(1);
+    expect(result?.blocks[0]).toMatchObject({
+      type: "user_message",
+      role: "user",
+      content: "Repair the stream & preserve <exact> content.",
+      position: 0,
+      metadata: {
+        source_event_type: "codex_delegation",
+        source_record_ordinal: 8,
+        source_sub_block_ordinal: 0,
+        chat_item: {
+          type: "message",
+          role: "user",
+          parts: [{ type: "text", text: "Repair the stream & preserve <exact> content." }],
+        },
+      },
+    });
+  });
+
   it("preserves opaque custom tool input byte-for-byte", async () => {
     const parser = new CodexParser();
     const rawInput = '{"path":"a\\nb","literal":"  x  ","shell":"$(never-run)"}';
