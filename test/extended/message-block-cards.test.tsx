@@ -179,14 +179,12 @@ describe('message action cards', () => {
     expect(group.container.querySelectorAll('.tool-call-group > .compact-activity__row > .compact-activity__icon')).toHaveLength(1);
   });
 
-  it('boxes individual tool payloads without boxing grouped disclosure rows', () => {
+  it('renders expanded tool input and output as distinct boxes without boxing grouped rows', () => {
     const css = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
     expect(css).toMatch(/\.compact-activity__details\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;[^}]*background:\s*transparent;[^}]*padding:\s*0;/s);
-    expect(css).toMatch(/\.tool-card__body\s*\{[^}]*border:\s*1px solid var\(--tool-activity-border\);[^}]*border-radius:\s*6px;[^}]*background:\s*var\(--tool-activity-background\);[^}]*padding:\s*3px 10px;[^}]*--overflow-fade-color:\s*var\(--tool-activity-background\);/s);
-    const resultBoundaryRule = css.match(/\.tool-card__body > \.tool-card__result-wrapper\s*\{[^}]*\}/s)?.[0];
-    expect(resultBoundaryRule).toMatch(/border-block-start:\s*1px solid var\(--tool-activity-border\);/);
-    expect(resultBoundaryRule).toMatch(/padding-block-start:\s*3px;/);
-    expect(resultBoundaryRule).not.toMatch(/background|border-radius/);
+    expect(css).toMatch(/\.tool-card__body\s*\{[^}]*gap:\s*var\(--space-1\);[^}]*color:\s*var\(--tool-activity-box-text\);/s);
+    expect(css).toMatch(/\.tool-card__payload-box\s*\{[^}]*border:\s*1px solid var\(--tool-activity-border\);[^}]*border-radius:\s*6px;[^}]*background:\s*var\(--tool-activity-background\);[^}]*padding:\s*3px 10px;[^}]*--overflow-fade-color:\s*var\(--tool-activity-background\);/s);
+    expect(css).not.toMatch(/\.tool-card__body > \.tool-card__result-wrapper\s*\{/);
     expect(css).not.toMatch(/\.tool-call-group__body\s*\{[^}]*(?:border|background|padding):/s);
 
     const tool = render(<ToolUseBlock
@@ -196,8 +194,9 @@ describe('message action cards', () => {
       defaultExpanded
     />);
     const payload = tool.container.querySelector('.tool-card > .compact-activity > .compact-activity__details > .tool-card__body')!;
-    expect(payload.querySelector(':scope > .tool-card__input')).toBeTruthy();
-    expect(payload.querySelector(':scope > .tool-card__result-wrapper')).toBeTruthy();
+    expect(payload.querySelector(':scope > .tool-card__input-wrapper.tool-card__payload-box')).toBeTruthy();
+    expect(payload.querySelector(':scope > .tool-card__result-wrapper.tool-card__payload-box')).toBeTruthy();
+    expect(payload.querySelectorAll(':scope > .tool-card__payload-box')).toHaveLength(2);
     tool.unmount();
 
     const group = render(<MessageGroup turn={{
@@ -390,7 +389,7 @@ describe('message action cards', () => {
     expect(groupBody.querySelectorAll('.tool-card')).toHaveLength(2);
 
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('.tool-card > .compact-activity > .compact-activity__row')!);
-    expect(view.container.querySelectorAll('.tool-card__body > .tool-card__input .overflow-fade, .tool-card__body > .tool-card__result-wrapper .overflow-fade')).toHaveLength(2);
+    expect(view.container.querySelectorAll('.tool-card__input-wrapper .tool-card__input .overflow-fade, .tool-card__body > .tool-card__result-wrapper .overflow-fade')).toHaveLength(2);
     const inputFade = view.container.querySelector<HTMLElement>('.tool-card__input .overflow-fade')!;
     const inputScroll = inputFade.querySelector<HTMLElement>('.overflow-fade__scroll')!;
     setScrollMetrics(inputScroll, 40, 100);

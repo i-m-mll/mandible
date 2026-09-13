@@ -290,7 +290,7 @@ export function ToolCard({
     if (!result) return content;
     const source = result.source;
     return (
-      <div className="message-block-wrapper tool-card__result-wrapper" data-block-id={source?.blockId}>
+      <div className="message-block-wrapper tool-card__payload-box tool-card__result-wrapper" data-block-id={source?.blockId}>
         {content}
         <MessageActions
           onCopy={() => { navigator.clipboard.writeText(result.fullText ?? extractResultText(result.content)).catch(() => {}); }}
@@ -309,8 +309,10 @@ export function ToolCard({
   const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'running' || status === 'pending' ? ' · Running' : status === 'failed' ? ' · Failed' : ''}`;
   const details = (
     <div className="tool-card__body">
-      {diffStats ? <div className="tool-card__diff-stats">+{diffStats.additions} / -{diffStats.deletions}</div> : null}
-      {renderInputPanel()}
+      <div className="tool-card__payload-box tool-card__input-wrapper">
+        {diffStats ? <div className="tool-card__diff-stats">+{diffStats.additions} / -{diffStats.deletions}</div> : null}
+        {renderInputPanel()}
+      </div>
       {result && hasVisibleResult(result)
         ? renderResult(<ResultBody result={result} commandLike={commandLike} />)
         : null}

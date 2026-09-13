@@ -401,8 +401,13 @@
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
+  color: var(--tool-activity-box-text);
+}
+
+.tool-card__payload-box {
   box-sizing: border-box;
+  width: 100%;
   border: 1px solid var(--tool-activity-border);
   border-radius: 6px;
   background: var(--tool-activity-background);
@@ -413,11 +418,6 @@
 
 .tool-card__result-wrapper {
   width: 100%;
-}
-
-.tool-card__body > .tool-card__result-wrapper {
-  border-block-start: 1px solid var(--tool-activity-border);
-  padding-block-start: 3px;
 }
 
 .tool-card__input,
