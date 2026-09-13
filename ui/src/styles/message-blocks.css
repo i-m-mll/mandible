@@ -321,11 +321,6 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
-.compact-activity__row:not(.compact-activity__row--inert):hover,
-.compact-activity__row:focus-visible {
-  color: var(--text-primary);
-}
-
 .compact-activity__icon,
 .compact-activity__chevron {
   display: inline-flex;

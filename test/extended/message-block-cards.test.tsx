@@ -148,6 +148,7 @@ describe('message action cards', () => {
     expect(css).toMatch(/\.compact-activity,\s*\.tool-card\s*\{[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.tool-card__body\s*\{[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.compact-activity__row\s*\{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\) 16px;[^}]*gap:\s*6px;[^}]*min-height:\s*22px;[^}]*padding:\s*1px 0;[^}]*font:\s*400 var\(--text-lg\)\/1\.15 var\(--font-sans\);/s);
+    expect(css).not.toMatch(/\.compact-activity__row[^{}]*(?::hover|:focus-visible)[^{]*\{[^}]*color:/s);
     expect(css).toMatch(/\.compact-activity__row--inert\s*\{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\);/s);
     expect(css).toMatch(/\.msg-text-block\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);/s);
     expect(css).toMatch(/\.compact-activity__details\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;[^}]*background:\s*transparent;[^}]*padding:\s*0;/s);
