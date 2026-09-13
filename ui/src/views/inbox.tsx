@@ -971,12 +971,14 @@ export function InboxView({
     [allItems, selectedItemId],
   );
 
-  // Auto-select first item when data loads if nothing is selected
+  // Keep the detail pane on the last valid item. If that item disappears,
+  // advance deterministically to the first currently visible item.
   useEffect(() => {
-    if (!selectedItemId && filteredItems.length > 0 && onSelectItem) {
-      onSelectItem(filteredItems[0].id);
-    }
-  }, [filteredItems.length > 0, selectedItemId]);
+    if (!onSelectItem) return;
+    if (selectedItem) return;
+    const nextId = filteredItems[0]?.id ?? null;
+    if (nextId !== (selectedItemId ?? null)) onSelectItem(nextId);
+  }, [filteredItems, onSelectItem, selectedItem, selectedItemId]);
 
   const handleAddChip = (chip: FilterChip) => setChips((prev) => [...prev, chip]);
   const handleRemoveChip = (chip: FilterChip) =>
@@ -1088,7 +1090,7 @@ export function InboxView({
         {!selectedItem ? (
           <div className="inbox-detail__empty">
             <span className="text-muted" style={{ fontSize: '14px' }}>
-              Select an item to view details
+              No items in this view
             </span>
           </div>
         ) : selectedItem.type === 'continuation' ? (

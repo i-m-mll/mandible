@@ -21,12 +21,14 @@ export type ChatViewState = {
   conversationLifecycle: 'active' | 'archived';
   pinnedConversationIds: string[];
   previewPinOverrides: Record<string, boolean>;
+  lastSelection: { type: 'conversation' | 'session'; id: string } | null;
 };
 
 export const DEFAULT_CHAT_VIEW_STATE: ChatViewState = {
   conversationLifecycle: 'active',
   pinnedConversationIds: [],
   previewPinOverrides: {},
+  lastSelection: null,
 };
 
 export type LegacyChatViewState = ChatViewState & { shownProjects: ShownChatProject[] };
@@ -40,6 +42,17 @@ export function normalizeChatViewState(value: unknown): LegacyChatViewState {
     && !Array.isArray(row.previewPinOverrides)
     ? row.previewPinOverrides as Record<string, unknown>
     : {};
+  const rawSelection = row.lastSelection
+    && typeof row.lastSelection === 'object'
+    && !Array.isArray(row.lastSelection)
+    ? row.lastSelection as Record<string, unknown>
+    : null;
+  const lastSelection: ChatViewState['lastSelection'] = rawSelection
+    && (rawSelection.type === 'conversation' || rawSelection.type === 'session')
+    && typeof rawSelection.id === 'string'
+    && rawSelection.id.trim()
+    ? { type: rawSelection.type, id: rawSelection.id.trim() }
+    : null;
   return {
     conversationLifecycle: row.conversationLifecycle === 'archived' ? 'archived' : 'active',
     pinnedConversationIds: normalizeOrderedPinIds(row.pinnedConversationIds),
@@ -48,6 +61,7 @@ export function normalizeChatViewState(value: unknown): LegacyChatViewState {
         .filter((entry): entry is [string, boolean] => Boolean(entry[0].trim()) && typeof entry[1] === 'boolean')
         .slice(0, 1000),
     ),
+    lastSelection,
     shownProjects: Array.isArray(row.shownProjects)
       ? [...new Map(row.shownProjects.flatMap((candidate) => {
         if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
@@ -109,6 +123,7 @@ export function useChatViewState() {
         conversationLifecycle: normalized.conversationLifecycle,
         pinnedConversationIds: normalized.pinnedConversationIds,
         previewPinOverrides: normalized.previewPinOverrides,
+        lastSelection: normalized.lastSelection,
       };
     },
     DEFAULT_CHAT_VIEW_STATE,
@@ -140,6 +155,7 @@ function removeLegacyShownProjects(): void {
       conversationLifecycle: normalized.conversationLifecycle,
       pinnedConversationIds: normalized.pinnedConversationIds,
       previewPinOverrides: normalized.previewPinOverrides,
+      lastSelection: normalized.lastSelection,
     }));
   } catch {
     // Host persistence is authoritative; unavailable browser storage does not

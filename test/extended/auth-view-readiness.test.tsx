@@ -255,7 +255,7 @@ describe('AuthQueueView daemon readiness gate', () => {
 
     const warning = screen.getByText(/Auth actions are disabled for this copied preview queue/).closest('.detail-pane-notice')!;
     const detail = warning.parentElement;
-    const empty = screen.getByText('Select a request to view details').closest('.auth-detail__empty');
+    const empty = screen.getByText('No requests in this view').closest('.auth-detail__empty');
     expect(detail?.classList.contains('auth-detail')).toBe(true);
     expect(warning.getAttribute('data-severity')).toBe('warning');
     expect(detail?.firstElementChild).toBe(warning);

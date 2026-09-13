@@ -2,7 +2,7 @@
 // request outside the loaded queue/history lists must fetch the request from
 // the by-id detail route and render the detail pane from that record, with an
 // honest not-found state for invalid ids, instead of falling through to the
-// "Select a request to view details" placeholder (or having the sidebar
+// empty-view placeholder (or having the sidebar
 // reconciliation effect steal the selection).
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -128,7 +128,7 @@ describe('AuthQueueView deep-linked request outside loaded lists', () => {
     renderDeepLinkedView([], REMOTE_ID);
 
     expect(await screen.findByText(/Archived merge: feature\/old-branch/)).toBeTruthy();
-    expect(screen.queryByText('Select a request to view details')).toBeNull();
+    expect(screen.queryByText('No requests in this view')).toBeNull();
     expect(fetchMock).toHaveBeenCalledWith(
       `/api/auth/request/${encodeURIComponent(REMOTE_ID)}`,
       expect.anything(),
@@ -164,7 +164,7 @@ describe('AuthQueueView deep-linked request outside loaded lists', () => {
     renderDeepLinkedView([], 'req-nonexistent');
 
     expect(await screen.findByText(/Auth request req-none was not found/)).toBeTruthy();
-    expect(screen.queryByText('Select a request to view details')).toBeNull();
+    expect(screen.queryByText('No requests in this view')).toBeNull();
   });
 });
 
@@ -202,7 +202,7 @@ describe('AuthQueueView short-form request params', () => {
     await waitFor(() => {
       expect(screen.getAllByText(/Self-merge: feature\/x/).length).toBeGreaterThan(1);
     });
-    expect(screen.queryByText('Select a request to view details')).toBeNull();
+    expect(screen.queryByText('No requests in this view')).toBeNull();
     expect(fetchMock).toHaveBeenCalledWith(
       `/api/auth/request/${encodeURIComponent(fullId.slice(0, 8))}`,
       expect.anything(),
@@ -309,6 +309,6 @@ describe('AuthQueueView short-form request params', () => {
     renderDeepLinkedView([], 'req-ambiguous-prefix');
 
     expect(await screen.findByText(/is ambiguous — it matches multiple requests/)).toBeTruthy();
-    expect(screen.queryByText('Select a request to view details')).toBeNull();
+    expect(screen.queryByText('No requests in this view')).toBeNull();
   });
 });

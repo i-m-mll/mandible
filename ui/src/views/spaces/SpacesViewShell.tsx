@@ -27,6 +27,7 @@ import {
   type SpaceRenderer,
 } from '../../api';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
+import { useAppShell } from '../../app-shell';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
 import type { SpacesRouteTarget } from '../../routing';
@@ -178,6 +179,7 @@ export function SpacesViewShell({
   loadSpace,
   loadSpaceFactPacket,
 }: SpacesViewShellProps): JSX.Element {
+  const appShell = useAppShell();
   const resolvedLoadSpaceFactPacket = useMemo(
     () => {
       if (loadSpaceFactPacket) return loadSpaceFactPacket;
@@ -299,6 +301,7 @@ export function SpacesViewShell({
           persistence (`sidebar-width:spaces`). The shell just threads hidden. */}
       <SpacesSidebar
         hidden={sidebarHidden}
+        selectionActive={appShell.active}
         selectedSpaceId={canonicalSpaceId}
         onSelectedSpaceResolved={handleSidebarSpaceResolved}
         onSelectSpace={(args) =>
@@ -355,7 +358,7 @@ export function SpacesViewShell({
           {!spaceId ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
               <p className="spaces-shell__empty-text">
-                Select a space, or create one with the <strong>+</strong> in the sidebar.
+                No spaces yet. Create one with the <strong>+</strong> in the sidebar.
               </p>
             </div>
           ) : spaceLoadError &&

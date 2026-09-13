@@ -45,6 +45,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     getCachedBriefingSidebarSnapshot(nowMs) ?? { briefings: [], bundles: [], groups: [] });
   const { briefings, bundles, groups } = sidebar;
   const [error, setError] = useState<string | null>(null);
+  const [sidebarLoaded, setSidebarLoaded] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const sequence = useRef(0);
 
@@ -78,6 +79,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
       const next = await getBriefingSidebarSnapshot(signal);
       if (!signal.aborted && request === sequence.current) {
         setSidebar(next);
+        setSidebarLoaded(true);
         setError(null);
       }
     } catch (cause) {
@@ -131,6 +133,29 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
 
   const selected = useMemo(() => briefings.find((entry) => entry.id === viewState.selectedCollectionId) ?? null, [briefings, viewState.selectedCollectionId]);
   const selectedGroup = useMemo(() => groups.find((group) => group.id === viewState.selectedGroupId) ?? null, [groups, viewState.selectedGroupId]);
+  useEffect(() => {
+    const hasResolvedCollection = sidebarLoaded || groups.length > 0 || briefings.length > 0;
+    if (!appShell.active || !hasResolvedCollection || initialBriefingId || initialGroupId || selected || selectedGroup) return;
+    const fallbackGroup = groups.find((group) => viewState.collectionLifecycle === 'all'
+      || (viewState.collectionLifecycle === 'archived' ? group.archivedAt != null : group.archivedAt == null));
+    if (fallbackGroup) {
+      setViewState((current) => ({
+        ...current,
+        selectedGroupId: fallbackGroup.id,
+        selectedCollectionId: null,
+      }));
+      window.history.replaceState(null, '', briefingGroupRoute(fallbackGroup.key));
+      return;
+    }
+    const fallbackBriefing = briefings[0];
+    if (!fallbackBriefing) return;
+    setViewState((current) => ({
+      ...current,
+      selectedCollectionId: fallbackBriefing.id,
+      selectedGroupId: null,
+    }));
+    replaceBriefingRoute(fallbackBriefing.collectionId);
+  }, [appShell.active, briefings, groups, initialBriefingId, initialGroupId, selected, selectedGroup, setViewState, sidebarLoaded, viewState.collectionLifecycle]);
   const groupBundleOwners = useMemo(() => indexBriefingGroupBundleOwners(groups), [groups]);
   const selectedGroupUpdateId = selectedGroup
     ? resolveBriefingGroupProjection(
@@ -237,7 +262,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
           onSelectUpdate={(updateId) => selectGroupUpdate(selectedGroup.id, updateId)}
           onDisposition={updateDispositionedGroup}
         />
-      ) : !selected ? <p className="briefing-empty briefing-empty--selection">Select a Briefing or group.</p> : (
+      ) : !selected ? <p className="briefing-empty briefing-empty--selection">No Briefings in this view.</p> : (
         <BriefingDocumentRenderer
           key={`${selected.collectionId}:${explicitRoundId ?? 'latest'}`}
           briefingId={selected.collectionId}

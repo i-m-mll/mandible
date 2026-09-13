@@ -2888,7 +2888,7 @@ export function AuthQueueView({
                     ? `Failed to load auth request ${selectedId.slice(0, 8)} — the daemon may be unavailable.`
                     : selectedId && !selectedListRequest
                       ? 'Loading request…'
-                      : 'Select a request to view details'}
+                      : 'No requests in this view'}
             </p>
             {selectedId && selectedFetchFailed ? (
               <button type="button" onClick={retrySelectedFetch}>
