@@ -301,6 +301,59 @@ describe('chat message stream render model', () => {
 });
 
 describe('ChatSurface stream behavior', () => {
+  it('uses semantic direct-sibling boundaries for mixed prose and activity rhythm', () => {
+    const mixedTurn: StreamEvent = {
+      type: 'assistant',
+      uuid: 'mixed-turn',
+      session_id: 's1',
+      parent_tool_use_id: null,
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Prose before activity' },
+          { type: 'thinking', thinking: 'Reasoning activity' },
+          { type: 'tool_use', id: 'tool-1', name: 'Read', input: { path: '/tmp/a' } },
+          { type: 'tool_use', id: 'tool-2', name: 'Read', input: { path: '/tmp/b' } },
+          { type: 'text', text: 'Prose after activity' },
+        ],
+      },
+    };
+    const activity = (ordinal: number, text: string): ActivityItem => canonicalItem<ActivityItem>({
+      type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary',
+      parts: [{ type: 'text', text }], ordinal, turn: `activity-${ordinal}`,
+    });
+    const view = render(<ChatSurface events={[
+      mixedTurn,
+      canonicalEvent(activity(0, 'Outer activity before prose'), 'outer-activity-1'),
+      assistantText('Outer prose', 'outer-prose'),
+      canonicalEvent(activity(1, 'Outer activity after prose'), 'outer-activity-2'),
+    ]} streaming={false} sessionInfo={{ sessionId: 'mixed-boundaries' }} />);
+
+    const outer = view.container.querySelector('.turn-group--assistant > .turn-group__body')!;
+    const outerBoundaries = Array.from(outer.children)
+      .filter((child) => child.className.includes('chat-boundary--'))
+      .map((child) => child.className);
+    expect(outerBoundaries).toEqual([
+      expect.stringContaining('chat-boundary--starts-prose chat-boundary--ends-prose'),
+      expect.stringContaining('chat-boundary--starts-activity chat-boundary--ends-activity'),
+      expect.stringContaining('chat-boundary--starts-prose chat-boundary--ends-prose'),
+      expect.stringContaining('chat-boundary--starts-activity chat-boundary--ends-activity'),
+    ]);
+
+    const inner = view.container.querySelector('.message-group__content')!;
+    const innerBoundaries = Array.from(inner.children).map((child) => child.className);
+    expect(innerBoundaries).toEqual([
+      expect.stringContaining('chat-boundary--starts-prose chat-boundary--ends-prose'),
+      expect.stringContaining('chat-boundary--starts-activity chat-boundary--ends-activity'),
+      expect.stringContaining('tool-call-group chat-boundary--starts-activity chat-boundary--ends-activity'),
+      expect.stringContaining('chat-boundary--starts-prose chat-boundary--ends-prose'),
+    ]);
+
+    const css = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
+    expect(css).toMatch(/:is\(\.turn-group__body, \.message-group__content\)[\s\S]*?> \.chat-boundary--ends-prose[\s\S]*?\+ \.chat-boundary--starts-activity,[\s\S]*?:is\(\.turn-group__body, \.message-group__content\)[\s\S]*?> \.chat-boundary--ends-activity[\s\S]*?\+ \.chat-boundary--starts-prose\s*\{[^}]*margin-block-start:\s*calc\(var\(--space-2\) \* 0\.5\);/s);
+    expect(css).not.toMatch(/chat-boundary--ends-activity\s*\+\s*\.chat-boundary--starts-activity/);
+  });
+
   it('renders one compact activity row and an accessible stable disclosure for a run', () => {
     const activity = (ordinal: number, text: string, severity?: ActivityItem['severity']): ActivityItem => canonicalItem<ActivityItem>({
       type: 'activity', role: 'assistant', activity_kind: 'diagnostic', severity,

@@ -179,6 +179,36 @@ describe('message action cards', () => {
     expect(group.container.querySelectorAll('.tool-call-group > .compact-activity__row > .compact-activity__icon')).toHaveLength(1);
   });
 
+  it('boxes individual tool payloads without boxing grouped disclosure rows', () => {
+    const css = readFileSync('ui/src/styles/message-blocks.css', 'utf8');
+    expect(css).toMatch(/\.compact-activity__details\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;[^}]*background:\s*transparent;[^}]*padding:\s*0;/s);
+    expect(css).toMatch(/\.tool-card__body\s*\{[^}]*border:\s*1px solid var\(--tool-activity-border\);[^}]*border-radius:\s*6px;[^}]*background:\s*var\(--tool-activity-background\);[^}]*padding:\s*3px 10px;[^}]*--overflow-fade-color:\s*var\(--tool-activity-background\);/s);
+    expect(css).not.toMatch(/\.tool-call-group__body\s*\{[^}]*(?:border|background|padding):/s);
+
+    const tool = render(<ToolUseBlock
+      toolName="Read"
+      input={{ path: '/tmp/example' }}
+      result={{ type: 'tool_result', tool_use_id: 'tool-1', content: 'payload' }}
+      defaultExpanded
+    />);
+    expect(tool.container.querySelector('.tool-card > .compact-activity > .compact-activity__details > .tool-card__body')).toBeTruthy();
+    tool.unmount();
+
+    const group = render(<MessageGroup turn={{
+      id: 'group-payload-contract',
+      assistantEvent: {
+        type: 'assistant', session_id: 's1', parent_tool_use_id: null,
+        message: { role: 'assistant', content: [
+          { type: 'tool_use', id: 'one', name: 'Read', input: { path: 'one' } },
+          { type: 'tool_use', id: 'two', name: 'Read', input: { path: 'two' } },
+        ] },
+      },
+      toolResults: new Map(),
+    }} isStreaming={false} getDisclosureExpanded={() => true} />);
+    expect(group.container.querySelector('.tool-call-group > .compact-activity__details > .tool-call-group__body')).toBeTruthy();
+    expect(group.container.querySelector('.tool-call-group__body.tool-card__body')).toBeNull();
+  });
+
   it('gives grouped tool runs exactly one representative icon', () => {
     expect(toolRunIcon([
       { name: 'Read', input: { path: 'one' } },
