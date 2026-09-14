@@ -17,9 +17,10 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "../db.js";
-import { ensureMandibleConfigEntry } from "../platform-paths.js";
+import { ensureMandibleClientAuthDir } from "../platform-paths.js";
 
 const PEPPER_FILE = "pepper";
+const AUTHORITY_ID_FILE = "authority-id";
 const BOOTSTRAP_TOKEN_FILE = "bootstrap-token";
 const DASHBOARD_SESSION_FILE = "dashboard-session.json";
 export const PREVIEW_BROWSER_ENROLLMENT_FILE = "preview-browser-enrollment.json";
@@ -34,7 +35,7 @@ const LEGACY_PEPPER_SETTING_KEY = "client_auth.token_pepper";
  * it, so a fresh pepper silently invalidates all of them.
  */
 export function defaultClientAuthDir(): string {
-  return ensureMandibleConfigEntry("client-auth");
+  return ensureMandibleClientAuthDir();
 }
 
 function ensureDir(dir: string): void {
@@ -86,6 +87,23 @@ export function loadOrCreatePepper(db: Db, dir: string = defaultClientAuthDir())
   const pepper = randomBytes(32).toString("base64url");
   writePepperExclusively(pepperPath, pepper);
   return readRequiredSecretFile(pepperPath);
+}
+
+/**
+ * Stable public identity for one client-auth authority. Production and every
+ * isolated preview have different protected config directories, so this value
+ * lets a browser recognize that a different daemon temporarily appeared at
+ * the same origin without presenting or discarding its credential.
+ */
+export function loadOrCreateClientAuthAuthorityId(
+  dir: string = defaultClientAuthDir(),
+): string {
+  const authorityPath = path.join(dir, AUTHORITY_ID_FILE);
+  const existing = readProtectedSecretFile(authorityPath);
+  if (existing) return existing;
+  const authorityId = `authority_${randomBytes(18).toString("base64url")}`;
+  writeSecretFile(authorityPath, authorityId);
+  return readRequiredSecretFile(authorityPath);
 }
 
 function writePepperExclusively(pepperPath: string, pepper: string): void {

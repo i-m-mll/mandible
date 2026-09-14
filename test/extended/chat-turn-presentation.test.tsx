@@ -43,9 +43,11 @@ describe('chat turn presentation', () => {
     expect(messageBlocksCss).toMatch(/:root\[data-theme='light'\] \.user-bubble__text\s*{[^}]*background: #F3F3F4;/s);
   });
 
-  it('gives tool and reasoning siblings one symmetric compact parent-owned gap', () => {
-    expect(messageBlocksCss).toMatch(/\.turn-group__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*var\(--space-2\);/s);
-    expect(messageBlocksCss).toMatch(/:is\(\.turn-group__body, \.message-group__content\)[\s\S]*?> \.chat-boundary--ends-activity[\s\S]*?\+ \.chat-boundary--starts-activity\s*\{[^}]*margin-block-start:\s*calc\(var\(--space-2\) \* -0\.333333\);/s);
+  it('gives every visible event one measured parent-owned gap', () => {
+    expect(messageBlocksCss).toMatch(/\.turn-group\s*\{[^}]*--chat-event-gap:\s*var\(--space-2\);[^}]*box-sizing:\s*border-box;[^}]*padding-block-end:\s*var\(--chat-event-gap\);/s);
+    expect(messageBlocksCss).toMatch(/\.turn-group__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*var\(--chat-event-gap\);/s);
+    expect(consoleCss).toMatch(/\.message-group__content\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*var\(--chat-event-gap\);/s);
+    expect(messageBlocksCss).not.toMatch(/chat-boundary[^}]*margin-block-start/s);
     const turnNodeRule = consoleCss.match(/\.stream-turn-node\s*\{[^}]*\}/s)?.[0];
     expect(turnNodeRule).toBeTruthy();
     expect(turnNodeRule).not.toMatch(/margin(?:-bottom)?:/);
@@ -60,9 +62,10 @@ describe('chat turn presentation', () => {
     expect(contextualActionCss).not.toContain('.contextual-action-group:focus-within');
     expect(contextualActionCss).toContain('.contextual-action-group:has(.contextual-action:focus-visible)');
     expect(consoleCss).not.toContain('.message-block-wrapper:is(:hover, :focus-within)');
+    expect(consoleCss).toMatch(/\.message-block-wrapper\s*{[^}]*position:\s*relative;[^}]*width:\s*100%;/s);
     expect(consoleCss).toContain('.message-block-wrapper:hover > .message-actions');
     expect(consoleCss).toContain('.message-block-wrapper:has(.message-actions .contextual-action:focus-visible) > .message-actions');
-    expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*height: 24px;/s);
+    expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*height:\s*24px;[^}]*inset-block-end:\s*0;[^}]*position:\s*absolute;/s);
   });
 
   it('removes the final segmented prose margin before a tool row', () => {
@@ -71,6 +74,6 @@ describe('chat turn presentation', () => {
 
   it('provides explicit hoverless and coarse-pointer access', () => {
     expect(contextualActionCss).toMatch(/@media \(hover: none\), \(pointer: coarse\)\s*{[^}]*\.contextual-action-group\s*{[^}]*opacity: 1;[^}]*pointer-events: auto;/s);
-    expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*height: 24px;/s);
+    expect(consoleCss).toMatch(/\.group-footer\s*{[^}]*position:\s*absolute;/s);
   });
 });

@@ -157,16 +157,25 @@ describe("client-auth gate: middleware resolution matrix", () => {
     expect(response.body).toMatchObject({ ok: true, identity: { slug: "agent-y" } });
   });
 
-  it("strict mode: leaves reads open in phase 1", async () => {
+  it("strict mode: gives reads and writes one coherent identity boundary", async () => {
     setClientAuthMode(db, "strict");
-    const response = await router.invoke({ method: "GET", url: "/api/read", transport: "http" });
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ ok: true });
+    const anonymous = await router.invoke({ method: "GET", url: "/api/read", transport: "http" });
+    expect(anonymous.status).toBe(401);
+    const user = createUser(db, { slug: "reader", kind: "agent", display_name: "Reader" });
+    const token = authenticator.mintApiToken(user.slug).token;
+    const authenticated = await router.invoke({
+      method: "GET",
+      url: "/api/read",
+      credential: token,
+      transport: "http",
+    });
+    expect(authenticated.status).toBe(200);
+    expect(authenticated.body).toMatchObject({ ok: true });
   });
 
-  it("strict mode: a bootstrap ephemeral token authenticates as the operator", async () => {
+  it("strict mode: a bootstrap proof is limited to the handshake route", async () => {
     setClientAuthMode(db, "strict");
-    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
+    setupOperator(db, { display_name: "Op", email: "op@example.com" });
     const token = authenticator.bootstrapToken();
     expect(token).toBeTruthy();
     const response = await router.invoke({
@@ -176,11 +185,7 @@ describe("client-auth gate: middleware resolution matrix", () => {
       credential: `Bearer ${token}`,
       transport: "http",
     });
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      ok: true,
-      identity: { user_id: operator.id, method: "ephemeral", source: "http_bearer" },
-    });
+    expect(response.status).toBe(401);
     const replay = await router.invoke({
       method: "POST",
       url: "/api/write",

@@ -5,8 +5,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
+  ClientAuthRenewalCoordinator,
   clientAuthWebSocketProtocols,
   ensureClientAuthToken,
+  getClientAuthSessionState,
   getStoredToken,
   installClientAuthFetch,
 } from "../../ui/src/client-auth-token.js";
@@ -37,17 +39,50 @@ afterEach(() => {
 });
 
 describe("dashboard client-auth enrollment", () => {
-  it("adopts a same-user fragment credential, strips it, and renews with Authorization", async () => {
+  it("shares one renewal across concurrent callers", async () => {
+    const coordinator = new ClientAuthRenewalCoordinator();
+    let resolve!: (token: string) => void;
+    const operation = vi.fn(() => new Promise<string>((done) => { resolve = done; }));
+    const first = coordinator.run(operation);
+    const second = coordinator.run(operation);
+    expect(first).toBe(second);
+    expect(operation).toHaveBeenCalledTimes(1);
+    resolve("renewed");
+    await expect(first).resolves.toBe("renewed");
+  });
+
+  it("adopts one pairing fragment, then recovers concurrent requests through clean URLs", async () => {
     window.history.replaceState(null, "", "/#/issues?repo=mandible&mandible_auth=bootstrap-secret");
     let writeAttempts = 0;
+    let renewalAttempts = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const authorization = new Headers(init?.headers).get("Authorization");
+      if (url === "/api/health") {
+        return new Response(JSON.stringify({ client_auth: { authority_id: "preview-a" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url === "/api/client-auth/whoami") {
+        return new Response(JSON.stringify({
+          authenticated: authorization === "Bearer bootstrap-secret",
+          audience: "preview-a",
+          evidence_method: "ephemeral",
+          ephemeral_purpose: "dashboard_handshake",
+          session: { expires_at: Date.now() + 60_000 },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       if (url === "/api/client-auth/handshake") {
-        const token = authorization === "Bearer bootstrap-secret"
-          ? "dashboard-session"
-          : "renewed-dashboard-session";
-        return new Response(JSON.stringify({ token }), {
+        renewalAttempts += 1;
+        return new Response(JSON.stringify({
+          token: "renewed-dashboard-session",
+          audience: "preview-a",
+          expires_at: Date.now() + 60_000,
+        }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
@@ -63,14 +98,18 @@ describe("dashboard client-auth enrollment", () => {
     window.fetch = fetchMock as typeof window.fetch;
     installClientAuthFetch();
 
-    await expect(ensureClientAuthToken()).resolves.toBe("dashboard-session");
-    expect(getStoredToken()).toBe("dashboard-session");
+    await expect(ensureClientAuthToken()).resolves.toBe("bootstrap-secret");
+    expect(getStoredToken()).toBe("bootstrap-secret");
     expect(window.location.hash).toBe("#/issues?repo=mandible");
     expect(window.location.href).not.toContain("bootstrap-secret");
 
-    const recovered = await window.fetch("/api/write", { method: "POST" });
-    expect(recovered.status).toBe(200);
-    expect(writeAttempts).toBe(2);
+    const recovered = await Promise.all([
+      window.fetch("/api/write", { method: "POST" }),
+      window.fetch("/api/write", { method: "POST" }),
+    ]);
+    expect(recovered.map((response) => response.status)).toEqual([200, 200]);
+    expect(writeAttempts).toBe(4);
+    expect(renewalAttempts).toBe(1);
     expect(getStoredToken()).toBe("renewed-dashboard-session");
     expect(clientAuthWebSocketProtocols()).toEqual([
       "mandible",
@@ -81,10 +120,29 @@ describe("dashboard client-auth enrollment", () => {
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
-          Authorization: "Bearer dashboard-session",
+          Authorization: "Bearer bootstrap-secret",
         }),
       }),
     );
+  });
+
+  it("preserves the preview credential when a different authority occupies its origin", async () => {
+    window.localStorage.setItem("mandible.client_auth.token", JSON.stringify({
+      version: 1,
+      token: "preview-session",
+      audience: "preview-a",
+      expires_at: Date.now() + 60_000,
+    }));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      client_auth: { authority_id: "production" },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    window.fetch = fetchMock as typeof window.fetch;
+
+    await ensureClientAuthToken();
+
+    expect(getClientAuthSessionState()).toBe("wrong-audience");
+    expect(getStoredToken()).toBe("preview-session");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("has the Tauri shell request a one-time protected proof and redirect with a fragment", () => {
@@ -149,5 +207,21 @@ describe("dashboard SSE transport", () => {
     expect(requestedUrl).toBe("/api/events/subscribe");
     expect(requestedUrl).not.toContain("token=");
     expect(requestedInit?.method).toBe("POST");
+  });
+
+  it("does not retry a terminal authorization rejection", async () => {
+    vi.useFakeTimers();
+    window.localStorage.setItem("mandible.client_auth.token", "revoked-session");
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 401 }));
+    const client = new SSEClient({ fetchImpl: fetchImpl as typeof fetch, backoffMs: 10 });
+
+    client.connect();
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(client.getState()).toBe("down");
+    client.close();
+    vi.useRealTimers();
   });
 });
