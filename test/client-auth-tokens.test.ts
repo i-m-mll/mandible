@@ -181,7 +181,7 @@ describe("bounded dashboard sessions", () => {
     return { auth, operator, durable, identity };
   }
 
-  it("keeps concurrent sessions and renews only the presented session", () => {
+  it("keeps the presented session valid while concurrent renewal succeeds", () => {
     const { auth, identity } = operatorAuth();
     const browser = auth.issueDashboardToken(identity);
     const desktop = auth.issueDashboardToken(identity);
@@ -193,7 +193,7 @@ describe("bounded dashboard sessions", () => {
       pathname: "/api/client-auth/handshake",
     })!;
     const renewed = auth.issueDashboardToken(browserIdentity);
-    expect(auth.authenticate(browser.token)).toBeNull();
+    expect(auth.authenticate(browser.token)).not.toBeNull();
     expect(auth.authenticate(desktop.token)).not.toBeNull();
     expect(auth.authenticate(renewed.token)).not.toBeNull();
   });
@@ -239,6 +239,23 @@ describe("bounded dashboard sessions", () => {
     const restarted = new ClientAuthenticator(db, { secretsDir });
     expect(restarted.authenticate(first.token)).toMatchObject({ user_id: operator.id });
     expect(restarted.authenticate(second.token)).toMatchObject({ user_id: operator.id });
+  });
+
+  it("isolates production and preview audiences even when they share a copied database", () => {
+    const operator = setupOperator(db, { display_name: "Operator", email: "op@example.com" });
+    const production = new ClientAuthenticator(db, {
+      secretsDir: path.join(tempDir, "production-auth"),
+    });
+    const preview = new ClientAuthenticator(db, {
+      secretsDir: path.join(tempDir, "preview-auth"),
+    });
+    const identity = { user_id: operator.id, slug: operator.slug };
+    const productionSession = production.issueDashboardToken(identity);
+    const previewSession = preview.issueDashboardToken(identity);
+
+    expect(production.authorityId()).not.toBe(preview.authorityId());
+    expect(preview.authenticate(productionSession.token)).toBeNull();
+    expect(production.authenticate(previewSession.token)).toBeNull();
   });
 
   it("migrates the legacy single-record file transparently", () => {

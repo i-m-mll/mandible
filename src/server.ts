@@ -65,6 +65,8 @@ export interface RequestLike {
   // is unauthenticated. Downstream attribution wiring consumes this; the gate
   // itself performs authentication only, not authorization.
   client_identity?: ResolvedClientIdentity | null;
+  /** Classified auth failure; raw bearer material is never exposed to routes. */
+  client_auth_failure?: "expired" | "revoked" | "unknown";
   /** Aborts when the underlying HTTP client disconnects before a response completes. */
   signal?: AbortSignal;
 }
@@ -115,7 +117,16 @@ export interface ClientAuthGate {
   mode(): ClientAuthMode;
   recordUnattributedWrite(record: UnattributedWriteRecord): void;
   telemetrySnapshot?(): unknown;
+  authorityId?(): string;
+  classifyFailure?(credential: string | null | undefined): "expired" | "revoked" | "unknown";
 }
+
+const STRICT_ANONYMOUS_HTTP_ROUTES = new Set([
+  "/api/health",
+  "/api/instance",
+  "/api/client-auth/handshake",
+  "/api/client-auth/whoami",
+]);
 
 /** Presentation transport for a credential, used to label the resolved source. */
 function clientAuthSourceForTransport(
@@ -468,10 +479,11 @@ export class Router implements RouteRegistrar {
 
       // Issue 708dc4c — client-authentication gate. Resolve the presented token
       // to a client identity (attached to the request for downstream
-      // attribution). For mutations, enforce strict mode and count unattributed
-      // writes in compat mode. Reads stay open in phase 1. When no gate is wired
-      // (tests/legacy) this whole block is skipped and behavior is unchanged.
+      // attribution). Strict HTTP uses one identity boundary for reads and
+      // writes; compat mode counts unattributed writes. When no gate is wired
+      // (tests/legacy), this block is skipped.
       let clientIdentity: ResolvedClientIdentity | null = null;
+      let clientAuthFailure: "expired" | "revoked" | "unknown" = "unknown";
       const gate = this.options.clientAuth;
       if (gate) {
         clientIdentity = gate.authenticate(
@@ -479,6 +491,19 @@ export class Router implements RouteRegistrar {
           clientAuthSourceForTransport(transport),
           { method: normalizedMethod, pathname },
         );
+        if (!clientIdentity) clientAuthFailure = gate.classifyFailure?.(credential) ?? "unknown";
+        if (
+          transport === "http"
+          && gate.mode() === "strict"
+          && !clientIdentity
+          && !STRICT_ANONYMOUS_HTTP_ROUTES.has(pathname)
+        ) {
+          response.status(401).json({
+            error: "authentication_required",
+            reason: clientAuthFailure,
+          });
+          return true;
+        }
         if (UNSAFE_METHODS.has(normalizedMethod) && !clientIdentity) {
           const telemetryTransport = transport === "http" ? "http" : "file-rpc";
           if (gate.mode() === "strict") {
@@ -512,6 +537,7 @@ export class Router implements RouteRegistrar {
         body,
         ambient_identity: requestAmbientIdentity,
         client_identity: clientIdentity,
+        client_auth_failure: clientAuthFailure,
         signal,
       };
 
@@ -657,6 +683,9 @@ export function createServer(options: ServerOptions): http.Server {
         ? {
             client_auth: {
               mode: options.clientAuth.mode(),
+              ...(options.clientAuth.authorityId
+                ? { authority_id: options.clientAuth.authorityId() }
+                : {}),
               ...(options.clientAuth.telemetrySnapshot
                 ? { telemetry: options.clientAuth.telemetrySnapshot() }
                 : {}),
@@ -711,9 +740,16 @@ export function createServer(options: ServerOptions): http.Server {
 
     // SSE endpoints handled directly (long-lived connections don't fit the router)
     if (pathname === "/api/events" && method === "GET") {
-      // Legacy EventSource clients remain anonymous in phase 1. Query-string
-      // bearer tokens are deliberately ignored: URLs leak through browser and
-      // proxy surfaces. Authenticated dashboard clients use POST below.
+      // Compat-mode EventSource clients may remain anonymous. Query-string
+      // bearer tokens are deliberately ignored; strict dashboards use the
+      // authenticated POST stream below.
+      if (options.clientAuth?.mode() === "strict") {
+        writeJsonResponse(res, 401, {
+          error: "authentication_required",
+          reason: "client_auth_strict_mode",
+        });
+        return;
+      }
       const topics = parseTopics(url?.searchParams, null);
       sse.addClient(req, res, topics, null);
       return;

@@ -55,11 +55,21 @@ export function registerClientAuthRoutes(
   // Dashboard session renewal. This endpoint never upgrades an anonymous or
   // unrelated identity: an already-authenticated operator is required in both
   // compat and strict mode. The resulting bounded, expiring session survives a
-  // daemon restart through a protected fingerprint and is rotated on every
-  // successful boot or bounded post-expiry recovery.
+  // daemon restart through a protected fingerprint. Normal boots validate the
+  // existing session; this endpoint mints a successor only for initial pairing
+  // or bounded post-expiry recovery.
   router.post("/api/client-auth/handshake", (req, res) => {
     try {
       const db = getDb();
+      if (!req.client_identity) {
+        sendJson(res, 401, {
+          error: "Dashboard renewal requires an authenticated operator session.",
+          code: "authentication_required",
+          reason: req.client_auth_failure ?? "unknown",
+          audience: authenticator.authorityId(),
+        });
+        return;
+      }
       const identity = requireOperator(db, req);
       const operator = getOperator(db);
       if (!operator) {
@@ -73,8 +83,26 @@ export function registerClientAuthRoutes(
       const session = authenticator.issueDashboardToken(identity);
       sendJson(res, 200, {
         ...session,
+        audience: authenticator.authorityId(),
         user: { id: operator.id, slug: operator.slug },
       });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/logout", (req, res) => {
+    try {
+      const identity = requireOperator(getDb(), req);
+      const revoked = authenticator.revokePresentedDashboardSession(identity);
+      if (!revoked) {
+        sendJson(res, 403, {
+          error: "Only a dashboard session can be logged out through this endpoint.",
+          code: "dashboard_session_required",
+        });
+        return;
+      }
+      sendJson(res, 200, { logged_out: true, audience: authenticator.authorityId() });
     } catch (error) {
       handleError(res, error);
     }
@@ -174,6 +202,8 @@ export function registerClientAuthRoutes(
       if (!identity) {
         sendJson(res, 200, {
           authenticated: false,
+          audience: authenticator.authorityId(),
+          failure_reason: req.client_auth_failure ?? "unknown",
           mode,
           user: null,
           evidence_method: null,
@@ -194,6 +224,8 @@ export function registerClientAuthRoutes(
         : null;
       sendJson(res, 200, {
         authenticated: true,
+        audience: authenticator.authorityId(),
+        session: authenticator.dashboardSessionMetadata(identity),
         mode,
         user: user
           ? {

@@ -53,6 +53,8 @@ describe("GET /api/client-auth/whoami", () => {
       source: null,
       ephemeral_purpose: null,
       credential: null,
+      audience: authenticator.authorityId(),
+      failure_reason: "unknown",
     });
   });
 
@@ -129,19 +131,18 @@ describe("GET /api/client-auth/whoami", () => {
     });
   });
 
-  it("reports the operator bootstrap token as an ephemeral identity", async () => {
-    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
+  it("does not expose an operator bootstrap proof as a general identity", async () => {
+    setupOperator(db, { display_name: "Op", email: "op@example.com" });
     const bootstrap = authenticator.bootstrapToken();
     expect(bootstrap).toBeTruthy();
 
     const response = await whoami(bootstrap);
 
     expect(response.body).toMatchObject({
-      authenticated: true,
-      user: { id: operator.id, kind: "human" },
-      evidence_method: "ephemeral",
-      ephemeral_purpose: "operator_bootstrap",
-      credential: null,
+      authenticated: false,
+      user: null,
+      evidence_method: null,
+      failure_reason: "unknown",
     });
   });
 

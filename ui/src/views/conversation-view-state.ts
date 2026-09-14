@@ -8,7 +8,11 @@ import {
   isApiErrorStatus,
   updateChatShownProjectsPreference,
 } from '../api';
-import { subscribeClientAuthSessionState } from '../client-auth-token';
+import {
+  getClientAuthSessionState,
+  isTerminalClientAuthState,
+  subscribeClientAuthSessionState,
+} from '../client-auth-token';
 
 export const CHAT_VIEW_STATE_KEY = 'mandible.chat.viewState:v1';
 
@@ -185,14 +189,6 @@ export function useChatProjectSelection(): [
   useEffect(() => {
     activeRef.current = true;
     let loading = false;
-    let retryTimer: number | null = null;
-    const scheduleRetry = () => {
-      if (!activeRef.current || retryTimer !== null) return;
-      retryTimer = window.setTimeout(() => {
-        retryTimer = null;
-        void load();
-      }, 1500);
-    };
     const load = async () => {
       if (loading) return;
       loading = true;
@@ -220,10 +216,17 @@ export function useChatProjectSelection(): [
             ? 'Imported this browser’s saved project selection to the shared host preference.'
             : null,
         });
-      } catch {
+      } catch (error) {
         if (!activeRef.current) return;
-        setState({ ready: false, notice: null });
-        scheduleRetry();
+        const authRequired = isApiErrorStatus(error, 401)
+          || isApiErrorStatus(error, 403)
+          || isTerminalClientAuthState(getClientAuthSessionState());
+        setState({
+          ready: false,
+          notice: authRequired
+            ? 'Reconnect this browser to load its saved project selection.'
+            : 'Project selection is unavailable. It will retry when Mandible reconnects.',
+        });
       } finally {
         loading = false;
       }
@@ -239,7 +242,6 @@ export function useChatProjectSelection(): [
     void load();
     return () => {
       activeRef.current = false;
-      if (retryTimer !== null) window.clearTimeout(retryTimer);
       unsubscribeAuth();
       window.removeEventListener('focus', refreshWhenVisible);
       document.removeEventListener('visibilitychange', refreshWhenVisible);
