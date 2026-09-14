@@ -1,6 +1,7 @@
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
+import { QueryClientProvider } from '@tanstack/preact-query';
 
 import {
   acknowledgeInboxItem,
@@ -149,6 +150,9 @@ import {
   subscribeAgentPageBinding,
 } from './agent-page-binding';
 import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
+import { queryClient } from './query/client';
+import { applyConversationSse } from './query/conversationSse';
+import type { ConversationAppendPayload } from './query/conversationData';
 import {
   APP_RAIL_ORDER_SETTING_KEY,
   DEFAULT_APP_RAIL_ORDER,
@@ -1284,9 +1288,13 @@ function App(): JSX.Element {
     const conversationHandler = (payload: SSEPayload) => {
       handler(payload);
       const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
-      window.dispatchEvent(
-        new CustomEvent('conversation:sse', { detail: { type: payload.type, data } }),
-      );
+      if (payload.type === 'conversation:new' || payload.type === 'conversation:updated') {
+        applyConversationSse(
+          queryClient,
+          payload.type as 'conversation:new' | 'conversation:updated',
+          data as ConversationAppendPayload,
+        );
+      }
     };
     const userSettingHandler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
@@ -2842,7 +2850,12 @@ if (mountNode) {
     })
     .catch(() => undefined)
     .finally(() => {
-      render(<App />, mountNode);
+      render(
+        <QueryClientProvider client={queryClient}>
+          <App />
+        </QueryClientProvider>,
+        mountNode,
+      );
     });
 }
 

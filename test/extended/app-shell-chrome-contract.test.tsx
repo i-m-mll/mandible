@@ -7,6 +7,7 @@ import { DetailPaneHeader } from '../../ui/src/components/shared/DetailPaneHeade
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell';
 
 const base = readFileSync('ui/src/styles/base.css', 'utf8');
+const tokens = readFileSync('ui/src/styles/tokens.css', 'utf8');
 const detailPaneShell = readFileSync('ui/src/styles/detail-pane-shell.css', 'utf8');
 const appShellSource = readFileSync('ui/src/app-shell.tsx', 'utf8');
 const appSource = readFileSync('ui/src/app.tsx', 'utf8');
@@ -46,6 +47,18 @@ describe('shared app-shell chrome contract', () => {
     expect(ruleBody(base, '.app-header__brand')).not.toMatch(/var\(--(?:text-subdued|text-chrome-muted)\)/);
     expect(ruleBody(base, ":root[data-theme='light'] .app-header__brand"))
       .not.toMatch(/var\(--(?:text-subdued|text-chrome-muted)\)/);
+  });
+
+  it('routes app and detail titles through one exact cross-theme token', () => {
+    expect(ruleBody(tokens, ':root')).toContain('--text-header-title: #fff');
+    expect(ruleBody(tokens, "[data-theme='light']")).toContain('--text-header-title: #000');
+    expect(ruleBody(base, '.app-header__route')).toContain('color: var(--text-header-title)');
+    expect(ruleBody(detailPaneShell, '.detail-pane-header__title'))
+      .toContain('color: var(--text-header-title)');
+    expect(ruleBody(detailPaneShell, '.detail-pane-header--compact .detail-pane-header__title'))
+      .not.toContain('color:');
+    expect(ruleBody(detailPaneShell, '.detail-pane-shell--compact .detail-pane-shell__title'))
+      .toContain('color: var(--text-header-title)');
   });
 
   it('keeps shared horizontal chrome hairlines equivalent and below the unsubdivided header', () => {

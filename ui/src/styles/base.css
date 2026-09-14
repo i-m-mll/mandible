@@ -333,7 +333,7 @@ a {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-muted);
+  color: var(--text-header-title);
   font-size: 13px;
   font-weight: 600;
   text-align: center;

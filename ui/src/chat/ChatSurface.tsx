@@ -1,6 +1,6 @@
-import type { ComponentChildren } from 'preact';
 import type { JSX } from 'preact/jsx-runtime';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { observeElementRect, useVirtualizer, type Rect, type Virtualizer } from '@tanstack/react-virtual';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRequest } from '../api';
 import type {
   ContentBlock,
@@ -14,6 +14,7 @@ import {
   MessageGroup,
 } from '../components/stream-renderer/MessageGroup';
 import { MessageActions } from '../components/shared/MessageActions';
+import { DetailPaneOverlayContext } from '../components/shared/DetailPaneShell';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble } from '../components/message-blocks/UserBubble';
@@ -55,10 +56,24 @@ export type ChatSurfaceProps = StreamRendererProps & {
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
-const VIRTUAL_OVERSCAN = 6;
 const FOLLOW_THRESHOLD_PX = 80;
 const JUMP_RETURN_SECONDS = 2;
 const MANUAL_RETURN_PX_PER_SECOND = 600;
+const INITIAL_VIRTUAL_RECT = { width: 600, height: 720 };
+
+function estimateVirtualRow(): number {
+  return ESTIMATED_ROW_HEIGHT;
+}
+
+function observeChatElementRect(
+  instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  notify: (rect: Rect) => void,
+): ReturnType<typeof observeElementRect> {
+  return observeElementRect(instance, (rect) => notify({
+    width: rect.width || INITIAL_VIRTUAL_RECT.width,
+    height: rect.height || INITIAL_VIRTUAL_RECT.height,
+  }));
+}
 
 /**
  * The follow threshold answers whether appends should stick to the tail. This
@@ -71,21 +86,8 @@ export function shouldShowJumpToLatest(distancePx: number, viewportHeight: numbe
 
 type VirtualItem =
   | { kind: 'group'; id: string; group: DisplayGroup }
-  | { kind: 'live'; id: string };
-
-type VirtualLayout = {
-  totalHeight: number;
-  offsets: number[];
-  start: number;
-  end: number;
-};
-
-type LayoutSnapshot = {
-  ids: string[];
-  offsets: number[];
-  heights: number[];
-  scrollTop: number;
-};
+  | { kind: 'live'; id: string }
+  | { kind: 'permission'; id: string };
 
 function storageGet(key: string): string | null {
   try {
@@ -110,79 +112,14 @@ function blockId(turnId: string, block: ContentBlock, index: number): string {
   return `${turnId}:${block.type}:${index}`;
 }
 
-function useVirtualLayout(
-  items: VirtualItem[],
-  heights: Record<string, number>,
-  scrollTop: number,
-  viewportHeight: number,
-): VirtualLayout {
-  return useMemo(() => {
-    const offsets: number[] = [];
-    let totalHeight = 0;
-
-    for (const item of items) {
-      offsets.push(totalHeight);
-      totalHeight += heights[item.id] ?? ESTIMATED_ROW_HEIGHT;
-    }
-
-    let start = 0;
-    while (
-      start < items.length &&
-      offsets[start] + (heights[items[start].id] ?? ESTIMATED_ROW_HEIGHT) < scrollTop
-    ) {
-      start += 1;
-    }
-
-    let end = start;
-    const lowerBound = scrollTop + viewportHeight;
-    while (end < items.length && offsets[end] < lowerBound) {
-      end += 1;
-    }
-
-    return {
-      totalHeight,
-      offsets,
-      start: Math.max(0, start - VIRTUAL_OVERSCAN),
-      end: Math.min(items.length, end + VIRTUAL_OVERSCAN),
-    };
-  }, [heights, items, scrollTop, viewportHeight]);
+function measureVirtualRow(element: Element): number {
+  const height = element.getBoundingClientRect().height;
+  return height > 0 ? Math.ceil(height) : ESTIMATED_ROW_HEIGHT;
 }
 
-function VirtualRow({
-  top,
-  onMeasure,
-  children,
-}: {
-  top: number;
-  onMeasure: (height: number) => void;
-  children: ComponentChildren;
-}): JSX.Element {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) {
-      return undefined;
-    }
-
-    const measure = () => {
-      const height = el.getBoundingClientRect().height;
-      if (height > 0) {
-        onMeasure(Math.ceil(height));
-      }
-    };
-
-    measure();
-    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
-    observer?.observe(el);
-    return () => observer?.disconnect();
-  }, [children, onMeasure]);
-
-  return (
-    <div ref={ref} className="stream-renderer__virtual-row" style={{ top: `${top}px` }}>
-      {children}
-    </div>
-  );
+function requestedScrollBehavior(smooth: boolean): ScrollBehavior {
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  return smooth && !reducedMotion ? 'smooth' : 'auto';
 }
 
 export function ChatSurface({
@@ -208,22 +145,17 @@ export function ChatSurface({
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const overlayContext = useContext(DetailPaneOverlayContext);
+  const registerScrollOwner = overlayContext?.registerScrollOwner;
   const storageScope = sessionInfo?.sessionId ?? 'default';
   const scrollStorageKey = `mandible:chat-scroll:${storageScope}`;
 
-  const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(720);
-  const [isFollowing, setIsFollowing] = useState(true);
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
-  const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
-  const scrollTopRef = useRef(0);
-  const isFollowingRef = useRef(true);
-  const rowHeightsRef = useRef<Record<string, number>>({});
   const handledNavigationKeyRef = useRef<string | null>(null);
-  const pendingExactBlockRef = useRef<string | null>(null);
-  const previousLayoutRef = useRef<LayoutSnapshot | null>(null);
-  const skipAnchorReconciliationRef = useRef(false);
+  const pendingFocusRef = useRef<{ blockId: string | null; itemId: string } | null>(null);
+  const restoredScrollScopeRef = useRef<string | null>(null);
 
   const groups = useMemo(() => groupMessagesForDisplay(nodes), [nodes]);
   const turns = useMemo(() => extractTurns(nodes), [nodes]);
@@ -241,10 +173,35 @@ export function ChatSurface({
     if (streaming) {
       groupedItems.push({ kind: 'live', id: 'stream-live-tail' });
     }
+    if (activePermissionRequest && onPermissionRespond) {
+      groupedItems.push({ kind: 'permission', id: `permission:${activePermissionRequest.id}` });
+    }
     return groupedItems;
-  }, [groups, streaming]);
+  }, [activePermissionRequest, groups, onPermissionRespond, streaming]);
 
-  const layout = useVirtualLayout(items, rowHeights, scrollTop, viewportHeight);
+  const getItemKey = useCallback((index: number) => items[index]?.id ?? index, [items]);
+  const getScrollElement = useCallback(() => scrollRef.current, []);
+  const initialOffset = useMemo(() => {
+    const storedTop = Number(storageGet(scrollStorageKey));
+    return Number.isFinite(storedTop) && storedTop > 0
+      ? storedTop
+      : Math.max(0, items.length * ESTIMATED_ROW_HEIGHT - 720);
+  }, [items.length, scrollStorageKey]);
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: items.length,
+    getScrollElement,
+    estimateSize: estimateVirtualRow,
+    measureElement: measureVirtualRow,
+    getItemKey,
+    initialOffset,
+    initialRect: INITIAL_VIRTUAL_RECT,
+    observeElementRect: observeChatElementRect,
+    overscan: 6,
+    anchorTo: 'end',
+    followOnAppend: 'auto',
+    scrollEndThreshold: FOLLOW_THRESHOLD_PX,
+  });
+  const virtualItems = virtualizer.getVirtualItems();
   const estimatedUnmaterializedDistance = Math.max(0, unmaterializedAfterCount) * ESTIMATED_ROW_HEIGHT;
   const showJumpToLatest = shouldShowJumpToLatest(
     Math.max(distanceFromBottom, estimatedUnmaterializedDistance),
@@ -258,50 +215,35 @@ export function ChatSurface({
     setExpandedBlocks({});
   }, [storageScope]);
 
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el) {
-      return;
-    }
-    const storedTop = Number(storageGet(scrollStorageKey) ?? 0);
-    if (Number.isFinite(storedTop) && storedTop > 0) {
-      el.scrollTop = storedTop;
-      scrollTopRef.current = storedTop;
-      setScrollTop(storedTop);
-      const atBottom = storedTop + el.clientHeight >= el.scrollHeight - FOLLOW_THRESHOLD_PX;
-      isFollowingRef.current = atBottom;
-      setIsFollowing(atBottom);
-      setDistanceFromBottom(Math.max(0, el.scrollHeight - storedTop - el.clientHeight));
-    }
-    setViewportHeight(el.clientHeight || 720);
-  }, [scrollStorageKey]);
+  const setScrollNode = useCallback((node: HTMLDivElement | null) => {
+    scrollRef.current = node;
+    registerScrollOwner?.(node);
+    if (node) setViewportHeight(node.clientHeight || 720);
+  }, [registerScrollOwner]);
 
-  useEffect(() => {
-    if (!streaming || !isFollowingRef.current) {
-      return;
+  useLayoutEffect(() => {
+    if (!scrollRef.current || restoredScrollScopeRef.current === scrollStorageKey || items.length === 0) return;
+    restoredScrollScopeRef.current = scrollStorageKey;
+    const storedTop = Number(storageGet(scrollStorageKey));
+    if (Number.isFinite(storedTop) && storedTop > 0) {
+      virtualizer.scrollToOffset(storedTop, { behavior: 'auto' });
+    } else if (!navigationTarget) {
+      virtualizer.scrollToEnd({ behavior: 'auto' });
     }
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTop = layout.totalHeight;
-      scrollTopRef.current = el.scrollTop;
-      setScrollTop(el.scrollTop);
-      setDistanceFromBottom(0);
-      storageSet(scrollStorageKey, String(el.scrollTop));
-    }
-  }, [items.length, layout.totalHeight, scrollStorageKey, streaming, isFollowing]);
+  }, [items.length, navigationTarget, scrollStorageKey, virtualizer]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!navigationTarget) {
       handledNavigationKeyRef.current = null;
-      pendingExactBlockRef.current = null;
+      pendingFocusRef.current = null;
       return;
     }
-    if (!el || handledNavigationKeyRef.current === navigationTarget.key) return;
-    let destination = layout.totalHeight;
+    if (!el || handledNavigationKeyRef.current === navigationTarget.key || items.length === 0) return;
+    let itemIndex = items.length - 1;
     let targetFound = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest';
     if (navigationTarget.kind !== 'initial' && navigationTarget.kind !== 'latest') {
-      let itemIndex = navigationTarget.turnId ? items.findIndex((item) => (
+      itemIndex = navigationTarget.turnId ? items.findIndex((item) => (
         item.kind === 'group' && item.group.nodes.some((node) => node.key === navigationTarget.turnId)
       )) : -1;
       if (itemIndex < 0 && navigationTarget.blockId) {
@@ -321,107 +263,56 @@ export function ChatSurface({
           })
         ));
       }
-      if (itemIndex >= 0) {
-        destination = layout.offsets[itemIndex] ?? 0;
-        targetFound = true;
-      }
+      targetFound = itemIndex >= 0;
     }
     if (!targetFound) return;
 
-    // Virtual navigation is a controlled two-stage anchor. Keep both the
-    // coarse row materialization and exact-block centering instantaneous so a
-    // browser animation cannot compete with measurement corrections.
-    const behavior: ScrollBehavior = 'auto';
+    const behavior = requestedScrollBehavior(navigationTarget.smooth);
     handledNavigationKeyRef.current = navigationTarget.key;
-    skipAnchorReconciliationRef.current = true;
-    pendingExactBlockRef.current = navigationTarget.blockId ?? null;
-    if (typeof el.scrollTo === 'function') el.scrollTo({ top: destination, behavior });
-    else el.scrollTop = destination;
-    scrollTopRef.current = el.scrollTop;
-    setScrollTop(el.scrollTop);
-    const followsTail = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest';
-    isFollowingRef.current = followsTail;
-    setIsFollowing(followsTail);
-    setDistanceFromBottom(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest' ? 0 : Math.max(0, layout.totalHeight - destination - viewportHeight));
+    pendingFocusRef.current = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest'
+      ? null
+      : { blockId: navigationTarget.blockId ?? null, itemId: items[itemIndex].id };
+    if (navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest') {
+      virtualizer.scrollToEnd({ behavior });
+    } else {
+      virtualizer.scrollToIndex(itemIndex, { align: 'center', behavior });
+    }
+    setDistanceFromBottom(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest'
+      ? 0
+      : virtualizer.getDistanceFromEnd());
     storageSet(scrollStorageKey, String(el.scrollTop));
-  }, [items, layout.offsets, layout.totalHeight, navigationTarget, scrollStorageKey, viewportHeight]);
+  }, [items, navigationTarget, scrollStorageKey, virtualizer]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    const blockId = pendingExactBlockRef.current;
-    if (!el || !blockId) return;
-    const exactBlock = Array.from(el.querySelectorAll<HTMLElement>('[data-block-id]'))
-      .find((candidate) => candidate.dataset.blockId === blockId);
-    if (!exactBlock) return;
-    if (typeof exactBlock.scrollIntoView === 'function') {
-      exactBlock.scrollIntoView({ block: 'center', behavior: 'auto' });
+    const pending = pendingFocusRef.current;
+    if (!el || !pending) return;
+    const row = Array.from(el.querySelectorAll<HTMLElement>('[data-virtual-key]'))
+      .find((candidate) => candidate.dataset.virtualKey === pending.itemId);
+    if (!row) return;
+    const target = pending.blockId
+      ? Array.from(row.querySelectorAll<HTMLElement>('[data-block-id]'))
+        .find((candidate) => candidate.dataset.blockId === pending.blockId)
+      : row;
+    if (!target) return;
+    if (pending.blockId && typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ block: 'center', behavior: 'auto' });
     }
-    pendingExactBlockRef.current = null;
-    scrollTopRef.current = el.scrollTop;
-    setScrollTop(el.scrollTop);
+    target.tabIndex = -1;
+    target.focus({ preventScroll: true });
+    pendingFocusRef.current = null;
     storageSet(scrollStorageKey, String(el.scrollTop));
-  }, [layout.end, layout.start, scrollStorageKey]);
-
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    const previous = previousLayoutRef.current;
-    const ids = items.map((item) => item.id);
-    let nextScrollTop = scrollTopRef.current;
-    const skipReconciliation = skipAnchorReconciliationRef.current;
-    skipAnchorReconciliationRef.current = false;
-
-    if (
-      el
-      && previous
-      && !skipReconciliation
-      && !isFollowingRef.current
-      && (!navigationTarget || handledNavigationKeyRef.current === navigationTarget.key)
-      && (previous.ids.length !== ids.length || previous.ids.some((id, index) => ids[index] !== id))
-    ) {
-      const anchorIndex = previous.ids.findIndex((_, index) => (
-        previous.offsets[index] + previous.heights[index] > previous.scrollTop
-      ));
-      if (anchorIndex >= 0) {
-        const newAnchorIndex = ids.indexOf(previous.ids[anchorIndex]);
-        if (newAnchorIndex >= 0) {
-          const anchorInset = previous.scrollTop - previous.offsets[anchorIndex];
-          nextScrollTop = (layout.offsets[newAnchorIndex] ?? 0) + anchorInset;
-          if (Math.abs(nextScrollTop - el.scrollTop) > 0.5) {
-            el.scrollTop = nextScrollTop;
-            scrollTopRef.current = nextScrollTop;
-            setScrollTop(nextScrollTop);
-            setDistanceFromBottom(Math.max(0, layout.totalHeight - nextScrollTop - (el.clientHeight || viewportHeight)));
-            storageSet(scrollStorageKey, String(nextScrollTop));
-          }
-        }
-      }
-    }
-
-    previousLayoutRef.current = {
-      ids,
-      offsets: layout.offsets,
-      heights: items.map((item) => rowHeights[item.id] ?? ESTIMATED_ROW_HEIGHT),
-      scrollTop: nextScrollTop,
-    };
-  }, [items, layout.offsets, layout.totalHeight, navigationTarget, rowHeights, scrollStorageKey, viewportHeight]);
+  }, [scrollStorageKey, virtualItems]);
 
   function handleScroll(): void {
     const el = scrollRef.current;
     if (!el) {
       return;
     }
-    const nextScrollTop = el.scrollTop;
     const nextViewportHeight = el.clientHeight || viewportHeight;
-    const atBottom = nextScrollTop + nextViewportHeight >= el.scrollHeight - FOLLOW_THRESHOLD_PX;
-    const movedUp = nextScrollTop < scrollTopRef.current - 0.5;
-    const nextFollowing = movedUp ? false : atBottom;
-    scrollTopRef.current = nextScrollTop;
-    isFollowingRef.current = nextFollowing;
-    setScrollTop(nextScrollTop);
     setViewportHeight(nextViewportHeight);
-    setIsFollowing(nextFollowing);
-    setDistanceFromBottom(Math.max(0, el.scrollHeight - nextScrollTop - nextViewportHeight));
-    storageSet(scrollStorageKey, String(nextScrollTop));
+    setDistanceFromBottom(Math.max(0, el.scrollHeight - el.scrollTop - nextViewportHeight));
+    storageSet(scrollStorageKey, String(el.scrollTop));
   }
 
   function handleJumpToBottom(): void {
@@ -431,34 +322,9 @@ export function ChatSurface({
     }
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = layout.totalHeight;
-    scrollTopRef.current = el.scrollTop;
-    isFollowingRef.current = true;
-    setScrollTop(el.scrollTop);
+    virtualizer.scrollToEnd({ behavior: requestedScrollBehavior(true) });
     setDistanceFromBottom(0);
     storageSet(scrollStorageKey, String(el.scrollTop));
-    setIsFollowing(true);
-  }
-
-  function handleRowMeasure(itemIndex: number, itemId: string, height: number): void {
-    const previousHeight = rowHeightsRef.current[itemId] ?? ESTIMATED_ROW_HEIGHT;
-    if (previousHeight === height) return;
-    const nextHeights = { ...rowHeightsRef.current, [itemId]: height };
-    rowHeightsRef.current = nextHeights;
-    setRowHeights(nextHeights);
-
-    const el = scrollRef.current;
-    const itemTop = layout.offsets[itemIndex] ?? 0;
-    if (!el || isFollowingRef.current || itemTop + previousHeight > scrollTopRef.current) return;
-    const adjustedScrollTop = scrollTopRef.current + height - previousHeight;
-    el.scrollTop = adjustedScrollTop;
-    scrollTopRef.current = adjustedScrollTop;
-    setScrollTop(adjustedScrollTop);
-    setDistanceFromBottom(Math.max(
-      0,
-      layout.totalHeight + height - previousHeight - adjustedScrollTop - (el.clientHeight || viewportHeight),
-    ));
-    storageSet(scrollStorageKey, String(adjustedScrollTop));
   }
 
   function setBlockExpanded(id: string, expanded: boolean): void {
@@ -670,37 +536,41 @@ export function ChatSurface({
     );
   }
 
-  const visibleItems = items.slice(layout.start, layout.end);
   return (
     <div className="stream-renderer">
       <div
-        ref={scrollRef}
+        ref={setScrollNode}
         className="stream-renderer__scroll"
         onScroll={handleScroll}
       >
-        <div className="stream-renderer__virtual-canvas" style={{ height: `${layout.totalHeight}px` }}>
-          {visibleItems.map((item, offset) => {
-            const itemIndex = layout.start + offset;
+        <div className="stream-renderer__virtual-canvas" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+          {virtualItems.map((virtualItem) => {
+            const item = items[virtualItem.index];
+            if (!item) return null;
             return (
-              <VirtualRow
-                key={item.id}
-                top={layout.offsets[itemIndex] ?? 0}
-                onMeasure={(height) => handleRowMeasure(itemIndex, item.id, height)}
+              <div
+                key={virtualItem.key}
+                ref={virtualizer.measureElement}
+                className="stream-renderer__virtual-row"
+                data-index={virtualItem.index}
+                data-virtual-key={item.id}
+                style={{ top: 0, transform: `translateY(${virtualItem.start}px)` }}
               >
-                {item.kind === 'group' ? renderGroup(item.group) : renderLiveIndicator()}
-              </VirtualRow>
+                {item.kind === 'group' && renderGroup(item.group)}
+                {item.kind === 'live' && renderLiveIndicator()}
+                {item.kind === 'permission' && activePermissionRequest && onPermissionRespond && (
+                  <TurnGroup speaker="system">
+                    <PermissionApprovalCard
+                      request={activePermissionRequest}
+                      backendType={permissionBackendType}
+                      onRespond={onPermissionRespond}
+                    />
+                  </TurnGroup>
+                )}
+              </div>
             );
           })}
         </div>
-        {activePermissionRequest && onPermissionRespond && (
-          <TurnGroup speaker="system">
-            <PermissionApprovalCard
-              request={activePermissionRequest}
-              backendType={permissionBackendType}
-              onRespond={onPermissionRespond}
-            />
-          </TurnGroup>
-        )}
       </div>
       {showJumpToLatest && (
         <>

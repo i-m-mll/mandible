@@ -2341,6 +2341,7 @@ export async function getConversations(params?: {
   parent_id?: string;
   session_id?: string;
   tag?: string;
+  signal?: AbortSignal;
 }): Promise<{ conversations: Conversation[]; total: number }> {
   const query = new URLSearchParams();
   if (params?.source) query.set('source', params.source);
@@ -2357,9 +2358,8 @@ export async function getConversations(params?: {
   if (params?.session_id) query.set('session_id', params.session_id);
   if (params?.tag) query.set('tag', params.tag);
   const qs = query.toString();
-  return cachedApiGetJson<{ conversations: Conversation[]; total: number }>(
-    `/api/conversations${qs ? '?' + qs : ''}`,
-  );
+  const response = await apiGet(`/api/conversations${qs ? '?' + qs : ''}`, { signal: params?.signal });
+  return (await parseMaybeJson(response)) as { conversations: Conversation[]; total: number };
 }
 
 export type ConversationSidebarConversation = Conversation & {
@@ -2398,6 +2398,7 @@ export async function getConversationSidebar(params: {
   limit: number;
   group_key?: string;
   cursor?: string;
+  signal?: AbortSignal;
 }): Promise<ConversationSidebarResponse> {
   const query = new URLSearchParams();
   if (params.lifecycle) query.set('lifecycle', params.lifecycle);
@@ -2416,7 +2417,8 @@ export async function getConversationSidebar(params: {
   query.set('limit', String(limit));
   if (params.group_key) query.set('group_key', params.group_key);
   if (params.cursor) query.set('cursor', params.cursor);
-  return cachedApiGetJson<ConversationSidebarResponse>(`/api/conversations/sidebar?${query.toString()}`);
+  const response = await apiGet(`/api/conversations/sidebar?${query.toString()}`, { signal: params.signal });
+  return (await parseMaybeJson(response)) as ConversationSidebarResponse;
 }
 
 export type ConversationWindowRequest =
