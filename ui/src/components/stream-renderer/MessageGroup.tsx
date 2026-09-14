@@ -11,27 +11,6 @@ import { MessageActions } from '../shared/MessageActions';
 import { ToolCallGroup } from '../message-blocks/ToolCallGroup';
 import { summarizeToolRun, toolRunIcon } from '../message-blocks/toolPresentation';
 
-export type ChatBoundaryKind = 'prose' | 'activity';
-
-export function chatBoundaryClasses(start: ChatBoundaryKind, end = start): string {
-  return `chat-boundary--starts-${start} chat-boundary--ends-${end}`;
-}
-
-export function assistantTurnBoundaryKinds(turn: MessageGroupProps['turn']): {
-  start: ChatBoundaryKind;
-  end: ChatBoundaryKind;
-} | null {
-  const blocks = turn.assistantEvent.message.content;
-  const newestPlanIndex = latestPlanIndex(blocks);
-  const visibleKinds = blocks.flatMap((block, index): ChatBoundaryKind[] => {
-    if (block.type === 'text' && !block.text.trim()) return [];
-    if (block.type === 'plan' && index !== newestPlanIndex) return [];
-    return [block.type === 'text' ? 'prose' : 'activity'];
-  });
-  if (visibleKinds.length === 0) return null;
-  return { start: visibleKinds[0], end: visibleKinds[visibleKinds.length - 1] };
-}
-
 export function MessageGroup({
   turn,
   isStreaming,
@@ -130,11 +109,10 @@ export function MessageGroup({
     // Copy lives in the shared group footer, so a second top-right copy action
     // would duplicate the same operation and obscure message text on hover.
     const source = block.source;
-    const boundaryKind: ChatBoundaryKind = block.type === 'text' ? 'prose' : 'activity';
     return (
       <div
         key={`block-wrap-${index}`}
-        className={`message-block-wrapper contextual-action-owner ${chatBoundaryClasses(boundaryKind)}`}
+        className="message-block-wrapper contextual-action-owner"
         data-block-id={source?.blockId}
       >
         {inner}
@@ -174,7 +152,6 @@ export function MessageGroup({
       rendered.push(
         <ToolCallGroup
           key={groupId}
-          className={chatBoundaryClasses('activity')}
           summary={summarizeToolRun(run)}
           icon={toolRunIcon(run)}
           expanded={expanded}
