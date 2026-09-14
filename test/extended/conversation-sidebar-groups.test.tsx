@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { QueryClientProvider } from '@tanstack/preact-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../ui/src/api.js';
@@ -17,6 +18,8 @@ import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import { compareConversationSidebarRows } from '../../src/conversations/sidebar-order.js';
 import { normalizeChatViewState, reconcileShownProjects } from '../../ui/src/views/conversation-view-state.js';
+import { queryClient } from '../../ui/src/query/client.js';
+import { applyConversationSse } from '../../ui/src/query/conversationSse.js';
 
 const chatHistoryStylesheet = [
   'ui/src/styles/chat-history.css',
@@ -43,6 +46,7 @@ vi.mock('@xterm/xterm', () => ({ Terminal: class { options = {}; loadAddon(): vo
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
 beforeEach(() => {
+  queryClient.clear();
   vi.stubGlobal('ResizeObserver', class {
     observe(): void {}
     unobserve(): void {}
@@ -150,15 +154,19 @@ function renderView(
   instance: InstanceInfo | null = null,
   sidebarGroupLimit = 1,
 ): void {
-  render(<ConversationsView
-    consoleSessions={consoleSessions}
-    initialConversationId={null}
-    initialSessionId={null}
-    sidebarGroupLimit={sidebarGroupLimit}
-    instance={instance}
-    onSelectSession={() => undefined}
-    onNewConversation={onNewConversation}
-  />);
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ConversationsView
+        consoleSessions={consoleSessions}
+        initialConversationId={null}
+        initialSessionId={null}
+        sidebarGroupLimit={sidebarGroupLimit}
+        instance={instance}
+        onSelectSession={() => undefined}
+        onNewConversation={onNewConversation}
+      />
+    </QueryClientProvider>,
+  );
 }
 
 describe('conversation sidebar groups', () => {
@@ -625,9 +633,10 @@ describe('conversation sidebar groups', () => {
     })));
     const priorRequestCount = requests.length;
 
-    FakeEventSource.instances[0].emit({
-      type: 'conversation:updated',
-      data: { id: canonicalRow.id, block_count: canonicalRow.block_count, canonical_project_id: null },
+    applyConversationSse(queryClient, 'conversation:updated', {
+      id: canonicalRow.id,
+      block_count: canonicalRow.block_count,
+      canonical_project_id: null,
     });
     await waitFor(() => expect(requests.length).toBeGreaterThan(priorRequestCount), { timeout: 1600 });
     expect(requests.at(-1)).toEqual(expect.objectContaining({ project_ids: ['prj-mandible'] }));
@@ -688,9 +697,10 @@ describe('conversation sidebar groups', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await screen.findByRole('button', { name: 'Open conversation Pinned two' });
 
-    FakeEventSource.instances[0].emit({
-      type: 'conversation:updated',
-      data: { id: pinnedOne.id, title: 'Pinned renamed', block_count: 3 },
+    applyConversationSse(queryClient, 'conversation:updated', {
+      id: pinnedOne.id,
+      title: 'Pinned renamed',
+      block_count: 3,
     });
     await screen.findByRole('button', { name: 'Open conversation Pinned renamed' });
     expect(screen.getByRole('button', { name: 'Open conversation Pinned two' })).toBeTruthy();
@@ -755,11 +765,12 @@ describe('conversation sidebar groups', () => {
       .toEqual(['Open conversation Zulu first', 'Open conversation Alpha second']);
     expect(getSidebar).toHaveBeenCalledTimes(2);
 
-    FakeEventSource.instances[0].emit({
-      type: 'conversation:updated',
-      data: { id: first.id, block_count: 4, started_at: '2026-08-18T12:00:00.000Z' },
+    applyConversationSse(queryClient, 'conversation:updated', {
+      id: first.id,
+      block_count: 4,
+      started_at: '2026-08-18T12:00:00.000Z',
     });
-    await waitFor(() => expect(getSidebar).toHaveBeenCalledTimes(4), { timeout: 1500 });
+    await waitFor(() => expect(getSidebar).toHaveBeenCalledTimes(3), { timeout: 1500 });
   });
 
   it('deduplicates provider-backed live sessions, preserves sort, and consumes local overflow before another request', async () => {
@@ -846,7 +857,7 @@ describe('conversation sidebar groups', () => {
     await waitFor(() => expect(provisionalRow.getAttribute('aria-current')).toBe('true'));
 
     indexed = true;
-    FakeEventSource.instances[0].emit({ type: 'conversation:new', data: { id: indexedConversation.id } });
+    applyConversationSse(queryClient, 'conversation:new', { id: indexedConversation.id });
 
     const indexedRow = await within(projectSection).findByRole(
       'button',

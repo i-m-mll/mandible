@@ -1,5 +1,6 @@
 import type { ComponentChildren, Ref } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useQuery, useQueryClient } from '@tanstack/preact-query';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
@@ -24,7 +25,6 @@ import type {
   ConversationBlock,
   ConversationChild,
   InstanceInfo,
-  ConversationParent,
   ConversationPositionWindow,
   ConversationSource,
   ConversationSidebarGroup,
@@ -98,14 +98,8 @@ import {
   type NewChatDraft,
   type NewChatProvider,
 } from '../chat';
-import {
-  applyConversationAppendPayload,
-  mergeConversationSummaryIntoList,
-  type ConversationAppendPayload,
-} from '../chat/conversationAppend';
 import { formatAbsoluteTime, truncate } from '../lib/format';
 import { acquireSharedSse } from '../sse-shared';
-import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { PreviewIcon } from '../components/icons/TabIcons';
 import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
@@ -130,6 +124,19 @@ import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 import { subscribeClientAuthSessionState } from '../client-auth-token';
 import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding';
+import {
+  flattenConversationWindow,
+  mergeConversationWindows,
+  mergeSidebarPages,
+  type ConversationWithDetails,
+} from '../query/conversationData';
+import {
+  conversationKeys,
+  normalizeWindowTarget,
+  windowRequest,
+  type ConversationSidebarFilters,
+} from '../query/conversationKeys';
+import { queryClient as appQueryClient } from '../query/client';
 
 // ── Toast notification ──
 
@@ -470,16 +477,6 @@ type ChatSidebarSections = {
   projects: ChatProjectGroup[];
   chats: ChatProjectGroup | null;
 };
-type ConversationWithDetails = Conversation & {
-  blocks: ConversationBlock[];
-  children: ConversationChild[];
-  parent: ConversationParent | null;
-  position_window: Pick<ConversationPositionWindow, 'revision' | 'total' | 'target' | 'window'>;
-};
-type ConversationAppendSseDetail = {
-  type: string;
-  data?: ConversationAppendPayload;
-};
 function conversationShell(conversation: Conversation): ConversationWithDetails {
   return {
     ...conversation,
@@ -584,21 +581,6 @@ function reconcileControlSnapshot(
   if (incoming.ownership.generation === current.ownership.generation
       && incoming.capability.revision < current.capability.revision) return current;
   return incoming;
-}
-
-function flattenConversationWindow(payload: ConversationPositionWindow): ConversationWithDetails {
-  return {
-    ...payload.conversation,
-    blocks: payload.blocks,
-    children: payload.children,
-    parent: payload.parent,
-    position_window: {
-      revision: payload.revision,
-      total: payload.total,
-      target: payload.target,
-      window: payload.window,
-    },
-  };
 }
 
 export function conversationAnchorFromHash(hash: string): { block: string } | { turn: string } | null {
@@ -1032,26 +1014,9 @@ function ConversationDetail({
   onUnavailable?: (conversationId: string) => void;
   externalNotice?: ComponentChildren;
 }): JSX.Element {
-  const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
-    initialConversation ? conversationShell(initialConversation) : null,
-  );
-  const [loadedConversationKey, setLoadedConversationKey] = useState(
-    () => detailRequestKey('conversation', { conversationId, leaf: null }),
-  );
-  const loadedConversationKeyRef = useRef(loadedConversationKey);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<ConversationLoadFailure | null>(null);
-  const [notFound, setNotFound] = useState(false);
-  const [loadNonce, setLoadNonce] = useState(0);
-  const requestGenerationRef = useRef(0);
-  const requestAbortRef = useRef<AbortController | null>(null);
-  useEffect(() => {
-    if (notFound) onUnavailable?.(conversationId);
-  }, [conversationId, notFound, onUnavailable]);
-  const retryingLoadRef = useRef(false);
-  const skipNextWindowLoadRef = useRef(false);
-  const latestRevisionRef = useRef(initialConversation?.block_count ?? 0);
+  const queryClient = useQueryClient(appQueryClient);
   const [jumpingToLatest, setJumpingToLatest] = useState(false);
+  const [navigationError, setNavigationError] = useState<ConversationLoadFailure | null>(null);
   const [navigationTarget, setNavigationTarget] = useState<{
     key: string;
     kind: 'initial' | 'latest' | 'block' | 'turn' | 'position';
@@ -1100,9 +1065,45 @@ function ConversationDetail({
   const submittingIntentRef = useRef<string | null>(null);
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
-  const anchorKey = effectiveAnchor ? JSON.stringify(effectiveAnchor) : 'initial';
-  const conversationRequestKey = detailRequestKey('conversation', { conversationId, anchor: anchorKey });
-  const conversation = loadedConversationKey === conversationRequestKey ? loadedConversation : null;
+  const windowTargetJson = JSON.stringify(normalizeWindowTarget(effectiveAnchor ?? { target: 'initial' }));
+  const windowTarget = useMemo(
+    () => JSON.parse(windowTargetJson) as ReturnType<typeof normalizeWindowTarget>,
+    [windowTargetJson],
+  );
+  const conversationRequestKey = useMemo(
+    () => conversationKeys.window(conversationId, windowTarget),
+    [conversationId, windowTarget],
+  );
+  const fetchConversationDetail = useCallback(
+    async ({ signal }: { signal: AbortSignal }) => {
+      const incoming = await getConversationWindow(conversationId, windowRequest(windowTarget, signal));
+      const merged = mergeConversationWindows(
+        queryClient.getQueryData<ConversationPositionWindow>(conversationKeys.aggregate(conversationId)),
+        incoming,
+      );
+      queryClient.setQueryData(conversationKeys.aggregate(conversationId), merged);
+      return merged;
+    },
+    [conversationId, queryClient, windowTarget],
+  );
+  const windowQuery = useQuery({
+    queryKey: conversationRequestKey,
+    queryFn: fetchConversationDetail,
+  }, queryClient);
+  const conversation = windowQuery.data
+    ? flattenConversationWindow(windowQuery.data)
+    : initialConversation ? conversationShell(initialConversation) : null;
+  const loading = windowQuery.isFetching;
+  const notFound = isApiErrorStatus(windowQuery.error, 404) && !creationReceipt;
+  const error = navigationError ?? (
+    windowQuery.error && !notFound
+      ? conversationLoadFailure(windowQuery.error, Boolean(windowQuery.data))
+      : null
+  );
+
+  useEffect(() => {
+    if (notFound) onUnavailable?.(conversationId);
+  }, [conversationId, notFound, onUnavailable]);
 
   const currentRightSidebarViewState = scopeConversationRightSidebar(conversationId, rightSidebarViewState);
 
@@ -1145,69 +1146,27 @@ function ConversationDetail({
     placement: 'top-end',
   });
 
-  useLayoutEffect(() => {
-    if (skipNextWindowLoadRef.current) {
-      skipNextWindowLoadRef.current = false;
-      return undefined;
+  useEffect(() => {
+    const payload = windowQuery.data;
+    if (!payload) return;
+    const pendingReconciliations = pendingDurableReconciliationsRef.current
+      .splice(0)
+      .filter((event) => event.conversation_id === conversationId);
+    if (pendingReconciliations.length > 0) {
+      setLiveProjection((current) => pendingReconciliations.reduce(
+        (projection, event) => mergeProviderLiveProjection(projection, event),
+        current,
+      ));
     }
-    const controller = new AbortController();
-    requestAbortRef.current?.abort();
-    requestAbortRef.current = controller;
-    const generation = ++requestGenerationRef.current;
-    const requestKey = conversationRequestKey;
-    const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
-    const requestChanged = loadedConversationKeyRef.current !== requestKey;
-    const preserveErrorWhileRetrying = retryingLoadRef.current;
-    retryingLoadRef.current = false;
-    loadedConversationKeyRef.current = requestKey;
-    setLoadedConversationKey(requestKey);
-    setConversation((current) => (
-      requestChanged
-        ? cached ?? (initialConversation ? conversationShell(initialConversation) : null)
-        : current ?? cached ?? (initialConversation ? conversationShell(initialConversation) : null)
-    ));
-    setLoading(true);
-    setNotFound(false);
-    if (!preserveErrorWhileRetrying) setError(null);
-    getConversationWindow(conversationId, { ...(effectiveAnchor ?? { target: 'initial' as const }), signal: controller.signal })
-      .then((payload) => {
-        if (generation !== requestGenerationRef.current) return;
-        const conv = flattenConversationWindow(payload);
-        latestRevisionRef.current = Math.max(latestRevisionRef.current, payload.revision);
-        setConversation(conv);
-        const pendingReconciliations = pendingDurableReconciliationsRef.current
-          .splice(0)
-          .filter((event) => event.conversation_id === conversationId);
-        if (pendingReconciliations.length > 0) {
-          setLiveProjection((current) => pendingReconciliations.reduce(
-            (projection, event) => mergeProviderLiveProjection(projection, event),
-            current,
-          ));
-        }
-        setNavigationTarget({
-          key: `${generation}:${payload.revision}:${payload.target.kind}:${payload.target.turn_id ?? ''}`,
-          kind: payload.target.kind,
-          turnId: payload.target.turn_id,
-          blockId: payload.target.block_id,
-          smooth: false,
-        });
-        setError(null);
-        setNotFound(false);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
-        if (isApiErrorStatus(err, 404)) {
-          setError(null);
-          setNotFound(!creationReceipt);
-        } else {
-          setError(conversationLoadFailure(err, Boolean(cached)));
-          setNotFound(false);
-        }
-        setLoading(false);
-      });
-    return () => controller.abort();
-  }, [anchorKey, conversationId, conversationRequestKey, creationReceipt, effectiveAnchor, initialConversation, loadNonce]);
+    setNavigationTarget({
+      key: `${payload.revision}:${payload.target.kind}:${payload.target.turn_id ?? ''}`,
+      kind: payload.target.kind,
+      turnId: payload.target.turn_id,
+      blockId: payload.target.block_id,
+      smooth: false,
+    });
+    setNavigationError(null);
+  }, [conversationId, windowQuery.data]);
 
   const refreshControl = useCallback(() => {
     let active = true;
@@ -1233,14 +1192,9 @@ function ConversationDetail({
 
   useEffect(() => {
     if (creationReceipt?.state !== 'ready') return;
-    setLoadNonce((nonce) => nonce + 1);
+    void queryClient.invalidateQueries({ queryKey: conversationKeys.conversation(conversationId) });
     return refreshControl();
-  }, [creationReceipt?.attempt_count, creationReceipt?.state, creationReceipt?.updated_at, refreshControl]);
-
-  useEffect(() => {
-    if (!conversation || loading || loadedConversationKey !== conversationRequestKey) return;
-    writePersistedDetail('conversations', conversationRequestKey, conversation);
-  }, [conversation, conversationRequestKey, loadedConversationKey, loading]);
+  }, [conversationId, creationReceipt?.attempt_count, creationReceipt?.state, creationReceipt?.updated_at, queryClient, refreshControl]);
 
   useEffect(() => {
     if (typeof EventSource === 'undefined') return undefined;
@@ -1251,14 +1205,12 @@ function ConversationDetail({
         window.clearTimeout(refreshTimer);
       }
       refreshTimer = window.setTimeout(() => {
-        setLoadNonce((prev) => prev + 1);
+        void queryClient.invalidateQueries({ queryKey: conversationRequestKey, exact: true });
       }, 150);
     };
-    // conversation:new / conversation:updated are NOT subscribed here: the
-    // id-filtered `conversation:sse` window handler below applies append
-    // payloads in place and falls back to a targeted `loadNonce` refetch only
-    // on a detected sequence gap. This effect keeps just the workflow refresh
-    // and the reconnect resync (which patching can never survive).
+    // conversation:new / conversation:updated are reconciled centrally into
+    // Query caches. This effect keeps only workflow refresh and reconnect
+    // resync work that cannot be reconstructed from an append payload.
     const offWorkflowUpdated = client.on('workflow:updated', () => {
       setWorkflowNonce((prev) => prev + 1);
     });
@@ -1302,7 +1254,7 @@ function ConversationDetail({
       offState();
       client.close();
     };
-  }, [conversationId, refreshControl]);
+  }, [conversationId, conversationRequestKey, queryClient, refreshControl]);
 
   useEffect(() => {
     if (!conversation?.session_id) {
@@ -1348,124 +1300,56 @@ function ConversationDetail({
     return () => { active = false; };
   }, [conversation?.session_id]);
 
-  useEffect(() => {
-    const handleConversationSse = (event: Event) => {
-      const detail = (event as CustomEvent<ConversationAppendSseDetail>).detail;
-      const data = detail?.data;
-      if (!data || data.id !== conversationId) return;
-      if (typeof data.block_count === 'number') {
-        latestRevisionRef.current = Math.max(latestRevisionRef.current, data.block_count);
-      }
-
-      const appendBlocks = data.append?.blocks ?? [];
-      if (appendBlocks.length === 0) {
-        setConversation((prev) => {
-          if (!prev) return prev;
-          const nextTotal = Math.max(prev.position_window.total, data.block_count ?? 0);
-          const appendedAfterWindow = prev.position_window.window.has_after
-            ? Math.max(0, nextTotal - prev.position_window.total)
-            : 0;
-          return {
-            ...(applyConversationAppendPayload(prev, data) ?? prev),
-            position_window: {
-              ...prev.position_window,
-              revision: Math.max(prev.position_window.revision, data.block_count ?? 0),
-              total: nextTotal,
-              window: {
-                ...prev.position_window.window,
-                after_count: prev.position_window.window.after_count + appendedAfterWindow,
-              },
-            },
-          };
-        });
-        return;
-      }
-
-      setConversation((prev) => {
-        if (!prev) return prev;
-        if (prev.position_window.window.has_after) {
-          const nextTotal = Math.max(prev.position_window.total, data.block_count ?? prev.position_window.total);
-          return {
-            ...prev,
-            block_count: Math.max(prev.block_count, data.block_count ?? prev.block_count),
-            position_window: {
-              ...prev.position_window,
-              revision: Math.max(prev.position_window.revision, data.block_count ?? 0),
-              total: nextTotal,
-              window: {
-                ...prev.position_window.window,
-                after_count: prev.position_window.window.after_count
-                  + Math.max(0, nextTotal - prev.position_window.total),
-              },
-            },
-          };
-        }
-        const next = applyConversationAppendPayload(prev, data);
-        if (!next) {
-          window.setTimeout(() => setLoadNonce((nonce) => nonce + 1), 0);
-          return prev;
-        }
-        return {
-          ...next,
-          position_window: {
-            ...prev.position_window,
-            revision: Math.max(prev.position_window.revision, data.block_count ?? next.block_count),
-            total: Math.max(prev.position_window.total, data.block_count ?? next.block_count),
-            window: {
-              ...prev.position_window.window,
-              end_position: next.blocks[next.blocks.length - 1]?.position ?? prev.position_window.window.end_position,
-            },
-          },
-        };
-      });
-    };
-
-    window.addEventListener('conversation:sse', handleConversationSse);
-    return () => window.removeEventListener('conversation:sse', handleConversationSse);
-  }, [conversationId]);
-
   const handleJumpToLatest = useCallback(async () => {
-    const controller = new AbortController();
-    requestAbortRef.current?.abort();
-    requestAbortRef.current = controller;
-    const generation = ++requestGenerationRef.current;
     setJumpingToLatest(true);
-    setError(null);
+    setNavigationError(null);
+    const latestTarget = normalizeWindowTarget({ target: 'latest' });
+    const latestKey = conversationKeys.window(conversationId, latestTarget);
     try {
-      let payload = await getConversationWindow(conversationId, { target: 'latest', signal: controller.signal });
-      // Appends can land after the indexed end was read but before each response
-      // reaches the browser. Re-resolve until it covers the newest observed revision.
-      while (payload.revision < latestRevisionRef.current) {
-        if (generation !== requestGenerationRef.current || controller.signal.aborted) return;
-        payload = await getConversationWindow(conversationId, { target: 'latest', signal: controller.signal });
+      let latest = await queryClient.fetchQuery({
+        queryKey: latestKey,
+        queryFn: ({ signal }) => getConversationWindow(conversationId, windowRequest(latestTarget, signal)),
+        staleTime: 0,
+      });
+      let observedRevision = queryClient.getQueryData<ConversationPositionWindow>(
+        conversationKeys.aggregate(conversationId),
+      )?.revision ?? latest.revision;
+      while (latest.revision < observedRevision) {
+        latest = await queryClient.fetchQuery({
+          queryKey: latestKey,
+          queryFn: ({ signal }) => getConversationWindow(conversationId, windowRequest(latestTarget, signal)),
+          staleTime: 0,
+        });
+        observedRevision = queryClient.getQueryData<ConversationPositionWindow>(
+          conversationKeys.aggregate(conversationId),
+        )?.revision ?? latest.revision;
       }
-      if (generation !== requestGenerationRef.current) return;
-      latestRevisionRef.current = Math.max(latestRevisionRef.current, payload.revision);
-      setConversation(flattenConversationWindow(payload));
-      const latestRequestKey = detailRequestKey('conversation', { conversationId, anchor: 'initial' });
-      if (effectiveAnchor) {
-        skipNextWindowLoadRef.current = true;
-        setEffectiveAnchor(null);
-      }
-      loadedConversationKeyRef.current = latestRequestKey;
-      setLoadedConversationKey(latestRequestKey);
+      const payload = mergeConversationWindows(
+        queryClient.getQueryData<ConversationPositionWindow>(conversationKeys.aggregate(conversationId)),
+        latest,
+      );
+      queryClient.setQueryData(conversationKeys.aggregate(conversationId), payload);
+      queryClient.setQueryData(latestKey, payload);
+      queryClient.setQueryData(
+        conversationKeys.window(conversationId, normalizeWindowTarget({ target: 'initial' })),
+        payload,
+      );
+      setEffectiveAnchor(null);
       const params = new URLSearchParams({ conversation: conversationId });
       window.history.replaceState(null, '', `#/console?${params.toString()}`);
       setNavigationTarget({
-        key: `${generation}:${payload.revision}:latest`,
+        key: `${payload.revision}:latest`,
         kind: 'latest',
         turnId: payload.target.turn_id,
         blockId: payload.target.block_id,
         smooth: true,
       });
     } catch (err) {
-      if (generation === requestGenerationRef.current && !controller.signal.aborted) {
-        setError(conversationLoadFailure(err, true));
-      }
+      setNavigationError(conversationLoadFailure(err, true));
     } finally {
-      if (generation === requestGenerationRef.current) setJumpingToLatest(false);
+      setJumpingToLatest(false);
     }
-  }, [conversationId, effectiveAnchor]);
+  }, [conversationId, queryClient]);
 
   // Toast auto-dismiss
   useEffect(() => {
@@ -1576,7 +1460,14 @@ function ConversationDetail({
     const newStarred = !conversation.starred;
     try {
       await updateConversation(conversationId, { starred: newStarred });
-      setConversation((prev) => prev ? { ...prev, starred: newStarred } : prev);
+      queryClient.setQueriesData<ConversationPositionWindow>(
+        { queryKey: conversationKeys.windows(conversationId) },
+        (current) => current ? {
+          ...current,
+          conversation: { ...current.conversation, starred: newStarred },
+        } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: conversationKeys.sidebars() });
     } catch {
       // ignore
     }
@@ -1868,10 +1759,9 @@ function ConversationDetail({
   }, [conversation?.session_id, linkedConsoleSession?.id]);
 
   const retryLoad = useCallback(() => {
-    retryingLoadRef.current = true;
-    setLoading(true);
-    setLoadNonce((prev) => prev + 1);
-  }, []);
+    setNavigationError(null);
+    void windowQuery.refetch();
+  }, [windowQuery]);
 
   const loadErrorNotice = error ? (
     <DetailPaneNotice
@@ -2405,49 +2295,47 @@ function LiveSessionDetail({
   session: ConsoleSession;
   notice?: ComponentChildren;
 }): JSX.Element {
+  const queryClient = useQueryClient(appQueryClient);
   const [viewMode, setViewMode] = useState<ViewMode>('rich');
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
-  const [messageAnchor, setMessageAnchor] = useState<string | null>(null);
+  const providerSessionId = session.provider_session_id ?? '';
+  const sessionConversationQuery = useQuery({
+    queryKey: conversationKeys.bySession(providerSessionId),
+    queryFn: ({ signal }) => getConversations({ session_id: providerSessionId, limit: 1, signal }),
+    enabled: Boolean(providerSessionId),
+  }, queryClient);
+  const linkedConversationId = sessionConversationQuery.data?.conversations[0]?.id ?? '';
+  const latestTarget = useMemo(() => normalizeWindowTarget({ target: 'latest', limit: 1 }), []);
+  const latestWindowQuery = useQuery({
+    queryKey: conversationKeys.window(linkedConversationId, latestTarget),
+    queryFn: ({ signal }) => getConversationWindow(linkedConversationId, windowRequest(latestTarget, signal)),
+    enabled: Boolean(linkedConversationId),
+  }, queryClient);
+  const messageAnchor = useMemo(() => {
+    const blocks = latestWindowQuery.data?.blocks ?? [];
+    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+      if (blocks[index].dag_uuid) return blocks[index].dag_uuid ?? null;
+    }
+    return null;
+  }, [latestWindowQuery.data]);
 
   useEffect(() => {
-    if (!session.provider_session_id) {
+    if (!linkedConversationId) {
       setControl(null);
-      setMessageAnchor(null);
       return undefined;
     }
     let active = true;
-    void getConversations({ session_id: session.provider_session_id, limit: 1 })
-      .then(async ({ conversations }) => {
-        const conversation = conversations[0];
-        if (!conversation) return null;
-        const [snapshot, window] = await Promise.all([
-          getConversationControl(conversation.id),
-          getConversationWindow(conversation.id, { target: 'latest', limit: 1 }),
-        ]);
-        let latestMessageAnchor: string | null = null;
-        for (let index = window.blocks.length - 1; index >= 0; index -= 1) {
-          if (window.blocks[index].dag_uuid) {
-            latestMessageAnchor = window.blocks[index].dag_uuid ?? null;
-            break;
-          }
-        }
-        return {
-          snapshot,
-          messageAnchor: latestMessageAnchor,
-        };
-      })
-      .then((result) => {
+    void getConversationControl(linkedConversationId)
+      .then((snapshot) => {
         if (!active) return;
-        setControl(result?.snapshot ?? null);
-        setMessageAnchor(result?.messageAnchor ?? null);
+        setControl(snapshot);
       })
       .catch(() => {
         if (!active) return;
         setControl(null);
-        setMessageAnchor(null);
       });
     return () => { active = false; };
-  }, [session.provider_session_id]);
+  }, [linkedConversationId]);
 
   useEffect(() => {
     if (!control || typeof EventSource === 'undefined') return undefined;
@@ -2524,6 +2412,7 @@ export function ConversationsView({
   onSelectSession,
   onNewConversation,
 }: ConversationsViewProps): JSX.Element {
+  const queryClient = useQueryClient(appQueryClient);
   const [chatViewState, setChatViewState] = useChatViewState();
   const [selection, setSelection] = useState<ChatSelection>(() => (
     initialConversationId
@@ -2558,14 +2447,15 @@ export function ConversationsView({
   const [retainedSelection, setRetainedSelection] = useState<ConversationSidebarConversation | null>(null);
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
-  const [serverGroups, setServerGroups] = useState<ConversationSidebarGroup[]>([]);
-  const [sidebarLoaded, setSidebarLoaded] = useState(false);
   const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
   const [canonicalProjectsReady, setCanonicalProjectsReady] = useState(false);
   const [canonicalProjectsLoaded, setCanonicalProjectsLoaded] = useState(false);
   const [visibleTargets, setVisibleTargets] = useState<Map<string, number>>(new Map());
-  const [loadingMoreKeys, setLoadingMoreKeys] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState(false);
+  const [continuationRequests, setContinuationRequests] = useState<Array<{
+    group: string;
+    cursor: string;
+    filters: ConversationSidebarFilters;
+  }>>([]);
   const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
   const acceptedConversationId = newChatDraft?.state === 'accepted' ? newChatDraft.conversationId : null;
@@ -2599,10 +2489,20 @@ export function ConversationsView({
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [acceptedConversationId, acceptedSpawnState, reconcileCreationReceipt]);
-  const searchTimer = useRef<number | null>(null);
-  const fetchGenerationRef = useRef(0);
-  const groupsRef = useRef(serverGroups);
-  groupsRef.current = serverGroups;
+  useEffect(() => {
+    if (typeof EventSource === 'undefined') return undefined;
+    const client = acquireSharedSse();
+    const offSpawn = client.on('conversation-spawn:updated', (payload) => {
+      const update = eventData<{ spawn?: ConversationSpawnReceipt }>(payload);
+      if (update?.spawn) reconcileCreationReceipt(update.spawn);
+      void queryClient.invalidateQueries({ queryKey: conversationKeys.sidebars() });
+    });
+    client.connect();
+    return () => {
+      offSpawn();
+      client.close();
+    };
+  }, [queryClient, reconcileCreationReceipt]);
   const targetsRef = useRef(visibleTargets);
   targetsRef.current = visibleTargets;
   const previousGroupLimitRef = useRef(sidebarGroupLimit);
@@ -2719,9 +2619,14 @@ export function ConversationsView({
       };
     }
     const sessionLookupId = liveById?.provider_session_id ?? initialSessionId;
+    const sessionLookupKey = conversationKeys.bySession(sessionLookupId);
 
     const resolveConversation = (attemptsRemaining: number) => {
-      void getConversations({ session_id: sessionLookupId, limit: 1 })
+      void queryClient.fetchQuery({
+        queryKey: sessionLookupKey,
+        queryFn: ({ signal }) => getConversations({ session_id: sessionLookupId, limit: 1, signal }),
+        staleTime: 0,
+      })
         .then((result) => {
           if (!active) return;
           const resolvedId = result.conversations[0]?.id ?? null;
@@ -2753,11 +2658,12 @@ export function ConversationsView({
 
     return () => {
       active = false;
+      void queryClient.cancelQueries({ queryKey: sessionLookupKey, exact: true });
       if (retryTimer !== null) {
         window.clearTimeout(retryTimer);
       }
     };
-  }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession]);
+  }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession, queryClient]);
 
   const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
 
@@ -2806,148 +2712,104 @@ export function ConversationsView({
     return params;
   }, [chatViewState.previewPinOverrides, conversationLifecycle, hideEmpty, previewMutationsRejected, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
-  // A refresh starts from one bounded page per logical group, then replays only
-  // the extra pages needed to restore that group's current visible target.
-  const fetchConversationGroups = useCallback(async (projectIds = selectedProjectIds) => {
-    if (!canonicalProjectsReady || !shownProjectsState.ready) return;
-    const generation = ++fetchGenerationRef.current;
-    setLoading(true);
-    try {
-      const result = await getConversationSidebar(sidebarRequestParams(sidebarGroupLimit, projectIds));
-      const reconciled = await Promise.all(result.groups.map(async (initialGroup) => {
-        const target = targetsRef.current.get(initialGroup.key) ?? sidebarGroupLimit;
-        let group = initialGroup;
-        while (group.conversations.length < target && group.next_cursor) {
-          const page = await getConversationSidebar({
-            ...sidebarRequestParams(Math.min(sidebarGroupLimit, target - group.conversations.length), projectIds),
-            group_key: group.key,
-            cursor: group.next_cursor,
-          });
-          const next = page.groups[0];
-          if (!next) break;
-          const seen = new Set(group.conversations.map((conversation) => conversation.id));
-          group = {
-            ...next,
-            conversations: [...group.conversations, ...next.conversations.filter((conversation) => !seen.has(conversation.id))],
-          };
-        }
-        return group;
-      }));
-      if (generation !== fetchGenerationRef.current) return;
-      setServerGroups(reconciled);
-      setSidebarLoaded(true);
-      setVisibleTargets((current) => {
-        const next = new Map(current);
-        for (const group of reconciled) {
-          if (!next.has(group.key)) next.set(group.key, sidebarGroupLimit);
-        }
-        return next;
-      });
-    } catch {
-      if (generation === fetchGenerationRef.current) {
-        setSidebarToast({ message: 'Chats could not be refreshed.', type: 'error' });
-      }
-    } finally {
-      if (generation === fetchGenerationRef.current) setLoading(false);
+  const sidebarFiltersJson = JSON.stringify(sidebarRequestParams(sidebarGroupLimit));
+  const sidebarFilters = useMemo(
+    () => JSON.parse(sidebarFiltersJson) as ConversationSidebarFilters,
+    [sidebarFiltersJson],
+  );
+  const sidebarEnabled = canonicalProjectsReady && shownProjectsState.ready;
+  const sidebarQueryKey = useMemo(() => conversationKeys.sidebarInitial(sidebarFilters), [sidebarFilters]);
+  const fetchSidebarInitial = useCallback(
+    ({ signal }: { signal: AbortSignal }) => getConversationSidebar({ ...sidebarFilters, signal }),
+    [sidebarFilters],
+  );
+  const sidebarQuery = useQuery({
+    queryKey: sidebarQueryKey,
+    queryFn: fetchSidebarInitial,
+    enabled: sidebarEnabled,
+  }, queryClient);
+  const [continuationCacheRevision, setContinuationCacheRevision] = useState(0);
+  useEffect(() => queryClient.getQueryCache().subscribe((event) => {
+    if (event.query.queryKey[0] === 'chat' && event.query.queryKey[1] === 'sidebar') {
+      setContinuationCacheRevision((revision) => revision + 1);
     }
-  }, [canonicalProjectsReady, selectedProjectIds, shownProjectsState.ready, sidebarGroupLimit, sidebarRequestParams]);
-
-  // Live sidebar updates: the sidebar owns its own shared SSE handle rather than
-  // refetching whenever the parent's `initialConversations` prop changes.
-  // - conversation:updated for a known id merges {title, block_count} in place
-  //   with a monotonic block_count check (rejecting stale/out-of-order summaries);
-  // - conversation:new, an unknown id, or a summary with no block_count anchor
-  //   schedules one trailing 1 s refetch (membership/grouping under the active
-  //   filters is server-determined);
-  // - a reconnect refetches, since patching cannot survive a missed-event gap.
-  // Bug: d51fbc8 — SSE updates must not blindly overwrite the filtered/paginated list.
+  }), [queryClient]);
   useEffect(() => {
-    if (typeof EventSource === 'undefined') return undefined;
-    let refetchTimer: number | null = null;
-    const client = acquireSharedSse();
-    const scheduleListRefetch = () => {
-      if (refetchTimer !== null) return;
-      refetchTimer = window.setTimeout(() => {
-        refetchTimer = null;
-        void fetchConversationGroups();
-      }, 1000);
-    };
-    const offUpdated = client.on('conversation:updated', (payload) => {
-      const data = (
-        typeof payload.data === 'object' && payload.data !== null ? payload.data : payload
-      ) as ConversationAppendPayload;
-      const rawData = data as ConversationAppendPayload & { updates?: unknown };
-      const membershipFields = ['starred', 'archived_at', 'cwd', 'project_path', 'canonical_project_id', 'canonical_project_key'];
-      const membershipChanged = membershipFields.some((field) => Object.prototype.hasOwnProperty.call(rawData, field))
-        || (Array.isArray(rawData.updates) && rawData.updates.some((field) => (
-          typeof field === 'string' && membershipFields.includes(field)
-        )));
-      const groupIndex = data.id
-        ? groupsRef.current.findIndex((group) => group.conversations.some((conversation) => conversation.id === data.id))
-        : -1;
-      if (groupIndex < 0) {
-        scheduleListRefetch();
-        return;
-      }
-      const currentGroup = groupsRef.current[groupIndex];
-      const currentConversation = currentGroup.conversations.find((conversation) => conversation.id === data.id)!;
-      const sortKeyChanged = sort === 'blocks'
-        ? typeof data.block_count === 'number' && data.block_count !== currentConversation.block_count
-        : typeof data.started_at === 'string' && data.started_at !== currentConversation.started_at;
-      const result = mergeConversationSummaryIntoList(currentGroup.conversations, data);
-      if (result.applied) {
-        setServerGroups(groupsRef.current.map((group, index) => (
-          index === groupIndex
-            ? { ...group, conversations: result.conversations as ConversationSidebarConversation[] }
-            : group
-        )));
-        if (sortKeyChanged || membershipChanged) scheduleListRefetch();
-      } else if (result.refetch) {
-        scheduleListRefetch();
-      } else if (membershipChanged) {
-        scheduleListRefetch();
-      }
-      // stale summary (neither applied nor refetch): keep the list unchanged.
+    if (!sidebarEnabled) return undefined;
+    const keys = continuationRequests.map((request) => {
+      const queryKey = conversationKeys.sidebarPage(request.filters, request.group, request.cursor);
+      void queryClient.fetchQuery({
+        queryKey,
+        queryFn: ({ signal }) => getConversationSidebar({
+          ...request.filters,
+          group_key: request.group,
+          cursor: request.cursor,
+          signal,
+        }),
+      });
+      return queryKey;
     });
-    const offNew = client.on('conversation:new', () => {
-      scheduleListRefetch();
-    });
-    const offSpawn = client.on('conversation-spawn:updated', (payload) => {
-      const update = eventData<{ spawn?: ConversationSpawnReceipt }>(payload);
-      if (update?.spawn) reconcileCreationReceipt(update.spawn);
-      scheduleListRefetch();
-    });
-    const offState = client.onState((_state, { reconnected }) => {
-      if (!reconnected) return;
-      void fetchConversationGroups();
-      if (acceptedConversationId) {
-        void getProviderChat(acceptedConversationId).then(reconcileCreationReceipt).catch(() => {});
-      }
-    });
-    client.connect();
     return () => {
-      if (refetchTimer !== null) {
-        window.clearTimeout(refetchTimer);
-      }
-      offUpdated();
-      offNew();
-      offSpawn();
-      offState();
-      client.close();
+      for (const queryKey of keys) void queryClient.cancelQueries({ queryKey, exact: true });
     };
-  }, [acceptedConversationId, fetchConversationGroups, reconcileCreationReceipt]);
+  }, [continuationRequests, queryClient, sidebarEnabled]);
+  const continuationPages = continuationRequests.flatMap((request) => {
+    const data = queryClient.getQueryData<import('../api').ConversationSidebarResponse>(
+      conversationKeys.sidebarPage(request.filters, request.group, request.cursor),
+    );
+    return data ? [data] : [];
+  });
+  const serverGroups = useMemo(
+    () => mergeSidebarPages(sidebarQuery.data, continuationPages),
+    [continuationCacheRevision, sidebarQuery.data],
+  );
+  const sidebarLoaded = sidebarQuery.isFetched;
+  const loading = sidebarQuery.isFetching;
+  const loadingMoreKeys = new Set(continuationRequests.flatMap((request) => (
+    queryClient.getQueryState(conversationKeys.sidebarPage(request.filters, request.group, request.cursor))?.fetchStatus === 'fetching'
+      ? [request.group]
+      : []
+  )));
 
-  // Debounced fetch on filter changes
   useEffect(() => {
-    if (!canonicalProjectsReady || !shownProjectsState.ready) return undefined;
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    searchTimer.current = window.setTimeout(() => {
-      fetchConversationGroups();
-    }, 300);
-    return () => {
-      if (searchTimer.current) clearTimeout(searchTimer.current);
-    };
-  }, [canonicalProjectsReady, fetchConversationGroups, shownProjectsState.ready]);
+    if (!sidebarQuery.data) return;
+    setVisibleTargets((current) => {
+      const next = new Map(current);
+      for (const group of serverGroups) {
+        if (!next.has(group.key)) next.set(group.key, sidebarGroupLimit);
+      }
+      return next.size === current.size ? current : next;
+    });
+    setContinuationRequests((current) => {
+      let next = current;
+      for (const group of serverGroups) {
+        const target = targetsRef.current.get(group.key) ?? sidebarGroupLimit;
+        if (group.conversations.length >= target || !group.next_cursor) continue;
+        if (next.some((request) => request.group === group.key && request.cursor === group.next_cursor)) continue;
+        if (next === current) next = [...current];
+        next.push({ group: group.key, cursor: group.next_cursor, filters: sidebarFilters });
+      }
+      return next;
+    });
+  }, [serverGroups, sidebarFilters, sidebarGroupLimit, sidebarQuery.data]);
+
+  useEffect(() => {
+    if (!sidebarQuery.error) return;
+    setSidebarToast({ message: 'Chats could not be refreshed.', type: 'error' });
+  }, [sidebarQuery.error]);
+
+  useEffect(() => {
+    setContinuationRequests((current) => current.length === 0 ? current : []);
+  }, [sidebarFilters]);
+
+  const fetchConversationGroups = useCallback(async (projectIds = selectedProjectIds) => {
+    const filters = sidebarRequestParams(sidebarGroupLimit, projectIds) as ConversationSidebarFilters;
+    await queryClient.fetchQuery({
+      queryKey: conversationKeys.sidebarInitial(filters),
+      queryFn: ({ signal }) => getConversationSidebar({ ...filters, signal }),
+      staleTime: 0,
+    });
+  }, [queryClient, selectedProjectIds, sidebarGroupLimit, sidebarRequestParams]);
 
   const acceptedConversation = useMemo(() => newChatDraft?.state === 'accepted'
     ? conversationFromSpawn(newChatDraft.spawn, newChatDraft.placement)
@@ -3264,12 +3126,18 @@ export function ConversationsView({
   };
 
   const updateConversationInList = (updated: Conversation) => {
-    // Pinning can change group membership and manual order, so reconcile from
-    // the grouped endpoint while keeping selection, folds, and quotas intact.
-    setServerGroups((current) => current.map((group) => ({
-      ...group,
-      conversations: group.conversations.map((conv) => (conv.id === updated.id ? { ...conv, ...updated } : conv)),
-    })));
+    queryClient.setQueriesData<import('../api').ConversationSidebarResponse>(
+      { queryKey: conversationKeys.sidebars() },
+      (current) => current ? {
+        ...current,
+        groups: current.groups.map((group) => ({
+          ...group,
+          conversations: group.conversations.map((conversation) => (
+            conversation.id === updated.id ? { ...conversation, ...updated } : conversation
+          )),
+        })),
+      } : current,
+    );
     void fetchConversationGroups();
   };
 
@@ -3281,37 +3149,10 @@ export function ConversationsView({
     setVisibleTargets(nextTargets);
     if (group.entries.length >= nextTarget || !group.nextCursor) return;
 
-    setLoadingMoreKeys((current) => new Set(current).add(group.key));
-    void getConversationSidebar({
-      ...sidebarRequestParams(sidebarGroupLimit),
-      group_key: group.key,
-      cursor: group.nextCursor,
-    })
-      .then((page) => {
-        const fetched = page.groups[0];
-        if (!fetched) return;
-        setServerGroups((current) => current.map((candidate) => {
-          if (candidate.key !== group.key) return candidate;
-          const seen = new Set(candidate.conversations.map((conversation) => conversation.id));
-          return {
-            ...fetched,
-            conversations: [
-              ...candidate.conversations,
-              ...fetched.conversations.filter((conversation) => !seen.has(conversation.id)),
-            ],
-          };
-        }));
-      })
-      .catch(() => {
-        const rolledBackTargets = new Map(targetsRef.current).set(group.key, currentTarget);
-        targetsRef.current = rolledBackTargets;
-        setVisibleTargets(rolledBackTargets);
-      })
-      .finally(() => setLoadingMoreKeys((current) => {
-        const next = new Set(current);
-        next.delete(group.key);
-        return next;
-      }));
+    const filters = sidebarRequestParams(sidebarGroupLimit) as ConversationSidebarFilters;
+    setContinuationRequests((current) => current.some((request) => (
+      request.group === group.key && request.cursor === group.nextCursor
+    )) ? current : [...current, { group: group.key, cursor: group.nextCursor!, filters }]);
   }, [sidebarGroupLimit, sidebarRequestParams]);
 
   const handleToggleEntryPin = async (entry: ChatEntry) => {

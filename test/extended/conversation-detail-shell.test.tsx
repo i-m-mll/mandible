@@ -9,7 +9,6 @@ import * as api from '../../ui/src/api.js';
 import type { Conversation, ConversationBlock, ConversationControlSnapshot, ConversationPositionWindow } from '../../ui/src/api.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
 import { AppShellProvider, type AppRightSidebarDescriptor } from '../../ui/src/app-shell.js';
-import { detailRequestKey, writePersistedDetail } from '../../ui/src/detail-cache.js';
 import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import {
@@ -21,6 +20,8 @@ import {
 } from '../../ui/src/views/conversations.js';
 import { chatItemIdentityKey } from '../../src/conversation-control/provider-live.js';
 import type { ChatItem } from '../../src/parsers/types.js';
+import { queryClient } from '../../ui/src/query/client.js';
+import { applyConversationSse } from '../../ui/src/query/conversationSse.js';
 
 
 vi.mock('@xterm/xterm', () => ({
@@ -42,6 +43,7 @@ vi.mock('@xterm/xterm', () => ({
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
 beforeEach(() => {
+  queryClient.clear();
   vi.stubGlobal('ResizeObserver', class {
     observe(): void {}
     unobserve(): void {}
@@ -59,6 +61,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  queryClient.clear();
   __resetSharedSseForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -1153,49 +1156,23 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByText(transcriptBlock.content)).toBeTruthy();
 
     act(() => {
-      window.dispatchEvent(new CustomEvent('conversation:sse', {
-        detail: {
-          type: 'conversation:updated',
-          data: {
-            id: conversation.id,
-            block_count: 2,
-            append: { from_position: 1, blocks: [appendedBlock] },
-          },
-        },
-      }));
+      applyConversationSse(queryClient, 'conversation:updated', {
+        id: conversation.id,
+        block_count: 2,
+        append: { from_position: 1, blocks: [appendedBlock] },
+      });
     });
     expect(await screen.findByText('Live content stays visible')).toBeTruthy();
 
-    const staleWindow = positionPayload(scopedConversation, [transcriptBlock]);
-    writePersistedDetail('conversations', detailRequestKey('conversation', {
-      conversationId: conversation.id,
-      anchor: 'initial',
-    }), {
-      ...scopedConversation,
-      blocks: [transcriptBlock],
-      children: [],
-      parent: null,
-      position_window: {
-        revision: staleWindow.revision,
-        total: staleWindow.total,
-        target: staleWindow.target,
-        window: staleWindow.window,
-      },
-    });
     act(() => {
-      window.dispatchEvent(new CustomEvent('conversation:sse', {
-        detail: {
-          type: 'conversation:updated',
-          data: {
-            id: conversation.id,
-            block_count: 4,
-            append: {
-              from_position: 3,
-              blocks: [makeTranscriptBlock({ id: 'gap-block', dag_uuid: 'gap-block', position: 3, content: appendedBlock.content })],
-            },
-          },
+      applyConversationSse(queryClient, 'conversation:updated', {
+        id: conversation.id,
+        block_count: 4,
+        append: {
+          from_position: 3,
+          blocks: [makeTranscriptBlock({ id: 'gap-block', dag_uuid: 'gap-block', position: 3, content: appendedBlock.content })],
         },
-      }));
+      });
     });
 
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
@@ -1329,37 +1306,27 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByText('Middle window')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
 
-    window.dispatchEvent(new CustomEvent('conversation:sse', {
-      detail: {
-        type: 'conversation:updated',
-        data: {
-          id: conversation.id,
-          block_count: 12,
-          append: {
-            from_position: 2,
-            blocks: Array.from({ length: 10 }, (_, index) => makeTranscriptBlock({
-              id: `append-${index + 2}`,
-              dag_uuid: `append-${index + 2}`,
-              position: index + 2,
-              content: `append ${index + 2}`,
-            })),
-          },
-        },
+    applyConversationSse(queryClient, 'conversation:updated', {
+      id: conversation.id,
+      block_count: 12,
+      append: {
+        from_position: 2,
+        blocks: Array.from({ length: 10 }, (_, index) => makeTranscriptBlock({
+          id: `append-${index + 2}`,
+          dag_uuid: `append-${index + 2}`,
+          position: index + 2,
+          content: `append ${index + 2}`,
+        })),
       },
-    }));
+    });
 
     fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
     await waitFor(() => expect(latestCalls).toBe(1));
-    window.dispatchEvent(new CustomEvent('conversation:sse', {
-      detail: {
-        type: 'conversation:updated',
-        data: {
-          id: conversation.id,
-          block_count: 13,
-          append: { from_position: 12, blocks: [makeTranscriptBlock({ id: 'append-12', dag_uuid: 'append-12', position: 12, content: 'append 12' })] },
-        },
-      },
-    }));
+    applyConversationSse(queryClient, 'conversation:updated', {
+      id: conversation.id,
+      block_count: 13,
+      append: { from_position: 12, blocks: [makeTranscriptBlock({ id: 'append-12', dag_uuid: 'append-12', position: 12, content: 'append 12' })] },
+    });
     firstLatest.resolve(positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'old-tail', dag_uuid: 'old-tail', position: 11, content: 'Old tail' })], { kind: 'latest', revision: 12 }));
     await waitFor(() => expect(latestCalls).toBe(2));
     trueLatest.resolve(positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'true-tail', dag_uuid: 'true-tail', position: 12, content: 'Newest true tail' })], { kind: 'latest', revision: 13 }));
