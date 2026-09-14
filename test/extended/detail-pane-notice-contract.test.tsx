@@ -13,6 +13,7 @@ afterEach(() => {
 
 const inventory = {
   anchored: [
+    'ui/src/chat/ChatFailureNotice.tsx',
     'ui/src/components/console/TerminalPane.tsx',
     'ui/src/views/auth.tsx',
     'ui/src/views/conversations.tsx',
@@ -135,7 +136,7 @@ describe('typed anchored detail and main notice contract', () => {
     const pavedRoads = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
       .filter((entry) => entry.isFile() && /\.(tsx|css)$/.test(entry.name))
       .map((entry) => resolve(entry.parentPath, entry.name))
-      .filter((path) => /PreviewDisabledNotice|preview-disabled-notice|conv-load-error|timeline-sync-banner|terminal-pane__inbox-banner|auth-detail--with-preview-notice/.test(readFileSync(path, 'utf8')));
+      .filter((path) => /PreviewDisabledNotice|preview-disabled-notice|conv-load-error|timeline-sync-banner|terminal-pane__inbox-banner|auth-detail--with-preview-notice|auth-toast/.test(readFileSync(path, 'utf8')));
     expect(pavedRoads).toEqual([]);
   });
 

@@ -175,6 +175,37 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(onApprove).toHaveBeenCalledWith('req-1');
   });
 
+  it('keeps an approval failure in the shared main notice until retry or dismissal', async () => {
+    const onApprove = vi.fn()
+      .mockRejectedValueOnce(new Error('Signing credential is unavailable.'))
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('Approval remains unavailable.'));
+    renderView(true, onApprove);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+
+    const alert = await screen.findByRole('alert');
+    const requestPane = document.querySelector('.auth-detail-pane');
+    const requestHeader = document.querySelector('.auth-detail__header');
+    const requestBody = document.querySelector('.auth-detail__body');
+    expect(alert.textContent).toContain('Signing credential is unavailable.');
+    expect(alert.closest('[data-detail-pane-slot="notice"]')?.parentElement).toBe(requestPane);
+    expect(requestHeader?.nextElementSibling?.contains(alert)).toBe(true);
+    expect(requestBody?.contains(alert)).toBe(false);
+    expect(document.querySelector('.auth-toast')).toBeNull();
+
+    const retry = screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
+    await waitFor(() => expect(retry.disabled).toBe(false));
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(onApprove).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    const replacementAlert = await screen.findByRole('alert');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss auth error' }));
+    expect(replacementAlert.isConnected).toBe(false);
+  });
+
   it('omits request-local clearance controls and queries while preserving audit metadata', async () => {
     const fetchMock = vi.fn(() => Promise.reject(new Error('no network in test')));
     vi.stubGlobal('fetch', fetchMock);
