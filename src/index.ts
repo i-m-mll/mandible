@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type http from "node:http";
 import { WebSocketServer } from "ws";
+import { parse as parseCookie } from "cookie";
 import { getDbPath, openDb, setDb, type Db } from "./db.js";
 import {
   configureDaemonLogger,
@@ -82,6 +83,8 @@ import { registerProjectRoutes } from "./routes/projects.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerClientAuthRoutes } from "./routes/client-auth.js";
 import { ClientAuthenticator } from "./client-auth/index.js";
+import { COOKIE_NAME } from "./client-auth/session-authority.js";
+import { validatePreviewWritableRoots } from "./security/effect-policy.js";
 import {
   authorizeManagedSessionWebSocket,
 } from "./client-auth/authz.js";
@@ -104,7 +107,7 @@ import {
   restartAvailabilityInstanceKey,
 } from "./restart-availability.js";
 
-const DEFAULT_PORT = 19420;
+const DEFAULT_PORT = 29420;
 const STARTUP_DISCOVERY_DELAY_MS = 1_000;
 
 let startupInfo: StartupCommitInfo | null = null;
@@ -172,6 +175,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       : process.env.MANDIBLE_INSTANCE_DB_PATH_SOURCE
         ?? (process.env.MANDIBLE_DB ? "env" : "default"),
   });
+  validatePreviewWritableRoots(instance);
   const operationalMutationsAllowed = allowsOperationalMutations(instance);
   const restartAvailability = operationalMutationsAllowed
     ? new RestartAvailabilityStore({ instanceKey: restartAvailabilityInstanceKey(port) })
@@ -231,6 +235,18 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // default: unauthenticated loopback still works and unattributed writes are
   // counted; strict mode rejects anonymous mutations).
   const clientAuth = new ClientAuthenticator(db, { instance, startupEpoch });
+  if (instance.role === "main") {
+    clientAuth.registerInstance({
+      instance_id: instance.instance_id,
+      installation_id: instance.installation_id,
+      role: "main",
+      public_origin: instance.public_origin,
+      backend_origin: `http://127.0.0.1:${port}`,
+      backend_generation: instance.backend_generation,
+      effect_ceiling: instance.allowed_effects,
+      writable_roots: instance.writable_roots,
+    });
+  }
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });
   const sessionRegistry = new SessionRegistry(db, logger);
@@ -407,10 +423,22 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   // Attach WebSocket upgrade handler for console backend sessions (Bug: e980dd8)
   const wss = new WebSocketServer({ noServer: true });
+  const browserSockets = new Map<string, Set<import("ws").WebSocket>>();
+  clientAuth.onBrowserSessionRevoked((familyId, userId) => {
+    sse.closeForBrowserSession(familyId, userId);
+    for (const [key, sockets] of browserSockets) {
+      if (familyId !== null && key !== familyId) continue;
+      for (const ws of sockets) ws.close(1008, "session revoked");
+    }
+  });
   attachWebSocketUpgrade(server, (req, socket, head) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const match = url.pathname.match(/^\/terminal\/([^/]+)$/);
-    if (match) {
+    void (async () => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const match = url.pathname.match(/^\/terminal\/([^/]+)$/);
+      if (!match) {
+        socket.destroy();
+        return;
+      }
       const sessionId = decodeURIComponent(match[1]);
       const session = sessionManager.get(sessionId);
       if (!session) {
@@ -418,11 +446,18 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
         socket.destroy();
         return;
       }
-      if (!authorizeManagedSessionWebSocket(
+      const contextHeader = req.headers["x-mandible-session-context"];
+      const compact = Array.isArray(contextHeader) ? contextHeader[0] : contextHeader;
+      const cookies = parseCookie(Array.isArray(req.headers.cookie)
+        ? req.headers.cookie[0] ?? ""
+        : req.headers.cookie ?? "");
+      const identity = compact
+        ? await clientAuth.authenticateInternalContext(compact)
+        : clientAuth.authenticateBrowserSession(cookies[COOKIE_NAME]);
+      if (!identity || !authorizeManagedSessionWebSocket(
         db,
-        clientAuth,
-        req.headers["sec-websocket-protocol"],
-        url.pathname,
+        identity,
+        session.meta.owner_user_id,
         sessionManager.isCredentialBearing(sessionId),
       )) {
           socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
@@ -433,12 +468,28 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
         const added = sessionManager.addWsClient(sessionId, ws);
         if (!added) {
           ws.close(1008, "session not found");
+          return;
+        }
+        if (identity.session_family) {
+          const sockets = browserSockets.get(identity.session_family) ?? new Set();
+          sockets.add(ws);
+          browserSockets.set(identity.session_family, sockets);
+          ws.once("close", () => {
+            sockets.delete(ws);
+            if (sockets.size === 0) browserSockets.delete(identity.session_family!);
+          });
+        }
+        if (identity.auth_context_expires_at) {
+          const expiry = setTimeout(
+            () => ws.close(1008, "preview authorization expired"),
+            Math.max(0, identity.auth_context_expires_at - Date.now()),
+          );
+          if (typeof expiry === "object" && "unref" in expiry) expiry.unref();
+          ws.once("close", () => clearTimeout(expiry));
         }
       });
-    } else {
-      socket.destroy();
-    }
-  });
+    })().catch(() => socket.destroy());
+  }, instance);
 
   const actualPort = await startServer(server, port, { logger });
   writePidFile(process.pid, options.pidFilePath);
@@ -448,7 +499,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // listen endpoint. A losing concurrent startup must never overwrite the
   // credential used by the live daemon.
   clientAuth.refreshBootstrapTokenFile();
-  clientAuth.publishPreviewBrowserEnrollmentProof();
 
   // Initialize console session manager: reconcile DB state, restart operator if configured.
   try {
@@ -551,7 +601,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     updateWarmReadiness();
     logger("info", "background_operational_mutations_disabled", {
       instance_role: instance.role,
-      operational_mutations: instance.operational_mutations,
+      allowed_effects: instance.allowed_effects,
     });
   }
 

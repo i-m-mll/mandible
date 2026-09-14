@@ -1,5 +1,6 @@
 import { getDb } from "../db.js";
 import { redactCredential } from "../credential-redaction.js";
+import { PRODUCTION_EFFECTS } from "../security/effect-policy.js";
 import type { ClientAuthenticator } from "../client-auth/authenticator.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import {
@@ -326,6 +327,7 @@ export function registerUserRoutes(
         method: "api_token" as const,
         credential_id: null,
         source: "in_process" as const,
+        effect_ceiling: PRODUCTION_EFFECTS,
       };
       const projectAccess = evaluateProjectAccess(db, {
         identity,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-: "${MANDIBLE_PORT:=19420}"
-: "${MANDIBLE_BASE:=http://127.0.0.1:${MANDIBLE_PORT}}"
+: "${MANDIBLE_PORT:=29420}"
+: "${MANDIBLE_BASE:=${MANDIBLE_PUBLIC_ORIGIN:-https://app.mandible.localhost:19420}}"
 
 # Run a jq filter with the shared human-facing identity contract loaded. JSON
 # output deliberately bypasses this helper so exact API authority is preserved.
@@ -987,7 +987,7 @@ api_operational_mutation_category() {
   # and the TypeScript set in sync; test/cli-instance-preflight.test.ts fails on
   # drift.
   case "${method} ${pathname}" in
-    "POST /api/auth/check"|"POST /api/briefing-destination-routes/plan"|"POST /api/client-auth/handshake"|"POST /api/client-auth/logout"|"POST /api/timeline/project"|"PUT /api/host-preferences/app-theme"|"PUT /api/host-preferences/chat-shown-projects") return 1 ;;
+    "POST /api/auth/check"|"POST /api/briefing-destination-routes/plan"|"POST /api/client-auth/pairing/start"|"POST /api/client-auth/pairing/complete"|"POST /api/client-auth/renew"|"POST /api/client-auth/logout"|"POST /api/timeline/project"|"PUT /api/host-preferences/app-theme"|"PUT /api/host-preferences/chat-shown-projects") return 1 ;;
   esac
 
   if generated_category="$(api_generated_operational_mutation_category "$method" "$pathname")"; then

@@ -72,7 +72,7 @@ export function registerManagedReminderRoutes(server: RouteRegistrar, db: Db = g
       const result = createManagedReminder(
         db,
         request,
-        { userId: identity.user_id, evidenceMethod: identity.method },
+        { userId: identity.user_id, evidenceMethod: identity.method === "api_token" ? "api_token" : "ephemeral" },
         { projectId: project.id },
       );
       if (result.stored) {
@@ -123,7 +123,7 @@ export function registerManagedReminderRoutes(server: RouteRegistrar, db: Db = g
       const identity = admitProjectWrite(db, req, current.project_id);
       const reminder = cancelManagedReminder(db, current.id, {
         userId: identity.user_id,
-        evidenceMethod: identity.method,
+        evidenceMethod: identity.method === "api_token" ? "api_token" : "ephemeral",
       });
       broadcast(MANAGED_REMINDER_EVENTS.changed, {
         task_id: reminder.id,

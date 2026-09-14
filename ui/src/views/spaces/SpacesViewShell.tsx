@@ -280,7 +280,7 @@ export function SpacesViewShell({
     ?? spaceId;
 
   const MountPoint = renderers?.[activeRenderer] ?? null;
-  const previewMutationsBlocked = Boolean(instance && instance.operational_mutations !== 'allow');
+  const previewMutationsBlocked = Boolean(instance && !instance.allowed_effects.includes('ledger:write'));
   const requiresAuthoritativeResolution = Boolean(spaceId && isGeneratedShortSpaceRef(spaceId));
   const waitingForFactPacket = Boolean(
     spaceId &&

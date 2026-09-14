@@ -439,7 +439,7 @@ export function OperationalIncidentsRegion({
     [list],
   );
   const counts = list?.counts ?? EMPTY_COUNTS;
-  const mutationsAllowed = !instance || instance.operational_mutations === 'allow';
+  const mutationsAllowed = !instance || instance.allowed_effects.includes('ledger:write');
 
   const setCardError = useCallback((incidentId: string, message: string | null) => {
     setCardErrors((current) => {

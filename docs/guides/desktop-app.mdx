@@ -11,7 +11,7 @@ Mandible ships as a Tauri 2 native application. The desktop shell wraps the same
 
 The desktop app has two components:
 
-1. **Tauri shell** (Rust) — a thin native wrapper that provides a transparent-titlebar window, daemon process management commands, and Zone 2 runtime resolution. It does not bundle its own web server; instead, it connects to the same `localhost:19420` daemon that the browser dashboard uses.
+1. **Tauri shell** (Rust) — a thin native wrapper that provides a transparent-titlebar window, daemon process management commands, and Zone 2 runtime resolution. It connects through the registered HTTPS production origin and installs opaque HttpOnly sessions directly into the webview.
 
 2. **Mandible daemon** (Node.js) — the same server process that runs when you do `npm start`. The Tauri shell can launch it as a child process, monitor its health, and restart it.
 

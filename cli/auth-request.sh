@@ -1140,8 +1140,20 @@ echo "Listening for auth resolution via SSE (timeout: ${timeout}s)..."
 # file written from within the while-subshell, then check it after the pipeline
 # completes. This avoids exit 23 propagating as a failure.
 set +o pipefail
-curl -sN --max-time "$timeout" \
-  "${MANDIBLE_BASE}/api/events?topic=auth:" 2>/dev/null | \
+_mandible_sse_traced=0
+case "$-" in *x*) _mandible_sse_traced=1; { set +x; } 2>/dev/null ;; esac
+_mandible_sse_token="$(api_client_token POST)"
+_mandible_sse_config=""
+if [[ -n "$_mandible_sse_token" ]]; then
+  _mandible_sse_config="$(api_temp_file)"
+  printf 'header = "Authorization: Bearer %s"\n' "$_mandible_sse_token" > "$_mandible_sse_config"
+fi
+_mandible_sse_token=""
+(( _mandible_sse_traced == 0 )) || set -x
+_mandible_sse_curl_args=(-sN --max-time "$timeout" -X POST -H 'Content-Type: application/json' --data-binary '{"topics":["auth:"]}')
+[[ -z "$_mandible_sse_config" ]] || _mandible_sse_curl_args+=(--config "$_mandible_sse_config")
+curl "${_mandible_sse_curl_args[@]}" \
+  "${MANDIBLE_BASE}/api/events/subscribe" 2>/dev/null | \
 while IFS= read -r line; do
   # Skip heartbeat comments and empty lines
   [[ "$line" =~ ^: ]] && continue
@@ -1182,6 +1194,7 @@ while IFS= read -r line; do
     esac
   fi
 done || true
+[[ -z "$_mandible_sse_config" ]] || rm -f "$_mandible_sse_config"
 set -o pipefail
 
 sse_result=$(cat "$tmp_sse_result" 2>/dev/null || echo "")

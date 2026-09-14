@@ -47,6 +47,7 @@ import {
   spacesRouteFromHash,
 } from '../ui/src/routing';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
+import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import {
   AppShellProvider,
   RightSidebarIcon,
@@ -167,6 +168,7 @@ vi.mock('@xterm/addon-fit', () => ({
 }));
 
 beforeEach(() => {
+  __resetBrowserSessionForTests();
   reactFlowMockState.mountCount = 0;
   reactFlowMockState.unmountCount = 0;
   vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
@@ -182,6 +184,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetBrowserSessionForTests();
   invalidateApiGetCache();
   cleanup();
   __resetSharedSseForTests();

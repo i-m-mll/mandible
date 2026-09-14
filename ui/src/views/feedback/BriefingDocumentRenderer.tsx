@@ -298,7 +298,7 @@ export function BriefingDocumentRenderer({
     && round.items.every((item) => item.responseVisible)
     && (round.state === 'open' || round.state === 'submitted')
     && round.directive_binding?.status === 'valid'
-    && instance?.briefing_response_mutations === 'allow',
+    && Boolean(instance?.allowed_effects.includes('ledger:write')),
   );
   const requiredIncomplete = Boolean(round?.items.some((item) => item.item_kind === 'item' && item.revision.required && !meaningful(draft[item.id] ?? null)));
   const draftDiffers = Boolean(round?.items.some((item) => item.item_kind === 'item'

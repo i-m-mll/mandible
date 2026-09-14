@@ -33,7 +33,7 @@ if [ -z "$session_ref" ]; then
   session_ref=$(json_field sessionId)
 fi
 
-base=${MANDIBLE_BASE:-http://127.0.0.1:${MANDIBLE_PORT:-19420}}
+base=${MANDIBLE_BASE:-${MANDIBLE_PUBLIC_ORIGIN:-https://app.mandible.localhost:19420}}
 url="$base/api/hooks/statusline"
 if [ -n "$session_ref" ]; then
   url="$url?sessionRef=$(urlencode "$session_ref")"

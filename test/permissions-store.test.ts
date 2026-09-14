@@ -106,15 +106,13 @@ describe("permission evaluator", () => {
 
   it.each(
     (["user", "group"] as const).flatMap((subjectType) =>
-      PROJECT_ROLES.flatMap((role) =>
-        (["compat", "strict"] as const).map((mode) => [subjectType, role, mode] as const),
-      ),
+      PROJECT_ROLES.map((role) => [subjectType, role] as const),
     ),
-  )("matrix project subject=%s role=%s mode=%s", (subjectType, role, mode) => {
+  )("strict matrix project subject=%s role=%s", (subjectType, role) => {
     const project = addProject(db, { project_key: "p", display_name: "P" });
     const agent = createUser(db, { slug: "agent", kind: "agent", display_name: "Agent" });
     setProjectRestricted(db, project.id, true);
-    setClientAuthMode(db, mode);
+    setClientAuthMode(db, "strict");
     let subject = agent.id;
     if (subjectType === "group") {
       const group = addGroup(db, { slug: "matrix", display_name: "Matrix" });
@@ -130,13 +128,11 @@ describe("permission evaluator", () => {
 
   it.each(
     (["user", "group"] as const).flatMap((subjectType) =>
-      GLOBAL_CAPABILITIES.flatMap((capability) =>
-        (["compat", "strict"] as const).map((mode) => [subjectType, capability, mode] as const),
-      ),
+      GLOBAL_CAPABILITIES.map((capability) => [subjectType, capability] as const),
     ),
-  )("matrix global subject=%s capability=%s mode=%s", (subjectType, capability, mode) => {
+  )("strict matrix global subject=%s capability=%s", (subjectType, capability) => {
     const agent = createUser(db, { slug: "agent", kind: "agent", display_name: "Agent" });
-    setClientAuthMode(db, mode);
+    setClientAuthMode(db, "strict");
     let subject = agent.id;
     if (subjectType === "group") {
       const group = addGroup(db, { slug: "matrix", display_name: "Matrix" });
@@ -148,14 +144,11 @@ describe("permission evaluator", () => {
       .toMatchObject({ allowed: true, reason: "grant" });
   });
 
-  it("bypasses anonymous compat, denies anonymous strict, and fails closed on identity mismatch", () => {
+  it("denies anonymous access and fails closed on identity mismatch", () => {
     const project = addProject(db, { project_key: "p", display_name: "P" });
     const agent = createUser(db, { slug: "agent", kind: "agent", display_name: "Agent" });
     setProjectRestricted(db, project.id, true);
 
-    expect(evaluateProjectAccess(db, {
-      identity: null, project_id: project.id, required_role: "write",
-    })).toMatchObject({ allowed: true, reason: "compat_anonymous_bypass" });
     setClientAuthMode(db, "strict");
     expect(evaluateProjectAccess(db, {
       identity: null, project_id: project.id, required_role: "write",

@@ -9,7 +9,7 @@
 #   GET  /api/users/operator                 current operator
 #   GET  /api/client-auth/whoami             effective client identity (this request)
 #   POST /api/users/setup                    idempotent operator setup
-#   dashboard-link                          same-user dashboard enrollment URL
+#   POST /api/client-auth/pairing/approve   approve one browser pairing reference
 #   GET  /api/users/<ref>/credentials        list credentials
 #   POST /api/users/<ref>/credentials        add credential
 #   POST /api/users/credentials/<id>/revoke  revoke credential
@@ -34,7 +34,7 @@ usage() {
   cat <<'EOF'
 Usage:
   mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--agents] [--json]
-  mandible user dashboard-link
+  mandible user pair <reference> [--json]
   mandible user whoami [--json]
   mandible user list [--kind <k>] [--status <s>] [--json]
   mandible user show <ref> [--json]
@@ -342,28 +342,20 @@ cmd_setup() {
   emit "$response" "$json" '.user | "id: \(mandible_display_id)\nslug: \(.slug)\nname: \(.display_name)\nemail: \(.email // "-")"'
 }
 
-cmd_dashboard_link() {
+cmd_pair() {
+  local reference="" json=0 response payload
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$reference" ]] || die "Unexpected argument: $1" 2; reference="$1"; shift ;;
+    esac
+  done
+  [[ -n "$reference" ]] || die "Usage: mandible user pair <reference> [--json]" 2
   require_tools
-  local token encoded base bootstrap_file="" traced=0
-  if [[ -z "${MANDIBLE_TOKEN:-}" ]]; then
-    bootstrap_file="$(api_client_auth_config_dir)/client-auth/bootstrap-token"
-  fi
-  # Suspend xtrace from the token capture through the final printf (issue
-  # e2cb93f): the capture, the encoding and the URL itself all carry the
-  # enrollment credential. stdout is the intended channel for that URL; a trace
-  # stream is not.
-  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
-  token="$(api_client_token)"
-  [[ -n "$token" ]] \
-    || die "No operator bootstrap token is available. Run mandible user setup first." 1
-  encoded="$(jq -rn --arg value "$token" '$value|@uri')"
-  token=""
-  base="$(api_base)"
-  [[ "$base" == http://* || "$base" == https://* ]] \
-    || die "Dashboard enrollment requires an HTTP Mandible endpoint." 1
-  [[ -z "$bootstrap_file" ]] || rm -f -- "$bootstrap_file"
-  printf '%s/#/?mandible_auth=%s\n' "${base%/}" "$encoded"
-  (( traced == 0 )) || set -x
+  payload="$(jq -n --arg reference "$reference" '{reference:$reference}')"
+  response="$(api_send POST "/api/client-auth/pairing/approve" "$payload")" || die "Pairing approval failed." 1
+  emit "$response" "$json" '"approved pairing \(.reference)"'
 }
 
 # Issue 499c148 — print the identity the daemon resolves for THIS shell's
@@ -976,7 +968,7 @@ fi
 cmd="$1"; shift
 case "$cmd" in
   setup)      cmd_setup "$@" ;;
-  dashboard-link) cmd_dashboard_link "$@" ;;
+  pair)       cmd_pair "$@" ;;
   whoami)     cmd_whoami "$@" ;;
   list)       cmd_list "$@" ;;
   show)       cmd_show "$@" ;;

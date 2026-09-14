@@ -69,6 +69,13 @@ export class SseManager {
     };
     this.clients.add(client);
 
+    if (identity?.auth_context_expires_at) {
+      const lifetime = Math.max(0, identity.auth_context_expires_at - Date.now());
+      const expiry = setTimeout(client.remove, lifetime);
+      if (typeof expiry === "object" && "unref" in expiry) expiry.unref();
+      res.once("close", () => clearTimeout(expiry));
+    }
+
     req.on("close", client.remove);
     res.on("close", client.remove);
 
@@ -112,6 +119,15 @@ export class SseManager {
       if (client.identity?.user_id === userId) count += 1;
     }
     return count;
+  }
+
+  closeForBrowserSession(familyId: string | null, userId: string): void {
+    for (const client of Array.from(this.clients)) {
+      if (client.identity?.user_id === userId
+          && (familyId === null || client.identity.session_family === familyId)) {
+        this.removeClient(client);
+      }
+    }
   }
 
   private maybeSendReloadEvent(client: SseClient): void {

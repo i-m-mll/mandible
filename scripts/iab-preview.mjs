@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Issue 24f0316 — the ledger database lives under the durable root now.
@@ -14,8 +15,8 @@ const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
 const Database = require("better-sqlite3");
 
-const DEFAULT_PORT_START = 19421;
-const DEFAULT_PORT_END = 19499;
+const DEFAULT_PORT_START = 29421;
+const DEFAULT_PORT_END = 29499;
 const DEFAULT_DB_PATH = liveDbPath();
 const DEFAULT_PREVIEW_BASE_DIR = path.join(os.homedir(), ".cache", "mandible", "previews");
 const HEALTH_TIMEOUT_MS = 30_000;
@@ -95,7 +96,7 @@ async function createOrReusePreview(options) {
     if (existing) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
       const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
-      if (existing.health?.startup_commit?.hash !== currentHead || existing.clientAuthMigrationRequired) {
+      if (existing.health?.startup_commit?.hash !== currentHead) {
         return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
       }
       return {
@@ -127,7 +128,7 @@ async function createOrReusePreview(options) {
         throw new Error(`Healthy preview metadata exists for ${branch}, but its worktree is not registered.`);
       }
       const currentHead = git(["rev-parse", "HEAD"], { cwd: selectedWorktree }).stdout.trim();
-      if (existing.health?.startup_commit?.hash !== currentHead || existing.clientAuthMigrationRequired) {
+      if (existing.health?.startup_commit?.hash !== currentHead) {
         return refreshExistingPreview(existing, {
           branch,
           worktree: selectedWorktree,
@@ -188,8 +189,7 @@ async function createOrReusePreview(options) {
   }
 
   fs.mkdirSync(preview.root, { recursive: true });
-  const clientAuthAuthority = migratePreviewClientAuthAuthority(preview.root);
-
+  fs.rmSync(path.join(preview.root, "preview-browser-enrollment.json"), { force: true });
   const preStartCleanup = await cleanupPreviewCache({
     apply: true,
     previewBaseDir: options.previewBaseDir,
@@ -216,6 +216,7 @@ async function createOrReusePreview(options) {
 
   const dbCopy = path.join(preview.root, `mandible-${formatDateTimeForFile(new Date())}.db`);
   const projection = await createProjectedSnapshot({ sourceDb, dbCopy, worktree });
+  sanitizePreviewDatabase(dbCopy);
   replaceSymlink(dbCopy, path.join(preview.root, "current.db"));
   const agentsReview = options.artifactVersion
     ? await materializeProjectedAgentsReview({ worktree, previewRoot: preview.root, db: dbCopy, sourceDb,
@@ -226,6 +227,10 @@ async function createOrReusePreview(options) {
   const stderrLog = path.join(preview.root, "stderr.log");
   const pidFile = path.join(preview.root, "mandible.pid");
   const runScript = path.join(preview.root, "run.sh");
+  const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
+  const instanceEnv = previewInstanceEnv({ port, dbCopy, sourceDb, pidFile, generation: currentHead });
+  registerPreviewInstance(instanceEnv);
+  reloadLocalFrontDoor();
   writeRunScript(runScript, {
     worktree,
     port,
@@ -235,6 +240,7 @@ async function createOrReusePreview(options) {
     nodePath: process.execPath,
     stdoutLog,
     stderrLog,
+    generation: currentHead,
   });
 
   fs.writeFileSync(stdoutLog, "");
@@ -250,7 +256,6 @@ async function createOrReusePreview(options) {
     stderrLog,
   });
 
-  const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
   const health = await waitForPreviewReadiness(
     port,
     {
@@ -270,14 +275,13 @@ async function createOrReusePreview(options) {
     worktree,
     protectedBranch,
     port,
-    url: `http://127.0.0.1:${port}/#/timeline`,
+    url: `${instanceEnv.MANDIBLE_PUBLIC_ORIGIN}/#/timeline`,
     db: dbCopy,
     sourceDb,
     projection,
     agentsReview,
-    clientAuthAuthority,
     preStartCleanup,
-    instanceEnv: previewInstanceEnv({ port, dbCopy, sourceDb, pidFile }),
+    instanceEnv,
     previewRoot: preview.root,
     pidFile,
     stdoutLog,
@@ -326,7 +330,6 @@ export async function materializeProjectedAgentsReview(details) {
   const seedEnv = {
     MANDIBLE_DB: custody.db,
     MANDIBLE_INSTANCE_ROLE: "preview",
-    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
     MANDIBLE_INSTANCE_SOURCE_DB: custody.sourceDb,
   };
@@ -378,7 +381,6 @@ export async function materializeProjectedBriefingDemo(details) {
     MANDIBLE_DB: custody.db,
     MANDIBLE_ARTIFACT_DIR: custody.artifactRoot,
     MANDIBLE_INSTANCE_ROLE: "preview",
-    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
     MANDIBLE_INSTANCE_SOURCE_DB: custody.sourceDb,
   };
@@ -478,8 +480,8 @@ function validateBriefingDemoCustody() {
 
   const expectedPolicy = {
     MANDIBLE_INSTANCE_ROLE: "preview",
-    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
   };
   for (const [key, value] of Object.entries(expectedPolicy)) {
     if (metadata.instanceEnv?.[key] !== value) {
@@ -487,7 +489,7 @@ function validateBriefingDemoCustody() {
     }
   }
   const persistedInstance = metadata.health?.instance;
-  if (persistedInstance?.role !== "preview" || persistedInstance?.operational_mutations !== "reject" ||
+  if (persistedInstance?.role !== "preview" || persistedInstance?.allowed_effects?.join(",") !== "ledger:read,ledger:write,files:preview" ||
       persistedInstance?.db_path_source !== "iab-preview-copy") {
     throw new Error("Refusing demo seed: metadata instance policy does not match the persisted preview contract.");
   }
@@ -912,19 +914,11 @@ function previewInstanceEnvDrift(metadata, previewRoot) {
     dbCopy: metadata.db,
     sourceDb: metadata.sourceDb,
     pidFile: path.join(previewRoot, "mandible.pid"),
+    generation: metadata.instanceEnv?.MANDIBLE_BACKEND_GENERATION,
   });
   return Object.entries(expected)
     .filter(([key, value]) => metadata.instanceEnv?.[key] !== value)
     .map(([key]) => key);
-}
-
-function hasMigratableClientAuthDrift(metadata, previewRoot, drift) {
-  if (drift.length !== 1 || drift[0] !== "MANDIBLE_CLIENT_AUTH_DIR") return false;
-  const legacyConfigDir = path.join(previewRoot, "config");
-  const recordedClientAuthDir = metadata.instanceEnv?.MANDIBLE_CLIENT_AUTH_DIR;
-  return recordedClientAuthDir === path.join(legacyConfigDir, "client-auth")
-    || (recordedClientAuthDir === undefined
-      && metadata.instanceEnv?.MANDIBLE_CONFIG_DIR === legacyConfigDir);
 }
 
 async function healthyExistingPreview(branch, expected = {}) {
@@ -944,27 +938,18 @@ async function healthyExistingPreview(branch, expected = {}) {
   // state with the live daemon. Client-auth is the one upgradeable exception:
   // its exact authority bytes can move after the verified daemon stops.
   const drift = previewInstanceEnvDrift(metadata, preview.root);
-  const clientAuthMigrationRequired = hasMigratableClientAuthDrift(metadata, preview.root, drift);
-  if (drift.length > 0 && !clientAuthMigrationRequired) return null;
-  if (clientAuthMigrationRequired) {
-    assertLivePreviewProcessCustody(metadata, preview, health);
-  }
+  if (drift.length > 0) return null;
 
   return {
     ...metadata,
     health,
-    freshUrl: browserUrl(metadata.port),
-    clientAuthMigrationRequired,
+    freshUrl: `${metadata.instanceEnv.MANDIBLE_PUBLIC_ORIGIN}/?fresh=${Date.now()}#/timeline`,
   };
 }
 
 async function refreshExistingPreview(existing, details) {
   const preview = previewPaths(details.branch);
   const validated = validateRefreshContract(existing, preview, details);
-
-  if (validated.clientAuthMigrationRequired) {
-    assertPreviewClientAuthMigrationReady(preview.root);
-  }
 
   ensureDependencies(details.worktree);
   run("npm", ["run", "build"], { cwd: details.worktree });
@@ -985,12 +970,12 @@ async function refreshExistingPreview(existing, details) {
     nodePath: process.execPath,
     stdoutLog: validated.stdoutLog,
     stderrLog: validated.stderrLog,
+    generation: details.currentHead,
   });
 
   const stopped = await stopPreviewProcess(validated.pidFile);
-  const migratedClientAuthAuthority = validated.clientAuthMigrationRequired
-    ? migratePreviewClientAuthAuthority(preview.root)
-    : null;
+  registerPreviewInstance(validated.instanceEnv);
+  reloadLocalFrontDoor();
   const structureCache = await seedProjectedConversationStructureCache({
     sourceCache: sourceConversationStructureCachePath(),
     targetCache: validated.instanceEnv.MANDIBLE_CONVERSATION_STRUCTURE_DB,
@@ -1024,9 +1009,7 @@ async function refreshExistingPreview(existing, details) {
     ok: true,
     status: "refreshed",
     mode: details.mode,
-    message: validated.clientAuthMigrationRequired
-      ? "Upgraded the live preview to durable client-auth custody on its existing port."
-      : `Refreshed the existing preview from ${shortHash(existing.health.startup_commit.hash)} to ${shortHash(details.currentHead)}.`,
+    message: `Refreshed the existing preview from ${shortHash(existing.health.startup_commit.hash)} to ${shortHash(details.currentHead)}.`,
     branch: details.branch,
     worktree: details.worktree,
     port: validated.port,
@@ -1041,7 +1024,6 @@ async function refreshExistingPreview(existing, details) {
     projection: { ...existing.projection, structureCache },
     structureCache,
     briefingDemo,
-    ...(migratedClientAuthAuthority ? { clientAuthAuthority: migratedClientAuthAuthority } : {}),
     restartLifecycle,
     health,
     refreshedAt: new Date().toISOString(),
@@ -1049,7 +1031,6 @@ async function refreshExistingPreview(existing, details) {
   };
   delete refreshed.freshUrl;
   delete refreshed.browserEnrollment;
-  delete refreshed.clientAuthMigrationRequired;
   fs.writeFileSync(preview.metadata, `${JSON.stringify(refreshed, null, 2)}\n`);
   return await withBrowserReadyUrl(refreshed, { pairBrowser: details.options.pairBrowser });
 }
@@ -1106,8 +1087,7 @@ function validateRefreshContract(existing, preview, details) {
   }
 
   const drift = previewInstanceEnvDrift(existing, preview.root);
-  const clientAuthMigrationRequired = hasMigratableClientAuthDrift(existing, preview.root, drift);
-  if (drift.length > 0 && !clientAuthMigrationRequired) {
+  if (drift.length > 0) {
     throw new Error(
       `Refusing preview refresh: persisted ${drift.join(", ")} does not match the required preview contract.`,
     );
@@ -1117,6 +1097,7 @@ function validateRefreshContract(existing, preview, details) {
     dbCopy: existing.db,
     sourceDb: existing.sourceDb,
     pidFile: expectedPaths.pidFile,
+    generation: details.currentHead,
   });
   if (!hasExpectedPreviewFileRpc(existing, existing.health, preview.root)) {
     throw new Error("Refusing preview refresh: preview file-RPC custody is not isolated to the selected preview root.");
@@ -1127,106 +1108,20 @@ function validateRefreshContract(existing, preview, details) {
     ...expectedPaths,
     sourceDb: existing.sourceDb,
     instanceEnv,
-    clientAuthMigrationRequired,
   };
-}
-
-function assertLivePreviewProcessCustody(metadata, preview, health) {
-  const pidFile = metadata.pidFile ?? path.join(preview.root, "mandible.pid");
-  const pid = readPidFile(pidFile);
-  const proof = readPreviewEnrollmentProof(path.join(preview.root, "preview-browser-enrollment.json"));
-  if (pid === null || !isProcessAlive(pid) || proof.pid !== pid
-      || proof.startup_epoch !== health?.startup_epoch) {
-    throw new Error(
-      "Refusing live preview auth upgrade: pid file, enrollment proof, and healthy startup epoch do not identify one process.",
-    );
-  }
 }
 
 export async function withBrowserReadyUrl(preview, options = {}) {
+  const origin = preview.instanceEnv?.MANDIBLE_PUBLIC_ORIGIN;
+  if (!origin) throw new Error("Preview metadata has no registered public origin.");
   const clean = {
     ...preview,
-    freshUrl: browserUrl(preview.port),
-    browserEnrollment: "existing-profile-session",
+    freshUrl: `${origin}/?fresh=${Date.now()}#/timeline`,
+    browserEnrollment: "cookie-or-pairing",
   };
-  if (options.pairBrowser !== true) return clean;
-  const previewRoot = preview.previewRoot ?? path.dirname(preview.db);
-  const proof = readPreviewEnrollmentProof(
-    path.join(previewRoot, "preview-browser-enrollment.json"),
-  );
-  const expectedPid = readPidFile(preview.pidFile ?? path.join(previewRoot, "mandible.pid"));
-  if (expectedPid === null || proof.pid !== expectedPid) {
-    throw new Error("Preview browser enrollment proof is not bound to the live daemon pid.");
-  }
-  if (!preview.health?.startup_epoch || proof.startup_epoch !== preview.health.startup_epoch) {
-    throw new Error("Preview browser enrollment proof is not bound to the live daemon instance.");
-  }
-  const handshake = await requestPreviewJson(preview.port, "POST", "/api/client-auth/handshake", proof.token);
-  if (handshake.status !== 200 || typeof handshake.body?.token !== "string") {
-    throw new Error(`Preview browser enrollment handshake failed with HTTP ${handshake.status}.`);
-  }
-  const dashboardToken = handshake.body.token;
-  const whoami = await requestPreviewJson(preview.port, "GET", "/api/client-auth/whoami", dashboardToken);
-  const verified = whoami.status === 200
-    && whoami.body?.authenticated === true
-    && whoami.body?.user?.kind === "human"
-    && whoami.body?.user?.id === handshake.body?.user?.id
-    && whoami.body?.ephemeral_purpose === "dashboard_handshake";
-  if (!verified) {
-    throw new Error(`Preview browser enrollment identity verification failed with HTTP ${whoami.status}.`);
-  }
-  return {
-    ...clean,
-    pairingUrl: browserUrl(preview.port, dashboardToken),
-    browserEnrollment: "verified-pairing-session",
-  };
-}
-
-function browserUrl(port, token = null) {
-  const hashQuery = token
-    ? `?${new URLSearchParams({ mandible_auth: token }).toString()}`
-    : "";
-  return `http://127.0.0.1:${port}/?fresh=${Date.now()}#/timeline${hashQuery}`;
-}
-
-function readPreviewEnrollmentProof(proofPath) {
-  const stat = fs.statSync(proofPath);
-  if (!stat.isFile()) throw new Error("Preview browser enrollment proof is not a file.");
-  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
-    throw new Error(`Preview browser enrollment proof has unsafe permissions: ${proofPath}`);
-  }
-  const proof = JSON.parse(fs.readFileSync(proofPath, "utf8"));
-  if (proof?.version !== 1 || !Number.isInteger(proof.pid) || proof.pid <= 1
-      || typeof proof.startup_epoch !== "string" || !proof.startup_epoch
-      || typeof proof.token !== "string" || !proof.token) {
-    throw new Error("Preview browser enrollment proof is invalid.");
-  }
-  return proof;
-}
-
-function requestPreviewJson(port, method, requestPath, token) {
-  return new Promise((resolve, reject) => {
-    const req = http.request({
-      hostname: "127.0.0.1",
-      port,
-      path: requestPath,
-      method,
-      timeout: 2_000,
-      headers: { Authorization: `Bearer ${token}` },
-    }, (res) => {
-      let body = "";
-      res.setEncoding("utf8");
-      res.on("data", (chunk) => { body += chunk; });
-      res.on("end", () => {
-        let parsed = null;
-        try { parsed = body ? JSON.parse(body) : null; } catch { /* invalid response */ }
-        resolve({ status: res.statusCode ?? 0, body: parsed });
-      });
-    });
-    req.on("timeout", () => req.destroy(new Error("Preview browser enrollment request timed out.")));
-    req.on("error", reject);
-    req.end();
-  });
+  return options.pairBrowser === true
+    ? { ...clean, pairingUrl: clean.freshUrl, browserEnrollment: "interactive-pairing" }
+    : clean;
 }
 
 async function analyzePreviewDirForCleanup(dirPath, apply) {
@@ -1762,13 +1657,13 @@ function previewIsolationEnv(previewRoot, sourceDb) {
   const conversationsDir = path.join(previewRoot, "conversations");
   return {
     MANDIBLE_INSTANCE_ROLE: "preview",
-    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
     MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
     MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
-    MANDIBLE_CLIENT_AUTH_DIR: previewClientAuthDir(previewRoot),
     MANDIBLE_PREVIEW_ROOT: previewRoot,
+    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
+    MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
     // Recyclable writable state stays under the preview root. Client-auth is
     // the deliberate exception: its authority id, pepper, and bounded session
     // fingerprints survive stale cache reclamation in the durable authority
@@ -1786,147 +1681,107 @@ function previewIsolationEnv(previewRoot, sourceDb) {
   };
 }
 
-function previewClientAuthDir(previewRoot) {
-  return path.join(previewAuthorityBaseDir(), path.basename(previewRoot), "client-auth");
-}
-
-function migratePreviewClientAuthAuthority(previewRoot) {
-  const legacy = path.join(previewRoot, "config", "client-auth");
-  const durable = previewClientAuthDir(previewRoot);
-  if (canonicalFuturePath(legacy) === canonicalFuturePath(durable)) {
-    return { status: "already-durable", path: durable };
-  }
-  if (!fs.existsSync(legacy)) {
-    return { status: fs.existsSync(durable) ? "already-durable" : "not-yet-created", path: durable };
-  }
-  if (fs.existsSync(durable)) {
-    if (JSON.stringify(clientAuthImmutableSnapshot(legacy))
-        !== JSON.stringify(clientAuthImmutableSnapshot(durable))) {
-      throw new Error(
-        `Refusing preview auth migration: immutable authority bytes in legacy ${legacy} conflict with durable ${durable}.`,
-      );
-    }
-    retireLegacyClientAuthDirectory(legacy);
-    return { status: "retired-legacy-shadow", path: durable };
-  }
-
-  fs.mkdirSync(path.dirname(durable), { recursive: true });
-  const temporary = `${durable}.migrating-${process.pid}`;
-  try {
-    copyDirectoryPreservingModes(legacy, temporary);
-    if (JSON.stringify(directorySnapshot(legacy)) !== JSON.stringify(directorySnapshot(temporary))) {
-      throw new Error("Copied preview auth authority did not preserve the source bytes and modes.");
-    }
-    fs.renameSync(temporary, durable);
-  } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
-  }
-  retireLegacyClientAuthDirectory(legacy);
-  return { status: "migrated", path: durable };
-}
-
-function assertPreviewClientAuthMigrationReady(previewRoot) {
-  const legacy = path.join(previewRoot, "config", "client-auth");
-  const durable = previewClientAuthDir(previewRoot);
-  if (!fs.existsSync(legacy) && !fs.existsSync(durable)) {
-    throw new Error("Refusing preview auth migration: the recorded legacy authority has no durable bytes.");
-  }
-  if (fs.existsSync(legacy)) clientAuthImmutableSnapshot(legacy);
-  if (fs.existsSync(durable)) clientAuthImmutableSnapshot(durable);
-  if (!fs.existsSync(legacy) || !fs.existsSync(durable)) return;
-  if (JSON.stringify(clientAuthImmutableSnapshot(legacy))
-      !== JSON.stringify(clientAuthImmutableSnapshot(durable))) {
-    throw new Error(
-      `Refusing preview auth migration: immutable authority bytes in legacy ${legacy} conflict with durable ${durable}.`,
-    );
-  }
-}
-
-function clientAuthImmutableSnapshot(root) {
-  return ["authority-id", "pepper"].map((name) => {
-    const filePath = path.join(root, name);
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`Refusing preview auth migration: immutable ${name} is missing from ${root}.`);
-    }
-    const stat = fs.lstatSync(filePath);
-    if (!stat.isFile() || stat.isSymbolicLink()) {
-      throw new Error(`Refusing preview auth migration: immutable ${name} is not a regular file in ${root}.`);
-    }
-    return [name, stat.mode & 0o7777, fs.readFileSync(filePath).toString("base64")];
-  });
-}
-
-function retireLegacyClientAuthDirectory(legacy) {
-  const retiring = `${legacy}.retiring-${process.pid}-${Date.now()}`;
-  fs.renameSync(legacy, retiring);
-  fs.rmSync(retiring, { recursive: true });
-  if (fs.existsSync(legacy) || fs.existsSync(retiring)) {
-    throw new Error(`Failed to retire legacy preview auth authority: ${legacy}`);
-  }
-}
-
-function copyDirectoryPreservingModes(source, target) {
-  const stat = fs.lstatSync(source);
-  if (stat.isSymbolicLink()) {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.symlinkSync(fs.readlinkSync(source), target);
-    return;
-  }
-  if (stat.isDirectory()) {
-    fs.mkdirSync(target, { mode: stat.mode & 0o7777 });
-    for (const entry of fs.readdirSync(source)) {
-      copyDirectoryPreservingModes(path.join(source, entry), path.join(target, entry));
-    }
-    fs.chmodSync(target, stat.mode & 0o7777);
-    return;
-  }
-  if (!stat.isFile()) throw new Error(`Unsupported preview auth authority entry: ${source}`);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
-  fs.chmodSync(target, stat.mode & 0o7777);
-}
-
-function directorySnapshot(root) {
-  const entries = [["directory", "", fs.lstatSync(root).mode & 0o7777]];
-  const visit = (current, relative) => {
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const entryPath = path.join(current, entry.name);
-      const entryRelative = path.join(relative, entry.name);
-      const mode = fs.lstatSync(entryPath).mode & 0o7777;
-      if (entry.isDirectory()) {
-        entries.push(["directory", entryRelative, mode]);
-        visit(entryPath, entryRelative);
-      } else if (entry.isSymbolicLink()) {
-        entries.push(["symlink", entryRelative, mode, fs.readlinkSync(entryPath)]);
-      } else if (entry.isFile()) {
-        entries.push(["file", entryRelative, mode, fs.readFileSync(entryPath).toString("base64")]);
-      } else {
-        throw new Error(`Unsupported preview auth authority entry: ${entryPath}`);
-      }
-    }
-  };
-  visit(root, "");
-  return entries.sort((left, right) => String(left[1]).localeCompare(String(right[1])));
-}
-
-function previewAuthorityBaseDir() {
-  const explicit = process.env.MANDIBLE_PREVIEW_AUTH_BASE_DIR?.trim();
-  if (explicit) return path.resolve(expandHome(explicit));
-  const previewOverride = process.env.MANDIBLE_PREVIEW_BASE_DIR?.trim();
-  if (previewOverride) return `${path.resolve(expandHome(previewOverride))}.authorities`;
-  const mandibleHome = process.env.MANDIBLE_HOME?.trim()
-    ? path.resolve(expandHome(process.env.MANDIBLE_HOME.trim()))
-    : path.join(os.homedir(), ".mandible");
-  return path.join(mandibleHome, "preview-authorities");
-}
-
 function previewInstanceEnv(details) {
+  const installationId = readInstallationId();
+  const instanceId = `preview-${createHash("sha256").update(path.dirname(details.dbCopy)).digest("hex").slice(0, 16)}`;
   return {
     MANDIBLE_PORT: String(details.port),
     MANDIBLE_DB: details.dbCopy,
     MANDIBLE_PID_FILE: details.pidFile,
+    MANDIBLE_INSTANCE_ID: instanceId,
+    MANDIBLE_INSTALLATION_ID: installationId,
+    MANDIBLE_PUBLIC_ORIGIN: `https://${instanceId}.mandible.localhost:19421`,
+    MANDIBLE_BACKEND_GENERATION: details.generation ?? "preview-generation",
+    MANDIBLE_CONTEXT_VERIFICATION_KEY: path.join(localSessionAuthorityDir(), "context-verification-key.pem"),
     ...previewIsolationEnv(path.dirname(details.dbCopy), details.sourceDb),
   };
+}
+
+function mandibleHome() {
+  return process.env.MANDIBLE_HOME?.trim()
+    ? path.resolve(expandHome(process.env.MANDIBLE_HOME.trim()))
+    : path.join(os.homedir(), ".mandible");
+}
+
+function localSessionAuthorityDir() {
+  return path.join(mandibleHome(), "config", "local-sessions");
+}
+
+function readInstallationId() {
+  const filePath = path.join(mandibleHome(), "config", "client-auth", "authority-id");
+  if (!fs.existsSync(filePath)) throw new Error("Local installation authority is missing; run `npm run local-front-door -- initialize` first.");
+  const value = fs.readFileSync(filePath, "utf8").trim();
+  if (!value) throw new Error("Local installation authority is empty.");
+  return value;
+}
+
+function registerPreviewInstance(env) {
+  const databasePath = path.join(localSessionAuthorityDir(), "sessions.db");
+  if (!fs.existsSync(databasePath)) throw new Error("Local session authority is not initialized.");
+  const db = new Database(databasePath);
+  try {
+    const existing = db.prepare("SELECT * FROM instance_registrations WHERE instance_id = ?")
+      .get(env.MANDIBLE_INSTANCE_ID);
+    if (existing && (existing.installation_id !== env.MANDIBLE_INSTALLATION_ID
+        || existing.role !== "preview" || existing.public_origin !== env.MANDIBLE_PUBLIC_ORIGIN)) {
+      throw new Error(`Conflicting preview registration for ${env.MANDIBLE_INSTANCE_ID}.`);
+    }
+    db.prepare(`
+      INSERT INTO instance_registrations (
+        instance_id, installation_id, role, public_origin, backend_origin,
+        backend_generation, effect_ceiling_json, writable_roots_json, updated_at
+      ) VALUES (?, ?, 'preview', ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(instance_id) DO UPDATE SET
+        backend_origin=excluded.backend_origin,
+        backend_generation=excluded.backend_generation,
+        effect_ceiling_json=excluded.effect_ceiling_json,
+        writable_roots_json=excluded.writable_roots_json,
+        updated_at=excluded.updated_at
+    `).run(
+      env.MANDIBLE_INSTANCE_ID,
+      env.MANDIBLE_INSTALLATION_ID,
+      env.MANDIBLE_PUBLIC_ORIGIN,
+      `http://127.0.0.1:${env.MANDIBLE_PORT}`,
+      env.MANDIBLE_BACKEND_GENERATION,
+      env.MANDIBLE_ALLOWED_EFFECTS,
+      env.MANDIBLE_WRITABLE_ROOTS,
+      Date.now(),
+    );
+  } finally {
+    db.close();
+  }
+}
+
+function reloadLocalFrontDoor() {
+  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "local-front-door.mjs");
+  const configured = spawnSync(process.execPath, [script, "configure"], { encoding: "utf8" });
+  if (configured.status !== 0) {
+    throw new Error(`Failed to configure the local HTTPS front door: ${configured.stderr.trim()}`);
+  }
+  const binary = path.join(mandibleHome(), "runtime", "caddy", "2.11.3", "caddy");
+  if (!fs.existsSync(binary)) {
+    throw new Error("The pinned local HTTPS front door is not installed. Run `npm run local-front-door -- install`, trust its local CA explicitly, then start it.");
+  }
+  const reloaded = spawnSync(binary, ["reload", "--config", path.join(localSessionAuthorityDir(), "Caddyfile"), "--adapter", "caddyfile"], { encoding: "utf8" });
+  if (reloaded.status !== 0) {
+    throw new Error("The local HTTPS front door is not running; start `npm run local-front-door -- run` before launching a preview.");
+  }
+}
+
+function sanitizePreviewDatabase(databasePath) {
+  const db = new Database(databasePath);
+  try {
+    const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
+    db.transaction(() => {
+      if (tables.has("user_credentials")) db.prepare("DELETE FROM user_credentials").run();
+      if (tables.has("auth_clearances")) db.prepare("DELETE FROM auth_clearances").run();
+      if (tables.has("settings")) {
+        db.prepare("DELETE FROM settings WHERE key LIKE '%token%' OR key LIKE '%secret%' OR key LIKE '%credential%'").run();
+      }
+    })();
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -2128,8 +1983,8 @@ function readHealth(port) {
 
 function hasExpectedPreviewPolicy(health) {
   return health?.instance?.role === "preview" &&
-    health.instance.operational_mutations === "reject" &&
-    health.instance.preview_browser_enrollment === "allow";
+    Array.isArray(health.instance.allowed_effects) &&
+    health.instance.allowed_effects.join(",") === "ledger:read,ledger:write,files:preview";
 }
 
 function hasExpectedPreviewFileRpc(metadata, health, previewRoot) {
@@ -2154,8 +2009,8 @@ function hasExpectedPreviewReadiness(health, expected) {
 
 function describePreviewPolicy(health) {
   const role = health?.instance?.role ?? "unknown";
-  const policy = health?.instance?.operational_mutations ?? "unknown";
-  return `role=${role}, operational_mutations=${policy}`;
+  const policy = health?.instance?.allowed_effects?.join(",") ?? "unknown";
+  return `role=${role}, allowed_effects=${policy}`;
 }
 
 async function findFreePort(start, end) {

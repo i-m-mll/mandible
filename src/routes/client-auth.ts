@@ -1,16 +1,16 @@
-// Client-authentication routes (issue 708dc4c):
-//   POST /api/client-auth/handshake   dashboard acquires an ephemeral operator token
+// Client-authentication routes:
+//   POST /api/client-auth/pairing/*   approve and redeem browser-bound pairing
+//   POST /api/client-auth/renew       renew the current opaque browser session
+//   POST /api/client-auth/logout      revoke the current browser session family
 //   POST /api/client-auth/session-token  exchange an agent PAT for a session-scoped token
 //   GET  /api/client-auth/whoami      effective client identity for this request (read)
-//   PUT  /api/client-auth/mode        set mode (operator only, both directions)
 //   POST /api/users/:ref/tokens       mint an api_token (self or operator)
 //   GET  /api/users/:ref/tokens       list a user's api_token credentials (self or operator)
 //
 // Token revocation reuses the guarded credential-revoke route in routes/users.ts.
-// All management routes require an authenticated identity regardless of mode —
-// they administer authentication itself (finding 2). Bootstrappability comes
-// from the filesystem bootstrap token and the CLI's fragment-only dashboard
-// enrollment link; the handshake itself always requires the operator.
+// Management routes require an authenticated identity. Pairing starts and
+// completes through a browser-held HttpOnly secret and an explicit operator
+// approval; no reusable browser credential is exposed to renderer code.
 
 import { getDb } from "../db.js";
 import type { ClientAuthenticator } from "../client-auth/authenticator.js";
@@ -19,7 +19,9 @@ import {
   requireOperator,
   requireSelfOrOperator,
 } from "../client-auth/authz.js";
-import { getClientAuthMode, setClientAuthMode } from "../client-auth/mode.js";
+import { serialize } from "cookie";
+import { COOKIE_NAME, PAIRING_COOKIE_NAME } from "../client-auth/session-authority.js";
+import type { IssuedBrowserSession } from "../client-auth/session-authority.js";
 import {
   getOperator,
   getUserById,
@@ -32,6 +34,36 @@ import { bodyRecord, sendJson } from "./http.js";
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function cookieOptions(maxAge: number) {
+  return {
+    secure: true,
+    httpOnly: true,
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge,
+  };
+}
+
+function setSessionCookie(res: ResponseLike, token: string, absoluteExpiresAt: number): void {
+  const maxAge = Math.max(0, Math.floor((absoluteExpiresAt - Date.now()) / 1_000));
+  res.header?.("Set-Cookie", serialize(COOKIE_NAME, token, cookieOptions(maxAge)));
+}
+
+function clearSessionCookie(res: ResponseLike): void {
+  res.header?.("Set-Cookie", serialize(COOKIE_NAME, "", cookieOptions(0)));
+}
+
+function publicSession(session: IssuedBrowserSession): Record<string, unknown> {
+  return {
+    family_id: session.family_id,
+    audience: session.audience,
+    csrf_token: session.csrf_token,
+    effect_ceiling: session.effect_ceiling,
+    expires_at: session.expires_at,
+    absolute_expires_at: session.absolute_expires_at,
+  };
 }
 
 function handleError(res: ResponseLike, error: unknown): void {
@@ -52,24 +84,25 @@ export function registerClientAuthRoutes(
   router: RouteRegistrar,
   authenticator: ClientAuthenticator,
 ): void {
-  // Dashboard session renewal. This endpoint never upgrades an anonymous or
-  // unrelated identity: an already-authenticated operator is required in both
-  // compat and strict mode. The resulting bounded, expiring session survives a
-  // daemon restart through a protected fingerprint. Normal boots validate the
-  // existing session; this endpoint mints a successor only for initial pairing
-  // or bounded post-expiry recovery.
-  router.post("/api/client-auth/handshake", (req, res) => {
+  router.get("/api/client-auth/forward-auth", async (req, res) => {
     try {
-      const db = getDb();
-      if (!req.client_identity) {
-        sendJson(res, 401, {
-          error: "Dashboard renewal requires an authenticated operator session.",
-          code: "authentication_required",
-          reason: req.client_auth_failure ?? "unknown",
-          audience: authenticator.authorityId(),
-        });
+      const identity = req.client_identity;
+      const target = req.target_instance_id;
+      if (!identity || identity.source !== "browser_cookie" || !target) {
+        sendJson(res, 401, { error: "preview_session_required" });
         return;
       }
+      const context = await authenticator.signPreviewContext(identity, target);
+      res.header?.("X-Mandible-Session-Context", context);
+      res.status(204).empty?.();
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/native-enrollment", (req, res) => {
+    try {
+      const db = getDb();
       const identity = requireOperator(db, req);
       const operator = getOperator(db);
       if (!operator) {
@@ -80,10 +113,10 @@ export function registerClientAuthRoutes(
         });
         return;
       }
-      const session = authenticator.issueDashboardToken(identity);
+      const session = authenticator.issueBrowserSession(identity, authenticator.instanceId());
+      setSessionCookie(res, session.token, session.absolute_expires_at);
       sendJson(res, 200, {
-        ...session,
-        audience: authenticator.authorityId(),
+        session: publicSession(session),
         user: { id: operator.id, slug: operator.slug },
       });
     } catch (error) {
@@ -91,18 +124,96 @@ export function registerClientAuthRoutes(
     }
   }, { fileRpc: "deny", countUnattributed: false });
 
-  router.post("/api/client-auth/logout", (req, res) => {
+  router.post("/api/client-auth/pairing/start", (req, res) => {
+    try {
+      const body = bodyRecord(req);
+      const audience = req.target_instance_id ?? authenticator.instanceId();
+      const pairing = authenticator.beginPairing(audience, optionalString(body, "return_path") ?? "/");
+      res.header?.("Set-Cookie", serialize(PAIRING_COOKIE_NAME, pairing.secret, cookieOptions(600)));
+      sendJson(res, 201, {
+        reference: pairing.reference,
+        audience: pairing.audience,
+        return_path: pairing.return_path,
+        expires_at: pairing.expires_at,
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/pairing/approve", (req, res) => {
     try {
       const identity = requireOperator(getDb(), req);
-      const revoked = authenticator.revokePresentedDashboardSession(identity);
+      const reference = (optionalString(bodyRecord(req), "reference") ?? "").trim();
+      if (!reference) throw new UserRegistryError("invalid", "reference is required.");
+      authenticator.approvePairing(reference, identity.user_id);
+      sendJson(res, 200, { approved: true, reference });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow", countUnattributed: false });
+
+  router.post("/api/client-auth/pairing/complete", (req, res) => {
+    try {
+      const reference = (optionalString(bodyRecord(req), "reference") ?? "").trim();
+      const secret = req.browser_pairing_secret;
+      if (!reference || !secret) {
+        sendJson(res, 401, { error: "pairing_secret_required" });
+        return;
+      }
+      const session = authenticator.completePairing(reference, secret);
+      if (!session) {
+        sendJson(res, 409, { error: "pairing_not_approved" });
+        return;
+      }
+      setSessionCookie(res, session.token, session.absolute_expires_at);
+      sendJson(res, 200, { session: publicSession(session) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/renew", (req, res) => {
+    try {
+      const identity = req.client_identity;
+      if (!identity || identity.source !== "browser_cookie") {
+        sendJson(res, 401, { error: "browser_session_required" });
+        return;
+      }
+      sendJson(res, 200, { session: authenticator.browserSessionMetadata(identity) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/logout", (req, res) => {
+    try {
+      const identity = req.client_identity;
+      if (!identity || identity.source !== "browser_cookie") {
+        sendJson(res, 401, { error: "browser_session_required" });
+        return;
+      }
+      const revoked = authenticator.revokeBrowserFamily(identity);
       if (!revoked) {
         sendJson(res, 403, {
-          error: "Only a dashboard session can be logged out through this endpoint.",
-          code: "dashboard_session_required",
+          error: "The browser session is already revoked.",
+          code: "session_revoked",
         });
         return;
       }
-      sendJson(res, 200, { logged_out: true, audience: authenticator.authorityId() });
+      clearSessionCookie(res);
+      sendJson(res, 200, { logged_out: true, audience: identity.audience });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/logout-everywhere", (req, res) => {
+    try {
+      const identity = requireOperator(getDb(), req);
+      const revoked = authenticator.revokeAllBrowserFamilies(identity);
+      clearSessionCookie(res);
+      sendJson(res, 200, { logged_out_everywhere: true, revoked });
     } catch (error) {
       handleError(res, error);
     }
@@ -197,14 +308,12 @@ export function registerClientAuthRoutes(
   router.get("/api/client-auth/whoami", (req, res) => {
     try {
       const db = getDb();
-      const mode = getClientAuthMode(db);
       const identity = req.client_identity ?? null;
       if (!identity) {
         sendJson(res, 200, {
           authenticated: false,
           audience: authenticator.authorityId(),
           failure_reason: req.client_auth_failure ?? "unknown",
-          mode,
           user: null,
           evidence_method: null,
           source: null,
@@ -224,9 +333,8 @@ export function registerClientAuthRoutes(
         : null;
       sendJson(res, 200, {
         authenticated: true,
-        audience: authenticator.authorityId(),
-        session: authenticator.dashboardSessionMetadata(identity),
-        mode,
+        audience: identity.audience ?? authenticator.instanceId(),
+        session: authenticator.browserSessionMetadata(identity),
         user: user
           ? {
               id: user.id,
@@ -237,8 +345,8 @@ export function registerClientAuthRoutes(
           : { id: identity.user_id, slug: identity.slug, kind: null, display_name: null },
         evidence_method: identity.method,
         source: identity.source,
-        // Distinguishes a dashboard handshake from the operator bootstrap proof
-        // or a per-agent file-RPC capability; null for api_token identities.
+        // Distinguishes bounded bootstrap or agent-session proofs; opaque
+        // browser sessions report their durable authentication evidence above.
         ephemeral_purpose: identity.ephemeral_purpose ?? null,
         credential: credential
           ? {
@@ -253,22 +361,6 @@ export function registerClientAuthRoutes(
       handleError(res, error);
     }
   }, { fileRpc: "allow" });
-
-  // Set client-auth mode. Requires an authenticated OPERATOR in BOTH directions:
-  // compat->strict proves provisioning works before lockout is possible;
-  // strict->compat prevents an anonymous downgrade.
-  router.put("/api/client-auth/mode", (req, res) => {
-    try {
-      requireOperator(getDb(), req);
-      const body = bodyRecord(req);
-      const mode = optionalString(body, "mode");
-      if (!mode) throw new UserRegistryError("invalid", "mode is required.");
-      const applied = setClientAuthMode(getDb(), mode);
-      sendJson(res, 200, { mode: applied });
-    } catch (error) {
-      handleError(res, error);
-    }
-  }, { fileRpc: "allow", countUnattributed: false });
 
   // Mint a bearer token for a user. Self-service, or operator for another user.
   // The raw token is returned exactly once and never persisted.

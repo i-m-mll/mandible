@@ -150,7 +150,7 @@ npm start
 node dist/index.js
 
 # Open the dashboard
-open http://localhost:19420
+open https://app.mandible.localhost:19420
 ```
 
 The daemon creates a SQLite database at `~/.mandible/mandible.db` on first run and applies all schema migrations automatically.
@@ -282,7 +282,7 @@ Persisted in the `settings` table, configurable from Settings tab:
 
 ## API Quick Reference
 
-Base URL: `http://localhost:19420`
+Base URL: `https://app.mandible.localhost:19420`
 
 ### Auth
 

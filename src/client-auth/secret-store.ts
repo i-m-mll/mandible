@@ -9,10 +9,6 @@
 //     0600 so a same-user CLI can authenticate without the token ever appearing
 //     on the wire or in the served HTML (finding 1).
 //
-// Preview instances also hold one process-bound browser-enrollment proof under
-// their isolated preview root. It is accepted only by the handshake and is
-// never created by the main daemon.
-
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -22,9 +18,7 @@ import { ensureMandibleClientAuthDir } from "../platform-paths.js";
 const PEPPER_FILE = "pepper";
 const AUTHORITY_ID_FILE = "authority-id";
 const BOOTSTRAP_TOKEN_FILE = "bootstrap-token";
-const DASHBOARD_SESSION_FILE = "dashboard-session.json";
-export const PREVIEW_BROWSER_ENROLLMENT_FILE = "preview-browser-enrollment.json";
-export const MAX_DASHBOARD_SESSIONS = 8;
+const LEGACY_DASHBOARD_SESSION_FILE = "dashboard-session.json";
 /** Legacy location: the pepper used to live in the settings KV table. */
 const LEGACY_PEPPER_SETTING_KEY = "client_auth.token_pepper";
 
@@ -165,133 +159,7 @@ export function bootstrapTokenFilePath(dir: string = defaultClientAuthDir()): st
   return path.join(dir, BOOTSTRAP_TOKEN_FILE);
 }
 
-export interface PreviewBrowserEnrollmentProof {
-  version: 1;
-  pid: number;
-  startup_epoch: string;
-  token: string;
-}
-
-export function writePreviewBrowserEnrollmentProof(
-  proof: PreviewBrowserEnrollmentProof | null,
-  previewRoot: string,
-): string {
-  const filePath = path.join(previewRoot, PREVIEW_BROWSER_ENROLLMENT_FILE);
-  if (proof) {
-    writeSecretFile(filePath, JSON.stringify(proof));
-  } else {
-    fs.rmSync(filePath, { force: true });
-  }
-  return filePath;
-}
-
-export interface StoredDashboardSession {
-  token_fingerprint: string;
-  user_id: string;
-  slug: string;
-  created_at: number;
-  expires_at: number;
-  renew_until: number;
-}
-
-export interface StoredDashboardSessions {
-  version: 2;
-  sessions: StoredDashboardSession[];
-}
-
-function parseDashboardSession(value: unknown): StoredDashboardSession {
-  if (!value || typeof value !== "object") {
-    throw new Error("Invalid client-auth dashboard session file.");
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    typeof record.token_fingerprint !== "string"
-    || !/^sha256:[0-9a-f]{64}$/.test(record.token_fingerprint)
-    || typeof record.user_id !== "string"
-    || record.user_id.length === 0
-    || typeof record.slug !== "string"
-    || record.slug.length === 0
-    || typeof record.created_at !== "number"
-    || !Number.isSafeInteger(record.created_at)
-    || record.created_at < 0
-    || typeof record.expires_at !== "number"
-    || !Number.isSafeInteger(record.expires_at)
-    || record.expires_at < 0
-    || (record.renew_until !== undefined
-      && (typeof record.renew_until !== "number"
-        || !Number.isSafeInteger(record.renew_until)
-        || record.renew_until < 0))
-  ) {
-    throw new Error("Invalid client-auth dashboard session file.");
-  }
-  const renewUntil = typeof record.renew_until === "number"
-    ? record.renew_until
-    : record.expires_at;
-  if (record.created_at > record.expires_at || renewUntil < record.expires_at) {
-    throw new Error("Invalid client-auth dashboard session file.");
-  }
-  return {
-    token_fingerprint: record.token_fingerprint,
-    user_id: record.user_id,
-    slug: record.slug,
-    created_at: record.created_at,
-    expires_at: record.expires_at,
-    renew_until: renewUntil,
-  };
-}
-
-export function readDashboardSessions(
-  dir: string = defaultClientAuthDir(),
-): { sessions: StoredDashboardSession[]; legacy: boolean } | null {
-  const filePath = path.join(dir, DASHBOARD_SESSION_FILE);
-  const raw = readProtectedSecretFile(filePath);
-  if (!raw) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("Invalid client-auth dashboard session file.");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Invalid client-auth dashboard session file.");
-  }
-  const value = parsed as Record<string, unknown>;
-  if (value.version === 2) {
-    if (!Array.isArray(value.sessions) || value.sessions.length > MAX_DASHBOARD_SESSIONS) {
-      throw new Error("Invalid client-auth dashboard session file.");
-    }
-    const sessions = value.sessions.map(parseDashboardSession);
-    if (new Set(sessions.map((session) => session.token_fingerprint)).size !== sessions.length) {
-      throw new Error("Invalid client-auth dashboard session file.");
-    }
-    return { sessions, legacy: false };
-  }
-  return { sessions: [parseDashboardSession(value)], legacy: true };
-}
-
-export function writeDashboardSessions(
-  sessions: StoredDashboardSession[],
-  dir: string = defaultClientAuthDir(),
-): void {
-  const filePath = path.join(dir, DASHBOARD_SESSION_FILE);
-  if (sessions.length > 0) {
-    const state: StoredDashboardSessions = { version: 2, sessions };
-    writeSecretFile(filePath, JSON.stringify(state));
-    return;
-  }
-  fs.rmSync(filePath, { force: true });
-}
-
-/** Compatibility helpers for callers that still operate on one session. */
-export function readDashboardSession(
-  dir: string = defaultClientAuthDir(),
-): StoredDashboardSession | null {
-  return readDashboardSessions(dir)?.sessions[0] ?? null;
-}
-
-export function writeDashboardSession(
-  session: StoredDashboardSession | null,
-  dir: string = defaultClientAuthDir(),
-): void {
-  writeDashboardSessions(session ? [session] : [], dir);
+/** One-way cutover: old bearer-session fingerprints have no authority after cookie sessions exist. */
+export function retireLegacyDashboardSessionStore(dir: string = defaultClientAuthDir()): void {
+  fs.rmSync(path.join(dir, LEGACY_DASHBOARD_SESSION_FILE), { force: true });
 }

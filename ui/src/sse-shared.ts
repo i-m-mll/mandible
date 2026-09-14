@@ -48,18 +48,11 @@ export function shouldSkipFallbackPoll(
 let sharedCoordinator: CrossTabSseCoordinator | null = null;
 let refCount = 0;
 let teardownTimer: ReturnType<typeof setTimeout> | null = null;
-let EventSourceOverride: typeof EventSource | undefined;
 
 function ensureCoordinator(): CrossTabSseCoordinator {
   if (!sharedCoordinator) {
     sharedCoordinator = new CrossTabSseCoordinator({
-      createTransport: () => new SSEClient(
-        EventSourceOverride ? { EventSourceImpl: EventSourceOverride } : {},
-      ),
-      // Unit tests that inject a fake EventSource exercise the legacy
-      // document-local seam deterministically. Cross-tab behavior has its own
-      // coordinator tests with explicit fake channels and locks.
-      ...(EventSourceOverride ? { channelFactory: null, lockManager: null } : {}),
+      createTransport: () => new SSEClient(),
     });
   }
   return sharedCoordinator;
@@ -144,16 +137,14 @@ export function acquireSharedSse(): SseHandle {
 }
 
 /**
- * Test-only reset: drops the singleton and refcount so each test starts clean,
- * optionally installing a fake EventSource used for all subsequently-created
- * shared clients.
+ * Test-only reset: drops the authenticated fetch-stream singleton and refcount
+ * so each test starts clean.
  */
-export function __resetSharedSseForTests(impl?: typeof EventSource): void {
+export function __resetSharedSseForTests(): void {
   cancelTeardown();
   if (sharedCoordinator) {
     sharedCoordinator.disconnect();
   }
   sharedCoordinator = null;
   refCount = 0;
-  EventSourceOverride = impl;
 }

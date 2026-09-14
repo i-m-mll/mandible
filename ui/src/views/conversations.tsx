@@ -1329,7 +1329,6 @@ export function ConversationDetail({
   }, [conversationId, creationReceipt?.attempt_count, creationReceipt?.state, creationReceipt?.updated_at, queryClient, refreshControl]);
 
   useEffect(() => {
-    if (typeof EventSource === 'undefined') return undefined;
     let refreshTimer: number | null = null;
     const client = acquireSharedSse();
     const scheduleRefresh = () => {
@@ -2489,7 +2488,7 @@ function LiveSessionDetail({
   }, [linkedConversationId]);
 
   useEffect(() => {
-    if (!control || typeof EventSource === 'undefined') return undefined;
+    if (!control) return undefined;
     const client = acquireSharedSse();
     const offControlUpdated = client.on('conversation:control-updated', (payload) => {
       const snapshot = payload as unknown as ConversationControlSnapshot;
@@ -2643,7 +2642,6 @@ export function ConversationsView({
     };
   }, [acceptedConversationId, acceptedSpawnState, reconcileCreationReceipt]);
   useEffect(() => {
-    if (typeof EventSource === 'undefined') return undefined;
     const client = acquireSharedSse();
     const offSpawn = client.on('conversation-spawn:updated', (payload) => {
       const update = eventData<{ spawn?: ConversationSpawnReceipt }>(payload);
@@ -2721,7 +2719,7 @@ export function ConversationsView({
 
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
-  const previewMutationsRejected = instance?.operational_mutations === 'reject';
+  const previewMutationsRejected = !instance?.allowed_effects.includes('ledger:write');
   const isConversationPinned = useCallback((conversation: Conversation): boolean => {
     if (!previewMutationsRejected) return conversation.starred;
     return Object.prototype.hasOwnProperty.call(chatViewState.previewPinOverrides, conversation.id)

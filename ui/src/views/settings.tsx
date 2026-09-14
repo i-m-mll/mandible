@@ -1630,7 +1630,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     typography = DEFAULT_TYPOGRAPHY_SETTINGS,
     onTypographySave = async () => undefined,
   } = props;
-  const operationalMutationsAllowed = !instance || instance.operational_mutations === 'allow';
+  const operationalMutationsAllowed = !instance || instance.allowed_effects.includes('maintenance:shared');
   const [protectedBranches, setProtectedBranches] = useState('');
   const [quietHours, setQuietHours] = useState('');
   const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');

@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetSharedSseForTests } from "../ui/src/sse-shared";
+import { __resetBrowserSessionForTests } from "../ui/src/client-auth-token";
 import { h } from "preact";
 
 import { App } from "../ui/src/app";
@@ -40,6 +41,7 @@ function jsonResponse(body: unknown): Promise<Response> {
 
 describe("visible-first dashboard boot", () => {
   beforeEach(() => {
+    __resetBrowserSessionForTests();
     MockEventSource.instances = [];
     vi.stubGlobal("EventSource", MockEventSource);
     __resetSharedSseForTests();
@@ -57,6 +59,7 @@ describe("visible-first dashboard boot", () => {
   });
 
   afterEach(() => {
+    __resetBrowserSessionForTests();
     invalidateApiGetCache();
     cleanup();
     vi.useRealTimers();

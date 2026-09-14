@@ -1,13 +1,13 @@
 # mandible CLI
 
-The `mandible` command is a dispatcher that routes to subcommands. All subcommands communicate with the Mandible daemon at `http://localhost:19420`.
+The `mandible` command is a dispatcher that routes to subcommands. HTTP subcommands use the registered production origin at `https://app.mandible.localhost:19420`; sandboxed clients may use file RPC.
 
 ## Global Environment
 
 | Variable | Description |
 |---|---|
 | `MANDIBLE_PORT` | Daemon port (default: `19420`) |
-| `MANDIBLE_BASE` | Daemon base URL (default: `http://localhost:19420`) |
+| `MANDIBLE_BASE` | Daemon base URL (default: `https://app.mandible.localhost:19420`) |
 | `MANDIBLE_SESSION_ID` | Current session ID (set by `mandible wrap`) |
 | `MANDIBLE_DB` | Database path (default: `~/.cache/mandible/mandible.db`) |
 
@@ -391,7 +391,9 @@ closure behavior, or stored spec semantics.
 
 **Resolution watching:**
 
-Unless `--no-watch` is specified, connects to the SSE stream at `/api/events?topic=auth:` and waits for `auth:resolved` events matching the request ID. Falls back to a single poll on connection loss.
+Unless `--no-watch` is specified, opens an authenticated POST stream at
+`/api/events/subscribe` and waits for the matching `auth:resolved` event. It
+falls back to one authenticated status read if that connection closes.
 
 **Fallback on submission interruption:**
 
