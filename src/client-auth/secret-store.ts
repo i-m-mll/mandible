@@ -17,7 +17,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "../db.js";
-import { ensureMandibleConfigEntry } from "../platform-paths.js";
+import { ensureMandibleClientAuthDir } from "../platform-paths.js";
 
 const PEPPER_FILE = "pepper";
 const AUTHORITY_ID_FILE = "authority-id";
@@ -35,7 +35,7 @@ const LEGACY_PEPPER_SETTING_KEY = "client_auth.token_pepper";
  * it, so a fresh pepper silently invalidates all of them.
  */
 export function defaultClientAuthDir(): string {
-  return ensureMandibleConfigEntry("client-auth");
+  return ensureMandibleClientAuthDir();
 }
 
 function ensureDir(dir: string): void {

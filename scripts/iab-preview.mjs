@@ -188,6 +188,7 @@ async function createOrReusePreview(options) {
   }
 
   fs.mkdirSync(preview.root, { recursive: true });
+  const clientAuthAuthority = migratePreviewClientAuthAuthority(preview.root);
 
   const preStartCleanup = await cleanupPreviewCache({
     apply: true,
@@ -269,6 +270,7 @@ async function createOrReusePreview(options) {
     sourceDb,
     projection,
     agentsReview,
+    clientAuthAuthority,
     preStartCleanup,
     instanceEnv: previewInstanceEnv({ port, dbCopy, sourceDb, pidFile }),
     previewRoot: preview.root,
@@ -1721,13 +1723,14 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
     MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
+    MANDIBLE_CLIENT_AUTH_DIR: previewClientAuthDir(previewRoot),
     MANDIBLE_PREVIEW_ROOT: previewRoot,
-    // Every writable file the preview daemon opens has to live under the
-    // preview root. The ledger copy was isolated from the start; these three
-    // were missed, so a preview opened the live conversations index read-write
-    // on the same inode as the live daemon and rotated the live daemon's log
-    // file on its own five-second timer. Derived from previewRoot rather than
-    // taken from `details` so every caller gets the identical contract.
+    // Recyclable writable state stays under the preview root. Client-auth is
+    // the deliberate exception: its authority id, pepper, and bounded session
+    // fingerprints survive stale cache reclamation in the durable authority
+    // root above. The ledger copy was isolated from the start; these other
+    // paths were missed, so a preview opened the live conversations index
+    // read-write and rotated the live daemon's log file.
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversationsDir, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversationsDir, "search-cache.db"),
     MANDIBLE_STDERR_LOG_PATH: path.join(previewRoot, "stderr.log"),
@@ -1737,6 +1740,97 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     // worktree that is later deleted. Same leak, fourth shared resource.
     MANDIBLE_CLI_CACHE_DIR: path.join(previewRoot, "cli"),
   };
+}
+
+function previewClientAuthDir(previewRoot) {
+  return path.join(previewAuthorityBaseDir(), path.basename(previewRoot), "client-auth");
+}
+
+function migratePreviewClientAuthAuthority(previewRoot) {
+  const legacy = path.join(previewRoot, "config", "client-auth");
+  const durable = previewClientAuthDir(previewRoot);
+  if (canonicalFuturePath(legacy) === canonicalFuturePath(durable)) {
+    return { status: "already-durable", path: durable };
+  }
+  if (!fs.existsSync(legacy)) {
+    return { status: fs.existsSync(durable) ? "already-durable" : "not-yet-created", path: durable };
+  }
+  if (fs.existsSync(durable)) {
+    if (JSON.stringify(directorySnapshot(legacy)) !== JSON.stringify(directorySnapshot(durable))) {
+      throw new Error(
+        `Refusing preview auth migration: legacy ${legacy} conflicts with durable ${durable}.`,
+      );
+    }
+    return { status: "already-durable", path: durable };
+  }
+
+  fs.mkdirSync(path.dirname(durable), { recursive: true });
+  const temporary = `${durable}.migrating-${process.pid}`;
+  try {
+    copyDirectoryPreservingModes(legacy, temporary);
+    if (JSON.stringify(directorySnapshot(legacy)) !== JSON.stringify(directorySnapshot(temporary))) {
+      throw new Error("Copied preview auth authority did not preserve the source bytes and modes.");
+    }
+    fs.renameSync(temporary, durable);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+  return { status: "migrated", path: durable };
+}
+
+function copyDirectoryPreservingModes(source, target) {
+  const stat = fs.lstatSync(source);
+  if (stat.isSymbolicLink()) {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.symlinkSync(fs.readlinkSync(source), target);
+    return;
+  }
+  if (stat.isDirectory()) {
+    fs.mkdirSync(target, { mode: stat.mode & 0o7777 });
+    for (const entry of fs.readdirSync(source)) {
+      copyDirectoryPreservingModes(path.join(source, entry), path.join(target, entry));
+    }
+    fs.chmodSync(target, stat.mode & 0o7777);
+    return;
+  }
+  if (!stat.isFile()) throw new Error(`Unsupported preview auth authority entry: ${source}`);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+  fs.chmodSync(target, stat.mode & 0o7777);
+}
+
+function directorySnapshot(root) {
+  const entries = [["directory", "", fs.lstatSync(root).mode & 0o7777]];
+  const visit = (current, relative) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      const entryRelative = path.join(relative, entry.name);
+      const mode = fs.lstatSync(entryPath).mode & 0o7777;
+      if (entry.isDirectory()) {
+        entries.push(["directory", entryRelative, mode]);
+        visit(entryPath, entryRelative);
+      } else if (entry.isSymbolicLink()) {
+        entries.push(["symlink", entryRelative, mode, fs.readlinkSync(entryPath)]);
+      } else if (entry.isFile()) {
+        entries.push(["file", entryRelative, mode, fs.readFileSync(entryPath).toString("base64")]);
+      } else {
+        throw new Error(`Unsupported preview auth authority entry: ${entryPath}`);
+      }
+    }
+  };
+  visit(root, "");
+  return entries.sort((left, right) => String(left[1]).localeCompare(String(right[1])));
+}
+
+function previewAuthorityBaseDir() {
+  const explicit = process.env.MANDIBLE_PREVIEW_AUTH_BASE_DIR?.trim();
+  if (explicit) return path.resolve(expandHome(explicit));
+  const previewOverride = process.env.MANDIBLE_PREVIEW_BASE_DIR?.trim();
+  if (previewOverride) return `${path.resolve(expandHome(previewOverride))}.authorities`;
+  const mandibleHome = process.env.MANDIBLE_HOME?.trim()
+    ? path.resolve(expandHome(process.env.MANDIBLE_HOME.trim()))
+    : path.join(os.homedir(), ".mandible");
+  return path.join(mandibleHome, "preview-authorities");
 }
 
 function previewInstanceEnv(details) {
