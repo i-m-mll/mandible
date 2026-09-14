@@ -354,22 +354,33 @@ export function extractTurns(nodes: RenderNode[]): RenderedTurn[] {
     .map((n) => n.turn);
 }
 
+export const MAX_DISPLAY_GROUP_NODES = 12;
+
 export function groupMessagesForDisplay(nodes: RenderNode[]): DisplayGroup[] {
-  const groups: DisplayGroup[] = [];
+  const runs: Array<{ speaker: DisplayGroup['speaker']; nodes: RenderNode[] }> = [];
 
   for (const node of nodes) {
-    const previous = groups[groups.length - 1];
+    const previous = runs[runs.length - 1];
     if (previous && previous.speaker === node.entity) {
       previous.nodes.push(node);
     } else {
-      groups.push({
-        id: `${node.entity}-${node.key}`,
-        speaker: node.entity,
-        nodes: [node],
-        meta: {},
-      });
+      runs.push({ speaker: node.entity, nodes: [node] });
     }
   }
+
+  const groups = runs.flatMap((run): DisplayGroup[] => {
+    const firstChunkSize = run.nodes.length % MAX_DISPLAY_GROUP_NODES || MAX_DISPLAY_GROUP_NODES;
+    const chunks: RenderNode[][] = [run.nodes.slice(0, firstChunkSize)];
+    for (let index = firstChunkSize; index < run.nodes.length; index += MAX_DISPLAY_GROUP_NODES) {
+      chunks.push(run.nodes.slice(index, index + MAX_DISPLAY_GROUP_NODES));
+    }
+    return chunks.map((chunk) => ({
+      id: `${run.speaker}-${chunk.at(-1)!.key}`,
+      speaker: run.speaker,
+      nodes: chunk,
+      meta: {},
+    }));
+  });
 
   return groups.map((group) => {
     let tokenSum = 0;

@@ -51,6 +51,11 @@ beforeEach(() => {
   });
   vi.spyOn(api, 'listCanonicalProjects').mockResolvedValue([]);
   vi.spyOn(api, 'getConversationSidebar').mockResolvedValue({ groups: [], limit: 50 });
+  vi.spyOn(api, 'exportConversationBlocks').mockResolvedValue({
+    content: '## User\n\nPreserve the whole conversation export.\n\n## Assistant\n\nServer-only unread tail.',
+    block_count: 2,
+    body_source: 'source',
+  });
   vi.spyOn(api, 'getChatShownProjectsPreference').mockResolvedValue({
     version: 1, key: 'chat_shown_projects', value: [], revision: 0,
   });
@@ -180,6 +185,7 @@ function mockConversationDetail(
   vi.spyOn(api, 'getConversationWindow').mockResolvedValue({
     conversation: scopedConversation,
     body_source: 'legacy',
+    source_version_id: null,
     blocks,
     children: [],
     parent: null,
@@ -234,6 +240,7 @@ function positionPayload(
   return {
     conversation: { ...scopedConversation, block_count: revision },
     body_source: 'legacy',
+    source_version_id: null,
     blocks,
     children: [],
     parent: null,
@@ -617,6 +624,7 @@ describe('compact detail pane shell', () => {
   it('parses exact block and turn anchors from shareable Chat URLs', () => {
     expect(conversationAnchorFromHash('#/console?conversation=conv&block=block-42')).toEqual({ block: 'block-42' });
     expect(conversationAnchorFromHash('#/console?conversation=conv&turn=turn-9')).toEqual({ turn: 'turn-9' });
+    expect(conversationAnchorFromHash('#/console?conversation=conv&position=42')).toEqual({ position: 42 });
     expect(conversationAnchorFromHash('#/console?conversation=conv')).toBeNull();
     expect(conversationAnchorHref('conv 1', { block: 'block/42' })).toBe('#/console?conversation=conv+1&block=block%2F42');
   });
@@ -661,7 +669,7 @@ describe('compact detail pane shell', () => {
     const retry = deferred<ConversationPositionWindow>();
     const scopedConversation = mockConversationDetail(defaultControl);
     vi.mocked(api.getConversationWindow)
-      .mockRejectedValueOnce(new Error(sourceUnavailable))
+      .mockRejectedValueOnce(new api.ApiError(sourceUnavailable, 409, 'source_unavailable'))
       .mockImplementationOnce(() => retry.promise);
 
     renderConversationDetail(scopedConversation);
@@ -686,6 +694,23 @@ describe('compact detail pane shell', () => {
     retry.resolve(positionPayload(scopedConversation, [transcriptBlock]));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(api.getConversationWindow).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the server-materialized complete transcript for conversation markdown actions', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
+    renderConversationDetail(scopedConversation);
+
+    await screen.findByText(transcriptBlock.content);
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy markdown' }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('Server-only unread tail')));
+    expect(api.exportConversationBlocks).toHaveBeenCalledWith(conversation.id, { format: 'markdown' });
   });
 
   it('composes Chat detail through the compact shell with a floating composer and no footer', async () => {
@@ -809,7 +834,8 @@ describe('compact detail pane shell', () => {
     expect(modelSelect.title).toBe('Model');
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy markdown' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('## User')));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('Server-only unread tail')));
+    expect(api.exportConversationBlocks).toHaveBeenCalledWith(conversation.id, { format: 'markdown' });
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open markdown' }));
     expect(open).toHaveBeenCalledWith('blob:conversation-markdown', '_blank', 'noopener,noreferrer');

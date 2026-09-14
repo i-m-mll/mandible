@@ -4,6 +4,7 @@ import {
   applyConversationAppendPayload,
   mergeConversationSummaryIntoList,
   type ConversationAppendPayload,
+  type ConversationTranscriptData,
 } from './conversationData';
 import { conversationKeys } from './conversationKeys';
 
@@ -54,8 +55,14 @@ export function applyConversationSse(
     else if (affected || key[2] === 'initial') void client.refetchQueries({ queryKey: key, exact: true, type: 'all' });
   }
 
+  const appendBlocks = data.append?.blocks ?? [];
+  if (typeof data.block_count === 'number' && appendBlocks.length === 0) {
+    void client.refetchQueries({ queryKey: conversationKeys.windows(data.id), type: 'active' });
+    return;
+  }
+
   const aggregateKey = conversationKeys.aggregate(data.id);
-  const aggregate = client.getQueryData<ConversationPositionWindow>(aggregateKey);
+  const aggregate = client.getQueryData<ConversationTranscriptData>(aggregateKey);
   if (aggregate) {
     const total = Math.max(aggregate.total, data.block_count ?? aggregate.total);
     const flattened = {
@@ -63,9 +70,16 @@ export function applyConversationSse(
       blocks: aggregate.blocks,
       children: aggregate.children,
     };
-    const next = aggregate.window.has_after ? null : applyConversationAppendPayload(flattened, data);
+    const lastInterval = aggregate.loaded_intervals.at(-1);
+    const includesTail = aggregate.end_reached;
+    const next = includesTail ? applyConversationAppendPayload(flattened, data) : null;
     const blocks = next?.blocks ?? aggregate.blocks;
-    const endPosition = blocks.at(-1)?.position ?? aggregate.window.end_position;
+    const endPosition = blocks.at(-1)?.position ?? lastInterval?.end ?? null;
+    const nextIntervals = next && endPosition !== null
+      ? aggregate.loaded_intervals.map((interval, index) => index === aggregate.loaded_intervals.length - 1
+        ? { ...interval, end: Math.max(interval.end, endPosition) }
+        : interval)
+      : aggregate.loaded_intervals;
     client.setQueryData(aggregateKey, {
       ...aggregate,
       conversation: {
@@ -76,12 +90,9 @@ export function applyConversationSse(
       blocks,
       revision: Math.max(aggregate.revision, data.block_count ?? next?.block_count ?? 0),
       total,
-      window: {
-        ...aggregate.window,
-        end_position: endPosition,
-        has_after: endPosition !== null && endPosition < total - 1,
-        after_count: endPosition === null ? total : Math.max(0, total - endPosition - 1),
-      },
+      loaded_intervals: nextIntervals,
+      end_reached: next ? true : aggregate.end_reached,
+      after_count: next ? 0 : Math.max(aggregate.after_count, total - aggregate.total),
     });
   }
 

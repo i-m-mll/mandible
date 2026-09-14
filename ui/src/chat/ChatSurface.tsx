@@ -1,5 +1,12 @@
 import type { JSX } from 'preact/jsx-runtime';
-import { observeElementRect, useVirtualizer, type Rect, type Virtualizer } from '@tanstack/react-virtual';
+import {
+  defaultRangeExtractor,
+  observeElementRect,
+  useVirtualizer,
+  type Range,
+  type Rect,
+  type Virtualizer,
+} from '@tanstack/react-virtual';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRequest } from '../api';
 import type {
@@ -23,6 +30,11 @@ import { ActivityGroup, ActivityRow } from '../components/message-blocks/Activit
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
 import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import { openMarkdownDocument } from './markdownActions';
+import type {
+  ConversationNavigationCommand,
+  ConversationNavigationResult,
+  ConversationTranscriptConsumer,
+} from '../query/conversationData';
 import {
   deriveLiveLabel,
   deriveTokenCount,
@@ -41,13 +53,9 @@ export type ChatSurfaceProps = StreamRendererProps & {
   unmaterializedAfterCount?: number;
   onJumpToLatest?: () => void | Promise<void>;
   jumpingToLatest?: boolean;
-  navigationTarget?: {
-    key: string;
-    kind: 'initial' | 'latest' | 'block' | 'turn' | 'position';
-    turnId: string | null;
-    blockId?: string | null;
-    smooth: boolean;
-  } | null;
+  transcript?: ConversationTranscriptConsumer;
+  navigationTarget?: ConversationNavigationCommand | null;
+  onNavigationResult?: (result: ConversationNavigationResult) => void;
   selectedBlockIds?: ReadonlySet<string>;
   selectMode?: boolean;
   onToggleBlockSelect?: (blockId: string, shiftKey: boolean) => void;
@@ -86,8 +94,25 @@ export function shouldShowJumpToLatest(distancePx: number, viewportHeight: numbe
 
 type VirtualItem =
   | { kind: 'group'; id: string; group: DisplayGroup }
+  | { kind: 'history'; id: string; state: HistoryRowState }
   | { kind: 'live'; id: string }
   | { kind: 'permission'; id: string };
+
+type HistoryDirection = 'older' | 'newer';
+type HistoryLoadState = 'idle' | 'loading' | 'retry';
+type HistoryRowState =
+  | { kind: 'boundary'; direction: HistoryDirection }
+  | { kind: 'edge'; direction: HistoryDirection; loadState: HistoryLoadState }
+  | { kind: 'gap'; start: number; end: number; loadState: HistoryLoadState };
+
+type ReadingAnchor = {
+  version: 1;
+  itemId: string;
+  blockId: string | null;
+  position: number | null;
+  viewportOffset: number;
+  followingTail: boolean;
+};
 
 function storageGet(key: string): string | null {
   try {
@@ -102,6 +127,24 @@ function storageSet(key: string, value: string): void {
     window.localStorage.setItem(key, value);
   } catch {
     // Ignore private-mode and SSR storage failures.
+  }
+}
+
+function parseReadingAnchor(value: string | null): ReadingAnchor | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<ReadingAnchor>;
+    return parsed.version === 1
+      && typeof parsed.itemId === 'string'
+      && (typeof parsed.blockId === 'string' || parsed.blockId === null)
+      && (typeof parsed.position === 'number' || parsed.position === null)
+      && typeof parsed.viewportOffset === 'number'
+      && Number.isFinite(parsed.viewportOffset)
+      && typeof parsed.followingTail === 'boolean'
+      ? parsed as ReadingAnchor
+      : null;
+  } catch {
+    return null;
   }
 }
 
@@ -122,6 +165,30 @@ function requestedScrollBehavior(smooth: boolean): ScrollBehavior {
   return smooth && !reducedMotion ? 'smooth' : 'auto';
 }
 
+function renderNodeContainsBlock(node: RenderNode, targetBlockId: string): boolean {
+  if (node.key === targetBlockId) return true;
+  if (node.kind === 'user_message') return node.persisted?.blockId === targetBlockId;
+  if (node.kind === 'semantic_event') return node.event.source.blockId === targetBlockId;
+  if (node.kind === 'unmatched_tool_result') return node.result.source?.blockId === targetBlockId;
+  if (node.kind !== 'assistant_turn') return node.source?.blockId === targetBlockId;
+  return node.turn.assistantEvent.message.content.some((block) => block.source?.blockId === targetBlockId)
+    || Array.from(node.turn.toolResults.values()).some((result) => result.source?.blockId === targetBlockId);
+}
+
+function renderNodePosition(node: RenderNode, targetBlockId: string | null): number | null {
+  if (node.kind === 'user_message') return node.persisted?.position ?? null;
+  if (node.kind === 'semantic_event') return node.event.source.position ?? null;
+  if (node.kind === 'unmatched_tool_result') return node.result.source?.position ?? null;
+  if (node.kind === 'activity') return node.source?.position ?? null;
+  if (targetBlockId) {
+    const content = node.turn.assistantEvent.message.content.find((block) => block.source?.blockId === targetBlockId);
+    if (content?.source?.position !== undefined) return content.source.position;
+    const result = Array.from(node.turn.toolResults.values()).find((candidate) => candidate.source?.blockId === targetBlockId);
+    if (result?.source?.position !== undefined) return result.source.position;
+  }
+  return node.turn.assistantEvent.message.content.find((block) => block.source?.position !== undefined)?.source?.position ?? null;
+}
+
 export function ChatSurface({
   events,
   streaming,
@@ -136,7 +203,9 @@ export function ChatSurface({
   unmaterializedAfterCount = 0,
   onJumpToLatest,
   jumpingToLatest = false,
+  transcript,
   navigationTarget = null,
+  onNavigationResult,
   selectedBlockIds,
   selectMode = false,
   onToggleBlockSelect,
@@ -152,10 +221,19 @@ export function ChatSurface({
 
   const [viewportHeight, setViewportHeight] = useState(720);
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
+  const [followingTail, setFollowingTail] = useState(false);
+  const [historyLoadStates, setHistoryLoadStates] = useState<Record<string, HistoryLoadState>>({});
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const handledNavigationKeyRef = useRef<string | null>(null);
-  const pendingFocusRef = useRef<{ blockId: string | null; itemId: string } | null>(null);
+  const pendingFocusRef = useRef<{ key: string; blockId: string | null; itemId: string } | null>(null);
   const restoredScrollScopeRef = useRef<string | null>(null);
+  const pendingReadingAnchorRef = useRef<ReadingAnchor | null>(null);
+  const itemIdentitySignatureRef = useRef<string | null>(null);
+  const inFlightHistoryRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  const transcriptRef = useRef(transcript);
+  transcriptRef.current = transcript;
+  const historyScopeRef = useRef(storageScope);
+  historyScopeRef.current = storageScope;
 
   const groups = useMemo(() => groupMessagesForDisplay(nodes), [nodes]);
   const turns = useMemo(() => extractTurns(nodes), [nodes]);
@@ -165,40 +243,96 @@ export function ChatSurface({
   const hasPermissionCard = Boolean(activePermissionRequest && onPermissionRespond);
 
   const items = useMemo<VirtualItem[]>(() => {
-    const groupedItems: VirtualItem[] = groups.map((group) => ({
+    const contentItems: VirtualItem[] = groups.map((group) => ({
       kind: 'group',
       id: group.id,
       group,
     }));
+    const groupedItems: VirtualItem[] = [];
+    if (transcript) {
+      groupedItems.push(transcript.hasOlder
+        ? {
+          kind: 'history',
+          id: 'history:older',
+          state: { kind: 'edge', direction: 'older', loadState: historyLoadStates['edge:older'] ?? 'idle' },
+        }
+        : { kind: 'history', id: 'history:boundary:start', state: { kind: 'boundary', direction: 'older' } });
+      const gaps: Array<Extract<VirtualItem, { kind: 'history' }>> = [];
+      for (let index = 1; index < transcript.loadedIntervals.length; index += 1) {
+        const previous = transcript.loadedIntervals[index - 1];
+        const next = transcript.loadedIntervals[index];
+        if (next.start <= previous.end + 1) continue;
+        const start = previous.end + 1;
+        const end = next.start - 1;
+        const key = `gap:${start}:${end}`;
+        gaps.push({
+          kind: 'history',
+          id: `history:${key}`,
+          state: { kind: 'gap', start, end, loadState: historyLoadStates[key] ?? 'idle' },
+        });
+      }
+      for (const item of contentItems) {
+        if (item.kind === 'group') {
+          const position = item.group.nodes
+            .map((node) => renderNodePosition(node, null))
+            .find((candidate): candidate is number => candidate !== null);
+          while (position !== undefined && gaps[0]?.state.kind === 'gap' && gaps[0].state.end < position) {
+            groupedItems.push(gaps.shift()!);
+          }
+        }
+        groupedItems.push(item);
+      }
+      groupedItems.push(...gaps);
+    } else {
+      groupedItems.push(...contentItems);
+    }
     if (streaming) {
       groupedItems.push({ kind: 'live', id: 'stream-live-tail' });
     }
     if (activePermissionRequest && onPermissionRespond) {
       groupedItems.push({ kind: 'permission', id: `permission:${activePermissionRequest.id}` });
     }
+    if (transcript) {
+      groupedItems.push(transcript.hasNewer
+        ? {
+          kind: 'history',
+          id: 'history:newer',
+          state: { kind: 'edge', direction: 'newer', loadState: historyLoadStates['edge:newer'] ?? 'idle' },
+        }
+        : { kind: 'history', id: 'history:boundary:end', state: { kind: 'boundary', direction: 'newer' } });
+    }
     return groupedItems;
-  }, [activePermissionRequest, groups, onPermissionRespond, streaming]);
+  }, [activePermissionRequest, groups, historyLoadStates, onPermissionRespond, streaming, transcript]);
 
   const getItemKey = useCallback((index: number) => items[index]?.id ?? index, [items]);
+  const extractVirtualRows = useCallback((range: Range): number[] => {
+    const indices = new Set(defaultRangeExtractor(range));
+    // Keep the two paging edges and one truthful discontinuity discoverable
+    // without letting a fragmented transcript make DOM size unbounded.
+    const historyIndices = [
+      0,
+      items.findIndex((item) => item.kind === 'history' && item.state.kind === 'gap'),
+      items.length - 1,
+    ];
+    historyIndices.forEach((index) => {
+      if (index >= 0 && items[index]?.kind === 'history') indices.add(index);
+    });
+    return [...indices].sort((left, right) => left - right);
+  }, [items]);
   const getScrollElement = useCallback(() => scrollRef.current, []);
-  const initialOffset = useMemo(() => {
-    const storedTop = Number(storageGet(scrollStorageKey));
-    return Number.isFinite(storedTop) && storedTop > 0
-      ? storedTop
-      : Math.max(0, items.length * ESTIMATED_ROW_HEIGHT - 720);
-  }, [items.length, scrollStorageKey]);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: items.length,
     getScrollElement,
     estimateSize: estimateVirtualRow,
     measureElement: measureVirtualRow,
     getItemKey,
-    initialOffset,
+    initialOffset: Math.max(0, items.length * ESTIMATED_ROW_HEIGHT - 720),
     initialRect: INITIAL_VIRTUAL_RECT,
     observeElementRect: observeChatElementRect,
-    overscan: 6,
+    rangeExtractor: extractVirtualRows,
+    overscan: 4,
     anchorTo: 'end',
-    followOnAppend: 'auto',
+    followOnAppend: followingTail ? 'auto' : false,
     scrollEndThreshold: FOLLOW_THRESHOLD_PX,
   });
   const virtualItems = virtualizer.getVirtualItems();
@@ -208,11 +342,120 @@ export function ChatSurface({
     viewportHeight,
   );
 
+  const requestHistory = useCallback((key: string, load: () => void | Promise<void>): Promise<void> => {
+    const current = inFlightHistoryRef.current;
+    if (current) return current.promise;
+    const scope = storageScope;
+    const before = JSON.stringify(transcriptRef.current?.loadedIntervals ?? []);
+    setHistoryLoadStates((states) => ({ ...states, [key]: 'loading' }));
+    const promise = Promise.resolve(load()).then(() => new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    })).then(() => {
+      if (historyScopeRef.current !== scope) return;
+      const after = JSON.stringify(transcriptRef.current?.loadedIntervals ?? []);
+      setHistoryLoadStates((states) => ({ ...states, [key]: before === after ? 'retry' : 'idle' }));
+    }, () => {
+      if (historyScopeRef.current !== scope) return;
+      setHistoryLoadStates((states) => ({ ...states, [key]: 'retry' }));
+    }).finally(() => {
+      if (inFlightHistoryRef.current?.promise === promise) inFlightHistoryRef.current = null;
+    });
+    inFlightHistoryRef.current = { key, promise };
+    return promise;
+  }, [storageScope]);
+
+  const findAnchorItemIndex = useCallback((anchor: Pick<ReadingAnchor, 'itemId' | 'blockId'>): number => {
+    if (anchor.blockId) {
+      const blockIndex = items.findIndex((item) => item.kind === 'group'
+        && item.group.nodes.some((node) => renderNodeContainsBlock(node, anchor.blockId!)));
+      if (blockIndex >= 0) return blockIndex;
+    }
+    return items.findIndex((item) => item.id === anchor.itemId);
+  }, [items]);
+
+  const captureReadingAnchor = useCallback((followingTailOverride?: boolean): ReadingAnchor | null => {
+    const el = scrollRef.current;
+    if (!el || items.length === 0) return null;
+    const offset = el.scrollTop;
+    let virtualItem = virtualizer.getVirtualItemForOffset(offset) ?? virtualizer.getVirtualItems()[0];
+    if (virtualItem && items[virtualItem.index]?.kind !== 'group') {
+      virtualItem = virtualizer.getVirtualItems().find((candidate) => (
+        items[candidate.index]?.kind === 'group'
+        && candidate.end > offset
+        && candidate.start < offset + el.clientHeight
+      )) ?? virtualItem;
+    }
+    if (!virtualItem) return null;
+    const item = items[virtualItem.index];
+    if (!item) return null;
+    const row = Array.from(el.querySelectorAll<HTMLElement>('[data-virtual-key]'))
+      .find((candidate) => candidate.dataset.virtualKey === item.id);
+    const scrollRect = el.getBoundingClientRect();
+    const blocks = row ? Array.from(row.querySelectorAll<HTMLElement>('[data-block-id]')) : [];
+    const visibleBlock = blocks.find((block) => block.getBoundingClientRect().bottom > scrollRect.top) ?? blocks[0] ?? null;
+    const blockIdValue = visibleBlock?.dataset.blockId ?? null;
+    const node = item.kind === 'group'
+      ? item.group.nodes.find((candidate) => !blockIdValue || renderNodeContainsBlock(candidate, blockIdValue))
+      : undefined;
+    const anchor: ReadingAnchor = {
+      version: 1,
+      itemId: item.id,
+      blockId: blockIdValue,
+      position: node ? renderNodePosition(node, blockIdValue) : null,
+      viewportOffset: visibleBlock
+        ? visibleBlock.getBoundingClientRect().top - scrollRect.top
+        : virtualItem.start - offset,
+      followingTail: followingTailOverride ?? followingTail,
+    };
+    storageSet(scrollStorageKey, JSON.stringify(anchor));
+    return anchor;
+  }, [followingTail, items, scrollStorageKey, virtualizer]);
+
+  const restoreReadingAnchor = useCallback((anchor: ReadingAnchor): boolean => {
+    const el = scrollRef.current;
+    if (!el) return false;
+    const itemIndex = findAnchorItemIndex(anchor);
+    if (itemIndex < 0) {
+      if (anchor.position !== null && transcript) {
+        const key = `anchor:${anchor.position}`;
+        if ((historyLoadStates[key] ?? 'idle') === 'idle') {
+          void requestHistory(key, () => transcript.loadAround(anchor.position!));
+        }
+      }
+      return false;
+    }
+    const item = items[itemIndex];
+    const row = Array.from(el.querySelectorAll<HTMLElement>('[data-virtual-key]'))
+      .find((candidate) => candidate.dataset.virtualKey === item.id);
+    if (!row) {
+      pendingReadingAnchorRef.current = anchor;
+      virtualizer.scrollToIndex(itemIndex, { align: 'start', behavior: 'auto' });
+      return false;
+    }
+    const target = anchor.blockId
+      ? Array.from(row.querySelectorAll<HTMLElement>('[data-block-id]'))
+        .find((candidate) => candidate.dataset.blockId === anchor.blockId)
+      : row;
+    if (!target) return false;
+    const currentOffset = anchor.blockId
+      ? target.getBoundingClientRect().top - el.getBoundingClientRect().top
+      : (virtualizer.getVirtualItems().find((candidate) => candidate.index === itemIndex)?.start ?? el.scrollTop) - el.scrollTop;
+    const delta = currentOffset - anchor.viewportOffset;
+    if (Math.abs(delta) >= 0.5) {
+      virtualizer.scrollToOffset(el.scrollTop + delta, { behavior: 'auto' });
+    }
+    pendingReadingAnchorRef.current = null;
+    return true;
+  }, [findAnchorItemIndex, historyLoadStates, items, requestHistory, transcript, virtualizer]);
+
   // Chat disclosures are transient reading state. A new conversation or page
   // refresh starts from each block's declared default instead of reviving old
   // tool/thinking expansion choices from browser storage.
   useEffect(() => {
     setExpandedBlocks({});
+    setHistoryLoadStates({});
+    pendingReadingAnchorRef.current = null;
+    inFlightHistoryRef.current = null;
   }, [storageScope]);
 
   const setScrollNode = useCallback((node: HTMLDivElement | null) => {
@@ -224,13 +467,17 @@ export function ChatSurface({
   useLayoutEffect(() => {
     if (!scrollRef.current || restoredScrollScopeRef.current === scrollStorageKey || items.length === 0) return;
     restoredScrollScopeRef.current = scrollStorageKey;
-    const storedTop = Number(storageGet(scrollStorageKey));
-    if (Number.isFinite(storedTop) && storedTop > 0) {
-      virtualizer.scrollToOffset(storedTop, { behavior: 'auto' });
+    const storedAnchor = parseReadingAnchor(storageGet(scrollStorageKey));
+    if (navigationTarget) return;
+    if (storedAnchor) {
+      pendingReadingAnchorRef.current = storedAnchor;
+      setFollowingTail(storedAnchor.followingTail && !transcript?.hasNewer);
+      restoreReadingAnchor(storedAnchor);
     } else if (!navigationTarget) {
+      setFollowingTail(!transcript?.hasNewer);
       virtualizer.scrollToEnd({ behavior: 'auto' });
     }
-  }, [items.length, navigationTarget, scrollStorageKey, virtualizer]);
+  }, [items.length, navigationTarget, restoreReadingAnchor, scrollStorageKey, transcript?.hasNewer, virtualizer]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -248,40 +495,38 @@ export function ChatSurface({
       )) : -1;
       if (itemIndex < 0 && navigationTarget.blockId) {
         itemIndex = items.findIndex((item) => (
-          item.kind === 'group' && item.group.nodes.some((node) => {
-            if (node.key === navigationTarget.blockId) return true;
-            if (node.kind === 'user_message') return node.persisted?.blockId === navigationTarget.blockId;
-            if (node.kind === 'semantic_event') return node.event.source.blockId === navigationTarget.blockId;
-            if (node.kind === 'unmatched_tool_result') return node.result.source?.blockId === navigationTarget.blockId;
-            if (node.kind === 'assistant_turn') {
-              const matchedResult = Array.from(node.turn.toolResults.entries())
-                .find(([, result]) => result.source?.blockId === navigationTarget.blockId);
-              return node.turn.assistantEvent.message.content.some((block) => block.source?.blockId === navigationTarget.blockId)
-                || Boolean(matchedResult);
-            }
-            return false;
-          })
+          item.kind === 'group' && item.group.nodes.some((node) => (
+            renderNodeContainsBlock(node, navigationTarget.blockId!)
+          ))
         ));
       }
       targetFound = itemIndex >= 0;
     }
-    if (!targetFound) return;
+    if (!targetFound) {
+      handledNavigationKeyRef.current = navigationTarget.key;
+      onNavigationResult?.({ key: navigationTarget.key, status: 'not-renderable' });
+      return;
+    }
 
     const behavior = requestedScrollBehavior(navigationTarget.smooth);
     handledNavigationKeyRef.current = navigationTarget.key;
     pendingFocusRef.current = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest'
       ? null
-      : { blockId: navigationTarget.blockId ?? null, itemId: items[itemIndex].id };
+      : { key: navigationTarget.key, blockId: navigationTarget.blockId ?? null, itemId: items[itemIndex].id };
+    setFollowingTail(
+      (navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest')
+      && !transcript?.hasNewer,
+    );
     if (navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest') {
       virtualizer.scrollToEnd({ behavior });
+      onNavigationResult?.({ key: navigationTarget.key, status: 'revealed' });
     } else {
       virtualizer.scrollToIndex(itemIndex, { align: 'center', behavior });
     }
     setDistanceFromBottom(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest'
       ? 0
       : virtualizer.getDistanceFromEnd());
-    storageSet(scrollStorageKey, String(el.scrollTop));
-  }, [items, navigationTarget, scrollStorageKey, virtualizer]);
+  }, [items, navigationTarget, onNavigationResult, transcript?.hasNewer, virtualizer]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -294,15 +539,62 @@ export function ChatSurface({
       ? Array.from(row.querySelectorAll<HTMLElement>('[data-block-id]'))
         .find((candidate) => candidate.dataset.blockId === pending.blockId)
       : row;
-    if (!target) return;
+    if (!target) {
+      pendingFocusRef.current = null;
+      onNavigationResult?.({ key: pending.key, status: 'not-renderable' });
+      return;
+    }
     if (pending.blockId && typeof target.scrollIntoView === 'function') {
       target.scrollIntoView({ block: 'center', behavior: 'auto' });
     }
     target.tabIndex = -1;
     target.focus({ preventScroll: true });
     pendingFocusRef.current = null;
-    storageSet(scrollStorageKey, String(el.scrollTop));
-  }, [scrollStorageKey, virtualItems]);
+    onNavigationResult?.({ key: pending.key, status: 'revealed' });
+    captureReadingAnchor(false);
+  }, [captureReadingAnchor, onNavigationResult, virtualItems]);
+
+  useLayoutEffect(() => {
+    const pending = pendingReadingAnchorRef.current;
+    if (!pending || navigationTarget) return;
+    restoreReadingAnchor(pending);
+  }, [expandedBlocks, items, navigationTarget, restoreReadingAnchor, virtualItems]);
+
+  useLayoutEffect(() => {
+    const signature = items.map((item) => item.id).join('\0');
+    const previous = itemIdentitySignatureRef.current;
+    itemIdentitySignatureRef.current = signature;
+    if (previous === null || previous === signature || navigationTarget) return;
+    const anchor = parseReadingAnchor(storageGet(scrollStorageKey));
+    if (!anchor || anchor.followingTail) return;
+    pendingReadingAnchorRef.current = anchor;
+    restoreReadingAnchor(anchor);
+  }, [items, navigationTarget, restoreReadingAnchor, scrollStorageKey]);
+
+  useEffect(() => {
+    if (!transcript || inFlightHistoryRef.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const rendered = virtualizer.getVirtualItems();
+    if (rendered.length === 0) return;
+    const scrollStart = el.scrollTop;
+    const scrollEnd = scrollStart + el.clientHeight;
+    const isAtRenderedEdge = (id: string): boolean => {
+      const row = rendered.find((candidate) => items[candidate.index]?.id === id);
+      if (!row) return false;
+      return row.end >= scrollStart - FOLLOW_THRESHOLD_PX
+        && row.start <= scrollEnd + FOLLOW_THRESHOLD_PX;
+    };
+    const olderState = historyLoadStates['edge:older'] ?? 'idle';
+    const newerState = historyLoadStates['edge:newer'] ?? 'idle';
+    if (transcript.hasOlder && olderState === 'idle' && isAtRenderedEdge('history:older')) {
+      void requestHistory('edge:older', transcript.loadOlder);
+      return;
+    }
+    if (transcript.hasNewer && newerState === 'idle' && isAtRenderedEdge('history:newer')) {
+      void requestHistory('edge:newer', transcript.loadNewer);
+    }
+  }, [historyLoadStates, items, requestHistory, transcript, virtualItems, virtualizer]);
 
   function handleScroll(): void {
     const el = scrollRef.current;
@@ -310,9 +602,14 @@ export function ChatSurface({
       return;
     }
     const nextViewportHeight = el.clientHeight || viewportHeight;
+    const nextDistance = Math.max(0, el.scrollHeight - el.scrollTop - nextViewportHeight);
+    const nextFollowingTail = nextDistance <= FOLLOW_THRESHOLD_PX
+      && !transcript?.hasNewer
+      && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
     setViewportHeight(nextViewportHeight);
-    setDistanceFromBottom(Math.max(0, el.scrollHeight - el.scrollTop - nextViewportHeight));
-    storageSet(scrollStorageKey, String(el.scrollTop));
+    setDistanceFromBottom(nextDistance);
+    setFollowingTail(nextFollowingTail);
+    captureReadingAnchor(nextFollowingTail);
   }
 
   function handleJumpToBottom(): void {
@@ -324,10 +621,13 @@ export function ChatSurface({
     if (!el) return;
     virtualizer.scrollToEnd({ behavior: requestedScrollBehavior(true) });
     setDistanceFromBottom(0);
-    storageSet(scrollStorageKey, String(el.scrollTop));
+    setFollowingTail(!transcript?.hasNewer);
+    captureReadingAnchor(!transcript?.hasNewer);
   }
 
   function setBlockExpanded(id: string, expanded: boolean): void {
+    const anchor = captureReadingAnchor();
+    if (anchor) pendingReadingAnchorRef.current = anchor;
     setExpandedBlocks((current) => {
       return { ...current, [id]: expanded };
     });
@@ -526,7 +826,48 @@ export function ChatSurface({
     );
   }
 
-  if (!hasContent && !hasPermissionCard) {
+  function renderHistoryRow(state: HistoryRowState): JSX.Element {
+    if (state.kind === 'boundary') {
+      return (
+        <div className="stream-renderer__history-state" role="note">
+          {state.direction === 'older' ? 'Start of conversation' : 'End of conversation'}
+        </div>
+      );
+    }
+    if (state.kind === 'gap') {
+      const key = `gap:${state.start}:${state.end}`;
+      const label = `Load missing history from positions ${state.start} to ${state.end}`;
+      return (
+        <div className="stream-renderer__history-state" role="status" aria-live="polite">
+          {state.loadState === 'loading' ? 'Loading missing history…' : (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => {
+              if (!transcript) return;
+              void requestHistory(key, () => transcript.loadAround(state.start));
+            }}>
+              {state.loadState === 'retry' ? `Retry: ${label}` : label}
+            </button>
+          )}
+        </div>
+      );
+    }
+    const edgeKey = `edge:${state.direction}`;
+    const earlier = state.direction === 'older';
+    const label = earlier ? 'Load earlier history' : 'Load later history';
+    return (
+      <div className="stream-renderer__history-state" role="status" aria-live="polite">
+        {state.loadState === 'loading' ? (earlier ? 'Loading earlier history…' : 'Loading later history…') : (
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => {
+            if (!transcript) return;
+            void requestHistory(edgeKey, earlier ? transcript.loadOlder : transcript.loadNewer);
+          }}>
+            {state.loadState === 'retry' ? `Retry: ${label}` : label}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (!hasContent && !hasPermissionCard && !transcript) {
     return (
       <div className="stream-renderer">
         <div className="stream-renderer__empty">
@@ -557,6 +898,7 @@ export function ChatSurface({
                 style={{ top: 0, transform: `translateY(${virtualItem.start}px)` }}
               >
                 {item.kind === 'group' && renderGroup(item.group)}
+                {item.kind === 'history' && renderHistoryRow(item.state)}
                 {item.kind === 'live' && renderLiveIndicator()}
                 {item.kind === 'permission' && activePermissionRequest && onPermissionRespond && (
                   <TurnGroup speaker="system">
