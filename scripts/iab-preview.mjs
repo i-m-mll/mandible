@@ -1800,12 +1800,14 @@ function migratePreviewClientAuthAuthority(previewRoot) {
     return { status: fs.existsSync(durable) ? "already-durable" : "not-yet-created", path: durable };
   }
   if (fs.existsSync(durable)) {
-    if (JSON.stringify(directorySnapshot(legacy)) !== JSON.stringify(directorySnapshot(durable))) {
+    if (JSON.stringify(clientAuthImmutableSnapshot(legacy))
+        !== JSON.stringify(clientAuthImmutableSnapshot(durable))) {
       throw new Error(
-        `Refusing preview auth migration: legacy ${legacy} conflicts with durable ${durable}.`,
+        `Refusing preview auth migration: immutable authority bytes in legacy ${legacy} conflict with durable ${durable}.`,
       );
     }
-    return { status: "already-durable", path: durable };
+    retireLegacyClientAuthDirectory(legacy);
+    return { status: "retired-legacy-shadow", path: durable };
   }
 
   fs.mkdirSync(path.dirname(durable), { recursive: true });
@@ -1819,6 +1821,7 @@ function migratePreviewClientAuthAuthority(previewRoot) {
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }
+  retireLegacyClientAuthDirectory(legacy);
   return { status: "migrated", path: durable };
 }
 
@@ -1828,11 +1831,37 @@ function assertPreviewClientAuthMigrationReady(previewRoot) {
   if (!fs.existsSync(legacy) && !fs.existsSync(durable)) {
     throw new Error("Refusing preview auth migration: the recorded legacy authority has no durable bytes.");
   }
+  if (fs.existsSync(legacy)) clientAuthImmutableSnapshot(legacy);
+  if (fs.existsSync(durable)) clientAuthImmutableSnapshot(durable);
   if (!fs.existsSync(legacy) || !fs.existsSync(durable)) return;
-  if (JSON.stringify(directorySnapshot(legacy)) !== JSON.stringify(directorySnapshot(durable))) {
+  if (JSON.stringify(clientAuthImmutableSnapshot(legacy))
+      !== JSON.stringify(clientAuthImmutableSnapshot(durable))) {
     throw new Error(
-      `Refusing preview auth migration: legacy ${legacy} conflicts with durable ${durable}.`,
+      `Refusing preview auth migration: immutable authority bytes in legacy ${legacy} conflict with durable ${durable}.`,
     );
+  }
+}
+
+function clientAuthImmutableSnapshot(root) {
+  return ["authority-id", "pepper"].map((name) => {
+    const filePath = path.join(root, name);
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Refusing preview auth migration: immutable ${name} is missing from ${root}.`);
+    }
+    const stat = fs.lstatSync(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`Refusing preview auth migration: immutable ${name} is not a regular file in ${root}.`);
+    }
+    return [name, stat.mode & 0o7777, fs.readFileSync(filePath).toString("base64")];
+  });
+}
+
+function retireLegacyClientAuthDirectory(legacy) {
+  const retiring = `${legacy}.retiring-${process.pid}-${Date.now()}`;
+  fs.renameSync(legacy, retiring);
+  fs.rmSync(retiring, { recursive: true });
+  if (fs.existsSync(legacy) || fs.existsSync(retiring)) {
+    throw new Error(`Failed to retire legacy preview auth authority: ${legacy}`);
   }
 }
 
