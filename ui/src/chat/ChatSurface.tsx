@@ -23,6 +23,11 @@ import { ActivityGroup, ActivityRow } from '../components/message-blocks/Activit
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
 import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import { openMarkdownDocument } from './markdownActions';
+import type {
+  ConversationNavigationCommand,
+  ConversationNavigationResult,
+  ConversationTranscriptConsumer,
+} from '../query/conversationData';
 import {
   deriveLiveLabel,
   deriveTokenCount,
@@ -41,13 +46,9 @@ export type ChatSurfaceProps = StreamRendererProps & {
   unmaterializedAfterCount?: number;
   onJumpToLatest?: () => void | Promise<void>;
   jumpingToLatest?: boolean;
-  navigationTarget?: {
-    key: string;
-    kind: 'initial' | 'latest' | 'block' | 'turn' | 'position';
-    turnId: string | null;
-    blockId?: string | null;
-    smooth: boolean;
-  } | null;
+  transcript?: ConversationTranscriptConsumer;
+  navigationTarget?: ConversationNavigationCommand | null;
+  onNavigationResult?: (result: ConversationNavigationResult) => void;
   selectedBlockIds?: ReadonlySet<string>;
   selectMode?: boolean;
   onToggleBlockSelect?: (blockId: string, shiftKey: boolean) => void;
@@ -137,6 +138,7 @@ export function ChatSurface({
   onJumpToLatest,
   jumpingToLatest = false,
   navigationTarget = null,
+  onNavigationResult,
   selectedBlockIds,
   selectMode = false,
   onToggleBlockSelect,
@@ -265,7 +267,11 @@ export function ChatSurface({
       }
       targetFound = itemIndex >= 0;
     }
-    if (!targetFound) return;
+    if (!targetFound) {
+      handledNavigationKeyRef.current = navigationTarget.key;
+      onNavigationResult?.({ key: navigationTarget.key, status: 'not-renderable' });
+      return;
+    }
 
     const behavior = requestedScrollBehavior(navigationTarget.smooth);
     handledNavigationKeyRef.current = navigationTarget.key;
@@ -281,7 +287,8 @@ export function ChatSurface({
       ? 0
       : virtualizer.getDistanceFromEnd());
     storageSet(scrollStorageKey, String(el.scrollTop));
-  }, [items, navigationTarget, scrollStorageKey, virtualizer]);
+    onNavigationResult?.({ key: navigationTarget.key, status: 'revealed' });
+  }, [items, navigationTarget, onNavigationResult, scrollStorageKey, virtualizer]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;

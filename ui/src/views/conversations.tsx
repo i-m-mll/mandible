@@ -38,6 +38,7 @@ import {
   getConsoleSessionOptions,
   getConsoleRunOptions,
   getConversationWindow,
+  exportConversationBlocks,
   getConversationControl,
   getConversationLiveProjection,
   getProviderChat,
@@ -85,9 +86,7 @@ import {
   UsageModal,
   conversationBlocksToStreamEvents,
   reconcileProviderProjection,
-  buildStreamState,
   deriveChatUsageSummary,
-  serializeConversationToMarkdown,
   useStatuslineTelemetry,
   chatControlFailureNotice,
   chatSpawnFailureNotice,
@@ -125,9 +124,11 @@ import type { ChatEntityClickAction } from '../../../src/contracts';
 import { subscribeClientAuthSessionState } from '../client-auth-token';
 import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding';
 import {
-  flattenConversationWindow,
-  mergeConversationWindows,
+  flattenConversationTranscript,
+  reconcileConversationWindow,
   mergeSidebarPages,
+  type ConversationTranscriptConsumer,
+  type ConversationTranscriptData,
   type ConversationWithDetails,
 } from '../query/conversationData';
 import {
@@ -145,12 +146,14 @@ type ToastState = { message: string; type: 'info' | 'error' } | null;
 type ChatDetailState = 'loading' | 'error' | 'not-found' | 'conversation' | 'live-session' | 'draft' | 'no-selection';
 
 export type ConversationLoadFailure = {
+  operation: 'initial' | 'edge-older' | 'edge-newer' | 'target' | 'source-unavailable' | 'refresh' | 'export';
+  retryOperation?: 'initial' | 'edge-older' | 'edge-newer' | 'target' | 'refresh' | 'export';
   code: string | null;
   message: string;
   retryable: boolean;
 };
 
-const TRANSIENT_CONVERSATION_CODES = new Set(['provider_metadata_unavailable', 'freshness_pending', 'freshness_error']);
+const TRANSIENT_CONVERSATION_CODES = new Set(['provider_metadata_unavailable', 'freshness_pending', 'freshness_error', 'source_unavailable']);
 
 function optimisticPromptItem(
   intent: { id: string; message: string },
@@ -173,11 +176,22 @@ function optimisticPromptItem(
   };
 }
 
-export function conversationLoadFailure(error: unknown, transcriptLoaded: boolean): ConversationLoadFailure {
+export function conversationLoadFailure(
+  error: unknown,
+  transcriptLoaded: boolean,
+  operation: ConversationLoadFailure['operation'] = 'refresh',
+): ConversationLoadFailure {
   const apiError = error instanceof ApiError ? error : null;
   const code = apiError?.code ?? null;
+  const resolvedOperation = code === 'source_unavailable' ? 'source-unavailable' : operation;
+  const retryOperation: ConversationLoadFailure['retryOperation'] = resolvedOperation === 'source-unavailable'
+      && operation !== 'source-unavailable'
+    ? operation
+    : undefined;
   if (code === 'provider_metadata_missing') {
     return {
+      operation: resolvedOperation,
+      ...(retryOperation ? { retryOperation } : {}),
       code,
       message: `${transcriptLoaded ? 'Transcript loaded, but ' : ''}Mandible cannot verify its current Codex title because the matching Codex task metadata is missing. Retrying will not recreate that metadata.`,
       retryable: false,
@@ -185,12 +199,16 @@ export function conversationLoadFailure(error: unknown, transcriptLoaded: boolea
   }
   if (code === 'provider_metadata_unavailable') {
     return {
+      operation: resolvedOperation,
+      ...(retryOperation ? { retryOperation } : {}),
       code,
       message: `Codex title metadata is temporarily unavailable.${transcriptLoaded ? ' The transcript is unchanged;' : ''} try again.`,
       retryable: true,
     };
   }
   return {
+    operation: resolvedOperation,
+    ...(retryOperation ? { retryOperation } : {}),
     code,
     message: error instanceof Error ? error.message : String(error),
     retryable: code ? TRANSIENT_CONVERSATION_CODES.has(code) : apiError ? apiError.status >= 500 : true,
@@ -485,16 +503,12 @@ function conversationShell(conversation: Conversation): ConversationWithDetails 
     parent: null,
     position_window: {
       revision: conversation.block_count,
+      source_version_id: null,
       total: conversation.block_count,
-      target: { kind: 'initial', requested_value: null, position: null, block_id: null, turn_id: null },
-      window: {
-        start_position: null,
-        end_position: null,
-        has_before: false,
-        has_after: conversation.block_count > 0,
-        after_count: conversation.block_count,
-        limit: 160,
-      },
+      loaded_intervals: [],
+      has_before: false,
+      has_after: conversation.block_count > 0,
+      after_count: conversation.block_count,
     },
   };
 }
@@ -583,23 +597,30 @@ function reconcileControlSnapshot(
   return incoming;
 }
 
-export function conversationAnchorFromHash(hash: string): { block: string } | { turn: string } | null {
+export type ConversationAnchor = { block: string } | { turn: string } | { position: number };
+
+export function conversationAnchorFromHash(hash: string): ConversationAnchor | null {
   const query = hash.includes('?') ? hash.slice(hash.indexOf('?') + 1) : '';
   const params = new URLSearchParams(query);
   const block = params.get('block');
   const turn = params.get('turn');
+  const position = params.get('position');
   if (block) return { block };
   if (turn) return { turn };
+  if (position !== null && Number.isSafeInteger(Number(position)) && Number(position) >= 0) {
+    return { position: Number(position) };
+  }
   return null;
 }
 
 export function conversationAnchorHref(
   conversationId: string,
-  anchor: { block: string } | { turn: string },
+  anchor: ConversationAnchor,
 ): string {
   const params = new URLSearchParams({ conversation: conversationId });
   if ('block' in anchor) params.set('block', anchor.block);
-  else params.set('turn', anchor.turn);
+  else if ('turn' in anchor) params.set('turn', anchor.turn);
+  else params.set('position', String(anchor.position));
   return `#/console?${params.toString()}`;
 }
 
@@ -1004,7 +1025,7 @@ export function ConversationDetail({
 }: {
   conversationId: string;
   initialConversation?: Conversation | null;
-  anchor: { block: string } | { turn: string } | null;
+  anchor: ConversationAnchor | null;
   onNavigate: (id: string) => void;
   consoleSessions: ConsoleSession[];
   sidebarCollapsed: boolean;
@@ -1016,6 +1037,9 @@ export function ConversationDetail({
 }): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
   const [jumpingToLatest, setJumpingToLatest] = useState(false);
+  const [edgeLoading, setEdgeLoading] = useState<'older' | 'newer' | null>(null);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportIntent, setExportIntent] = useState<'copy' | 'open' | null>(null);
   const [navigationError, setNavigationError] = useState<ConversationLoadFailure | null>(null);
   const [navigationTarget, setNavigationTarget] = useState<{
     key: string;
@@ -1065,6 +1089,7 @@ export function ConversationDetail({
   const submittingIntentRef = useRef<string | null>(null);
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
+  const handledAnchorKeyRef = useRef<string | null>(null);
   const windowTargetJson = JSON.stringify(normalizeWindowTarget(effectiveAnchor ?? { target: 'initial' }));
   const windowTarget = useMemo(
     () => JSON.parse(windowTargetJson) as ReturnType<typeof normalizeWindowTarget>,
@@ -1077,12 +1102,20 @@ export function ConversationDetail({
   const fetchConversationDetail = useCallback(
     async ({ signal }: { signal: AbortSignal }) => {
       const incoming = await getConversationWindow(conversationId, windowRequest(windowTarget, signal));
-      const merged = mergeConversationWindows(
-        queryClient.getQueryData<ConversationPositionWindow>(conversationKeys.aggregate(conversationId)),
+      const aggregateKey = conversationKeys.aggregate(conversationId);
+      const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+      const merged = reconcileConversationWindow(
+        current,
         incoming,
       );
-      queryClient.setQueryData(conversationKeys.aggregate(conversationId), merged);
-      return merged;
+      if (current && current.source_version_id !== incoming.source_version_id) {
+        queryClient.removeQueries({
+          queryKey: conversationKeys.windows(conversationId),
+          type: 'inactive',
+        });
+      }
+      queryClient.setQueryData(aggregateKey, merged);
+      return incoming;
     },
     [conversationId, queryClient, windowTarget],
   );
@@ -1090,22 +1123,100 @@ export function ConversationDetail({
     queryKey: conversationRequestKey,
     queryFn: fetchConversationDetail,
   }, queryClient);
+  const aggregateQuery = useQuery<ConversationTranscriptData>({
+    queryKey: conversationKeys.aggregate(conversationId),
+    queryFn: () => Promise.reject(new Error('Conversation transcript aggregate has no direct transport.')),
+    enabled: false,
+  }, queryClient);
+  const fetchAndReconcileWindow = useCallback(async (
+    target: ReturnType<typeof normalizeWindowTarget>,
+  ): Promise<ConversationPositionWindow> => {
+    const key = conversationKeys.window(conversationId, target);
+    const incoming = await queryClient.fetchQuery({
+      queryKey: key,
+      queryFn: ({ signal }) => getConversationWindow(conversationId, windowRequest(target, signal)),
+      staleTime: 0,
+    });
+    const aggregateKey = conversationKeys.aggregate(conversationId);
+    const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+    if (current && current.source_version_id !== incoming.source_version_id) {
+      queryClient.removeQueries({ queryKey: conversationKeys.windows(conversationId), type: 'inactive' });
+    }
+    queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
+    return incoming;
+  }, [conversationId, queryClient]);
+
+  useEffect(() => () => {
+    void queryClient.cancelQueries({ queryKey: conversationKeys.conversation(conversationId) });
+  }, [conversationId, queryClient]);
   // Flattening is a projection of query data, not a new entity on every
   // component render. Keeping its identity stable also keeps the registered
   // app-sidebar descriptor stable; otherwise that descriptor updates App,
   // which renders this detail again and recreates the descriptor forever.
   const conversation = useMemo(() => (
-    windowQuery.data
-      ? flattenConversationWindow(windowQuery.data)
+    aggregateQuery.data
+      ? flattenConversationTranscript(aggregateQuery.data)
       : initialConversation ? conversationShell(initialConversation) : null
-  ), [initialConversation, windowQuery.data]);
+  ), [aggregateQuery.data, initialConversation]);
   const loading = windowQuery.isFetching;
-  const notFound = isApiErrorStatus(windowQuery.error, 404) && !creationReceipt;
+  const targetRequest = effectiveAnchor !== null;
+  const notFound = !targetRequest && isApiErrorStatus(windowQuery.error, 404) && !creationReceipt;
   const error = navigationError ?? (
     windowQuery.error && !notFound
-      ? conversationLoadFailure(windowQuery.error, Boolean(windowQuery.data))
+      ? conversationLoadFailure(
+        windowQuery.error,
+        Boolean(aggregateQuery.data),
+        targetRequest ? 'target' : aggregateQuery.data ? 'refresh' : 'initial',
+      )
       : null
   );
+
+  const loadTranscriptEdge = useCallback(async (direction: 'older' | 'newer') => {
+    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
+    if (!aggregate || edgeLoading) return;
+    const interval = direction === 'older' ? aggregate.loaded_intervals[0] : aggregate.loaded_intervals.at(-1);
+    if (!interval) return;
+    const position = direction === 'older' ? interval.start - 1 : interval.end + 1;
+    if (position < 0 || position >= aggregate.total) return;
+    setEdgeLoading(direction);
+    setNavigationError(null);
+    try {
+      await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
+    } catch (cause) {
+      setNavigationError(conversationLoadFailure(cause, true, direction === 'older' ? 'edge-older' : 'edge-newer'));
+    } finally {
+      setEdgeLoading(null);
+    }
+  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient]);
+
+  const loadTranscriptAround = useCallback(async (position: number) => {
+    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
+    if (!aggregate || edgeLoading || !Number.isSafeInteger(position) || position < 0 || position >= aggregate.total) return;
+    if (aggregate.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) return;
+    setEdgeLoading('newer');
+    setNavigationError(null);
+    try {
+      await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
+    } catch (cause) {
+      setNavigationError(conversationLoadFailure(cause, true, 'edge-newer'));
+    } finally {
+      setEdgeLoading(null);
+    }
+  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient]);
+
+  const transcriptConsumer = useMemo<ConversationTranscriptConsumer | undefined>(() => {
+    const aggregate = aggregateQuery.data;
+    if (!aggregate) return undefined;
+    return {
+      loadedIntervals: aggregate.loaded_intervals,
+      hasOlder: !aggregate.start_reached,
+      hasNewer: !aggregate.end_reached,
+      unmaterializedAfterCount: aggregate.after_count,
+      loadOlder: () => loadTranscriptEdge('older'),
+      loadNewer: () => loadTranscriptEdge('newer'),
+      loadAround: loadTranscriptAround,
+    };
+  }, [aggregateQuery.data, loadTranscriptAround, loadTranscriptEdge]);
 
   useEffect(() => {
     if (notFound) onUnavailable?.(conversationId);
@@ -1130,6 +1241,9 @@ export function ConversationDetail({
 
   useEffect(() => {
     setEffectiveAnchor(anchor);
+    handledAnchorKeyRef.current = null;
+    setNavigationTarget(null);
+    setNavigationError(null);
   }, [incomingAnchorKey]);
 
   const headerRef = useRef<HTMLElement>(null);
@@ -1164,15 +1278,21 @@ export function ConversationDetail({
         current,
       ));
     }
-    setNavigationTarget({
-      key: `${payload.revision}:${payload.target.kind}:${payload.target.turn_id ?? ''}`,
-      kind: payload.target.kind,
-      turnId: payload.target.turn_id,
-      blockId: payload.target.block_id,
-      smooth: false,
+    if (effectiveAnchor && handledAnchorKeyRef.current !== incomingAnchorKey) {
+      handledAnchorKeyRef.current = incomingAnchorKey;
+      setNavigationTarget({
+        key: `${conversationId}:target:${incomingAnchorKey}`,
+        kind: payload.target.kind,
+        turnId: payload.target.turn_id,
+        blockId: payload.target.block_id,
+        smooth: false,
+      });
+    }
+    setNavigationError((current) => {
+      const operation = current?.operation === 'source-unavailable' ? current.retryOperation : current?.operation;
+      return current && operation && ['edge-older', 'edge-newer', 'export'].includes(operation) ? current : null;
     });
-    setNavigationError(null);
-  }, [conversationId, windowQuery.data]);
+  }, [conversationId, effectiveAnchor, incomingAnchorKey, windowQuery.data]);
 
   const refreshControl = useCallback(() => {
     let active = true;
@@ -1310,52 +1430,33 @@ export function ConversationDetail({
     setJumpingToLatest(true);
     setNavigationError(null);
     const latestTarget = normalizeWindowTarget({ target: 'latest' });
-    const latestKey = conversationKeys.window(conversationId, latestTarget);
     try {
-      let latest = await queryClient.fetchQuery({
-        queryKey: latestKey,
-        queryFn: ({ signal }) => getConversationWindow(conversationId, windowRequest(latestTarget, signal)),
-        staleTime: 0,
-      });
-      let observedRevision = queryClient.getQueryData<ConversationPositionWindow>(
+      let latest = await fetchAndReconcileWindow(latestTarget);
+      let observedRevision = queryClient.getQueryData<ConversationTranscriptData>(
         conversationKeys.aggregate(conversationId),
       )?.revision ?? latest.revision;
       while (latest.revision < observedRevision) {
-        latest = await queryClient.fetchQuery({
-          queryKey: latestKey,
-          queryFn: ({ signal }) => getConversationWindow(conversationId, windowRequest(latestTarget, signal)),
-          staleTime: 0,
-        });
-        observedRevision = queryClient.getQueryData<ConversationPositionWindow>(
+        latest = await fetchAndReconcileWindow(latestTarget);
+        observedRevision = queryClient.getQueryData<ConversationTranscriptData>(
           conversationKeys.aggregate(conversationId),
         )?.revision ?? latest.revision;
       }
-      const payload = mergeConversationWindows(
-        queryClient.getQueryData<ConversationPositionWindow>(conversationKeys.aggregate(conversationId)),
-        latest,
-      );
-      queryClient.setQueryData(conversationKeys.aggregate(conversationId), payload);
-      queryClient.setQueryData(latestKey, payload);
-      queryClient.setQueryData(
-        conversationKeys.window(conversationId, normalizeWindowTarget({ target: 'initial' })),
-        payload,
-      );
       setEffectiveAnchor(null);
       const params = new URLSearchParams({ conversation: conversationId });
       window.history.replaceState(null, '', `#/console?${params.toString()}`);
       setNavigationTarget({
-        key: `${payload.revision}:latest`,
+        key: `${conversationId}:latest:${latest.source_version_id ?? 'legacy'}:${latest.revision}`,
         kind: 'latest',
-        turnId: payload.target.turn_id,
-        blockId: payload.target.block_id,
+        turnId: latest.target.turn_id,
+        blockId: latest.target.block_id,
         smooth: true,
       });
     } catch (err) {
-      setNavigationError(conversationLoadFailure(err, true));
+      setNavigationError(conversationLoadFailure(err, true, 'target'));
     } finally {
       setJumpingToLatest(false);
     }
-  }, [conversationId, queryClient]);
+  }, [conversationId, fetchAndReconcileWindow, queryClient]);
 
   // Toast auto-dismiss
   useEffect(() => {
@@ -1516,10 +1617,22 @@ export function ConversationDetail({
     blocks,
     usageRows,
   }), [blocks, chatEvents, telemetry, usageRows]);
-  const conversationMarkdown = useMemo(
-    () => serializeConversationToMarkdown(buildStreamState(chatEvents).nodes),
-    [chatEvents],
-  );
+  const runMarkdownAction = useCallback(async (intent: 'copy' | 'open') => {
+    setExportLoading(true);
+    setExportIntent(intent);
+    setNavigationError(null);
+    try {
+      const exported = await exportConversationBlocks(conversationId, { format: 'markdown' });
+      if (intent === 'copy') await navigator.clipboard.writeText(exported.content);
+      else openMarkdownDocument(exported.content);
+      setExportIntent(null);
+      setActionsOpen(false);
+    } catch (cause) {
+      setNavigationError(conversationLoadFailure(cause, true, 'export'));
+    } finally {
+      setExportLoading(false);
+    }
+  }, [conversationId]);
 
   const openUsage = useCallback(() => setUsageModalOpen(true), []);
   const [sessionRunOptions, setSessionRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
@@ -1766,8 +1879,21 @@ export function ConversationDetail({
 
   const retryLoad = useCallback(() => {
     if (error) setNavigationError(error);
+    const operation = error?.operation === 'source-unavailable' ? error.retryOperation : error?.operation;
+    if (operation === 'edge-older') {
+      void loadTranscriptEdge('older');
+      return;
+    }
+    if (operation === 'edge-newer') {
+      void loadTranscriptEdge('newer');
+      return;
+    }
+    if (operation === 'export' && exportIntent) {
+      void runMarkdownAction(exportIntent);
+      return;
+    }
     void windowQuery.refetch();
-  }, [error, windowQuery]);
+  }, [error, exportIntent, loadTranscriptEdge, runMarkdownAction, windowQuery]);
 
   const loadErrorNotice = error ? (
     <DetailPaneNotice
@@ -1776,7 +1902,7 @@ export function ConversationDetail({
       actions={error.retryable ? (
         <>
           {error.retryable ? (
-            <button type="button" className="btn btn--ghost btn--sm" disabled={loading} onClick={retryLoad}>Retry</button>
+            <button type="button" className="btn btn--ghost btn--sm" disabled={loading || edgeLoading !== null || exportLoading} onClick={retryLoad}>Retry</button>
           ) : null}
         </>
       ) : undefined}
@@ -1784,6 +1910,20 @@ export function ConversationDetail({
       {error.message}
     </DetailPaneNotice>
   ) : undefined;
+
+  const handleNavigationResult = useCallback((result: { key: string; status: 'revealed' | 'not-renderable' }) => {
+    if (result.key !== navigationTarget?.key) return;
+    if (result.status === 'revealed') {
+      setNavigationError((current) => current?.operation === 'target' ? null : current);
+      return;
+    }
+    setNavigationError({
+      operation: 'target',
+      code: 'target_not_renderable',
+      message: 'The requested transcript target was loaded but has no readable rendered content.',
+      retryable: false,
+    });
+  }, [navigationTarget?.key]);
 
   if (loading && !conversation && !error) {
     return (
@@ -1874,21 +2014,18 @@ export function ConversationDetail({
                 <button
                   type="button"
                   role="menuitem"
-                  disabled={!conversationMarkdown}
-                  onClick={() => {
-                    void navigator.clipboard.writeText(conversationMarkdown).catch(() => {});
-                    setActionsOpen(false);
-                  }}
+                  disabled={exportLoading}
+                  onClick={() => { void runMarkdownAction('copy'); }}
                 >
-                  Copy markdown
+                  {exportLoading && exportIntent === 'copy' ? 'Copying markdown…' : 'Copy markdown'}
                 </button>
                 <button
                   type="button"
                   role="menuitem"
-                  disabled={!conversationMarkdown}
-                  onClick={() => { openMarkdownDocument(conversationMarkdown); setActionsOpen(false); }}
+                  disabled={exportLoading}
+                  onClick={() => { void runMarkdownAction('open'); }}
                 >
-                  Open markdown
+                  {exportLoading && exportIntent === 'open' ? 'Opening markdown…' : 'Open markdown'}
                 </button>
                 <button type="button" role="menuitem" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
                   {conversation.starred ? 'Unstar' : 'Star'}
@@ -2136,10 +2273,12 @@ export function ConversationDetail({
             emptyLabel={error
                 ? 'Conversation content unavailable.'
                 : 'No messages yet'}
-            unmaterializedAfterCount={conversation.position_window.window.after_count}
+            transcript={transcriptConsumer}
+            unmaterializedAfterCount={transcriptConsumer?.unmaterializedAfterCount ?? 0}
             onJumpToLatest={handleJumpToLatest}
             jumpingToLatest={jumpingToLatest}
             navigationTarget={navigationTarget}
+            onNavigationResult={handleNavigationResult}
             onFork={handleFork}
             sessionInfo={{
               sessionId: conversation.session_id,
@@ -2427,12 +2566,14 @@ export function ConversationsView({
         ? { type: 'session', id: initialSessionId }
         : chatViewState.lastSelection
   ));
-  const handleNavigateConversation = useCallback((conversationId: string) => {
+  const handleNavigateConversation = useCallback((conversationId: string, target?: ConversationAnchor) => {
     setSelection((current) => current?.type === 'conversation' && current.id === conversationId
       ? current
       : { type: 'conversation', id: conversationId });
     const nextHash = hashWithAgentSession(
-      `#/console?conversation=${encodeURIComponent(conversationId)}`,
+      target
+        ? conversationAnchorHref(conversationId, target)
+        : `#/console?conversation=${encodeURIComponent(conversationId)}`,
       getAgentPageBinding(),
     );
     if (window.location.hash !== nextHash) window.location.hash = nextHash;
@@ -3410,7 +3551,7 @@ export function ConversationsView({
       onClick={() => {
         if (newChatDraft?.state === 'choosing') discardDraft();
         if (entry.kind === 'conversation' && entry.conversation) {
-          handleNavigateConversation(entry.conversation.id);
+          handleNavigateConversation(entry.conversation.id, entry.conversation.search_target);
           setRetainedSelection(entry.conversation);
           return;
         }

@@ -95,6 +95,7 @@ const conversation = {
 const positionWindow = {
   conversation,
   body_source: 'source',
+  source_version_id: 'fixture-v1',
   children: [],
   parent: null,
   revision: 9,

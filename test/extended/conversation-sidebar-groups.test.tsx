@@ -505,7 +505,7 @@ describe('conversation sidebar groups', () => {
     };
     vi.spyOn(api, 'getConversationWindow').mockResolvedValue({
       conversation: scopedConversation,
-      body_source: 'legacy', blocks: [], children: [], parent: null, revision: 0, total: 0,
+      body_source: 'legacy', source_version_id: null, blocks: [], children: [], parent: null, revision: 0, total: 0,
       target: { kind: 'initial', requested_value: null, position: null, block_id: null, turn_id: null },
       window: { start_position: null, end_position: null, has_before: false, has_after: false, after_count: 0, limit: 160 },
     });
