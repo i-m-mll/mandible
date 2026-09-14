@@ -548,6 +548,7 @@ export type ConversationPositionTarget = {
 export type ConversationPositionWindow = {
   conversation: Conversation;
   body_source: "source" | "legacy";
+  source_version_id: string | null;
   children: ConversationChild[];
   parent: ConversationParent | null;
   revision: number;

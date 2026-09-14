@@ -851,12 +851,14 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
         });
       }
     }
+    const searchTargets = new Map<string, string>();
     if (searchNeedle && fullTextSearch && rows.length > 0) {
       const searched = await getConversationSearchCache(db).search({
         conversationIds: rows.map((row) => row.id),
         needle: searchNeedle,
         limit: rows.length,
       });
+      for (const match of searched.matches) searchTargets.set(match.conversation_id, match.block_id);
       const matching = new Set(searched.matches.map((match) => match.conversation_id));
       rows = rows.filter((row) => matching.has(row.id));
     }
@@ -886,6 +888,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
           total: group.total,
           conversations: group.rows.map((row) => ({
             ...mapSidebarConversation(row, fullTextSearch),
+            ...(searchTargets.has(row.id)
+              ? { search_target: { block: searchTargets.get(row.id)! } }
+              : {}),
             ...(externalNavigation.has(row.id)
               ? { external_navigation: externalNavigation.get(row.id) }
               : {}),
@@ -1244,6 +1249,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     let bodySource: "source" | "legacy" = "legacy";
     let resolvedBlock: BlockRow | SourceBackedConversationBlock | null = null;
     let resolvedTurnId: string | null = null;
+    let sourceVersionId: string | null = null;
     if (useSourceReader) {
       const source = db.prepare(`
         SELECT current_version_id FROM conversation_sources
@@ -1251,6 +1257,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
          ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC
          LIMIT 1
       `).get(id) as { current_version_id: string } | undefined;
+      sourceVersionId = source?.current_version_id ?? null;
       const structureCache = getConversationStructureCache(db);
       const cachedTotal = source
         ? structureCache.blockCount(id, source.current_version_id)
@@ -1317,6 +1324,9 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       }
       readableBlocks = sourcePage.value.blocks;
       bodySource = sourcePage.status;
+      if (sourcePage.status === "source" && sourcePage.sourceVersionId) {
+        sourceVersionId = sourcePage.sourceVersionId;
+      }
       total = sourcePage.value.total;
       if (targetKind === "initial" || targetKind === "latest") {
         anchorPosition = readableBlocks[readableBlocks.length - 1]?.position ?? null;
@@ -1480,6 +1490,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     sendJson(res, 200, {
       conversation: mapped,
       body_source: bodySource,
+      source_version_id: sourceVersionId,
       children: childrenWithDuration,
       parent: parent ?? null,
       revision: conv.block_count,

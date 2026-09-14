@@ -529,7 +529,10 @@ describe("conversation sidebar projection", () => {
       expect.objectContaining({
         label: "Chats",
         total: 1,
-        conversations: [expect.objectContaining({ id: "body-only" })],
+        conversations: [expect.objectContaining({
+          id: "body-only",
+          search_target: { block: "body-block" },
+        })],
       }),
     ]);
 

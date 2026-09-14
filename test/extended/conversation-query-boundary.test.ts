@@ -8,7 +8,11 @@ import type {
   ConversationSidebarGroup,
 } from '../../ui/src/api';
 import { conversationKeys, normalizeWindowTarget } from '../../ui/src/query/conversationKeys';
-import { mergeConversationWindows, mergeSidebarPages } from '../../ui/src/query/conversationData';
+import {
+  conversationTranscriptFromWindow,
+  reconcileConversationWindow,
+  mergeSidebarPages,
+} from '../../ui/src/query/conversationData';
 import { applyConversationSse } from '../../ui/src/query/conversationSse';
 
 function conversation(id = 'conv-1', blockCount = 0): Conversation {
@@ -55,6 +59,7 @@ function window(target: ConversationPositionWindow['target'], blocks: Conversati
   return {
     conversation: conversation('conv-1', total),
     body_source: 'source',
+    source_version_id: 'source-v1',
     children: [],
     parent: null,
     revision: total,
@@ -126,7 +131,34 @@ describe('Chat Query authority', () => {
       { kind: 'block', requested_value: 'b1', position: 1, block_id: 'b1', turn_id: null },
       [block('b1', 1), block('b2', 2)],
     );
-    expect(mergeConversationWindows(initial, exact).blocks.map((item) => item.id)).toEqual(['b0', 'b1', 'b2']);
+    const merged = reconcileConversationWindow(conversationTranscriptFromWindow(initial), exact);
+    expect(merged.blocks.map((item) => item.id)).toEqual(['b0', 'b1', 'b2']);
+    expect(merged.loaded_intervals).toEqual([{ start: 0, end: 2 }]);
+  });
+
+  it('preserves explicit gaps and replaces the aggregate when source bytes change at the same count', () => {
+    const head = window(
+      { kind: 'position', requested_value: 1, position: 1, block_id: 'b1', turn_id: null },
+      [block('b0', 0), block('b1', 1)],
+      6,
+    );
+    const tail = window(
+      { kind: 'position', requested_value: 5, position: 5, block_id: 'b5', turn_id: null },
+      [block('b4', 4), block('b5', 5)],
+      6,
+    );
+    const gapped = reconcileConversationWindow(conversationTranscriptFromWindow(head), tail);
+    expect(gapped.loaded_intervals).toEqual([{ start: 0, end: 1 }, { start: 4, end: 5 }]);
+    expect(gapped.blocks.map((item) => item.id)).toEqual(['b0', 'b1', 'b4', 'b5']);
+
+    const replacement = {
+      ...tail,
+      source_version_id: 'source-v2',
+      blocks: [block('replacement', 4), block('b5', 5)],
+    };
+    const replaced = reconcileConversationWindow(gapped, replacement);
+    expect(replaced.loaded_intervals).toEqual([{ start: 4, end: 5 }]);
+    expect(replaced.blocks.map((item) => item.id)).toEqual(['replacement', 'b5']);
   });
 
   it('merges each sidebar continuation without disturbing the existing prefix', () => {
