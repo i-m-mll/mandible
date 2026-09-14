@@ -1650,23 +1650,25 @@ describe("iab-preview launcher", () => {
 
     const payload = JSON.parse(result.stdout);
     expect(payload.status).toBe("already-running");
-    expect(payload.browserEnrollment).toBe("verified-dashboard-session");
-    expect(new URL(payload.freshUrl).hash).toContain("mandible_auth=preview+dashboard+session+1");
+    expect(payload.browserEnrollment).toBe("existing-profile-session");
+    expect(new URL(payload.freshUrl).hash).not.toContain("mandible_auth");
+    expect(payload.pairingUrl).toBeUndefined();
     expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
       .not.toContain("preview process proof");
     expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
       .not.toContain("preview dashboard session");
 
-    const reused = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+    const reused = await execFileAsync(process.execPath, [SCRIPT, "--json", "--pair-browser"], {
       cwd: repo,
       encoding: "utf8",
       env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
     });
     const reusedPayload = JSON.parse(reused.stdout);
     expect(reusedPayload.status).toBe("already-running");
-    expect(new URL(reusedPayload.freshUrl).hash)
-      .toContain("mandible_auth=preview+dashboard+session+2");
-    expect(reusedPayload.freshUrl).not.toBe(payload.freshUrl);
+    expect(reusedPayload.browserEnrollment).toBe("verified-pairing-session");
+    expect(new URL(reusedPayload.freshUrl).hash).not.toContain("mandible_auth");
+    expect(new URL(reusedPayload.pairingUrl).hash)
+      .toContain("mandible_auth=preview+dashboard+session+1");
     expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
       .not.toContain("preview dashboard session");
   });
@@ -1693,7 +1695,7 @@ describe("iab-preview launcher", () => {
       try {
         const result = await launcher.withBrowserReadyUrl(${JSON.stringify({
           port, pidFile, previewRoot, health,
-        })});
+        })}, { pairBrowser: true });
         process.stdout.write(JSON.stringify({ ok: true, result }));
       } catch (error) {
         process.stdout.write(JSON.stringify({ ok: false, error: String(error) }));

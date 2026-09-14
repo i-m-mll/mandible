@@ -1,5 +1,9 @@
 import type { MandibleEvent } from '../../src/contracts';
-import { getStoredToken } from './client-auth-token';
+import {
+  getClientAuthSessionState,
+  getStoredToken,
+  isTerminalClientAuthState,
+} from './client-auth-token';
 
 export type SSEPayload = MandibleEvent;
 
@@ -228,6 +232,10 @@ export class SSEClient {
         headers: { Accept: 'text/event-stream' },
         signal: controller.signal,
       });
+      if (response.status === 401 || response.status === 403) {
+        this.setState('down');
+        return;
+      }
       if (!response.ok || !response.body) {
         throw new Error(`SSE subscribe failed (${response.status})`);
       }
@@ -256,7 +264,10 @@ export class SSEClient {
         }
       }
     } catch {
-      if (!controller.signal.aborted && !this.closed) shouldReconnect = true;
+      if (!controller.signal.aborted && !this.closed
+          && !isTerminalClientAuthState(getClientAuthSessionState())) {
+        shouldReconnect = true;
+      }
     } finally {
       if (this.abortController === controller) this.abortController = null;
       this.connecting = false;

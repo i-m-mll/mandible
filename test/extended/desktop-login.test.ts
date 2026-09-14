@@ -304,19 +304,19 @@ describe("reserved credential parameter", () => {
 });
 
 describe("losing a dashboard session mid-session", () => {
-  it("marks the surface unauthenticated when a 401 clears the stored token", async () => {
+  it("marks the surface unauthenticated without destroying a recoverable token", async () => {
     window.localStorage.setItem("mandible.client_auth.token", "revoked-session");
     const states: string[] = [];
     const unsubscribe = subscribeClientAuthSessionState((state) => states.push(state));
-    // Another surface enrolled and rotated this session away: the request 401s
-    // and the renewal handshake cannot revive an unknown token.
+    // Explicit revocation makes the request and renewal fail, but a transient
+    // wrong backend must not make the renderer destroy the stored credential.
     window.fetch = vi.fn(async () => new Response(null, { status: 401 })) as typeof window.fetch;
     installClientAuthFetch();
 
     const response = await window.fetch("/api/write", { method: "POST" });
 
     expect(response.status).toBe(401);
-    expect(getStoredToken()).toBeNull();
+    expect(getStoredToken()).toBe("revoked-session");
     expect(getClientAuthSessionState()).toBe("unauthenticated");
     expect(states).toContain("unauthenticated");
     unsubscribe();

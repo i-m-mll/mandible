@@ -29,6 +29,7 @@ import { getClientAuthMode } from "./mode.js";
 import {
   defaultClientAuthDir,
   loadOrCreatePepper,
+  loadOrCreateClientAuthAuthorityId,
   MAX_DASHBOARD_SESSIONS,
   readDashboardSessions,
   writeDashboardSessions,
@@ -117,8 +118,11 @@ export class ClientAuthenticator implements ClientAuthGate {
   private readonly now: () => number;
   /** Pepper is loaded from the filesystem ONCE at construction (startup). */
   private readonly pepper: string;
+  private readonly clientAuthAuthorityId: string;
   /** Presented dashboard fingerprint keyed by the exact authenticate() result. */
   private readonly presentedDashboardSessions = new WeakMap<object, string>();
+  private readonly expiredDashboardFingerprints = new Set<string>();
+  private readonly revokedDashboardFingerprints = new Set<string>();
   private bootstrapRaw: string | null = null;
   private previewEnrollmentRaw: string | null = null;
   private readonly previewEnrollment: { previewRoot: string; startupEpoch: string } | null;
@@ -150,7 +154,21 @@ export class ClientAuthenticator implements ClientAuthGate {
       ? { previewRoot: options.instance.preview_root, startupEpoch: options.startupEpoch }
       : null;
     this.pepper = loadOrCreatePepper(db, this.secretsDir);
+    this.clientAuthAuthorityId = loadOrCreateClientAuthAuthorityId(this.secretsDir);
     this.restoreDashboardSession();
+  }
+
+  authorityId(): string {
+    return this.clientAuthAuthorityId;
+  }
+
+  classifyFailure(credential: string | null | undefined): "expired" | "revoked" | "unknown" {
+    const token = normalizeBearer(credential);
+    if (!token) return "unknown";
+    const fingerprint = fingerprintForToken(this.pepper, token);
+    if (this.expiredDashboardFingerprints.has(fingerprint)) return "expired";
+    if (this.revokedDashboardFingerprints.has(fingerprint)) return "revoked";
+    return "unknown";
   }
 
   mode(): ClientAuthMode {
@@ -171,7 +189,8 @@ export class ClientAuthenticator implements ClientAuthGate {
     const eph = this.ephemeral.get(key);
     if (eph) {
       if (
-        eph.purpose.startsWith(PREVIEW_BROWSER_ENROLLMENT_PURPOSE_PREFIX)
+        (eph.purpose === "operator_bootstrap"
+          || eph.purpose.startsWith(PREVIEW_BROWSER_ENROLLMENT_PURPOSE_PREFIX))
         && (context?.method !== "POST" || context.pathname !== "/api/client-auth/handshake")
       ) {
         return null;
@@ -301,6 +320,26 @@ export class ClientAuthenticator implements ClientAuthGate {
     if (entry?.purpose === "dashboard_handshake") this.persistDashboardSessions();
   }
 
+  /** Revoke exactly the dashboard session presented by this request identity. */
+  revokePresentedDashboardSession(identity: object): boolean {
+    const fingerprint = this.presentedDashboardSessions.get(identity);
+    if (!fingerprint) return false;
+    const entry = this.ephemeral.get(fingerprint);
+    if (!entry || entry.purpose !== "dashboard_handshake") return false;
+    this.ephemeral.delete(fingerprint);
+    this.revokedDashboardFingerprints.add(fingerprint);
+    this.boundFailureHistory();
+    this.persistDashboardSessions();
+    return true;
+  }
+
+  dashboardSessionMetadata(identity: object): { audience: string; expires_at: number } | null {
+    const fingerprint = this.presentedDashboardSessions.get(identity);
+    const entry = fingerprint ? this.ephemeral.get(fingerprint) : null;
+    if (!entry || entry.purpose !== "dashboard_handshake" || entry.expiresAt === null) return null;
+    return { audience: this.clientAuthAuthorityId, expires_at: entry.expiresAt };
+  }
+
   /**
    * Mint a session-scoped ephemeral token for an already-authenticated agent
    * identity (issue 0b989d1). The caller has proved the identity with a durable
@@ -411,8 +450,6 @@ export class ClientAuthenticator implements ClientAuthGate {
     expires_at: number;
   } {
     const previous = this.dashboardEntries();
-    const replacedFingerprint = this.presentedDashboardSessions.get(identity);
-    if (replacedFingerprint) this.ephemeral.delete(replacedFingerprint);
     const token = this.issueEphemeralToken(identity, "dashboard_handshake", {
       ttlMs: this.dashboardSessionTtlMs,
     });
@@ -515,7 +552,12 @@ export class ClientAuthenticator implements ClientAuthGate {
         session.renew_until <= this.now()
         || !operator
         || session.user_id !== operator.id
-      ) continue;
+      ) {
+        if (session.user_id === operator?.id) {
+          this.expiredDashboardFingerprints.add(session.token_fingerprint);
+        }
+        continue;
+      }
       this.ephemeral.set(session.token_fingerprint, {
         identity: { user_id: session.user_id, slug: operator.slug },
         purpose: "dashboard_handshake",
@@ -543,6 +585,8 @@ export class ClientAuthenticator implements ClientAuthGate {
       ) {
         this.ephemeral.delete(key);
         if (entry.purpose === "dashboard_handshake") {
+          this.expiredDashboardFingerprints.add(key);
+          this.boundFailureHistory();
           dashboardChanged = true;
         }
       }
@@ -658,6 +702,12 @@ export class ClientAuthenticator implements ClientAuthGate {
       const [key] = evictable.shift()!;
       this.ephemeral.delete(key);
       retained -= 1;
+    }
+  }
+
+  private boundFailureHistory(): void {
+    for (const set of [this.expiredDashboardFingerprints, this.revokedDashboardFingerprints]) {
+      while (set.size > 256) set.delete(set.values().next().value!);
     }
   }
 }

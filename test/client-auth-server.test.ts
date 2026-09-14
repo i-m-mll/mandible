@@ -221,7 +221,7 @@ describe("client-auth: dashboard handshake (finding 1/3)", () => {
     });
   });
 
-  it("lets a dashboard session token re-handshake, as the desktop shell flow needs", async () => {
+  it("lets concurrent dashboard renewal complete without revoking the presented session", async () => {
     // Issue 54b5677: the desktop shell redeems the durable operator credential
     // for a session itself, then hands only that session to the webview, whose
     // normal boot handshake must be able to rotate it.
@@ -239,11 +239,33 @@ describe("client-auth: dashboard handshake (finding 1/3)", () => {
     expect(rotated.status).toBe(200);
     const dashboardToken = (rotated.body as { token: string }).token;
     expect(dashboardToken).not.toBe(shellSession.token);
-    // Rotation revokes the token it replaced, so only the newest one works.
-    expect(authenticator.authenticate(shellSession.token, "http_bearer")).toBeNull();
+    // Another tab can still finish an in-flight request with the presented
+    // session; renewal does not turn concurrency into a false revocation.
+    expect(authenticator.authenticate(shellSession.token, "http_bearer")).not.toBeNull();
     expect(authenticator.authenticate(dashboardToken, "http_bearer")).toMatchObject({
       method: "ephemeral",
     });
+  });
+
+  it("revokes exactly the explicitly logged-out dashboard session", async () => {
+    const first = (
+      await requestJson("POST", "/api/client-auth/handshake", undefined, bearer(operatorToken()))
+    ).body as { token: string };
+    const second = (
+      await requestJson("POST", "/api/client-auth/handshake", undefined, bearer(operatorToken()))
+    ).body as { token: string };
+
+    const logout = await requestJson(
+      "POST",
+      "/api/client-auth/logout",
+      undefined,
+      bearer(first.token),
+    );
+
+    expect(logout).toMatchObject({ status: 200, body: { logged_out: true } });
+    expect(authenticator.authenticate(first.token, "http_bearer")).toBeNull();
+    expect(authenticator.classifyFailure(first.token)).toBe("revoked");
+    expect(authenticator.authenticate(second.token, "http_bearer")).not.toBeNull();
   });
 
   it("renews an expired dashboard only at the handshake during a bounded grace", () => {
@@ -463,7 +485,7 @@ describe("client-auth: settings surface is protected (finding 4)", () => {
       "UPDATE settings SET value = ? WHERE key = 'console_operator_session_id'",
     ).run("operator-session");
     setClientAuthMode(db, "strict");
-    const all = await requestJson("GET", "/api/settings");
+    const all = await requestJson("GET", "/api/settings", undefined, bearer(operatorToken()));
     expect(all.status).toBe(200);
     for (const key of Object.keys(all.body as Record<string, unknown>)) {
       expect(key.startsWith("client_auth.")).toBe(false);
@@ -483,8 +505,8 @@ describe("client-auth: explicit operator and credential administration", () => {
     expect(
       fs.readFileSync(path.join(tempDir, "client-auth", "bootstrap-token"), "utf8").trim(),
     ).toMatch(/^mandible_pat_/);
-    const opToken = authenticator.bootstrapToken();
-    expect(opToken).toBeTruthy();
+    const operator = (first.body as { user: { id: string } }).user;
+    const opToken = authenticator.mintApiToken(operator.id, { label: "setup-test" }).token;
 
     const anonymousUpdate = await requestJson("POST", "/api/users/setup", {
       display_name: "Attacker",
@@ -512,7 +534,7 @@ describe("client-auth: explicit operator and credential administration", () => {
       "POST",
       "/api/users/setup",
       { display_name: "Operator Updated" },
-      bearer(opToken!),
+      bearer(opToken),
     );
     expect(authorized.status).toBe(200);
   });
@@ -568,12 +590,12 @@ describe("client-auth: authenticated SSE identity without URL bearer leakage", (
 });
 
 describe("client-auth over HTTP (strict mode)", () => {
-  it("rejects an anonymous mutation and keeps reads open", async () => {
+  it("rejects anonymous reads and mutations", async () => {
     setClientAuthMode(db, "strict");
     const write = await requestJson("POST", "/api/write", {});
     expect(write.status).toBe(401);
     const read = await requestJson("GET", "/api/read");
-    expect(read.status).toBe(200);
+    expect(read.status).toBe(401);
   });
 
   it("accepts a token-authenticated mutation", async () => {
