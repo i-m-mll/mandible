@@ -1905,7 +1905,12 @@ describe("iab-preview launcher", () => {
     expect(daemonPid).not.toBe(running);
   }, 60_000);
 
-  it("upgrades a live preview with legacy client-auth metadata before reusing its port", async () => {
+  it.each([
+    { recordedClientAuthDir: "legacy" },
+    { recordedClientAuthDir: "missing" },
+  ])("upgrades a live preview with $recordedClientAuthDir client-auth metadata before reusing its port", async ({
+    recordedClientAuthDir,
+  }) => {
     const fixture = await createRefreshFixture();
     fs.copyFileSync(fixture.refreshedHealthPath, fixture.healthPath);
     const running = spawnStandInDaemon(path.join(fixture.previewRoot, "legacy-live.pid"));
@@ -1923,12 +1928,15 @@ describe("iab-preview launcher", () => {
     fs.writeFileSync(path.join(legacyClientAuthDir, "dashboard-sessions.json"), "saved browser session\n", {
       mode: 0o600,
     });
+    const legacyInstanceEnv = { ...fixture.metadata.instanceEnv };
+    if (recordedClientAuthDir === "missing") {
+      delete legacyInstanceEnv.MANDIBLE_CLIENT_AUTH_DIR;
+    } else {
+      legacyInstanceEnv.MANDIBLE_CLIENT_AUTH_DIR = legacyClientAuthDir;
+    }
     const legacyMetadata = {
       ...fixture.metadata,
-      instanceEnv: {
-        ...fixture.metadata.instanceEnv,
-        MANDIBLE_CLIENT_AUTH_DIR: legacyClientAuthDir,
-      },
+      instanceEnv: legacyInstanceEnv,
       health: JSON.parse(fs.readFileSync(fixture.refreshedHealthPath, "utf8")),
     };
     fs.writeFileSync(fixture.metadataPath, JSON.stringify(legacyMetadata), "utf8");
