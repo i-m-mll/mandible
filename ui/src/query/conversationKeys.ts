@@ -8,6 +8,10 @@ function sorted(values: string[] | undefined): string[] {
   return [...new Set(values ?? [])].sort();
 }
 
+function ordered(values: string[] | undefined): string[] {
+  return [...new Set(values ?? [])];
+}
+
 export function normalizeSidebarFilters(filters: ConversationSidebarFilters): ConversationSidebarFilters {
   return {
     lifecycle: filters.lifecycle,
@@ -19,7 +23,7 @@ export function normalizeSidebarFilters(filters: ConversationSidebarFilters): Co
     min_blocks: filters.min_blocks,
     exclude_subagents: filters.exclude_subagents,
     project_ids: sorted(filters.project_ids),
-    pinned_ids: sorted(filters.pinned_ids),
+    pinned_ids: filters.pinned_ids === undefined ? undefined : ordered(filters.pinned_ids),
     limit: filters.limit,
   };
 }

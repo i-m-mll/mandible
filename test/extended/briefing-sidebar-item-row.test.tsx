@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { useState } from 'preact/hooks';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as api from '../../ui/src/api';
 import { briefingRoute } from '../../ui/src/routing';
 import {
   normalizeBriefingBundles,
@@ -155,8 +156,18 @@ function PersistedHarness(): JSX.Element {
   );
 }
 
+beforeEach(() => {
+  vi.spyOn(api, 'getSidebarOrderPreference').mockResolvedValue({
+    version: 1, key: 'sidebar_order', value: { pinnedConversationIds: null, briefingTopLevelIds: null }, revision: 0,
+  });
+  vi.spyOn(api, 'updateSidebarOrderPreference').mockImplementation(async (value, revision) => ({
+    version: 1, key: 'sidebar_order', value, revision: revision + 1,
+  }));
+});
+
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 

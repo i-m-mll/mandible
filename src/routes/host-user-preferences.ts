@@ -5,6 +5,7 @@ import {
   HostUserPreferencesStore,
   normalizeAppTheme,
   normalizeChatShownProjects,
+  normalizeSidebarOrderPreferenceValue,
 } from "../host-user-preferences.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import { bodyRecord, sendJson } from "./http.js";
@@ -62,6 +63,38 @@ export function registerHostUserPreferencesRoutes(
         return;
       }
       sendJson(res, 200, await store.writeChatShownProjects(
+        identity.user_id,
+        body.expected_revision as number,
+        value,
+      ));
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
+  server.get("/api/host-preferences/sidebar-order", async (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      sendJson(res, 200, await store.readSidebarOrder(identity.user_id));
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
+  server.put("/api/host-preferences/sidebar-order", async (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      const body = bodyRecord(req);
+      const value = normalizeSidebarOrderPreferenceValue(body.value);
+      if (!Number.isSafeInteger(body.expected_revision) || (body.expected_revision as number) < 0) {
+        sendJson(res, 400, { error: "Missing or invalid expected_revision", code: "invalid_preference_revision" });
+        return;
+      }
+      if (value === null) {
+        sendJson(res, 400, { error: "Invalid sidebar order", code: "invalid_sidebar_order" });
+        return;
+      }
+      sendJson(res, 200, await store.writeSidebarOrder(
         identity.user_id,
         body.expected_revision as number,
         value,

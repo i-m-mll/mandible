@@ -69,6 +69,12 @@ beforeEach(() => {
   vi.spyOn(api, 'updateChatShownProjectsPreference').mockImplementation(async (value, revision) => ({
     version: 1, key: 'chat_shown_projects', value, revision: revision + 1,
   }));
+  vi.spyOn(api, 'getSidebarOrderPreference').mockResolvedValue({
+    version: 1, key: 'sidebar_order', value: { pinnedConversationIds: null, briefingTopLevelIds: null }, revision: 0,
+  });
+  vi.spyOn(api, 'updateSidebarOrderPreference').mockImplementation(async (value, revision) => ({
+    version: 1, key: 'sidebar_order', value, revision: revision + 1,
+  }));
 });
 
 afterEach(() => {

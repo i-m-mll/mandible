@@ -38,12 +38,30 @@
   background: var(--surface-selected);
 }
 
-.sidebar-group-node--draggable > .sidebar-group-node__header {
+.sidebar-reorder-item > .sidebar-group-node__header,
+.sidebar-item-row.sidebar-reorder-item {
   cursor: grab;
+  touch-action: pan-x;
 }
 
-.sidebar-group-node--dragging {
+.sidebar-reorder-item--dragging {
   opacity: 0.6;
+  cursor: grabbing;
+}
+
+.sidebar-reorder-item--drop-target {
+  position: relative;
+}
+
+.sidebar-reorder-item--drop-target::before {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  inset: -2px 7px auto;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--app-divider-emphasis);
+  pointer-events: none;
 }
 
 .sidebar-group-node__heading {
