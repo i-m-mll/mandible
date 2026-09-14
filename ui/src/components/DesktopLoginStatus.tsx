@@ -3,7 +3,9 @@ import { useCallback, useEffect, useState } from 'preact/hooks';
 
 import { isDesktopShell } from '../api';
 import {
+  ensureClientAuthToken,
   getClientAuthSessionState,
+  logoutClientAuth,
   subscribeClientAuthSessionState,
   type ClientAuthSessionState,
 } from '../client-auth-token';
@@ -57,11 +59,14 @@ export function DesktopLoginStatus({
   useEffect(() => subscribeClientAuthSessionState(setSessionState), []);
 
   useEffect(() => {
-    if (!isDesktopShell()) return;
     if (sessionState === 'enrolled') {
       resetDesktopLoginRecoveryEpisode();
       setManualRetryAllowed(false);
       setError(null);
+      return;
+    }
+    if (!isDesktopShell()) {
+      setManualRetryAllowed(true);
       return;
     }
 
@@ -92,6 +97,10 @@ export function DesktopLoginStatus({
     setError(null);
     const reported: { message: string | null } = { message: null };
     try {
+      if (!isDesktopShell()) {
+        await ensureClientAuthToken();
+        return;
+      }
       const outcome = await retryDesktopLoginManually({
         onError: (message) => {
           reported.message = message;
@@ -107,27 +116,72 @@ export function DesktopLoginStatus({
     }
   }, []);
 
-  if (!isDesktopShell() || sessionState === 'enrolled' || busy || !manualRetryAllowed) {
+  const handleLogout = useCallback(async () => {
+    setBusy(true);
+    try {
+      await logoutClientAuth();
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  if (busy) {
     return null;
   }
 
-  const sessionLabel = sessionState === 'unreachable' ? 'Session unverified' : 'Not logged in';
+  if (sessionState === 'enrolled') {
+    return placement === 'rail' ? (
+      <div className="desktop-login desktop-login--rail">
+        <button
+          type="button"
+          className="app-rail__item desktop-login__rail-button"
+          onClick={handleLogout}
+          aria-label="Log out"
+          title="Log out this browser profile"
+        >
+          <span className="app-rail__icon"><DesktopLoginIcon /></span>
+          {showRailLabel ? <span className="app-rail__label">Log out</span> : null}
+          {!showRailLabel ? <span className="app-rail__tooltip">Log out</span> : null}
+        </button>
+      </div>
+    ) : (
+      <button type="button" className="desktop-login__button" onClick={handleLogout}>
+        Log out
+      </button>
+    );
+  }
+
+  if (!manualRetryAllowed) return null;
+
+  const sessionLabel = sessionState === 'unreachable'
+    ? 'Mandible unavailable'
+    : sessionState === 'wrong-audience'
+      ? 'Different Mandible instance'
+      : sessionState === 'expired'
+        ? 'Session expired'
+        : sessionState === 'revoked'
+          ? 'Session revoked'
+          : 'Not logged in';
+  const actionLabel = isDesktopShell() ? 'Log in' : 'Reconnect';
 
   if (placement === 'rail') {
     const statusDescription = error ? `${sessionLabel}: ${error}` : sessionLabel;
     return (
-      <div className="desktop-login desktop-login--rail" role="status">
+      <div
+        className="desktop-login desktop-login--rail"
+        role={isDesktopShell() ? 'status' : undefined}
+      >
         <button
           type="button"
           className="app-rail__item desktop-login__rail-button"
           onClick={handleLogin}
-          aria-label="Log in"
-          title={`${statusDescription}. Log in with the operator credential from the login keychain`}
+          aria-label={actionLabel}
+          title={`${statusDescription}. ${isDesktopShell() ? 'Log in with the operator credential from the login keychain' : 'Retry the saved browser session or open a new pairing link'}`}
         >
           <span className="app-rail__icon">
             <DesktopLoginIcon />
           </span>
-          {showRailLabel ? <span className="app-rail__label">Log in</span> : null}
+          {showRailLabel ? <span className="app-rail__label">{actionLabel}</span> : null}
           {!showRailLabel ? <span className="app-rail__tooltip">{statusDescription}</span> : null}
         </button>
         <span className="sr-only">{statusDescription}</span>
@@ -136,15 +190,17 @@ export function DesktopLoginStatus({
   }
 
   return (
-    <div className="desktop-login" role="status">
+    <div className="desktop-login" role={isDesktopShell() ? 'status' : undefined}>
       <span className="desktop-login__label">{sessionLabel}</span>
       <button
         type="button"
         className="desktop-login__button"
         onClick={handleLogin}
-        title="Log in with the operator credential from the login keychain"
+        title={isDesktopShell()
+          ? 'Log in with the operator credential from the login keychain'
+          : 'Retry the saved browser session or open a new pairing link'}
       >
-        Log in
+        {actionLabel}
       </button>
       {error ? (
         <span className="desktop-login__error" title={error}>

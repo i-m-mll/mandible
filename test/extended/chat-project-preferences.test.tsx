@@ -110,7 +110,7 @@ describe('Chat project preference migration', () => {
     expect(screen.getByRole('status').getAttribute('data-notice')).toContain('another Mandible window');
   });
 
-  it('retries preference read failures silently and restores the saved selection', async () => {
+  it('stops timer retries and restores the saved selection on an explicit reconnect signal', async () => {
     vi.useFakeTimers();
     const saved = [{ projectId: 'prj-shared', checkoutId: 'checkout-shared' }];
     vi.spyOn(api, 'getChatShownProjectsPreference')
@@ -119,9 +119,12 @@ describe('Chat project preference migration', () => {
 
     render(<Probe />);
 
-    await vi.waitFor(() => expect(screen.getByRole('status').getAttribute('data-ready')).toBe('false'));
-    expect(screen.getByRole('status').getAttribute('data-notice')).toBe('');
+    await vi.waitFor(() => {
+      expect(screen.getByRole('status').getAttribute('data-notice')).toMatch(/unavailable|Reconnect/);
+    });
     await vi.advanceTimersByTimeAsync(1500);
+    expect(api.getChatShownProjectsPreference).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new Event('focus'));
     await vi.waitFor(() => expect(screen.getByRole('status').getAttribute('data-ready')).toBe('true'));
     expect(JSON.parse(screen.getByRole('status').textContent ?? '[]')).toEqual(saved);
     vi.useRealTimers();

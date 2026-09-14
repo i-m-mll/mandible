@@ -99,7 +99,7 @@ async function createOrReusePreview(options) {
         return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
       }
       return {
-        ...await withBrowserReadyUrl(existing),
+        ...await withBrowserReadyUrl(existing, { pairBrowser: options.pairBrowser }),
         ok: true,
         status: "already-running",
         mode,
@@ -137,7 +137,7 @@ async function createOrReusePreview(options) {
         });
       }
       return {
-        ...await withBrowserReadyUrl(existing),
+        ...await withBrowserReadyUrl(existing, { pairBrowser: options.pairBrowser }),
         ok: true,
         status: "already-running",
         mode,
@@ -286,7 +286,7 @@ async function createOrReusePreview(options) {
     keepDbPaths: [dbCopy],
   });
   fs.writeFileSync(preview.metadata, `${JSON.stringify(metadata, null, 2)}\n`);
-  return await withBrowserReadyUrl(metadata);
+  return await withBrowserReadyUrl(metadata, { pairBrowser: options.pairBrowser });
 }
 
 async function seedBriefingDemo(options) {
@@ -610,6 +610,7 @@ function parseArgs(argv, commandName) {
     help: false,
     json: false,
     noBuild: false,
+    pairBrowser: false,
     port: null,
     artifactVersion: null,
   };
@@ -642,6 +643,9 @@ function parseArgs(argv, commandName) {
         break;
       case "--no-build":
         options.noBuild = true;
+        break;
+      case "--pair-browser":
+        options.pairBrowser = true;
         break;
       case "--port":
         options.port = Number.parseInt(requireValue(argv, ++index, arg), 10);
@@ -760,6 +764,7 @@ Options:
   --port PORT      Use an explicit preview port.
   --force-new      Do not reuse the current integration preview; create a new default branch/instance.
   --no-build       Skip dependency checks and npm run build.
+  --pair-browser   Mint one bounded pairing URL for a new browser profile.
   --dry-run        Resolve the plan without creating a DB copy or starting a daemon.
   -h, --help       Show this help.
 
@@ -797,6 +802,7 @@ function printResult(result, json) {
   console.log(`Mandible IAB preview ${result.status}`);
   if (result.message) console.log(result.message);
   console.log(`URL: ${result.freshUrl ?? result.url}`);
+  if (result.pairingUrl) console.log(`Pair new browser: ${result.pairingUrl}`);
   console.log(`Branch: ${result.branch}`);
   console.log(`Worktree: ${result.worktree}`);
   console.log(`DB: ${result.db ?? result.previewRoot}`);
@@ -1013,7 +1019,7 @@ async function refreshExistingPreview(existing, details) {
   delete refreshed.freshUrl;
   delete refreshed.browserEnrollment;
   fs.writeFileSync(preview.metadata, `${JSON.stringify(refreshed, null, 2)}\n`);
-  return await withBrowserReadyUrl(refreshed);
+  return await withBrowserReadyUrl(refreshed, { pairBrowser: details.options.pairBrowser });
 }
 
 function validatePreviewIdentity(metadata, preview, branch, expectedWorktree) {
@@ -1091,7 +1097,13 @@ function validateRefreshContract(existing, preview, details) {
   };
 }
 
-export async function withBrowserReadyUrl(preview) {
+export async function withBrowserReadyUrl(preview, options = {}) {
+  const clean = {
+    ...preview,
+    freshUrl: browserUrl(preview.port),
+    browserEnrollment: "existing-profile-session",
+  };
+  if (options.pairBrowser !== true) return clean;
   const previewRoot = preview.previewRoot ?? path.dirname(preview.db);
   const proof = readPreviewEnrollmentProof(
     path.join(previewRoot, "preview-browser-enrollment.json"),
@@ -1118,9 +1130,9 @@ export async function withBrowserReadyUrl(preview) {
     throw new Error(`Preview browser enrollment identity verification failed with HTTP ${whoami.status}.`);
   }
   return {
-    ...preview,
-    freshUrl: browserUrl(preview.port, dashboardToken),
-    browserEnrollment: "verified-dashboard-session",
+    ...clean,
+    pairingUrl: browserUrl(preview.port, dashboardToken),
+    browserEnrollment: "verified-pairing-session",
   };
 }
 

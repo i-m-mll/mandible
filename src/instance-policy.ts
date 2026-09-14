@@ -29,6 +29,7 @@ export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
   // dashboards need it to exchange their one-time bootstrap proof before any
   // identity-scoped reads can succeed.
   "POST /api/client-auth/handshake",
+  "POST /api/client-auth/logout",
   // Chat project visibility is host/user view intent stored outside both the
   // ledger and copied preview DB. Main and reject-mode previews deliberately
   // share this one revisioned authority.

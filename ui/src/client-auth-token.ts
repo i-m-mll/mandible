@@ -1,38 +1,69 @@
-// Dashboard client-auth token handling (issue 708dc4c, finding 3).
+// Browser-profile client authentication.
 //
-// The served HTML carries no token (that would leak operator identity to any
-// loopback-response reader). Instead the dashboard acquires an ephemeral
-// operator session via an authenticated POST /api/client-auth/handshake and
-// persists it in localStorage. The server persists the bounded session in a
-// protected file, so a strict dashboard can renew it after daemon restart.
-// Every same-origin /api request, including fetch-based SSE, carries an
-// Authorization header; bearer values never ride in URLs.
+// Each Mandible instance owns a stable protected authority directory. The raw
+// bounded session stays in this browser origin; the server stores only its
+// fingerprint. The public authority id lets the browser recognize that a
+// different daemon temporarily occupied the same port without presenting or
+// discarding its credential.
 
 const STORAGE_KEY = 'mandible.client_auth.token';
 const HANDSHAKE_PATH = '/api/client-auth/handshake';
+const WHOAMI_PATH = '/api/client-auth/whoami';
+const HEALTH_PATH = '/api/health';
+const LOGOUT_PATH = '/api/client-auth/logout';
 const WEBSOCKET_AUTH_PROTOCOL_PREFIX = 'mandible-auth.';
 
-/**
- * Outcome of the last handshake attempt (issue 54b5677). The desktop shell
- * needs to distinguish "this surface holds no operator session" (offer a login
- * path) from "the daemon could not answer" (nothing to log into yet).
- */
-export type ClientAuthSessionState = 'enrolled' | 'unauthenticated' | 'unreachable';
+type StoredClientAuthSession = {
+  version: 1;
+  token: string;
+  audience: string | null;
+  expires_at: number | null;
+};
+
+export type ClientAuthSessionState =
+  | 'enrolled'
+  | 'unauthenticated'
+  | 'unreachable'
+  | 'wrong-audience'
+  | 'expired'
+  | 'revoked';
 
 let sessionState: ClientAuthSessionState = 'unauthenticated';
+let currentAudience: string | null = null;
 const sessionStateListeners = new Set<(state: ClientAuthSessionState) => void>();
+
+export class ClientAuthRenewalCoordinator {
+  private pending: Promise<string | null> | null = null;
+
+  run(operation: () => Promise<string | null>): Promise<string | null> {
+    if (this.pending) return this.pending;
+    this.pending = operation().finally(() => {
+      this.pending = null;
+    });
+    return this.pending;
+  }
+}
+
+const renewalCoordinator = new ClientAuthRenewalCoordinator();
 
 export function getClientAuthSessionState(): ClientAuthSessionState {
   return sessionState;
+}
+
+export function isTerminalClientAuthState(
+  state: ClientAuthSessionState = sessionState,
+): boolean {
+  return state === 'unauthenticated'
+    || state === 'wrong-audience'
+    || state === 'expired'
+    || state === 'revoked';
 }
 
 export function subscribeClientAuthSessionState(
   listener: (state: ClientAuthSessionState) => void,
 ): () => void {
   sessionStateListeners.add(listener);
-  return () => {
-    sessionStateListeners.delete(listener);
-  };
+  return () => sessionStateListeners.delete(listener);
 }
 
 function setSessionState(next: ClientAuthSessionState): void {
@@ -49,39 +80,65 @@ function storage(): Storage | null {
   }
 }
 
-export function getStoredToken(): string | null {
-  const store = storage();
-  if (!store) return null;
+function storedSession(): StoredClientAuthSession | null {
   try {
-    const value = store.getItem(STORAGE_KEY);
-    return value && value.trim() ? value : null;
+    const raw = storage()?.getItem(STORAGE_KEY)?.trim();
+    if (!raw) return null;
+    if (!raw.startsWith('{')) {
+      return { version: 1, token: raw, audience: null, expires_at: null };
+    }
+    const parsed = JSON.parse(raw) as Partial<StoredClientAuthSession>;
+    if (parsed.version !== 1 || typeof parsed.token !== 'string' || !parsed.token) return null;
+    return {
+      version: 1,
+      token: parsed.token,
+      audience: typeof parsed.audience === 'string' ? parsed.audience : null,
+      expires_at: typeof parsed.expires_at === 'number' ? parsed.expires_at : null,
+    };
   } catch {
     return null;
   }
 }
 
-/** WebSocket browser APIs cannot set Authorization; use a header subprotocol. */
-export function clientAuthWebSocketProtocols(): string[] {
-  const token = getStoredToken();
-  return token
-    ? ['mandible', `${WEBSOCKET_AUTH_PROTOCOL_PREFIX}${token}`]
-    : ['mandible'];
+export function getStoredToken(): string | null {
+  return storedSession()?.token ?? null;
 }
 
-function setStoredToken(token: string): void {
+export function clientAuthWebSocketProtocols(): string[] {
+  const token = getStoredToken();
+  return token ? ['mandible', `${WEBSOCKET_AUTH_PROTOCOL_PREFIX}${token}`] : ['mandible'];
+}
+
+function setStoredSession(
+  token: string,
+  audience: string | null,
+  expiresAt: number | null,
+): void {
   try {
-    storage()?.setItem(STORAGE_KEY, token);
+    storage()?.setItem(STORAGE_KEY, JSON.stringify({
+      version: 1,
+      token,
+      audience,
+      expires_at: expiresAt,
+    } satisfies StoredClientAuthSession));
   } catch {
-    // localStorage may be unavailable (private mode); the dashboard still works
-    // in compat mode without a persisted token.
+    // A storage-disabled browser can still use the session for this page load.
   }
 }
 
-function clearStoredToken(): void {
+function setLegacyToken(token: string): void {
+  try {
+    storage()?.setItem(STORAGE_KEY, token);
+  } catch {
+    // The authenticated request below will report the unavailable store.
+  }
+}
+
+function clearStoredSession(): void {
   try {
     storage()?.removeItem(STORAGE_KEY);
   } catch {
-    // ignore
+    // Explicit logout has still dropped the renderer's in-memory state.
   }
 }
 
@@ -94,24 +151,14 @@ function adoptTokenFromUrlFragment(): void {
   const params = new URLSearchParams(hash.slice(queryIndex + 1));
   const token = params.get('mandible_auth');
   if (!token) return;
-  setStoredToken(token);
+  setLegacyToken(token);
   params.delete('mandible_auth');
   const remaining = params.toString();
-  const nextHash = `${route}${remaining ? `?${remaining}` : ''}`;
   window.history.replaceState(
     null,
     '',
-    `${window.location.pathname}${window.location.search}${nextHash}`,
+    `${window.location.pathname}${window.location.search}${route}${remaining ? `?${remaining}` : ''}`,
   );
-}
-
-function isSameOriginApiRequest(url: string): boolean {
-  try {
-    const resolved = new URL(url, window.location.origin);
-    return resolved.origin === window.location.origin && resolved.pathname.startsWith('/api');
-  } catch {
-    return false;
-  }
 }
 
 function requestUrl(input: RequestInfo | URL): string {
@@ -120,110 +167,183 @@ function requestUrl(input: RequestInfo | URL): string {
   return input.url;
 }
 
+function sameOriginApiPath(url: string): string | null {
+  try {
+    const resolved = new URL(url, window.location.origin);
+    return resolved.origin === window.location.origin && resolved.pathname.startsWith('/api')
+      ? resolved.pathname
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function stateForFailure(reason: unknown): ClientAuthSessionState {
+  if (reason === 'expired') return 'expired';
+  if (reason === 'revoked') return 'revoked';
+  return 'unauthenticated';
+}
+
+async function responseJson(response: Response): Promise<Record<string, unknown>> {
+  try {
+    const body = await response.clone().json();
+    return body && typeof body === 'object' && !Array.isArray(body)
+      ? body as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function readAudience(fetchImpl: typeof fetch): Promise<string | null> {
+  const response = await fetchImpl(HEALTH_PATH, { headers: { Accept: 'application/json' } });
+  if (!response.ok) return null;
+  const body = await responseJson(response);
+  const auth = body.client_auth && typeof body.client_auth === 'object'
+    ? body.client_auth as Record<string, unknown>
+    : null;
+  return typeof auth?.authority_id === 'string' ? auth.authority_id : null;
+}
+
+async function renewStoredSession(
+  fetchImpl: typeof fetch,
+  expectedToken: string,
+): Promise<string | null> {
+  return renewalCoordinator.run(async () => {
+    try {
+      const audience = await readAudience(fetchImpl);
+      currentAudience = audience;
+      const stored = storedSession();
+      if (!stored || stored.token !== expectedToken) return stored?.token ?? null;
+      if (stored.audience && audience && stored.audience !== audience) {
+        setSessionState('wrong-audience');
+        return null;
+      }
+      const response = await fetchImpl(HANDSHAKE_PATH, {
+        method: 'POST',
+        headers: { Accept: 'application/json', Authorization: `Bearer ${expectedToken}` },
+      });
+      const body = await responseJson(response);
+      if (!response.ok) {
+        setSessionState(response.status === 401 || response.status === 403
+          ? stateForFailure(body.reason ?? body.code)
+          : 'unreachable');
+        return null;
+      }
+      if (typeof body.token !== 'string' || !body.token) {
+        setSessionState('unreachable');
+        return null;
+      }
+      const nextAudience = typeof body.audience === 'string' ? body.audience : audience;
+      if (audience && nextAudience && audience !== nextAudience) {
+        setSessionState('wrong-audience');
+        return null;
+      }
+      setStoredSession(
+        body.token,
+        nextAudience,
+        typeof body.expires_at === 'number' ? body.expires_at : null,
+      );
+      setSessionState('enrolled');
+      return body.token;
+    } catch {
+      setSessionState('unreachable');
+      return null;
+    }
+  });
+}
+
 let installed = false;
 
-/**
- * Install a global fetch wrapper that attaches the client-auth bearer token to
- * every same-origin /api request. A single interception point covers the many
- * direct fetch call sites without touching each one. A 401 from an API request
- * drops the stored token (e.g. a stale ephemeral token after a daemon restart)
- * so the next dashboard boot re-handshakes.
- */
 export function installClientAuthFetch(): void {
   if (installed || typeof window === 'undefined' || typeof window.fetch !== 'function') return;
   installed = true;
   const originalFetch = window.fetch.bind(window);
 
   window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
-    const url = requestUrl(input);
-    if (!isSameOriginApiRequest(url)) {
+    const path = sameOriginApiPath(requestUrl(input));
+    if (!path || path === HEALTH_PATH || path === '/api/instance') {
       return originalFetch(input, init);
     }
-    const token = getStoredToken();
-    if (!token) {
-      return originalFetch(input, init);
+    const stored = storedSession();
+    if (!stored) return originalFetch(input, init);
+    if (stored.audience && currentAudience && stored.audience !== currentAudience) {
+      setSessionState('wrong-audience');
+      return new Response(JSON.stringify({
+        error: 'authentication_required',
+        reason: 'wrong_audience',
+      }), { status: 401, headers: { 'Content-Type': 'application/json' } });
     }
     const headers = new Headers(
       init.headers ?? (input instanceof Request ? input.headers : undefined),
     );
     const attachedStoredToken = !headers.has('Authorization');
-    if (attachedStoredToken) {
-      headers.set('Authorization', `Bearer ${token}`);
-    }
+    if (attachedStoredToken) headers.set('Authorization', `Bearer ${stored.token}`);
     const retryInput = input instanceof Request ? input.clone() : input;
     const response = await originalFetch(input, { ...init, headers });
-    if (response.status === 401 && attachedStoredToken && getStoredToken() === token) {
-      const resolved = new URL(url, window.location.origin);
-      if (resolved.pathname !== HANDSHAKE_PATH) {
-        try {
-          const renewal = await originalFetch(HANDSHAKE_PATH, {
-            method: 'POST',
-            headers: {
-              Accept: 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-          });
-          if (renewal.ok) {
-            const body = (await renewal.json()) as { token?: unknown };
-            if (typeof body.token === 'string' && body.token) {
-              setStoredToken(body.token);
-              setSessionState('enrolled');
-              headers.set('Authorization', `Bearer ${body.token}`);
-              return originalFetch(retryInput, { ...init, headers });
-            }
-          }
-        } catch {
-          // Fall through to clearing a credential that cannot be renewed.
-        }
-      }
-      if (getStoredToken() === token) {
-        clearStoredToken();
-        // Losing the session mid-run (e.g. another surface enrolled and rotated
-        // it away) must surface a login affordance immediately, not at the next
-        // reload.
-        setSessionState('unauthenticated');
-      }
+    if (response.status !== 401 || !attachedStoredToken || path === HANDSHAKE_PATH) {
+      return response;
     }
-    return response;
+    const renewed = await renewStoredSession(originalFetch, stored.token);
+    if (!renewed) return response;
+    headers.set('Authorization', `Bearer ${renewed}`);
+    return originalFetch(retryInput, { ...init, headers });
   };
 }
 
-/**
- * Renew an enrolled dashboard session on every boot. The handshake requires
- * the existing operator identity; an anonymous compat caller or unrelated
- * strict-mode identity can never use it to acquire operator privilege.
- */
 export async function ensureClientAuthToken(): Promise<string | null> {
   adoptTokenFromUrlFragment();
-  const existing = getStoredToken();
-  if (!existing) {
+  const stored = storedSession();
+  if (!stored) {
     setSessionState('unauthenticated');
     return null;
   }
   try {
-    const response = await fetch(HANDSHAKE_PATH, {
-      method: 'POST',
-      headers: { Accept: 'application/json' },
-    });
+    currentAudience = await readAudience(fetch.bind(window));
+    if (stored.audience && currentAudience && stored.audience !== currentAudience) {
+      setSessionState('wrong-audience');
+      return stored.token;
+    }
+    const response = await fetch(WHOAMI_PATH, { headers: { Accept: 'application/json' } });
+    const body = await responseJson(response);
     if (!response.ok) {
-      // 401/403 means the stored credential is not (or is no longer) an
-      // operator session, which a login can fix; anything else is a daemon-side
-      // problem that logging in again would not resolve.
-      setSessionState(
-        response.status === 401 || response.status === 403 ? 'unauthenticated' : 'unreachable',
+      setSessionState(response.status === 401 || response.status === 403
+        ? stateForFailure(body.reason ?? body.code)
+        : 'unreachable');
+      return stored.token;
+    }
+    if (response.ok
+        && body.authenticated === true
+        && body.evidence_method === 'ephemeral'
+        && body.ephemeral_purpose === 'dashboard_handshake') {
+      const audience = typeof body.audience === 'string' ? body.audience : currentAudience;
+      const session = body.session && typeof body.session === 'object'
+        ? body.session as Record<string, unknown>
+        : null;
+      setStoredSession(
+        stored.token,
+        audience,
+        typeof session?.expires_at === 'number' ? session.expires_at : stored.expires_at,
       );
-      return getStoredToken();
-    }
-    const body = (await response.json()) as { token?: unknown };
-    if (typeof body.token === 'string' && body.token) {
-      setStoredToken(body.token);
       setSessionState('enrolled');
-      return body.token;
+      return stored.token;
     }
-    setSessionState('unreachable');
-    return getStoredToken();
+    const renewed = await renewStoredSession(fetch.bind(window), stored.token);
+    if (renewed) return renewed;
+    if (sessionState === 'unreachable' || sessionState === 'wrong-audience') return stored.token;
+    setSessionState(stateForFailure(body.failure_reason));
+    return stored.token;
   } catch {
     setSessionState('unreachable');
-    return getStoredToken();
+    return stored.token;
+  }
+}
+
+export async function logoutClientAuth(): Promise<void> {
+  try {
+    await fetch(LOGOUT_PATH, { method: 'POST', headers: { Accept: 'application/json' } });
+  } finally {
+    clearStoredSession();
+    setSessionState('unauthenticated');
   }
 }
