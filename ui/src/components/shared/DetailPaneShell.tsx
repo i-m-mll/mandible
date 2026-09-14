@@ -92,15 +92,33 @@ export function DetailPaneShell({
   ariaBusy,
 }: DetailPaneShellProps): JSX.Element {
   const [bodyScrollOwner, setBodyScrollOwner] = useState<HTMLDivElement | null>(null);
-  const [registeredScrollOwner, registerScrollOwner] = useState<HTMLElement | null>(null);
+  const [registeredScrollOwner, setRegisteredScrollOwner] = useState<HTMLElement | null>(null);
   const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null);
+  const bodyScrollOwnerRef = useRef<HTMLDivElement | null>(null);
+  const registeredScrollOwnerRef = useRef<HTMLElement | null>(null);
+  const overlayHostRef = useRef<HTMLDivElement | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const footerRef = useRef<HTMLElement | null>(null);
   const overlayControlRef = useRef<HTMLDivElement | null>(null);
+  // Preact may replay callback refs during a descendant-driven render. DOM
+  // ownership is state only when the node identity actually changes; writing
+  // the same node back here otherwise queues the shell forever.
   const setBodyNode = useCallback((node: HTMLDivElement | null) => {
+    if (bodyScrollOwnerRef.current === node) return;
+    bodyScrollOwnerRef.current = node;
     setBodyScrollOwner(node);
     assignRef(bodyRef, node);
   }, [bodyRef]);
+  const registerScrollOwner = useCallback((node: HTMLElement | null) => {
+    if (registeredScrollOwnerRef.current === node) return;
+    registeredScrollOwnerRef.current = node;
+    setRegisteredScrollOwner(node);
+  }, []);
+  const setOverlayHostNode = useCallback((node: HTMLDivElement | null) => {
+    if (overlayHostRef.current === node) return;
+    overlayHostRef.current = node;
+    setOverlayHost(node);
+  }, []);
   const scrollOwner = registeredScrollOwner ?? bodyScrollOwner;
   const overlayContext = useMemo(() => ({
     host: overlayHost,
@@ -220,7 +238,7 @@ export function DetailPaneShell({
           className="detail-pane-shell__overlay-host"
           data-detail-pane-slot="overlay-host"
           data-detail-pane-overlay-host
-          ref={setOverlayHost}
+          ref={setOverlayHostNode}
         />
         {overlays}
       </Element>
