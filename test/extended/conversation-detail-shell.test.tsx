@@ -643,7 +643,7 @@ describe('compact detail pane shell', () => {
     expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__header\s*\{[^}]*box-shadow:\s*none;/s);
     expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__header-primary\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;/s);
 
-    expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__title\s*\{[^}]*color:\s*var\(--text-muted\);[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
+    expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__title\s*\{[^}]*color:\s*var\(--text-header-title\);[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
     expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__actions\s*\{[^}]*flex-shrink:\s*0;/s);
 
     const defaultShell = render(

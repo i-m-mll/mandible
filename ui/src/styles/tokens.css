@@ -131,6 +131,7 @@
   --scrim-modal: rgba(0, 0, 0, 0.6);
 
   --text-primary: var(--neutral-12);
+  --text-header-title: #fff;
   --text-secondary: var(--neutral-10);
   --text-muted: var(--neutral-9);
   --text-subdued: var(--neutral-10);
@@ -348,6 +349,7 @@
   --surface-overlay: rgba(15, 23, 42, 0.34);
   --scrim-modal: rgba(15, 23, 42, 0.34);
   --text-primary-soft: rgba(23, 32, 42, 0.88);
+  --text-header-title: #000;
   --text-primary-muted: rgba(23, 32, 42, 0.76);
   --text-primary-subtle: rgba(23, 32, 42, 0.72);
   --text-subtle: rgba(23, 32, 42, 0.72);

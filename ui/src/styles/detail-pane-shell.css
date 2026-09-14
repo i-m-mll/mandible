@@ -247,7 +247,7 @@
   flex: 1;
   min-width: 0;
   margin: 0;
-  color: var(--text-primary);
+  color: var(--text-header-title);
   font-size: 21px;
   line-height: 1.25;
   overflow-wrap: anywhere;
@@ -306,7 +306,6 @@
 }
 
 .detail-pane-header--compact .detail-pane-header__title {
-  color: var(--text-muted);
   font-size: 14px;
   font-weight: 500;
   line-height: 1.25;
@@ -434,7 +433,7 @@
   flex: 1;
   min-width: 0;
   margin: 0;
-  color: var(--text-muted);
+  color: var(--text-header-title);
   font-size: 14px;
   font-weight: 500;
   line-height: 1.25;
