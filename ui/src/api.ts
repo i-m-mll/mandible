@@ -2365,6 +2365,7 @@ export async function getConversations(params?: {
 export type ConversationSidebarConversation = Conversation & {
   canonical_project_id: string | null;
   canonical_project_key: string | null;
+  search_target?: { block: string };
   spawn?: ContractConversationSpawnReceipt;
 };
 
@@ -2463,11 +2464,11 @@ export async function updateConversationArchive(id: string, archived: boolean): 
 }
 
 export async function exportConversationBlocks(id: string, data: {
-  block_ids: string[];
+  block_ids?: string[];
   format: 'mdx' | 'markdown' | 'json';
-}): Promise<{ content: string; filename: string }> {
+}): Promise<{ content: string; block_count: number; body_source: 'source' | 'legacy' }> {
   const resp = await apiPost(`/api/conversations/${encodeURIComponent(id)}/export`, data);
-  return (await parseMaybeJson(resp)) as { content: string; filename: string };
+  return (await parseMaybeJson(resp)) as { content: string; block_count: number; body_source: 'source' | 'legacy' };
 }
 
 export async function transformExport(data: {

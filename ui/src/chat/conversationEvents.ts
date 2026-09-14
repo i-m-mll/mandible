@@ -106,6 +106,7 @@ function canonicalChatItem(value: unknown): ChatItem | null {
 export function conversationBlocksToStreamEvents(
   providerSessionId: string,
   blocks: Array<Pick<ConversationBlock, 'id' | 'type' | 'content' | 'metadata_json' | 'timestamp' | 'dag_uuid'>
+    & Partial<Pick<ConversationBlock, 'position'>>
     & Partial<Pick<ConversationBlock, 'parent_id'>>>,
 ): StreamEvent[] {
   const events: StreamEvent[] = [];
@@ -114,6 +115,7 @@ export function conversationBlocksToStreamEvents(
     const metadata = parseMetadata(block.metadata_json);
     const source = {
       blockId: block.id,
+      ...(Number.isSafeInteger(block.position) ? { position: block.position } : {}),
       ...(block.parent_id ? { parentBlockId: block.parent_id } : {}),
       timestamp: block.timestamp || undefined,
       dagUuid: block.dag_uuid ?? undefined,

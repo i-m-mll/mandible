@@ -115,6 +115,7 @@ function positionWindow(row: Conversation) {
   return {
     conversation: row,
     body_source: 'legacy' as const,
+    source_version_id: null,
     blocks: [],
     children: [],
     parent: null,

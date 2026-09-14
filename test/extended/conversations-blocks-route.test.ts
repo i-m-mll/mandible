@@ -163,7 +163,8 @@ describe("indexed conversation position window", () => {
     );
     fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
     fs.writeFileSync(sourcePath, "{}\n{}\n{}\n");
-    await new ConversationSourceStore(db).recordConversation({
+    const sourceStore = new ConversationSourceStore(db);
+    await sourceStore.recordConversation({
       conversationId: "conv-projected",
       provider: "codex",
       nativeSessionId: "session-projected",
@@ -181,6 +182,7 @@ describe("indexed conversation position window", () => {
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body).toMatchObject({
       body_source: "legacy",
+      source_version_id: sourceStore.resolveConversation("conv-projected")?.currentVersionId,
       total: 3,
       target: { kind: "initial", position: 9999, block_id: "projected-9999" },
       window: { start_position: 9997, end_position: 9999, has_after: false },
