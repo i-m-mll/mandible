@@ -15,7 +15,7 @@ beforeEach(() => {
   db = openDb(path.join(root, "mandible.db")); setDb(db);
   auth = new ClientAuthenticator(db, { secretsDir: path.join(root, "auth") });
   router = new Router({ clientAuth: auth });
-  router.post("/api/write", (req, res) => res.json({ identity: req.client_identity ?? null }), { fileRpc: "allow" });
+  router.post("/api/issues/test-write", (req, res) => res.json({ identity: req.client_identity ?? null }), { fileRpc: "allow" });
   router.get("/api/read", (req, res) => res.json({ identity: req.client_identity ?? null }), { fileRpc: "allow" });
 });
 afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
@@ -24,7 +24,7 @@ async function fileRpc(token?: string) {
   const transport = new FileRpcTransport({ router, dir: path.join(root, "rpc") });
   fs.mkdirSync(transport.dir, { recursive: true });
   fs.writeFileSync(path.join(transport.dir, "one.request.json"), JSON.stringify({
-    id: "one", method: "POST", path: "/api/write", body: {}, ...(token ? { capability_token: token } : {}),
+    id: "one", method: "POST", path: "/api/issues/test-write", body: {}, ...(token ? { capability_token: token } : {}),
   }));
   await transport.processOnce();
   return JSON.parse(fs.readFileSync(path.join(transport.dir, "one.response.json"), "utf8")) as { status: number; body: unknown };
@@ -33,13 +33,13 @@ async function fileRpc(token?: string) {
 describe("strict client-auth boundary", () => {
   it("rejects anonymous reads and writes coherently", async () => {
     expect((await router.invoke({ method: "GET", url: "/api/read", transport: "http" })).status).toBe(401);
-    expect((await router.invoke({ method: "POST", url: "/api/write", body: {}, transport: "http" })).status).toBe(401);
+    expect((await router.invoke({ method: "POST", url: "/api/issues/test-write", body: {}, transport: "http" })).status).toBe(401);
   });
 
   it("resolves a durable bearer to its exact user", async () => {
     const user = createUser(db, { slug: "agent-x", kind: "agent", display_name: "Agent X" });
     const issued = auth.mintApiToken(user.id);
-    const response = await router.invoke({ method: "POST", url: "/api/write", body: {}, credential: issued.token, transport: "http" });
+    const response = await router.invoke({ method: "POST", url: "/api/issues/test-write", body: {}, credential: issued.token, transport: "http" });
     expect(response).toMatchObject({ status: 200, body: { identity: { user_id: user.id, source: "http_bearer" } } });
   });
 

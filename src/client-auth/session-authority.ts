@@ -52,6 +52,12 @@ export type BrowserSessionAuthentication =
   | { state: "active"; session: BrowserSession }
   | { state: "missing" | "wrong_audience" | "expired" | "revoked"; session: null };
 
+export type BrowserSessionRevocation = {
+  root_family_id: string | null;
+  family_ids: string[];
+  user_id: string;
+};
+
 export type PairingTransaction = {
   reference: string;
   secret: string;
@@ -332,20 +338,30 @@ export class LocalSessionAuthority {
     return Boolean(row && row.revoked_at === null && safeEqual(row.csrf_digest, digest(csrf)));
   }
 
-  revokeFamily(familyId: string): boolean {
+  revokeFamily(familyId: string): BrowserSessionRevocation | null {
     const row = this.db.prepare(
-      "SELECT root_family_id FROM browser_sessions WHERE family_id = ?",
-    ).get(familyId) as { root_family_id: string } | undefined;
-    if (!row) return false;
-    return this.db.prepare(
+      "SELECT root_family_id, user_id FROM browser_sessions WHERE family_id = ?",
+    ).get(familyId) as { root_family_id: string; user_id: string } | undefined;
+    if (!row) return null;
+    const familyIds = (this.db.prepare(
+      "SELECT family_id FROM browser_sessions WHERE root_family_id = ? AND revoked_at IS NULL ORDER BY family_id",
+    ).all(row.root_family_id) as Array<{ family_id: string }>).map((entry) => entry.family_id);
+    if (familyIds.length === 0) return null;
+    this.db.prepare(
       "UPDATE browser_sessions SET revoked_at = ? WHERE root_family_id = ? AND revoked_at IS NULL",
-    ).run(this.now(), row.root_family_id).changes > 0;
+    ).run(this.now(), row.root_family_id);
+    return { root_family_id: row.root_family_id, family_ids: familyIds, user_id: row.user_id };
   }
 
-  revokeUser(userId: string): number {
-    return this.db.prepare(
+  revokeUser(userId: string): BrowserSessionRevocation | null {
+    const rows = this.db.prepare(
+      "SELECT family_id FROM browser_sessions WHERE user_id = ? AND revoked_at IS NULL ORDER BY family_id",
+    ).all(userId) as Array<{ family_id: string }>;
+    if (rows.length === 0) return null;
+    this.db.prepare(
       "UPDATE browser_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
-    ).run(this.now(), userId).changes;
+    ).run(this.now(), userId);
+    return { root_family_id: null, family_ids: rows.map((row) => row.family_id), user_id: userId };
   }
 
   beginPreviewTransfer(targetAudience: string, returnPath: string): PreviewTransfer {
@@ -454,7 +470,9 @@ export class LocalSessionAuthority {
     authenticated_at: number;
   }): LegacyConversion {
     const target = this.requiredInstance(input.target_audience);
-    if (target.role !== "main") throw new Error("Legacy conversion may create only a production family.");
+    if (target.role !== "main" && target.role !== "preview") {
+      throw new Error("Legacy conversion target must be a registered local instance.");
+    }
     const reference = `migration_${this.derivedId("legacy-reference", input.legacy_fingerprint)}`;
     const secret = this.derivedToken("legacy-transfer", input.raw_legacy_token);
     const returnPath = validateReturnPath(input.return_path);

@@ -18,6 +18,11 @@ describe("local HTTPS front door", () => {
       public_origin: "https://app.mandible.localhost:19420", backend_origin: "http://127.0.0.1:29420",
       backend_generation: "main-1", effect_ceiling: ["ledger:read", "ledger:write"], writable_roots: [],
     });
+    authority.registerInstance({
+      instance_id: "preview-existing", installation_id: "install_test", role: "preview",
+      public_origin: "https://preview-existing.mandible.localhost:19421", backend_origin: "http://127.0.0.1:29421",
+      backend_generation: "preview-1", effect_ceiling: ["ledger:read", "ledger:write", "files:preview"], writable_roots: [],
+    });
     authority.close();
     const script = path.resolve("scripts/local-front-door.mjs");
     for (const [command, contains] of [["configure-migration", true], ["configure", false]] as const) {
@@ -27,11 +32,19 @@ describe("local HTTPS front door", () => {
       expect(config.includes("legacy-conversion/complete")).toBe(contains);
       if (contains) {
         expect(config).toContain("http://127.0.0.1:19420, http://localhost:19420");
+        expect(config).toContain("http://127.0.0.1:19421, http://localhost:19421");
+        expect(config).toContain("https://preview-existing.mandible.localhost:19419");
+        expect(config).toContain("header_up X-Mandible-Target-Instance preview-existing");
+        expect(config).toContain("header_up X-Mandible-Legacy-Migration complete-v1");
         expect(config).not.toContain("https://app.mandible.localhost:19420 {");
         expect(config).toContain("header_up -Authorization");
       } else {
         expect(config).toContain("https://app.mandible.localhost:19420 {");
         expect(config).not.toContain("http://127.0.0.1:19420");
+        expect(config).toContain("https://preview-existing.mandible.localhost:19421 {");
+        expect(config).toContain("rewrite * /api/client-auth/preview-bootstrap");
+        expect(config.indexOf("rewrite * /api/client-auth/preview-bootstrap"))
+          .toBeLessThan(config.indexOf("forward_auth"));
       }
     }
   });

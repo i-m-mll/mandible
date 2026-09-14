@@ -66,10 +66,11 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
   if (!production) fail("The production instance is not registered.");
   const productionBackend = new URL(production.backend_origin);
   const productionPublic = new URL(production.public_origin);
-  const migrationOrigin = `https://${productionPublic.hostname}:19419`;
   const globalOptions = "{\n  admin 127.0.0.1:2019\n  local_certs\n  auto_https disable_redirects\n}";
-  const migrationIngress = [
-    `${migrationOrigin} {`,
+  const migrationIngress = instances.map((entry) => {
+    const publicUrl = new URL(entry.public_origin);
+    return [
+    `https://${publicUrl.hostname}:19419 {`,
     "  bind 127.0.0.1 ::1",
     "  tls internal",
     "  header -Server",
@@ -80,14 +81,17 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     "      header_up -Authorization",
     "      header_up -Cookie",
     "      header_up -X-Mandible-Session-Context",
-    "      header_up -X-Mandible-Target-Instance",
+    `      header_up X-Mandible-Target-Instance ${entry.instance_id}`,
+    "      header_up -X-Mandible-Legacy-Migration",
+    "      header_up X-Mandible-Legacy-Migration complete-v1",
     "    }",
     "  }",
     "  respond 404",
     "}",
   ].join("\n");
+  }).join("\n\n");
   const legacyOrigin = [
-    "http://127.0.0.1:19420, http://localhost:19420 {",
+    "http://127.0.0.1:19420, http://localhost:19420, http://127.0.0.1:19421, http://localhost:19421 {",
     "  bind 127.0.0.1 ::1",
     "  header -Server",
     "  handle /api/client-auth/legacy-conversion/prepare {",
@@ -123,6 +127,17 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     ];
     if (entry.role === "preview") {
       shared.push(
+        "  handle / {",
+        "    rewrite * /api/client-auth/preview-bootstrap",
+        `    reverse_proxy ${productionBackend.origin} {`,
+        `      header_up Host ${new URL(production.public_origin).host}`,
+        `      header_up Origin ${new URL(production.public_origin).origin}`,
+        `      header_up X-Mandible-Target-Instance ${entry.instance_id}`,
+        "      header_up -Authorization",
+        "      header_up -Cookie",
+        "      header_up -X-Mandible-Session-Context",
+        "    }",
+        "  }",
         "  handle /api/client-auth/* {",
         `    reverse_proxy ${productionBackend.origin} {`,
         `      header_up Host ${new URL(production.public_origin).host}`,

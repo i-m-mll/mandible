@@ -804,8 +804,7 @@ describe('App routing', () => {
       readFileSync('src-tauri/capabilities/default.json', 'utf8'),
     ) as { remote?: { urls?: string[] }; permissions?: string[] };
 
-    expect(capability.remote?.urls).toContain('http://127.0.0.1:19420');
-    expect(capability.remote?.urls).toContain('http://localhost:19420');
+    expect(capability.remote?.urls).toEqual(['https://app.mandible.localhost:19420']);
     expect(capability.permissions).toContain('deep-link:default');
   });
 

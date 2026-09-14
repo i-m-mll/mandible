@@ -11,13 +11,18 @@ interface TestServer {
 }
 
 let testServer: TestServer | null = null;
+let previousLegacyConversion: string | undefined;
 
 beforeEach(async () => {
+  previousLegacyConversion = process.env.MANDIBLE_LEGACY_CONVERSION;
   const router = new Router();
-  router.post("/api/write", (req, res) => {
+  router.post("/api/issues/test-write", (req, res) => {
     res.json({ ok: true, body: req.body });
   }, { fileRpc: "deny" });
   router.get("/api/read", (_req, res) => {
+    res.json({ ok: true });
+  }, { fileRpc: "deny" });
+  router.post("/api/client-auth/legacy-conversion/complete", (_req, res) => {
     res.json({ ok: true });
   }, { fileRpc: "deny" });
 
@@ -40,6 +45,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (previousLegacyConversion === undefined) delete process.env.MANDIBLE_LEGACY_CONVERSION;
+  else process.env.MANDIBLE_LEGACY_CONVERSION = previousLegacyConversion;
   if (testServer) {
     await close(testServer.server);
     testServer = null;
@@ -48,14 +55,30 @@ afterEach(async () => {
 
 describe("daemon write boundary", () => {
   it("allows local non-browser writes without Origin or Fetch Metadata headers", async () => {
-    const response = await requestJson("POST", "/api/write", { hello: "cli" });
+    const response = await requestJson("POST", "/api/issues/test-write", { hello: "cli" });
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ ok: true, body: { hello: "cli" } });
   });
 
+  it("admits only the gateway-bound cross-site migration completion", async () => {
+    process.env.MANDIBLE_LEGACY_CONVERSION = "allow";
+    const hostile = {
+      Host: "app.mandible.localhost:19420",
+      Origin: "https://app.mandible.localhost:19420",
+      "Sec-Fetch-Site": "cross-site",
+      "X-Mandible-Target-Instance": "production",
+    };
+    expect((await requestJson("POST", "/api/client-auth/legacy-conversion/complete", {}, hostile)).body)
+      .toMatchObject({ reason: "cross_site_fetch" });
+    expect((await requestJson("POST", "/api/client-auth/legacy-conversion/complete", {}, {
+      ...hostile,
+      "X-Mandible-Legacy-Migration": "complete-v1",
+    })).body).toEqual({ ok: true });
+  });
+
   it("allows browser same-origin writes from the daemon origin", async () => {
-    const response = await requestJson("POST", "/api/write", { hello: "ui" }, {
+    const response = await requestJson("POST", "/api/issues/test-write", { hello: "ui" }, {
       Host: "app.mandible.localhost:19420",
       Origin: "https://app.mandible.localhost:19420",
       "Sec-Fetch-Site": "same-origin",
@@ -66,7 +89,7 @@ describe("daemon write boundary", () => {
   });
 
   it("rejects cross-origin browser writes before dispatching the route", async () => {
-    const response = await requestJson("POST", "/api/write", { hello: "evil" }, {
+    const response = await requestJson("POST", "/api/issues/test-write", { hello: "evil" }, {
       Host: "app.mandible.localhost:19420",
       Origin: "https://example.com",
       "Sec-Fetch-Site": "cross-site",
@@ -77,7 +100,7 @@ describe("daemon write boundary", () => {
   });
 
   it("rejects DNS-rebinding style writes with a non-loopback Host", async () => {
-    const response = await requestJson("POST", "/api/write", { hello: "evil" }, {
+    const response = await requestJson("POST", "/api/issues/test-write", { hello: "evil" }, {
       Host: "example.com:19420",
       Origin: "http://example.com:19420",
     });

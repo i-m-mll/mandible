@@ -82,7 +82,7 @@ beforeEach(async () => {
   registry = new SessionRegistry(db);
 
   const router = new Router({ clientAuth: authenticator });
-  router.post("/api/write", (req, res) => {
+  router.post("/api/issues/test-write", (req, res) => {
     res.json({ ok: true, identity: req.client_identity ?? null });
   }, { fileRpc: "allow" });
   registerClientAuthRoutes(router, authenticator);
@@ -130,10 +130,10 @@ describe("session-token exchange", () => {
     const { body } = await exchange(agent.pat);
     registerSession();
 
-    const withPat = await requestJson("POST", "/api/write", {}, bearer(agent.pat));
+    const withPat = await requestJson("POST", "/api/issues/test-write", {}, bearer(agent.pat));
     const withSessionToken = await requestJson(
       "POST",
-      "/api/write",
+      "/api/issues/test-write",
       {},
       bearer(body.token as string),
     );
@@ -184,11 +184,11 @@ describe("session-token exchange", () => {
 
   it("refuses an exchange from the operator's dashboard session token", async () => {
     const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
-    const dashboard = authenticator.issueDashboardToken({
+    const dashboard = authenticator.issueEphemeralToken({
       user_id: operator.id,
       slug: operator.slug,
-    });
-    const response = await exchange(dashboard.token);
+    }, "dashboard_handshake");
+    const response = await exchange(dashboard);
     expect(response.status).toBe(403);
   });
 
@@ -226,18 +226,18 @@ describe("session-token exchange", () => {
     ).ephemeral.size;
 
     expect(sizeAfterSecond).toBe(sizeAfterFirst);
-    expect((await requestJson("POST", "/api/write", {}, bearer(first.body.token as string))).body)
-      .toMatchObject({ identity: null });
-    expect((await requestJson("POST", "/api/write", {}, bearer(second.body.token as string))).body)
+    expect((await requestJson("POST", "/api/issues/test-write", {}, bearer(first.body.token as string))).status)
+      .toBe(401);
+    expect((await requestJson("POST", "/api/issues/test-write", {}, bearer(second.body.token as string))).body)
       .toMatchObject({ identity: { user_id: agent.id } });
   });
 
   it("caps wrap tokens without evicting a dashboard handshake", () => {
     const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
-    const dashboard = authenticator.issueDashboardToken({
+    const dashboard = authenticator.issueEphemeralToken({
       user_id: operator.id,
       slug: operator.slug,
-    });
+    }, "dashboard_handshake");
     const agent = agentWithPat();
     const wrapTokens = Array.from(
       { length: 65 },
@@ -247,7 +247,7 @@ describe("session-token exchange", () => {
       ).token,
     );
 
-    expect(authenticator.authenticate(dashboard.token)).toMatchObject({
+    expect(authenticator.authenticate(dashboard)).toMatchObject({
       user_id: operator.id,
       ephemeral_purpose: "dashboard_handshake",
     });
@@ -263,7 +263,7 @@ describe("session-token revocation", () => {
     const token = body.token as string;
     registerSession();
 
-    expect((await requestJson("POST", "/api/write", {}, bearer(token))).body)
+    expect((await requestJson("POST", "/api/issues/test-write", {}, bearer(token))).body)
       .toMatchObject({ identity: { user_id: agent.id } });
 
     // Exactly the call cli/wrap.sh's orphan watcher makes when the agent exits.
@@ -271,13 +271,14 @@ describe("session-token revocation", () => {
       "PATCH",
       `/api/sessions/${SESSION_ID}/end`,
       { status: "ended" },
+      bearer(agent.pat),
     );
     expect(ended.status).toBe(200);
 
-    const afterEnd = await requestJson("POST", "/api/write", {}, bearer(token));
-    expect(afterEnd.body).toMatchObject({ ok: true, identity: null });
+    const afterEnd = await requestJson("POST", "/api/issues/test-write", {}, bearer(token));
+    expect(afterEnd.status).toBe(401);
     // The PAT it replaced is untouched — revocation cannot cascade past one session.
-    expect((await requestJson("POST", "/api/write", {}, bearer(agent.pat))).body)
+    expect((await requestJson("POST", "/api/issues/test-write", {}, bearer(agent.pat))).body)
       .toMatchObject({ identity: { user_id: agent.id } });
   });
 
@@ -291,8 +292,8 @@ describe("session-token revocation", () => {
     // that revokes; the authenticator's liveness read must still refuse.
     registry.updateSession(SESSION_ID, { status: "dead" });
 
-    const response = await requestJson("POST", "/api/write", {}, bearer(token));
-    expect(response.body).toMatchObject({ ok: true, identity: null });
+    const response = await requestJson("POST", "/api/issues/test-write", {}, bearer(token));
+    expect(response.status).toBe(401);
   });
 
   it("expires on the TTL backstop when a session never reports an end", async () => {
@@ -302,12 +303,12 @@ describe("session-token revocation", () => {
     registerSession();
 
     clock += WRAP_TTL_MS - 1;
-    expect((await requestJson("POST", "/api/write", {}, bearer(token))).body)
+    expect((await requestJson("POST", "/api/issues/test-write", {}, bearer(token))).body)
       .toMatchObject({ identity: { user_id: agent.id } });
 
     clock += 2;
-    expect((await requestJson("POST", "/api/write", {}, bearer(token))).body)
-      .toMatchObject({ ok: true, identity: null });
+    expect((await requestJson("POST", "/api/issues/test-write", {}, bearer(token))).status)
+      .toBe(401);
   });
 
   it("stays usable in the window before the session row exists", async () => {
@@ -315,7 +316,7 @@ describe("session-token revocation", () => {
     // not evidence of an ended session.
     const agent = agentWithPat();
     const { body } = await exchange(agent.pat);
-    const response = await requestJson("POST", "/api/write", {}, bearer(body.token as string));
+    const response = await requestJson("POST", "/api/issues/test-write", {}, bearer(body.token as string));
     expect(response.body).toMatchObject({ identity: { user_id: agent.id } });
   });
 
@@ -325,11 +326,11 @@ describe("session-token revocation", () => {
     const token = body.token as string;
 
     clock += PRE_REGISTRATION_GRACE_MS - 1;
-    expect((await requestJson("POST", "/api/write", {}, bearer(token))).body)
+    expect((await requestJson("POST", "/api/issues/test-write", {}, bearer(token))).body)
       .toMatchObject({ identity: { user_id: agent.id } });
     clock += 2;
-    expect((await requestJson("POST", "/api/write", {}, bearer(token))).body)
-      .toMatchObject({ identity: null });
+    expect((await requestJson("POST", "/api/issues/test-write", {}, bearer(token))).status)
+      .toBe(401);
   });
 });
 

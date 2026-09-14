@@ -74,6 +74,7 @@ export interface RequestLike {
   browser_pairing_secret?: string | null;
   browser_transfer_secret?: string | null;
   legacy_browser_credential?: string | null;
+  legacy_browser_origin?: string | null;
   target_instance_id?: string | null;
 }
 
@@ -153,6 +154,7 @@ const STRICT_ANONYMOUS_HTTP_ROUTES = new Set([
   "/api/client-auth/pairing/start",
   "/api/client-auth/pairing/complete",
   "/api/client-auth/preview-transfer/prepare",
+  "/api/client-auth/preview-bootstrap",
   "/api/client-auth/preview-transfer/complete",
   "/api/client-auth/legacy-conversion/prepare",
   "/api/client-auth/legacy-conversion/complete",
@@ -495,6 +497,7 @@ export class Router implements RouteRegistrar {
           transferSecret: cookies[TRANSFER_COOKIE_NAME] ?? null,
           targetInstanceId: headerValue(req.headers["x-mandible-target-instance"]),
           legacyBrowserConversion,
+          legacyBrowserOrigin: legacyBrowserConversion ? headerValue(req.headers.origin) : undefined,
         },
       );
     } finally {
@@ -520,6 +523,7 @@ export class Router implements RouteRegistrar {
       transferSecret?: string | null;
       targetInstanceId?: string;
       legacyBrowserConversion?: boolean;
+      legacyBrowserOrigin?: string;
     },
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
@@ -639,6 +643,7 @@ export class Router implements RouteRegistrar {
         browser_pairing_secret: httpAuth?.pairingSecret ?? null,
         browser_transfer_secret: httpAuth?.transferSecret ?? null,
         legacy_browser_credential: httpAuth?.legacyBrowserConversion ? credential ?? null : null,
+        legacy_browser_origin: httpAuth?.legacyBrowserOrigin ?? null,
         target_instance_id: httpAuth?.targetInstanceId ?? null,
       };
 
@@ -727,6 +732,8 @@ function isBrowserRequest(headers: http.IncomingHttpHeaders): boolean {
 const LEGACY_BROWSER_ORIGINS = new Set([
   "http://127.0.0.1:19420",
   "http://localhost:19420",
+  "http://127.0.0.1:19421",
+  "http://localhost:19421",
 ]);
 
 function isLegacyBrowserConversionRequest(req: http.IncomingMessage): boolean {
@@ -1293,7 +1300,16 @@ function validateDaemonWriteBoundary(
       && isLegacyBrowserConversionRequest(req)) {
     return { ok: true };
   }
+  if (isBoundLegacyConversionCompletion(req, pathname)) return { ok: true };
   return validateDaemonBrowserBoundary(req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod));
+}
+
+function isBoundLegacyConversionCompletion(req: http.IncomingMessage, pathname: string): boolean {
+  if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
+  return (req.method ?? "GET").toUpperCase() === "POST"
+    && pathname === "/api/client-auth/legacy-conversion/complete"
+    && firstHeader(req, "x-mandible-legacy-migration") === "complete-v1"
+    && Boolean(firstHeader(req, "x-mandible-target-instance"));
 }
 
 function validateDaemonBrowserBoundary(

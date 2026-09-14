@@ -471,6 +471,10 @@ export function registerUserRoutes(
       const target = resolveUserOrThrow(db, req.params.ref);
       requireSelfOrOperator(db, req, target.id);
       const body = bodyRecord(req);
+      // Lifecycle status is an operator-owned credential boundary. In
+      // particular, a retired account must never use one lingering client
+      // identity to make itself active again.
+      if ("status" in body) requireOperator(db, req);
       const user = updateUser(db, target.id, {
         display_name: optionalString(body, "display_name"),
         email: "email" in body ? (optionalString(body, "email") ?? null) : undefined,

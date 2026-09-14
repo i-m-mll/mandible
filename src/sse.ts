@@ -121,10 +121,12 @@ export class SseManager {
     return count;
   }
 
-  closeForBrowserSession(familyId: string | null, userId: string): void {
+  closeForBrowserSessions(familyIds: readonly string[], userId: string): void {
+    const revoked = new Set(familyIds);
     for (const client of Array.from(this.clients)) {
       if (client.identity?.user_id === userId
-          && (familyId === null || client.identity.session_family === familyId)) {
+          && client.identity.session_family
+          && revoked.has(client.identity.session_family)) {
         this.removeClient(client);
       }
     }

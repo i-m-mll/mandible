@@ -62,7 +62,7 @@ describe("local browser session authority", () => {
     expect(bytes.includes(Buffer.from(issued.token))).toBe(false);
     expect(authority.classify(issued.token, "production").state).toBe("active");
     expect(authority.classify(issued.token, "preview-test").state).toBe("wrong_audience");
-    expect(authority.revokeFamily(issued.family_id)).toBe(true);
+    expect(authority.revokeFamily(issued.family_id)?.family_ids).toEqual([issued.family_id]);
     expect(authority.classify(issued.token, "production").state).toBe("revoked");
     authority.close();
   });
@@ -147,7 +147,9 @@ describe("local browser session authority", () => {
     expect(retry).toMatchObject({ token: first?.token, family_id: first?.family_id });
     expect(first?.root_family_id).toBe(root.family_id);
     expect(authority.classify(first!.token, "production").state).toBe("wrong_audience");
-    expect(authority.revokeFamily(root.family_id)).toBe(true);
+    expect(authority.revokeFamily(first!.family_id)?.family_ids).toEqual(
+      expect.arrayContaining([root.family_id, first!.family_id]),
+    );
     expect(authority.classify(first!.token, "preview-test").state).toBe("revoked");
     authority.close();
   });

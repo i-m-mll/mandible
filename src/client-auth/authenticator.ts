@@ -49,6 +49,7 @@ import {
 import {
   LocalSessionAuthority,
   type BrowserSession,
+  type BrowserSessionRevocation,
   type InstanceRegistration,
   type IssuedBrowserSession,
   type LegacyConversion,
@@ -120,7 +121,7 @@ export class ClientAuthenticator implements ClientAuthGate {
   private readonly instance: InstanceInfo | null;
   private readonly sessionAuthority: LocalSessionAuthority | null;
   private readonly contextVerificationKeyPem: string | null;
-  private readonly revocationListeners = new Set<(familyId: string | null, userId: string) => void>();
+  private readonly revocationListeners = new Set<(scope: BrowserSessionRevocation) => void>();
   private bootstrapRaw: string | null = null;
 
   constructor(
@@ -297,9 +298,8 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   authenticateBrowserSession(raw: string | null | undefined): ResolvedClientIdentity | null {
-    if (!raw || !this.instance || !this.sessionAuthority) return null;
-    const session = this.sessionAuthority.authenticate(raw, this.instance.instance_id);
-    return session ? this.identityFromBrowserSession(session, "browser_cookie") : null;
+    const result = this.classifyBrowserSession(raw);
+    return result.state === "active" ? result.identity : null;
   }
 
   authenticateBrowserSessionForAudience(
@@ -316,9 +316,14 @@ export class ClientAuthenticator implements ClientAuthGate {
   ): { state: "active" | "missing" | "wrong_audience" | "expired" | "revoked"; identity: ResolvedClientIdentity | null } {
     if (!raw || !audience || !this.sessionAuthority) return { state: "missing", identity: null };
     const result = this.sessionAuthority.classify(raw, audience);
-    return result.state === "active"
-      ? { state: "active", identity: this.identityFromBrowserSession(result.session, "browser_cookie") }
-      : { state: result.state, identity: null };
+    if (result.state !== "active") return { state: result.state, identity: null };
+    const user = getUserById(this.db, result.session.user_id);
+    if (!user || user.status !== "active" || user.slug !== result.session.slug) {
+      const scope = this.sessionAuthority.revokeUser(result.session.user_id);
+      if (scope) this.emitRevocation(scope);
+      return { state: "revoked", identity: null };
+    }
+    return { state: "active", identity: this.identityFromBrowserSession(result.session, "browser_cookie") };
   }
 
   async signPreviewContext(identity: ResolvedClientIdentity, previewInstanceId: string): Promise<string> {
@@ -414,21 +419,39 @@ export class ClientAuthenticator implements ClientAuthGate {
     rawLegacyToken: string,
     returnPath: string,
     browserState: Record<string, string>,
+    legacyOrigin: string,
   ): LegacyConversion {
     if (!this.sessionAuthority || identity.source !== "legacy_browser_conversion"
         || !identity.legacy_fingerprint || identity.legacy_authenticated_at === undefined) {
       throw new Error("A verified legacy browser session is required for conversion.");
     }
+    const targetAudience = this.legacyConversionTarget(legacyOrigin);
     return this.sessionAuthority.beginLegacyConversion({
       raw_legacy_token: rawLegacyToken,
       legacy_fingerprint: identity.legacy_fingerprint,
       user_id: identity.user_id,
       slug: identity.slug,
-      target_audience: this.instanceId(),
+      target_audience: targetAudience,
       return_path: returnPath,
       browser_state: browserState,
       authenticated_at: identity.legacy_authenticated_at,
     });
+  }
+
+  private legacyConversionTarget(origin: string): string {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(parsed.hostname)) {
+      throw new Error("Legacy browser origin is not in the migration inventory.");
+    }
+    if (parsed.port === "19420") return this.instanceId();
+    if (parsed.port === "19421") {
+      const preview = this.sessionAuthority?.instances().find((entry) => {
+        const publicUrl = new URL(entry.public_origin);
+        return entry.role === "preview" && publicUrl.port === "19421";
+      });
+      if (preview) return preview.instance_id;
+    }
+    throw new Error("Legacy browser origin is not bound to a registered replacement instance.");
   }
 
   completeLegacyConversion(reference: string, secret: string): IssuedBrowserSession | null {
@@ -473,21 +496,26 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   revokeBrowserFamily(identity: ResolvedClientIdentity): boolean {
-    const revoked = Boolean(this.sessionAuthority && identity.session_family
-      && this.sessionAuthority.revokeFamily(identity.session_family));
-    if (revoked) for (const listener of this.revocationListeners) listener(identity.session_family!, identity.user_id);
-    return revoked;
+    const scope = this.sessionAuthority && identity.session_family
+      ? this.sessionAuthority.revokeFamily(identity.session_family)
+      : null;
+    if (scope) this.emitRevocation(scope);
+    return Boolean(scope);
   }
 
   revokeAllBrowserFamilies(identity: ResolvedClientIdentity): number {
-    const revoked = this.sessionAuthority?.revokeUser(identity.user_id) ?? 0;
-    if (revoked > 0) for (const listener of this.revocationListeners) listener(null, identity.user_id);
-    return revoked;
+    const scope = this.sessionAuthority?.revokeUser(identity.user_id) ?? null;
+    if (scope) this.emitRevocation(scope);
+    return scope?.family_ids.length ?? 0;
   }
 
-  onBrowserSessionRevoked(listener: (familyId: string | null, userId: string) => void): () => void {
+  onBrowserSessionRevoked(listener: (scope: BrowserSessionRevocation) => void): () => void {
     this.revocationListeners.add(listener);
     return () => this.revocationListeners.delete(listener);
+  }
+
+  private emitRevocation(scope: BrowserSessionRevocation): void {
+    for (const listener of this.revocationListeners) listener(scope);
   }
 
   browserSessionMetadata(identity: ResolvedClientIdentity): Record<string, unknown> | null {

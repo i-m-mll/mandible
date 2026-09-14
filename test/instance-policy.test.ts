@@ -114,7 +114,17 @@ describe("instance effect policy", () => {
     expect(authorizeEffects(instance, session, operationForRequest("POST", "/api/webhooks"))).toMatchObject({ allowed: false });
   });
 
-  it("maps unknown local writes to the bounded ledger-write effect", () => {
-    expect(authorizeEffects(preview(), { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("POST", "/api/future-local-write"))).toEqual({ allowed: true });
+  it("rejects every unclassified write and explicitly guards external-open operations", () => {
+    expect(authorizeEffects(preview(), { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("POST", "/api/future-local-write"))).toEqual({
+      allowed: false, code: "unknown_operation", missing: [],
+    });
+    for (const pathname of [
+      "/api/system/open-path",
+      "/api/artifacts/example/open-externally",
+      "/api/conversations/example/open-external",
+    ]) {
+      expect(operationForRequest("POST", pathname)).toMatchObject({ effects: ["process:external"] });
+      expect(authorizeEffects(preview(), { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("POST", pathname))).toMatchObject({ allowed: false });
+    }
   });
 });

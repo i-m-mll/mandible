@@ -880,7 +880,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_credential, read_client_auth_bootstrap, resolve_user_path_from};
+    use super::{extract_credential, read_client_auth_bootstrap, resolve_user_path_from, PRODUCTION_ORIGIN};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -900,6 +900,13 @@ mod tests {
             resolve_user_path_from("~/tilde-root/", home),
             home.join("tilde-root")
         );
+    }
+
+    #[test]
+    fn privileged_native_enrollment_is_pinned_to_https_production() {
+        assert_eq!(PRODUCTION_ORIGIN, "https://app.mandible.localhost:19420");
+        assert!(!PRODUCTION_ORIGIN.contains("preview"));
+        assert!(!PRODUCTION_ORIGIN.starts_with("http://"));
     }
 
     #[test]

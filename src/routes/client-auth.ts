@@ -95,16 +95,16 @@ function htmlEscape(value: string): string {
   })[character]!);
 }
 
-function migrationOrigin(authenticator: ClientAuthenticator): string {
-  const production = authenticator.productionRegistration();
-  if (!production) throw new Error("The production instance is not registered.");
+function migrationOrigin(authenticator: ClientAuthenticator, targetAudience: string): string {
+  const target = authenticator.instanceRegistration(targetAudience);
+  if (!target) throw new Error("The migration target is not registered.");
   const configured = process.env.MANDIBLE_LEGACY_MIGRATION_ORIGIN
-    ?? `${new URL(production.public_origin).protocol}//${new URL(production.public_origin).hostname}:19419`;
+    ?? `${new URL(target.public_origin).protocol}//${new URL(target.public_origin).hostname}:19419`;
   const parsed = new URL(configured);
-  const productionUrl = new URL(production.public_origin);
-  if (parsed.protocol !== "https:" || parsed.hostname !== productionUrl.hostname || !parsed.port
+  const targetUrl = new URL(target.public_origin);
+  if (parsed.protocol !== "https:" || parsed.hostname !== targetUrl.hostname || !parsed.port
       || parsed.pathname !== "/" || parsed.search || parsed.hash) {
-    throw new Error("Legacy migration origin must be exact HTTPS on the production hostname.");
+    throw new Error("Legacy migration origin must be exact HTTPS on the target hostname.");
   }
   return parsed.origin;
 }
@@ -138,6 +138,20 @@ export function registerClientAuthRoutes(
   router: RouteRegistrar,
   authenticator: ClientAuthenticator,
 ): void {
+  router.get("/api/client-auth/preview-bootstrap", (req, res) => {
+    try {
+      const target = req.target_instance_id;
+      const preview = target ? authenticator.instanceRegistration(target) : null;
+      if (!preview || preview.role !== "preview") {
+        sendJson(res, 404, { error: "preview_not_registered" });
+        return;
+      }
+      res.html?.(`<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'"><title>Opening Mandible preview</title><main>Opening preview…</main><script>(async()=>{const return_path=location.pathname+location.search+location.hash;const response=await fetch('/api/client-auth/preview-transfer/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({return_path})});if(!response.ok)throw new Error('preview bootstrap failed');const body=await response.json();location.replace(body.authorize_url)})().catch(()=>{document.querySelector('main').textContent='Could not open this preview.'})</script>`);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
   router.post("/api/client-auth/preview-transfer/prepare", (req, res) => {
     try {
       const target = req.target_instance_id;
@@ -202,7 +216,8 @@ export function registerClientAuthRoutes(
     try {
       const identity = req.client_identity;
       const raw = req.legacy_browser_credential;
-      if (!identity || identity.source !== "legacy_browser_conversion" || !raw) {
+      const legacyOrigin = req.legacy_browser_origin;
+      if (!identity || identity.source !== "legacy_browser_conversion" || !raw || !legacyOrigin) {
         sendJson(res, 401, { error: "legacy_browser_session_required" });
         return;
       }
@@ -212,11 +227,12 @@ export function registerClientAuthRoutes(
         raw,
         optionalString(body, "return_path") ?? "/",
         browserState(body.browser_state),
+        legacyOrigin,
       );
       sendJson(res, 201, {
         reference: conversion.reference,
         secret: conversion.secret,
-        complete_url: `${migrationOrigin(authenticator)}/api/client-auth/legacy-conversion/complete`,
+        complete_url: `${migrationOrigin(authenticator, conversion.target_audience)}/api/client-auth/legacy-conversion/complete`,
         expires_at: conversion.expires_at,
       });
     } catch (error) {
@@ -234,7 +250,7 @@ export function registerClientAuthRoutes(
         return;
       }
       const session = authenticator.completeLegacyConversion(reference, secret);
-      if (!session) {
+      if (!session || session.audience !== req.target_instance_id) {
         sendJson(res, 409, { error: "legacy_conversion_invalid" });
         return;
       }

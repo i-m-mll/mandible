@@ -37,6 +37,7 @@ const EXACT_OPERATIONS = new Map<string, Operation>([
   ["GET /api/health", { id: "health.read", effects: [] }],
   ["GET /api/instance", { id: "instance.read", effects: [] }],
   ["GET /api/client-auth/whoami", { id: "session.inspect", effects: [] }],
+  ["GET /api/client-auth/preview-bootstrap", { id: "session.preview_bootstrap", effects: [] }],
   ["POST /api/users/setup", { id: "installation.setup", effects: [] }],
   ["POST /api/auth/check", READ_OPERATION],
   ["POST /api/timeline/project", READ_OPERATION],
@@ -59,6 +60,25 @@ const EXACT_OPERATIONS = new Map<string, Operation>([
   ["PUT /api/host-preferences/app-theme", { id: "preferences.shared", effects: ["maintenance:shared"] }],
 ]);
 
+const EXACT_WRITE_OPERATIONS = new Map<string, Operation>([
+  ["POST /api/system/open-path", { id: "system.open_path", effects: ["process:external"] }],
+  ["POST /api/work/push", { id: "work.push", effects: ["files:production", "network:publish"] }],
+  ["POST /api/work/scan", { id: "work.scan", effects: ["files:production"] }],
+  ["POST /api/artifacts/scan-repos", { id: "artifacts.scan_repos", effects: ["files:production"] }],
+  ["POST /api/artifacts/ingest", { id: "artifacts.ingest", effects: ["files:production"] }],
+  ["POST /api/artifacts/snapshot", { id: "artifacts.snapshot", effects: ["files:production"] }],
+  ["POST /api/artifacts/drafts/publish", { id: "artifacts.publish", effects: ["files:production"] }],
+  ["POST /api/artifacts/drafts/rebase", { id: "artifacts.rebase", effects: ["files:production"] }],
+  ["POST /api/conversation-custody/import", { id: "conversation.import", effects: ["files:production"] }],
+  ["POST /api/conversations/scan-credentials", { id: "conversation.scan_credentials", effects: ["files:production"] }],
+  ["POST /api/conversations/export/transform", { id: "conversation.export_transform", effects: ["files:production"] }],
+  ["POST /api/tasks/commands", { id: "tasks.command", effects: ["process:external"] }],
+  ["POST /api/tasks/inventory", { id: "tasks.inventory", effects: ["process:external"] }],
+  ["POST /api/hooks/ingest-nudge", { id: "hooks.ingest", effects: ["delivery:background"] }],
+  ["POST /api/hooks/notification", { id: "hooks.notification", effects: ["delivery:background"] }],
+  ["POST /api/hooks/statusline", { id: "hooks.statusline", effects: ["delivery:background"] }],
+]);
+
 const RESTRICTED_PREFIXES: ReadonlyArray<[string, Operation]> = [
   ["/api/auth", { id: "auth.protected", effects: ["auth:protected"] }],
   ["/api/users", { id: "auth.credentials", effects: ["auth:credentials"] }],
@@ -72,7 +92,28 @@ const RESTRICTED_PREFIXES: ReadonlyArray<[string, Operation]> = [
   ["/api/runtime", { id: "runtime.files", effects: ["files:production", "process:external"] }],
   ["/api/backup", { id: "backup.production", effects: ["files:production"] }],
   ["/api/settings/instructions", { id: "instructions.install", effects: ["files:production"] }],
+  ["/api/work", { id: "work.files", effects: ["files:production"] }],
+  ["/api/v1/trash", { id: "trash.files", effects: ["files:production"] }],
+  ["/api/conversation-custody", { id: "conversation.custody", effects: ["files:production"] }],
+  ["/api/tasks/commands", { id: "tasks.command", effects: ["process:external"] }],
 ];
+
+const LOCAL_WRITE_PREFIXES = [
+  "/api/artifacts",
+  "/api/briefings",
+  "/api/briefing-bundles",
+  "/api/briefing-destination-routes",
+  "/api/briefing-groups",
+  "/api/inbox",
+  "/api/issues",
+  "/api/knowledge-backrefs",
+  "/api/ledger",
+  "/api/operational-incidents",
+  "/api/provider-manifests",
+  "/api/providers",
+  "/api/spaces",
+  "/api/work-units",
+] as const;
 
 export function operationForRequest(method: string, pathname: string): Operation | null {
   const normalizedMethod = method.toUpperCase();
@@ -83,12 +124,54 @@ export function operationForRequest(method: string, pathname: string): Operation
       && /^\/api\/conversations\/[^/]+\/control\/(submit|stop)$/.test(pathname)) {
     return { id: "provider.send", effects: ["provider:send"] };
   }
+  if (normalizedMethod === "POST"
+      && (/^\/api\/artifacts\/[^/]+\/open-externally$/.test(pathname)
+        || /^\/api\/conversations\/[^/]+\/open-external$/.test(pathname))) {
+    return { id: "external.open", effects: ["process:external"] };
+  }
+  if (normalizedMethod === "POST" && /^\/api\/work\/repos\/[^/]+\/push$/.test(pathname)) {
+    return { id: "work.push", effects: ["files:production", "network:publish"] };
+  }
+  if (normalizedMethod === "POST" && /^\/api\/conversations\/[^/]+\/(fork|export)$/.test(pathname)) {
+    return pathname.endsWith("/fork")
+      ? { id: "provider.send", effects: ["provider:send"] }
+      : { id: "conversation.export", effects: ["files:production"] };
+  }
+  if (/^\/api\/conversations\/[^/]+\/custody(?:\/|$)/.test(pathname)) {
+    return { id: "conversation.custody", effects: ["files:production"] };
+  }
+  if (normalizedMethod === "POST" && /^\/api\/issues\/[^/]+\/[^/]+\/spawn$/.test(pathname)) {
+    return { id: "issue.spawn", effects: ["process:external"] };
+  }
+  if (pathname === "/api/spaces/exports/settings"
+      || /^\/api\/spaces\/[^/]+\/exports(?:\/|$)/.test(pathname)) {
+    return { id: "spaces.export", effects: ["files:production"] };
+  }
+  const explicitWrite = EXACT_WRITE_OPERATIONS.get(`${normalizedMethod} ${pathname}`);
+  if (explicitWrite) return explicitWrite;
   for (const [prefix, operation] of RESTRICTED_PREFIXES) {
     if (pathname === prefix || pathname.startsWith(`${prefix}/`)) return operation;
   }
   if (normalizedMethod === "GET" || normalizedMethod === "HEAD") return READ_OPERATION;
   if (!new Set(["POST", "PUT", "PATCH", "DELETE"]).has(normalizedMethod)) return null;
-  return LOCAL_WRITE_OPERATION;
+  for (const prefix of LOCAL_WRITE_PREFIXES) {
+    if (pathname === prefix || pathname.startsWith(`${prefix}/`)) return LOCAL_WRITE_OPERATION;
+  }
+  if (pathname === "/api/settings" || pathname.startsWith("/api/settings/")
+      || pathname === "/api/user-settings" || pathname.startsWith("/api/user-settings/")
+      || pathname === "/api/host-preferences" || pathname.startsWith("/api/host-preferences/")) {
+    return { id: "preferences.shared", effects: ["maintenance:shared"] };
+  }
+  if (pathname === "/api/projects" || pathname.startsWith("/api/projects/")) {
+    return { id: "projects.registry", effects: ["maintenance:shared"] };
+  }
+  if (pathname === "/api/sessions" || pathname.startsWith("/api/sessions/")) {
+    return { id: "sessions.process", effects: ["process:external"] };
+  }
+  if (pathname === "/api/conversations" || pathname.startsWith("/api/conversations/")) {
+    return LOCAL_WRITE_OPERATION;
+  }
+  return null;
 }
 
 export function authorizeEffects(

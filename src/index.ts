@@ -423,11 +423,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   // Attach WebSocket upgrade handler for console backend sessions (Bug: e980dd8)
   const wss = new WebSocketServer({ noServer: true });
-  const browserSockets = new Map<string, Set<import("ws").WebSocket>>();
-  clientAuth.onBrowserSessionRevoked((familyId, userId) => {
-    sse.closeForBrowserSession(familyId, userId);
-    for (const [key, sockets] of browserSockets) {
-      if (familyId !== null && key !== familyId) continue;
+  const browserSockets = new Map<string, { userId: string; sockets: Set<import("ws").WebSocket> }>();
+  clientAuth.onBrowserSessionRevoked((scope) => {
+    sse.closeForBrowserSessions(scope.family_ids, scope.user_id);
+    const revoked = new Set(scope.family_ids);
+    for (const [key, entry] of browserSockets) {
+      if (entry.userId !== scope.user_id || !revoked.has(key)) continue;
+      const { sockets } = entry;
       for (const ws of sockets) ws.close(1008, "session revoked");
     }
   });
@@ -471,9 +473,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
           return;
         }
         if (identity.session_family) {
-          const sockets = browserSockets.get(identity.session_family) ?? new Set();
+          const entry = browserSockets.get(identity.session_family)
+            ?? { userId: identity.user_id, sockets: new Set<import("ws").WebSocket>() };
+          const { sockets } = entry;
           sockets.add(ws);
-          browserSockets.set(identity.session_family, sockets);
+          browserSockets.set(identity.session_family, entry);
           ws.once("close", () => {
             sockets.delete(ws);
             if (sockets.size === 0) browserSockets.delete(identity.session_family!);
