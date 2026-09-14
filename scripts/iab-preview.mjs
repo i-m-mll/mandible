@@ -95,7 +95,7 @@ async function createOrReusePreview(options) {
     if (existing) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
       const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
-      if (existing.health?.startup_commit?.hash !== currentHead) {
+      if (existing.health?.startup_commit?.hash !== currentHead || existing.clientAuthMigrationRequired) {
         return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
       }
       return {
@@ -127,7 +127,7 @@ async function createOrReusePreview(options) {
         throw new Error(`Healthy preview metadata exists for ${branch}, but its worktree is not registered.`);
       }
       const currentHead = git(["rev-parse", "HEAD"], { cwd: selectedWorktree }).stdout.trim();
-      if (existing.health?.startup_commit?.hash !== currentHead) {
+      if (existing.health?.startup_commit?.hash !== currentHead || existing.clientAuthMigrationRequired) {
         return refreshExistingPreview(existing, {
           branch,
           worktree: selectedWorktree,
@@ -205,6 +205,11 @@ async function createOrReusePreview(options) {
       ? priorPort
       : await findFreePort(DEFAULT_PORT_START, DEFAULT_PORT_END)
   );
+  if (await isPortOpen(port)) {
+    throw new Error(
+      `Refusing preview start: port ${port} is already occupied and no verified reusable preview owns it.`,
+    );
+  }
   if (!fs.existsSync(sourceDb)) {
     throw new Error(`Source database does not exist: ${sourceDb}`);
   }
@@ -913,6 +918,13 @@ function previewInstanceEnvDrift(metadata, previewRoot) {
     .map(([key]) => key);
 }
 
+function hasMigratableClientAuthDrift(metadata, previewRoot, drift) {
+  return drift.length === 1
+    && drift[0] === "MANDIBLE_CLIENT_AUTH_DIR"
+    && metadata.instanceEnv?.MANDIBLE_CLIENT_AUTH_DIR
+      === path.join(previewRoot, "config", "client-auth");
+}
+
 async function healthyExistingPreview(branch, expected = {}) {
   const preview = previewPaths(branch);
   if (!fs.existsSync(preview.metadata)) return null;
@@ -925,23 +937,32 @@ async function healthyExistingPreview(branch, expected = {}) {
   const { health } = readiness;
   if (!hasExpectedPreviewPolicy(health)) return null;
   if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return null;
-  // An instance started before the current isolation contract is not reusable:
-  // it is sharing the live conversations index or log file. Report it as absent
-  // so the caller replaces it, rather than refreshing a preview that is still
-  // writing to the live daemon's resources.
-  if (previewInstanceEnvDrift(metadata, preview.root).length > 0) return null;
   validatePreviewIdentity(metadata, preview, branch, expected.worktree);
+  // Most old isolation contracts are not reusable because they share writable
+  // state with the live daemon. Client-auth is the one upgradeable exception:
+  // its exact authority bytes can move after the verified daemon stops.
+  const drift = previewInstanceEnvDrift(metadata, preview.root);
+  const clientAuthMigrationRequired = hasMigratableClientAuthDrift(metadata, preview.root, drift);
+  if (drift.length > 0 && !clientAuthMigrationRequired) return null;
+  if (clientAuthMigrationRequired) {
+    assertLivePreviewProcessCustody(metadata, preview, health);
+  }
 
   return {
     ...metadata,
     health,
     freshUrl: browserUrl(metadata.port),
+    clientAuthMigrationRequired,
   };
 }
 
 async function refreshExistingPreview(existing, details) {
   const preview = previewPaths(details.branch);
   const validated = validateRefreshContract(existing, preview, details);
+
+  if (validated.clientAuthMigrationRequired) {
+    assertPreviewClientAuthMigrationReady(preview.root);
+  }
 
   ensureDependencies(details.worktree);
   run("npm", ["run", "build"], { cwd: details.worktree });
@@ -965,6 +986,9 @@ async function refreshExistingPreview(existing, details) {
   });
 
   const stopped = await stopPreviewProcess(validated.pidFile);
+  const migratedClientAuthAuthority = validated.clientAuthMigrationRequired
+    ? migratePreviewClientAuthAuthority(preview.root)
+    : null;
   const structureCache = await seedProjectedConversationStructureCache({
     sourceCache: sourceConversationStructureCachePath(),
     targetCache: validated.instanceEnv.MANDIBLE_CONVERSATION_STRUCTURE_DB,
@@ -998,7 +1022,9 @@ async function refreshExistingPreview(existing, details) {
     ok: true,
     status: "refreshed",
     mode: details.mode,
-    message: `Refreshed the existing preview from ${shortHash(existing.health.startup_commit.hash)} to ${shortHash(details.currentHead)}.`,
+    message: validated.clientAuthMigrationRequired
+      ? "Upgraded the live preview to durable client-auth custody on its existing port."
+      : `Refreshed the existing preview from ${shortHash(existing.health.startup_commit.hash)} to ${shortHash(details.currentHead)}.`,
     branch: details.branch,
     worktree: details.worktree,
     port: validated.port,
@@ -1013,6 +1039,7 @@ async function refreshExistingPreview(existing, details) {
     projection: { ...existing.projection, structureCache },
     structureCache,
     briefingDemo,
+    ...(migratedClientAuthAuthority ? { clientAuthAuthority: migratedClientAuthAuthority } : {}),
     restartLifecycle,
     health,
     refreshedAt: new Date().toISOString(),
@@ -1020,6 +1047,7 @@ async function refreshExistingPreview(existing, details) {
   };
   delete refreshed.freshUrl;
   delete refreshed.browserEnrollment;
+  delete refreshed.clientAuthMigrationRequired;
   fs.writeFileSync(preview.metadata, `${JSON.stringify(refreshed, null, 2)}\n`);
   return await withBrowserReadyUrl(refreshed, { pairBrowser: details.options.pairBrowser });
 }
@@ -1076,7 +1104,8 @@ function validateRefreshContract(existing, preview, details) {
   }
 
   const drift = previewInstanceEnvDrift(existing, preview.root);
-  if (drift.length > 0) {
+  const clientAuthMigrationRequired = hasMigratableClientAuthDrift(existing, preview.root, drift);
+  if (drift.length > 0 && !clientAuthMigrationRequired) {
     throw new Error(
       `Refusing preview refresh: persisted ${drift.join(", ")} does not match the required preview contract.`,
     );
@@ -1096,7 +1125,20 @@ function validateRefreshContract(existing, preview, details) {
     ...expectedPaths,
     sourceDb: existing.sourceDb,
     instanceEnv,
+    clientAuthMigrationRequired,
   };
+}
+
+function assertLivePreviewProcessCustody(metadata, preview, health) {
+  const pidFile = metadata.pidFile ?? path.join(preview.root, "mandible.pid");
+  const pid = readPidFile(pidFile);
+  const proof = readPreviewEnrollmentProof(path.join(preview.root, "preview-browser-enrollment.json"));
+  if (pid === null || !isProcessAlive(pid) || proof.pid !== pid
+      || proof.startup_epoch !== health?.startup_epoch) {
+    throw new Error(
+      "Refusing live preview auth upgrade: pid file, enrollment proof, and healthy startup epoch do not identify one process.",
+    );
+  }
 }
 
 export async function withBrowserReadyUrl(preview, options = {}) {
@@ -1776,6 +1818,20 @@ function migratePreviewClientAuthAuthority(previewRoot) {
     fs.rmSync(temporary, { recursive: true, force: true });
   }
   return { status: "migrated", path: durable };
+}
+
+function assertPreviewClientAuthMigrationReady(previewRoot) {
+  const legacy = path.join(previewRoot, "config", "client-auth");
+  const durable = previewClientAuthDir(previewRoot);
+  if (!fs.existsSync(legacy) && !fs.existsSync(durable)) {
+    throw new Error("Refusing preview auth migration: the recorded legacy authority has no durable bytes.");
+  }
+  if (!fs.existsSync(legacy) || !fs.existsSync(durable)) return;
+  if (JSON.stringify(directorySnapshot(legacy)) !== JSON.stringify(directorySnapshot(durable))) {
+    throw new Error(
+      `Refusing preview auth migration: legacy ${legacy} conflicts with durable ${durable}.`,
+    );
+  }
 }
 
 function copyDirectoryPreservingModes(source, target) {
