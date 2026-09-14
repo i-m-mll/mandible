@@ -35,16 +35,6 @@
   position: relative;
 }
 
-.auth-toast {
-  margin-bottom: 12px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  font-size: 13px;
-  color: var(--accent-red);
-  background: rgba(242, 107, 107, 0.12);
-  border: 1px solid rgba(242, 107, 107, 0.25);
-}
-
 .auth-card__header {
   display: flex;
   justify-content: space-between;
@@ -2382,15 +2372,6 @@
   justify-content: center;
   flex: 1;
   min-height: 0;
-}
-
-/* Toast in sidebar layout - float at top of page */
-.auth-toast--floating {
-  position: fixed;
-  top: 90px;
-  right: 32px;
-  z-index: 100;
-  margin-bottom: 0;
 }
 
 /* Responsive: stack sidebar above detail on narrow screens */
