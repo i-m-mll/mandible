@@ -222,12 +222,15 @@ describe('Briefing sidebar row actions', () => {
     expect(groups[0].updates[0].members.map((member) => member.briefing.label)).toEqual(['First', 'Second']);
   });
 
-  it('selects a group separately from its chevron and previews proposals without replacing Current', () => {
+  it('selects a group separately from its reorder handle and chevron without replacing Current', async () => {
     render(<GroupHarness />);
 
     const groupSelect = screen.getByRole('button', { name: 'Select Briefing group Release review' });
     const group = groupSelect.closest('.sidebar-group-node') as HTMLElement;
+    const reorderHandle = await within(group).findByRole('button', { name: 'Reorder Release review' });
     const disclosure = within(group).getByRole('button', { name: 'Collapse Release review' });
+    expect(reorderHandle.dataset.sidebarReorderHandle).toBe(`group:${groupedUpdates.id}`);
+    expect(groupSelect.hasAttribute('data-sidebar-reorder-handle')).toBe(false);
     expect(disclosure.getAttribute('aria-expanded')).toBe('true');
     expect(within(group).getByRole('button', { name: 'Select briefing First briefing' })).toBeTruthy();
 

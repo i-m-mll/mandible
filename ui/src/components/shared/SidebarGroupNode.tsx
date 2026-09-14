@@ -2,6 +2,7 @@ import type { ComponentChildren, JSX } from 'preact';
 import { ContextualAction } from './ContextualAction';
 import { DisclosureChevronIcon } from './DisclosureChevronIcon';
 import { SidebarDisclosureRegion } from './SidebarDisclosureRegion';
+import { SidebarReorderHandle } from './SidebarReorderHandle';
 import type { SidebarReorderBinding } from './sidebar-order';
 
 type SidebarGroupNodeCommonProps = {
@@ -133,7 +134,6 @@ export function SidebarGroupNode({
       <div
         className={`sidebar-group-node__header contextual-action-owner${selection?.selected ? ' sidebar-group-node__header--selected' : ''}`}
         {...reorder?.root}
-        data-testid={testIds?.dragHandle}
         onClick={toggleFromHeader}
       >
         <button
@@ -148,7 +148,6 @@ export function SidebarGroupNode({
           data-testid={testIds?.heading}
           aria-describedby={reorder?.control['aria-describedby']}
           aria-keyshortcuts={reorder?.control['aria-keyshortcuts']}
-          data-sidebar-reorder-control={reorder?.control['data-sidebar-reorder-control']}
           onKeyDown={reorder?.control.onKeyDown}
           onClick={activateHeading}
         >
@@ -169,8 +168,13 @@ export function SidebarGroupNode({
             <DisclosureChevronIcon expanded={expanded} />
           </button>
         ) : null}
+        {reorder ? (
+          <span className="sidebar-group-node__reorder-slot contextual-action-group">
+            <SidebarReorderHandle binding={reorder} testId={testIds?.dragHandle} />
+          </span>
+        ) : null}
         {action ? (
-          <span className={`sidebar-group-node__action-slot contextual-action-group${action.persistentWhenExpanded && expanded ? ' contextual-action-group--persistent' : ''}`}>
+          <span className={`sidebar-group-node__action-slot contextual-action-group${action?.persistentWhenExpanded && expanded ? ' contextual-action-group--persistent' : ''}`}>
             <ContextualAction
               className="sidebar-group-node__action"
               aria-label={action.label}

@@ -5,18 +5,24 @@ export type SidebarReorderBinding = {
   dropTarget: boolean;
   root: {
     'data-sidebar-reorder-id': string;
-    onPointerDown(event: JSX.TargetedPointerEvent<HTMLElement>): void;
-    onPointerMove(event: JSX.TargetedPointerEvent<HTMLElement>): void;
-    onPointerUp(event: JSX.TargetedPointerEvent<HTMLElement>): void;
-    onPointerCancel(event: JSX.TargetedPointerEvent<HTMLElement>): void;
-    onLostPointerCapture(event: JSX.TargetedPointerEvent<HTMLElement>): void;
     onClickCapture(event: JSX.TargetedMouseEvent<HTMLElement>): void;
   };
   control: {
     'aria-describedby': string;
     'aria-keyshortcuts': string;
-    'data-sidebar-reorder-control': string;
     onKeyDown(event: JSX.TargetedKeyboardEvent<HTMLElement>): void;
+  };
+  handle: {
+    'aria-label': string;
+    'aria-describedby': string;
+    'aria-keyshortcuts': string;
+    'data-sidebar-reorder-handle': string;
+    onKeyDown(event: JSX.TargetedKeyboardEvent<HTMLElement>): void;
+    onPointerDown(event: JSX.TargetedPointerEvent<HTMLElement>): void;
+    onPointerMove(event: JSX.TargetedPointerEvent<HTMLElement>): void;
+    onPointerUp(event: JSX.TargetedPointerEvent<HTMLElement>): void;
+    onPointerCancel(event: JSX.TargetedPointerEvent<HTMLElement>): void;
+    onLostPointerCapture(event: JSX.TargetedPointerEvent<HTMLElement>): void;
   };
 };
 

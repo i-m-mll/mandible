@@ -193,6 +193,7 @@
   white-space: nowrap;
 }
 
+.sidebar-item-row__reorder,
 .sidebar-item-row__actions {
   position: relative;
   display: inline-flex;

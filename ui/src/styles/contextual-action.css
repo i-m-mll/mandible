@@ -8,6 +8,7 @@
 .contextual-action-owner:hover > .contextual-action-group,
 .contextual-action-owner:hover > .contextual-action-scope > .contextual-action-group,
 .contextual-action-owner:hover > .contextual-action-scope > .contextual-action-scope > .contextual-action-group,
+.contextual-action-group:focus-within,
 .contextual-action-group:has(.contextual-action:focus-visible),
 .contextual-action-group--persistent {
   opacity: 1;
@@ -32,7 +33,7 @@
 :where(.contextual-action-owner:hover) > :where(.contextual-action-group) .contextual-action,
 :where(.contextual-action-owner:hover) > :where(.contextual-action-scope) > :where(.contextual-action-group) .contextual-action,
 :where(.contextual-action-owner:hover) > :where(.contextual-action-scope) > :where(.contextual-action-scope) > :where(.contextual-action-group) .contextual-action,
-:where(.contextual-action-group:has(.contextual-action:focus-visible), .contextual-action-group--persistent) .contextual-action {
+:where(.contextual-action-group:focus-within, .contextual-action-group:has(.contextual-action:focus-visible), .contextual-action-group--persistent) .contextual-action {
   color: var(--chrome-icon-hover-indirect);
 }
 
