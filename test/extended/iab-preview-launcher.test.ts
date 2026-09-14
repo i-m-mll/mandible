@@ -1905,6 +1905,84 @@ describe("iab-preview launcher", () => {
     expect(daemonPid).not.toBe(running);
   }, 60_000);
 
+  it("upgrades a live preview with legacy client-auth metadata before reusing its port", async () => {
+    const fixture = await createRefreshFixture();
+    fs.copyFileSync(fixture.refreshedHealthPath, fixture.healthPath);
+    const running = spawnStandInDaemon(path.join(fixture.previewRoot, "legacy-live.pid"));
+    fs.writeFileSync(fixture.pidFile, `${running}\n`, "utf8");
+    fs.writeFileSync(path.join(fixture.previewRoot, "preview-browser-enrollment.json"), JSON.stringify({
+      version: 1,
+      pid: running,
+      startup_epoch: "preview-refresh-fixture",
+      token: "legacy preview process proof",
+    }), { mode: 0o600 });
+
+    const legacyClientAuthDir = path.join(fixture.previewRoot, "config", "client-auth");
+    fs.mkdirSync(legacyClientAuthDir, { recursive: true });
+    fs.writeFileSync(path.join(legacyClientAuthDir, "authority-id"), "authority_preserved\n", { mode: 0o600 });
+    fs.writeFileSync(path.join(legacyClientAuthDir, "dashboard-sessions.json"), "saved browser session\n", {
+      mode: 0o600,
+    });
+    const legacyMetadata = {
+      ...fixture.metadata,
+      instanceEnv: {
+        ...fixture.metadata.instanceEnv,
+        MANDIBLE_CLIENT_AUTH_DIR: legacyClientAuthDir,
+      },
+      health: JSON.parse(fs.readFileSync(fixture.refreshedHealthPath, "utf8")),
+    };
+    fs.writeFileSync(fixture.metadataPath, JSON.stringify(legacyMetadata), "utf8");
+
+    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+      cwd: fixture.repo,
+      encoding: "utf8",
+      env: fixture.env,
+    });
+
+    const payload = JSON.parse(result.stdout);
+    const durableClientAuthDir = fixture.metadata.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR;
+    expect(payload.status).toBe("refreshed");
+    expect(payload.port).toBe(fixture.metadata.port);
+    expect(payload.restartLifecycle.stopped).toEqual({ pid: running, outcome: "terminated" });
+    expect(isProcessAlive(running)).toBe(false);
+    expect(payload.clientAuthAuthority).toEqual({ status: "migrated", path: durableClientAuthDir });
+    expect(payload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR).toBe(durableClientAuthDir);
+    expect(fs.readFileSync(path.join(durableClientAuthDir, "authority-id"), "utf8"))
+      .toBe("authority_preserved\n");
+    expect(fs.readFileSync(path.join(durableClientAuthDir, "dashboard-sessions.json"), "utf8"))
+      .toBe("saved browser session\n");
+
+    await vi.waitFor(() => expect(readPidFile(fixture.markerPidFile)).not.toBeNull(), { timeout: 5_000 });
+    const daemonPid = readPidFile(fixture.markerPidFile);
+    expect(daemonPid).not.toBeNull();
+    expect(daemonPid).not.toBe(running);
+  }, 60_000);
+
+  it("refuses to race an unverified process on an explicitly requested port", async () => {
+    const repo = createRepo();
+    git(["checkout", "-b", "integration/test-preview"], repo);
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-occupied-"));
+    tempRoots.push(previewBase, `${previewBase}.authorities`);
+    const occupiedPort = await listenForHealth({ unexpected: true });
+
+    await expect(execFileAsync(process.execPath, [
+      SCRIPT,
+      "--json",
+      "--no-build",
+      "--db",
+      path.join(repo, "missing-source.db"),
+      "--port",
+      String(occupiedPort),
+    ], {
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
+    })).rejects.toMatchObject({
+      code: 1,
+      stdout: expect.stringContaining(`port ${occupiedPort} is already occupied`),
+    });
+  });
+
   it("escalates to SIGKILL and reports it when the preview daemon ignores SIGTERM", async () => {
     const fixture = await createRefreshFixture();
     const wedged = spawnStandInDaemon(path.join(fixture.previewRoot, "wedged.pid"), { ignoresSigterm: true });
