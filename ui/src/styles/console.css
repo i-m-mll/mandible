@@ -891,6 +891,14 @@
   contain: layout style;
 }
 
+.stream-renderer__history-state {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-2) 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
 /* Bug: a654b69 — P4: individual nodes within a grouped turn */
 .stream-turn-node {
   width: 100%;

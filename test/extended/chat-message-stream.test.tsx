@@ -13,6 +13,7 @@ import {
   serializeConversationToMarkdown,
 } from '../../ui/src/chat';
 import { ChatSurface, shouldShowJumpToLatest } from '../../ui/src/chat/ChatSurface';
+import type { ConversationTranscriptConsumer } from '../../ui/src/query/conversationData';
 import { plainActivityHeader, presentActivityItems } from '../../ui/src/components/message-blocks/ActivityBlock';
 import { MessageActions } from '../../ui/src/components/shared/MessageActions';
 import { DetailPaneOverlayContext, DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell';
@@ -183,6 +184,21 @@ describe('chat message stream render model', () => {
     expect(serializeConversationToMarkdown(state.nodes)).toContain('## Assistant\n\nanswer two');
   });
 
+  it('keeps downstream same-speaker row keys stable across prepends and bounds each row', () => {
+    const events = Array.from({ length: 25 }, (_, index) => user(`prompt ${index}`, `u${index}`));
+    const before = groupMessagesForDisplay(buildStreamState(events).nodes);
+    const after = groupMessagesForDisplay(buildStreamState([
+      user('older 0', 'older-0'),
+      user('older 1', 'older-1'),
+      user('older 2', 'older-2'),
+      ...events,
+    ]).nodes);
+
+    expect(before.every((group) => group.nodes.length <= 12)).toBe(true);
+    expect(after.every((group) => group.nodes.length <= 12)).toBe(true);
+    expect(after.slice(-2).map((group) => group.id)).toEqual(before.slice(-2).map((group) => group.id));
+  });
+
   it('bounds large tool result text before DOM delivery', () => {
     const fullText = `${'x'.repeat(13000)}TAIL-MARKER`;
     const bounded = boundToolResultBlock({
@@ -308,6 +324,61 @@ describe('chat message stream render model', () => {
 });
 
 describe('ChatSurface stream behavior', () => {
+  it('renders truthful history boundaries and an actionable explicit gap', () => {
+    const transcript: ConversationTranscriptConsumer = {
+      loadedIntervals: [{ start: 0, end: 2 }, { start: 7, end: 9 }],
+      hasOlder: false,
+      hasNewer: false,
+      unmaterializedAfterCount: 0,
+      loadOlder: vi.fn(),
+      loadNewer: vi.fn(),
+      loadAround: vi.fn(),
+    };
+    render(<ChatSurface events={[user('prompt', 'u1')]} streaming={false} transcript={transcript} />);
+
+    expect(screen.getByText('Start of conversation')).toBeTruthy();
+    expect(screen.getByText('End of conversation')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Load missing history from positions 3 to 6' }));
+    expect(transcript.loadAround).toHaveBeenCalledWith(3);
+  });
+
+  it('continues edge loading when a page advances coverage without adding readable rows', async () => {
+    const loadOlder = vi.fn(() => Promise.resolve());
+    const consumer = (start: number): ConversationTranscriptConsumer => ({
+      loadedIntervals: [{ start, end: 9 }],
+      hasOlder: true,
+      hasNewer: false,
+      unmaterializedAfterCount: 0,
+      loadOlder,
+      loadNewer: vi.fn(),
+      loadAround: vi.fn(),
+    });
+    const view = render(
+      <ChatSurface events={[user('only readable row', 'u1')]} streaming={false} transcript={consumer(8)} />,
+    );
+    await waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
+
+    view.rerender(
+      <ChatSurface events={[user('only readable row', 'u1')]} streaming={false} transcript={consumer(4)} />,
+    );
+    await waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(2));
+  });
+
+  it('persists a canonical reading anchor instead of a raw scroll offset', () => {
+    const view = render(
+      <ChatSurface events={[canonicalEvent(canonicalItem({
+        type: 'message', role: 'user', parts: [{ type: 'text', text: 'anchored' }], ordinal: 4,
+      }), 'persisted-anchor')]} streaming={false} sessionInfo={{ sessionId: 'reading-anchor' }} />,
+    );
+    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    fireEvent.scroll(scroll);
+    const stored = JSON.parse(localStorage.getItem('mandible:chat-scroll:reading-anchor')!);
+
+    expect(stored).toMatchObject({ version: 1, blockId: 'persisted-anchor' });
+    expect(stored).toHaveProperty('itemId');
+    expect(stored).toHaveProperty('viewportOffset');
+  });
+
   it('uses semantic direct-sibling boundaries for mixed prose and activity rhythm', () => {
     const mixedTurn: StreamEvent = {
       type: 'assistant',
@@ -512,7 +583,8 @@ describe('ChatSurface stream behavior', () => {
     scroll.scrollTop = 2000;
     fireEvent.scroll(scroll);
     const anchor = Array.from(container.querySelectorAll<HTMLElement>('[data-virtual-key]'))
-      .find((row) => Number.parseFloat(row.style.transform.replace(/[^\d.-]/g, '')) <= scroll.scrollTop)!;
+      .filter((row) => Number.parseFloat(row.style.transform.replace(/[^\d.-]/g, '')) <= scroll.scrollTop)
+      .at(-1)!;
     const anchorKey = anchor.dataset.virtualKey!;
     const anchorStart = Number.parseFloat(anchor.style.transform.replace(/[^\d.-]/g, ''));
     const anchorInset = scroll.scrollTop - anchorStart;
