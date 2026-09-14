@@ -3,6 +3,7 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { ContextualAction } from './ContextualAction';
 import { OfficialProviderMark, type OfficialProviderMarkKind } from './OfficialProviderMark';
+import { SidebarReorderHandle } from './SidebarReorderHandle';
 import type { SidebarReorderBinding } from './sidebar-order';
 
 export type SidebarItemRowProps = {
@@ -111,7 +112,6 @@ export function SidebarItemRow({
         onClick={onSelect}
         aria-describedby={reorder?.control['aria-describedby']}
         aria-keyshortcuts={reorder?.control['aria-keyshortcuts']}
-        data-sidebar-reorder-control={reorder?.control['data-sidebar-reorder-control']}
         onKeyDown={(event) => {
           reorder?.control.onKeyDown(event);
           if (!event.defaultPrevented) onKeyDown?.(event);
@@ -123,7 +123,7 @@ export function SidebarItemRow({
           {badges ? <span className="sidebar-item-row__badges">{badges}</span> : null}
         </span>
       </button>
-      {provider?.mark || actions ? (
+      {provider?.mark || actions || reorder ? (
         <span
           ref={(element) => {
             trailingRef.current = element;
@@ -131,6 +131,11 @@ export function SidebarItemRow({
           }}
           className="sidebar-item-row__trailing contextual-action-scope"
         >
+          {reorder ? (
+            <span className="sidebar-item-row__reorder contextual-action-group">
+              <SidebarReorderHandle binding={reorder} />
+            </span>
+          ) : null}
           {actions ? <span className={`sidebar-item-row__actions contextual-action-group${trailingReveal === 'persistent-pin' ? ' contextual-action-group--persistent' : ''}`}>{actions}</span> : null}
           {provider?.mark ? (
             <span className="sidebar-item-row__provider">

@@ -16,10 +16,12 @@ function ReorderList({
   initial = ['a', 'b', 'c'],
   onSelect = vi.fn(),
   onAction = vi.fn(),
+  persistentActions = false,
 }: {
   initial?: string[];
   onSelect?: (id: string) => void;
   onAction?: (id: string) => void;
+  persistentActions?: boolean;
 }) {
   const [ids, setIds] = useState(initial);
   const reorder = useSidebarReorder({ ids, label: (id) => id.toUpperCase(), onCommit: setIds });
@@ -31,6 +33,7 @@ function ReorderList({
           key={id}
           label={id.toUpperCase()}
           selectionLabel={`Select ${id}`}
+          trailingReveal={persistentActions ? 'persistent-pin' : 'interaction'}
           onSelect={() => onSelect(id)}
           actions={<button type="button" aria-label={`Action ${id}`} onClick={() => onAction(id)}>act</button>}
           reorder={reorder.binding(id)}
@@ -68,7 +71,36 @@ describe('shared sidebar reorder', () => {
     expect(order()).toEqual(['b', 'a', 'c']);
   });
 
-  it('moves by pointer, suppresses the post-drop click, and excludes action controls', () => {
+  it('keeps title and action clicks independent from the dedicated pointer handle', () => {
+    const onSelect = vi.fn();
+    const onAction = vi.fn();
+    render(<ReorderList onSelect={onSelect} onAction={onAction} />);
+    const title = screen.getByRole('button', { name: 'Select a' });
+    const handle = screen.getByRole('button', { name: 'Reorder A' });
+    expect(title.hasAttribute('data-sidebar-reorder-handle')).toBe(false);
+    expect(handle.dataset.sidebarReorderHandle).toBe('a');
+
+    fireEvent.pointerDown(title, { button: 0, pointerId: 1, clientX: 5, clientY: 5 });
+    fireEvent.pointerMove(title, { pointerId: 1, clientX: 5, clientY: 100 });
+    fireEvent.pointerUp(title, { pointerId: 1 });
+    fireEvent.click(title);
+    expect(onSelect).toHaveBeenCalledWith('a');
+    expect(order()).toEqual(['a', 'b', 'c']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Action a' }));
+    expect(onAction).toHaveBeenCalledWith('a');
+  });
+
+  it('keeps the reorder handle hover-only when a neighboring action is persistent', () => {
+    render(<ReorderList initial={['a']} persistentActions />);
+    const row = screen.getByRole('button', { name: 'Select a' }).closest('.sidebar-item-row')!;
+    expect(row.querySelector('.sidebar-item-row__reorder')?.classList.contains('contextual-action-group--persistent'))
+      .toBe(false);
+    expect(row.querySelector('.sidebar-item-row__actions')?.classList.contains('contextual-action-group--persistent'))
+      .toBe(true);
+  });
+
+  it('moves only from the pointer handle and suppresses its post-drop click', () => {
     const onCommit = vi.fn();
     const { result } = renderHook(() => useSidebarReorder({
       ids: ['a', 'b', 'c'], label: (id) => id.toUpperCase(), onCommit,
@@ -84,36 +116,37 @@ describe('shared sidebar reorder', () => {
     });
     const list = document.createElement('div');
     vi.spyOn(list, 'querySelectorAll').mockReturnValue(rows as unknown as NodeListOf<Element>);
-    const root = document.createElement('div');
-    vi.spyOn(root, 'closest').mockReturnValue(list);
-    const control = document.createElement('button');
-    control.dataset.sidebarReorderControl = 'a';
-    const action = document.createElement('button');
+    const handle = document.createElement('button');
+    handle.dataset.sidebarReorderHandle = 'a';
+    vi.spyOn(handle, 'closest').mockImplementation((selector) => (
+      selector === '[data-sidebar-reorder-handle]' ? handle : list
+    ));
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
 
-    act(() => result.current.binding('a')!.root.onPointerDown({
-      button: 0, pointerId: 7, clientX: 5, clientY: 5, target: control, currentTarget: root,
+    act(() => result.current.binding('a')!.handle.onPointerDown({
+      button: 0, pointerId: 7, clientX: 5, clientY: 5, currentTarget: handle,
       metaKey: false, ctrlKey: false, shiftKey: false, altKey: false,
     } as never));
-    act(() => result.current.binding('a')!.root.onPointerMove({
-      pointerId: 7, clientX: 5, clientY: 100, currentTarget: root, preventDefault: vi.fn(),
+    expect(handle.setPointerCapture).toHaveBeenCalledWith(7);
+    act(() => result.current.binding('a')!.handle.onPointerMove({
+      pointerId: 7, clientX: 5, clientY: 100, currentTarget: handle, preventDefault: vi.fn(),
     } as never));
     expect(result.current.binding('a')?.dragging).toBe(true);
-    act(() => result.current.binding('a')!.root.onPointerUp({
-      pointerId: 7, currentTarget: root,
+    act(() => result.current.binding('a')!.handle.onPointerUp({
+      pointerId: 7, currentTarget: handle,
     } as never));
+    expect(handle.releasePointerCapture).toHaveBeenCalledWith(7);
     expect(onCommit).toHaveBeenCalledWith(['b', 'c', 'a']);
-    const click = { preventDefault: vi.fn(), stopPropagation: vi.fn() };
+    const click = { target: handle, preventDefault: vi.fn(), stopPropagation: vi.fn() };
     result.current.binding('a')!.root.onClickCapture(click as never);
     expect(click.preventDefault).toHaveBeenCalled();
 
-    result.current.binding('b')!.root.onPointerDown({
-      button: 0, pointerId: 8, clientX: 5, clientY: 5, target: action, currentTarget: root,
-      metaKey: false, ctrlKey: false, shiftKey: false, altKey: false,
-    } as never);
-    result.current.binding('b')!.root.onPointerMove({
-      pointerId: 8, clientX: 5, clientY: 100, currentTarget: root, preventDefault: vi.fn(),
-    } as never);
-    result.current.binding('b')!.root.onPointerUp({ pointerId: 8, currentTarget: root } as never);
-    expect(onCommit).toHaveBeenCalledTimes(1);
+    const title = document.createElement('button');
+    const titleClick = { target: title, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+    result.current.binding('a')!.root.onClickCapture(titleClick as never);
+    expect(titleClick.preventDefault).not.toHaveBeenCalled();
+
+    expect(result.current.binding('b')?.root).not.toHaveProperty('onPointerDown');
   });
 });

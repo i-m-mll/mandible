@@ -142,7 +142,7 @@ describe('SpacesSidebar render + grouping', () => {
     expect(alphaGroup.classList.contains('sidebar-group-node--folder')).toBe(true);
     expect(
       alphaGroup.querySelector('[data-testid="spaces-group-header-proj-a"]')
-        ?.classList.contains('sidebar-group-node__header'),
+        ?.classList.contains('sidebar-reorder-handle'),
     ).toBe(true);
     expect(scroll.contains(topLevelGroup)).toBe(true);
     expect(scroll.contains(alphaGroup)).toBe(true);

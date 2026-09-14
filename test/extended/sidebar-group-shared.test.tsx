@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CollectionsSidebar } from '../../ui/src/views/feedback/CollectionsSidebar.js';
 import { SidebarGroupNode, SidebarNewChatIcon } from '../../ui/src/components/shared/SidebarGroupNode.js';
+import type { SidebarReorderBinding } from '../../ui/src/components/shared/sidebar-order.js';
 import { SettingsView } from '../../ui/src/views/settings.js';
 import type { FeedbackCollection } from '../../ui/src/views/feedback/collection-model.js';
 import * as api from '../../ui/src/api.js';
@@ -131,6 +132,53 @@ describe('shared sidebar group presentation', () => {
       </SidebarGroupNode>,
     );
     expect(screen.getByRole('button', { name: 'Add project' }).parentElement?.classList.contains('contextual-action-group--persistent')).toBe(false);
+  });
+
+  it('keeps a reorder grip contextual when its neighboring group action is persistent', () => {
+    const reorder = {
+      dragging: false,
+      dropTarget: false,
+      root: { 'data-sidebar-reorder-id': 'projects', onClickCapture: vi.fn() },
+      control: {
+        'aria-describedby': 'instructions status',
+        'aria-keyshortcuts': 'Control+Shift+ArrowUp Control+Shift+ArrowDown',
+        onKeyDown: vi.fn(),
+      },
+      handle: {
+        'aria-label': 'Reorder Projects',
+        'aria-describedby': 'instructions status',
+        'aria-keyshortcuts': 'Control+Shift+ArrowUp Control+Shift+ArrowDown',
+        'data-sidebar-reorder-handle': 'projects',
+        onKeyDown: vi.fn(),
+        onPointerDown: vi.fn(),
+        onPointerMove: vi.fn(),
+        onPointerUp: vi.fn(),
+        onPointerCancel: vi.fn(),
+        onLostPointerCapture: vi.fn(),
+      },
+    } satisfies SidebarReorderBinding;
+
+    render(
+      <SidebarGroupNode
+        presentation="category"
+        id="projects"
+        label="Projects"
+        expanded
+        onToggle={() => undefined}
+        reorder={reorder}
+        action={{ label: 'Add project', icon: <span>+</span>, onPress: () => undefined, persistentWhenExpanded: true }}
+      >
+        <span>No projects included</span>
+      </SidebarGroupNode>,
+    );
+
+    const gripGroup = screen.getByRole('button', { name: 'Reorder Projects' }).parentElement;
+    const actionGroup = screen.getByRole('button', { name: 'Add project' }).parentElement;
+    expect(gripGroup?.classList.contains('sidebar-group-node__reorder-slot')).toBe(true);
+    expect(gripGroup?.classList.contains('contextual-action-group--persistent')).toBe(false);
+    expect(actionGroup?.classList.contains('sidebar-group-node__action-slot')).toBe(true);
+    expect(actionGroup?.classList.contains('contextual-action-group--persistent')).toBe(true);
+    expect(gripGroup).not.toBe(actionGroup);
   });
 
   it('keeps a selectable group disclosure immediately after its heading content', () => {

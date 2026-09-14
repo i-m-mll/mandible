@@ -58,7 +58,6 @@ export function useSidebarReorder({
     if (disabled) return undefined;
     const begin = (event: JSX.TargetedPointerEvent<HTMLElement>) => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      if (!(event.target as Element).closest('[data-sidebar-reorder-control]')) return;
       const originOrder = [...ids];
       dragRef.current = {
         itemId,
@@ -134,14 +133,11 @@ export function useSidebarReorder({
       dropTarget: drag?.active === true && drag.overId === itemId,
       root: {
         'data-sidebar-reorder-id': itemId,
-        onPointerDown: begin,
-        onPointerMove: move,
-        onPointerUp: finish,
-        onPointerCancel: cancelPointer,
-        onLostPointerCapture: cancelPointer,
         onClickCapture: (event) => {
           const suppressed = suppressClickRef.current;
-          if (suppressed?.itemId !== itemId || Date.now() > suppressed.until) return;
+          const handleId = (event.target as Element).closest<HTMLElement>('[data-sidebar-reorder-handle]')
+            ?.dataset.sidebarReorderHandle;
+          if (suppressed?.itemId !== itemId || handleId !== itemId || Date.now() > suppressed.until) return;
           suppressClickRef.current = null;
           event.preventDefault();
           event.stopPropagation();
@@ -150,8 +146,19 @@ export function useSidebarReorder({
       control: {
         'aria-describedby': `${tokenRef.current}-instructions ${tokenRef.current}-status`,
         'aria-keyshortcuts': 'Control+Shift+ArrowUp Control+Shift+ArrowDown',
-        'data-sidebar-reorder-control': itemId,
         onKeyDown: keyDown,
+      },
+      handle: {
+        'aria-label': `Reorder ${label(itemId)}`,
+        'aria-describedby': `${tokenRef.current}-instructions ${tokenRef.current}-status`,
+        'aria-keyshortcuts': 'Control+Shift+ArrowUp Control+Shift+ArrowDown',
+        'data-sidebar-reorder-handle': itemId,
+        onKeyDown: keyDown,
+        onPointerDown: begin,
+        onPointerMove: move,
+        onPointerUp: finish,
+        onPointerCancel: cancelPointer,
+        onLostPointerCapture: cancelPointer,
       },
     };
   };
