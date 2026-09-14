@@ -1272,13 +1272,13 @@ export function ConversationDetail({
     listWorkflows({ session_id: conversation.session_id })
       .then((runs) => {
         if (!active) return;
-        setWorkflows(runs);
+        setWorkflows((current) => current.length === 0 && runs.length === 0 ? current : runs);
         if (activeWorkflowId && !runs.some((run) => run.id === activeWorkflowId)) {
           setActiveWorkflowId(null);
         }
       })
       .catch(() => {
-        if (active) setWorkflows([]);
+        if (active) setWorkflows((current) => current.length === 0 ? current : []);
       });
     return () => { active = false; };
   }, [activeWorkflowId, conversation?.session_id, workflowNonce]);
@@ -1399,7 +1399,7 @@ export function ConversationDetail({
     ],
     [blocks, conversation?.children, onNavigate, workflows],
   );
-  const rightSidebarDescriptor = useMemo(() => conversation ? ({
+  const rightSidebarDescriptor = useMemo(() => conversation && windowQuery.data ? ({
     id: 'chat-right-sidebar',
     kind: 'tabs' as const,
     ariaLabel: 'Chat sidebar',
@@ -1441,7 +1441,7 @@ export function ConversationDetail({
         content: <ChatActivity items={activityItems} />,
       },
     ],
-  }) : null, [activityItems, conversation, conversationId, currentRightSidebarViewState, rightSidebarState, updateRightSidebarState]);
+  }) : null, [activityItems, conversation, conversationId, currentRightSidebarViewState, rightSidebarState, updateRightSidebarState, windowQuery.data]);
   useRegisterAppRightSidebar(rightSidebarDescriptor);
   const isReadOnlyChild = Boolean(conversation?.is_sidechain || conversation?.parent_conversation_id);
   const activeWorkflow = useMemo(
@@ -1765,9 +1765,9 @@ export function ConversationDetail({
   }, [conversation?.session_id, linkedConsoleSession?.id]);
 
   const retryLoad = useCallback(() => {
-    setNavigationError(null);
+    if (error) setNavigationError(error);
     void windowQuery.refetch();
-  }, [windowQuery]);
+  }, [error, windowQuery]);
 
   const loadErrorNotice = error ? (
     <DetailPaneNotice
@@ -2769,7 +2769,7 @@ export function ConversationsView({
     () => mergeSidebarPages(sidebarQuery.data, continuationPages),
     [continuationCacheRevision, sidebarQuery.data],
   );
-  const sidebarLoaded = sidebarQuery.isFetched;
+  const sidebarLoaded = sidebarQuery.isSuccess;
   const loading = sidebarQuery.isFetching;
   const loadingMoreKeys = new Set(continuationRequests.flatMap((request) => (
     queryClient.getQueryState(conversationKeys.sidebarPage(request.filters, request.group, request.cursor))?.fetchStatus === 'fetching'
