@@ -1036,6 +1036,12 @@ export function ConversationDetail({
   externalNotice?: ComponentChildren;
 }): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
+  // The sidebar descriptor is published back through the app shell. Keep its
+  // activity navigation dependency stable even when an embedding parent uses
+  // an inline callback, or that publication becomes a render feedback loop.
+  const onNavigateRef = useRef(onNavigate);
+  onNavigateRef.current = onNavigate;
+  const navigateFromActivity = useCallback((id: string) => onNavigateRef.current(id), []);
   const [jumpingToLatest, setJumpingToLatest] = useState(false);
   const [edgeLoading, setEdgeLoading] = useState<'older' | 'newer' | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
@@ -1495,10 +1501,10 @@ export function ConversationDetail({
     || control?.turn.kind === 'waiting-permission';
   const activityItems = useMemo(
     () => [
-      ...buildSubagentActivityItems(conversation?.children ?? [], blocks, onNavigate),
+      ...buildSubagentActivityItems(conversation?.children ?? [], blocks, navigateFromActivity),
       ...buildWorkflowActivityItems(workflows, setActiveWorkflowId),
     ],
-    [blocks, conversation?.children, onNavigate, workflows],
+    [blocks, conversation?.children, navigateFromActivity, workflows],
   );
   const rightSidebarDescriptor = useMemo(() => conversation && windowQuery.data ? ({
     id: 'chat-right-sidebar',
