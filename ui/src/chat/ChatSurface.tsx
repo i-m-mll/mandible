@@ -1,5 +1,12 @@
 import type { JSX } from 'preact/jsx-runtime';
-import { observeElementRect, useVirtualizer, type Rect, type Virtualizer } from '@tanstack/react-virtual';
+import {
+  defaultRangeExtractor,
+  observeElementRect,
+  useVirtualizer,
+  type Range,
+  type Rect,
+  type Virtualizer,
+} from '@tanstack/react-virtual';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRequest } from '../api';
 import type {
@@ -298,6 +305,20 @@ export function ChatSurface({
   }, [activePermissionRequest, groups, historyLoadStates, onPermissionRespond, streaming, transcript]);
 
   const getItemKey = useCallback((index: number) => items[index]?.id ?? index, [items]);
+  const extractVirtualRows = useCallback((range: Range): number[] => {
+    const indices = new Set(defaultRangeExtractor(range));
+    // Keep the two paging edges and one truthful discontinuity discoverable
+    // without letting a fragmented transcript make DOM size unbounded.
+    const historyIndices = [
+      0,
+      items.findIndex((item) => item.kind === 'history' && item.state.kind === 'gap'),
+      items.length - 1,
+    ];
+    historyIndices.forEach((index) => {
+      if (index >= 0 && items[index]?.kind === 'history') indices.add(index);
+    });
+    return [...indices].sort((left, right) => left - right);
+  }, [items]);
   const getScrollElement = useCallback(() => scrollRef.current, []);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: items.length,
@@ -308,7 +329,8 @@ export function ChatSurface({
     initialOffset: Math.max(0, items.length * ESTIMATED_ROW_HEIGHT - 720),
     initialRect: INITIAL_VIRTUAL_RECT,
     observeElementRect: observeChatElementRect,
-    overscan: 6,
+    rangeExtractor: extractVirtualRows,
+    overscan: 4,
     anchorTo: 'end',
     followOnAppend: followingTail ? 'auto' : false,
     scrollEndThreshold: FOLLOW_THRESHOLD_PX,
@@ -355,7 +377,14 @@ export function ChatSurface({
     const el = scrollRef.current;
     if (!el || items.length === 0) return null;
     const offset = el.scrollTop;
-    const virtualItem = virtualizer.getVirtualItemForOffset(offset) ?? virtualizer.getVirtualItems()[0];
+    let virtualItem = virtualizer.getVirtualItemForOffset(offset) ?? virtualizer.getVirtualItems()[0];
+    if (virtualItem && items[virtualItem.index]?.kind !== 'group') {
+      virtualItem = virtualizer.getVirtualItems().find((candidate) => (
+        items[candidate.index]?.kind === 'group'
+        && candidate.end > offset
+        && candidate.start < offset + el.clientHeight
+      )) ?? virtualItem;
+    }
     if (!virtualItem) return null;
     const item = items[virtualItem.index];
     if (!item) return null;
@@ -544,16 +573,25 @@ export function ChatSurface({
 
   useEffect(() => {
     if (!transcript || inFlightHistoryRef.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
     const rendered = virtualizer.getVirtualItems();
     if (rendered.length === 0) return;
-    const visibleIds = new Set(rendered.map((item) => items[item.index]?.id));
+    const scrollStart = el.scrollTop;
+    const scrollEnd = scrollStart + el.clientHeight;
+    const isAtRenderedEdge = (id: string): boolean => {
+      const row = rendered.find((candidate) => items[candidate.index]?.id === id);
+      if (!row) return false;
+      return row.end >= scrollStart - FOLLOW_THRESHOLD_PX
+        && row.start <= scrollEnd + FOLLOW_THRESHOLD_PX;
+    };
     const olderState = historyLoadStates['edge:older'] ?? 'idle';
     const newerState = historyLoadStates['edge:newer'] ?? 'idle';
-    if (transcript.hasOlder && olderState === 'idle' && visibleIds.has('history:older')) {
+    if (transcript.hasOlder && olderState === 'idle' && isAtRenderedEdge('history:older')) {
       void requestHistory('edge:older', transcript.loadOlder);
       return;
     }
-    if (transcript.hasNewer && newerState === 'idle' && visibleIds.has('history:newer')) {
+    if (transcript.hasNewer && newerState === 'idle' && isAtRenderedEdge('history:newer')) {
       void requestHistory('edge:newer', transcript.loadNewer);
     }
   }, [historyLoadStates, items, requestHistory, transcript, virtualItems, virtualizer]);

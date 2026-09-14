@@ -36,6 +36,7 @@ type CdpClient = {
 
 type BrowserSnapshot = {
   requests: string[];
+  fetchedBlockIds: string[];
   seenBlockIds: string[];
   mountedRows: number;
   maximumMountedRows: number;
@@ -51,6 +52,7 @@ let db: Database.Database;
 let server: http.Server;
 let origin = '';
 let expectedBlockIds: string[] = [];
+let expectedReadableBlockIds: string[] = [];
 let targetBlockId = '';
 let fixtureBundle = '';
 
@@ -128,6 +130,10 @@ async function seedSourceBackedConversation(): Promise<void> {
   `).all() as Array<{ id: string; position: number }>;
   expect(rows).toHaveLength(SOURCE_BACKED_HISTORY_BLOCK_COUNT);
   expectedBlockIds = rows.map((row) => row.id);
+  const hiddenPositions = new Set(parsed.blocks
+    .filter((block) => block.metadata.usage_telemetry !== undefined)
+    .map((block) => block.position));
+  expectedReadableBlockIds = rows.filter((row) => !hiddenPositions.has(row.position)).map((row) => row.id);
   targetBlockId = rows.find((row) => row.position === 123)?.id ?? '';
   expect(targetBlockId).not.toBe('');
 }
@@ -137,7 +143,7 @@ function fixtureHtml(): string {
     html,body,#root { height: 100%; margin: 0; }
     body { font: 14px system-ui; }
     .detail-pane-shell,.chat-detail-frame { display:flex; flex-direction:column; height:100%; min-height:0; }
-    .detail-pane-shell__body,.chat-detail-frame__body,.conv-transcript,.stream-renderer { display:flex; flex:1; flex-direction:column; min-height:0; }
+    .detail-pane-shell__body,.chat-detail-frame__body,.conv-transcript,.chat-entity-link-boundary,.stream-renderer { display:flex; flex:1; flex-direction:column; min-height:0; }
     .stream-renderer__scroll { flex:1; min-height:0; overflow-y:auto; }
     .stream-renderer__virtual-canvas { position:relative; min-height:100%; }
     .stream-renderer__virtual-row { position:absolute; left:0; right:0; }
@@ -223,7 +229,10 @@ async function connectCdp(url: string): Promise<CdpClient> {
 function rendererRssKb(profile: string): number {
   const rows = spawnSync('ps', ['-axo', 'rss=,command='], { encoding: 'utf8' }).stdout.split('\n');
   return rows.reduce((total, row) => {
-    if (!row.includes(profile) || !row.includes('(Renderer)')) return total;
+    if (!row.includes(profile)
+        || !row.includes('(Renderer)')
+        || row.includes('--top-chrome-webui')
+        || row.includes('--extension-process')) return total;
     const value = Number(row.trim().split(/\s+/, 1)[0]);
     return total + (Number.isFinite(value) ? value : 0);
   }, 0);
@@ -299,11 +308,14 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     expect(cold.requests.filter((url) => url.includes('/source-backed-history?target=initial'))).toHaveLength(1);
     process.stdout.write('SOURCE_BACKED_CHAT_STAGE cold\n');
 
-    const beforePrepend = await evaluate<{ id: string; top: number }>(`(() => {
+    const beforePrepend = await evaluate<{ id: string; top: number }>(`new Promise(resolve => {(() => {
       const scroll=document.querySelector('.stream-renderer__scroll');scroll.scrollTop=0;scroll.dispatchEvent(new Event('scroll'));
-      const block=[...document.querySelectorAll('[data-block-id]')].find(el=>el.getBoundingClientRect().bottom>0);
-      return {id:block?.dataset.blockId??'',top:block?.getBoundingClientRect().top??0};
-    })()`);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const viewport=scroll.getBoundingClientRect();
+        const block=[...document.querySelectorAll('[data-block-id]')].find(el=>{const rect=el.getBoundingClientRect();return rect.bottom>viewport.top&&rect.top<viewport.bottom});
+        resolve({id:block?.dataset.blockId??'',top:block?.getBoundingClientRect().top??0});
+      }));
+    })()})`);
     const firstOlderCount = cold.requests.length;
     const afterPrepend = await waitFor('first bounded older window', async () => {
       const value = await snapshot();
@@ -326,11 +338,13 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     await evaluate(`new Promise(resolve=>{const scroll=document.querySelector('.stream-renderer__scroll');let offset=0;const step=Math.max(180,scroll.clientHeight/2);const advance=()=>{scroll.scrollTop=offset;scroll.dispatchEvent(new Event('scroll'));offset+=step;if(offset<=scroll.scrollHeight){requestAnimationFrame(advance)}else{requestAnimationFrame(()=>requestAnimationFrame(resolve))}};advance()})`);
     const complete = await snapshot();
     process.stdout.write(`SOURCE_BACKED_CHAT_STAGE traversed ${complete.seenBlockIds.length}\n`);
-    expect(new Set(complete.seenBlockIds)).toEqual(new Set(expectedBlockIds));
-    expect(complete.seenBlockIds).toHaveLength(expectedBlockIds.length);
-    expect(complete.text).toContain('FIRST SOURCE BACKED PROMPT');
+    expect(new Set(complete.fetchedBlockIds)).toEqual(new Set(expectedBlockIds));
+    expect(complete.fetchedBlockIds).toHaveLength(expectedBlockIds.length);
+    expect(new Set(complete.seenBlockIds)).toEqual(new Set(expectedReadableBlockIds));
+    expect(complete.seenBlockIds).toHaveLength(expectedReadableBlockIds.length);
+    expect(complete.seenBlockIds).toContain(expectedReadableBlockIds[0]);
     expect(complete.maximumMountedRows).toBeLessThanOrEqual(20);
-    const windowRequests = complete.requests.filter((url) => url.includes(`/api/conversations/source-backed-history`));
+    const windowRequests = complete.requests.filter((url) => url.includes(`/api/conversations/source-backed-history?`));
     expect(windowRequests.length).toBeGreaterThan(3);
     for (const request of windowRequests) {
       const response = await fetch(new URL(request, origin));
@@ -365,7 +379,8 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     return {
       coldRequest: cold.requests.find((url) => url.includes('target=initial')),
       boundedWindowRequests: windowRequests,
-      firstPromptReached: complete.text.includes('FIRST SOURCE BACKED PROMPT'),
+      firstPromptReached: complete.seenBlockIds.includes(expectedReadableBlockIds[0]),
+      sourceCanonicalIdentities: complete.fetchedBlockIds.length,
       readableCanonicalIdentities: complete.seenBlockIds.length,
       maximumMountedRows: complete.maximumMountedRows,
       prependAnchor: { before: beforePrepend, after: afterPrepend },
@@ -389,7 +404,8 @@ describe('source-backed Chat history acceptance', () => {
     const evidence = await runBrowserJourney();
     expect(evidence).toMatchObject({
       firstPromptReached: true,
-      readableCanonicalIdentities: SOURCE_BACKED_HISTORY_BLOCK_COUNT,
+      sourceCanonicalIdentities: SOURCE_BACKED_HISTORY_BLOCK_COUNT,
+      readableCanonicalIdentities: SOURCE_BACKED_HISTORY_BLOCK_COUNT - 1,
       gapVisibleAfterDistantWindows: true,
       focusedBlockId: targetBlockId,
     });

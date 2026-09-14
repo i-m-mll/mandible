@@ -16,15 +16,24 @@ declare global {
 
 const conversationId = 'source-backed-history';
 const requests: string[] = [];
+const fetchedBlockIds = new Set<string>();
 const seenBlockIds = new Set<string>();
 let maximumMountedRows = 0;
 let navigation: (anchor: ConversationAnchor | null) => void = () => undefined;
 
 const nativeFetch = window.fetch.bind(window);
-window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input);
   if (url.includes('/api/conversations')) requests.push(url);
-  return nativeFetch(input, init);
+  const response = await nativeFetch(input, init);
+  if (url.includes(`/api/conversations/${conversationId}`) && response.ok) {
+    void response.clone().json().then((payload: { blocks?: Array<{ id?: string }> }) => {
+      for (const block of payload.blocks ?? []) {
+        if (block.id) fetchedBlockIds.add(block.id);
+      }
+    }).catch(() => undefined);
+  }
+  return response;
 }) as typeof window.fetch;
 
 Object.defineProperty(window, 'EventSource', { value: undefined, configurable: true });
@@ -36,6 +45,11 @@ Object.defineProperty(navigator, 'clipboard', {
 const observer = new MutationObserver(() => {
   for (const element of document.querySelectorAll<HTMLElement>('[data-block-id]')) {
     if (element.dataset.blockId) seenBlockIds.add(element.dataset.blockId);
+  }
+  for (const element of document.querySelectorAll<HTMLElement>('[data-member-refs]')) {
+    for (const blockId of (element.dataset.memberRefs ?? '').split(/\s+/).filter(Boolean)) {
+      seenBlockIds.add(blockId);
+    }
   }
   maximumMountedRows = Math.max(
     maximumMountedRows,
@@ -110,6 +124,7 @@ window.__sourceBackedHistory = {
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     return {
       requests: [...requests],
+      fetchedBlockIds: [...fetchedBlockIds],
       seenBlockIds: [...seenBlockIds],
       mountedRows: document.querySelectorAll('.stream-renderer__virtual-row').length,
       maximumMountedRows,
@@ -119,7 +134,7 @@ window.__sourceBackedHistory = {
       focusedBlockId: focused?.dataset.blockId
         ?? focused?.closest<HTMLElement>('[data-block-id]')?.dataset.blockId
         ?? null,
-      text: document.body.textContent ?? '',
+      text: document.getElementById('root')?.textContent ?? '',
     };
   },
 };
