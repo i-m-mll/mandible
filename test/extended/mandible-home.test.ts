@@ -17,6 +17,7 @@ import {
 } from "../../src/db.js";
 import {
   getLegacyMandibleConfigDirs,
+  ensureMandibleClientAuthDir,
   getMandibleConfigDir,
   getMandibleHome,
   getMandibleHomePath,
@@ -76,6 +77,7 @@ describe("durable-state root (issue 24f0316)", () => {
     MANDIBLE_HOME: process.env.MANDIBLE_HOME,
     MANDIBLE_DB: process.env.MANDIBLE_DB,
     MANDIBLE_CONFIG_DIR: process.env.MANDIBLE_CONFIG_DIR,
+    MANDIBLE_CLIENT_AUTH_DIR: process.env.MANDIBLE_CLIENT_AUTH_DIR,
   };
   let tempHome = "";
 
@@ -85,6 +87,7 @@ describe("durable-state root (issue 24f0316)", () => {
     delete process.env.MANDIBLE_HOME;
     delete process.env.MANDIBLE_DB;
     delete process.env.MANDIBLE_CONFIG_DIR;
+    delete process.env.MANDIBLE_CLIENT_AUTH_DIR;
   });
 
   afterEach(() => {
@@ -151,6 +154,13 @@ describe("durable-state root (issue 24f0316)", () => {
       const explicit = path.join(tempHome, "custom-config");
       process.env.MANDIBLE_CONFIG_DIR = explicit;
       expect(getMandibleConfigDir()).toBe(explicit);
+    });
+
+    it("lets an isolated authority override only the client-auth directory", () => {
+      const explicit = path.join(tempHome, "preview-authority", "client-auth");
+      process.env.MANDIBLE_CLIENT_AUTH_DIR = explicit;
+      expect(ensureMandibleClientAuthDir()).toBe(explicit);
+      expect(getMandibleConfigDir()).toBe(path.join(tempHome, ".mandible", "config"));
     });
 
     it("lists the pre-fold config locations without including the new one", () => {

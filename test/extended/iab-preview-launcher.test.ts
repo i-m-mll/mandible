@@ -6,7 +6,7 @@ import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 
 import { openDb } from "../../src/db.js";
@@ -14,7 +14,7 @@ import { setSetting } from "../../src/client-auth/settings-kv.js";
 import { retireBriefingV1ToCustody } from "../../src/feedback/migrate-legacy.js";
 import { RICH_BRIEFING_DEMO } from "../../src/feedback/rich-briefing-demo.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
-import { createUser } from "../../src/users/store.js";
+import { createUser, setupOperator } from "../../src/users/store.js";
 import { insertRawLedgerCheckout, insertRawLedgerProject } from "../helpers/ledger-fixtures.js";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "iab-preview.mjs");
@@ -50,6 +50,37 @@ function isProcessAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+async function findUnusedPort(): Promise<number> {
+  const server = http.createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("test server did not allocate a port");
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return address.port;
+}
+
+function requestPreviewWhoami(port: number, token: string): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: "127.0.0.1",
+      port,
+      path: "/api/client-auth/whoami",
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    }, (res) => {
+      let raw = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { raw += chunk; });
+      res.on("end", () => resolve({
+        status: res.statusCode ?? 0,
+        body: raw ? JSON.parse(raw) : null,
+      }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 /**
@@ -718,6 +749,11 @@ function previewContractEnv(details: {
   pidFile: string;
 }): Record<string, string> {
   const conversations = path.join(details.previewRoot, "conversations");
+  const clientAuthDir = path.join(
+    `${path.dirname(details.previewRoot)}.authorities`,
+    path.basename(details.previewRoot),
+    "client-auth",
+  );
   return {
     MANDIBLE_PORT: String(details.port),
     MANDIBLE_DB: details.db,
@@ -728,6 +764,7 @@ function previewContractEnv(details: {
     MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
     MANDIBLE_FILE_RPC_DIR: path.join(details.previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(details.previewRoot, "config"),
+    MANDIBLE_CLIENT_AUTH_DIR: clientAuthDir,
     MANDIBLE_PREVIEW_ROOT: details.previewRoot,
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversations, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversations, "search-cache.db"),
@@ -1352,11 +1389,18 @@ describe("iab-preview launcher", () => {
       MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
       MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
       MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
+      MANDIBLE_CLIENT_AUTH_DIR: path.join(
+        `${previewBase}.authorities`,
+        "integration-test-preview",
+        "client-auth",
+      ),
       MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(previewConversations, "structure.db"),
       MANDIBLE_CONVERSATION_CACHE_DB: path.join(previewConversations, "search-cache.db"),
       MANDIBLE_STDERR_LOG_PATH: path.join(previewRoot, "stderr.log"),
       MANDIBLE_CLI_CACHE_DIR: path.join(previewRoot, "cli"),
     });
+    expect(payload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR.startsWith(`${previewRoot}${path.sep}`))
+      .toBe(false);
 
     // These four keys are the shared-resource leak this contract closes: a
     // preview used to open the live conversations index read-write on the same
@@ -1672,6 +1716,91 @@ describe("iab-preview launcher", () => {
     expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
       .not.toContain("preview dashboard session");
   });
+
+  it("keeps one paired authority across stale cache reclamation and clean restore", async () => {
+    const repo = createRepo();
+    git(["checkout", "-b", "integration/test-preview"], repo);
+    fs.mkdirSync(path.join(repo, "scripts"));
+    fs.copyFileSync(
+      path.join(process.cwd(), "scripts", "project-db-snapshot.mjs"),
+      path.join(repo, "scripts", "project-db-snapshot.mjs"),
+    );
+    fs.symlinkSync(path.join(process.cwd(), "cli"), path.join(repo, "cli"));
+    fs.cpSync(path.join(process.cwd(), "dist"), path.join(repo, "dist"), { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(repo, "node_modules"));
+    fs.symlinkSync(path.join(process.cwd(), "ui"), path.join(repo, "ui"));
+
+    const sourceDb = path.join(repo, "source.db");
+    const source = openDb(sourceDb);
+    setupOperator(source, { display_name: "Preview Operator", email: "preview@example.invalid" });
+    source.close();
+
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-lifecycle-"));
+    const authorityBase = `${previewBase}.authorities`;
+    tempRoots.push(previewBase, authorityBase);
+    const previewRoot = path.join(previewBase, "integration-test-preview");
+    const port = await findUnusedPort();
+    const env = { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase };
+
+    const first = await execFileAsync(process.execPath, [
+      SCRIPT, "--json", "--no-build", "--db", sourceDb, "--port", String(port), "--pair-browser",
+    ], { cwd: repo, encoding: "utf8", env }).catch((error: { stdout?: string; stderr?: string }) => {
+      throw new Error([error.stderr, error.stdout].filter(Boolean).join("\n"));
+    });
+    const firstPayload = JSON.parse(first.stdout);
+    const token = new URL(firstPayload.pairingUrl).hash
+      .match(/[?&]mandible_auth=([^&]+)/)?.[1];
+    expect(token).toBeTruthy();
+    const dashboardToken = decodeURIComponent(token!);
+    const firstAuthority = firstPayload.health.client_auth.authority_id;
+    expect(firstAuthority).toMatch(/^authority_/);
+    expect(firstPayload.port).toBe(port);
+
+    const firstPid = readPidFile(firstPayload.pidFile);
+    expect(firstPid).not.toBeNull();
+    process.kill(firstPid!, "SIGTERM");
+    await vi.waitFor(() => expect(isProcessAlive(firstPid!)).toBe(false), { timeout: 5_000 });
+    const legacyClientAuthDir = path.join(previewRoot, "config", "client-auth");
+    fs.mkdirSync(path.dirname(legacyClientAuthDir), { recursive: true });
+    fs.renameSync(firstPayload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR, legacyClientAuthDir);
+    fs.writeFileSync(path.join(previewRoot, "recyclable-marker"), "delete me", "utf8");
+
+    const second = await execFileAsync(process.execPath, [
+      SCRIPT, "--json", "--no-build", "--db", sourceDb, "--port", String(port),
+    ], { cwd: repo, encoding: "utf8", env }).catch((error: { stdout?: string; stderr?: string }) => {
+      throw new Error([error.stderr, error.stdout].filter(Boolean).join("\n"));
+    });
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload).toMatchObject({
+      status: "started",
+      branch: "integration/test-preview",
+      port,
+      browserEnrollment: "existing-profile-session",
+      clientAuthAuthority: {
+        status: "migrated",
+        path: firstPayload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR,
+      },
+    });
+    expect(secondPayload.pairingUrl).toBeUndefined();
+    expect(new URL(secondPayload.freshUrl).hash).not.toContain("mandible_auth");
+    expect(secondPayload.health.client_auth.authority_id).toBe(firstAuthority);
+    expect(fs.existsSync(path.join(previewRoot, "recyclable-marker"))).toBe(false);
+
+    const whoami = await requestPreviewWhoami(port, dashboardToken);
+    expect(whoami).toMatchObject({
+      status: 200,
+      body: {
+        authenticated: true,
+        user: { kind: "human" },
+        ephemeral_purpose: "dashboard_handshake",
+        audience: firstAuthority,
+      },
+    });
+
+    const secondPid = readPidFile(secondPayload.pidFile);
+    expect(secondPid).not.toBeNull();
+    standInPids.push(secondPid!);
+  }, 60_000);
 
   it("emits no browser URL when the exchanged identity is not a verified human", async () => {
     const previewRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-enrollment-"));

@@ -85,6 +85,17 @@ export function getMandibleConfigPath(...segments: string[]): string {
 }
 
 /**
+ * Client-auth state may have an authority-specific durable root. Preview
+ * launchers use this to keep the pepper, authority id, and session
+ * fingerprints outside their recyclable database/cache directory.
+ */
+export function ensureMandibleClientAuthDir(): string {
+  const override = envPath("MANDIBLE_CLIENT_AUTH_DIR");
+  if (override) return override;
+  return ensureMandibleConfigEntry("client-auth");
+}
+
+/**
  * Config directories Mandible used before the durable root existed, in the
  * order they should be consulted. Platform-conventional first (that is where
  * the daemon most recently wrote), then the original `~/.config/mandible`.
