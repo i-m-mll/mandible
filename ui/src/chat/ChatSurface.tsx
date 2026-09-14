@@ -1,5 +1,5 @@
 import type { JSX } from 'preact/jsx-runtime';
-import { observeElementRect, useVirtualizer } from '@tanstack/react-virtual';
+import { observeElementRect, useVirtualizer, type Rect, type Virtualizer } from '@tanstack/react-virtual';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRequest } from '../api';
 import type {
@@ -59,6 +59,21 @@ const ESTIMATED_ROW_HEIGHT = 168;
 const FOLLOW_THRESHOLD_PX = 80;
 const JUMP_RETURN_SECONDS = 2;
 const MANUAL_RETURN_PX_PER_SECOND = 600;
+const INITIAL_VIRTUAL_RECT = { width: 600, height: 720 };
+
+function estimateVirtualRow(): number {
+  return ESTIMATED_ROW_HEIGHT;
+}
+
+function observeChatElementRect(
+  instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  notify: (rect: Rect) => void,
+): ReturnType<typeof observeElementRect> {
+  return observeElementRect(instance, (rect) => notify({
+    width: rect.width || INITIAL_VIRTUAL_RECT.width,
+    height: rect.height || INITIAL_VIRTUAL_RECT.height,
+  }));
+}
 
 /**
  * The follow threshold answers whether appends should stick to the tail. This
@@ -165,6 +180,7 @@ export function ChatSurface({
   }, [activePermissionRequest, groups, onPermissionRespond, streaming]);
 
   const getItemKey = useCallback((index: number) => items[index]?.id ?? index, [items]);
+  const getScrollElement = useCallback(() => scrollRef.current, []);
   const initialOffset = useMemo(() => {
     const storedTop = Number(storageGet(scrollStorageKey));
     return Number.isFinite(storedTop) && storedTop > 0
@@ -173,16 +189,13 @@ export function ChatSurface({
   }, [items.length, scrollStorageKey]);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: items.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => ESTIMATED_ROW_HEIGHT,
+    getScrollElement,
+    estimateSize: estimateVirtualRow,
     measureElement: measureVirtualRow,
     getItemKey,
     initialOffset,
-    initialRect: { width: 600, height: 720 },
-    observeElementRect: (instance, notify) => observeElementRect(instance, (rect) => notify({
-      width: rect.width || 600,
-      height: rect.height || 720,
-    })),
+    initialRect: INITIAL_VIRTUAL_RECT,
+    observeElementRect: observeChatElementRect,
     overscan: 6,
     anchorTo: 'end',
     followOnAppend: 'auto',
