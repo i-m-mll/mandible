@@ -46,6 +46,7 @@ export type DetailPaneShellProps = {
 export type DetailPaneOverlayContextValue = {
   host: HTMLElement | null;
   scrollOwner: HTMLElement | null;
+  registerScrollOwner: (owner: HTMLElement | null) => void;
 };
 
 export const DetailPaneOverlayContext = createContext<DetailPaneOverlayContextValue | null>(null);
@@ -90,19 +91,22 @@ export function DetailPaneShell({
   children,
   ariaBusy,
 }: DetailPaneShellProps): JSX.Element {
-  const [scrollOwner, setScrollOwner] = useState<HTMLDivElement | null>(null);
+  const [bodyScrollOwner, setBodyScrollOwner] = useState<HTMLDivElement | null>(null);
+  const [registeredScrollOwner, registerScrollOwner] = useState<HTMLElement | null>(null);
   const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const footerRef = useRef<HTMLElement | null>(null);
   const overlayControlRef = useRef<HTMLDivElement | null>(null);
   const setBodyNode = useCallback((node: HTMLDivElement | null) => {
-    setScrollOwner(node);
+    setBodyScrollOwner(node);
     assignRef(bodyRef, node);
   }, [bodyRef]);
+  const scrollOwner = registeredScrollOwner ?? bodyScrollOwner;
   const overlayContext = useMemo(() => ({
     host: overlayHost,
     scrollOwner,
-  }), [overlayHost, scrollOwner]);
+    registerScrollOwner,
+  }), [overlayHost, registerScrollOwner, scrollOwner]);
 
   useLayoutEffect(() => {
     if (footer?.mode !== 'overlay' || !shellRef.current || !footerRef.current || !scrollOwner) return undefined;

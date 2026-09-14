@@ -39,6 +39,11 @@ export function mandibleVitestConfig(include: string[], options: MandibleSuiteOp
       coverage: {
         provider: 'v8',
       },
+      server: {
+        deps: {
+          inline: ['@tanstack/react-virtual'],
+        },
+      },
     },
     esbuild: {
       jsx: 'automatic',
