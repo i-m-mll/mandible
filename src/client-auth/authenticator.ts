@@ -29,7 +29,8 @@ import {
   defaultClientAuthDir,
   loadOrCreatePepper,
   loadOrCreateClientAuthAuthorityId,
-  retireLegacyDashboardSessionStore,
+  readLegacyDashboardSessions,
+  retireLegacyDashboardSessions,
   writeBootstrapTokenFile,
 } from "./secret-store.js";
 import {
@@ -50,7 +51,9 @@ import {
   type BrowserSession,
   type InstanceRegistration,
   type IssuedBrowserSession,
+  type LegacyConversion,
   type PairingTransaction,
+  type PreviewTransfer,
 } from "./session-authority.js";
 
 interface EphemeralEntry {
@@ -154,7 +157,9 @@ export class ClientAuthenticator implements ClientAuthGate {
       ?? (process.env.MANDIBLE_CONTEXT_VERIFICATION_KEY
         ? fs.readFileSync(process.env.MANDIBLE_CONTEXT_VERIFICATION_KEY, "utf8")
         : this.sessionAuthority?.verificationKeyPem() ?? null);
-    if (this.sessionAuthority) retireLegacyDashboardSessionStore(this.secretsDir);
+    if (this.sessionAuthority) {
+      retireLegacyDashboardSessions(this.sessionAuthority.retiredLegacyFingerprints(), this.secretsDir);
+    }
   }
 
   authorityId(): string {
@@ -163,6 +168,14 @@ export class ClientAuthenticator implements ClientAuthGate {
 
   instanceId(): string {
     return this.instance?.instance_id ?? "production";
+  }
+
+  instanceRegistration(instanceId: string): InstanceRegistration | null {
+    return this.sessionAuthority?.instance(instanceId) ?? null;
+  }
+
+  productionRegistration(): InstanceRegistration | null {
+    return this.sessionAuthority?.instances().find((entry) => entry.role === "main") ?? null;
   }
 
   classifyFailure(credential: string | null | undefined): "expired" | "revoked" | "unknown" {
@@ -259,6 +272,30 @@ export class ClientAuthenticator implements ClientAuthGate {
     });
   }
 
+  authenticateLegacyBrowserSession(raw: string | null | undefined): ResolvedClientIdentity | null {
+    const token = normalizeBearer(raw);
+    if (!token || !this.sessionAuthority) return null;
+    const fingerprint = fingerprintForToken(this.pepper, token);
+    if (this.sessionAuthority.isLegacyFingerprintRetired(fingerprint)) return null;
+    const legacy = readLegacyDashboardSessions(this.secretsDir).find(
+      (row) => row.token_fingerprint === fingerprint && row.renew_until > this.now(),
+    );
+    if (!legacy) return null;
+    const user = getUserById(this.db, legacy.user_id);
+    if (!user || user.status !== "active" || user.slug !== legacy.slug) return null;
+    return {
+      user_id: user.id,
+      slug: user.slug,
+      method: "legacy_browser_session",
+      credential_id: null,
+      source: "legacy_browser_conversion",
+      ephemeral_purpose: "legacy_dashboard_conversion",
+      effect_ceiling: this.instance?.allowed_effects ?? PRODUCTION_EFFECTS,
+      legacy_fingerprint: fingerprint,
+      legacy_authenticated_at: legacy.created_at,
+    };
+  }
+
   authenticateBrowserSession(raw: string | null | undefined): ResolvedClientIdentity | null {
     if (!raw || !this.instance || !this.sessionAuthority) return null;
     const session = this.sessionAuthority.authenticate(raw, this.instance.instance_id);
@@ -290,6 +327,7 @@ export class ClientAuthenticator implements ClientAuthGate {
     }
     return this.sessionAuthority.signPreviewContext({
       family_id: identity.session_family,
+      root_family_id: identity.root_session_family ?? identity.session_family,
       user_id: identity.user_id,
       slug: identity.slug,
       audience: identity.audience,
@@ -336,6 +374,89 @@ export class ClientAuthenticator implements ClientAuthGate {
   beginPairing(audience: string, returnPath: string): PairingTransaction {
     if (!this.sessionAuthority) throw new Error("Pairing is owned by the installation authority.");
     return this.sessionAuthority.beginPairing(audience, returnPath);
+  }
+
+  beginPreviewTransfer(audience: string, returnPath: string): PreviewTransfer {
+    if (!this.sessionAuthority) throw new Error("Preview transfers are owned by the installation authority.");
+    return this.sessionAuthority.beginPreviewTransfer(audience, returnPath);
+  }
+
+  authorizePreviewTransfer(reference: string, identity: ResolvedClientIdentity): InstanceRegistration {
+    if (!this.sessionAuthority || identity.source !== "browser_cookie" || !identity.session_family
+        || !identity.root_session_family || !identity.audience) {
+      throw new Error("A production browser session is required to authorize preview access.");
+    }
+    return this.sessionAuthority.authorizePreviewTransfer(reference, {
+      family_id: identity.session_family,
+      root_family_id: identity.root_session_family,
+      user_id: identity.user_id,
+      slug: identity.slug,
+      audience: identity.audience,
+      effect_ceiling: identity.effect_ceiling,
+      csrf_token: identity.csrf_token ?? "",
+      expires_at: this.now(),
+      absolute_expires_at: this.now(),
+      evidence: { method: identity.method, credential_id: identity.credential_id, authenticated_at: this.now() },
+    });
+  }
+
+  completePreviewTransfer(reference: string, secret: string): IssuedBrowserSession | null {
+    if (!this.sessionAuthority) throw new Error("Preview transfers are owned by the installation authority.");
+    return this.sessionAuthority.completePreviewTransfer(reference, secret);
+  }
+
+  previewTransferReturnPath(reference: string): string | null {
+    return this.sessionAuthority?.previewTransferReturnPath(reference) ?? null;
+  }
+
+  beginLegacyConversion(
+    identity: ResolvedClientIdentity,
+    rawLegacyToken: string,
+    returnPath: string,
+    browserState: Record<string, string>,
+  ): LegacyConversion {
+    if (!this.sessionAuthority || identity.source !== "legacy_browser_conversion"
+        || !identity.legacy_fingerprint || identity.legacy_authenticated_at === undefined) {
+      throw new Error("A verified legacy browser session is required for conversion.");
+    }
+    return this.sessionAuthority.beginLegacyConversion({
+      raw_legacy_token: rawLegacyToken,
+      legacy_fingerprint: identity.legacy_fingerprint,
+      user_id: identity.user_id,
+      slug: identity.slug,
+      target_audience: this.instanceId(),
+      return_path: returnPath,
+      browser_state: browserState,
+      authenticated_at: identity.legacy_authenticated_at,
+    });
+  }
+
+  completeLegacyConversion(reference: string, secret: string): IssuedBrowserSession | null {
+    if (!this.sessionAuthority) throw new Error("Legacy conversion is owned by the installation authority.");
+    return this.sessionAuthority.completeLegacyConversion(reference, secret);
+  }
+
+  legacyConversionReturnPath(reference: string): string | null {
+    return this.sessionAuthority?.legacyConversionReturnPath(reference) ?? null;
+  }
+
+  legacyConversionDetails(identity: ResolvedClientIdentity): {
+    browser_state: Record<string, string>;
+    return_path: string;
+    finalized: boolean;
+  } | null {
+    if (!this.sessionAuthority || !identity.session_family || !identity.root_session_family
+        || !identity.audience) return null;
+    return this.sessionAuthority.legacyConversionDetails(this.browserSessionFromIdentity(identity));
+  }
+
+  finalizeLegacyConversion(identity: ResolvedClientIdentity): boolean {
+    if (!this.sessionAuthority || !identity.session_family || !identity.root_session_family
+        || !identity.audience) return false;
+    const fingerprint = this.sessionAuthority.finalizeLegacyConversion(this.browserSessionFromIdentity(identity));
+    if (!fingerprint) return false;
+    retireLegacyDashboardSessions([fingerprint], this.secretsDir);
+    return true;
   }
 
   approvePairing(reference: string, userId: string): void {
@@ -391,9 +512,25 @@ export class ClientAuthenticator implements ClientAuthGate {
       source,
       effect_ceiling: session.effect_ceiling,
       session_family: session.family_id,
+      root_session_family: session.root_family_id,
       audience: session.audience,
       csrf_token: session.csrf_token,
       auth_context_expires_at: source === "installation_context" ? session.expires_at : null,
+    };
+  }
+
+  private browserSessionFromIdentity(identity: ResolvedClientIdentity): BrowserSession {
+    return {
+      family_id: identity.session_family!,
+      root_family_id: identity.root_session_family!,
+      user_id: identity.user_id,
+      slug: identity.slug,
+      audience: identity.audience!,
+      effect_ceiling: identity.effect_ceiling,
+      csrf_token: identity.csrf_token ?? "",
+      expires_at: identity.auth_context_expires_at ?? this.now() + 1,
+      absolute_expires_at: identity.auth_context_expires_at ?? this.now() + 1,
+      evidence: { method: identity.method, credential_id: identity.credential_id, authenticated_at: this.now() },
     };
   }
 

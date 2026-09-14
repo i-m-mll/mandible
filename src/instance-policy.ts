@@ -108,10 +108,14 @@ export function resolveInstanceInfo(options: {
   if (role === "preview" && (
     !hasIsolatedDatabaseCopy(resolvedDbPath, resolvedSourceDbPath)
     || !isPathWithinRoot(resolvedDbPath, resolvedPreviewRoot)
+    || isPathAtOrWithinRoot(resolvedSourceDbPath, resolvedPreviewRoot)
   )) {
     throw new Error("Preview startup requires an isolated copied database beneath its registered root.");
   }
   const writableRoots = parseWritableRoots(env.MANDIBLE_WRITABLE_ROOTS, resolvedPreviewRoot, role);
+  if (role === "preview" && writableRoots.some((root) => !isPathAtOrWithinRoot(root, resolvedPreviewRoot))) {
+    throw new Error("Preview writable roots must remain beneath the registered preview root.");
+  }
   const allowedEffects = parseAllowedEffects(env.MANDIBLE_ALLOWED_EFFECTS, role);
 
   return {
@@ -150,6 +154,16 @@ function isPathWithinRoot(candidate: string | null, root: string | null): boolea
     const canonicalRoot = fs.realpathSync.native(root);
     const relative = path.relative(canonicalRoot, canonicalCandidate);
     return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+  } catch {
+    return false;
+  }
+}
+
+function isPathAtOrWithinRoot(candidate: string | null, root: string | null): boolean {
+  if (candidate === null || root === null) return false;
+  try {
+    const relative = path.relative(fs.realpathSync.native(root), fs.realpathSync.native(candidate));
+    return !relative.startsWith("..") && !path.isAbsolute(relative);
   } catch {
     return false;
   }

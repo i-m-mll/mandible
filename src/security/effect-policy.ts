@@ -44,6 +44,13 @@ const EXACT_OPERATIONS = new Map<string, Operation>([
   ["POST /api/briefing-destination-routes/plan", READ_OPERATION],
   ["POST /api/client-auth/pairing/start", { id: "session.pairing.start", effects: [] }],
   ["POST /api/client-auth/pairing/complete", { id: "session.pairing.complete", effects: [] }],
+  ["POST /api/client-auth/preview-transfer/prepare", { id: "session.preview_transfer.prepare", effects: [] }],
+  ["GET /api/client-auth/preview-transfer/authorize", { id: "session.preview_transfer.authorize", effects: [] }],
+  ["POST /api/client-auth/preview-transfer/complete", { id: "session.preview_transfer.complete", effects: [] }],
+  ["POST /api/client-auth/legacy-conversion/prepare", { id: "session.legacy_conversion.prepare", effects: [] }],
+  ["POST /api/client-auth/legacy-conversion/complete", { id: "session.legacy_conversion.complete", effects: [] }],
+  ["GET /api/client-auth/legacy-conversion/state", { id: "session.legacy_conversion.state", effects: [] }],
+  ["POST /api/client-auth/legacy-conversion/finalize", { id: "session.legacy_conversion.finalize", effects: [] }],
   ["POST /api/client-auth/renew", { id: "session.renew", effects: [] }],
   ["POST /api/client-auth/logout", { id: "session.logout", effects: [] }],
   ["POST /api/client-auth/logout-everywhere", { id: "session.logout_everywhere", effects: [] }],
@@ -114,7 +121,7 @@ export function validatePreviewWritableRoots(instance: InstanceInfo): void {
   const previewRoot = canonicalDirectory(instance.preview_root);
   const database = canonicalFile(instance.db_path);
   const source = canonicalFile(instance.source_db_path);
-  if (sameFile(database, source) || !inside(previewRoot, database)) {
+  if (sameFile(database, source) || !inside(previewRoot, database) || inside(previewRoot, source)) {
     throw new Error("Preview database is not an isolated file beneath its registered root.");
   }
   for (const root of instance.writable_roots) {

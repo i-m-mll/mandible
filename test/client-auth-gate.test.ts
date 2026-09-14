@@ -1,0 +1,56 @@
+// @vitest-environment node
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { openDb, setDb, type Db } from "../src/db.js";
+import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { Router } from "../src/server.js";
+import { createUser } from "../src/users/store.js";
+
+let root = ""; let db: Db; let auth: ClientAuthenticator; let router: Router;
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-gate-"));
+  db = openDb(path.join(root, "mandible.db")); setDb(db);
+  auth = new ClientAuthenticator(db, { secretsDir: path.join(root, "auth") });
+  router = new Router({ clientAuth: auth });
+  router.post("/api/write", (req, res) => res.json({ identity: req.client_identity ?? null }), { fileRpc: "allow" });
+  router.get("/api/read", (req, res) => res.json({ identity: req.client_identity ?? null }), { fileRpc: "allow" });
+});
+afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+
+async function fileRpc(token?: string) {
+  const transport = new FileRpcTransport({ router, dir: path.join(root, "rpc") });
+  fs.mkdirSync(transport.dir, { recursive: true });
+  fs.writeFileSync(path.join(transport.dir, "one.request.json"), JSON.stringify({
+    id: "one", method: "POST", path: "/api/write", body: {}, ...(token ? { capability_token: token } : {}),
+  }));
+  await transport.processOnce();
+  return JSON.parse(fs.readFileSync(path.join(transport.dir, "one.response.json"), "utf8")) as { status: number; body: unknown };
+}
+
+describe("strict client-auth boundary", () => {
+  it("rejects anonymous reads and writes coherently", async () => {
+    expect((await router.invoke({ method: "GET", url: "/api/read", transport: "http" })).status).toBe(401);
+    expect((await router.invoke({ method: "POST", url: "/api/write", body: {}, transport: "http" })).status).toBe(401);
+  });
+
+  it("resolves a durable bearer to its exact user", async () => {
+    const user = createUser(db, { slug: "agent-x", kind: "agent", display_name: "Agent X" });
+    const issued = auth.mintApiToken(user.id);
+    const response = await router.invoke({ method: "POST", url: "/api/write", body: {}, credential: issued.token, transport: "http" });
+    expect(response).toMatchObject({ status: 200, body: { identity: { user_id: user.id, source: "http_bearer" } } });
+  });
+
+  it("does not expose the operator bootstrap proof outside enrollment", async () => {
+    expect(auth.authenticate(auth.bootstrapToken())).toBeNull();
+  });
+
+  it("rejects anonymous file RPC and accepts an explicit capability", async () => {
+    expect((await fileRpc()).status).toBe(401);
+    const user = createUser(db, { slug: "agent-y", kind: "agent", display_name: "Agent Y" });
+    const issued = auth.mintApiToken(user.id);
+    expect((await fileRpc(issued.token)).status).toBe(200);
+  });
+});

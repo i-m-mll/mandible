@@ -4,7 +4,8 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
-import { createUser } from "../src/users/store.js";
+import { setupOperator } from "../src/users/store.js";
+import { authenticatedTestIdentity } from "./helpers/authenticated-router.js";
 
 class TestRoutes implements RouteRegistrar {
   private readonly handlers = new Map<string, RouteHandler>();
@@ -52,6 +53,8 @@ function createResponse(): ResponseLike & { statusCode: number; payload: unknown
   };
 }
 
+let operator: ReturnType<typeof setupOperator>;
+
 function request(method: string, url: string, body?: unknown): RequestLike {
   return {
     method,
@@ -59,6 +62,7 @@ function request(method: string, url: string, body?: unknown): RequestLike {
     params: {},
     query: {},
     body,
+    client_identity: authenticatedTestIdentity(operator),
   };
 }
 
@@ -86,6 +90,7 @@ describe("backup routes", () => {
     const { openDb, setDb } = await import("../src/db.js");
     db = openDb(path.join(tempHome, "mandible.db"));
     setDb(db);
+    operator = setupOperator(db, { display_name: "Backup route test operator" });
 
     const { registerBackupRoutes } = await import("../src/routes/backup.js");
     const routes = new TestRoutes();

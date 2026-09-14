@@ -27,6 +27,8 @@ import {
   insertRawLedgerIssue,
   insertRawLedgerProject,
 } from "./helpers/ledger-fixtures.js";
+import { authenticatedTestIdentity } from "./helpers/authenticated-router.js";
+import { setupOperator } from "../src/users/store.js";
 
 // --- id-formula replicas (must stay byte-identical to artifactRegistryId) -----
 // artifactRegistryId("artifact_link", parts) = `artifact_link:${sha256(JSON.stringify(parts)).slice(0,32)}`.
@@ -90,7 +92,14 @@ function createResponse(): ResponseLike & { statusCode: number; payload: unknown
 async function postRoute(routePath: string, body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
   const routes = new TestRoutes();
   registerProviderRoutes(routes);
-  const req = { method: "POST", url: routePath, params: {}, query: {}, body } as RequestLike;
+  const req = {
+    method: "POST",
+    url: routePath,
+    params: {},
+    query: {},
+    body,
+    client_identity: authenticatedTestIdentity(operator),
+  } as RequestLike;
   const res = createResponse();
   // Several artifact routes (ingest/plan/snapshot/bundles) are async because
   // their file read+hash runs in the off-thread ingest pool; await the handler.
@@ -173,6 +182,7 @@ function makeSeriesWithHead(key: string, content: string): { seriesId: string; h
 
 let tempDir = "";
 let db: Db;
+let operator: ReturnType<typeof setupOperator>;
 let savedEnv: Record<string, string | undefined>;
 
 beforeEach(() => {
@@ -188,6 +198,7 @@ beforeEach(() => {
   counter = 0;
   db = openDb(path.join(tempDir, "mandible.db"));
   setDb(db); // wire getDb() for the route handlers
+  operator = setupOperator(db, { display_name: "Artifact route test operator" });
 });
 
 afterEach(() => {

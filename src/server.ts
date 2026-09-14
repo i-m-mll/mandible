@@ -14,7 +14,7 @@ import {
   UNSAFE_MUTATION_METHODS as UNSAFE_METHODS,
 } from "./instance-policy.js";
 import { authorizeEffects, operationForRequest } from "./security/effect-policy.js";
-import { COOKIE_NAME, PAIRING_COOKIE_NAME } from "./client-auth/session-authority.js";
+import { COOKIE_NAME, PAIRING_COOKIE_NAME, TRANSFER_COOKIE_NAME } from "./client-auth/session-authority.js";
 import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
 import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";
@@ -72,6 +72,8 @@ export interface RequestLike {
   /** Aborts when the underlying HTTP client disconnects before a response completes. */
   signal?: AbortSignal;
   browser_pairing_secret?: string | null;
+  browser_transfer_secret?: string | null;
+  legacy_browser_credential?: string | null;
   target_instance_id?: string | null;
 }
 
@@ -82,9 +84,9 @@ export type ClientAuthMode = "compat" | "strict";
 export interface ResolvedClientIdentity {
   user_id: string;
   slug: string;
-  method: "api_token" | "ephemeral" | "browser_session" | "installation_context";
+  method: "api_token" | "ephemeral" | "browser_session" | "installation_context" | "legacy_browser_session";
   credential_id: string | null;
-  source: "http_bearer" | "browser_cookie" | "installation_context" | "file_rpc_capability" | "bootstrap" | "in_process";
+  source: "http_bearer" | "browser_cookie" | "installation_context" | "legacy_browser_conversion" | "file_rpc_capability" | "bootstrap" | "in_process";
   /**
    * Issue 499c148 — which daemon-minted ephemeral credential answered
    * (`dashboard_handshake`, `operator_bootstrap`, `agent_session:<id>`). Set
@@ -94,9 +96,12 @@ export interface ResolvedClientIdentity {
   ephemeral_purpose?: string | null;
   effect_ceiling: readonly import("./security/effect-policy.js").Effect[];
   session_family?: string | null;
+  root_session_family?: string | null;
   audience?: string | null;
   csrf_token?: string | null;
   auth_context_expires_at?: number | null;
+  legacy_fingerprint?: string | null;
+  legacy_authenticated_at?: number;
 }
 
 export interface ClientAuthRequestContext {
@@ -139,6 +144,7 @@ export interface ClientAuthGate {
   ): { state: "active" | "missing" | "wrong_audience" | "expired" | "revoked"; identity: ResolvedClientIdentity | null };
   authenticateInternalContext?(credential: string | null | undefined): Promise<ResolvedClientIdentity | null>;
   validateBrowserCsrf?(identity: ResolvedClientIdentity, csrf: string | null | undefined): boolean;
+  authenticateLegacyBrowserSession?(credential: string | null | undefined): ResolvedClientIdentity | null;
 }
 
 const STRICT_ANONYMOUS_HTTP_ROUTES = new Set([
@@ -146,6 +152,10 @@ const STRICT_ANONYMOUS_HTTP_ROUTES = new Set([
   "/api/instance",
   "/api/client-auth/pairing/start",
   "/api/client-auth/pairing/complete",
+  "/api/client-auth/preview-transfer/prepare",
+  "/api/client-auth/preview-transfer/complete",
+  "/api/client-auth/legacy-conversion/prepare",
+  "/api/client-auth/legacy-conversion/complete",
   "/api/client-auth/whoami",
   "/api/users/setup",
 ]);
@@ -161,7 +171,7 @@ function clientAuthSourceForTransport(
 
 export interface ResponseLike {
   status(code: number): ResponseLike;
-  header?(name: string, value: string): ResponseLike;
+  header?(name: string, value: string | string[]): ResponseLike;
   json(payload: unknown): void;
   empty?(): void;
   html?(payload: string): void;
@@ -255,7 +265,7 @@ function compileRoute(pattern: string): { regex: RegExp; paramNames: string[] } 
 class HttpResponse implements ResponseLike {
   private _statusCode = 200;
   private _sent = false;
-  private readonly headers: Record<string, string> = {};
+  private readonly headers: Record<string, string | string[]> = {};
 
   constructor(private res: http.ServerResponse) {}
 
@@ -264,7 +274,7 @@ class HttpResponse implements ResponseLike {
     return this;
   }
 
-  header(name: string, value: string): ResponseLike {
+  header(name: string, value: string | string[]): ResponseLike {
     this.headers[name] = value;
     return this;
   }
@@ -292,6 +302,7 @@ class HttpResponse implements ResponseLike {
     if (this._sent) return;
     this._sent = true;
     this.res.writeHead(this._statusCode, {
+      ...this.headers,
       "Content-Type": "text/html; charset=utf-8",
       "Content-Length": Buffer.byteLength(payload),
       "Cache-Control": "no-store",
@@ -303,6 +314,7 @@ class HttpResponse implements ResponseLike {
     if (this._sent) return;
     this._sent = true;
     this.res.writeHead(this._statusCode, {
+      ...this.headers,
       "Content-Type": contentType,
       "Content-Length": Buffer.byteLength(payload),
       "Cache-Control": "no-store",
@@ -321,7 +333,7 @@ class CapturedResponse implements ResponseLike {
     return this;
   }
 
-  header(_name: string, _value: string): ResponseLike {
+  header(_name: string, _value: string | string[]): ResponseLike {
     return this;
   }
 
@@ -456,7 +468,8 @@ export class Router implements RouteRegistrar {
     try {
       const cookies = parseCookie(headerValue(req.headers.cookie) ?? "");
       const browserRequest = isBrowserRequest(req.headers);
-      if (browserRequest && headerValue(req.headers.authorization)) {
+      const legacyBrowserConversion = isLegacyBrowserConversionRequest(req);
+      if (browserRequest && headerValue(req.headers.authorization) && !legacyBrowserConversion) {
         new HttpResponse(res).status(400).json({
           error: "browser_bearer_forbidden",
           message: "Browser requests authenticate only with the host-only session cookie.",
@@ -469,7 +482,9 @@ export class Router implements RouteRegistrar {
         body,
         new HttpResponse(res),
         ambientIdentityFromHeaders(req.headers),
-        browserRequest ? cookies[COOKIE_NAME] ?? null : bearerFromHeaders(req.headers),
+        legacyBrowserConversion
+          ? bearerFromHeaders(req.headers)
+          : browserRequest ? cookies[COOKIE_NAME] ?? null : bearerFromHeaders(req.headers),
         "http",
         abortController.signal,
         {
@@ -477,7 +492,9 @@ export class Router implements RouteRegistrar {
           csrf: headerValue(req.headers["x-mandible-csrf"]),
           internalContext: headerValue(req.headers["x-mandible-session-context"]),
           pairingSecret: cookies[PAIRING_COOKIE_NAME] ?? null,
+          transferSecret: cookies[TRANSFER_COOKIE_NAME] ?? null,
           targetInstanceId: headerValue(req.headers["x-mandible-target-instance"]),
+          legacyBrowserConversion,
         },
       );
     } finally {
@@ -500,7 +517,9 @@ export class Router implements RouteRegistrar {
       csrf?: string;
       internalContext?: string;
       pairingSecret?: string | null;
+      transferSecret?: string | null;
       targetInstanceId?: string;
+      legacyBrowserConversion?: boolean;
     },
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
@@ -523,7 +542,9 @@ export class Router implements RouteRegistrar {
       let clientAuthFailure: "expired" | "revoked" | "wrong_audience" | "unknown" = "unknown";
       const gate = this.options.clientAuth;
       if (gate) {
-        clientIdentity = httpAuth?.internalContext && gate.authenticateInternalContext
+        clientIdentity = httpAuth?.legacyBrowserConversion && gate.authenticateLegacyBrowserSession
+          ? gate.authenticateLegacyBrowserSession(credential)
+          : httpAuth?.internalContext && gate.authenticateInternalContext
           ? await gate.authenticateInternalContext(httpAuth.internalContext)
           : httpAuth?.browserRequest && httpAuth.targetInstanceId
             && gate.authenticateBrowserSessionForAudience
@@ -616,6 +637,8 @@ export class Router implements RouteRegistrar {
         client_auth_failure: clientAuthFailure,
         signal,
         browser_pairing_secret: httpAuth?.pairingSecret ?? null,
+        browser_transfer_secret: httpAuth?.transferSecret ?? null,
+        legacy_browser_credential: httpAuth?.legacyBrowserConversion ? credential ?? null : null,
         target_instance_id: httpAuth?.targetInstanceId ?? null,
       };
 
@@ -699,6 +722,24 @@ function isBrowserRequest(headers: http.IncomingHttpHeaders): boolean {
   return headerValue(headers.origin) !== undefined
     || headerValue(headers["sec-fetch-site"]) !== undefined
     || headerValue(headers.cookie) !== undefined;
+}
+
+const LEGACY_BROWSER_ORIGINS = new Set([
+  "http://127.0.0.1:19420",
+  "http://localhost:19420",
+]);
+
+function isLegacyBrowserConversionRequest(req: http.IncomingMessage): boolean {
+  if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
+  if ((req.method ?? "GET").toUpperCase() !== "POST") return false;
+  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  if (pathname !== "/api/client-auth/legacy-conversion/prepare") return false;
+  const origin = headerValue(req.headers.origin);
+  const host = headerValue(req.headers.host);
+  if (!origin || !host) return false;
+  return LEGACY_BROWSER_ORIGINS.has(origin)
+    && new URL(origin).host.toLowerCase() === host.toLowerCase()
+    && headerValue(req.headers["sec-fetch-site"])?.toLowerCase() !== "cross-site";
 }
 
 // --- Server creation ---
@@ -815,7 +856,7 @@ export function createServer(options: ServerOptions): http.Server {
       }
     });
 
-    const boundary = validateDaemonWriteBoundary(req, method, isApi, instance);
+    const boundary = validateDaemonWriteBoundary(req, method, pathname, isApi, instance);
     if (!boundary.ok) {
       logger("warn", "request_forbidden", { method, pathname, reason: boundary.reason });
       writeJsonResponse(res, 403, { error: "forbidden", reason: boundary.reason });
@@ -1240,11 +1281,16 @@ type WriteBoundaryResult = { ok: true } | { ok: false; reason: string };
 function validateDaemonWriteBoundary(
   req: http.IncomingMessage,
   method: string,
+  pathname: string,
   isApi: boolean,
   instance: InstanceInfo,
 ): WriteBoundaryResult {
   const normalizedMethod = method.toUpperCase();
   if (!isBrowserRequest(req.headers)) {
+    return { ok: true };
+  }
+  if (pathname === "/api/client-auth/legacy-conversion/prepare"
+      && isLegacyBrowserConversionRequest(req)) {
     return { ok: true };
   }
   return validateDaemonBrowserBoundary(req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod));

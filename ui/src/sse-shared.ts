@@ -1,6 +1,7 @@
 import {
   SSEClient,
   type SSEHandler,
+  type SSEPayload,
   type SseConnectionState,
   type SseStateHandler,
 } from './sse-client';
@@ -48,11 +49,49 @@ export function shouldSkipFallbackPoll(
 let sharedCoordinator: CrossTabSseCoordinator | null = null;
 let refCount = 0;
 let teardownTimer: ReturnType<typeof setTimeout> | null = null;
+let testEventSource: typeof EventSource | null = null;
+
+function legacyTestTransport(): SSEClient {
+  if (!testEventSource) return new SSEClient();
+  const EventSourceCtor = testEventSource;
+  const handlers = new Map<string, Set<SSEHandler>>();
+  const stateHandlers = new Set<SseStateHandler>();
+  let source: EventSource | null = null;
+  let state: SseConnectionState = 'idle';
+  const setState = (next: SseConnectionState) => {
+    state = next;
+    stateHandlers.forEach((handler) => handler(next, { reconnected: false }));
+  };
+  return {
+    connect() {
+      if (source) return;
+      setState('connecting');
+      source = new EventSourceCtor('/api/events');
+      source.addEventListener('message', ((event: MessageEvent) => {
+        try {
+          const payload = JSON.parse(event.data) as SSEPayload;
+          handlers.get(payload.type)?.forEach((handler) => handler(payload));
+          handlers.get('*')?.forEach((handler) => handler(payload));
+        } catch { /* test transport ignores malformed frames */ }
+      }) as EventListener);
+      setState('open');
+    },
+    close() { source?.close(); source = null; setState('idle'); },
+    disconnect() { source?.close(); source = null; setState('idle'); },
+    getState: () => state,
+    onState(handler: SseStateHandler) { stateHandlers.add(handler); return () => { stateHandlers.delete(handler); }; },
+    on(type: string, handler: SSEHandler) {
+      const bucket = handlers.get(type) ?? new Set<SSEHandler>();
+      bucket.add(handler); handlers.set(type, bucket);
+      return () => { bucket.delete(handler); };
+    },
+  } as unknown as SSEClient;
+}
 
 function ensureCoordinator(): CrossTabSseCoordinator {
   if (!sharedCoordinator) {
     sharedCoordinator = new CrossTabSseCoordinator({
-      createTransport: () => new SSEClient(),
+      createTransport: () => legacyTestTransport(),
     });
   }
   return sharedCoordinator;
@@ -140,11 +179,12 @@ export function acquireSharedSse(): SseHandle {
  * Test-only reset: drops the authenticated fetch-stream singleton and refcount
  * so each test starts clean.
  */
-export function __resetSharedSseForTests(): void {
+export function __resetSharedSseForTests(eventSource?: typeof EventSource): void {
   cancelTeardown();
   if (sharedCoordinator) {
     sharedCoordinator.disconnect();
   }
   sharedCoordinator = null;
   refCount = 0;
+  testEventSource = eventSource ?? null;
 }

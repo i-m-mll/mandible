@@ -44,7 +44,7 @@ describe("visible-first dashboard boot", () => {
     __resetBrowserSessionForTests();
     MockEventSource.instances = [];
     vi.stubGlobal("EventSource", MockEventSource);
-    __resetSharedSseForTests();
+    __resetSharedSseForTests(MockEventSource as unknown as typeof EventSource);
     vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
       matches: false,
       media: query,

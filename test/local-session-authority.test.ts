@@ -134,6 +134,56 @@ describe("local browser session authority", () => {
     )).toBeNull();
     authority.close();
   });
+  it("derives one retry-safe preview family and revokes it with the production root", () => {
+    const { authority, now } = fixture();
+    const root = authority.issueSession("user_1", "operator", "production", {
+      method: "api_token", credential_id: "credential_1", authenticated_at: now.value,
+    });
+    const transfer = authority.beginPreviewTransfer("preview-test", "/timeline");
+    authority.authorizePreviewTransfer(transfer.reference, root);
+    const first = authority.completePreviewTransfer(transfer.reference, transfer.secret);
+    const retry = authority.completePreviewTransfer(transfer.reference, transfer.secret);
+    expect(first).not.toBeNull();
+    expect(retry).toMatchObject({ token: first?.token, family_id: first?.family_id });
+    expect(first?.root_family_id).toBe(root.family_id);
+    expect(authority.classify(first!.token, "production").state).toBe("wrong_audience");
+    expect(authority.revokeFamily(root.family_id)).toBe(true);
+    expect(authority.classify(first!.token, "preview-test").state).toBe("revoked");
+    authority.close();
+  });
+
+  it("converts legacy state transactionally, retries deterministically, and tombstones resurrection", () => {
+    const { authority, now } = fixture();
+    const input = {
+      raw_legacy_token: "legacy-secret-token",
+      legacy_fingerprint: "legacy-fingerprint",
+      user_id: "user_1",
+      slug: "operator",
+      target_audience: "production",
+      return_path: "/issues?selected=8b97e8d",
+      browser_state: { "mandible.view": "timeline" },
+      authenticated_at: now.value,
+    };
+    const prepared = authority.beginLegacyConversion(input);
+    expect(authority.beginLegacyConversion(input)).toMatchObject({
+      reference: prepared.reference, secret: prepared.secret,
+    });
+    const issued = authority.completeLegacyConversion(prepared.reference, prepared.secret)!;
+    expect(issued.absolute_expires_at).toBe(input.authenticated_at + 180 * 24 * 60 * 60 * 1_000);
+    expect(authority.completeLegacyConversion(prepared.reference, prepared.secret)).toMatchObject({
+      token: issued.token, family_id: issued.family_id,
+    });
+    expect(authority.legacyConversionDetails(issued)).toEqual({
+      browser_state: input.browser_state,
+      return_path: input.return_path,
+      finalized: false,
+    });
+    expect(authority.finalizeLegacyConversion(issued)).toBe(input.legacy_fingerprint);
+    expect(authority.isLegacyFingerprintRetired(input.legacy_fingerprint)).toBe(true);
+    expect(authority.finalizeLegacyConversion(issued)).toBeNull();
+    expect(() => authority.beginLegacyConversion(input)).toThrow("cannot be resurrected");
+    authority.close();
+  });
 });
 
 describe("effect ceilings", () => {

@@ -55,9 +55,9 @@ describe("daemon write boundary", () => {
   });
 
   it("allows browser same-origin writes from the daemon origin", async () => {
-    const { port } = requireServer();
     const response = await requestJson("POST", "/api/write", { hello: "ui" }, {
-      Origin: `http://127.0.0.1:${port}`,
+      Host: "app.mandible.localhost:19420",
+      Origin: "https://app.mandible.localhost:19420",
       "Sec-Fetch-Site": "same-origin",
     });
 
@@ -67,6 +67,7 @@ describe("daemon write boundary", () => {
 
   it("rejects cross-origin browser writes before dispatching the route", async () => {
     const response = await requestJson("POST", "/api/write", { hello: "evil" }, {
+      Host: "app.mandible.localhost:19420",
       Origin: "https://example.com",
       "Sec-Fetch-Site": "cross-site",
     });
@@ -85,14 +86,15 @@ describe("daemon write boundary", () => {
     expect(response.body).toMatchObject({ error: "forbidden", reason: "invalid_host" });
   });
 
-  it("does not apply the write boundary to safe reads", async () => {
+  it("applies the registered browser origin boundary to safe reads", async () => {
     const response = await requestJson("GET", "/api/read", undefined, {
+      Host: "app.mandible.localhost:19420",
       Origin: "https://example.com",
       "Sec-Fetch-Site": "cross-site",
     });
 
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ ok: true });
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({ error: "forbidden", reason: "cross_site_fetch" });
   });
 
   it("rejects cross-origin browser WebSocket upgrades", async () => {

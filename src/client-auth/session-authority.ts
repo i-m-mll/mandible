@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -7,13 +7,14 @@ import type { Effect } from "../security/effect-policy.js";
 
 const COOKIE_NAME = "__Host-mandible-session";
 const PAIRING_COOKIE_NAME = "__Host-mandible-pairing";
+const TRANSFER_COOKIE_NAME = "__Host-mandible-transfer";
 const DEFAULT_RENEWABLE_MS = 30 * 24 * 60 * 60 * 1_000;
 const DEFAULT_ABSOLUTE_MS = 180 * 24 * 60 * 60 * 1_000;
 const INTERNAL_CONTEXT_TTL_SECONDS = 5;
 const MAX_ACTIVE_FAMILIES = 32;
-const AUTHORITY_SCHEMA_VERSION = "1";
+const AUTHORITY_SCHEMA_VERSION = "2";
 
-export { COOKIE_NAME, PAIRING_COOKIE_NAME };
+export { COOKIE_NAME, PAIRING_COOKIE_NAME, TRANSFER_COOKIE_NAME };
 
 export type InstanceRegistration = {
   instance_id: string;
@@ -34,6 +35,7 @@ export type AuthEvidence = {
 
 export type BrowserSession = {
   family_id: string;
+  root_family_id: string;
   user_id: string;
   slug: string;
   audience: string;
@@ -58,8 +60,25 @@ export type PairingTransaction = {
   expires_at: number;
 };
 
+export type PreviewTransfer = {
+  reference: string;
+  secret: string;
+  target_audience: string;
+  return_path: string;
+  expires_at: number;
+};
+
+export type LegacyConversion = {
+  reference: string;
+  secret: string;
+  target_audience: string;
+  return_path: string;
+  expires_at: number;
+};
+
 type SessionRow = {
   family_id: string;
+  root_family_id: string;
   token_digest: string;
   csrf_digest: string;
   user_id: string;
@@ -70,6 +89,7 @@ type SessionRow = {
   expires_at: number;
   absolute_expires_at: number;
   revoked_at: number | null;
+  legacy_fingerprint: string | null;
 };
 
 export class LocalSessionAuthority {
@@ -77,6 +97,8 @@ export class LocalSessionAuthority {
   private readonly now: () => number;
   private readonly privateKeyPath: string;
   private readonly publicKeyPath: string;
+  private readonly derivationKeyPath: string;
+  private readonly derivationKey: string;
 
   constructor(
     directory: string,
@@ -99,10 +121,19 @@ export class LocalSessionAuthority {
     this.ensureSchema();
     this.privateKeyPath = path.join(directory, "context-signing-key.pem");
     this.publicKeyPath = path.join(directory, "context-verification-key.pem");
-    if (options.initialize) this.ensureSigningKeys();
+    this.derivationKeyPath = path.join(directory, "session-derivation-key");
+    if (options.initialize) {
+      this.ensureSigningKeys();
+      this.ensureDerivationKey();
+    }
     if (!fs.existsSync(this.publicKeyPath)) {
       throw new Error("Local session context verification key is missing.");
     }
+    if (!fs.existsSync(this.derivationKeyPath)) {
+      throw new Error("Local session derivation key is missing.");
+    }
+    this.derivationKey = fs.readFileSync(this.derivationKeyPath, "utf8").trim();
+    if (!this.derivationKey) throw new Error("Local session derivation key is empty.");
   }
 
   close(): void {
@@ -207,33 +238,53 @@ export class LocalSessionAuthority {
     })();
   }
 
-  issueSession(userId: string, slug: string, audience: string, evidence: AuthEvidence): IssuedBrowserSession {
+  issueSession(
+    userId: string,
+    slug: string,
+    audience: string,
+    evidence: AuthEvidence,
+    options: {
+      rootFamilyId?: string;
+      rawToken?: string;
+      familyId?: string;
+      absoluteExpiresAt?: number;
+      legacyFingerprint?: string;
+    } = {},
+  ): IssuedBrowserSession {
     const registration = this.requiredInstance(audience);
-    const active = this.db.prepare(
-      "SELECT COUNT(*) AS count FROM browser_sessions WHERE revoked_at IS NULL AND expires_at > ? AND absolute_expires_at > ?",
-    ).get(this.now(), this.now()) as { count: number };
-    if (active.count >= MAX_ACTIVE_FAMILIES) {
-      throw new Error("Browser session capacity is full; revoke an existing environment explicitly.");
+    if (!options.rootFamilyId) {
+      const active = this.db.prepare(
+        "SELECT COUNT(DISTINCT root_family_id) AS count FROM browser_sessions WHERE revoked_at IS NULL AND expires_at > ? AND absolute_expires_at > ?",
+      ).get(this.now(), this.now()) as { count: number };
+      if (active.count >= MAX_ACTIVE_FAMILIES) {
+        throw new Error("Browser session capacity is full; revoke an existing environment explicitly.");
+      }
     }
-    const raw = token(32);
+    const raw = options.rawToken ?? token(32);
     const csrf = csrfForToken(raw);
-    const familyId = `family_${randomBytes(16).toString("base64url")}`;
+    const familyId = options.familyId ?? `family_${randomBytes(16).toString("base64url")}`;
+    const rootFamilyId = options.rootFamilyId ?? familyId;
     const expiresAt = this.now() + DEFAULT_RENEWABLE_MS;
-    const absoluteExpiresAt = this.now() + DEFAULT_ABSOLUTE_MS;
+    const absoluteExpiresAt = Math.min(
+      options.absoluteExpiresAt ?? this.now() + DEFAULT_ABSOLUTE_MS,
+      this.now() + DEFAULT_ABSOLUTE_MS,
+    );
     this.db.prepare(`
       INSERT INTO browser_sessions (
-        family_id, token_digest, csrf_digest, user_id, slug, audience,
+        family_id, root_family_id, token_digest, csrf_digest, user_id, slug, audience,
         effect_ceiling_json, evidence_json, created_at, last_activity_at,
-        expires_at, absolute_expires_at, revoked_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        expires_at, absolute_expires_at, revoked_at, legacy_fingerprint
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
     `).run(
-      familyId, digest(raw), digest(csrf), userId, slug, audience,
+      familyId, rootFamilyId, digest(raw), digest(csrf), userId, slug, audience,
       JSON.stringify(registration.effect_ceiling), JSON.stringify(evidence),
       this.now(), this.now(), expiresAt, absoluteExpiresAt,
+      options.legacyFingerprint ?? null,
     );
     return {
       token: raw,
       family_id: familyId,
+      root_family_id: rootFamilyId,
       user_id: userId,
       slug,
       audience,
@@ -282,15 +333,268 @@ export class LocalSessionAuthority {
   }
 
   revokeFamily(familyId: string): boolean {
+    const row = this.db.prepare(
+      "SELECT root_family_id FROM browser_sessions WHERE family_id = ?",
+    ).get(familyId) as { root_family_id: string } | undefined;
+    if (!row) return false;
     return this.db.prepare(
-      "UPDATE browser_sessions SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL",
-    ).run(this.now(), familyId).changes === 1;
+      "UPDATE browser_sessions SET revoked_at = ? WHERE root_family_id = ? AND revoked_at IS NULL",
+    ).run(this.now(), row.root_family_id).changes > 0;
   }
 
   revokeUser(userId: string): number {
     return this.db.prepare(
       "UPDATE browser_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
     ).run(this.now(), userId).changes;
+  }
+
+  beginPreviewTransfer(targetAudience: string, returnPath: string): PreviewTransfer {
+    const target = this.requiredInstance(targetAudience);
+    if (target.role !== "preview") throw new Error("Preview transfer target must be a registered preview.");
+    const reference = `transfer_${token(12)}`;
+    const secret = token(32);
+    const expiresAt = this.now() + 5 * 60 * 1_000;
+    this.db.prepare(`
+      INSERT INTO preview_transfers (
+        reference, secret_digest, target_audience, return_path, expires_at,
+        authorized_root_family_id, authorized_user_id, authorized_at,
+        issued_family_id, consumed_at
+      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)
+    `).run(reference, digest(secret), target.instance_id, validateReturnPath(returnPath), expiresAt);
+    return {
+      reference,
+      secret,
+      target_audience: target.instance_id,
+      return_path: validateReturnPath(returnPath),
+      expires_at: expiresAt,
+    };
+  }
+
+  authorizePreviewTransfer(reference: string, session: BrowserSession): InstanceRegistration {
+    const source = this.requiredInstance(session.audience);
+    if (source.role !== "main" || session.family_id !== session.root_family_id) {
+      throw new Error("Preview transfer authorization requires a production root session.");
+    }
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT * FROM preview_transfers WHERE reference = ?")
+        .get(reference) as Record<string, unknown> | undefined;
+      if (!row || Number(row.expires_at) <= this.now() || row.consumed_at !== null) {
+        throw new Error("Preview transfer is invalid, expired, or already consumed.");
+      }
+      if (row.authorized_root_family_id !== null
+          && row.authorized_root_family_id !== session.root_family_id) {
+        throw new Error("Preview transfer was authorized by another browser family.");
+      }
+      this.db.prepare(`
+        UPDATE preview_transfers
+           SET authorized_root_family_id = ?, authorized_user_id = ?, authorized_at = ?
+         WHERE reference = ?
+      `).run(session.root_family_id, session.user_id, this.now(), reference);
+      return this.requiredInstance(String(row.target_audience));
+    })();
+  }
+
+  completePreviewTransfer(reference: string, secret: string): IssuedBrowserSession | null {
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT * FROM preview_transfers WHERE reference = ?")
+        .get(reference) as Record<string, unknown> | undefined;
+      if (!row || Number(row.expires_at) <= this.now()
+          || !safeEqual(String(row.secret_digest), digest(secret))
+          || typeof row.authorized_root_family_id !== "string"
+          || typeof row.authorized_user_id !== "string") return null;
+      const root = this.db.prepare(`
+        SELECT * FROM browser_sessions
+         WHERE family_id = ? AND root_family_id = family_id AND revoked_at IS NULL
+           AND expires_at > ? AND absolute_expires_at > ?
+      `).get(row.authorized_root_family_id, this.now(), this.now()) as SessionRow | undefined;
+      if (!root || root.user_id !== row.authorized_user_id) return null;
+      const raw = this.derivedToken("preview-session", secret);
+      const existingFamily = typeof row.issued_family_id === "string" ? row.issued_family_id : null;
+      if (existingFamily) {
+        const existing = this.db.prepare("SELECT * FROM browser_sessions WHERE family_id = ?")
+          .get(existingFamily) as SessionRow | undefined;
+        return existing && existing.revoked_at === null
+          ? { ...sessionFromRow(existing, raw), token: raw }
+          : null;
+      }
+      const familyId = `family_${this.derivedId("preview-family", reference)}`;
+      const issued = this.issueSession(
+        root.user_id,
+        root.slug,
+        String(row.target_audience),
+        JSON.parse(root.evidence_json) as AuthEvidence,
+        {
+          rootFamilyId: root.root_family_id,
+          rawToken: raw,
+          familyId,
+          absoluteExpiresAt: root.absolute_expires_at,
+        },
+      );
+      this.db.prepare(`
+        UPDATE preview_transfers SET issued_family_id = ?, consumed_at = ? WHERE reference = ?
+      `).run(familyId, this.now(), reference);
+      return issued;
+    })();
+  }
+
+  previewTransferReturnPath(reference: string): string | null {
+    const row = this.db.prepare("SELECT return_path FROM preview_transfers WHERE reference = ?")
+      .get(reference) as { return_path: string } | undefined;
+    return row?.return_path ?? null;
+  }
+
+  beginLegacyConversion(input: {
+    raw_legacy_token: string;
+    legacy_fingerprint: string;
+    user_id: string;
+    slug: string;
+    target_audience: string;
+    return_path: string;
+    browser_state: Record<string, string>;
+    authenticated_at: number;
+  }): LegacyConversion {
+    const target = this.requiredInstance(input.target_audience);
+    if (target.role !== "main") throw new Error("Legacy conversion may create only a production family.");
+    const reference = `migration_${this.derivedId("legacy-reference", input.legacy_fingerprint)}`;
+    const secret = this.derivedToken("legacy-transfer", input.raw_legacy_token);
+    const returnPath = validateReturnPath(input.return_path);
+    const expiresAt = this.now() + 30 * 60 * 1_000;
+    const stateJson = JSON.stringify(input.browser_state);
+    if (Buffer.byteLength(stateJson) > 256 * 1_024) throw new Error("Legacy browser state is too large.");
+    this.db.transaction(() => {
+      const existing = this.db.prepare("SELECT * FROM legacy_conversions WHERE legacy_fingerprint = ?")
+        .get(input.legacy_fingerprint) as Record<string, unknown> | undefined;
+      if (existing?.retired_at !== null && existing?.retired_at !== undefined) {
+        throw new Error("Legacy browser session was already converted and cannot be resurrected.");
+      }
+      if (existing) {
+        if (existing.user_id !== input.user_id || existing.target_audience !== target.instance_id
+            || existing.secret_digest !== digest(secret)) {
+          throw new Error("Legacy conversion state conflicts with the recorded transaction.");
+        }
+        this.db.prepare(`
+          UPDATE legacy_conversions
+             SET expires_at = max(expires_at, ?)
+           WHERE legacy_fingerprint = ? AND retired_at IS NULL
+        `).run(expiresAt, input.legacy_fingerprint);
+        return;
+      }
+      this.db.prepare(`
+        INSERT INTO legacy_conversions (
+          reference, secret_digest, legacy_fingerprint, user_id, slug,
+          target_audience, return_path, browser_state_json, authenticated_at,
+          created_at, expires_at, issued_family_id, verified_at, retired_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      `).run(
+        reference,
+        digest(secret),
+        input.legacy_fingerprint,
+        input.user_id,
+        input.slug,
+        target.instance_id,
+        returnPath,
+        stateJson,
+        input.authenticated_at,
+        this.now(),
+        expiresAt,
+      );
+    })();
+    return { reference, secret, target_audience: target.instance_id, return_path: returnPath, expires_at: expiresAt };
+  }
+
+  completeLegacyConversion(reference: string, secret: string): IssuedBrowserSession | null {
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT * FROM legacy_conversions WHERE reference = ?")
+        .get(reference) as Record<string, unknown> | undefined;
+      if (!row || row.retired_at !== null || Number(row.expires_at) <= this.now()
+          || !safeEqual(String(row.secret_digest), digest(secret))) return null;
+      const raw = this.derivedToken("legacy-session", secret);
+      const familyId = typeof row.issued_family_id === "string"
+        ? row.issued_family_id
+        : `family_${this.derivedId("legacy-family", reference)}`;
+      const existing = this.db.prepare("SELECT * FROM browser_sessions WHERE family_id = ?")
+        .get(familyId) as SessionRow | undefined;
+      if (existing) return existing.revoked_at === null
+        ? { ...sessionFromRow(existing, raw), token: raw }
+        : null;
+      const absoluteExpiresAt = Number(row.authenticated_at) + DEFAULT_ABSOLUTE_MS;
+      if (absoluteExpiresAt <= this.now()) return null;
+      const issued = this.issueSession(
+        String(row.user_id),
+        String(row.slug),
+        String(row.target_audience),
+        {
+          method: "legacy_conversion",
+          credential_id: null,
+          authenticated_at: Number(row.authenticated_at),
+        },
+        {
+          rawToken: raw,
+          familyId,
+          legacyFingerprint: String(row.legacy_fingerprint),
+          absoluteExpiresAt,
+        },
+      );
+      this.db.prepare("UPDATE legacy_conversions SET issued_family_id = ? WHERE reference = ?")
+        .run(familyId, reference);
+      return issued;
+    })();
+  }
+
+  legacyConversionReturnPath(reference: string): string | null {
+    const row = this.db.prepare(
+      "SELECT return_path FROM legacy_conversions WHERE reference = ? OR issued_family_id = ?",
+    ).get(reference, reference) as { return_path: string } | undefined;
+    return row?.return_path ?? null;
+  }
+
+  legacyConversionDetails(session: BrowserSession): {
+    browser_state: Record<string, string>;
+    return_path: string;
+    finalized: boolean;
+  } | null {
+    const row = this.db.prepare(`
+      SELECT browser_state_json, return_path, retired_at FROM legacy_conversions
+       WHERE issued_family_id = ?
+    `).get(session.family_id) as {
+      browser_state_json: string;
+      return_path: string;
+      retired_at: number | null;
+    } | undefined;
+    return row ? {
+      browser_state: JSON.parse(row.browser_state_json) as Record<string, string>,
+      return_path: row.return_path,
+      finalized: row.retired_at !== null,
+    } : null;
+  }
+
+  finalizeLegacyConversion(session: BrowserSession): string | null {
+    return this.db.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT legacy_fingerprint FROM legacy_conversions
+         WHERE issued_family_id = ? AND verified_at IS NULL AND retired_at IS NULL
+      `).get(session.family_id) as { legacy_fingerprint: string } | undefined;
+      if (!row) return null;
+      const verified = this.classifyByFamily(session.family_id);
+      if (!verified) throw new Error("The replacement browser session is not active.");
+      this.db.prepare(`
+        UPDATE legacy_conversions SET verified_at = ?, retired_at = ?
+         WHERE issued_family_id = ? AND verified_at IS NULL AND retired_at IS NULL
+      `).run(this.now(), this.now(), session.family_id);
+      return row.legacy_fingerprint;
+    })();
+  }
+
+  retiredLegacyFingerprints(): string[] {
+    return (this.db.prepare(
+      "SELECT legacy_fingerprint FROM legacy_conversions WHERE retired_at IS NOT NULL ORDER BY legacy_fingerprint",
+    ).all() as Array<{ legacy_fingerprint: string }>).map((row) => row.legacy_fingerprint);
+  }
+
+  isLegacyFingerprintRetired(fingerprint: string): boolean {
+    return Boolean(this.db.prepare(
+      "SELECT 1 FROM legacy_conversions WHERE legacy_fingerprint = ? AND retired_at IS NOT NULL",
+    ).get(fingerprint));
   }
 
   async signPreviewContext(session: BrowserSession, previewInstanceId: string): Promise<string> {
@@ -302,6 +606,7 @@ export class LocalSessionAuthority {
     const ceiling = preview.effect_ceiling.filter((effect) => session.effect_ceiling.includes(effect));
     return new SignJWT({
       sid: session.family_id,
+      root: session.root_family_id,
       uid: session.user_id,
       slug: session.slug,
       effects: ceiling,
@@ -332,7 +637,7 @@ export class LocalSessionAuthority {
         maxTokenAge: `${INTERNAL_CONTEXT_TTL_SECONDS}s`,
       });
       if (
-        typeof payload.sid !== "string" || typeof payload.uid !== "string"
+        typeof payload.sid !== "string" || typeof payload.root !== "string" || typeof payload.uid !== "string"
         || typeof payload.slug !== "string" || typeof payload.csrf !== "string"
         || payload.generation !== registration.backend_generation
         || !Array.isArray(payload.effects)
@@ -340,6 +645,7 @@ export class LocalSessionAuthority {
       ) return null;
       return {
         family_id: payload.sid,
+        root_family_id: payload.root,
         user_id: payload.uid,
         slug: payload.slug,
         audience: registration.instance_id,
@@ -364,6 +670,29 @@ export class LocalSessionAuthority {
     return registration;
   }
 
+  private classifyByFamily(familyId: string): SessionRow | null {
+    const row = this.db.prepare("SELECT * FROM browser_sessions WHERE family_id = ?")
+      .get(familyId) as SessionRow | undefined;
+    if (!row || row.revoked_at !== null || row.expires_at <= this.now()
+        || row.absolute_expires_at <= this.now()) return null;
+    return row;
+  }
+
+  private derivedToken(purpose: string, input: string): string {
+    return createHmac("sha256", this.derivationKey)
+      .update(`mandible:${purpose}\0`, "utf8")
+      .update(input, "utf8")
+      .digest("base64url");
+  }
+
+  private derivedId(purpose: string, input: string): string {
+    return createHmac("sha256", this.derivationKey)
+      .update(`mandible:${purpose}\0`, "utf8")
+      .update(input, "utf8")
+      .digest("hex")
+      .slice(0, 32);
+  }
+
   private ensureSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS authority_meta (
@@ -383,6 +712,7 @@ export class LocalSessionAuthority {
       );
       CREATE TABLE IF NOT EXISTS browser_sessions (
         family_id TEXT PRIMARY KEY,
+        root_family_id TEXT NOT NULL,
         token_digest TEXT NOT NULL UNIQUE,
         csrf_digest TEXT NOT NULL,
         user_id TEXT NOT NULL,
@@ -394,7 +724,8 @@ export class LocalSessionAuthority {
         last_activity_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         absolute_expires_at INTEGER NOT NULL,
-        revoked_at INTEGER
+        revoked_at INTEGER,
+        legacy_fingerprint TEXT UNIQUE
       );
       CREATE TABLE IF NOT EXISTS pairing_transactions (
         reference TEXT PRIMARY KEY,
@@ -404,6 +735,34 @@ export class LocalSessionAuthority {
         expires_at INTEGER NOT NULL,
         approved_user_id TEXT,
         consumed_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS preview_transfers (
+        reference TEXT PRIMARY KEY,
+        secret_digest TEXT NOT NULL,
+        target_audience TEXT NOT NULL REFERENCES instance_registrations(instance_id),
+        return_path TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        authorized_root_family_id TEXT,
+        authorized_user_id TEXT,
+        authorized_at INTEGER,
+        issued_family_id TEXT REFERENCES browser_sessions(family_id),
+        consumed_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS legacy_conversions (
+        reference TEXT PRIMARY KEY,
+        secret_digest TEXT NOT NULL,
+        legacy_fingerprint TEXT NOT NULL UNIQUE,
+        user_id TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        target_audience TEXT NOT NULL REFERENCES instance_registrations(instance_id),
+        return_path TEXT NOT NULL,
+        browser_state_json TEXT NOT NULL,
+        authenticated_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        issued_family_id TEXT UNIQUE REFERENCES browser_sessions(family_id),
+        verified_at INTEGER,
+        retired_at INTEGER
       );
     `);
     const meta = this.db.prepare("SELECT value FROM authority_meta WHERE key = 'installation_id'")
@@ -417,7 +776,16 @@ export class LocalSessionAuthority {
     }
     const schema = this.db.prepare("SELECT value FROM authority_meta WHERE key = 'schema_version'")
       .get() as { value: string } | undefined;
-    if (schema && schema.value !== AUTHORITY_SCHEMA_VERSION) {
+    if (schema?.value === "1") {
+      this.db.transaction(() => {
+        this.db.exec("ALTER TABLE browser_sessions ADD COLUMN root_family_id TEXT");
+        this.db.exec("ALTER TABLE browser_sessions ADD COLUMN legacy_fingerprint TEXT");
+        this.db.exec("UPDATE browser_sessions SET root_family_id = family_id WHERE root_family_id IS NULL");
+        this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_sessions_legacy_fingerprint ON browser_sessions(legacy_fingerprint) WHERE legacy_fingerprint IS NOT NULL");
+        this.db.prepare("UPDATE authority_meta SET value = ? WHERE key = 'schema_version'")
+          .run(AUTHORITY_SCHEMA_VERSION);
+      })();
+    } else if (schema && schema.value !== AUTHORITY_SCHEMA_VERSION) {
       throw new Error(`Unsupported local session authority schema: ${schema.value}`);
     }
     if (!schema) {
@@ -434,6 +802,11 @@ export class LocalSessionAuthority {
     const pair = generateKeyPairSync("ed25519");
     writeProtected(this.privateKeyPath, pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString());
     writeProtected(this.publicKeyPath, pair.publicKey.export({ type: "spki", format: "pem" }).toString());
+  }
+
+  private ensureDerivationKey(): void {
+    if (fs.existsSync(this.derivationKeyPath)) return;
+    writeProtected(this.derivationKeyPath, token(32));
   }
 }
 
@@ -454,6 +827,7 @@ function sessionFromRow(row: SessionRow, raw: string): BrowserSession {
   const evidence = JSON.parse(row.evidence_json) as AuthEvidence;
   return {
     family_id: row.family_id,
+    root_family_id: row.root_family_id,
     user_id: row.user_id,
     slug: row.slug,
     audience: row.audience,

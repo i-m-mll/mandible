@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,7 +11,7 @@ import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { COOKIE_NAME } from "../src/client-auth/session-authority.js";
 import { openDb, setDb, type Db } from "../src/db.js";
 import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from "../src/security/effect-policy.js";
-import { createServer, Router } from "../src/server.js";
+import { attachWebSocketUpgrade, createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import type { InstanceInfo } from "../src/types.js";
 import { setupOperator } from "../src/users/store.js";
@@ -22,6 +23,7 @@ let server: http.Server;
 let port = 0;
 let auth: ClientAuthenticator;
 let browser: ReturnType<ClientAuthenticator["issueBrowserSession"]>;
+let sse: SseManager;
 
 function productionInstance(database: string): InstanceInfo {
   return {
@@ -80,7 +82,7 @@ beforeEach(async () => {
   const router = new Router({ clientAuth: auth, instance });
   router.get("/api/read", (req, res) => res.json({ user: req.client_identity?.user_id }), { fileRpc: "allow" });
   router.post("/api/write", (req, res) => res.json({ user: req.client_identity?.user_id }), { fileRpc: "allow" });
-  const sse = new SseManager();
+  sse = new SseManager();
   server = createServer({
     db,
     sse,
@@ -91,6 +93,26 @@ beforeEach(async () => {
     instance,
     clientAuth: auth,
   });
+  const browserSockets = new Set<{ socket: net.Socket; family: string; user: string }>();
+  auth.onBrowserSessionRevoked((family, user) => {
+    sse.closeForBrowserSession(family, user);
+    for (const entry of browserSockets) {
+      if (entry.user === user && (family === null || entry.family === family)) entry.socket.destroy();
+    }
+  });
+  attachWebSocketUpgrade(server, (req, socket) => {
+    const rawCookie = Array.isArray(req.headers.cookie) ? req.headers.cookie[0] : req.headers.cookie;
+    const token = rawCookie?.split(";").map((part) => part.trim())
+      .find((part) => part.startsWith(`${COOKIE_NAME}=`))?.slice(COOKIE_NAME.length + 1);
+    const identity = auth.authenticateBrowserSession(token);
+    if (!identity?.session_family) {
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    browserSockets.add({ socket: socket as net.Socket, family: identity.session_family, user: identity.user_id });
+    socket.write("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
+  }, instance);
   port = await new Promise<number>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port));
@@ -160,7 +182,64 @@ describe("strict browser boundary", () => {
     expect(wrongAudience).toMatchObject({ status: 401, body: { reason: "wrong_audience" } });
     expect((await request("GET", "/api/events")).status).toBe(404);
   });
+
+  it("keeps real fetch, SSE, and WebSocket traffic on one session and closes streams on revocation", async () => {
+    const headers = {
+      Host: "app.mandible.localhost:19420",
+      Origin: origin,
+      Cookie: `${COOKIE_NAME}=${browser.token}`,
+      "X-Mandible-Csrf": browser.csrf_token,
+    };
+    expect((await request("GET", "/api/read", undefined, headers)).status).toBe(200);
+
+    const eventStream = await openEventStream(headers);
+    const webSocket = await openWebSocket(headers);
+    expect(sse.count()).toBe(1);
+
+    const identity = auth.authenticateBrowserSession(browser.token)!;
+    expect(auth.revokeBrowserFamily(identity)).toBe(true);
+    await Promise.all([eventStream.closed, webSocket.closed]);
+    expect(sse.count()).toBe(0);
+    expect((await request("GET", "/api/read", undefined, headers)).status).toBe(401);
+  });
 });
+
+function openEventStream(headers: Record<string, string>): Promise<{ closed: Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: "127.0.0.1", port, path: "/api/events/subscribe", method: "POST", headers }, (res) => {
+      const closed = new Promise<void>((closedResolve) => res.once("close", closedResolve));
+      res.once("data", () => resolve({ closed }));
+    });
+    req.on("error", reject);
+    req.end(JSON.stringify({ topics: [] }));
+  });
+}
+
+function openWebSocket(headers: Record<string, string>): Promise<{ closed: Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: "127.0.0.1", port }, () => {
+      socket.write([
+        "GET /terminal/test HTTP/1.1",
+        ...Object.entries(headers).map(([key, value]) => `${key}: ${value}`),
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+        "",
+        "",
+      ].join("\r\n"));
+    });
+    const closed = new Promise<void>((closedResolve) => socket.once("close", closedResolve));
+    socket.once("data", (chunk) => {
+      if (!chunk.toString("utf8").startsWith("HTTP/1.1 101")) {
+        reject(new Error(`WebSocket upgrade failed: ${chunk.toString("utf8")}`));
+        return;
+      }
+      resolve({ closed });
+    });
+    socket.on("error", reject);
+  });
+}
 
 function request(
   method: string,

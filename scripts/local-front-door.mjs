@@ -61,10 +61,57 @@ function initializeInstallationAuthority() {
   process.stdout.write(`${JSON.stringify({ installation_authority: installationAuthorityFile, authority_id: authorityId })}\n`);
 }
 
-function caddyfile(instances) {
+function caddyfile(instances, { legacyConversion = false } = {}) {
   const production = instances.find((entry) => entry.role === "main");
   if (!production) fail("The production instance is not registered.");
   const productionBackend = new URL(production.backend_origin);
+  const productionPublic = new URL(production.public_origin);
+  const migrationOrigin = `https://${productionPublic.hostname}:19419`;
+  const globalOptions = "{\n  admin 127.0.0.1:2019\n  local_certs\n  auto_https disable_redirects\n}";
+  const migrationIngress = [
+    `${migrationOrigin} {`,
+    "  bind 127.0.0.1 ::1",
+    "  tls internal",
+    "  header -Server",
+    "  handle /api/client-auth/legacy-conversion/complete {",
+    `    reverse_proxy ${productionBackend.origin} {`,
+    `      header_up Host ${productionPublic.host}`,
+    `      header_up Origin ${productionPublic.origin}`,
+    "      header_up -Authorization",
+    "      header_up -Cookie",
+    "      header_up -X-Mandible-Session-Context",
+    "      header_up -X-Mandible-Target-Instance",
+    "    }",
+    "  }",
+    "  respond 404",
+    "}",
+  ].join("\n");
+  const legacyOrigin = [
+    "http://127.0.0.1:19420, http://localhost:19420 {",
+    "  bind 127.0.0.1 ::1",
+    "  header -Server",
+    "  handle /api/client-auth/legacy-conversion/prepare {",
+    `    reverse_proxy ${productionBackend.origin} {`,
+    "      header_up Host {http.request.host}",
+    "      header_up Origin {http.request.header.Origin}",
+    "      header_up -Cookie",
+    "      header_up -X-Mandible-Session-Context",
+    "      header_up -X-Mandible-Target-Instance",
+    "    }",
+    "  }",
+    "  handle {",
+    `    reverse_proxy ${productionBackend.origin} {`,
+    `      header_up Host ${productionPublic.host}`,
+    "      header_up -Origin",
+    "      header_up -Authorization",
+    "      header_up -Cookie",
+    "      header_up -X-Mandible-Session-Context",
+    "      header_up -X-Mandible-Target-Instance",
+    "    }",
+    "  }",
+    "}",
+  ].join("\n");
+  if (legacyConversion) return `${globalOptions}\n\n${migrationIngress}\n\n${legacyOrigin}\n`;
   const blocks = instances.map((entry) => {
     const publicUrl = new URL(entry.public_origin);
     const backendUrl = new URL(entry.backend_origin);
@@ -113,7 +160,7 @@ function caddyfile(instances) {
     shared.push("}");
     return shared.join("\n");
   });
-  return `{\n  admin 127.0.0.1:2019\n  local_certs\n  auto_https disable_redirects\n}\n\n${blocks.join("\n\n")}\n`;
+  return `${globalOptions}\n\n${blocks.join("\n\n")}\n`;
 }
 
 function install() {
@@ -133,9 +180,9 @@ function install() {
   fs.chmodSync(binary, 0o755);
 }
 
-function configure() {
+function configure({ legacyConversion = false } = {}) {
   fs.mkdirSync(authorityDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(configPath, caddyfile(readInstances()), { mode: 0o600 });
+  fs.writeFileSync(configPath, caddyfile(readInstances(), { legacyConversion }), { mode: 0o600 });
   fs.chmodSync(configPath, 0o600);
 }
 
@@ -146,13 +193,20 @@ if (command === "initialize") {
   configure();
 } else if (command === "configure") {
   configure();
+} else if (command === "configure-migration") {
+  configure({ legacyConversion: true });
 } else if (command === "run") {
   install();
   configure();
   const result = spawnSync(binary, ["run", "--config", configPath, "--adapter", "caddyfile"], { stdio: "inherit" });
   process.exit(result.status ?? 1);
+} else if (command === "run-migration") {
+  install();
+  configure({ legacyConversion: true });
+  const result = spawnSync(binary, ["run", "--config", configPath, "--adapter", "caddyfile"], { stdio: "inherit" });
+  process.exit(result.status ?? 1);
 } else if (command === "status") {
   process.stdout.write(`${JSON.stringify({ version: CADDY_VERSION, binary, config: configPath, installed: fs.existsSync(binary), instances: fs.existsSync(authorityDb) ? readInstances().length : 0 })}\n`);
 } else {
-  fail("Usage: local-front-door.mjs initialize|install|configure|run|status");
+  fail("Usage: local-front-door.mjs initialize|install|configure|configure-migration|run|run-migration|status");
 }

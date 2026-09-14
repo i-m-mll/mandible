@@ -7,6 +7,7 @@ const RENEW_PATH = '/api/client-auth/renew';
 const LOGOUT_PATH = '/api/client-auth/logout';
 const PENDING_LOGOUT_KEY = 'mandible.session.revocation_pending';
 const LEGACY_BEARER_STORAGE_KEY = 'mandible.client_auth.token';
+const PREVIEW_TRANSFER_ATTEMPT_KEY = 'mandible.preview_transfer.attempted_at';
 
 export type ClientAuthSessionState =
   | 'enrolled'
@@ -88,6 +89,127 @@ function retireLegacyBrowserBearer(): void {
   window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${cleanHash}`);
 }
 
+function legacyOrigin(): boolean {
+  return window.location.origin === 'http://127.0.0.1:19420'
+    || window.location.origin === 'http://localhost:19420';
+}
+
+function legacyBearer(): string | null {
+  try {
+    const raw = window.localStorage.getItem(LEGACY_BEARER_STORAGE_KEY)?.trim();
+    if (!raw) return null;
+    if (!raw.startsWith('{')) return raw;
+    const parsed = JSON.parse(raw) as { token?: unknown };
+    return typeof parsed.token === 'string' && parsed.token ? parsed.token : null;
+  } catch {
+    return null;
+  }
+}
+
+function legacyBrowserState(): Record<string, string> {
+  const result: Record<string, string> = {};
+  try {
+    for (let index = 0; index < window.localStorage.length && Object.keys(result).length < 64; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key || key === LEGACY_BEARER_STORAGE_KEY || key === PENDING_LOGOUT_KEY
+          || /auth|token|credential|secret/i.test(key) || key.length > 160) continue;
+      const value = window.localStorage.getItem(key);
+      if (value !== null && value.length <= 64 * 1_024) result[key] = value;
+    }
+  } catch {
+    return {};
+  }
+  return result;
+}
+
+async function beginLegacyConversion(fetchImpl: typeof fetch): Promise<boolean> {
+  if (!legacyOrigin()) return false;
+  const token = legacyBearer();
+  if (!token) return false;
+  const response = await fetchImpl('/api/client-auth/legacy-conversion/prepare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      return_path: `${window.location.pathname}${window.location.search}${window.location.hash}`,
+      browser_state: legacyBrowserState(),
+    }),
+  });
+  const body = await readJson(response);
+  if (!response.ok || typeof body.reference !== 'string' || typeof body.secret !== 'string'
+      || typeof body.complete_url !== 'string') return false;
+  const complete = new URL(body.complete_url);
+  if (complete.protocol !== 'https:' || complete.hostname !== 'app.mandible.localhost'
+      || complete.port !== '19419' || complete.pathname !== '/api/client-auth/legacy-conversion/complete') {
+    return false;
+  }
+  const form = document.createElement('form');
+  form.method = 'post';
+  form.action = complete.href;
+  for (const [name, value] of [['reference', body.reference], ['secret', body.secret]] as const) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.append(input);
+  }
+  document.body.append(form);
+  form.submit();
+  return true;
+}
+
+async function beginPreviewTransfer(fetchImpl: typeof fetch): Promise<boolean> {
+  if (!/^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(window.location.hostname)) return false;
+  const now = Date.now();
+  try {
+    const prior = Number(window.sessionStorage.getItem(PREVIEW_TRANSFER_ATTEMPT_KEY) ?? 0);
+    if (Number.isFinite(prior) && now - prior < 60_000) return false;
+    window.sessionStorage.setItem(PREVIEW_TRANSFER_ATTEMPT_KEY, String(now));
+  } catch {
+    // The server-side one-time transaction still bounds retries without storage.
+  }
+  const response = await fetchImpl('/api/client-auth/preview-transfer/prepare', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ return_path: `${window.location.pathname}${window.location.search}${window.location.hash}` }),
+  });
+  const body = await readJson(response);
+  if (!response.ok || typeof body.authorize_url !== 'string') return false;
+  const authorize = new URL(body.authorize_url);
+  if (authorize.origin !== 'https://app.mandible.localhost:19420'
+      || authorize.pathname !== '/api/client-auth/preview-transfer/authorize') return false;
+  window.location.assign(authorize.href);
+  return true;
+}
+
+async function finishLegacyConversion(fetchImpl: typeof fetch, active: SessionProjection): Promise<void> {
+  const response = await fetchImpl('/api/client-auth/legacy-conversion/state', {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  });
+  const body = await readJson(response);
+  if (!response.ok || typeof body.production_origin !== 'string'
+      || typeof body.return_path !== 'string') return;
+  const production = new URL(body.production_origin);
+  if (production.origin !== 'https://app.mandible.localhost:19420') return;
+  if (body.browser_state && typeof body.browser_state === 'object' && !Array.isArray(body.browser_state)) {
+    for (const [key, value] of Object.entries(body.browser_state as Record<string, unknown>)) {
+      if (typeof value === 'string' && !/auth|token|credential|secret/i.test(key)) {
+        try { window.localStorage.setItem(key, value); } catch { /* storage disabled */ }
+      }
+    }
+  }
+  if (body.finalized !== true) {
+    const finalized = await fetchImpl('/api/client-auth/legacy-conversion/finalize', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-Mandible-CSRF': active.csrf_token },
+    });
+    if (!finalized.ok) return;
+  }
+  window.location.replace(`${production.origin}${body.return_path}`);
+}
+
 async function readJson(response: Response): Promise<Record<string, unknown>> {
   try {
     const body = await response.clone().json();
@@ -117,10 +239,14 @@ function projection(value: unknown): SessionProjection | null {
 }
 
 export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(window)): Promise<ClientAuthSessionState> {
-  retireLegacyBrowserBearer();
   if (pending) return pending;
   pending = (async () => {
     try {
+      if (legacyOrigin()) {
+        const started = await beginLegacyConversion(fetchImpl);
+        return publish(started ? 'signed-out' : 'unreachable');
+      }
+      retireLegacyBrowserBearer();
       if (pendingLogout()) {
         const inspected = await fetchImpl(WHOAMI_PATH, {
           credentials: 'same-origin',
@@ -146,6 +272,7 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
       if (!response.ok || body.authenticated !== true) {
         session = null;
         const reason = body.failure_reason;
+        if (!reason || reason === 'unknown') await beginPreviewTransfer(fetchImpl);
         return publish(reason === 'expired' ? 'expired'
           : reason === 'revoked' ? 'revoked'
             : reason === 'wrong_audience' ? 'wrong-audience' : 'signed-out');
@@ -156,6 +283,7 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
         return publish('incompatible');
       }
       session = next;
+      if (body.legacy_conversion_pending === true) await finishLegacyConversion(fetchImpl, next);
       return publish('enrolled');
     } catch {
       return publish('unreachable');

@@ -23,7 +23,8 @@ import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { Router } from "../src/server.js";
 import { isSessionAliasLive, resolveSessionAlias } from "../src/session-liveness.js";
 import type { AuthRequest } from "../src/types.js";
-import { setupOperator } from "../src/users/store.js";
+import { createUser, setupOperator } from "../src/users/store.js";
+import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 
 const fakeScanner = {
   getRepos: () => [],
@@ -111,9 +112,14 @@ beforeEach(async () => {
   db = new Database(":memory:");
   migrate(db);
   setupOperator(db, { display_name: "Parent role identity operator" });
+  const coordinator = createUser(db, {
+    slug: "parent-role-test-agent",
+    kind: "agent",
+    display_name: "Parent role test agent",
+  });
   setDb(db);
   addProject(db, { project_key: "mandible", display_name: "Mandible" });
-  router = new Router();
+  router = authenticatedTestRouter(coordinator);
   const sessionAliasResolver = (database: Db, id: string) => resolveSessionAlias(database, id, {
     readCodexTaskLiveness: (_sourcePath, taskId) => ({
       status: taskId === DESKTOP_TASK ? "live" : "not_live",

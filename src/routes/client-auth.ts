@@ -20,7 +20,7 @@ import {
   requireSelfOrOperator,
 } from "../client-auth/authz.js";
 import { serialize } from "cookie";
-import { COOKIE_NAME, PAIRING_COOKIE_NAME } from "../client-auth/session-authority.js";
+import { COOKIE_NAME, PAIRING_COOKIE_NAME, TRANSFER_COOKIE_NAME } from "../client-auth/session-authority.js";
 import type { IssuedBrowserSession } from "../client-auth/session-authority.js";
 import {
   getOperator,
@@ -55,6 +55,60 @@ function clearSessionCookie(res: ResponseLike): void {
   res.header?.("Set-Cookie", serialize(COOKIE_NAME, "", cookieOptions(0)));
 }
 
+function setTransferCookie(res: ResponseLike, secret: string): void {
+  res.header?.("Set-Cookie", serialize(TRANSFER_COOKIE_NAME, secret, cookieOptions(300)));
+}
+
+function setSessionAndClearTransferCookies(
+  res: ResponseLike,
+  token: string,
+  absoluteExpiresAt: number,
+): void {
+  const maxAge = Math.max(0, Math.floor((absoluteExpiresAt - Date.now()) / 1_000));
+  res.header?.("Set-Cookie", [
+    serialize(COOKIE_NAME, token, cookieOptions(maxAge)),
+    serialize(TRANSFER_COOKIE_NAME, "", cookieOptions(0)),
+  ]);
+}
+
+function requestBody(req: { body: unknown }): Record<string, unknown> {
+  if (typeof req.body !== "string") return bodyRecord(req as never);
+  return Object.fromEntries(new URLSearchParams(req.body));
+}
+
+function browserState(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 64) throw new Error("Legacy browser state has too many entries.");
+  return Object.fromEntries(entries.map(([key, item]) => {
+    if (!key || key.length > 160 || /auth|token|credential|secret/i.test(key)
+        || typeof item !== "string" || item.length > 64 * 1_024) {
+      throw new Error("Legacy browser state contains an unsafe entry.");
+    }
+    return [key, item];
+  }));
+}
+
+function htmlEscape(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character]!);
+}
+
+function migrationOrigin(authenticator: ClientAuthenticator): string {
+  const production = authenticator.productionRegistration();
+  if (!production) throw new Error("The production instance is not registered.");
+  const configured = process.env.MANDIBLE_LEGACY_MIGRATION_ORIGIN
+    ?? `${new URL(production.public_origin).protocol}//${new URL(production.public_origin).hostname}:19419`;
+  const parsed = new URL(configured);
+  const productionUrl = new URL(production.public_origin);
+  if (parsed.protocol !== "https:" || parsed.hostname !== productionUrl.hostname || !parsed.port
+      || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new Error("Legacy migration origin must be exact HTTPS on the production hostname.");
+  }
+  return parsed.origin;
+}
+
 function publicSession(session: IssuedBrowserSession): Record<string, unknown> {
   return {
     family_id: session.family_id,
@@ -84,6 +138,146 @@ export function registerClientAuthRoutes(
   router: RouteRegistrar,
   authenticator: ClientAuthenticator,
 ): void {
+  router.post("/api/client-auth/preview-transfer/prepare", (req, res) => {
+    try {
+      const target = req.target_instance_id;
+      const production = authenticator.productionRegistration();
+      if (!target || !production) throw new Error("A registered preview target is required.");
+      const body = requestBody(req);
+      const transfer = authenticator.beginPreviewTransfer(
+        target,
+        optionalString(body, "return_path") ?? "/",
+      );
+      setTransferCookie(res, transfer.secret);
+      sendJson(res, 201, {
+        reference: transfer.reference,
+        expires_at: transfer.expires_at,
+        authorize_url: `${production.public_origin}/api/client-auth/preview-transfer/authorize?reference=${encodeURIComponent(transfer.reference)}`,
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.get("/api/client-auth/preview-transfer/authorize", (req, res) => {
+    try {
+      const identity = req.client_identity;
+      if (!identity || identity.source !== "browser_cookie") {
+        sendJson(res, 401, { error: "production_browser_session_required" });
+        return;
+      }
+      const reference = req.query?.reference?.trim();
+      if (!reference) throw new Error("Preview transfer reference is required.");
+      const preview = authenticator.authorizePreviewTransfer(reference, identity);
+      const action = `${preview.public_origin}/api/client-auth/preview-transfer/complete`;
+      res.html?.(`<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; form-action ${htmlEscape(preview.public_origin)}"><title>Opening Mandible preview</title><form method="post" action="${htmlEscape(action)}"><input type="hidden" name="reference" value="${htmlEscape(reference)}"></form><script>document.forms[0].submit()</script>`);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/preview-transfer/complete", (req, res) => {
+    try {
+      const reference = optionalString(requestBody(req), "reference")?.trim();
+      const secret = req.browser_transfer_secret;
+      if (!reference || !secret) {
+        sendJson(res, 401, { error: "preview_transfer_secret_required" });
+        return;
+      }
+      const session = authenticator.completePreviewTransfer(reference, secret);
+      const returnPath = authenticator.previewTransferReturnPath(reference);
+      if (!session || !returnPath || session.audience !== req.target_instance_id) {
+        sendJson(res, 409, { error: "preview_transfer_invalid" });
+        return;
+      }
+      setSessionAndClearTransferCookies(res, session.token, session.absolute_expires_at);
+      res.header?.("Location", returnPath);
+      res.status(303).empty?.();
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/legacy-conversion/prepare", (req, res) => {
+    try {
+      const identity = req.client_identity;
+      const raw = req.legacy_browser_credential;
+      if (!identity || identity.source !== "legacy_browser_conversion" || !raw) {
+        sendJson(res, 401, { error: "legacy_browser_session_required" });
+        return;
+      }
+      const body = requestBody(req);
+      const conversion = authenticator.beginLegacyConversion(
+        identity,
+        raw,
+        optionalString(body, "return_path") ?? "/",
+        browserState(body.browser_state),
+      );
+      sendJson(res, 201, {
+        reference: conversion.reference,
+        secret: conversion.secret,
+        complete_url: `${migrationOrigin(authenticator)}/api/client-auth/legacy-conversion/complete`,
+        expires_at: conversion.expires_at,
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/legacy-conversion/complete", (req, res) => {
+    try {
+      const body = requestBody(req);
+      const reference = optionalString(body, "reference")?.trim();
+      const secret = optionalString(body, "secret")?.trim();
+      if (!reference || !secret) {
+        sendJson(res, 401, { error: "legacy_conversion_proof_required" });
+        return;
+      }
+      const session = authenticator.completeLegacyConversion(reference, secret);
+      if (!session) {
+        sendJson(res, 409, { error: "legacy_conversion_invalid" });
+        return;
+      }
+      setSessionCookie(res, session.token, session.absolute_expires_at);
+      res.html?.("<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>Mandible migration prepared</title><main style=\"font:16px system-ui;max-width:42rem;margin:4rem auto\"><h1>Browser session prepared</h1><p>The replacement session is verified after the HTTPS cutover. You can close this tab; Mandible will restore this browser's saved view state when the final origin opens.</p></main>");
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.get("/api/client-auth/legacy-conversion/state", (req, res) => {
+    const identity = req.client_identity;
+    if (!identity || identity.source !== "browser_cookie") {
+      sendJson(res, 401, { error: "replacement_browser_session_required" });
+      return;
+    }
+    const details = authenticator.legacyConversionDetails(identity);
+    sendJson(res, 200, {
+      pending: Boolean(details && !details.finalized),
+      finalized: details?.finalized ?? false,
+      browser_state: details?.browser_state ?? null,
+      return_path: details?.return_path ?? null,
+      production_origin: authenticator.productionRegistration()?.public_origin ?? null,
+    });
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/legacy-conversion/finalize", (req, res) => {
+    try {
+      const identity = req.client_identity;
+      if (!identity || identity.source !== "browser_cookie") {
+        sendJson(res, 401, { error: "replacement_browser_session_required" });
+        return;
+      }
+      if (!authenticator.finalizeLegacyConversion(identity)) {
+        sendJson(res, 409, { error: "legacy_conversion_not_pending" });
+        return;
+      }
+      sendJson(res, 200, { finalized: true });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
   router.get("/api/client-auth/forward-auth", async (req, res) => {
     try {
       const identity = req.client_identity;
@@ -348,7 +542,7 @@ export function registerClientAuthRoutes(
         // Distinguishes bounded bootstrap or agent-session proofs; opaque
         // browser sessions report their durable authentication evidence above.
         ephemeral_purpose: identity.ephemeral_purpose ?? null,
-        credential: credential
+      credential: credential
           ? {
               id: credential.id,
               type: credential.type,
@@ -356,6 +550,9 @@ export function registerClientAuthRoutes(
               status: credential.status,
             }
           : null,
+        legacy_conversion_pending: identity.source === "browser_cookie"
+          ? Boolean(authenticator.legacyConversionDetails(identity)?.finalized === false)
+          : false,
       });
     } catch (error) {
       handleError(res, error);
