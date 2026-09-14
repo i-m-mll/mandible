@@ -76,6 +76,8 @@ import type {
   SeedSpaceRequest,
   SeedSpaceResult,
   ResolverResult,
+  SidebarOrderPreference,
+  SidebarOrderPreferenceValue,
 } from '../../src/contracts';
 export type {
   Space,
@@ -1870,6 +1872,47 @@ export async function updateChatShownProjectsPreference(
   return parseChatShownProjectsPreference(await parseMaybeJson(response));
 }
 
+export type { SidebarOrderPreferenceValue, SidebarOrderPreference } from '../../src/contracts';
+
+function parseSidebarOrderPreference(payload: unknown): SidebarOrderPreference {
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null;
+  const value = record?.value;
+  const validIds = (candidate: unknown) => candidate === null
+    || (Array.isArray(candidate) && candidate.every((id) => typeof id === 'string' && id.trim()));
+  if (
+    record?.version !== 1
+    || record.key !== 'sidebar_order'
+    || !Number.isSafeInteger(record.revision)
+    || (record.revision as number) < 0
+    || (
+      !value
+      || typeof value !== 'object'
+      || Array.isArray(value)
+      || !validIds((value as Record<string, unknown>).pinnedConversationIds)
+      || !validIds((value as Record<string, unknown>).briefingTopLevelIds)
+    )
+  ) throw new Error('Invalid authenticated sidebar order response');
+  return record as SidebarOrderPreference;
+}
+
+export async function getSidebarOrderPreference(): Promise<SidebarOrderPreference> {
+  const response = await apiGet('/api/host-preferences/sidebar-order');
+  return parseSidebarOrderPreference(await parseMaybeJson(response));
+}
+
+export async function updateSidebarOrderPreference(
+  value: SidebarOrderPreferenceValue,
+  expectedRevision: number,
+): Promise<SidebarOrderPreference> {
+  const response = await apiPut('/api/host-preferences/sidebar-order', {
+    value,
+    expected_revision: expectedRevision,
+  });
+  return parseSidebarOrderPreference(await parseMaybeJson(response));
+}
+
 export type AppThemePreference = {
   version: 1;
   key: 'app_theme';
@@ -2413,7 +2456,7 @@ export async function getConversationSidebar(params: {
   const projectIds = [...new Set((params.project_ids ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 500);
   if (projectIds.length > 0) query.set('project_ids', projectIds.join(','));
   const pinnedIds = [...new Set((params.pinned_ids ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 500);
-  if (pinnedIds.length > 0) query.set('pinned_ids', pinnedIds.join(','));
+  if (params.pinned_ids !== undefined) query.set('pinned_ids', pinnedIds.join(','));
   const limit = Math.min(50, Math.max(1, Math.trunc(Number.isFinite(params.limit) ? params.limit : 5)));
   query.set('limit', String(limit));
   if (params.group_key) query.set('group_key', params.group_key);

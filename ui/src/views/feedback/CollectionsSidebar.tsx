@@ -4,6 +4,7 @@ import { useMemo, useState } from 'preact/hooks';
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { SidebarBriefingBundleIcon, SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
 import {
   SidebarItemBadge,
@@ -21,6 +22,9 @@ import {
 import type { BriefingCollectionViewState } from './collection-view-state';
 import type { BriefingBundle, BriefingBundleLayoutEntry, BriefingGroup } from '../../api';
 import { indexBriefingGroupBundleOwners, resolveBriefingGroupProjection } from './briefing-group-projection';
+import { mergeSidebarSubsetOrder, reconcileSidebarOrder, type SidebarReorderBinding } from '../../components/shared/sidebar-order';
+import { useSidebarReorder } from '../../hooks/useSidebarReorder';
+import { useSidebarOrderPreference } from '../../hooks/useSidebarOrderPreference';
 
 type BriefingSidebarOccurrence = {
   key: string;
@@ -134,24 +138,59 @@ export function CollectionsSidebar({
   const unbundled = useMemo(() => viewState.collectionLifecycle === 'archived' ? []
     : ordered.filter((collection) => !containedBriefingIds.has(collection.id)),
   [ordered, containedBriefingIds, viewState.collectionLifecycle]);
+  const sidebarOrder = useSidebarOrderPreference();
+  const canonicalTopLevel = useMemo(() => [
+    ...visibleGroups.map((entry) => ({ kind: 'group' as const, id: `group:${entry.group.id}`, entry })),
+    ...visibleBundles.map((entry) => ({ kind: 'bundle' as const, id: `bundle:${entry.id}`, entry })),
+    ...unbundled.map((entry) => ({ kind: 'briefing' as const, id: `briefing:${entry.id}`, entry })),
+  ], [unbundled, visibleBundles, visibleGroups]);
+  const topLevel = useMemo(() => {
+    const byId = new Map(canonicalTopLevel.map((entry) => [entry.id, entry]));
+    return reconcileSidebarOrder(
+      canonicalTopLevel.map((entry) => entry.id),
+      viewState.collectionSort === 'activity' ? sidebarOrder.value.briefingTopLevelIds : null,
+    ).flatMap((id) => {
+      const entry = byId.get(id);
+      return entry ? [entry] : [];
+    });
+  }, [canonicalTopLevel, sidebarOrder.value.briefingTopLevelIds, viewState.collectionSort]);
+  const topLevelReorder = useSidebarReorder({
+    ids: topLevel.map((entry) => entry.id),
+    disabled: !sidebarOrder.ready || Boolean(viewState.collectionSourceFilter.trim())
+      || viewState.collectionLifecycle !== 'active' || viewState.collectionSort !== 'activity',
+    label: (id) => {
+      const target = topLevel.find((entry) => entry.id === id);
+      return target?.kind === 'group' ? target.entry.group.name
+        : target?.kind === 'bundle' ? target.entry.name
+          : target?.entry.label ?? id;
+    },
+    onCommit: (ids) => sidebarOrder.patch({
+      briefingTopLevelIds: mergeSidebarSubsetOrder(
+        sidebarOrder.value.briefingTopLevelIds,
+        topLevel.map((entry) => entry.id),
+        ids,
+      ),
+    }),
+  });
   const collapsedBundles = useMemo(() => new Set(viewState.collapsedBundleIds), [viewState.collapsedBundleIds]);
   const collapsedGroups = useMemo(() => new Set(viewState.collapsedGroupIds), [viewState.collapsedGroupIds]);
   const collapsedSubgroups = useMemo(() => new Set(viewState.collapsedGroupSubgroupKeys), [viewState.collapsedGroupSubgroupKeys]);
   const bundleExpanded = (bundleId: string) => Boolean(viewState.collectionSourceFilter.trim()) || !collapsedBundles.has(bundleId);
   const groupExpanded = (groupId: string) => Boolean(viewState.collectionSourceFilter.trim()) || !collapsedGroups.has(groupId);
-  const navigationRows = useMemo(() => [
-    ...visibleGroups.flatMap(({ group, projection, layout }) => groupExpanded(group.id)
+  const navigationRows = useMemo(() => topLevel.flatMap((top) => top.kind === 'group'
+    ? (() => { const { group, projection, layout } = top.entry; return groupExpanded(group.id)
       ? layout.flatMap((entry, index) => entry.kind === 'briefing'
         ? [{ key: `group:${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}:${entry.briefing.id}`, collection: entry.briefing }]
         : collapsedSubgroups.has(`${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}`) && !viewState.collectionSourceFilter.trim()
           ? []
           : entry.briefings.map((briefing) => ({ key: `group:${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}:${briefing.id}`, collection: briefing })))
-      : []),
-    ...visibleBundles.flatMap((bundle) => bundleExpanded(bundle.id)
-      ? bundle.members.map((member) => ({ key: `bundle:${bundle.id}:${member.briefing.id}`, collection: member.briefing }))
-      : []),
-    ...unbundled.map((collection) => ({ key: `briefing:${collection.id}`, collection })),
-  ], [visibleGroups, visibleBundles, unbundled, collapsedBundles, collapsedGroups, collapsedSubgroups, viewState.collectionSourceFilter]);
+      : []; })()
+    : top.kind === 'bundle'
+      ? (bundleExpanded(top.entry.id)
+        ? top.entry.members.map((member) => ({ key: `bundle:${top.entry.id}:${member.briefing.id}`, collection: member.briefing }))
+        : [])
+      : [{ key: `briefing:${top.entry.id}`, collection: top.entry }]),
+  [topLevel, collapsedBundles, collapsedGroups, collapsedSubgroups, viewState.collectionSourceFilter]);
   const selectedNavigationKey = navigationRows.find((row) => row.collection.id === selectedCollectionId)?.key ?? null;
   const listNavigation = useSidebarListNavigation({
     items: navigationRows,
@@ -195,7 +234,7 @@ export function CollectionsSidebar({
     navigator.clipboard?.writeText(target).catch(() => {});
   };
 
-  const renderCollection = (occurrence: BriefingSidebarOccurrence) => {
+  const renderCollection = (occurrence: BriefingSidebarOccurrence, reorder?: SidebarReorderBinding) => {
     const collection = occurrence.collection;
     const navigation = listNavigation.getItemNavigationProps(
       occurrence,
@@ -240,6 +279,7 @@ export function CollectionsSidebar({
               actions={overflowActions}
             />
           )}
+          reorder={reorder}
         />
       </li>
     );
@@ -324,7 +364,19 @@ export function CollectionsSidebar({
       )}
       bodyClassName="feedback-collections-sidebar__body"
     >
-      <div data-testid="feedback-collections-sidebar">
+      <div data-testid="feedback-collections-sidebar" {...topLevelReorder.list}>
+        {topLevelReorder.assistive}
+        {sidebarOrder.notice ? (
+          <DetailPaneNotice
+            severity="warning"
+            density="compact"
+            title="Sidebar order unavailable"
+            testId="briefing-sidebar-order-notice"
+            actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { void sidebarOrder.reload(); }}>Retry</button>}
+          >
+            {sidebarOrder.notice}
+          </DetailPaneNotice>
+        ) : null}
         {loadError ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty" role="alert">
@@ -341,7 +393,9 @@ export function CollectionsSidebar({
           </div>
         ) : (
           <>
-            {visibleGroups.map(({ group, projection, layout }) => {
+            {topLevel.map((top) => {
+              if (top.kind === 'group') {
+              const { group, projection, layout } = top.entry;
               const expanded = groupExpanded(group.id);
               const count = layout.reduce((total, entry) => total + (entry.kind === 'briefing' ? 1 : entry.briefings.length), 0);
               return (
@@ -361,6 +415,7 @@ export function CollectionsSidebar({
                     onSelect: () => onSelectGroup?.(group),
                   }}
                   headingDescription={`${count} Briefing${count === 1 ? '' : 's'} in ${projection.selectedUpdate ? 'selected proposed update' : 'current layout'}`}
+                  reorder={topLevelReorder.binding(top.id)}
                 >
                   {layout.map((entry, index) => {
                     if (entry.kind === 'briefing') {
@@ -400,8 +455,9 @@ export function CollectionsSidebar({
                   })}
                 </SidebarGroupNode>
               );
-            })}
-            {visibleBundles.map((bundle) => {
+              }
+              if (top.kind === 'bundle') {
+              const bundle = top.entry;
               const expanded = bundleExpanded(bundle.id);
               return (
                 <SidebarGroupNode
@@ -417,20 +473,23 @@ export function CollectionsSidebar({
                   expanded={expanded}
                   onToggle={() => toggleBundle(bundle.id)}
                   leadingIcon={<SidebarBriefingBundleIcon expanded={expanded} />}
+                  reorder={topLevelReorder.binding(top.id)}
                 >
                   {bundle.members.map((member) => renderCollection(
                     { key: `bundle:${bundle.id}:${member.briefing.id}`, collection: member.briefing },
                   ))}
                 </SidebarGroupNode>
               );
+              }
+              return (
+                <ul className="feedback-collections-sidebar__list" key={top.id}>
+                  {renderCollection(
+                    { key: top.id, collection: top.entry },
+                    topLevelReorder.binding(top.id),
+                  )}
+                </ul>
+              );
             })}
-            {unbundled.length > 0 ? (
-              <ul className="feedback-collections-sidebar__list">
-                {unbundled.map((collection) => renderCollection(
-                  { key: `briefing:${collection.id}`, collection },
-                ))}
-              </ul>
-            ) : null}
           </>
         )}
       </div>

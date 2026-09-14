@@ -9,6 +9,7 @@ type SidebarDisclosureRegionProps = {
   contentAs?: 'div' | 'ul';
   className?: string;
   contentClassName?: string;
+  contentAttributes?: { 'data-sidebar-reorder-list': string };
 };
 
 const FALLBACK_TRANSITION_MS = 240;
@@ -51,6 +52,7 @@ export function SidebarDisclosureRegion({
   contentAs = 'div',
   className = '',
   contentClassName = '',
+  contentAttributes,
 }: SidebarDisclosureRegionProps): JSX.Element | null {
   const reducedMotion = usePrefersReducedMotion();
   const [mounted, setMounted] = useState(expanded);
@@ -162,7 +164,7 @@ export function SidebarDisclosureRegion({
         }
       }}
     >
-      <Content ref={contentRef as never} className={contentClassName}>{children}</Content>
+      <Content ref={contentRef as never} className={contentClassName} {...contentAttributes}>{children}</Content>
     </div>
   );
 }

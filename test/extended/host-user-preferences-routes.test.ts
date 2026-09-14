@@ -46,6 +46,25 @@ async function callTheme(
   return { statusCode: res.statusCode, payload: res.payload };
 }
 
+async function callSidebarOrder(
+  routes: TestRoutes,
+  method: "GET" | "PUT",
+  body?: unknown,
+  user: ResolvedClientIdentity | null = identity(),
+) {
+  const res = response();
+  const routePath = "/api/host-preferences/sidebar-order";
+  await routes.handler(method, routePath)({
+    method,
+    url: routePath,
+    params: {},
+    query: {},
+    body,
+    client_identity: user,
+  }, res);
+  return { statusCode: res.statusCode, payload: res.payload };
+}
+
 function identity(userId = "user-stable-1"): ResolvedClientIdentity {
   return {
     user_id: userId,
@@ -91,6 +110,66 @@ afterEach(() => {
 });
 
 describe("host user Chat project preferences", () => {
+  it("stores ordered sidebar intent in a separate per-user authority without rewriting legacy preferences", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-host-preferences-"));
+    roots.push(root);
+    const routes = new TestRoutes();
+    registerHostUserPreferencesRoutes(routes, new HostUserPreferencesStore(root));
+    const projects = [{ projectId: "prj-mandible", checkoutId: "checkout-main" }];
+    await call(routes, "PUT", { value: projects, expected_revision: 0 });
+    const legacyPath = path.join(root, "user-stable-1.json");
+    const legacyBytes = fs.readFileSync(legacyPath, "utf8");
+
+    const value = {
+      pinnedConversationIds: ["conversation-b", "conversation-a"],
+      briefingTopLevelIds: ["group-one", "briefing-two"],
+    };
+    expect(await callSidebarOrder(routes, "GET")).toMatchObject({
+      payload: { key: "sidebar_order", value: { pinnedConversationIds: null, briefingTopLevelIds: null }, revision: 0 },
+    });
+    expect(await callSidebarOrder(routes, "PUT", { value, expected_revision: 0 })).toMatchObject({
+      payload: { key: "sidebar_order", value, revision: 1 },
+    });
+    expect(fs.readFileSync(legacyPath, "utf8")).toBe(legacyBytes);
+    expect(JSON.parse(fs.readFileSync(path.join(root, "user-stable-1.sidebar-order.json"), "utf8"))).toEqual({
+      version: 1,
+      userId: "user-stable-1",
+      revision: 1,
+      value,
+    });
+    expect(await callSidebarOrder(routes, "GET", undefined, identity("user-two"))).toMatchObject({
+      payload: { value: { pinnedConversationIds: null, briefingTopLevelIds: null }, revision: 0 },
+    });
+  });
+
+  it("rejects stale and malformed sidebar order writes without losing the durable value", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-host-preferences-"));
+    roots.push(root);
+    const routes = new TestRoutes();
+    registerHostUserPreferencesRoutes(routes, new HostUserPreferencesStore(root));
+    const value = { pinnedConversationIds: ["b", "a"], briefingTopLevelIds: null };
+    await callSidebarOrder(routes, "PUT", { value, expected_revision: 0 });
+
+    expect(await callSidebarOrder(routes, "PUT", {
+      value: { pinnedConversationIds: ["a", "b"], briefingTopLevelIds: null },
+      expected_revision: 0,
+    })).toMatchObject({
+      statusCode: 409,
+      payload: { code: "preference_revision_conflict", current: { value, revision: 1 } },
+    });
+    expect(await callSidebarOrder(routes, "PUT", {
+      value: { pinnedConversationIds: ["duplicate", "duplicate"], briefingTopLevelIds: null },
+      expected_revision: 1,
+    })).toMatchObject({ statusCode: 400, payload: { code: "invalid_sidebar_order" } });
+    expect(await callSidebarOrder(routes, "GET")).toMatchObject({ payload: { value, revision: 1 } });
+
+    fs.writeFileSync(path.join(root, "user-stable-1.sidebar-order.json"), "{broken", { mode: 0o600 });
+    expect(await callSidebarOrder(routes, "GET")).toMatchObject({
+      statusCode: 500,
+      payload: { code: "host_preferences_invalid_file" },
+    });
+  });
+
   it("shares app theme through the same host/user authority", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-host-preferences-"));
     roots.push(root);

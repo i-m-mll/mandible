@@ -698,6 +698,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
     }
     let requestedProjectIds: string[];
     let clientPinnedIds: string[];
+    const clientPinsAuthoritative = Object.prototype.hasOwnProperty.call(query, "pinned_ids");
     try {
       requestedProjectIds = parseSidebarProjectIds(query.project_ids);
       clientPinnedIds = parseSidebarIds(query.pinned_ids, "pinned_ids");
@@ -766,12 +767,11 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       min_blocks: Number.isFinite(minBlocks) && minBlocks > 0 ? minBlocks : null,
       exclude_subagents: excludeSubagents,
       project_ids: [...requestedProjectIds].sort(),
-      pinned_ids: [...clientPinnedIds].sort(),
+      pinned_ids: clientPinsAuthoritative ? clientPinnedIds : null,
       lifecycle,
       sort,
     })).digest("base64url");
 
-    const clientPinned = new Set(clientPinnedIds);
     let rows = (db.prepare(`SELECT c.*, s.project_id AS canonical_project_id,
         CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS canonical_placement_explicit,
         CASE WHEN s.id IS NULL THEN NULL ELSE p.project_key END AS canonical_project_key,
@@ -787,7 +787,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
       LEFT JOIN conversation_spawn_requests s ON s.id = c.id AND s.schema_version = 'mandible-conversation-spawn-request@3'
       LEFT JOIN ledger_projects p ON p.id = s.project_id
       ${where}`).all(...params) as ProjectedConversationRow[])
-      .map((row) => clientPinned.has(row.id) ? { ...row, starred: 1 } : row);
+      ;
     if (!query.starred && !(Number.isFinite(minBlocks) && minBlocks > 0)) {
       const spawnRows = db.prepare(`SELECT s.*, a.archived_at FROM conversation_spawn_requests s
         LEFT JOIN conversation_archive_states a ON a.conversation_id = s.id
@@ -872,6 +872,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
         cursor,
         projects,
         requestedProjectIds,
+        ...(clientPinsAuthoritative ? { pinnedIds: clientPinnedIds } : {}),
       });
       if (groupKey && groups.length === 0) {
         sendJson(res, 400, { error: "Unknown conversation sidebar group_key" });
