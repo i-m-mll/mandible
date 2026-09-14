@@ -989,7 +989,7 @@ function ConversationMetadataModal({
   );
 }
 
-function ConversationDetail({
+export function ConversationDetail({
   conversationId,
   initialConversation,
   anchor,
@@ -1090,9 +1090,15 @@ function ConversationDetail({
     queryKey: conversationRequestKey,
     queryFn: fetchConversationDetail,
   }, queryClient);
-  const conversation = windowQuery.data
-    ? flattenConversationWindow(windowQuery.data)
-    : initialConversation ? conversationShell(initialConversation) : null;
+  // Flattening is a projection of query data, not a new entity on every
+  // component render. Keeping its identity stable also keeps the registered
+  // app-sidebar descriptor stable; otherwise that descriptor updates App,
+  // which renders this detail again and recreates the descriptor forever.
+  const conversation = useMemo(() => (
+    windowQuery.data
+      ? flattenConversationWindow(windowQuery.data)
+      : initialConversation ? conversationShell(initialConversation) : null
+  ), [initialConversation, windowQuery.data]);
   const loading = windowQuery.isFetching;
   const notFound = isApiErrorStatus(windowQuery.error, 404) && !creationReceipt;
   const error = navigationError ?? (

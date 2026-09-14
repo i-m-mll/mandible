@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -12,9 +12,18 @@ const chrome = [
   '/usr/bin/chromium',
 ].filter((candidate): candidate is string => Boolean(candidate)).find(existsSync);
 
+function canonicalCheckoutRoot(): string {
+  if (statSync(resolve('.git')).isDirectory()) return process.cwd();
+  const gitDirectory = readFileSync(resolve('.git'), 'utf8').trim().replace(/^gitdir:\s*/, '');
+  const markerIndex = gitDirectory.lastIndexOf(join('.git', 'worktrees'));
+  if (markerIndex < 0) throw new Error(`Cannot resolve canonical checkout from ${gitDirectory}`);
+  return gitDirectory.slice(0, markerIndex).replace(/[\\/]$/, '');
+}
+
 function bundleFixture(directory: string): string {
+  const checkoutRoot = canonicalCheckoutRoot();
   const output = join(directory, 'fixture.js');
-  const bundled = spawnSync(resolve('node_modules/esbuild/bin/esbuild'), [
+  const bundled = spawnSync(join(checkoutRoot, 'node_modules', 'esbuild', 'bin', 'esbuild'), [
     resolve('test/browser/fixtures/chat-virtual-mount-fixture.tsx'),
     '--bundle',
     `--outfile=${output}`,
@@ -29,7 +38,7 @@ function bundleFixture(directory: string): string {
     '--loader:.css=empty',
     '--minify',
     '--log-level=silent',
-  ], { encoding: 'utf8' });
+  ], { encoding: 'utf8', env: { ...process.env, NODE_PATH: join(checkoutRoot, 'node_modules') } });
   if (bundled.status !== 0) throw new Error(`Chat mount fixture bundle failed: ${bundled.stderr || bundled.stdout}`);
   return readFileSync(output, 'utf8');
 }
@@ -63,7 +72,8 @@ describe('Chat transcript native mount', () => {
       expect(rendered.error, rendered.stderr).toBeUndefined();
       expect(rendered.status, rendered.stderr).toBe(0);
       expect(rendered.stdout).toContain('data-mount-status="settled"');
-      expect(rendered.stdout).toMatch(/data-row-count="[1-9][0-9]*"/);
+      expect(rendered.stdout).toContain('data-row-count="4"');
+      expect(rendered.stdout).toMatch(/data-sidebar-updates="[1-4]"/);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
