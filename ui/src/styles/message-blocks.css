@@ -4,35 +4,22 @@
 
 /* TurnGroup — shared turn layout (used by both Chat and History) */
 .turn-group {
+  --chat-event-gap: var(--space-2);
+  box-sizing: border-box;
   display: flex;
   width: 100%;
-  margin-bottom: var(--space-3);
+  padding-block-end: var(--chat-event-gap);
   position: relative;
 }
 
 .turn-group__body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--chat-event-gap);
   min-width: 0;
   overflow: visible;
   position: relative;
   width: 100%;
-}
-
-:is(.turn-group__body, .message-group__content)
-  > .chat-boundary--ends-activity
-  + .chat-boundary--starts-activity {
-  margin-block-start: calc(var(--space-2) * -0.333333);
-}
-
-:is(.turn-group__body, .message-group__content)
-  > .chat-boundary--ends-prose
-  + .chat-boundary--starts-activity,
-:is(.turn-group__body, .message-group__content)
-  > .chat-boundary--ends-activity
-  + .chat-boundary--starts-prose {
-  margin-block-start: calc(var(--space-2) * 0.5);
 }
 
 .turn-group--user .turn-group__body {
