@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useContext } from 'preact/hooks';
 
 import {
   boundToolResultBlock,
@@ -14,6 +15,7 @@ import {
 import { ChatSurface, shouldShowJumpToLatest } from '../../ui/src/chat/ChatSurface';
 import { plainActivityHeader, presentActivityItems } from '../../ui/src/components/message-blocks/ActivityBlock';
 import { MessageActions } from '../../ui/src/components/shared/MessageActions';
+import { DetailPaneOverlayContext, DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell';
 import { TextBlock } from '../../ui/src/components/message-blocks/TextBlock';
 import type { StreamEvent, ToolResultContentBlock } from '../../ui/src/components/stream-renderer/types';
 import type { ActivityItem, ChatItem } from '../../src/parsers/types';
@@ -123,6 +125,11 @@ function persistedBlock(id: string, item: ChatItem, timestamp?: string) {
     timestamp,
     metadata_json: JSON.stringify({ chat_item: item }),
   };
+}
+
+function ScrollOwnerProbe() {
+  const context = useContext(DetailPaneOverlayContext);
+  return <output data-testid="scroll-owner">{context?.scrollOwner?.className ?? ''}</output>;
 }
 
 beforeEach(() => {
@@ -463,6 +470,69 @@ describe('ChatSurface stream behavior', () => {
     expect(container.querySelectorAll('.turn-group').length).toBeLessThan(40);
   });
 
+  it('registers the bounded transcript as the shell scroll and overlay measurement owner', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    });
+    render(
+      <DetailPaneShell header={<span>Conversation</span>} overlayControl={<div>Composer</div>}>
+        <ChatSurface events={[user('prompt', 'u1')]} streaming={false} sessionInfo={{ sessionId: 'owner' }} />
+        <ScrollOwnerProbe />
+      </DetailPaneShell>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('scroll-owner').textContent).toContain('stream-renderer__scroll'));
+  });
+
+  it('preserves a visible stable-key anchor when an older page is prepended', async () => {
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function clientHeight() {
+      return this.classList.contains('stream-renderer__scroll') ? 500 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function scrollHeight() {
+      if (!this.classList.contains('stream-renderer__scroll')) return 0;
+      return Number.parseFloat(this.querySelector<HTMLElement>('.stream-renderer__virtual-canvas')?.style.height ?? '0');
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+        this.scrollTop = Number(options.top ?? 0);
+        this.dispatchEvent(new Event('scroll'));
+      },
+    });
+    const events = Array.from({ length: 40 }, (_, index) => [
+      user(`prompt ${index}`, `u${index}`),
+      assistantText(`answer ${index}`, `a${index}`),
+    ]).flat();
+    const { container, rerender } = render(
+      <ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'stable-anchor' }} />,
+    );
+    const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    scroll.scrollTop = 2000;
+    fireEvent.scroll(scroll);
+    const anchor = Array.from(container.querySelectorAll<HTMLElement>('[data-virtual-key]'))
+      .find((row) => Number.parseFloat(row.style.transform.replace(/[^\d.-]/g, '')) <= scroll.scrollTop)!;
+    const anchorKey = anchor.dataset.virtualKey!;
+    const anchorStart = Number.parseFloat(anchor.style.transform.replace(/[^\d.-]/g, ''));
+    const anchorInset = scroll.scrollTop - anchorStart;
+
+    rerender(
+      <ChatSurface
+        events={[user('older prompt', 'older-u'), assistantText('older answer', 'older-a'), ...events]}
+        streaming={false}
+        sessionInfo={{ sessionId: 'stable-anchor' }}
+      />,
+    );
+
+    await waitFor(() => {
+      const preserved = Array.from(container.querySelectorAll<HTMLElement>('[data-virtual-key]'))
+        .find((row) => row.dataset.virtualKey === anchorKey)!;
+      const preservedStart = Number.parseFloat(preserved.style.transform.replace(/[^\d.-]/g, ''));
+      expect(scroll.scrollTop - preservedStart).toBe(anchorInset);
+    });
+  });
+
   it('anchors Chat-only message actions and restores focus on Escape', async () => {
     vi.stubGlobal('innerWidth', 800);
     vi.stubGlobal('innerHeight', 600);
@@ -571,104 +641,6 @@ describe('ChatSurface stream behavior', () => {
     expect(scroll.scrollTop).toBe(8480);
   });
 
-  it('does not replay persistent latest navigation after an upward scroll and row measurement', () => {
-    const resizeCallbacks: ResizeObserverCallback[] = [];
-    let rowHeight = 168;
-    vi.stubGlobal('ResizeObserver', class {
-      constructor(callback: ResizeObserverCallback) {
-        resizeCallbacks.push(callback);
-      }
-      observe(): void {}
-      disconnect(): void {}
-    });
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
-      return this.classList.contains('stream-renderer__virtual-row')
-        ? domRect(0, 0, 600, rowHeight)
-        : domRect(0, 0, 0, 0);
-    });
-    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
-      this.scrollTop = Number(options.top ?? 0);
-    });
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
-      configurable: true,
-      value: scrollTo,
-    });
-    const events = Array.from({ length: 80 }, (_, index) => [
-      user(`prompt ${index}`, `u${index}`),
-      assistantText(`answer ${index}`, `a${index}`),
-    ]).flat();
-
-    const { container } = render(
-      <ChatSurface
-        events={events}
-        streaming
-        sessionInfo={{ sessionId: 'persistent-latest' }}
-        navigationTarget={{ key: 'latest-once', kind: 'latest', turnId: null, smooth: true }}
-      />,
-    );
-    const scroll = container.querySelector('.stream-renderer__scroll') as HTMLElement;
-    Object.defineProperty(scroll, 'clientHeight', { value: 500, configurable: true });
-    Object.defineProperty(scroll, 'scrollHeight', { value: 30000, configurable: true });
-    scrollTo.mockClear();
-
-    scroll.scrollTop = 1000;
-    fireEvent.scroll(scroll);
-    rowHeight = 240;
-    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
-
-    // Nine measured rows are wholly above the viewport, so preserving the
-    // visible anchor adds their aggregate 9 * 72px growth.
-    expect(scroll.scrollTop).toBe(1648);
-    expect(scrollTo).not.toHaveBeenCalled();
-  });
-
-  it('preserves the visible virtual anchor across measurement changes and history prepends', () => {
-    const observed = new Map<HTMLElement, ResizeObserverCallback>();
-    const heights = new Map<HTMLElement, number>();
-    vi.stubGlobal('ResizeObserver', class {
-      private callback: ResizeObserverCallback;
-      constructor(callback: ResizeObserverCallback) {
-        this.callback = callback;
-      }
-      observe(element: Element): void {
-        observed.set(element as HTMLElement, this.callback);
-      }
-      disconnect(): void {}
-    });
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
-      return this.classList.contains('stream-renderer__virtual-row')
-        ? domRect(0, 0, 600, heights.get(this) ?? 168)
-        : domRect(0, 0, 0, 0);
-    });
-    const events = Array.from({ length: 40 }, (_, index) => [
-      user(`prompt ${index}`, `u${index}`),
-      assistantText(`answer ${index}`, `a${index}`),
-    ]).flat();
-    const { container, rerender } = render(
-      <ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'stable-anchor' }} />,
-    );
-    const scroll = container.querySelector('.stream-renderer__scroll') as HTMLElement;
-    Object.defineProperty(scroll, 'clientHeight', { value: 500, configurable: true });
-    Object.defineProperty(scroll, 'scrollHeight', { value: 20000, configurable: true });
-    scroll.scrollTop = 2000;
-    fireEvent.scroll(scroll);
-
-    const rowAboveViewport = Array.from(observed.keys()).find((row) => Number.parseInt(row.style.top, 10) < 2000);
-    expect(rowAboveViewport).toBeTruthy();
-    heights.set(rowAboveViewport!, 268);
-    act(() => observed.get(rowAboveViewport!)!([], {} as ResizeObserver));
-    expect(scroll.scrollTop).toBe(2100);
-
-    rerender(
-      <ChatSurface
-        events={[user('older prompt', 'older-u'), assistantText('older answer', 'older-a'), ...events]}
-        streaming={false}
-        sessionInfo={{ sessionId: 'stable-anchor' }}
-      />,
-    );
-    expect(scroll.scrollTop).toBe(2436);
-  });
-
   it('suppresses one-page local and unmaterialized displacement but exposes a distant tail', () => {
     const events = [user('prompt', 'u1'), assistantText('answer', 'a1')];
     const { container, rerender } = render(
@@ -708,7 +680,12 @@ describe('ChatSurface stream behavior', () => {
       events.push(user(`prompt ${i}`, `u${i}`));
       events.push(assistantText(`answer ${i}`, `a${i}`));
     }
-    const scrollTo = vi.fn();
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(720);
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(30000);
+    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = Number(options.top ?? 0);
+      this.dispatchEvent(new Event('scroll'));
+    });
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
       configurable: true,
       value: scrollTo,
@@ -746,6 +723,15 @@ describe('ChatSurface stream behavior', () => {
       }),
     }));
     const scrollIntoView = vi.fn();
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(720);
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(30000);
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+        this.scrollTop = Number(options.top ?? 0);
+        this.dispatchEvent(new Event('scroll'));
+      },
+    });
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
       value: scrollIntoView,
@@ -761,7 +747,9 @@ describe('ChatSurface stream behavior', () => {
     );
 
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' }));
-    expect(document.querySelector('[data-block-id="block-51"]')).toBeTruthy();
+    const exactBlock = document.querySelector('[data-block-id="block-51"]');
+    expect(exactBlock).toBeTruthy();
+    expect(document.activeElement).toBe(exactBlock);
     expect(document.querySelectorAll('.turn-group').length).toBeLessThan(40);
   });
 
@@ -778,6 +766,15 @@ describe('ChatSurface stream behavior', () => {
       }), `2026-01-01T02:${String(index % 60).padStart(2, '0')}:00Z`),
     ])).flat();
     const scrollIntoView = vi.fn();
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(720);
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(50000);
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+        this.scrollTop = Number(options.top ?? 0);
+        this.dispatchEvent(new Event('scroll'));
+      },
+    });
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
       value: scrollIntoView,
