@@ -919,10 +919,12 @@ function previewInstanceEnvDrift(metadata, previewRoot) {
 }
 
 function hasMigratableClientAuthDrift(metadata, previewRoot, drift) {
-  return drift.length === 1
-    && drift[0] === "MANDIBLE_CLIENT_AUTH_DIR"
-    && metadata.instanceEnv?.MANDIBLE_CLIENT_AUTH_DIR
-      === path.join(previewRoot, "config", "client-auth");
+  if (drift.length !== 1 || drift[0] !== "MANDIBLE_CLIENT_AUTH_DIR") return false;
+  const legacyConfigDir = path.join(previewRoot, "config");
+  const recordedClientAuthDir = metadata.instanceEnv?.MANDIBLE_CLIENT_AUTH_DIR;
+  return recordedClientAuthDir === path.join(legacyConfigDir, "client-auth")
+    || (recordedClientAuthDir === undefined
+      && metadata.instanceEnv?.MANDIBLE_CONFIG_DIR === legacyConfigDir);
 }
 
 async function healthyExistingPreview(branch, expected = {}) {
