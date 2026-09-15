@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { assertLocalCaIdentity, localCaPaths } from "./local-ca-trust.mjs";
+import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
 
 const SCHEMA = "mandible-local-session-cutover@1";
 const STATES = new Set(["preparing", "prepared", "activating", "migration", "completing", "normal_pending", "rolling_back", "complete", "rolled_back", "recovery_failed"]);
@@ -39,6 +39,7 @@ export async function runCutoverCommand(options, effects = systemEffects()) {
     if (!options.confirmCaTrusted) throw new Error("Activation requires --confirm-ca-trusted; the cutover never changes certificate trust.");
     requireOneState(journal, ["prepared", "activating"]);
     assertTrustedLocalCa(journal.manifest.authority_db);
+    await effects.probeCurrentCaTrust(localCaForAuthorityDb(journal.manifest.authority_db));
     try {
       journal = await activate(journalPath, journal, effects);
       return publicState(journalPath, journal);
@@ -863,6 +864,7 @@ function intentProcessToken(journal, key) { return digest({ cutover: journal.id,
 
 function systemEffects() {
   return {
+    probeCurrentCaTrust: probeCurrentMacOsTrust,
     health: readHealth,
     waitHealth: async (port, expected) => {
       let result = null;

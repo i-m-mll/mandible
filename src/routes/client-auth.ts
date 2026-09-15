@@ -258,7 +258,7 @@ export function registerClientAuthRoutes(
         return;
       }
       setSessionCookie(res, session.token, session.absolute_expires_at);
-      res.html?.("<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>Mandible migration prepared</title><main style=\"font:16px system-ui;max-width:42rem;margin:4rem auto\"><h1>Browser session prepared</h1><p>The replacement session is verified after the HTTPS cutover. You can close this tab; Mandible will restore this browser's saved view state when the final origin opens.</p></main>");
+      res.html?.("<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>Mandible migration prepared</title><main style=\"font:16px system-ui;max-width:42rem;margin:4rem auto\"><h1>Browser session prepared</h1><p>The replacement session is verified after the HTTPS cutover. You can close this tab; Mandible will restore this browser's saved view state when the final origin opens.</p><p>If the new HTTPS page cannot load, <a href=\"mandible://connections/setup\">open the macOS setup action</a> in the installed Mandible app. The native action explains any computer-wide certificate trust request; this browser page cannot install trust.</p></main>");
     } catch (error) {
       handleError(res, error);
     }

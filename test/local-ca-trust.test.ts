@@ -1,6 +1,8 @@
 // @vitest-environment node
 
 import fs from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -98,6 +100,43 @@ describe("one-time local CA trust", () => {
     release();
     await expect(first).resolves.toMatchObject({ state: "trusted" });
     expect(fx.counts()).toEqual({ approvals: 1, bootstraps: 1, closes: 1 });
+  });
+
+  it("recovers a killed setup owner and retries without replacing its root", async () => {
+    const fx = fixture();
+    const moduleUrl = new URL("../scripts/local-ca-trust.mjs", import.meta.url).href;
+    const binaryUrl = new URL("../scripts/pinned-caddy.mjs", import.meta.url).href;
+    const script = `import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';\nimport { setupLocalCa, localCaPaths } from ${JSON.stringify(moduleUrl)};\nimport { pinnedCaddyBinary } from ${JSON.stringify(binaryUrl)};\nconst paths = localCaPaths(process.argv[1]);\nawait setupLocalCa(paths, { bootstrap: async (context) => {\n  fs.mkdirSync(path.dirname(paths.rootCert), { recursive: true });\n  fs.writeFileSync(paths.rootCert, '-----BEGIN CERTIFICATE-----\\ntest-root\\n-----END CERTIFICATE-----\\n');\n  fs.writeFileSync(paths.rootKey, 'test-key');\n  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-ca-setup-'));\n  const config = path.join(tempDir, 'Caddyfile');\n  fs.writeFileSync(path.join(tempDir, 'owner-token'), context.owner.id);\n  fs.writeFileSync(config, 'temporary setup config');\n  context.updateGateway({ pid: process.pid, process_start: context.owner.process_start, binary: pinnedCaddyBinary(paths.home), config, temp_dir: tempDir });\n  process.stdout.write('locked\\n');\n  await new Promise(() => setInterval(() => {}, 1000));\n} });`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script, fx.paths.home], { stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      const [signal] = await once(child.stdout, "data");
+      expect(signal.toString()).toContain("locked");
+      const lock = path.join(fx.paths.authorityDir, ".ca-setup.lock");
+      const previousOwner = JSON.parse(fs.readFileSync(path.join(lock, "owner.json"), "utf8"));
+      expect(previousOwner.pid).toBe(child.pid);
+      expect(fs.existsSync(previousOwner.gateway.temp_dir)).toBe(true);
+      child.kill("SIGKILL");
+      await once(child, "exit");
+      await expect(setupLocalCa(fx.paths, fx.effects)).resolves.toMatchObject({ state: "trusted" });
+      expect(fx.counts()).toEqual({ approvals: 1, bootstraps: 1, closes: 1 });
+      expect(fs.existsSync(lock)).toBe(false);
+      expect(fs.existsSync(previousOwner.gateway.temp_dir)).toBe(false);
+      expect(fs.readFileSync(fx.paths.rootCert, "utf8")).toContain("test-root");
+    } finally { if (child.exitCode === null) child.kill("SIGKILL"); }
+  });
+
+  it("preserves the owner lock when its temporary gateway cannot be cleaned", async () => {
+    const fx = fixture();
+    const originalBootstrap = fx.effects.bootstrap;
+    fx.effects.bootstrap = async () => {
+      const session = await originalBootstrap();
+      return { ...session, close: async () => { throw new Error("temporary gateway still running"); } };
+    };
+    await expect(setupLocalCa(fx.paths, fx.effects)).rejects.toThrow("temporary gateway still running");
+    const lock = path.join(fx.paths.authorityDir, ".ca-setup.lock");
+    expect(fs.existsSync(path.join(lock, "owner.json"))).toBe(true);
+    await expect(setupLocalCa(fx.paths, fx.effects)).rejects.toThrow("already in progress");
+    expect(fs.existsSync(lock)).toBe(true);
   });
 
   it("refuses a partial untracked CA instead of silently generating a replacement root", async () => {

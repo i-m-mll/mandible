@@ -5,9 +5,11 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{command, AppHandle, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 
 const DEFAULT_PORT: u16 = 29420;
 const PRODUCTION_ORIGIN: &str = "https://app.mandible.localhost:19420";
@@ -153,6 +155,26 @@ fn show_native_setup_result(message: &str) {
         .arg("-e")
         .arg(format!("display dialog {quoted} buttons {{\"OK\"}} default button \"OK\""))
         .status();
+}
+
+fn is_secure_connections_setup_link(url: &tauri::Url) -> bool {
+    url.as_str() == "mandible://connections/setup"
+}
+
+fn launch_native_ca_setup(handle: AppHandle, active: Arc<AtomicBool>) {
+    if active.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(move || {
+        match run_ca_setup_command(&handle, "setup") {
+            Ok(status) => show_native_setup_result(&format!(
+                "Secure local connections are ready. Mandible's pinned local root was verified at {}. Browser sign-in remains separate.",
+                status.verified_at.as_deref().unwrap_or("this setup")
+            )),
+            Err(error) => show_native_setup_result(&error),
+        }
+        active.store(false, Ordering::Release);
+    });
 }
 
 #[command]
@@ -1005,20 +1027,25 @@ pub fn run() {
             } else {
                 app.set_menu(MenuBuilder::new(app).item(&connections).build()?)?;
             }
+            let active_ca_setup = Arc::new(AtomicBool::new(false));
+            let menu_active = active_ca_setup.clone();
             app.on_menu_event(move |handle, event| {
                 if event.id() == setup_item.id() {
-                    let handle = handle.clone();
-                    std::thread::spawn(move || {
-                        match run_ca_setup_command(&handle, "setup") {
-                            Ok(status) => show_native_setup_result(&format!(
-                                "Secure local connections are ready. Mandible's pinned local root was verified at {}. Browser sign-in remains separate.",
-                                status.verified_at.as_deref().unwrap_or("this setup")
-                            )),
-                            Err(error) => show_native_setup_result(&error),
-                        }
-                    });
+                    launch_native_ca_setup(handle.clone(), menu_active.clone());
                 }
             });
+            let link_handle = app.handle().clone();
+            let link_active = active_ca_setup.clone();
+            app.deep_link().on_open_url(move |event| {
+                if event.urls().iter().any(is_secure_connections_setup_link) {
+                    launch_native_ca_setup(link_handle.clone(), link_active.clone());
+                }
+            });
+            if let Some(urls) = app.deep_link().get_current()? {
+                if urls.iter().any(is_secure_connections_setup_link) {
+                    launch_native_ca_setup(app.handle().clone(), active_ca_setup);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1043,7 +1070,8 @@ pub fn run() {
 mod tests {
     use super::{
         admits_native_command_origin, bind_session_cookie_to_production, extract_credential,
-        read_client_auth_bootstrap, resolve_user_path_from, PRODUCTION_ORIGIN,
+        is_secure_connections_setup_link, read_client_auth_bootstrap, resolve_user_path_from,
+        PRODUCTION_ORIGIN,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1054,6 +1082,14 @@ mod tests {
             .expect("clock")
             .as_nanos();
         std::env::temp_dir().join(format!("mandible-tauri-auth-{name}-{nonce}"))
+    }
+
+    #[test]
+    fn native_ca_setup_deep_link_has_one_exact_target() {
+        assert!(is_secure_connections_setup_link(&tauri::Url::parse("mandible://connections/setup").expect("URL")));
+        for denied in ["mandible://connections/setup?auto=1", "mandible://connections/setup/", "mandible://connections/status", "mandible://preview/connections/setup", "https://app.mandible.localhost:19420/connections/setup"] {
+            assert!(!is_secure_connections_setup_link(&tauri::Url::parse(denied).expect("URL")));
+        }
     }
 
     #[test]

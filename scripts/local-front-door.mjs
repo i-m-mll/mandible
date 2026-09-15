@@ -191,7 +191,7 @@ function install() {
 }
 
 function configure({ legacyConversion = false } = {}) {
-  try { assertLocalCaIdentity(caPaths); } catch (error) { fail(error.message); }
+  requireTrustedCa();
   fs.mkdirSync(authorityDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(configPath, caddyfile(readInstances(), { legacyConversion }), { mode: 0o600 });
   fs.chmodSync(configPath, 0o600);

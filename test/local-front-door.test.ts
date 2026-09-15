@@ -1,13 +1,27 @@
 // @vitest-environment node
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalSessionAuthority } from "../src/client-auth/session-authority.js";
+import { localCaPaths } from "../scripts/local-ca-trust.mjs";
 
 const roots = new Set<string>();
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.clear(); });
+
+function fakeTrustedCa(home: string) {
+  const ca = localCaPaths(home);
+  fs.mkdirSync(path.dirname(ca.installationAuthority), { recursive: true });
+  fs.mkdirSync(path.dirname(ca.rootCert), { recursive: true });
+  fs.writeFileSync(ca.installationAuthority, "install_test");
+  fs.writeFileSync(ca.rootCert, "-----BEGIN CERTIFICATE-----\ntest-root\n-----END CERTIFICATE-----\n");
+  fs.writeFileSync(ca.rootKey, "test-key");
+  const digest = (file: string) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  fs.writeFileSync(ca.receipt, JSON.stringify({ schema: "mandible-local-ca-trust@1", state: "trusted", caddy_version: "2.11.3", storage_root: ca.storageRoot, installation_digest: digest(ca.installationAuthority), root_digest: digest(ca.rootCert), key_digest: digest(ca.rootKey) }));
+  return ca;
+}
 
 describe("local HTTPS front door", () => {
   it("includes legacy ingress only during the explicit migration phase", () => {
@@ -24,6 +38,7 @@ describe("local HTTPS front door", () => {
       backend_generation: "preview-1", effect_ceiling: ["ledger:read", "ledger:write", "files:preview"], writable_roots: [],
     });
     authority.close();
+    fakeTrustedCa(home);
     const script = path.resolve("scripts/local-front-door.mjs");
     for (const [command, contains] of [["configure-migration", true], ["configure", false]] as const) {
       const result = spawnSync(process.execPath, [script, command], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8" });
@@ -55,9 +70,6 @@ describe("local HTTPS front door", () => {
           .toBeLessThan(config.indexOf("forward_auth"));
       }
     }
-    const untrustedRun = spawnSync(process.execPath, [script, "run"], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8" });
-    expect(untrustedRun.status).toBe(1);
-    expect(untrustedRun.stderr).toContain("Secure local connections are not set up");
   });
 
   it("routes multiple previews normally but refuses ambiguous legacy preview migration", () => {
@@ -76,6 +88,7 @@ describe("local HTTPS front door", () => {
       });
     }
     authority.close();
+    fakeTrustedCa(home);
     const script = path.resolve("scripts/local-front-door.mjs");
     const ordinary = spawnSync(process.execPath, [script, "configure"], {
       env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8",
@@ -92,5 +105,31 @@ describe("local HTTPS front door", () => {
     });
     expect(migration.status).toBe(1);
     expect(migration.stderr).toContain("Legacy port 19421 is ambiguous across registered previews.");
+  });
+
+  it("refuses an old-storage gateway reload before writing empty pinned storage or a new Caddyfile", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-old-storage-")); roots.add(home);
+    const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
+    authority.close();
+    const oldStorage = path.join(home, "old-caddy-storage");
+    fs.mkdirSync(oldStorage, { recursive: true });
+    fs.writeFileSync(path.join(oldStorage, "root.crt"), "old-root");
+    const config = path.join(home, "config", "local-sessions", "Caddyfile");
+    fs.writeFileSync(config, `1024 bytes of old gateway config: storage file_system ${JSON.stringify(oldStorage)}\n`);
+    const script = path.resolve("scripts/local-front-door.mjs");
+    for (const command of ["configure", "configure-migration", "run", "run-migration"]) {
+      const result = spawnSync(process.execPath, [script, command], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8" });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Secure local connections are not set up");
+      expect(fs.readFileSync(config, "utf8")).toContain(oldStorage);
+      expect(fs.existsSync(localCaPaths(home).storageRoot)).toBe(false);
+    }
+    const ca = fakeTrustedCa(home);
+    const receipt = JSON.parse(fs.readFileSync(ca.receipt, "utf8"));
+    receipt.state = "prepared";
+    fs.writeFileSync(ca.receipt, JSON.stringify(receipt));
+    const prepared = spawnSync(process.execPath, [script, "configure"], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8" });
+    expect(prepared.status).toBe(1);
+    expect(fs.readFileSync(config, "utf8")).toContain(oldStorage);
   });
 });

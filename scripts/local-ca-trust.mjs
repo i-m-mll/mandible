@@ -7,9 +7,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CADDY_VERSION, installPinnedCaddy } from "./pinned-caddy.mjs";
+import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 
 const SCHEMA = "mandible-local-ca-trust@1";
+const LOCK_SCHEMA = "mandible-local-ca-setup-lock@1";
 const SETUP_HOST = "setup.mandible.localhost";
 
 export function setupCaddyfile(storageRoot, adminPort, sitePort) {
@@ -69,6 +70,15 @@ export function assertLocalCaIdentity(paths) {
   return { state: record.state, storage_root: paths.storageRoot, root_digest: record.root_digest, verified_at: record.verified_at ?? null };
 }
 
+export function probeCurrentMacOsTrust(paths) {
+  if (assertLocalCaIdentity(paths).state !== "trusted") throw new Error("The installation-owned Caddy root has not passed explicit secure-local-connections setup.");
+  if (process.platform !== "darwin") throw new Error("Current local CA trust verification requires macOS.");
+  const result = spawnSync("/usr/bin/security", ["verify-cert", "-c", paths.rootCert, "-p", "ssl", "-l", "-L", "-q"], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`macOS no longer trusts the pinned local CA for HTTPS; no public listener was stopped. Reopen the explicit secure-local-connections setup action. ${(result.stderr || result.stdout).trim()}`);
+  assertLocalCaIdentity(paths);
+  return true;
+}
+
 function writeReceipt(paths, record) {
   fs.mkdirSync(paths.authorityDir, { recursive: true, mode: 0o700 });
   const temp = path.join(paths.authorityDir, `.ca-trust-${randomUUID()}.tmp`);
@@ -80,25 +90,115 @@ function writeReceipt(paths, record) {
   }
 }
 
-export async function setupLocalCa(paths, effects = systemTrustEffects(paths)) {
+function processIdentity(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("CA setup owner PID is invalid.");
+  const read = (field) => spawnSync("/bin/ps", ["-ww", "-p", String(pid), "-o", `${field}=`], { encoding: "utf8" });
+  const started = read("lstart");
+  const command = read("command");
+  const state = read("stat");
+  if ([started, command, state].every((result) => result.status === 1 && !result.stdout.trim() && !result.stderr.trim())) return null;
+  if ([started, command, state].some((result) => result.status !== 0 || !result.stdout.trim())) throw new Error(`Cannot verify CA setup process identity for PID ${pid}; preserving its lock.`);
+  if (state.stdout.trim().startsWith("Z")) return null;
+  return { pid, process_start: started.stdout.trim(), command: command.stdout.trim() };
+}
+
+function ownerFile(lock) { return path.join(lock, "owner.json"); }
+
+function readOwner(lock, paths) {
+  const owner = JSON.parse(regularBytes(ownerFile(lock), "CA setup lock owner").toString("utf8"));
+  if (owner.schema !== LOCK_SCHEMA || !/^[0-9a-f-]{36}$/.test(owner.id ?? "") || owner.home !== paths.home || owner.home_digest !== digest(paths.home) || !Number.isInteger(owner.pid) || !owner.process_start || !owner.command) throw new Error("CA setup lock ownership is incompatible or ambiguous; preserving the lock.");
+  return owner;
+}
+
+function writeOwner(lock, owner) {
+  const temp = path.join(lock, `.owner-${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temp, `${JSON.stringify(owner)}\n`, { flag: "wx", mode: 0o600 });
+    fs.renameSync(temp, ownerFile(lock));
+  } finally { if (existsEntry(temp)) fs.rmSync(temp, { force: true }); }
+}
+
+async function cleanupOwnedGateway(owner) {
+  const gateway = owner.gateway;
+  if (!gateway) return;
+  if (path.dirname(gateway.temp_dir ?? "") !== os.tmpdir() || !/^mandible-ca-setup-[A-Za-z0-9]{6}$/.test(path.basename(gateway.temp_dir ?? "")) || gateway.config !== path.join(gateway.temp_dir, "Caddyfile") || gateway.binary !== pinnedCaddyBinary(owner.home) || !Number.isInteger(gateway.pid) || !gateway.process_start) throw new Error("Interrupted setup gateway ownership is ambiguous; preserving it and the lock.");
+  if (existsEntry(gateway.temp_dir)) {
+    const marker = path.join(gateway.temp_dir, "owner-token");
+    if (regularBytes(marker, "temporary setup ownership marker").toString("utf8") !== owner.id) throw new Error("Temporary setup gateway ownership marker drifted; preserving it and the lock.");
+  }
+  const current = processIdentity(gateway.pid);
+  if (current && current.process_start === gateway.process_start) {
+    if (!current.command.startsWith(`${gateway.binary} run --config ${gateway.config} --adapter caddyfile`)) throw new Error("Temporary setup gateway process no longer matches its ownership receipt; preserving it and the lock.");
+    process.kill(gateway.pid, "SIGTERM");
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && processIdentity(gateway.pid)?.process_start === gateway.process_start) await new Promise((resolve) => setTimeout(resolve, 80));
+    if (processIdentity(gateway.pid)?.process_start === gateway.process_start) {
+      process.kill(gateway.pid, "SIGKILL");
+      if (processIdentity(gateway.pid)?.process_start === gateway.process_start) throw new Error("Interrupted setup gateway did not stop; preserving its lock and temporary files.");
+    }
+  }
+  if (existsEntry(gateway.temp_dir)) fs.rmSync(gateway.temp_dir, { recursive: true, force: true });
+}
+
+async function recoverStaleLock(lock, paths) {
+  const before = fs.lstatSync(lock);
+  if (!before.isDirectory() || before.isSymbolicLink()) throw new Error("CA setup lock is not an owned directory; preserving it.");
+  const owner = readOwner(lock, paths);
+  const ownerDigest = digest(regularBytes(ownerFile(lock), "CA setup lock owner"));
+  const current = processIdentity(owner.pid);
+  if (current?.process_start === owner.process_start && current.command === owner.command) throw new Error(`Secure-local-connections setup is already in progress under PID ${owner.pid}; preserving its lock.`);
+  const quarantine = `${lock}.stale-${randomUUID()}`;
+  fs.renameSync(lock, quarantine);
+  try {
+    const moved = fs.lstatSync(quarantine);
+    if (moved.dev !== before.dev || moved.ino !== before.ino || digest(regularBytes(ownerFile(quarantine), "CA setup lock owner")) !== ownerDigest || readOwner(quarantine, paths).id !== owner.id) throw new Error("CA setup lock changed during stale-owner recovery; preserving it.");
+    await cleanupOwnedGateway(owner);
+    if (fs.readdirSync(quarantine).some((entry) => entry !== "owner.json")) throw new Error("Interrupted CA setup lock contains unknown files; preserving it.");
+    fs.rmSync(ownerFile(quarantine));
+    fs.rmdirSync(quarantine);
+  } catch (error) {
+    if (!existsEntry(lock)) fs.renameSync(quarantine, lock);
+    throw error;
+  }
+}
+
+async function acquireSetupLock(paths) {
   fs.mkdirSync(paths.authorityDir, { recursive: true, mode: 0o700 });
   const lock = path.join(paths.authorityDir, ".ca-setup.lock");
   try { fs.mkdirSync(lock, { mode: 0o700 }); }
   catch (error) {
-    if (error.code === "EEXIST") throw new Error(`Secure-local-connections setup is already in progress or has a stale lock at ${lock}; inspect that exact lock before retrying.`);
-    throw error;
+    if (error.code !== "EEXIST") throw error;
+    await recoverStaleLock(lock, paths);
+    fs.mkdirSync(lock, { mode: 0o700 });
   }
-  try { return await reconcileLocalCa(paths, effects); }
-  finally { fs.rmdirSync(lock); }
+  try {
+    const identity = processIdentity(process.pid);
+    if (!identity) throw new Error("Cannot verify this CA setup process identity.");
+    const owner = { schema: LOCK_SCHEMA, id: randomUUID(), home: paths.home, home_digest: digest(paths.home), ...identity };
+    writeOwner(lock, owner);
+    return { lock, owner, updateGateway: (gateway) => { const next = { ...owner, gateway }; writeOwner(lock, next); } };
+  } catch (error) { fs.rmdirSync(lock); throw error; }
 }
 
-async function reconcileLocalCa(paths, effects) {
+export async function setupLocalCa(paths, effects = systemTrustEffects(paths)) {
+  const context = await acquireSetupLock(paths);
+  try { return await reconcileLocalCa(paths, effects, context); }
+  finally {
+    if (!context.preserveLock) {
+      if (readOwner(context.lock, paths).id !== context.owner.id) throw new Error("CA setup lock owner changed; preserving its lock.");
+      fs.rmSync(ownerFile(context.lock));
+      fs.rmdirSync(context.lock);
+    }
+  }
+}
+
+async function reconcileLocalCa(paths, effects, context) {
   const prior = assertLocalCaIdentity(paths);
   if (!existsEntry(paths.installationAuthority)) throw new Error("Installation authority is not initialized; run npm run local-front-door -- initialize before secure-local-connections setup.");
   const installationDigest = digest(regularBytes(paths.installationAuthority, "installation authority"));
   const existingRoot = prior.state === "untracked_root" ? rootDigest(paths) : null;
   const existingKey = prior.state === "untracked_root" ? keyDigest(paths) : null;
-  const session = await effects.bootstrap();
+  const session = await effects.bootstrap(context);
   try {
     const root = rootDigest(paths);
     const key = keyDigest(paths);
@@ -122,7 +222,8 @@ async function reconcileLocalCa(paths, effects) {
     writeReceipt(paths, { ...record, state: "trusted", verified_at: new Date().toISOString() });
     return assertLocalCaIdentity(paths);
   } finally {
-    await session.close();
+    try { await session.close(); }
+    catch (error) { context.preserveLock = true; throw error; }
   }
 }
 
@@ -142,7 +243,7 @@ function curlProbe(port, certPath = null) {
   throw new Error(`Secure setup connection failed (curl ${result.status}): ${(result.stderr || result.stdout).trim()}`);
 }
 
-async function bootstrapCaddy(paths) {
+async function bootstrapCaddy(paths, context) {
   if (process.platform !== "darwin") throw new Error("Secure local connections setup currently requires macOS.");
   const binary = installPinnedCaddy(paths.home);
   fs.mkdirSync(paths.storageRoot, { recursive: true, mode: 0o700 });
@@ -152,19 +253,34 @@ async function bootstrapCaddy(paths) {
   if (adminPort === sitePort || [19419, 19420, 19421, 2019].includes(adminPort) || [19419, 19420, 19421, 2019].includes(sitePort)) throw new Error("Temporary setup ports collided with a public or ordinary gateway port; retry setup.");
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ca-setup-"));
   const config = path.join(tempDir, "Caddyfile");
+  fs.writeFileSync(path.join(tempDir, "owner-token"), context.owner.id, { flag: "wx", mode: 0o600 });
   fs.writeFileSync(config, setupCaddyfile(paths.storageRoot, adminPort, sitePort), { mode: 0o600 });
   const child = spawn(binary, ["run", "--config", config, "--adapter", "caddyfile"], { stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { output = `${output}${chunk}`.slice(-8000); });
   const close = async () => {
-    if (child.exitCode === null) {
+    const running = () => child.exitCode === null && child.signalCode === null;
+    if (child.pid && running()) {
       child.kill("SIGTERM");
       await Promise.race([new Promise((resolve) => child.once("exit", resolve)), new Promise((resolve) => setTimeout(resolve, 2000))]);
-      if (child.exitCode === null) child.kill("SIGKILL");
+      if (running()) {
+        child.kill("SIGKILL");
+        await Promise.race([new Promise((resolve) => child.once("exit", resolve)), new Promise((resolve) => setTimeout(resolve, 2000))]);
+      }
+      if (running()) throw new Error("Temporary Caddy setup gateway did not stop; preserving its ownership lock and files.");
     }
     fs.rmSync(tempDir, { recursive: true, force: true });
   };
   try {
+    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    let childIdentity = null;
+    const identityDeadline = Date.now() + 1_000;
+    while (!childIdentity && child.exitCode === null && Date.now() < identityDeadline) {
+      childIdentity = processIdentity(child.pid);
+      if (!childIdentity) await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    if (!childIdentity) throw new Error("Temporary Caddy setup gateway exited before its ownership could be recorded.");
+    context.updateGateway({ pid: child.pid, process_start: childIdentity.process_start, binary, config, temp_dir: tempDir });
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       if (child.exitCode !== null) throw new Error(`Temporary Caddy setup gateway exited: ${output.trim()}`);
@@ -176,7 +292,8 @@ async function bootstrapCaddy(paths) {
     }
     throw new Error(`Temporary Caddy setup gateway did not become ready: ${output.trim()}`);
   } catch (error) {
-    await close();
+    try { await close(); }
+    catch (cleanupError) { context.preserveLock = true; throw cleanupError; }
     throw error;
   }
 }
@@ -190,7 +307,7 @@ function osascript(script) {
 
 function systemTrustEffects(paths) {
   return {
-    bootstrap: () => bootstrapCaddy(paths),
+    bootstrap: (context) => bootstrapCaddy(paths, context),
     approveTrust: async (rootDigestValue) => {
       assertLocalCaIdentity(paths);
       if (rootDigest(paths) !== rootDigestValue) throw new Error("Caddy root changed before macOS approval; no trust was installed.");

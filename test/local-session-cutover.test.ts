@@ -158,6 +158,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
   let interruptAfterNextStop = false;
   let failReloadOnce = false;
   let wrongGatewayStorage = false;
+  let nativeCaTrusted = true;
   const unhealthyRoles = new Set<string>();
   const supervisor = { loaded: fx.supervisedMain, enabled: fx.supervisedMain, plist_path: fx.servicePlistPath, definition: fx.supervisedMain ? fx.readPlistDefinition() : null };
   let interruptSupervisorEffect: "disable" | "bootout" | "bootstrap" | null = null;
@@ -208,6 +209,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
     interruptNextStop() { interruptAfterNextStop = true; },
     failNextReload() { failReloadOnce = true; },
     misconfigureStorage() { wrongGatewayStorage = true; },
+    revokeNativeCaTrust() { nativeCaTrusted = false; },
     dropGateway() { for (const [port, listener] of listeners) if (listener.kind === "gateway") listeners.delete(port); },
     replaceGatewayWithoutRuntime() {
       for (const [port, listener] of listeners) if (listener.kind === "gateway") listeners.delete(port);
@@ -230,6 +232,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
     },
     occupyPublicPort() { const pid = ++nextPid; listeners.set(19420, { pid, fingerprint: `process-${pid}`, kind: "candidate", role: "main" }); },
     effects: {
+      probeCurrentCaTrust: () => { if (!nativeCaTrusted) throw new Error("macOS no longer trusts the pinned local CA for HTTPS"); },
       health,
       waitHealth: async (port: number) => {
         if (!listeners.has(port)) {
@@ -353,6 +356,17 @@ function registration(fx: ReturnType<typeof fixture>, instanceId: string) {
 }
 
 describe("local session first cutover", () => {
+  it("refuses removed macOS CA trust before stopping any old public listener", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.revokeNativeCaTrust();
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("macOS no longer trusts");
+    expect(life.events).not.toContain("supervisor:disable");
+    expect(life.events).not.toContain("supervisor:bootout");
+    expect(life.events).not.toContain("stop:preview");
+    expect(life.events).not.toContain("start:gateway");
+  });
   it("requires the explicit installation CA trust receipt before activation effects", async () => {
     const fx = fixture({ supervisedMain: true });
     const life = lifecycle(fx);

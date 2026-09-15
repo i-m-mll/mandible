@@ -121,7 +121,7 @@ type SettingsSectionDefinition = {
 
 const SETTINGS_SECTIONS = {
   notifications: { id: 'settings-notifications', title: 'Notifications' },
-  daemon: { id: 'settings-daemon', title: 'Mandible Daemon', desktopOnly: true },
+  daemon: { id: 'settings-daemon', title: 'Local connections' },
   agentHooks: { id: 'settings-agent-hooks', title: 'Agent Hooks' },
   instructionDelivery: { id: 'settings-instruction-delivery', title: 'Instruction Delivery' },
   projectPermissions: { id: 'settings-project-permissions', title: 'Project permissions' },
@@ -1013,7 +1013,19 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
   }, []);
 
   if (!desktopShell) {
-    return null;
+    return (
+      <SettingsSectionShell section={props.section}>
+        <SettingsSectionHeader section={props.section} description="Set up the trusted local HTTPS connection before using a new browser origin." />
+        <div className="settings-view__section-body">
+          <div className="settings-view__daemon-card">
+            <div className="settings-view__daemon-title">Secure local connections</div>
+            <p className="settings-view__daemon-footer">If the new HTTPS page cannot load yet, open Mandible's installed macOS app for its explicit one-time certificate setup. The browser does not install system trust or authorize a session.</p>
+            <a className="btn btn--active btn--sm" href="mandible://connections/setup">Open macOS setup action</a>
+            <p className="settings-view__daemon-footer">macOS may ask whether to open the app, then Mandible explains the computer-wide trust change with Cancel selected by default. If the app is not installed, run <code>node scripts/local-ca-trust.mjs setup</code> from the local operator terminal.</p>
+          </div>
+        </div>
+      </SettingsSectionShell>
+    );
   }
 
   return (
