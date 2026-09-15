@@ -87,6 +87,7 @@ try {
         "test/extended/artifact-ingest-pool.test.ts",
         ...inheritedExtendedBaselines.keys(),
       ]);
+      if (process.platform !== "darwin") excluded.add("test/extended/local-ca-lockf.test.ts");
       const files = readdirSync(path.join(root, "test", "extended"))
         .filter((name) => /\.test\.tsx?$/.test(name))
         .map((name) => `test/extended/${name}`)

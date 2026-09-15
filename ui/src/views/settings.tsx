@@ -6,6 +6,7 @@ import {
   getBackupStatus,
   getDelegatedSigningStatus,
   getDesktopDaemonStatus,
+  getSecureLocalConnectionsStatus,
   getRuntimeStatus,
   isDesktopShell,
   navigateToDesktopBootstrap,
@@ -17,6 +18,7 @@ import {
   setDesktopDaemonLaunchMode,
   setupDelegatedSigning,
   startDesktopDaemon,
+  setupSecureLocalConnections,
   stopDesktopDaemon,
   getInstructionDeliverySettings,
   updateBackupSettings,
@@ -32,6 +34,7 @@ import {
   type InstructionTarget,
   type InstructionTargetMode,
   type DesktopDaemonStatus,
+  type SecureLocalConnectionsStatus,
   type RuntimeStatus,
   type ProjectAccessSettings,
   type ProjectPickerItem,
@@ -118,7 +121,7 @@ type SettingsSectionDefinition = {
 
 const SETTINGS_SECTIONS = {
   notifications: { id: 'settings-notifications', title: 'Notifications' },
-  daemon: { id: 'settings-daemon', title: 'Mandible Daemon', desktopOnly: true },
+  daemon: { id: 'settings-daemon', title: 'Local connections' },
   agentHooks: { id: 'settings-agent-hooks', title: 'Agent Hooks' },
   instructionDelivery: { id: 'settings-instruction-delivery', title: 'Instruction Delivery' },
   projectPermissions: { id: 'settings-project-permissions', title: 'Project permissions' },
@@ -882,6 +885,33 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
   const [loading, setLoading] = useState(desktopShell);
   const [action, setAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [caStatus, setCaStatus] = useState<SecureLocalConnectionsStatus | null>(null);
+  const [caError, setCaError] = useState<string | null>(null);
+  const [caAction, setCaAction] = useState(false);
+
+  const refreshCaStatus = useCallback(async () => {
+    if (!desktopShell) return;
+    try {
+      setCaStatus(await getSecureLocalConnectionsStatus());
+      setCaError(null);
+    } catch (err) {
+      setCaError(err instanceof Error ? err.message : 'Failed to inspect secure local connections');
+    }
+  }, [desktopShell]);
+
+  useEffect(() => { void refreshCaStatus(); }, [refreshCaStatus]);
+
+  const handleCaSetup = useCallback(async () => {
+    setCaAction(true);
+    try {
+      setCaStatus(await setupSecureLocalConnections());
+      setCaError(null);
+    } catch (err) {
+      setCaError(err instanceof Error ? err.message : 'Secure local connections setup failed');
+    } finally {
+      setCaAction(false);
+    }
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     if (!desktopShell) {
@@ -983,7 +1013,19 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
   }, []);
 
   if (!desktopShell) {
-    return null;
+    return (
+      <SettingsSectionShell section={props.section}>
+        <SettingsSectionHeader section={props.section} description="Set up the trusted local HTTPS connection before using a new browser origin." />
+        <div className="settings-view__section-body">
+          <div className="settings-view__daemon-card">
+            <div className="settings-view__daemon-title">Secure local connections</div>
+            <p className="settings-view__daemon-footer">If the new HTTPS page cannot load yet, open Mandible's installed macOS app for its explicit one-time certificate setup. The browser does not install system trust or authorize a session.</p>
+            <a className="btn btn--active btn--sm" href="mandible://connections/setup">Open macOS setup action</a>
+            <p className="settings-view__daemon-footer">macOS may ask whether to open the app, then Mandible explains the computer-wide trust change with Cancel selected by default. If the app is not installed, run <code>node scripts/local-ca-trust.mjs setup</code> from the local operator terminal.</p>
+          </div>
+        </div>
+      </SettingsSectionShell>
+    );
   }
 
   return (
@@ -1081,6 +1123,30 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
           <button type="button" className="btn btn--sm" onClick={refreshStatus} disabled={loading || action != null}>
             Check status
           </button>
+        </div>
+        <div className="settings-view__daemon-card">
+          <div className="settings-view__daemon-status-row">
+            <div>
+              <div className="settings-view__daemon-title">Secure local connections</div>
+              <div className="settings-view__daemon-meta">
+                {caStatus?.state === 'trusted' ? 'Ready: the installation-owned root is pinned and trusted.'
+                  : caStatus?.state === 'prepared' ? 'Root pinned; macOS approval or connection verification remains.'
+                    : caStatus?.state === 'untracked_root' ? 'An untracked local root exists; setup must verify and pin it.'
+                      : 'One-time setup has not completed.'}
+              </div>
+            </div>
+            <div className="settings-view__daemon-actions">
+              <button type="button" className="btn btn--active btn--sm" onClick={handleCaSetup} disabled={caAction}>
+                {caAction ? 'Setting up…' : caStatus?.state === 'trusted' ? 'Verify connection' : 'Set up'}
+              </button>
+              <button type="button" className="btn btn--sm" onClick={refreshCaStatus} disabled={caAction}>Check status</button>
+            </div>
+          </div>
+          <div className="settings-view__daemon-footer">
+            This explicit action may ask macOS to trust Mandible's local HTTPS root for this computer. It is separate from browser sign-in. New previews, restarts, and routine certificate renewals reuse the same root without another trust request. If this page cannot load before initial trust, use Connections → Set up secure local connections… in the macOS app menu.
+          </div>
+          {caStatus?.verified_at && <div className="settings-view__daemon-detail">Last verified: {caStatus.verified_at}</div>}
+          {caError && <div className="settings-view__daemon-error">{caError}</div>}
         </div>
       </div>
     </SettingsSectionShell>

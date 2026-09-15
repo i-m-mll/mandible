@@ -1,31 +1,21 @@
 #!/usr/bin/env node
 
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
-
-const CADDY_VERSION = "2.11.3";
-const RELEASES = Object.freeze({
-  "darwin-x64": {
-    name: `caddy_${CADDY_VERSION}_mac_amd64.tar.gz`,
-    sha256: "9e6f08758f2a4677d0f3acd3e3ccc541b0475217800325b5e5f4ef56668e4c88",
-  },
-  "darwin-arm64": {
-    name: `caddy_${CADDY_VERSION}_mac_arm64.tar.gz`,
-    sha256: "b37757be82ef630dddf359e6f1685731a1c657576ce80c469e0e3e6a8fb49e9d",
-  },
-});
+import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
+import { assertLocalCaIdentity, localCaPaths } from "./local-ca-trust.mjs";
 
 const home = path.resolve(process.env.MANDIBLE_HOME || path.join(os.homedir(), ".mandible"));
+const caPaths = localCaPaths(home);
 const authorityDir = path.join(home, "config", "local-sessions");
 const authorityDb = path.join(authorityDir, "sessions.db");
 const installationAuthorityDir = path.join(home, "config", "client-auth");
 const installationAuthorityFile = path.join(installationAuthorityDir, "authority-id");
-const runtimeDir = path.join(home, "runtime", "caddy", CADDY_VERSION);
-const binary = path.join(runtimeDir, "caddy");
+const binary = pinnedCaddyBinary(home);
 const configPath = path.join(authorityDir, "Caddyfile");
 const command = process.argv[2] ?? "status";
 
@@ -68,7 +58,7 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
   if (legacyConversion && previews.length > 1) fail("Legacy port 19421 is ambiguous across registered previews.");
   const productionBackend = new URL(production.backend_origin);
   const productionPublic = new URL(production.public_origin);
-  const globalOptions = "{\n  admin 127.0.0.1:2019\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}";
+  const globalOptions = `{\n  admin 127.0.0.1:2019\n  storage file_system ${JSON.stringify(caPaths.storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}`;
   const migrationIngress = instances.map((entry) => {
     const publicUrl = new URL(entry.public_origin);
     const legacyPort = entry.role === "preview" ? "19421" : "19420";
@@ -197,26 +187,20 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
 }
 
 function install() {
-  if (fs.existsSync(binary)) return;
-  const release = RELEASES[`${process.platform}-${process.arch}`];
-  if (!release) fail(`No pinned Caddy build for ${process.platform}-${process.arch}.`);
-  fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
-  const archive = path.join(os.tmpdir(), `mandible-caddy-${randomUUID()}.tar.gz`);
-  const url = `https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/${release.name}`;
-  const fetched = spawnSync("curl", ["--fail", "--location", "--silent", "--show-error", "--output", archive, url], { stdio: "inherit" });
-  if (fetched.status !== 0) fail("Failed to download the pinned Caddy release.");
-  const actual = createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
-  if (actual !== release.sha256) fail(`Caddy archive digest mismatch: ${actual}`);
-  const extracted = spawnSync("tar", ["-xzf", archive, "-C", runtimeDir, "caddy"], { stdio: "inherit" });
-  fs.rmSync(archive, { force: true });
-  if (extracted.status !== 0) fail("Failed to extract the pinned Caddy binary.");
-  fs.chmodSync(binary, 0o755);
+  try { installPinnedCaddy(home); } catch (error) { fail(error.message); }
 }
 
 function configure({ legacyConversion = false } = {}) {
+  requireTrustedCa();
   fs.mkdirSync(authorityDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(configPath, caddyfile(readInstances(), { legacyConversion }), { mode: 0o600 });
   fs.chmodSync(configPath, 0o600);
+}
+
+function requireTrustedCa() {
+  let ca;
+  try { ca = assertLocalCaIdentity(caPaths); } catch (error) { fail(error.message); }
+  if (ca.state !== "trusted") fail("Secure local connections are not set up. Choose the desktop Connections setup action or run node scripts/local-ca-trust.mjs setup before starting the front door.");
 }
 
 if (command === "initialize") {
@@ -229,17 +213,21 @@ if (command === "initialize") {
 } else if (command === "configure-migration") {
   configure({ legacyConversion: true });
 } else if (command === "run") {
+  requireTrustedCa();
   install();
   configure();
   const result = spawnSync(binary, ["run", "--config", configPath, "--adapter", "caddyfile"], { stdio: "inherit" });
   process.exit(result.status ?? 1);
 } else if (command === "run-migration") {
+  requireTrustedCa();
   install();
   configure({ legacyConversion: true });
   const result = spawnSync(binary, ["run", "--config", configPath, "--adapter", "caddyfile"], { stdio: "inherit" });
   process.exit(result.status ?? 1);
 } else if (command === "status") {
-  process.stdout.write(`${JSON.stringify({ version: CADDY_VERSION, binary, config: configPath, installed: fs.existsSync(binary), instances: fs.existsSync(authorityDb) ? readInstances().length : 0 })}\n`);
+  let ca;
+  try { ca = assertLocalCaIdentity(caPaths); } catch (error) { fail(error.message); }
+  process.stdout.write(`${JSON.stringify({ version: CADDY_VERSION, binary, config: configPath, installed: fs.existsSync(binary), instances: fs.existsSync(authorityDb) ? readInstances().length : 0, ca })}\n`);
 } else {
   fail("Usage: local-front-door.mjs initialize|install|configure|configure-migration|run|run-migration|status");
 }

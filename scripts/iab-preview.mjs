@@ -1880,15 +1880,15 @@ function restorePreviewRegistration(env, existing) {
   } finally { db.close(); }
 }
 
-function reloadLocalFrontDoor() {
+export function reloadLocalFrontDoor() {
   const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "local-front-door.mjs");
   const configured = spawnSync(process.execPath, [script, "configure"], { encoding: "utf8" });
   if (configured.status !== 0) {
-    throw new Error(`Failed to configure the local HTTPS front door: ${configured.stderr.trim()}`);
+    throw new Error(`Failed to configure the local HTTPS front door: ${configured.stderr.trim()} Open the installed desktop setup action with mandible://connections/setup, or run node scripts/local-ca-trust.mjs setup locally. No gateway reload occurred.`);
   }
   const binary = path.join(mandibleHome(), "runtime", "caddy", "2.11.3", "caddy");
   if (!fs.existsSync(binary)) {
-    throw new Error("The pinned local HTTPS front door is not installed. Run `npm run local-front-door -- install`, trust its local CA explicitly, then start it.");
+    throw new Error("The pinned local HTTPS front door is not installed. Run `npm run local-front-door -- install`, open mandible://connections/setup for the explicit native CA action, then start it.");
   }
   const reloaded = spawnSync(binary, ["reload", "--config", path.join(localSessionAuthorityDir(), "Caddyfile"), "--adapter", "caddyfile"], { encoding: "utf8" });
   if (reloaded.status !== 0) {
