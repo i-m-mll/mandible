@@ -799,6 +799,7 @@ function validateManifest(manifest) {
     if (!instance.candidate.instance_id || env.MANDIBLE_INSTANCE_ID !== instance.candidate.instance_id) throw new Error(`Candidate ${instance.role} process env does not match its durable instance identity.`);
     if (!instance.candidate.commit || instance.candidate.commit !== env.MANDIBLE_BACKEND_GENERATION || !env.MANDIBLE_DB) throw new Error(`Candidate ${instance.role} commit, backend generation, and database must be pinned consistently.`);
     if (path.resolve(env.MANDIBLE_CLIENT_AUTH_DIR ?? "") !== path.resolve(instance.candidate.credential_directory ?? "")) throw new Error(`Candidate ${instance.role} process env does not pin its credential directory.`);
+    if (env.MANDIBLE_STDERR_LOG_PATH !== instance.candidate.process.stderr_log) throw new Error(`Candidate ${instance.role} daemon stderr path must match its manifest-pinned launch log.`);
     for (const key of ["MANDIBLE_INSTALLATION_ID", "MANDIBLE_PUBLIC_ORIGIN", "MANDIBLE_BACKEND_GENERATION", "MANDIBLE_ALLOWED_EFFECTS", "MANDIBLE_WRITABLE_ROOTS"]) if (!env[key]) throw new Error(`Candidate ${instance.role} process env is missing ${key}.`);
     for (const key of ["MANDIBLE_ALLOWED_EFFECTS", "MANDIBLE_WRITABLE_ROOTS"]) if (!Array.isArray(JSON.parse(env[key]))) throw new Error(`Candidate ${instance.role} ${key} must be a JSON array.`);
     const publicOrigin = new URL(env.MANDIBLE_PUBLIC_ORIGIN);
@@ -813,6 +814,13 @@ function validateManifest(manifest) {
   if (!Array.isArray(manifest.rollback_files)) throw new Error("rollback_files must be an array.");
   if (new Set(manifest.rollback_files.map((filePath) => path.resolve(filePath))).size !== manifest.rollback_files.length) throw new Error("rollback_files must not contain duplicate paths.");
   for (const filePath of manifest.rollback_files) if (!path.isAbsolute(filePath)) throw new Error(`Rollback path must be absolute: ${filePath}`);
+  const launches = [...manifest.instances.map((entry) => entry.candidate.process), manifest.gateway.process];
+  const logs = launches.flatMap((spec) => [spec.stdout_log, spec.stderr_log]);
+  for (const log of logs) if (typeof log !== "string" || !path.isAbsolute(log) || path.resolve(log) !== log) throw new Error(`Candidate and gateway launch logs must be exact absolute paths: ${log}`);
+  if (new Set(logs).size !== logs.length) throw new Error("Candidate and gateway launch logs must be distinct.");
+  const protectedPaths = [manifest.authority_db, manifest.gateway.config_path, ...manifest.rollback_files,
+    ...manifest.instances.flatMap((entry) => [entry.candidate.process.env.MANDIBLE_DB, entry.candidate.process.env.MANDIBLE_PID_FILE])].filter(Boolean).map((entry) => path.resolve(entry));
+  if (logs.some((log) => protectedPaths.includes(log))) throw new Error("Launch logs cannot replace database, PID, gateway configuration, or rollback-custodied files; preserve logs as separate evidence.");
   const promotion = manifest.preview_promotion;
   if (!promotion || !path.isAbsolute(promotion.metadata_path ?? "") || !path.isAbsolute(promotion.current_db_path ?? "") || !path.isAbsolute(promotion.current_db_target ?? "") || !promotion.metadata) throw new Error("preview_promotion must pin absolute metadata/current.db paths, target, and metadata.");
   if (!manifest.rollback_files.includes(promotion.metadata_path) || !manifest.rollback_files.includes(promotion.current_db_path)) throw new Error("Preview promotion paths must have rollback custody.");
@@ -879,11 +887,7 @@ function systemEffects() {
     validateGateway: (gateway) => { for (const spec of [gateway.configure, gateway.process, gateway.reload]) if (!fs.existsSync(spec.command)) throw new Error(`Gateway executable is missing: ${spec.command}`); },
     configureGateway: (gateway, mode) => runSync({ ...gateway.configure, args: mode === "migration" ? gateway.configure.migration_args : gateway.configure.normal_args }),
     reloadGateway: (gateway) => runSync(gateway.reload),
-    startProcess: async (spec, envOverlay) => {
-      const child = spawn(spec.command, spec.args ?? [], { cwd: spec.cwd, env: { ...spec.env, ...envOverlay }, detached: true, stdio: "ignore" });
-      await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-      child.unref();
-    },
+    startProcess: spawnJournaledProcess,
     startControl: async (control) => runSync(control),
     inspectSupervisorPlist: (service) => inspectLaunchdPlist(service.plist_path),
     supervisorStatus: inspectLaunchdService,
@@ -897,6 +901,33 @@ function systemEffects() {
     supervisorBootstrap: (service) => launchdCommand("bootstrap", service.domain, service.plist_path),
     stopPid,
   };
+}
+
+function openLaunchLog(logPath) {
+  if (typeof logPath !== "string" || !path.isAbsolute(logPath) || path.resolve(logPath) !== logPath) throw new Error(`Manifest-pinned launch log must be an exact absolute path: ${logPath}`);
+  if (typeof fs.constants.O_NOFOLLOW !== "number") throw new Error("This platform cannot open manifest-pinned launch logs without following links.");
+  fs.mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });
+  const fd = fs.openSync(logPath, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  try { if (!fs.fstatSync(fd).isFile()) throw new Error(`Manifest-pinned launch log is not a regular file: ${logPath}`); }
+  catch (error) { fs.closeSync(fd); throw error; }
+  return fd;
+}
+
+export async function spawnJournaledProcess(spec, envOverlay = {}) {
+  const stdout = openLaunchLog(spec.stdout_log);
+  let stderr;
+  try {
+    stderr = openLaunchLog(spec.stderr_log);
+    const child = spawn(spec.command, spec.args ?? [], {
+      cwd: spec.cwd, env: { ...spec.env, ...envOverlay }, detached: true, stdio: ["ignore", stdout, stderr],
+    });
+    await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    child.unref();
+    return child;
+  } finally {
+    fs.closeSync(stdout);
+    if (stderr !== undefined) fs.closeSync(stderr);
+  }
 }
 
 function launchdCommand(action, ...args) {

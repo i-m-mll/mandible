@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { runCutoverCommand } from "../scripts/local-session-cutover.mjs";
+import { runCutoverCommand, spawnJournaledProcess } from "../scripts/local-session-cutover.mjs";
 import { LocalSessionAuthority } from "../src/client-auth/session-authority.js";
 import { localCaPaths } from "../scripts/local-ca-trust.mjs";
 
@@ -67,11 +67,14 @@ function fixture({ supervisedMain = false } = {}) {
           command: process.execPath,
           args: ["stand-in.js"],
           cwd: root,
+          stdout_log: path.join(root, `${role}-candidate-stdout.log`),
+          stderr_log: path.join(root, `${role}-candidate-stderr.log`),
           env: {
             PATH: process.env.PATH,
             MANDIBLE_PORT: String(backendPort),
             MANDIBLE_DB: role === "preview" ? candidateDb : path.join(root, "production.db"),
             MANDIBLE_PID_FILE: pidFile,
+            MANDIBLE_STDERR_LOG_PATH: path.join(root, `${role}-candidate-stderr.log`),
             MANDIBLE_INSTANCE_ROLE: role,
             MANDIBLE_INSTANCE_ID: instanceId,
             MANDIBLE_INSTALLATION_ID: "authority-test",
@@ -114,7 +117,8 @@ function fixture({ supervisedMain = false } = {}) {
     gateway: {
       config_path: configPath,
       configure: { command: process.execPath, args: [], migration_args: ["migration"], normal_args: ["normal"] },
-      process: { command: process.execPath, args: ["gateway.js"], cwd: root, env: { PATH: process.env.PATH } },
+      process: { command: process.execPath, args: ["gateway.js"], cwd: root,
+        stdout_log: path.join(root, "gateway-stdout.log"), stderr_log: path.join(root, "gateway-stderr.log"), env: { PATH: process.env.PATH } },
       reload: { command: "/usr/bin/true", args: [] },
     },
     rollback_files: [metadataPath, currentDbPath, configPath],
@@ -356,6 +360,52 @@ function registration(fx: ReturnType<typeof fixture>, instanceId: string) {
 }
 
 describe("local session first cutover", () => {
+  it("captures candidate and gateway streams in pinned logs and keeps them after rollback", async () => {
+    const fx = fixture();
+    const candidate = fx.manifest.instances[0].candidate.process;
+    const gateway = fx.manifest.gateway.process;
+    await spawnJournaledProcess({ ...candidate, args: ["-e", "process.stdout.write('candidate-out\\n'); process.stderr.write('candidate-err\\n');"] });
+    await spawnJournaledProcess({ ...gateway, args: ["-e", "process.stdout.write('gateway-out\\n'); process.stderr.write('gateway-err\\n');"] });
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && [
+      [candidate.stdout_log, "candidate-out"], [candidate.stderr_log, "candidate-err"],
+      [gateway.stdout_log, "gateway-out"], [gateway.stderr_log, "gateway-err"],
+    ].some(([log, marker]) => !fs.existsSync(log) || !fs.readFileSync(log, "utf8").includes(marker))) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(fs.readFileSync(candidate.stdout_log, "utf8")).toContain("candidate-out");
+    expect(fs.readFileSync(candidate.stderr_log, "utf8")).toContain("candidate-err");
+    expect(fs.readFileSync(gateway.stdout_log, "utf8")).toContain("gateway-out");
+    expect(fs.readFileSync(gateway.stderr_log, "utf8")).toContain("gateway-err");
+
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    await runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects);
+    await runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects);
+    expect(fs.readFileSync(candidate.stdout_log, "utf8")).toContain("candidate-out");
+    expect(fs.readFileSync(candidate.stderr_log, "utf8")).toContain("candidate-err");
+    expect(fs.readFileSync(gateway.stdout_log, "utf8")).toContain("gateway-out");
+    expect(fs.readFileSync(gateway.stderr_log, "utf8")).toContain("gateway-err");
+  });
+
+  it("rejects non-absolute, rollback-custodied, or linked launch logs before effects", async () => {
+    for (const [destination, failure] of [["relative-stdout.log", "exact absolute"], ["rollback", "separate evidence"]] as const) {
+      const fx = fixture();
+      const life = lifecycle(fx);
+      fx.manifest.gateway.process.stdout_log = destination === "rollback" ? fx.configPath : destination;
+      fs.writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+      await expect(runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects)).rejects.toThrow(failure);
+      expect(life.events).toEqual([]);
+    }
+    const linked = fixture();
+    const victim = path.join(linked.root, "victim.log");
+    fs.writeFileSync(victim, "preserve-victim");
+    fs.symlinkSync(victim, linked.manifest.gateway.process.stderr_log);
+    await expect(spawnJournaledProcess({ ...linked.manifest.gateway.process,
+      args: ["-e", "process.stderr.write('unsafe');"] })).rejects.toThrow();
+    expect(fs.readFileSync(victim, "utf8")).toBe("preserve-victim");
+  });
+
   it("refuses removed macOS CA trust before stopping any old public listener", async () => {
     const fx = fixture({ supervisedMain: true });
     const life = lifecycle(fx);
