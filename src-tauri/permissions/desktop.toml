@@ -10,6 +10,8 @@ commands.allow = [
   "daemon_restart",
   "client_auth_enroll",
   "client_auth_keychain_enroll",
+  "secure_local_connections_status",
+  "secure_local_connections_setup",
   "zone2_status",
   "zone2_bootstrap",
 ]
