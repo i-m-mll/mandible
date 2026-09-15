@@ -6,9 +6,11 @@ Mandible browser access uses one durable installation authority and one opaque, 
 
 1. Run `npm run local-front-door -- initialize`. This explicit, idempotent step establishes the installation authority before any daemon can create browser sessions.
 2. Start the production daemon on its loopback backend (port `29420`).
-3. Run `npm run local-front-door -- install`. This downloads Caddy `2.11.3` for the current macOS architecture and verifies the release SHA-256 pinned in `scripts/local-front-door.mjs`.
-4. Start the front door with `npm run local-front-door -- run`.
-5. Explicitly trust Caddy's local root certificate using the operator-controlled system flow. Mandible does not install certificate trust itself.
+3. Run `npm run local-front-door -- install`. This downloads Caddy `2.11.3` for the current macOS architecture and verifies the release SHA-256 pinned in `scripts/pinned-caddy.mjs`.
+4. Choose **Connections → Set up secure local connections…** in the macOS desktop app, or run `node scripts/local-ca-trust.mjs setup` from an operator terminal. This explicit action uses a temporary loopback-only Caddy listener, not ports `19420` or `19421`, to create the installation's root in persistent storage. If macOS does not already trust that exact root, the action explains the computer-wide change and asks for OS approval. It verifies a connection signed by the pinned root and one using macOS trust before recording success. A denial leaves a resumable prepared receipt, not a replacement root or silent retry.
+5. Start the ordinary front door with `npm run local-front-door -- run`. Its Caddyfile keeps `skip_install_trust`; previews, restarts, and routine certificate renewal do not request another system trust change.
+
+The root certificate and signing-key digests are pinned to the installation authority in `~/.mandible/config/local-sessions/ca-trust.json`; Caddy's storage stays at `~/.mandible/config/local-sessions/caddy-storage/`. Changed or missing root, key, installation identity, or gateway storage fails visibly. `node scripts/local-ca-trust.mjs status` inspects that custody without changing trust. Manual Keychain installation is a troubleshooting path only, not the normal setup. Certificate trust makes the HTTPS origin usable; browser pairing below is a separate authorization step.
 
 The registered production origin is `https://app.mandible.localhost:19420`. The Caddy admin API and every backend listener remain loopback-only. Redirects and ambient proxy discovery are disabled for native enrollment.
 

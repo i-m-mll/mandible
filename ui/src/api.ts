@@ -2855,6 +2855,21 @@ export async function restartDesktopDaemon(): Promise<DesktopDaemonStatus> {
   return invokeDesktop<DesktopDaemonStatus>('daemon_restart');
 }
 
+export type SecureLocalConnectionsStatus = {
+  state: 'not_set_up' | 'untracked_root' | 'prepared' | 'trusted';
+  storage_root: string;
+  root_digest: string | null;
+  verified_at: string | null;
+};
+
+export async function getSecureLocalConnectionsStatus(): Promise<SecureLocalConnectionsStatus> {
+  return invokeDesktop<SecureLocalConnectionsStatus>('secure_local_connections_status');
+}
+
+export async function setupSecureLocalConnections(): Promise<SecureLocalConnectionsStatus> {
+  return invokeDesktop<SecureLocalConnectionsStatus>('secure_local_connections_setup');
+}
+
 /**
  * Where the desktop shell reads the credential it enrolls this webview with:
  * the one-shot operator bootstrap file, or the durable `mandible-operator`

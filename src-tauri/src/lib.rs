@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{command, AppHandle, Manager};
 
 const DEFAULT_PORT: u16 = 29420;
@@ -70,6 +71,88 @@ struct DaemonStatus {
     log_file: String,
     detail: Option<String>,
     healthy: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct SecureLocalConnectionsStatus {
+    state: String,
+    storage_root: String,
+    root_digest: Option<String>,
+    verified_at: Option<String>,
+}
+
+fn resolve_ca_setup_script(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(resources) = app.path().resource_dir() {
+        let bundled = resources.join("local-ca-trust.mjs");
+        if bundled.is_file() {
+            return Ok(bundled);
+        }
+    }
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| "failed to resolve Mandible source root".to_string())?
+        .to_path_buf();
+    let script = repo.join("scripts").join("local-ca-trust.mjs");
+    if script.is_file() {
+        return Ok(script);
+    }
+    Err("secure-local-connections setup resource is missing from the desktop app".to_string())
+}
+
+fn run_ca_setup_command(app: &AppHandle, command_name: &str) -> Result<SecureLocalConnectionsStatus, String> {
+    let script = resolve_ca_setup_script(app)?;
+    let node = resolve_node_binary(app)?;
+    let output = Command::new(node)
+        .arg(script)
+        .arg(command_name)
+        .env("MANDIBLE_HOME", mandible_home())
+        .output()
+        .map_err(|error| format!("failed to run secure-local-connections setup: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "secure-local-connections {} failed: {}",
+            command_name,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("secure-local-connections setup returned invalid status: {error}"))
+}
+
+fn secure_connections_renderer_precheck(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "desktop main window is unavailable".to_string())?;
+    let url = window
+        .url()
+        .map_err(|error| format!("failed to inspect desktop origin: {error}"))?;
+    if !admits_native_command_origin(&url.origin().ascii_serialization()) {
+        return Err("secure-local-connections setup is available only from the production desktop origin".to_string());
+    }
+    Ok(())
+}
+
+#[command]
+fn secure_local_connections_status(app: AppHandle) -> Result<SecureLocalConnectionsStatus, String> {
+    secure_connections_renderer_precheck(&app)?;
+    run_ca_setup_command(&app, "status")
+}
+
+#[command]
+async fn secure_local_connections_setup(app: AppHandle) -> Result<SecureLocalConnectionsStatus, String> {
+    secure_connections_renderer_precheck(&app)?;
+    tauri::async_runtime::spawn_blocking(move || run_ca_setup_command(&app, "setup"))
+        .await
+        .map_err(|error| format!("secure-local-connections setup task failed: {error}"))?
+}
+
+fn show_native_setup_result(message: &str) {
+    let quoted = serde_json::to_string(message).unwrap_or_else(|_| "\"Secure-local-connections setup finished.\"".to_string());
+    let _ = Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(format!("display dialog {quoted} buttons {{\"OK\"}} default button \"OK\""))
+        .status();
 }
 
 #[command]
@@ -909,6 +992,33 @@ pub fn run() {
                 let dark = tauri::window::Color(11, 15, 20, 255);
                 let _ = window.set_background_color(Some(dark));
             }
+            let setup_item = MenuItemBuilder::with_id(
+                "secure_local_connections_setup",
+                "Set up secure local connections…",
+            )
+            .build(app)?;
+            let connections = SubmenuBuilder::new(app, "Connections")
+                .item(&setup_item)
+                .build()?;
+            if let Some(menu) = app.menu() {
+                menu.append(&connections)?;
+            } else {
+                app.set_menu(MenuBuilder::new(app).item(&connections).build()?)?;
+            }
+            app.on_menu_event(move |handle, event| {
+                if event.id() == setup_item.id() {
+                    let handle = handle.clone();
+                    std::thread::spawn(move || {
+                        match run_ca_setup_command(&handle, "setup") {
+                            Ok(status) => show_native_setup_result(&format!(
+                                "Secure local connections are ready. Mandible's pinned local root was verified at {}. Browser sign-in remains separate.",
+                                status.verified_at.as_deref().unwrap_or("this setup")
+                            )),
+                            Err(error) => show_native_setup_result(&error),
+                        }
+                    });
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -920,6 +1030,8 @@ pub fn run() {
             daemon_restart,
             client_auth_enroll,
             client_auth_keychain_enroll,
+            secure_local_connections_status,
+            secure_local_connections_setup,
             zone2_status,
             zone2_bootstrap
         ])

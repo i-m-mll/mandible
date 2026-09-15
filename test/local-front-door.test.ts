@@ -30,6 +30,7 @@ describe("local HTTPS front door", () => {
       expect(result.status, result.stderr).toBe(0);
       const config = fs.readFileSync(path.join(home, "config", "local-sessions", "Caddyfile"), "utf8");
       expect(config).toContain("skip_install_trust");
+      expect(config).toContain(`storage file_system ${JSON.stringify(path.join(home, "config", "local-sessions", "caddy-storage"))}`);
       expect(config.includes("legacy-conversion/complete")).toBe(contains);
       if (contains) {
         expect(config).toContain("http://127.0.0.1:19420, http://localhost:19420");
@@ -54,6 +55,9 @@ describe("local HTTPS front door", () => {
           .toBeLessThan(config.indexOf("forward_auth"));
       }
     }
+    const untrustedRun = spawnSync(process.execPath, [script, "run"], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8" });
+    expect(untrustedRun.status).toBe(1);
+    expect(untrustedRun.stderr).toContain("Secure local connections are not set up");
   });
 
   it("routes multiple previews normally but refuses ambiguous legacy preview migration", () => {

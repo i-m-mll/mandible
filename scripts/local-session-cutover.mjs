@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import { assertLocalCaIdentity, localCaPaths } from "./local-ca-trust.mjs";
 
 const SCHEMA = "mandible-local-session-cutover@1";
 const STATES = new Set(["preparing", "prepared", "activating", "migration", "completing", "normal_pending", "rolling_back", "complete", "rolled_back", "recovery_failed"]);
@@ -37,6 +38,7 @@ export async function runCutoverCommand(options, effects = systemEffects()) {
   if (options.command === "activate") {
     if (!options.confirmCaTrusted) throw new Error("Activation requires --confirm-ca-trusted; the cutover never changes certificate trust.");
     requireOneState(journal, ["prepared", "activating"]);
+    assertTrustedLocalCa(journal.manifest.authority_db);
     try {
       journal = await activate(journalPath, journal, effects);
       return publicState(journalPath, journal);
@@ -106,7 +108,7 @@ async function activate(journalPath, journal, effects) {
   for (const instance of working.manifest.instances) working = await ensureCandidate(journalPath, working, instance, true, effects);
   working = beginIntent(journalPath, working, "gateway.configure.migration", { mode: "migration" });
   effects.configureGateway(working.manifest.gateway, "migration");
-  assertGatewayConfig(working.manifest.gateway.config_path, "migration");
+  assertGatewayConfig(working.manifest.gateway.config_path, "migration", working.manifest.authority_db);
   working = finishIntent(journalPath, working, "gateway.configure.migration");
   working = await ensureGatewayStarted(journalPath, working, effects);
   return transition(journalPath, working, "migration", { activated_at: new Date().toISOString() });
@@ -134,7 +136,7 @@ async function complete(journalPath, journal, effects) {
     }
     working = beginIntent(journalPath, working, "gateway.configure.normal", { mode: "normal" });
     effects.configureGateway(working.manifest.gateway, "normal");
-    assertGatewayConfig(working.manifest.gateway.config_path, "normal");
+    assertGatewayConfig(working.manifest.gateway.config_path, "normal", working.manifest.authority_db);
     working = finishIntent(journalPath, working, "gateway.configure.normal");
     working = await ensureGatewayStarted(journalPath, working, effects, "normal");
     working = beginIntent(journalPath, working, "gateway.reload.normal", { mode: "normal" });
@@ -824,9 +826,18 @@ function validateManifest(manifest) {
   }
 }
 
-function assertGatewayConfig(configPath, mode) {
+function localCaForAuthorityDb(authorityDb) { return localCaPaths(path.resolve(path.dirname(authorityDb), "..", "..")); }
+
+function assertTrustedLocalCa(authorityDb) {
+  if (assertLocalCaIdentity(localCaForAuthorityDb(authorityDb)).state !== "trusted") throw new Error("The installation-owned Caddy root has not passed explicit secure-local-connections setup.");
+}
+
+function assertGatewayConfig(configPath, mode, authorityDb) {
   const config = fs.readFileSync(configPath, "utf8");
   if (!/^\{[\s\S]*?\bskip_install_trust\b/m.test(config)) throw new Error("Gateway configuration permits automatic certificate trust installation.");
+  const storageLines = [...config.matchAll(/^\s*storage file_system ("(?:[^"\\]|\\.)*")\s*$/gm)];
+  if (storageLines.length !== 1 || JSON.parse(storageLines[0][1]) !== localCaForAuthorityDb(authorityDb).storageRoot) throw new Error("Gateway Caddy storage is not the installation-owned pinned CA location.");
+  assertTrustedLocalCa(authorityDb);
   const hasMigration = config.includes("/api/client-auth/legacy-conversion/complete");
   if ((mode === "migration") !== hasMigration) throw new Error(`Gateway configuration is not in ${mode} mode.`);
 }

@@ -1,12 +1,14 @@
 // @vitest-environment node
 
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { runCutoverCommand } from "../scripts/local-session-cutover.mjs";
 import { LocalSessionAuthority } from "../src/client-auth/session-authority.js";
+import { localCaPaths } from "../scripts/local-ca-trust.mjs";
 
 const capturedLegacyHealth = JSON.parse(fs.readFileSync(new URL("./fixtures/local-session-legacy-health-9c742815.json", import.meta.url), "utf8"));
 
@@ -86,7 +88,7 @@ function fixture({ supervisedMain = false } = {}) {
   });
   fs.writeFileSync(instances[0].candidate.process.env.MANDIBLE_DB, "production");
 
-  const authorityDirectory = path.join(root, "authority");
+  const authorityDirectory = path.join(root, "config", "local-sessions");
   const authorityDb = path.join(authorityDirectory, "sessions.db");
   const authority = new LocalSessionAuthority(authorityDirectory, "authority-test", { initialize: true, now: () => 7 });
   authority.registerInstance({
@@ -95,6 +97,14 @@ function fixture({ supervisedMain = false } = {}) {
     backend_generation: "legacy-main", effect_ceiling: [], writable_roots: [],
   });
   authority.close();
+  const caPaths = localCaPaths(root);
+  fs.mkdirSync(path.dirname(caPaths.installationAuthority), { recursive: true });
+  fs.mkdirSync(path.dirname(caPaths.rootCert), { recursive: true });
+  fs.writeFileSync(caPaths.installationAuthority, "installation-test");
+  fs.writeFileSync(caPaths.rootCert, "-----BEGIN CERTIFICATE-----\ntest-root\n-----END CERTIFICATE-----\n");
+  fs.writeFileSync(caPaths.rootKey, "test-key");
+  const sha256 = (file: string) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  fs.writeFileSync(caPaths.receipt, JSON.stringify({ schema: "mandible-local-ca-trust@1", state: "trusted", caddy_version: "2.11.3", storage_root: caPaths.storageRoot, installation_digest: sha256(caPaths.installationAuthority), root_digest: sha256(caPaths.rootCert), key_digest: sha256(caPaths.rootKey) }));
 
   const manifest = {
     schema: "mandible-local-session-cutover@1",
@@ -125,7 +135,7 @@ function fixture({ supervisedMain = false } = {}) {
   const manifestPath = path.join(root, "manifest.json");
   const journalPath = path.join(root, "journal.json");
   fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-  return { root, configPath, metadataPath, currentDbPath, oldDb, candidateDb, authorityDb, manifest, manifestPath, journalPath, servicePlistPath, supervisedMain,
+  return { root, configPath, metadataPath, currentDbPath, oldDb, candidateDb, authorityDb, caPaths, manifest, manifestPath, journalPath, servicePlistPath, supervisedMain,
     readPlistDefinition() {
       if (fs.readFileSync(servicePlistPath, "utf8") !== renderServicePlist(serviceDefinition)) throw new Error("fake plist inspector found unrecognized plist bytes");
       return structuredClone(serviceDefinition);
@@ -147,6 +157,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
   let interruptBeforeBindRole: string | null = null;
   let interruptAfterNextStop = false;
   let failReloadOnce = false;
+  let wrongGatewayStorage = false;
   const unhealthyRoles = new Set<string>();
   const supervisor = { loaded: fx.supervisedMain, enabled: fx.supervisedMain, plist_path: fx.servicePlistPath, definition: fx.supervisedMain ? fx.readPlistDefinition() : null };
   let interruptSupervisorEffect: "disable" | "bootout" | "bootstrap" | null = null;
@@ -196,6 +207,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
     interruptBeforeBind(role: string) { interruptBeforeBindRole = role; },
     interruptNextStop() { interruptAfterNextStop = true; },
     failNextReload() { failReloadOnce = true; },
+    misconfigureStorage() { wrongGatewayStorage = true; },
     dropGateway() { for (const [port, listener] of listeners) if (listener.kind === "gateway") listeners.delete(port); },
     replaceGatewayWithoutRuntime() {
       for (const [port, listener] of listeners) if (listener.kind === "gateway") listeners.delete(port);
@@ -242,7 +254,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
       portOpen: async (port: number) => listeners.has(port),
       waitPort: async (port: number) => { if (!listeners.has(port)) throw new Error(`missing listener ${port}`); },
       validateGateway: () => undefined,
-      configureGateway: (_gateway: unknown, mode: "migration" | "normal") => fs.writeFileSync(fx.configPath, mode === "migration" ? "{\n skip_install_trust\n}\n/api/client-auth/legacy-conversion/complete\n" : "{\n skip_install_trust\n}\nnormal\n"),
+      configureGateway: (_gateway: unknown, mode: "migration" | "normal") => fs.writeFileSync(fx.configPath, `{\n skip_install_trust\n storage file_system ${JSON.stringify(wrongGatewayStorage ? `${fx.caPaths.storageRoot}.other` : fx.caPaths.storageRoot)}\n}\n${mode === "migration" ? "/api/client-auth/legacy-conversion/complete" : "normal"}\n`),
       reloadGateway: () => { if (failReloadOnce) { failReloadOnce = false; throw new Error("reload failed"); } },
       startProcess: async (spec: { env?: Record<string, string> }, overlay: Record<string, string>) => {
         const role = spec.env?.MANDIBLE_INSTANCE_ROLE as "main" | "preview" | undefined;
@@ -341,6 +353,32 @@ function registration(fx: ReturnType<typeof fixture>, instanceId: string) {
 }
 
 describe("local session first cutover", () => {
+  it("requires the explicit installation CA trust receipt before activation effects", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    fs.rmSync(fx.caPaths.receipt);
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("has not passed explicit secure-local-connections setup");
+    expect(life.events).not.toContain("supervisor:disable");
+    expect(life.events).not.toContain("supervisor:bootout");
+  });
+
+  it("refuses root drift and wrong Caddy storage instead of opening a new trust path", async () => {
+    const drift = fixture({ supervisedMain: true });
+    const driftLife = lifecycle(drift);
+    await runCutoverCommand({ command: "prepare", manifest: drift.manifestPath, journal: drift.journalPath }, driftLife.effects);
+    fs.appendFileSync(drift.caPaths.rootCert, "drift");
+    await expect(runCutoverCommand({ command: "activate", journal: drift.journalPath, confirmCaTrusted: true }, driftLife.effects)).rejects.toThrow("Caddy root changed");
+    expect(driftLife.events).not.toContain("supervisor:disable");
+
+    const storage = fixture({ supervisedMain: true });
+    const storageLife = lifecycle(storage);
+    await runCutoverCommand({ command: "prepare", manifest: storage.manifestPath, journal: storage.journalPath }, storageLife.effects);
+    storageLife.misconfigureStorage();
+    await expect(runCutoverCommand({ command: "activate", journal: storage.journalPath, confirmCaTrusted: true }, storageLife.effects)).rejects.toThrow("Gateway Caddy storage");
+    expect(storageLife.events).not.toContain("start:gateway");
+  });
+
   it("suspends a KeepAlive production service instead of stopping its PID and restores through launchd", async () => {
     const fx = fixture({ supervisedMain: true });
     const life = lifecycle(fx);
