@@ -311,11 +311,18 @@ async function bootstrapCaddy(paths, context) {
   }
 }
 
-function shellQuote(value) { return `'${value.replaceAll("'", "'\\''")}'`; }
-
-function osascript(script) {
-  const result = spawnSync("/usr/bin/osascript", ["-e", script], { encoding: "utf8" });
-  if (result.status !== 0) throw new Error(`macOS certificate setup was declined or failed: ${(result.stderr || result.stdout).trim()}`);
+function nativeTrustHelper() {
+  if (process.platform !== "darwin") throw new Error("Native HTTPS trust setup is unsupported on this platform.");
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.join(scriptDir, "local-ca-trust-helper"), // packaged desktop resource
+    path.join(scriptDir, "..", "src-tauri", "resources", "local-ca-trust-helper"), // source checkout
+  ];
+  const helper = candidates.find((candidate) => existsEntry(candidate));
+  if (!helper) throw new Error("Native macOS trust helper is missing; rebuild the desktop app or run scripts/build-local-ca-trust-helper.sh in the source checkout.");
+  const stat = fs.lstatSync(helper);
+  if (!stat.isFile() || stat.isSymbolicLink() || !(stat.mode & 0o111)) throw new Error("Native macOS trust helper is not an executable regular file.");
+  return helper;
 }
 
 function systemTrustEffects(paths) {
@@ -330,10 +337,11 @@ function systemTrustEffects(paths) {
       try {
         fs.writeFileSync(snapshot, regularBytes(paths.rootCert, "Caddy root certificate"), { flag: "wx", mode: 0o600 });
         if (digest(regularBytes(snapshot, "approval certificate snapshot")) !== rootDigestValue) throw new Error("Caddy root changed before the approval snapshot; no trust was installed.");
-        osascript(`display dialog ${JSON.stringify(`Mandible will trust its local HTTPS certificate authority in the macOS System Keychain. This is a computer-wide trust change, not browser sign-in. Root SHA-256: ${rootDigestValue}. Continue only if you requested secure local connections.`)} buttons {"Cancel", "Continue"} default button "Cancel" with icon caution`);
         context.assertHeld();
-        const command = ["/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot", "-p", "ssl", "-k", "/Library/Keychains/System.keychain", snapshot].map(shellQuote).join(" ");
-        osascript(`do shell script ${JSON.stringify(command)} with administrator privileges`);
+        const result = spawnSync(nativeTrustHelper(), [snapshot, rootDigestValue], { encoding: "utf8", timeout: 60_000 });
+        if (result.error || result.status !== 0) throw new Error(`This Mac did not complete secure local connections setup. macOS owns any account authentication; Mandible does not ask for a password. ${(result.stderr || result.stdout || result.error?.message || "Approval was declined or unavailable.").trim()}`);
+        context.assertHeld();
+        if (rootDigest(paths) !== rootDigestValue) throw new Error("Caddy root changed during macOS approval; the prepared setup remains pinned but cannot be marked trusted.");
       } finally {
         fs.rmSync(snapshotDir, { recursive: true, force: true });
       }

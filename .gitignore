@@ -6,6 +6,7 @@ vendor/
 *.db-shm
 target/
 src-tauri/gen/
+src-tauri/resources/local-ca-trust-helper
 worktrees/
 coverage/
 AGENT_HANDOFF.md

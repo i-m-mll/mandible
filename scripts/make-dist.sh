@@ -4,6 +4,7 @@
 # A native build must not overwrite dist/index.js after `npm run build`.
 set -e
 mkdir -p src-tauri/dist
+scripts/build-local-ca-trust-helper.sh
 cp src-tauri/bootstrap/index.html src-tauri/dist/index.html
 cp src-tauri/bootstrap/bootstrap.css src-tauri/dist/bootstrap.css
 cp src-tauri/bootstrap/bootstrap.js src-tauri/dist/bootstrap.js
