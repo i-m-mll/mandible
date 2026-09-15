@@ -28,6 +28,17 @@ const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
 // be removed. Deliberately anchored so no label outside it can ever match.
 const LEGACY_PREVIEW_LABEL_PATTERN = /^bio\.mll\.mandible\.preview\./;
 const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)?$/;
+const LEGACY_PREVIEW_CONTRACT_DRIFT = new Set([
+  "MANDIBLE_INSTANCE_ID",
+  "MANDIBLE_INSTALLATION_ID",
+  "MANDIBLE_PUBLIC_ORIGIN",
+  "MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR",
+  "MANDIBLE_CONTEXT_VERIFICATION_KEY",
+  "MANDIBLE_ARTIFACT_DIR",
+  "MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR",
+  "MANDIBLE_ALLOWED_EFFECTS",
+  "MANDIBLE_WRITABLE_ROOTS",
+]);
 
 if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(fileURLToPath(import.meta.url))) {
   await runCli();
@@ -95,6 +106,7 @@ async function createOrReusePreview(options) {
     const existing = await healthyExistingPreview(branch, { worktree });
     if (existing) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
+      if (existing.legacyContractDrift) throw legacyPreviewCutoverRequired(existing);
       const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
       if (existing.health?.startup_commit?.hash !== currentHead) {
         return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
@@ -124,6 +136,7 @@ async function createOrReusePreview(options) {
       : null;
     if (existing && !options.dryRun) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
+      if (existing.legacyContractDrift) throw legacyPreviewCutoverRequired(existing);
       if (!selectedWorktree) {
         throw new Error(`Healthy preview metadata exists for ${branch}, but its worktree is not registered.`);
       }
@@ -188,6 +201,8 @@ async function createOrReusePreview(options) {
     };
   }
 
+  assertOrdinaryPreviewLifecycleAllowed();
+
   fs.mkdirSync(preview.root, { recursive: true });
   fs.rmSync(path.join(preview.root, "preview-browser-enrollment.json"), { force: true });
   const preStartCleanup = await cleanupPreviewCache({
@@ -217,7 +232,6 @@ async function createOrReusePreview(options) {
   const dbCopy = path.join(preview.root, `mandible-${formatDateTimeForFile(new Date())}.db`);
   const projection = await createProjectedSnapshot({ sourceDb, dbCopy, worktree });
   sanitizePreviewDatabase(dbCopy);
-  replaceSymlink(dbCopy, path.join(preview.root, "current.db"));
   const agentsReview = options.artifactVersion
     ? await materializeProjectedAgentsReview({ worktree, previewRoot: preview.root, db: dbCopy, sourceDb,
       artifactVersionRef: options.artifactVersion })
@@ -229,8 +243,6 @@ async function createOrReusePreview(options) {
   const runScript = path.join(preview.root, "run.sh");
   const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
   const instanceEnv = previewInstanceEnv({ port, dbCopy, sourceDb, pidFile, generation: currentHead });
-  registerPreviewInstance(instanceEnv);
-  reloadLocalFrontDoor();
   writeRunScript(runScript, {
     worktree,
     port,
@@ -245,28 +257,45 @@ async function createOrReusePreview(options) {
 
   fs.writeFileSync(stdoutLog, "");
   fs.writeFileSync(stderrLog, "");
-  await startPreviewProcess({
-    runScript,
-    worktree,
-    port,
-    dbCopy,
-    sourceDb,
-    pidFile,
-    stdoutLog,
-    stderrLog,
-  });
-
-  const health = await waitForPreviewReadiness(
-    port,
-    {
-      head: currentHead,
+  const priorRegistration = registerPreviewInstance(instanceEnv);
+  let started = null;
+  let health;
+  try {
+    reloadLocalFrontDoor();
+    started = await startPreviewProcess({
+      runScript,
+      worktree,
+      port,
       dbCopy,
       sourceDb,
-      previewRoot: preview.root,
-    },
-    HEALTH_TIMEOUT_MS,
-    stderrLog,
-  );
+      pidFile,
+      stdoutLog,
+      stderrLog,
+    });
+    health = await waitForPreviewReadiness(
+      port,
+      {
+        head: currentHead,
+        dbCopy,
+        sourceDb,
+        previewRoot: preview.root,
+      },
+      HEALTH_TIMEOUT_MS,
+      stderrLog,
+    );
+  } catch (error) {
+    const recoveryFailures = [];
+    if (started) {
+      try { await stopPreviewProcess(pidFile); } catch (recoveryError) { recoveryFailures.push(recoveryError); }
+    }
+    try { restorePreviewRegistration(instanceEnv, priorRegistration); } catch (recoveryError) { recoveryFailures.push(recoveryError); }
+    try { reloadLocalFrontDoor(); } catch (recoveryError) { recoveryFailures.push(recoveryError); }
+    if (recoveryFailures.length > 0) {
+      throw new AggregateError([error, ...recoveryFailures], "Preview startup and registration rollback both failed.");
+    }
+    throw error;
+  }
+  replaceSymlink(dbCopy, path.join(preview.root, "current.db"));
   const metadata = {
     ok: true,
     status: "started",
@@ -922,7 +951,7 @@ function previewInstanceEnvDrift(metadata, previewRoot) {
     .map(([key]) => key);
 }
 
-async function healthyExistingPreview(branch, expected = {}) {
+export async function healthyExistingPreview(branch, expected = {}) {
   const preview = previewPaths(branch);
   if (!fs.existsSync(preview.metadata)) return null;
 
@@ -932,20 +961,49 @@ async function healthyExistingPreview(branch, expected = {}) {
   const readiness = await readPreviewReadiness(metadata.port);
   if (!readiness.ok) return null;
   const { health } = readiness;
-  if (!hasExpectedPreviewPolicy(health)) return null;
   if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return null;
   validatePreviewIdentity(metadata, preview, branch, expected.worktree);
-  // Most old isolation contracts are not reusable because they share writable
-  // state with the live daemon. Client-auth is the one upgradeable exception:
-  // its exact authority bytes can move after the verified daemon stops.
   const drift = previewInstanceEnvDrift(metadata, preview.root);
-  if (drift.length > 0) return null;
+  if (!hasExpectedPreviewPolicy(health) || drift.length > 0) {
+    if (!isExactLegacyPreview(metadata, health, preview.root, drift) && !isLegacyPreviewListener(health)) return null;
+    return { ...metadata, health, legacyContractDrift: drift };
+  }
 
   return {
     ...metadata,
     health,
     freshUrl: `${metadata.instanceEnv.MANDIBLE_PUBLIC_ORIGIN}/?fresh=${Date.now()}#/timeline`,
   };
+}
+
+function isLegacyPreviewListener(health) {
+  return health?.ready === true && health?.warm === true &&
+    health?.instance?.role === "preview" && health?.instance?.operational_mutations === "reject";
+}
+
+function isExactLegacyPreview(metadata, health, previewRoot, drift) {
+  const currentDb = readSymlinkTarget(path.join(previewRoot, "current.db"));
+  return health?.ready === true &&
+    health?.warm === true &&
+    health?.instance?.role === "preview" &&
+    health?.instance?.operational_mutations === "reject" &&
+    health?.instance?.db_path_source === "iab-preview-copy" &&
+    canonicalPath(health?.instance?.db_path ?? "") === canonicalPath(metadata.db ?? "") &&
+    canonicalPath(health?.instance?.source_db_path ?? "") === canonicalPath(metadata.sourceDb ?? "") &&
+    Boolean(currentDb) &&
+    canonicalPath(currentDb) === canonicalPath(metadata.db ?? "") &&
+    Boolean(metadata.instanceEnv?.MANDIBLE_CLIENT_AUTH_DIR) &&
+    fs.existsSync(metadata.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR) &&
+    drift.length > 0 &&
+    drift.every((key) => LEGACY_PREVIEW_CONTRACT_DRIFT.has(key) && metadata.instanceEnv?.[key] === undefined);
+}
+
+function legacyPreviewCutoverRequired(existing) {
+  return new Error(
+    `Preview port ${existing.port} is a verified legacy public listener and cannot be replaced independently. ` +
+    "Run the coordinated local-session cutover for production and preview together; " +
+    "the ordinary launcher will not stop the listener or allocate a second browser origin.",
+  );
 }
 
 async function refreshExistingPreview(existing, details) {
@@ -1664,6 +1722,14 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
     MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
+    // Unlike the preview copy, these fingerprints must survive cache cleanup so
+    // first cutover can verify and retire the exact legacy browser authority.
+    MANDIBLE_CLIENT_AUTH_DIR: path.join(
+      mandibleHome(),
+      "preview-authorities",
+      path.basename(previewRoot),
+      "client-auth",
+    ),
     MANDIBLE_PREVIEW_ROOT: previewRoot,
     MANDIBLE_ARTIFACT_DIR: artifactRoot,
     MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.resolve(
@@ -1715,6 +1781,15 @@ function localSessionAuthorityDir() {
   return path.join(mandibleHome(), "config", "local-sessions");
 }
 
+function assertOrdinaryPreviewLifecycleAllowed() {
+  const journalPath = path.join(localSessionAuthorityDir(), "cutover.json");
+  const journal = readJsonFile(journalPath);
+  if (!journal || journal.state === "complete" || journal.state === "rolled_back") return;
+  throw new Error(
+    `Local-session cutover is ${journal.state}; ordinary preview lifecycle is disabled until it completes or rolls back.`,
+  );
+}
+
 function readInstallationId() {
   const filePath = path.join(mandibleHome(), "config", "client-auth", "authority-id");
   if (!fs.existsSync(filePath)) throw new Error("Local installation authority is missing; run `npm run local-front-door -- initialize` first.");
@@ -1755,9 +1830,36 @@ function registerPreviewInstance(env) {
       env.MANDIBLE_WRITABLE_ROOTS,
       Date.now(),
     );
+    return existing ?? null;
   } finally {
     db.close();
   }
+}
+
+function restorePreviewRegistration(env, existing) {
+  const db = new Database(path.join(localSessionAuthorityDir(), "sessions.db"));
+  try {
+    db.transaction(() => {
+      if (!existing) {
+        db.prepare("DELETE FROM instance_registrations WHERE instance_id = ?").run(env.MANDIBLE_INSTANCE_ID);
+        return;
+      }
+      db.prepare(`UPDATE instance_registrations SET
+        installation_id=?, role=?, public_origin=?, backend_origin=?, backend_generation=?,
+        effect_ceiling_json=?, writable_roots_json=?, updated_at=?
+        WHERE instance_id=?`).run(
+        existing.installation_id,
+        existing.role,
+        existing.public_origin,
+        existing.backend_origin,
+        existing.backend_generation,
+        existing.effect_ceiling_json,
+        existing.writable_roots_json,
+        existing.updated_at,
+        existing.instance_id,
+      );
+    })();
+  } finally { db.close(); }
 }
 
 function reloadLocalFrontDoor() {
@@ -1776,13 +1878,17 @@ function reloadLocalFrontDoor() {
   }
 }
 
-function sanitizePreviewDatabase(databasePath) {
+export function sanitizePreviewDatabase(databasePath) {
   const db = new Database(databasePath);
   try {
     const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
     db.transaction(() => {
-      if (tables.has("user_credentials")) db.prepare("DELETE FROM user_credentials").run();
-      if (tables.has("auth_clearances")) db.prepare("DELETE FROM auth_clearances").run();
+      // Credential and clearance rows are immutable attribution history. Their
+      // reusable secrets/private keys live outside SQLite, while retained ledger
+      // rows reference these IDs with ON DELETE RESTRICT.
+      if (tables.has("delegated_signing_runtime_bindings")) {
+        db.prepare("DELETE FROM delegated_signing_runtime_bindings").run();
+      }
       if (tables.has("settings")) {
         db.prepare("DELETE FROM settings WHERE key LIKE '%token%' OR key LIKE '%secret%' OR key LIKE '%credential%'").run();
       }

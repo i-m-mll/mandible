@@ -16,6 +16,7 @@
     "dev": "node scripts/run-tsc.js --watch & node ui/esbuild.config.js --watch",
     "iab-preview": "node scripts/iab-preview.mjs",
     "local-front-door": "node scripts/local-front-door.mjs",
+    "local-session-cutover": "node scripts/local-session-cutover.mjs",
     "iab-preview-cleanup": "node scripts/iab-preview.mjs cleanup",
     "demo:briefing": "node scripts/demo-briefing.mjs",
     "preview-db-snapshot": "node scripts/project-db-snapshot.mjs",

@@ -168,6 +168,10 @@ export class ClientAuthenticator implements ClientAuthGate {
     return this.clientAuthAuthorityId;
   }
 
+  credentialDirectory(): string {
+    return this.secretsDir;
+  }
+
   instanceId(): string {
     return this.instance?.instance_id ?? "production";
   }

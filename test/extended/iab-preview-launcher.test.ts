@@ -812,6 +812,12 @@ function previewContractEnv(details: {
     MANDIBLE_WRITABLE_ROOTS: JSON.stringify([details.previewRoot]),
     MANDIBLE_FILE_RPC_DIR: path.join(details.previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(details.previewRoot, "config"),
+    MANDIBLE_CLIENT_AUTH_DIR: path.join(
+      mandibleHome,
+      "preview-authorities",
+      path.basename(details.previewRoot),
+      "client-auth",
+    ),
     MANDIBLE_PREVIEW_ROOT: details.previewRoot,
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversations, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversations, "search-cache.db"),
@@ -1502,6 +1508,87 @@ describe("iab-preview launcher", () => {
     const payload = JSON.parse(result.stdout);
     expect(payload.status).toBe("dry-run");
     expect(payload.mode).toBe("current-integration");
+  });
+
+  it("requires the coordinated cutover for the exact legacy preview instead of allocating another origin", async () => {
+    const repo = createRepo();
+    git(["checkout", "-b", "integration/test-preview"], repo);
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
+    tempRoots.push(previewBase);
+    const previewRoot = path.join(previewBase, "integration-test-preview");
+    const fileRpcDir = path.join(previewRoot, "agent-rpc");
+    const credentialDir = path.join(previewBase, "mandible-home", "preview-authorities", "integration-test-preview", "client-auth");
+    fs.mkdirSync(fileRpcDir, { recursive: true });
+    fs.mkdirSync(credentialDir, { recursive: true });
+    const db = path.join(previewRoot, "mandible-legacy.db");
+    const sourceDb = path.join(repo, "source.db");
+    const pidFile = path.join(previewRoot, "mandible.pid");
+    fs.writeFileSync(db, "legacy copy");
+    fs.writeFileSync(sourceDb, "source");
+    fs.writeFileSync(pidFile, `${process.pid}\n`);
+    fs.symlinkSync(db, path.join(previewRoot, "current.db"));
+    const port = await listenForHealth({
+      ready: true,
+      warm: true,
+      startup_epoch: "legacy-preview",
+      startup_commit: { hash: gitOutput(["rev-parse", "HEAD"], repo), summary: "legacy", date: "" },
+      instance: {
+        role: "preview",
+        operational_mutations: "reject",
+        db_path: db,
+        db_path_source: "iab-preview-copy",
+        source_db_path: sourceDb,
+      },
+      file_rpc_dir: fileRpcDir,
+    });
+    const instanceEnv = previewContractEnv({ port, db, sourceDb, previewRoot, pidFile });
+    for (const key of [
+      "MANDIBLE_INSTANCE_ID",
+      "MANDIBLE_INSTALLATION_ID",
+      "MANDIBLE_PUBLIC_ORIGIN",
+      "MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR",
+      "MANDIBLE_CONTEXT_VERIFICATION_KEY",
+      "MANDIBLE_ARTIFACT_DIR",
+      "MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR",
+      "MANDIBLE_ALLOWED_EFFECTS",
+      "MANDIBLE_WRITABLE_ROOTS",
+    ]) delete instanceEnv[key];
+    fs.writeFileSync(path.join(previewRoot, "metadata.json"), JSON.stringify({
+      branch: "integration/test-preview",
+      worktree: repo,
+      port,
+      db,
+      sourceDb,
+      previewRoot,
+      instanceEnv,
+    }));
+
+    const launcherEnv = previewLauncherEnv(previewBase);
+    const previousBase = process.env.MANDIBLE_PREVIEW_BASE_DIR;
+    const previousHome = process.env.MANDIBLE_HOME;
+    process.env.MANDIBLE_PREVIEW_BASE_DIR = previewBase;
+    process.env.MANDIBLE_HOME = path.join(previewBase, "mandible-home");
+    try {
+      const launcher = await import(`${pathToFileURL(SCRIPT).href}?legacy-cutover=${Date.now()}`);
+      const existing = await launcher.healthyExistingPreview("integration/test-preview", { worktree: repo });
+      expect(existing?.legacyContractDrift).toBeTruthy();
+    } finally {
+      if (previousBase === undefined) delete process.env.MANDIBLE_PREVIEW_BASE_DIR;
+      else process.env.MANDIBLE_PREVIEW_BASE_DIR = previousBase;
+      if (previousHome === undefined) delete process.env.MANDIBLE_HOME;
+      else process.env.MANDIBLE_HOME = previousHome;
+    }
+
+    const result = await execFileAsync(process.execPath, [SCRIPT, "--json", "--no-build"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: launcherEnv,
+    }).then(
+      () => { throw new Error("legacy preview launch unexpectedly succeeded"); },
+      (error: { stdout?: string }) => error,
+    );
+    expect(JSON.parse(result.stdout ?? "{}").error).toContain("coordinated local-session cutover");
+    expect(fs.readdirSync(previewRoot).filter((entry) => entry.startsWith("mandible-"))).toEqual(["mandible-legacy.db"]);
   });
 
   it("does not reuse a preview daemon that owns the shared file-RPC spool", async () => {
