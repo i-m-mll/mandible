@@ -4,6 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { SignJWT, importPKCS8, importSPKI, jwtVerify } from "jose";
 import type { Effect } from "../security/effect-policy.js";
+import { LEGACY_BROWSER_STATE_MAX_BYTES } from "./legacy-browser-state.js";
 
 const COOKIE_NAME = "__Host-mandible-session";
 const PAIRING_COOKIE_NAME = "__Host-mandible-pairing";
@@ -478,7 +479,7 @@ export class LocalSessionAuthority {
     const returnPath = validateReturnPath(input.return_path);
     const expiresAt = this.now() + 30 * 60 * 1_000;
     const stateJson = JSON.stringify(input.browser_state);
-    if (Buffer.byteLength(stateJson) > 256 * 1_024) throw new Error("Legacy browser state is too large.");
+    if (Buffer.byteLength(stateJson) > LEGACY_BROWSER_STATE_MAX_BYTES) throw new Error("Legacy browser state is too large.");
     this.db.transaction(() => {
       const existing = this.db.prepare("SELECT * FROM legacy_conversions WHERE legacy_fingerprint = ?")
         .get(input.legacy_fingerprint) as Record<string, unknown> | undefined;

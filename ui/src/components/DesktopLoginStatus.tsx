@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'preact/hooks';
 import { isDesktopShell } from '../api';
 import {
   completeBrowserPairing,
+  getBrowserSessionMigrationFailure,
   getClientAuthSessionState,
   logoutClientAuth,
   startBrowserPairing,
@@ -61,6 +62,11 @@ export function DesktopLoginStatus({
   useEffect(() => subscribeClientAuthSessionState(setSessionState), []);
 
   useEffect(() => {
+    if (sessionState === 'migration-blocked') {
+      setManualRetryAllowed(false);
+      setBusy(false);
+      return;
+    }
     if (sessionState === 'enrolled') {
       resetDesktopLoginRecoveryEpisode();
       setManualRetryAllowed(false);
@@ -131,6 +137,25 @@ export function DesktopLoginStatus({
       setBusy(false);
     }
   }, []);
+
+  if (sessionState === 'migration-blocked') {
+    const message = getBrowserSessionMigrationFailure()
+      ?? 'Existing browser state could not be migrated. Keep this profile intact and ask the operator to resolve it before conversion.';
+    return placement === 'rail' ? (
+      <div className="desktop-login desktop-login--rail" role="alert" title={message}>
+        <span className="app-rail__item" aria-label="Browser migration blocked">
+          <span className="app-rail__icon"><DesktopLoginIcon /></span>
+          {showRailLabel ? <span className="app-rail__label">Migration blocked</span> : null}
+        </span>
+        <span className="sr-only">{message}</span>
+      </div>
+    ) : (
+      <div className="desktop-login" role="alert">
+        <span className="desktop-login__label">Migration blocked</span>
+        <span className="desktop-login__error">{message}</span>
+      </div>
+    );
+  }
 
   if (busy) {
     return null;

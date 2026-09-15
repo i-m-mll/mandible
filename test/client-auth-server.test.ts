@@ -305,9 +305,14 @@ describe("strict browser boundary", () => {
         }],
       }), { mode: 0o600 });
 
+      const browserState = Object.fromEntries([
+        ...Array.from({ length: 90 }, (_, index) => [`mandible.view.setting:${index}`, `value-${index}`]),
+        ["mandible.briefing.draft:v2:test", "unsent answer"],
+        ["sidebar-width:auth", "320"],
+      ]);
       const prepared = await requestAt(sourcePort, "POST", "/api/client-auth/legacy-conversion/prepare", {
         return_path: "/#/timeline?project=mandible",
-        browser_state: { "mandible.timeline.view": "saved" },
+        browser_state: browserState,
       }, {
         Host: new URL(legacyOrigin).host,
         Origin: legacyOrigin,
@@ -339,6 +344,12 @@ describe("strict browser boundary", () => {
         "X-Mandible-Target-Instance": targetAudience,
       });
       expect(whoami.body).toMatchObject({ authenticated: true, audience: targetAudience });
+      const restored = await requestAt(port, "GET", "/api/client-auth/legacy-conversion/state", undefined, {
+        Host: "app.mandible.localhost:19420", Origin: origin, Cookie: cookie,
+        "X-Mandible-Target-Instance": targetAudience,
+      });
+      expect(restored.status).toBe(200);
+      expect(restored.body.browser_state).toEqual(browserState);
 
       for (const [hostileLabel, hostile] of [
         ["hostile origin", { Origin: "https://evil.invalid" }],
