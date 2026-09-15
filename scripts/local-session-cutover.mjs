@@ -312,8 +312,9 @@ async function ensureGatewayStarted(journalPath, journal, effects, mode = "migra
   if (intentDone(working, key)) {
     const existing = await discoverGateway(working.manifest, effects);
     if (existing) {
-      assertSameProcess(existing, working.runtime.gateway ?? working.runtime.intents[key].listener, "gateway");
-      return working;
+      assertSameProcess(existing, working.runtime.intents[key].listener, "gateway");
+      if (sameValue(working.runtime.gateway, existing) && working.runtime.gateway_mode === mode) return working;
+      return persist(journalPath, working, { runtime: { ...working.runtime, gateway: existing, gateway_mode: mode } });
     }
     working = retryIntent(journalPath, working, key);
   }
@@ -335,8 +336,22 @@ async function ensureGatewayStarted(journalPath, journal, effects, mode = "migra
     assertSameProcess(listener, intended, `${mode} gateway`);
   }
   if (!listener) throw new Error(`${mode} gateway has no single discoverable listener process.`);
-  working = finishIntent(journalPath, working, key, { listener });
-  return persist(journalPath, working, { runtime: { ...working.runtime, gateway: listener, gateway_mode: mode } });
+  return finishGatewayStart(journalPath, working, key, listener, mode);
+}
+
+function finishGatewayStart(journalPath, journal, key, listener, mode) {
+  const intent = journal.runtime.intents[key];
+  return persist(journalPath, journal, {
+    runtime: {
+      ...journal.runtime,
+      gateway: listener,
+      gateway_mode: mode,
+      intents: {
+        ...journal.runtime.intents,
+        [key]: { ...intent, status: "done", completed_at: new Date().toISOString(), listener },
+      },
+    },
+  });
 }
 
 async function ensureGatewayStopped(journalPath, journal, effects) {

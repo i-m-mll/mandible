@@ -176,6 +176,12 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
     interruptNextStop() { interruptAfterNextStop = true; },
     failNextReload() { failReloadOnce = true; },
     dropGateway() { for (const [port, listener] of listeners) if (listener.kind === "gateway") listeners.delete(port); },
+    replaceGatewayWithoutRuntime() {
+      for (const [port, listener] of listeners) if (listener.kind === "gateway") listeners.delete(port);
+      const replacement = { pid: ++nextPid, fingerprint: `process-${nextPid}`, kind: "gateway" as const };
+      for (const instance of fx.manifest.instances) listeners.set(instance.public_port, replacement);
+      return { pid: replacement.pid, fingerprint: replacement.fingerprint };
+    },
     makeCandidateUnhealthy(role: string) { unhealthyRoles.add(role); },
     effects: {
       health,
@@ -417,6 +423,26 @@ describe("local session first cutover", () => {
     expect(JSON.parse(fs.readFileSync(fx.metadataPath, "utf8"))).toEqual(fx.manifest.preview_promotion.metadata);
     expect(fs.realpathSync(fx.currentDbPath)).toBe(fs.realpathSync(fx.candidateDb));
     expect(JSON.parse(fs.readFileSync(fx.journalPath, "utf8")).runtime.intents["preview.promote"].status).toBe("done");
+  });
+
+  it("recovers a completed gateway intent whose runtime receipt was not yet updated", async () => {
+    const fx = fixture();
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    await runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects);
+    life.failNextReload();
+    await expect(runCutoverCommand({ command: "complete", journal: fx.journalPath, confirmBrowserConversion: true }, life.effects)).rejects.toThrow("forward-only");
+    const replacement = life.replaceGatewayWithoutRuntime();
+    const interrupted = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
+    expect(interrupted.runtime.gateway).not.toEqual(replacement);
+    interrupted.runtime.intents["gateway.start.normal"] = {
+      ...interrupted.runtime.intents["gateway.start.normal"],
+      status: "done",
+      listener: replacement,
+    };
+    fs.writeFileSync(fx.journalPath, JSON.stringify(interrupted));
+    await expect(runCutoverCommand({ command: "complete", journal: fx.journalPath, confirmBrowserConversion: true }, life.effects)).resolves.toMatchObject({ state: "complete" });
+    expect(JSON.parse(fs.readFileSync(fx.journalPath, "utf8")).runtime.gateway).toEqual(replacement);
   });
 
   it("restores stable legacy facts with a new startup epoch and resumes rolling_back", async () => {
