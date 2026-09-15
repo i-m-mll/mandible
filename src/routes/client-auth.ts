@@ -21,6 +21,7 @@ import {
 } from "../client-auth/authz.js";
 import { serialize } from "cookie";
 import { COOKIE_NAME, PAIRING_COOKIE_NAME, TRANSFER_COOKIE_NAME } from "../client-auth/session-authority.js";
+import { validateLegacyBrowserState } from "../client-auth/legacy-browser-state.js";
 import type { IssuedBrowserSession } from "../client-auth/session-authority.js";
 import {
   getOperator,
@@ -74,19 +75,6 @@ function setSessionAndClearTransferCookies(
 function requestBody(req: { body: unknown }): Record<string, unknown> {
   if (typeof req.body !== "string") return bodyRecord(req as never);
   return Object.fromEntries(new URLSearchParams(req.body));
-}
-
-function browserState(value: unknown): Record<string, string> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length > 64) throw new Error("Legacy browser state has too many entries.");
-  return Object.fromEntries(entries.map(([key, item]) => {
-    if (!key || key.length > 160 || /auth|token|credential|secret/i.test(key)
-        || typeof item !== "string" || item.length > 64 * 1_024) {
-      throw new Error("Legacy browser state contains an unsafe entry.");
-    }
-    return [key, item];
-  }));
 }
 
 function htmlEscape(value: string): string {
@@ -228,7 +216,7 @@ export function registerClientAuthRoutes(
         identity,
         raw,
         optionalString(body, "return_path") ?? "/",
-        browserState(body.browser_state),
+        validateLegacyBrowserState(body.browser_state),
         legacyOrigin,
         targetAudience,
       );

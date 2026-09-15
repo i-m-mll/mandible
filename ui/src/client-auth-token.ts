@@ -1,12 +1,18 @@
 // One browser-session client for fetch, SSE, and WebSocket transports.
 // The reusable session credential is an HttpOnly host-only cookie; renderer
 // code owns only the session-bound CSRF value returned by whoami.
+import {
+  exportLegacyBrowserState,
+  LEGACY_BEARER_STORAGE_KEY,
+  LegacyBrowserStateError,
+  PENDING_LOGOUT_STORAGE_KEY,
+  restoreLegacyBrowserState,
+} from '../../src/client-auth/legacy-browser-state';
 
 const WHOAMI_PATH = '/api/client-auth/whoami';
 const RENEW_PATH = '/api/client-auth/renew';
 const LOGOUT_PATH = '/api/client-auth/logout';
-const PENDING_LOGOUT_KEY = 'mandible.session.revocation_pending';
-const LEGACY_BEARER_STORAGE_KEY = 'mandible.client_auth.token';
+const PENDING_LOGOUT_KEY = PENDING_LOGOUT_STORAGE_KEY;
 const PREVIEW_TRANSFER_ATTEMPT_KEY = 'mandible.preview_transfer.attempted_at';
 
 export type ClientAuthSessionState =
@@ -16,7 +22,8 @@ export type ClientAuthSessionState =
   | 'wrong-audience'
   | 'expired'
   | 'revoked'
-  | 'incompatible';
+  | 'incompatible'
+  | 'migration-blocked';
 
 type SessionProjection = {
   family_id: string;
@@ -32,15 +39,21 @@ let session: SessionProjection | null = null;
 let pending: Promise<ClientAuthSessionState> | null = null;
 let renewal: Promise<boolean> | null = null;
 let legacyBearerRetired = false;
+let migrationFailure: string | null = null;
 const listeners = new Set<(value: ClientAuthSessionState) => void>();
 
 export function getClientAuthSessionState(): ClientAuthSessionState {
   return state;
 }
 
+export function getBrowserSessionMigrationFailure(): string | null {
+  return migrationFailure;
+}
+
 export function isTerminalClientAuthState(value = state): boolean {
   return value === 'signed-out' || value === 'wrong-audience'
-    || value === 'expired' || value === 'revoked' || value === 'incompatible';
+    || value === 'expired' || value === 'revoked' || value === 'incompatible'
+    || value === 'migration-blocked';
 }
 
 export function subscribeClientAuthSessionState(
@@ -108,22 +121,6 @@ function legacyBearer(): string | null {
   }
 }
 
-function legacyBrowserState(): Record<string, string> {
-  const result: Record<string, string> = {};
-  try {
-    for (let index = 0; index < window.localStorage.length && Object.keys(result).length < 64; index += 1) {
-      const key = window.localStorage.key(index);
-      if (!key || key === LEGACY_BEARER_STORAGE_KEY || key === PENDING_LOGOUT_KEY
-          || /auth|token|credential|secret/i.test(key) || key.length > 160) continue;
-      const value = window.localStorage.getItem(key);
-      if (value !== null && value.length <= 64 * 1_024) result[key] = value;
-    }
-  } catch {
-    return {};
-  }
-  return result;
-}
-
 async function beginLegacyConversion(fetchImpl: typeof fetch): Promise<boolean> {
   if (!legacyOrigin()) return false;
   const token = legacyBearer();
@@ -133,7 +130,7 @@ async function beginLegacyConversion(fetchImpl: typeof fetch): Promise<boolean> 
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({
       return_path: `${window.location.pathname}${window.location.search}${window.location.hash}`,
-      browser_state: legacyBrowserState(),
+      browser_state: exportLegacyBrowserState(window.localStorage),
     }),
   });
   const body = await readJson(response);
@@ -202,13 +199,10 @@ async function finishLegacyConversion(fetchImpl: typeof fetch, active: SessionPr
   if (!validTarget || active.audience !== (target.port === '19421'
     ? target.hostname.replace('.mandible.localhost', '')
     : 'production')) return;
-  if (body.browser_state && typeof body.browser_state === 'object' && !Array.isArray(body.browser_state)) {
-    for (const [key, value] of Object.entries(body.browser_state as Record<string, unknown>)) {
-      if (typeof value === 'string' && !/auth|token|credential|secret/i.test(key)) {
-        try { window.localStorage.setItem(key, value); } catch { /* storage disabled */ }
-      }
-    }
+  if (body.browser_state === null || body.browser_state === undefined) {
+    throw new LegacyBrowserStateError('Legacy browser state is missing from the pending conversion; this profile was not finalized.');
   }
+  restoreLegacyBrowserState(window.localStorage, body.browser_state);
   if (body.finalized !== true) {
     const finalized = await fetchImpl('/api/client-auth/legacy-conversion/finalize', {
       method: 'POST',
@@ -296,7 +290,12 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
       session = next;
       if (body.legacy_conversion_pending === true) await finishLegacyConversion(fetchImpl, next);
       return publish('enrolled');
-    } catch {
+    } catch (error) {
+      if (error instanceof LegacyBrowserStateError) {
+        migrationFailure = error.message;
+        session = null;
+        return publish('migration-blocked');
+      }
       return publish('unreachable');
     }
   })().finally(() => {
@@ -408,5 +407,6 @@ export function __resetBrowserSessionForTests(): void {
   pending = null;
   renewal = null;
   legacyBearerRetired = false;
+  migrationFailure = null;
   listeners.clear();
 }

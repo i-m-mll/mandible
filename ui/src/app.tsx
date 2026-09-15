@@ -2846,7 +2846,8 @@ if (mountNode) {
       // it (bootstrap file first, then the operator keychain credential). This
       // is a no-op in a browser and when a session is already working, so an
       // enrolled dashboard never mints a redundant session just by starting up.
-      if (getClientAuthSessionState() === 'enrolled') return undefined;
+      const sessionState = getClientAuthSessionState();
+      if (sessionState === 'enrolled' || sessionState === 'migration-blocked') return undefined;
       return recoverDesktopLoginAutomatically();
     })
     .catch(() => undefined)
