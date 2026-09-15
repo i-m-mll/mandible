@@ -198,8 +198,9 @@ async function acquireProcessLock(paths) {
   } catch (error) { holder.stdin.end(); holder.kill("SIGTERM"); throw error; }
 }
 
-export async function setupLocalCa(paths, effects = systemTrustEffects(paths)) {
-  const context = await acquireProcessLock(paths);
+// The CLI and desktop use the real macOS lock; mocked state tests supply their own adapter.
+export async function setupLocalCa(paths, effects = systemTrustEffects(paths), acquireLock = acquireProcessLock) {
+  const context = await acquireLock(paths);
   try {
     context.assertHeld();
     await recoverGatewayIntent(paths, context);

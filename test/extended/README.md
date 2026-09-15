@@ -9,6 +9,19 @@ any phase if the complete branch-test process tree reaches 950,000 KiB aggregate
 RSS. The watchdog controller is outside that measured tree. It reports each
 phase's measured peak.
 
+## Provisioned macOS CA lock proof
+
+`local-ca-lockf.test.ts` exercises the real macOS `lockf` setup boundary,
+separate-process SIGKILL windows, and an independently live child compiled by
+Xcode Command Line Tools (`/usr/bin/clang`). Run it serially with
+`npm run test:extended -- --ordinary-only test/extended/local-ca-lockf.test.ts`
+on a provisioned macOS host. The maintained full extended command includes it
+on macOS; on other platforms its exact file is omitted because those OS
+primitives do not exist. An explicit request to run the file on an unprovisioned
+host fails visibly. This classification is by external provisioning, not by a
+test failure. The portable receipt, drift, denial, and custody state-machine
+checks remain in flat `test/local-ca-trust.test.ts` with a mocked lock adapter.
+
 `iab-preview-launcher.test.ts` remains part of this maintained command, but is
 run one test declaration per fresh process by `scripts/run-iab-preview-tests.mjs`.
 Its process, SQLite, and copied-artifact fixtures retain enough native and V8
@@ -54,8 +67,9 @@ Changing any listed file requires removing it from this table and the config
 exclusion, then making its maintained assertions green or moving a still-useful
 regression to `test/quarantine/` against an open issue.
 
-Every file here was moved by one rule, not adjudicated one by one. A file is in
-the default gate (`npm test`) only if it is on the whitelist in
+The original corpus here was moved by one rule, not adjudicated one by one; the
+provisioned macOS proof above was added later for its explicit OS dependency.
+A file is in the default gate (`npm test`) only if it is on the whitelist in
 [`../README.md`](../README.md); everything else is here. The rules that placed
 these files, in order:
 
@@ -76,9 +90,10 @@ boundary checkable rather than a promise:
   looked at which files were red. A file is here because it is not on a
   whitelisted boundary, never because of its colour.
 
-There are no per-file reasons in this directory, and adding them would recreate
-the archaeology the whitelist exists to avoid. Per-file reasons are mandatory
-only in `test/quarantine/`.
+Ordinary non-whitelist files have no per-file reason here; adding one for each
+would recreate the archaeology the whitelist exists to avoid. The macOS case
+above records its external provisioning requirement. Failure reasons belong in
+`test/quarantine/`, not in this green suite.
 
 ## Coming back
 
@@ -95,4 +110,7 @@ line does not come back.
 
 ## Expiry
 
-Anything not promoted within 90 days is deleted. Git retains it either way.
+Ordinary exploratory files not promoted within 90 days are deleted. Git retains
+them either way. The provisioned macOS lock proof above remains a maintained
+boundary while local CA setup uses that OS primitive; retire it only when an
+equivalent maintained proof replaces it.
