@@ -15,6 +15,7 @@ const STATES = new Set(["preparing", "prepared", "activating", "migration", "com
 const PUBLIC_PORT = Object.freeze({ main: 19420, preview: 19421 });
 const HEALTH_TIMEOUT_MS = 30_000;
 const REGISTRATION_KEYS = ["instance_id", "installation_id", "role", "public_origin", "backend_origin", "backend_generation", "effect_ceiling_json", "writable_roots_json"];
+const LAUNCHD_INJECTED_ENV = new Set(["OSLogRateLimit", "XPC_SERVICE_NAME"]);
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) await runCli();
 
@@ -265,13 +266,15 @@ function supervisorDefinition(details) {
   if (typeof program !== "string" || !path.isAbsolute(program)) throw new Error("Supervised legacy plist requires an absolute executable.");
   const environment = details.EnvironmentVariables ?? {};
   if (Object.entries(environment).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string")) throw new Error("Supervised legacy plist has invalid environment values.");
+  if (Object.keys(environment).some((key) => LAUNCHD_INJECTED_ENV.has(key))) throw new Error("Supervised legacy plist cannot configure launchd-injected environment values.");
   return { program, arguments: args, environment, stdout_path: details.StandardOutPath ?? null, stderr_path: details.StandardErrorPath ?? null, keepalive: true };
 }
 
 function assertLoadedSupervisorDefinition(status, expected, role) {
   if (!status.loaded || !status.definition || status.definition.program !== expected.program || !sameValue(status.definition.arguments, expected.arguments) || status.definition.keepalive !== true) throw new Error(`Legacy ${role} loaded launchd executable or arguments drifted from its plist.`);
-  for (const key of ["MANDIBLE_PORT", "PATH", "HOME", "DEVELOPER_DIR"]) if (status.definition.environment?.[key] !== expected.environment[key]) throw new Error(`Legacy ${role} loaded launchd environment drifted from its plist: ${key}.`);
-  for (const [key, value] of Object.entries(expected.environment)) if (status.definition.environment?.[key] !== value) throw new Error(`Legacy ${role} loaded launchd environment drifted from its plist: ${key}.`);
+  const configuredEnvironment = Object.fromEntries(Object.entries(status.definition.environment ?? {}).filter(([key]) => !LAUNCHD_INJECTED_ENV.has(key)));
+  const orderedEntries = (environment) => Object.entries(environment).sort(([left], [right]) => left.localeCompare(right));
+  if (!sameValue(orderedEntries(configuredEnvironment), orderedEntries(expected.environment))) throw new Error(`Legacy ${role} loaded launchd configured environment drifted from its plist.`);
   if (status.definition.stdout_path !== expected.stdout_path) throw new Error(`Legacy ${role} loaded launchd stdout path drifted from its plist.`);
   if (status.definition.stderr_path !== expected.stderr_path) throw new Error(`Legacy ${role} loaded launchd stderr path drifted from its plist.`);
 }
@@ -343,12 +346,20 @@ async function ensureSupervisedLegacyRestored(journalPath, journal, instance, ef
   let working = journal;
   let status = await effects.supervisorStatus(service);
   assertLoadedSupervisorService(status, captured, instance.role);
-  if (working.runtime.intents[stopKey]?.effect === "not-applied") {
+  const stopReceipt = working.runtime.intents[stopKey];
+  if (stopReceipt?.effect === "not-applied") {
     if (!status.loaded || status.enabled !== captured.enabled) throw new Error(`Legacy ${instance.role} not-applied stop receipt lost its original launchd service.`);
     const observed = await observeBoundListener(effects, instance.public_port, instance.legacy.expected, `original legacy ${instance.role}`);
     if (status.pid !== observed.listener.pid) throw new Error(`Legacy ${instance.role} not-applied stop receipt lost listener ownership.`);
     assertSameProcess(observed.listener, working.legacy[instance.role].listener, `original legacy ${instance.role}`);
     return working;
+  }
+  if (stopReceipt?.effect === "restored-replacement") {
+    if (!status.loaded || status.enabled !== captured.enabled) throw new Error(`Legacy ${instance.role} restored replacement receipt lost its launchd service.`);
+    const observed = await observeSupervisedPort(instance, status, effects, `restored replacement legacy ${instance.role}`);
+    if (!observed || !sameProcess(observed.listener, stopReceipt.listener) || observed.health.startup_epoch !== stopReceipt.startup_epoch || !observed.health.startup_epoch || observed.health.startup_epoch === instance.legacy.expected.startup_epoch) throw new Error(`Legacy ${instance.role} restored replacement receipt no longer matches its launchd-owned healthy listener.`);
+    if (working.legacy[instance.role].restored_epoch === observed.health.startup_epoch) return working;
+    return persist(journalPath, working, { legacy: { ...working.legacy, [instance.role]: { ...working.legacy[instance.role], restored_epoch: observed.health.startup_epoch } } });
   }
   if (intentDone(working, restoreKey)) {
     if (status.loaded) {
@@ -372,7 +383,16 @@ async function ensureSupervisedLegacyRestored(journalPath, journal, instance, ef
         if (!status.enabled || !status.loaded || status.pid !== observed.listener.pid) throw new Error(`Legacy ${instance.role} launchd enabled state did not restore.`);
         working = finishIntent(journalPath, working, `legacy.${instance.role}.enable`);
       }
-      return finishIntent(journalPath, working, stopKey, { effect: "not-applied" });
+      status = await effects.supervisorStatus(service);
+      assertLoadedSupervisorService(status, captured, instance.role);
+      const restored = await observeSupervisedPort(instance, status, effects, `legacy ${instance.role} after enabled-state rollback`);
+      if (!restored || !sameProcess(restored.listener, observed.listener) || restored.health.startup_epoch !== observed.health.startup_epoch || status.enabled !== captured.enabled) throw new Error(`Legacy ${instance.role} process changed while rollback restored launchd state.`);
+      const original = sameProcess(restored.listener, working.legacy[instance.role].listener);
+      if (original && restored.health.startup_epoch !== instance.legacy.expected.startup_epoch) throw new Error(`Legacy ${instance.role} original process changed startup epoch during rollback.`);
+      if (!original && (!restored.health.startup_epoch || restored.health.startup_epoch === instance.legacy.expected.startup_epoch)) throw new Error(`Legacy ${instance.role} replacement did not prove a new startup epoch.`);
+      working = finishIntent(journalPath, working, stopKey, original ? { effect: "not-applied" } : { effect: "restored-replacement", listener: restored.listener, startup_epoch: restored.health.startup_epoch });
+      if (original) return working;
+      return persist(journalPath, working, { legacy: { ...working.legacy, [instance.role]: { ...working.legacy[instance.role], restored_epoch: restored.health.startup_epoch } } });
     }
   }
   if (!intentDone(working, stopKey)) {
@@ -976,7 +996,8 @@ function digest(value) { return createHash("sha256").update(JSON.stringify(value
 function sameValue(left, right) { return digest(left) === digest(right); }
 function messageOf(error) { return error instanceof Error ? error.message : String(error); }
 function defaultJournalPath() { return path.join(path.resolve(process.env.MANDIBLE_HOME || path.join(os.homedir(), ".mandible")), "config", "local-sessions", "cutover.json"); }
-function assertSameProcess(actual, expected, label) { if (!actual || !expected || actual.pid !== expected.pid || actual.fingerprint !== expected.fingerprint) throw new Error(`${label} listener process identity changed.`); }
+function sameProcess(actual, expected) { return !!actual && !!expected && actual.pid === expected.pid && actual.fingerprint === expected.fingerprint; }
+function assertSameProcess(actual, expected, label) { if (!sameProcess(actual, expected)) throw new Error(`${label} listener process identity changed.`); }
 
 async function observeBoundListener(effects, port, expected, label) {
   const before = await effects.discoverListener(port);
