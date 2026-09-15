@@ -3,12 +3,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { ProcessGroupSupervisor } from "./process-group-supervisor.mjs";
 
 const root = process.cwd();
 const relativeTest = "test/extended/iab-preview-launcher.test.ts";
 const testPath = path.join(root, relativeTest);
 const vitest = path.join(root, "node_modules", "vitest", "vitest.mjs");
 const rssLimitKiB = 950_000;
+const supervisor = new ProcessGroupSupervisor();
 const lines = fs.readFileSync(testPath, "utf8")
   .split("\n")
   .flatMap((line, index) => /^\s+it\(/.test(line) ? [index + 1] : []);
@@ -52,6 +54,7 @@ async function runShard(shard) {
     env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=384" },
     stdio: "inherit",
   });
+  supervisor.attach(child);
   let peakKiB = 0;
   let memoryKilled = false;
   const monitor = setInterval(() => {
@@ -60,17 +63,23 @@ async function runShard(shard) {
     peakKiB = Math.max(peakKiB, totalKiB);
     if (totalKiB >= rssLimitKiB && !memoryKilled) {
       memoryKilled = true;
-      try { process.kill(-child.pid, "SIGTERM"); } catch {}
+      void supervisor.stopActive("SIGTERM");
     }
   }, 100);
-  const result = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
-  });
-  clearInterval(monitor);
+  let result;
+  try {
+    result = await supervisor.settle(child);
+  } finally {
+    clearInterval(monitor);
+  }
   process.stdout.write(`iab-preview shard ${shard.label} peak_rss_kib=${peakKiB} memory_killed=${memoryKilled}\n`);
   if (memoryKilled) throw new Error(`IAB preview shard ${shard.label} exceeded ${rssLimitKiB} KiB RSS.`);
+  if (supervisor.interruptedSignal()) throw new Error(`IAB preview runner interrupted by ${supervisor.interruptedSignal()}.`);
   if (result.code !== 0) throw new Error(`IAB preview shard ${shard.label} failed (${result.signal ?? result.code}).`);
 }
 
-for (const shard of shards) await runShard(shard);
+try {
+  for (const shard of shards) await runShard(shard);
+} finally {
+  await supervisor.close();
+}

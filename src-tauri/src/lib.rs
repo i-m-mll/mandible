@@ -13,6 +13,31 @@ const PRODUCTION_ORIGIN: &str = "https://app.mandible.localhost:19420";
 fn admits_native_command_origin(origin: &str) -> bool {
     origin == PRODUCTION_ORIGIN
 }
+
+fn bind_session_cookie_to_production(
+    mut cookie: tauri::webview::Cookie<'static>,
+) -> Result<(tauri::webview::Cookie<'static>, tauri::Url), String> {
+    let origin = tauri::Url::parse(PRODUCTION_ORIGIN)
+        .map_err(|error| format!("invalid trusted production origin: {error}"))?;
+    let host = origin
+        .host_str()
+        .ok_or_else(|| "trusted production origin has no host".to_string())?;
+    if cookie.name() != "__Host-mandible-session"
+        || cookie.domain().is_some()
+        || cookie.path() != Some("/")
+        || cookie.secure() != Some(true)
+        || cookie.http_only() != Some(true)
+    {
+        return Err(
+            "the daemon returned a session cookie outside the host-only contract".to_string(),
+        );
+    }
+    // Wry's URL-less setter maps an absent domain to an empty NSHTTPCookie
+    // domain. Supplying this one exact host places the otherwise host-only
+    // __Host cookie in the production origin's native cookie store only.
+    cookie.set_domain(host.to_string());
+    Ok((cookie, origin))
+}
 const DEFAULT_LAUNCH_MODE: &str = "on_demand";
 /// Generic-password service holding the operator's durable bearer credential.
 /// Same item the CLI falls back to in unmarked operator terminals (issue 9283a50).
@@ -309,6 +334,10 @@ fn install_browser_session(app: &AppHandle, credential: &[u8]) -> Enrollment {
             ))
         }
     };
+    let (cookie, production_url) = match bind_session_cookie_to_production(cookie) {
+        Ok(bound) => bound,
+        Err(message) => return Enrollment::Refused(message),
+    };
     let Some(window) = app.get_webview_window("main") else {
         return Enrollment::Unreachable("desktop main window is unavailable".to_string());
     };
@@ -316,6 +345,23 @@ fn install_browser_session(app: &AppHandle, credential: &[u8]) -> Enrollment {
         return Enrollment::Unreachable(format!(
             "failed to install the browser session cookie: {error}"
         ));
+    }
+    match window.cookies_for_url(production_url) {
+        Ok(cookies)
+            if cookies.iter().any(|stored| {
+                stored.name() == "__Host-mandible-session"
+                    && stored.domain() == Some("app.mandible.localhost")
+            }) => {}
+        Ok(_) => {
+            return Enrollment::Unreachable(
+                "the native cookie store did not retain the production session".to_string(),
+            )
+        }
+        Err(error) => {
+            return Enrollment::Unreachable(format!(
+                "failed to verify the production browser session cookie: {error}"
+            ))
+        }
     }
     Enrollment::Session
 }
@@ -884,8 +930,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        admits_native_command_origin, extract_credential, read_client_auth_bootstrap,
-        resolve_user_path_from, PRODUCTION_ORIGIN,
+        admits_native_command_origin, bind_session_cookie_to_production, extract_credential,
+        read_client_auth_bootstrap, resolve_user_path_from, PRODUCTION_ORIGIN,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -925,6 +971,21 @@ mod tests {
                 "unexpected native admission: {denied}"
             );
         }
+    }
+
+    #[test]
+    fn native_session_cookie_is_bound_to_the_exact_production_host() {
+        let cookie = tauri::webview::Cookie::parse(
+            "__Host-mandible-session=opaque; Path=/; Secure; HttpOnly; SameSite=Strict",
+        )
+        .unwrap()
+        .into_owned();
+        let (cookie, url) = bind_session_cookie_to_production(cookie).unwrap();
+        assert_eq!(url.as_str(), "https://app.mandible.localhost:19420/");
+        assert_eq!(cookie.domain(), Some("app.mandible.localhost"));
+        assert_eq!(cookie.path(), Some("/"));
+        assert_eq!(cookie.secure(), Some(true));
+        assert_eq!(cookie.http_only(), Some(true));
     }
 
     #[test]

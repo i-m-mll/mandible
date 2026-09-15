@@ -1304,18 +1304,33 @@ function validateDaemonWriteBoundary(
       && isLegacyBrowserConversionRequest(req)) {
     return { ok: true };
   }
-  if (isBoundLegacyConversionCompletion(req, pathname)) return { ok: true };
+  if (pathname === "/api/client-auth/legacy-conversion/complete") {
+    return isBoundLegacyConversionCompletion(req, pathname, instance)
+      ? { ok: true }
+      : { ok: false, reason: "invalid_legacy_conversion_ingress" };
+  }
   return validateDaemonBrowserBoundary(req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod));
 }
 
-function isBoundLegacyConversionCompletion(req: http.IncomingMessage, pathname: string): boolean {
+function isBoundLegacyConversionCompletion(
+  req: http.IncomingMessage,
+  pathname: string,
+  instance: InstanceInfo,
+): boolean {
   if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
   const legacyOrigin = firstHeader(req, "x-mandible-legacy-origin");
   const target = firstHeader(req, "x-mandible-target-instance");
   if (!legacyOrigin || !target || !LEGACY_BROWSER_ORIGINS.has(legacyOrigin)) return false;
+  const registered = new URL(instance.public_origin);
+  const host = parseHostHeader(firstHeader(req, "host"));
+  const origin = firstHeader(req, "origin");
+  const legacyPort = new URL(legacyOrigin).port;
   return (req.method ?? "GET").toUpperCase() === "POST"
     && pathname === "/api/client-auth/legacy-conversion/complete"
+    && Boolean(host && `${host.hostname}:${host.port}` === registered.host.toLowerCase())
+    && origin === registered.origin
     && firstHeader(req, "x-mandible-legacy-migration") === "complete-v1"
+    && legacyPort === (target === instance.instance_id ? "19420" : "19421")
     // The gateway accepts only a cross-site form POST from one inventoried old
     // origin, then rewrites Host/Origin before the daemon sees the request.
     && firstHeader(req, "sec-fetch-site") === "cross-site";

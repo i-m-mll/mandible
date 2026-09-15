@@ -140,8 +140,11 @@ async function beginLegacyConversion(fetchImpl: typeof fetch): Promise<boolean> 
   if (!response.ok || typeof body.reference !== 'string' || typeof body.secret !== 'string'
       || typeof body.complete_url !== 'string') return false;
   const complete = new URL(body.complete_url);
-  if (complete.protocol !== 'https:' || complete.hostname !== 'app.mandible.localhost'
-      || complete.port !== '19419' || complete.pathname !== '/api/client-auth/legacy-conversion/complete') {
+  const exactMigrationHost = complete.hostname === 'app.mandible.localhost'
+    || /^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(complete.hostname);
+  if (complete.protocol !== 'https:' || !exactMigrationHost || complete.port !== '19419'
+      || complete.pathname !== '/api/client-auth/legacy-conversion/complete'
+      || complete.username || complete.password || complete.search || complete.hash) {
     return false;
   }
   const form = document.createElement('form');

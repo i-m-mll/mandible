@@ -240,6 +240,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     instance,
     startupEpoch,
     secretsDir: options.clientAuthDir,
+    sessionAuthorityDir: process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR?.trim() || undefined,
   });
   if (instance.role === "main") {
     clientAuth.registerInstance({

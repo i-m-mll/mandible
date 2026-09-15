@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { COOKIE_NAME } from "../src/client-auth/session-authority.js";
+import { fingerprintForToken } from "../src/client-auth/tokens.js";
 import { openDb, setDb, type Db } from "../src/db.js";
 import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from "../src/security/effect-policy.js";
 import { attachWebSocketUpgrade, createServer, Router } from "../src/server.js";
@@ -237,12 +238,129 @@ describe("strict browser boundary", () => {
       source: "legacy_browser_conversion",
       legacy_fingerprint: "legacy-preview-fingerprint",
       legacy_authenticated_at: Date.now(),
-    }, "legacy-preview-token", "/#/timeline", { "mandible.timeline.view": "saved" }, "http://127.0.0.1:19421");
+    }, "legacy-preview-token", "/#/timeline", { "mandible.timeline.view": "saved" }, "http://127.0.0.1:19421", "preview-test");
     expect(conversion.target_audience).toBe("preview-test");
     expect(auth.completeLegacyConversion(conversion.reference, conversion.secret)).toMatchObject({
       audience: "preview-test",
       effect_ceiling: STANDARD_PREVIEW_EFFECTS,
     });
+  });
+
+  it.each([
+    ["production", "http://127.0.0.1:19420", "production"],
+    ["preview", "http://127.0.0.1:19421", "preview-test"],
+  ] as const)("converts an old %s browser through its source backend and the shared installation authority", async (
+    _label,
+    legacyOrigin,
+    targetAudience,
+  ) => {
+    const priorMigration = process.env.MANDIBLE_LEGACY_CONVERSION;
+    process.env.MANDIBLE_LEGACY_CONVERSION = "allow";
+    let previewServer: http.Server | null = null;
+    try {
+      const legacyToken = `legacy-${targetAudience}`;
+      const sourceSecrets = targetAudience === "production"
+        ? path.join(root, "client-auth")
+        : path.join(root, "preview-client-auth");
+      let sourceAuth = auth;
+      let sourcePort = port;
+      if (targetAudience !== "production") {
+        fs.mkdirSync(sourceSecrets, { recursive: true, mode: 0o700 });
+        fs.writeFileSync(path.join(sourceSecrets, "pepper"), "preview-pepper", { mode: 0o600 });
+        const previewInstance: InstanceInfo = {
+          ...productionInstance(path.join(root, "mandible.db")),
+          role: "preview",
+          instance_id: "preview-test",
+          public_origin: "https://preview-test.mandible.localhost:19421",
+          allowed_effects: STANDARD_PREVIEW_EFFECTS,
+          preview_root: root,
+        };
+        sourceAuth = new ClientAuthenticator(db, {
+          instance: previewInstance,
+          secretsDir: sourceSecrets,
+          sessionAuthorityDir: path.join(root, "local-sessions"),
+          initializeSessionAuthority: false,
+        });
+        const previewRouter = new Router({ clientAuth: sourceAuth, instance: previewInstance });
+        registerClientAuthRoutes(previewRouter, sourceAuth);
+        previewServer = createServer({
+          db, sse: new SseManager(), logger: () => undefined, version: "test", router: previewRouter,
+          getStartupInfo: () => null,
+          instance: previewInstance,
+          clientAuth: sourceAuth,
+        });
+        sourcePort = await listen(previewServer);
+      }
+      const pepper = fs.readFileSync(path.join(sourceSecrets, "pepper"), "utf8").trim();
+      const current = Date.now();
+      fs.writeFileSync(path.join(sourceSecrets, "dashboard-session.json"), JSON.stringify({
+        version: 2,
+        sessions: [{
+          token_fingerprint: fingerprintForToken(pepper, legacyToken),
+          user_id: auth.authenticateBrowserSession(browser.token)!.user_id,
+          slug: auth.authenticateBrowserSession(browser.token)!.slug,
+          created_at: current - 1_000,
+          expires_at: current + 60_000,
+          renew_until: current + 120_000,
+        }],
+      }), { mode: 0o600 });
+
+      const prepared = await requestAt(sourcePort, "POST", "/api/client-auth/legacy-conversion/prepare", {
+        return_path: "/#/timeline?project=mandible",
+        browser_state: { "mandible.timeline.view": "saved" },
+      }, {
+        Host: new URL(legacyOrigin).host,
+        Origin: legacyOrigin,
+        "Sec-Fetch-Site": "same-origin",
+        "X-Mandible-Target-Instance": targetAudience,
+        Authorization: `Bearer ${legacyToken}`,
+      });
+      expect(prepared.status).toBe(201);
+      expect(prepared.body.complete_url).toBe(targetAudience === "production"
+        ? "https://app.mandible.localhost:19419/api/client-auth/legacy-conversion/complete"
+        : "https://preview-test.mandible.localhost:19419/api/client-auth/legacy-conversion/complete");
+
+      const completed = await requestAt(port, "POST", "/api/client-auth/legacy-conversion/complete", {
+        reference: prepared.body.reference,
+        secret: prepared.body.secret,
+      }, {
+        Host: "app.mandible.localhost:19420",
+        Origin: origin,
+        "Sec-Fetch-Site": "cross-site",
+        "X-Mandible-Legacy-Migration": "complete-v1",
+        "X-Mandible-Legacy-Origin": legacyOrigin,
+        "X-Mandible-Target-Instance": targetAudience,
+      });
+      expect(completed.status).toBe(200);
+      const cookie = String(completed.headers["set-cookie"]?.[0] ?? "").split(";", 1)[0];
+      expect(cookie).toMatch(/^__Host-mandible-session=/);
+      const whoami = await requestAt(port, "GET", "/api/client-auth/whoami", undefined, {
+        Host: "app.mandible.localhost:19420", Origin: origin, Cookie: cookie,
+        "X-Mandible-Target-Instance": targetAudience,
+      });
+      expect(whoami.body).toMatchObject({ authenticated: true, audience: targetAudience });
+
+      for (const [hostileLabel, hostile] of [
+        ["hostile origin", { Origin: "https://evil.invalid" }],
+        ["same-site completion", { "Sec-Fetch-Site": "same-origin" }],
+        ["wrong target", { "X-Mandible-Target-Instance": targetAudience === "production" ? "preview-test" : "production" }],
+      ] as const) {
+        const refused = await requestAt(port, "POST", "/api/client-auth/legacy-conversion/complete", {
+          reference: prepared.body.reference, secret: prepared.body.secret,
+        }, {
+          Host: "app.mandible.localhost:19420", Origin: origin,
+          "Sec-Fetch-Site": "cross-site", "X-Mandible-Legacy-Migration": "complete-v1",
+          "X-Mandible-Legacy-Origin": legacyOrigin,
+          "X-Mandible-Target-Instance": targetAudience,
+          ...hostile,
+        });
+        expect(refused.status, hostileLabel).toBeGreaterThanOrEqual(400);
+      }
+    } finally {
+      if (previewServer) await new Promise<void>((resolve) => previewServer!.close(() => resolve()));
+      if (priorMigration === undefined) delete process.env.MANDIBLE_LEGACY_CONVERSION;
+      else process.env.MANDIBLE_LEGACY_CONVERSION = priorMigration;
+    }
   });
 
   it("keeps real fetch, SSE, and WebSocket traffic on one session and closes streams on revocation", async () => {
@@ -372,6 +490,39 @@ function requestRaw(
       let raw = "";
       res.on("data", (chunk) => { raw += chunk; });
       res.on("end", () => resolve({ status: res.statusCode ?? 500, body: raw }));
+    });
+    req.on("error", reject);
+    req.end(data);
+  });
+}
+
+function listen(server: http.Server): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port));
+  });
+}
+
+function requestAt(
+  targetPort: number,
+  method: string,
+  requestPath: string,
+  body?: unknown,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: any; headers: http.IncomingHttpHeaders }> {
+  const data = body === undefined ? "" : JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: "127.0.0.1", port: targetPort, path: requestPath, method,
+      headers: { ...(data ? { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(data)) } : {}), ...headers },
+    }, (res) => {
+      let raw = "";
+      res.on("data", (chunk) => { raw += chunk; });
+      res.on("end", () => {
+        let parsed: any = raw;
+        try { parsed = raw ? JSON.parse(raw) : null; } catch { /* HTML response */ }
+        resolve({ status: res.statusCode ?? 500, body: parsed, headers: res.headers });
+      });
     });
     req.on("error", reject);
     req.end(data);

@@ -1699,6 +1699,7 @@ function previewInstanceEnv(details) {
     MANDIBLE_INSTALLATION_ID: installationId,
     MANDIBLE_PUBLIC_ORIGIN: `https://${instanceId}.mandible.localhost:19421`,
     MANDIBLE_BACKEND_GENERATION: details.generation ?? "preview-generation",
+    MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR: localSessionAuthorityDir(),
     MANDIBLE_CONTEXT_VERIFICATION_KEY: path.join(localSessionAuthorityDir(), "context-verification-key.pem"),
     ...previewIsolationEnv(path.dirname(details.dbCopy), details.sourceDb),
   };

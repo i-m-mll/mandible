@@ -119,7 +119,8 @@ export class ClientAuthenticator implements ClientAuthGate {
   private readonly pepper: string;
   private readonly clientAuthAuthorityId: string;
   private readonly instance: InstanceInfo | null;
-  private readonly sessionAuthority: LocalSessionAuthority | null;
+  private readonly sessionAuthority: LocalSessionAuthority;
+  private readonly ownsSessionAuthority: boolean;
   private readonly contextVerificationKeyPem: string | null;
   private readonly revocationListeners = new Set<(scope: BrowserSessionRevocation) => void>();
   private bootstrapRaw: string | null = null;
@@ -145,22 +146,22 @@ export class ClientAuthenticator implements ClientAuthGate {
     this.pepper = loadOrCreatePepper(db, this.secretsDir);
     this.clientAuthAuthorityId = options.instance?.installation_id
       ?? loadOrCreateClientAuthAuthorityId(this.secretsDir);
-    this.sessionAuthority = options.instance?.role === "preview"
-      ? null
-      : new LocalSessionAuthority(
-          options.sessionAuthorityDir ?? (options.secretsDir
-            ? path.join(this.secretsDir, "local-sessions")
-            : path.join(path.dirname(this.secretsDir), "local-sessions")),
-          options.instance?.installation_id ?? this.clientAuthAuthorityId,
-          { initialize: options.initializeSessionAuthority ?? true, now: this.now },
-        );
+    this.ownsSessionAuthority = options.instance?.role !== "preview";
+    this.sessionAuthority = new LocalSessionAuthority(
+      options.sessionAuthorityDir ?? (options.secretsDir
+        ? path.join(this.secretsDir, "local-sessions")
+        : path.join(path.dirname(this.secretsDir), "local-sessions")),
+      options.instance?.installation_id ?? this.clientAuthAuthorityId,
+      {
+        initialize: options.initializeSessionAuthority ?? this.ownsSessionAuthority,
+        now: this.now,
+      },
+    );
     this.contextVerificationKeyPem = options.contextVerificationKeyPem
       ?? (process.env.MANDIBLE_CONTEXT_VERIFICATION_KEY
         ? fs.readFileSync(process.env.MANDIBLE_CONTEXT_VERIFICATION_KEY, "utf8")
-        : this.sessionAuthority?.verificationKeyPem() ?? null);
-    if (this.sessionAuthority) {
-      retireLegacyDashboardSessions(this.sessionAuthority.retiredLegacyFingerprints(), this.secretsDir);
-    }
+        : this.sessionAuthority.verificationKeyPem());
+    retireLegacyDashboardSessions(this.sessionAuthority.retiredLegacyFingerprints(), this.secretsDir);
   }
 
   authorityId(): string {
@@ -172,11 +173,11 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   instanceRegistration(instanceId: string): InstanceRegistration | null {
-    return this.sessionAuthority?.instance(instanceId) ?? null;
+    return this.sessionAuthority.instance(instanceId);
   }
 
   productionRegistration(): InstanceRegistration | null {
-    return this.sessionAuthority?.instances().find((entry) => entry.role === "main") ?? null;
+    return this.sessionAuthority.instances().find((entry) => entry.role === "main") ?? null;
   }
 
   classifyFailure(credential: string | null | undefined): "expired" | "revoked" | "unknown" {
@@ -260,12 +261,12 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   registerInstance(registration: InstanceRegistration): void {
-    if (!this.sessionAuthority) throw new Error("Preview backends cannot mutate installation registrations.");
+    if (!this.ownsSessionAuthority) throw new Error("Preview backends cannot mutate installation registrations.");
     this.sessionAuthority.registerInstance(registration);
   }
 
   issueBrowserSession(identity: ResolvedClientIdentity, audience: string): IssuedBrowserSession {
-    if (!this.sessionAuthority) throw new Error("Browser sessions are issued by the installation authority only.");
+    if (!this.ownsSessionAuthority) throw new Error("Browser sessions are issued by the installation authority only.");
     return this.sessionAuthority.issueSession(identity.user_id, identity.slug, audience, {
       method: identity.method,
       credential_id: identity.credential_id,
@@ -275,7 +276,7 @@ export class ClientAuthenticator implements ClientAuthGate {
 
   authenticateLegacyBrowserSession(raw: string | null | undefined): ResolvedClientIdentity | null {
     const token = normalizeBearer(raw);
-    if (!token || !this.sessionAuthority) return null;
+    if (!token) return null;
     const fingerprint = fingerprintForToken(this.pepper, token);
     if (this.sessionAuthority.isLegacyFingerprintRetired(fingerprint)) return null;
     const legacy = readLegacyDashboardSessions(this.secretsDir).find(
@@ -314,7 +315,7 @@ export class ClientAuthenticator implements ClientAuthGate {
     raw: string | null | undefined,
     audience = this.instance?.instance_id,
   ): { state: "active" | "missing" | "wrong_audience" | "expired" | "revoked"; identity: ResolvedClientIdentity | null } {
-    if (!raw || !audience || !this.sessionAuthority) return { state: "missing", identity: null };
+    if (!raw || !audience) return { state: "missing", identity: null };
     const result = this.sessionAuthority.classify(raw, audience);
     if (result.state !== "active") return { state: result.state, identity: null };
     const user = getUserById(this.db, result.session.user_id);
@@ -327,7 +328,7 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   async signPreviewContext(identity: ResolvedClientIdentity, previewInstanceId: string): Promise<string> {
-    if (!this.sessionAuthority || !identity.session_family || !identity.audience) {
+    if (!this.ownsSessionAuthority || !identity.session_family || !identity.audience) {
       throw new Error("A live browser session is required for preview authorization.");
     }
     return this.sessionAuthority.signPreviewContext({
@@ -377,17 +378,17 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   beginPairing(audience: string, returnPath: string): PairingTransaction {
-    if (!this.sessionAuthority) throw new Error("Pairing is owned by the installation authority.");
+    if (!this.ownsSessionAuthority) throw new Error("Pairing is owned by the installation authority.");
     return this.sessionAuthority.beginPairing(audience, returnPath);
   }
 
   beginPreviewTransfer(audience: string, returnPath: string): PreviewTransfer {
-    if (!this.sessionAuthority) throw new Error("Preview transfers are owned by the installation authority.");
+    if (!this.ownsSessionAuthority) throw new Error("Preview transfers are owned by the installation authority.");
     return this.sessionAuthority.beginPreviewTransfer(audience, returnPath);
   }
 
   authorizePreviewTransfer(reference: string, identity: ResolvedClientIdentity): InstanceRegistration {
-    if (!this.sessionAuthority || identity.source !== "browser_cookie" || !identity.session_family
+    if (!this.ownsSessionAuthority || identity.source !== "browser_cookie" || !identity.session_family
         || !identity.root_session_family || !identity.audience) {
       throw new Error("A production browser session is required to authorize preview access.");
     }
@@ -406,12 +407,12 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   completePreviewTransfer(reference: string, secret: string): IssuedBrowserSession | null {
-    if (!this.sessionAuthority) throw new Error("Preview transfers are owned by the installation authority.");
+    if (!this.ownsSessionAuthority) throw new Error("Preview transfers are owned by the installation authority.");
     return this.sessionAuthority.completePreviewTransfer(reference, secret);
   }
 
   previewTransferReturnPath(reference: string): string | null {
-    return this.sessionAuthority?.previewTransferReturnPath(reference) ?? null;
+    return this.sessionAuthority.previewTransferReturnPath(reference);
   }
 
   beginLegacyConversion(
@@ -420,47 +421,45 @@ export class ClientAuthenticator implements ClientAuthGate {
     returnPath: string,
     browserState: Record<string, string>,
     legacyOrigin: string,
+    targetAudience: string,
   ): LegacyConversion {
-    if (!this.sessionAuthority || identity.source !== "legacy_browser_conversion"
+    if (identity.source !== "legacy_browser_conversion"
         || !identity.legacy_fingerprint || identity.legacy_authenticated_at === undefined) {
       throw new Error("A verified legacy browser session is required for conversion.");
     }
-    const targetAudience = this.legacyConversionTarget(legacyOrigin);
+    const exactTargetAudience = this.legacyConversionTarget(legacyOrigin, targetAudience);
     return this.sessionAuthority.beginLegacyConversion({
       raw_legacy_token: rawLegacyToken,
       legacy_fingerprint: identity.legacy_fingerprint,
       user_id: identity.user_id,
       slug: identity.slug,
-      target_audience: targetAudience,
+      target_audience: exactTargetAudience,
       return_path: returnPath,
       browser_state: browserState,
       authenticated_at: identity.legacy_authenticated_at,
     });
   }
 
-  private legacyConversionTarget(origin: string): string {
+  private legacyConversionTarget(origin: string, targetAudience: string): string {
     const parsed = new URL(origin);
     if (parsed.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(parsed.hostname)) {
       throw new Error("Legacy browser origin is not in the migration inventory.");
     }
-    if (parsed.port === "19420") return this.instanceId();
-    if (parsed.port === "19421") {
-      const preview = this.sessionAuthority?.instances().find((entry) => {
-        const publicUrl = new URL(entry.public_origin);
-        return entry.role === "preview" && publicUrl.port === "19421";
-      });
-      if (preview) return preview.instance_id;
-    }
+    const target = this.sessionAuthority.instance(targetAudience);
+    if (!target) throw new Error("Legacy browser origin is not bound to a registered replacement instance.");
+    if (parsed.port === "19420" && target.role === "main") return target.instance_id;
+    if (parsed.port === "19421" && target.role === "preview"
+        && new URL(target.public_origin).port === "19421") return target.instance_id;
     throw new Error("Legacy browser origin is not bound to a registered replacement instance.");
   }
 
   completeLegacyConversion(reference: string, secret: string): IssuedBrowserSession | null {
-    if (!this.sessionAuthority) throw new Error("Legacy conversion is owned by the installation authority.");
+    if (!this.ownsSessionAuthority) throw new Error("Legacy conversion completion is owned by the installation authority.");
     return this.sessionAuthority.completeLegacyConversion(reference, secret);
   }
 
   legacyConversionReturnPath(reference: string): string | null {
-    return this.sessionAuthority?.legacyConversionReturnPath(reference) ?? null;
+    return this.sessionAuthority.legacyConversionReturnPath(reference);
   }
 
   legacyConversionDetails(identity: ResolvedClientIdentity): {
@@ -468,13 +467,13 @@ export class ClientAuthenticator implements ClientAuthGate {
     return_path: string;
     finalized: boolean;
   } | null {
-    if (!this.sessionAuthority || !identity.session_family || !identity.root_session_family
+    if (!identity.session_family || !identity.root_session_family
         || !identity.audience) return null;
     return this.sessionAuthority.legacyConversionDetails(this.browserSessionFromIdentity(identity));
   }
 
   finalizeLegacyConversion(identity: ResolvedClientIdentity): boolean {
-    if (!this.sessionAuthority || !identity.session_family || !identity.root_session_family
+    if (!this.ownsSessionAuthority || !identity.session_family || !identity.root_session_family
         || !identity.audience) return false;
     const fingerprint = this.sessionAuthority.finalizeLegacyConversion(this.browserSessionFromIdentity(identity));
     if (!fingerprint) return false;
@@ -483,12 +482,12 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   approvePairing(reference: string, userId: string): void {
-    if (!this.sessionAuthority) throw new Error("Pairing is owned by the installation authority.");
+    if (!this.ownsSessionAuthority) throw new Error("Pairing is owned by the installation authority.");
     this.sessionAuthority.approvePairing(reference, userId);
   }
 
   completePairing(reference: string, secret: string): IssuedBrowserSession | null {
-    if (!this.sessionAuthority) throw new Error("Pairing is owned by the installation authority.");
+    if (!this.ownsSessionAuthority) throw new Error("Pairing is owned by the installation authority.");
     return this.sessionAuthority.completePairing(reference, secret, (userId) => {
       const user = getUserById(this.db, userId);
       return user?.status === "active" ? user.slug : null;
@@ -504,7 +503,7 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   revokeAllBrowserFamilies(identity: ResolvedClientIdentity): number {
-    const scope = this.sessionAuthority?.revokeUser(identity.user_id) ?? null;
+    const scope = this.sessionAuthority.revokeUser(identity.user_id);
     if (scope) this.emitRevocation(scope);
     return scope?.family_ids.length ?? 0;
   }

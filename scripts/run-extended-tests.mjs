@@ -9,6 +9,7 @@ const root = process.cwd();
 const vitestCli = "node_modules/vitest/vitest.mjs";
 const rssLimitKiB = 950_000;
 const rawArgs = process.argv.slice(2);
+const defaultOnly = rawArgs[0] === "--default";
 const ordinaryOnly = rawArgs[0] === "--ordinary-only";
 const ordinaryArgs = ordinaryOnly ? rawArgs.slice(1) : rawArgs;
 let activeChild = null;
@@ -75,29 +76,35 @@ async function runPhase(label, script, args = []) {
   if (result.code !== 0) throw new Error(`Extended phase ${label} failed (${result.signal ?? result.code}).`);
 }
 
-await runPhase("baseline", "scripts/check-extended-baseline.mjs");
-const vitestArgs = ["run", "--config", "vitest.extended.config.ts", "--maxWorkers=1", "--fileParallelism=false"];
-if (ordinaryArgs.length > 0) {
-  await runPhase("ordinary-subset", vitestCli, [...vitestArgs, ...ordinaryArgs]);
-} else {
-  const excluded = new Set([
-    "test/extended/iab-preview-launcher.test.ts",
-    "test/extended/artifact-ingest-pool.test.ts",
-    ...inheritedExtendedBaselines.keys(),
+if (defaultOnly) {
+  await runPhase("default", vitestCli, [
+    "run", "--config", "vitest.config.ts", "--maxWorkers=1", "--fileParallelism=false",
   ]);
-  const files = readdirSync(path.join(root, "test", "extended"))
-    .filter((name) => /\.test\.tsx?$/.test(name))
-    .map((name) => `test/extended/${name}`)
-    .filter((file) => !excluded.has(file))
-    .sort();
-  const batchSize = 1;
-  const batchCount = Math.ceil(files.length / batchSize);
-  for (let index = 0; index < files.length; index += batchSize) {
-    const batch = files.slice(index, index + batchSize);
-    await runPhase(`ordinary-${Math.floor(index / batchSize) + 1}-of-${batchCount}`, vitestCli, [
-      ...vitestArgs,
-      ...batch,
+} else {
+  await runPhase("baseline", "scripts/check-extended-baseline.mjs");
+  const vitestArgs = ["run", "--config", "vitest.extended.config.ts", "--maxWorkers=1", "--fileParallelism=false"];
+  if (ordinaryArgs.length > 0) {
+    await runPhase("ordinary-subset", vitestCli, [...vitestArgs, ...ordinaryArgs]);
+  } else {
+    const excluded = new Set([
+      "test/extended/iab-preview-launcher.test.ts",
+      "test/extended/artifact-ingest-pool.test.ts",
+      ...inheritedExtendedBaselines.keys(),
     ]);
+    const files = readdirSync(path.join(root, "test", "extended"))
+      .filter((name) => /\.test\.tsx?$/.test(name))
+      .map((name) => `test/extended/${name}`)
+      .filter((file) => !excluded.has(file))
+      .sort();
+    const batchSize = 1;
+    const batchCount = Math.ceil(files.length / batchSize);
+    for (let index = 0; index < files.length; index += batchSize) {
+      const batch = files.slice(index, index + batchSize);
+      await runPhase(`ordinary-${Math.floor(index / batchSize) + 1}-of-${batchCount}`, vitestCli, [
+        ...vitestArgs,
+        ...batch,
+      ]);
+    }
   }
+  if (!ordinaryOnly) await runPhase("iab-preview", "scripts/run-iab-preview-tests.mjs");
 }
-if (!ordinaryOnly) await runPhase("iab-preview", "scripts/run-iab-preview-tests.mjs");

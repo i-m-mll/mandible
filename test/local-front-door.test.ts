@@ -39,6 +39,8 @@ describe("local HTTPS front door", () => {
         expect(config).toContain("header Origin http://127.0.0.1:19420 http://localhost:19420");
         expect(config).toContain("header Origin http://127.0.0.1:19421 http://localhost:19421");
         expect(config).toContain("header Sec-Fetch-Site cross-site");
+        expect(config).toMatch(/http:\/\/127\.0\.0\.1:19420, http:\/\/localhost:19420 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29420[\s\S]*?X-Mandible-Target-Instance production/);
+        expect(config).toMatch(/http:\/\/127\.0\.0\.1:19421, http:\/\/localhost:19421 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29421[\s\S]*?X-Mandible-Target-Instance preview-existing/);
         expect(config).not.toContain("https://app.mandible.localhost:19420 {");
         expect(config).toContain("header_up -Authorization");
       } else {

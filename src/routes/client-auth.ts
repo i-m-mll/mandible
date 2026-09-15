@@ -217,7 +217,9 @@ export function registerClientAuthRoutes(
       const identity = req.client_identity;
       const raw = req.legacy_browser_credential;
       const legacyOrigin = req.legacy_browser_origin;
-      if (!identity || identity.source !== "legacy_browser_conversion" || !raw || !legacyOrigin) {
+      const targetAudience = req.target_instance_id;
+      if (!identity || identity.source !== "legacy_browser_conversion" || !raw || !legacyOrigin
+          || !targetAudience) {
         sendJson(res, 401, { error: "legacy_browser_session_required" });
         return;
       }
@@ -228,6 +230,7 @@ export function registerClientAuthRoutes(
         optionalString(body, "return_path") ?? "/",
         browserState(body.browser_state),
         legacyOrigin,
+        targetAudience,
       );
       sendJson(res, 201, {
         reference: conversion.reference,

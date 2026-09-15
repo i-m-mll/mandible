@@ -64,6 +64,8 @@ function initializeInstallationAuthority() {
 function caddyfile(instances, { legacyConversion = false } = {}) {
   const production = instances.find((entry) => entry.role === "main");
   if (!production) fail("The production instance is not registered.");
+  const previews = instances.filter((entry) => entry.role === "preview");
+  if (previews.length > 1) fail("Legacy port 19421 is ambiguous across registered previews.");
   const productionBackend = new URL(production.backend_origin);
   const productionPublic = new URL(production.public_origin);
   const globalOptions = "{\n  admin 127.0.0.1:2019\n  local_certs\n  auto_https disable_redirects\n}";
@@ -98,22 +100,25 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     "}",
   ].join("\n");
   }).join("\n\n");
-  const legacyOrigin = [
-    "http://127.0.0.1:19420, http://localhost:19420, http://127.0.0.1:19421, http://localhost:19421 {",
+  const legacyOrigin = [production, ...previews].map((entry) => {
+    const legacyPort = entry.role === "preview" ? "19421" : "19420";
+    const backend = new URL(entry.backend_origin);
+    return [
+    `http://127.0.0.1:${legacyPort}, http://localhost:${legacyPort} {`,
     "  bind 127.0.0.1 ::1",
     "  header -Server",
     "  handle /api/client-auth/legacy-conversion/prepare {",
-    `    reverse_proxy ${productionBackend.origin} {`,
+    `    reverse_proxy ${backend.origin} {`,
     "      header_up Host {http.request.host}",
     "      header_up Origin {http.request.header.Origin}",
+    `      header_up X-Mandible-Target-Instance ${entry.instance_id}`,
     "      header_up -Cookie",
     "      header_up -X-Mandible-Session-Context",
-    "      header_up -X-Mandible-Target-Instance",
     "    }",
     "  }",
     "  handle {",
-    `    reverse_proxy ${productionBackend.origin} {`,
-    `      header_up Host ${productionPublic.host}`,
+    `    reverse_proxy ${backend.origin} {`,
+    `      header_up Host ${new URL(entry.public_origin).host}`,
     "      header_up -Origin",
     "      header_up -Authorization",
     "      header_up -Cookie",
@@ -122,7 +127,8 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     "    }",
     "  }",
     "}",
-  ].join("\n");
+    ].join("\n");
+  }).join("\n\n");
   if (legacyConversion) return `${globalOptions}\n\n${migrationIngress}\n\n${legacyOrigin}\n`;
   const blocks = instances.map((entry) => {
     const publicUrl = new URL(entry.public_origin);

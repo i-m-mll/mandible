@@ -70,7 +70,7 @@ describe("daemon write boundary", () => {
       "X-Mandible-Target-Instance": "production",
     };
     expect((await requestJson("POST", "/api/client-auth/legacy-conversion/complete", {}, hostile)).body)
-      .toMatchObject({ reason: "cross_site_fetch" });
+      .toMatchObject({ reason: "invalid_legacy_conversion_ingress" });
     expect((await requestJson("POST", "/api/client-auth/legacy-conversion/complete", {}, {
       ...hostile,
       "X-Mandible-Legacy-Migration": "complete-v1",
@@ -80,7 +80,7 @@ describe("daemon write boundary", () => {
       ...hostile,
       "X-Mandible-Legacy-Migration": "complete-v1",
       "X-Mandible-Legacy-Origin": "null",
-    })).body).toMatchObject({ reason: "cross_site_fetch" });
+    })).body).toMatchObject({ reason: "invalid_legacy_conversion_ingress" });
   });
 
   it("allows browser same-origin writes from the daemon origin", async () => {

@@ -802,6 +802,7 @@ function previewContractEnv(details: {
     MANDIBLE_INSTALLATION_ID: "authority_iab_test",
     MANDIBLE_PUBLIC_ORIGIN: `https://${instanceId}.mandible.localhost:19421`,
     MANDIBLE_BACKEND_GENERATION: "preview-generation",
+    MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR: path.join(mandibleHome, "config", "local-sessions"),
     MANDIBLE_CONTEXT_VERIFICATION_KEY: path.join(mandibleHome, "config", "local-sessions", "context-verification-key.pem"),
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
     MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
