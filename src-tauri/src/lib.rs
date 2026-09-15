@@ -149,12 +149,28 @@ async fn secure_local_connections_setup(app: AppHandle) -> Result<SecureLocalCon
         .map_err(|error| format!("secure-local-connections setup task failed: {error}"))?
 }
 
-fn show_native_setup_result(message: &str) {
-    let quoted = serde_json::to_string(message).unwrap_or_else(|_| "\"Secure-local-connections setup finished.\"".to_string());
-    let _ = Command::new("/usr/bin/osascript")
-        .arg("-e")
-        .arg(format!("display dialog {quoted} buttons {{\"OK\"}} default button \"OK\""))
-        .status();
+fn resolve_ca_trust_helper(app: &AppHandle) -> Result<PathBuf, String> {
+    let script = resolve_ca_setup_script(app)?;
+    let bundled = script.with_file_name("local-ca-trust-helper");
+    if bundled.is_file() { return Ok(bundled); }
+    let source = script.parent().and_then(Path::parent)
+        .map(|root| root.join("src-tauri/resources/local-ca-trust-helper"))
+        .ok_or_else(|| "failed to resolve native trust helper source".to_string())?;
+    if source.is_file() { return Ok(source); }
+    Err("native macOS trust helper is missing from the desktop app".to_string())
+}
+
+fn show_native_setup_result(app: &AppHandle, headline: &str, detail: &str) {
+    match resolve_ca_trust_helper(app) {
+        Ok(helper) => {
+            match Command::new(helper).arg("--result").arg(headline).arg(detail).status() {
+                Ok(status) if status.success() => (),
+                Ok(status) => eprintln!("could not show secure-local-connections result: native alert exited with {status}; {headline}: {detail}"),
+                Err(error) => eprintln!("could not show secure-local-connections result: {error}; {headline}: {detail}"),
+            }
+        }
+        Err(error) => eprintln!("could not show secure-local-connections result: {error}; {headline}: {detail}"),
+    }
 }
 
 fn is_secure_connections_setup_link(url: &tauri::Url) -> bool {
@@ -167,11 +183,12 @@ fn launch_native_ca_setup(handle: AppHandle, active: Arc<AtomicBool>) {
     }
     std::thread::spawn(move || {
         match run_ca_setup_command(&handle, "setup") {
-            Ok(status) => show_native_setup_result(&format!(
-                "Secure local connections are ready. Mandible's pinned local root was verified at {}. Browser sign-in remains separate.",
-                status.verified_at.as_deref().unwrap_or("this setup")
-            )),
-            Err(error) => show_native_setup_result(&error),
+            Ok(_) => show_native_setup_result(&handle,
+                "Secure local connections are ready for this Mac account.",
+                "You can now open Mandible in this browser. Browser sign-in is separate."),
+            Err(error) => show_native_setup_result(&handle,
+                "Secure local connections setup did not finish.",
+                &error),
         }
         active.store(false, Ordering::Release);
     });

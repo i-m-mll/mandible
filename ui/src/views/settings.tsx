@@ -1019,9 +1019,9 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
         <div className="settings-view__section-body">
           <div className="settings-view__daemon-card">
             <div className="settings-view__daemon-title">Secure local connections</div>
-            <p className="settings-view__daemon-footer">If the new HTTPS page cannot load yet, open Mandible's installed macOS app for its explicit one-time certificate setup. The browser does not install system trust or authorize a session.</p>
+            <p className="settings-view__daemon-footer">If the new secure page cannot load yet, open Mandible's installed macOS app for a one-time setup for secure local connections on this Mac account. The browser cannot complete this setup or sign you in.</p>
             <a className="btn btn--active btn--sm" href="mandible://connections/setup">Open macOS setup action</a>
-            <p className="settings-view__daemon-footer">macOS may ask whether to open the app, then Mandible explains the computer-wide trust change with Cancel selected by default. If the app is not installed, run <code>node scripts/local-ca-trust.mjs setup</code> from the local operator terminal.</p>
+            <p className="settings-view__daemon-footer">This is a one-time setup for secure local connections on this Mac account. macOS may ask you to authorize it. If the app is not installed, run <code>node scripts/local-ca-trust.mjs setup</code> from the local operator terminal.</p>
           </div>
         </div>
       </SettingsSectionShell>
@@ -1129,9 +1129,9 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
             <div>
               <div className="settings-view__daemon-title">Secure local connections</div>
               <div className="settings-view__daemon-meta">
-                {caStatus?.state === 'trusted' ? 'Ready: the installation-owned root is pinned and trusted.'
-                  : caStatus?.state === 'prepared' ? 'Root pinned; macOS approval or connection verification remains.'
-                    : caStatus?.state === 'untracked_root' ? 'An untracked local root exists; setup must verify and pin it.'
+                {caStatus?.state === 'trusted' ? 'Ready for this Mac account.'
+                  : caStatus?.state === 'prepared' ? 'Setup is prepared; Mac authorization or connection verification remains.'
+                    : caStatus?.state === 'untracked_root' ? 'Setup needs to verify existing local connection material.'
                       : 'One-time setup has not completed.'}
               </div>
             </div>
@@ -1143,8 +1143,9 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
             </div>
           </div>
           <div className="settings-view__daemon-footer">
-            This explicit action may ask macOS to trust Mandible's local HTTPS root for this computer. It is separate from browser sign-in. New previews, restarts, and routine certificate renewals reuse the same root without another trust request. If this page cannot load before initial trust, use Connections → Set up secure local connections… in the macOS app menu.
+            This is a one-time setup for secure local connections on this Mac account. macOS controls any account authorization; Mandible never asks for your password. New previews, restarts, and routine renewals reuse the setup without another request. If this page cannot load before initial setup, use Connections → Set up secure local connections… in the macOS app menu.
           </div>
+          <details className="settings-view__daemon-detail"><summary>Details</summary>Mandible pins one Caddy HTTPS root and its signing key to this installation. macOS stores an SSL trust rule for this account, not a computer-wide administrator rule. That SSL rule is not limited to Mandible hostnames; keep the root signing key private. Browser sign-in is separate. To remove this trust later, use this account's Keychain Access certificate settings. {caStatus?.root_digest && <>Root SHA-256: <code>{caStatus.root_digest}</code>.</>}</details>
           {caStatus?.verified_at && <div className="settings-view__daemon-detail">Last verified: {caStatus.verified_at}</div>}
           {caError && <div className="settings-view__daemon-error">{caError}</div>}
         </div>
