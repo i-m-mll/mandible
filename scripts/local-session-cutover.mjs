@@ -144,7 +144,7 @@ async function complete(journalPath, journal, effects) {
     effects.reloadGateway(working.manifest.gateway);
     for (const instance of working.manifest.instances) await effects.waitPort(instance.public_port);
     working = finishIntent(journalPath, working, "gateway.reload.normal");
-    working = await promotePreview(journalPath, working);
+    working = await promotePreview(journalPath, working, effects);
     working = await proveSupervisedLegacySuspended(journalPath, working, effects);
     return transition(journalPath, working, "complete", { completed_at: new Date().toISOString(), operator_confirmed_browser_conversion: true, runtime: { ...working.runtime, gateway_mode: "normal" } });
   } catch (error) {
@@ -633,28 +633,78 @@ async function discoverGateway(manifest, effects, { allowPartial = false } = {})
   return listeners[0];
 }
 
-async function promotePreview(journalPath, journal) {
+async function promotePreview(journalPath, journal, effects) {
   const promotion = journal.manifest.preview_promotion;
+  const preview = journal.manifest.instances.find((entry) => entry.role === "preview");
   const key = "preview.promote";
   let working = journal;
+  const observed = await observeBoundListener(effects, preview.candidate.backend_port, candidateExpectation(preview, false), "normal preview promotion");
+  assertSameProcess(observed.listener, working.runtime.candidates.preview?.listener, "normal preview promotion");
+  assertPreviewRecoveryHealth(observed.health, promotion.metadata, preview);
+  const metadata = { ...promotion.metadata, health: previewHealthReceipt(observed.health) };
+  const runScript = renderRestartScript(preview.candidate.process);
+  const desired = { metadata, run_script: runScript, current_db_target: promotion.current_db_target };
   if (intentDone(working, key)) {
-    if (previewPromotionMatches(promotion)) return working;
+    if (working.runtime.intents[key].desired && sameValue(working.runtime.intents[key].desired, desired) && previewPromotionMatches(promotion, desired)) return working;
     working = retryIntent(journalPath, working, key);
   }
-  working = beginIntent(journalPath, working, key, { desired_digest: digest(promotion) });
-  writeJsonAtomic(promotion.metadata_path, promotion.metadata);
+  if (!working.runtime.intents[key]) working = beginIntent(journalPath, working, key, { desired });
+  else if (!working.runtime.intents[key].desired || !sameValue(working.runtime.intents[key].desired, desired)) {
+    working = persist(journalPath, working, { runtime: { ...working.runtime, intents: { ...working.runtime.intents, [key]: { ...working.runtime.intents[key], desired, revised_at: new Date().toISOString() } } } });
+  }
+  writeJsonAtomic(promotion.metadata_path, metadata);
+  writeRestartScript(promotion.run_script_path, runScript);
   replaceSymlink(promotion.current_db_target, promotion.current_db_path);
-  if (!previewPromotionMatches(promotion)) throw new Error("Preview promotion did not materialize its exact metadata and database target.");
+  if (!previewPromotionMatches(promotion, desired)) throw new Error("Preview promotion did not materialize its exact metadata, restart script, and database target.");
   return finishIntent(journalPath, working, key);
 }
 
-function previewPromotionMatches(promotion) {
+function previewPromotionMatches(promotion, desired) {
   try {
     const resolvedTarget = path.resolve(path.dirname(promotion.current_db_path), fs.readlinkSync(promotion.current_db_path));
-    return digest(readJson(promotion.metadata_path)) === digest(promotion.metadata) && resolvedTarget === path.resolve(promotion.current_db_target);
+    return sameValue(readJson(promotion.metadata_path), desired.metadata) &&
+      fs.lstatSync(promotion.run_script_path).isFile() &&
+      fs.readFileSync(promotion.run_script_path, "utf8") === desired.run_script &&
+      (fs.statSync(promotion.run_script_path).mode & 0o111) !== 0 &&
+      resolvedTarget === path.resolve(desired.current_db_target);
   } catch {
     return false;
   }
+}
+
+function assertPreviewRecoveryHealth(health, metadata, preview) {
+  if (!/^[0-9a-f]{40}$/.test(health.startup_commit?.hash ?? "")) throw new Error("Normal preview health must pin a full startup commit for launcher recovery.");
+  if (!health.startup_epoch || health.instance?.db_path_source !== "iab-preview-copy" ||
+      path.resolve(health.instance?.source_db_path ?? "") !== path.resolve(metadata.sourceDb) ||
+      path.resolve(health.file_rpc_dir ?? "") !== path.resolve(metadata.instanceEnv.MANDIBLE_FILE_RPC_DIR ?? "") ||
+      health.instance?.allowed_effects?.join(",") !== "ledger:read,ledger:write,files:preview") {
+    throw new Error("Normal preview health does not prove the isolated launcher recovery contract.");
+  }
+  if (health.startup_commit.hash !== preview.candidate.commit) throw new Error("Normal preview health does not match the candidate release.");
+}
+
+function previewHealthReceipt(health) {
+  return {
+    ready: true,
+    warm: true,
+    startup_epoch: health.startup_epoch,
+    startup_commit: health.startup_commit,
+    instance: health.instance,
+    file_rpc_dir: health.file_rpc_dir,
+  };
+}
+
+function renderRestartScript(spec) {
+  const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
+  return `#!/bin/zsh\nset -euo pipefail\ncd ${quote(spec.cwd)}\nexec env \\\n${Object.entries(spec.env).map(([key, value]) => `  ${key}=${quote(value)} \\`).join("\n")}\n  ${[spec.command, ...spec.args].map(quote).join(" ")} >> ${quote(spec.stdout_log)} 2>> ${quote(spec.stderr_log)}\n`;
+}
+
+function writeRestartScript(filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  const temporary = `${filePath}.tmp-${process.pid}`;
+  fs.writeFileSync(temporary, content, { mode: 0o755 });
+  fs.chmodSync(temporary, 0o755);
+  fs.renameSync(temporary, filePath);
 }
 
 async function preflightCandidates(manifest, effects) {
@@ -822,14 +872,24 @@ function validateManifest(manifest) {
     ...manifest.instances.flatMap((entry) => [entry.candidate.process.env.MANDIBLE_DB, entry.candidate.process.env.MANDIBLE_PID_FILE])].filter(Boolean).map((entry) => path.resolve(entry));
   if (logs.some((log) => protectedPaths.includes(log))) throw new Error("Launch logs cannot replace database, PID, gateway configuration, or rollback-custodied files; preserve logs as separate evidence.");
   const promotion = manifest.preview_promotion;
-  if (!promotion || !path.isAbsolute(promotion.metadata_path ?? "") || !path.isAbsolute(promotion.current_db_path ?? "") || !path.isAbsolute(promotion.current_db_target ?? "") || !promotion.metadata) throw new Error("preview_promotion must pin absolute metadata/current.db paths, target, and metadata.");
-  if (!manifest.rollback_files.includes(promotion.metadata_path) || !manifest.rollback_files.includes(promotion.current_db_path)) throw new Error("Preview promotion paths must have rollback custody.");
+  if (!promotion || !path.isAbsolute(promotion.metadata_path ?? "") || !path.isAbsolute(promotion.current_db_path ?? "") || !path.isAbsolute(promotion.current_db_target ?? "") || !path.isAbsolute(promotion.run_script_path ?? "") || !promotion.metadata) throw new Error("preview_promotion must pin absolute metadata/current.db/run.sh paths, target, and metadata.");
+  if (![promotion.metadata_path, promotion.current_db_path, promotion.run_script_path].every((entry) => manifest.rollback_files.includes(entry))) throw new Error("Preview promotion paths must have rollback custody.");
   if (!manifest.rollback_files.includes(manifest.gateway.config_path)) throw new Error("Gateway configuration must have rollback custody.");
   const preview = manifest.instances.find((entry) => entry.role === "preview");
   if (path.resolve(preview.candidate.process.env.MANDIBLE_DB) !== path.resolve(promotion.current_db_target)) throw new Error("Preview promotion target must be the candidate preview database.");
   if (promotion.metadata.port !== preview.candidate.backend_port || path.resolve(promotion.metadata.db ?? "") !== path.resolve(promotion.current_db_target)) throw new Error("Preview promotion metadata must describe the candidate backend and database.");
   if (!preview.candidate.process.env.MANDIBLE_PID_FILE || promotion.metadata.pidFile !== preview.candidate.process.env.MANDIBLE_PID_FILE) throw new Error("Preview promotion metadata must pin the candidate PID file.");
   if (!preview.candidate.process.env.MANDIBLE_PREVIEW_ROOT || promotion.metadata.previewRoot !== preview.candidate.process.env.MANDIBLE_PREVIEW_ROOT) throw new Error("Preview promotion metadata must pin the candidate preview root.");
+  if (promotion.metadata.runScript !== promotion.run_script_path || promotion.run_script_path !== path.join(promotion.metadata.previewRoot, "run.sh") ||
+      promotion.metadata.stdoutLog !== preview.candidate.process.stdout_log || promotion.metadata.stderrLog !== preview.candidate.process.stderr_log ||
+      promotion.metadata.stdoutLog !== path.join(promotion.metadata.previewRoot, "stdout.log") || promotion.metadata.stderrLog !== path.join(promotion.metadata.previewRoot, "stderr.log") ||
+      promotion.metadata.pidFile !== path.join(promotion.metadata.previewRoot, "mandible.pid") ||
+      path.resolve(promotion.metadata.db ?? "") !== path.join(promotion.metadata.previewRoot, path.basename(promotion.metadata.db ?? "")) ||
+      !path.isAbsolute(promotion.metadata.sourceDb ?? "") || !fs.existsSync(promotion.metadata.sourceDb) || !promotion.metadata.branch || !promotion.metadata.worktree ||
+      path.resolve(promotion.metadata.worktree) !== path.resolve(preview.candidate.process.cwd)) throw new Error("Preview promotion metadata must pin launcher recovery paths, source database, branch, and candidate worktree.");
+  if (!preview.candidate.process.cwd || !Array.isArray(preview.candidate.process.args) || !preview.candidate.process.env ||
+      Object.entries(preview.candidate.process.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string") ||
+      preview.candidate.process.args.some((arg) => typeof arg !== "string")) throw new Error("Preview restart command must have a pinned worktree, arguments, and string environment.");
   for (const key of Object.keys(preview.candidate.process.env).filter((key) => key.startsWith("MANDIBLE_"))) {
     if (promotion.metadata.instanceEnv?.[key] !== preview.candidate.process.env[key]) throw new Error(`Preview promotion metadata does not pin candidate ${key}.`);
   }
