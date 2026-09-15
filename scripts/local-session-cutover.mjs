@@ -72,7 +72,8 @@ async function prepare(options, journalPath, effects) {
   const legacy = {};
   for (const instance of manifest.instances) {
     const { health, listener } = await observeBoundListener(effects, instance.public_port, instance.legacy.expected, `legacy ${instance.role}`);
-    legacy[instance.role] = { health_identity: healthIdentity(health), listener, stopped: false, restored_epoch: null };
+    const supervisor = instance.legacy.lifecycle?.kind === "launchd" ? await captureLegacySupervisor(instance, listener, effects) : null;
+    legacy[instance.role] = { health_identity: healthIdentity(health), listener, supervisor, stopped: false, restored_epoch: null };
   }
   await preflightCandidates(manifest, effects);
   const rollback = manifest.rollback_files.map(snapshotPath);
@@ -140,6 +141,7 @@ async function complete(journalPath, journal, effects) {
     for (const instance of working.manifest.instances) await effects.waitPort(instance.public_port);
     working = finishIntent(journalPath, working, "gateway.reload.normal");
     working = await promotePreview(journalPath, working);
+    working = await proveSupervisedLegacySuspended(journalPath, working, effects);
     return transition(journalPath, working, "complete", { completed_at: new Date().toISOString(), operator_confirmed_browser_conversion: true, runtime: { ...working.runtime, gateway_mode: "normal" } });
   } catch (error) {
     if (error?.cutoverInterruption) throw error;
@@ -181,10 +183,12 @@ async function revalidateLegacy(journal, effects) {
     const { health, listener } = await observeBoundListener(effects, instance.public_port, instance.legacy.expected, `legacy ${instance.role}`);
     if (!sameValue(healthIdentity(health), journal.legacy[instance.role].health_identity)) throw new Error(`Legacy ${instance.role} health identity changed after prepare.`);
     assertSameProcess(listener, journal.legacy[instance.role].listener, `legacy ${instance.role}`);
+    if (instance.legacy.lifecycle?.kind === "launchd") await assertLegacySupervisorOwns(instance, journal.legacy[instance.role], listener, effects);
   }
 }
 
 async function ensureLegacyStopped(journalPath, journal, instance, effects) {
+  if (instance.legacy.lifecycle?.kind === "launchd") return ensureSupervisedLegacyStopped(journalPath, journal, instance, effects);
   const key = `legacy.${instance.role}.stop`;
   if (intentDone(journal, key)) return journal;
   let working = beginIntent(journalPath, journal, key, { listener: journal.legacy[instance.role].listener });
@@ -200,6 +204,7 @@ async function ensureLegacyStopped(journalPath, journal, instance, effects) {
 }
 
 async function ensureLegacyRestored(journalPath, journal, instance, effects) {
+  if (instance.legacy.lifecycle?.kind === "launchd") return ensureSupervisedLegacyRestored(journalPath, journal, instance, effects);
   const stopKey = `legacy.${instance.role}.stop`;
   const key = `legacy.${instance.role}.restore`;
   const stopIntent = journal.runtime.intents[stopKey];
@@ -228,6 +233,160 @@ async function ensureLegacyRestored(journalPath, journal, instance, effects) {
   if (!health.startup_epoch || health.startup_epoch === instance.legacy.expected.startup_epoch) throw new Error(`Restored legacy ${instance.role} did not prove a new startup epoch.`);
   working = finishIntent(journalPath, working, key, { listener, startup_epoch: health.startup_epoch });
   return persist(journalPath, working, { legacy: { ...working.legacy, [instance.role]: { ...working.legacy[instance.role], restored_epoch: health.startup_epoch } } });
+}
+
+async function captureLegacySupervisor(instance, listener, effects) {
+  const service = instance.legacy.lifecycle;
+  const plist = fs.readFileSync(service.plist_path);
+  const details = parseLaunchdPlist(service.plist_path);
+  if (details.Label !== service.label || details.KeepAlive !== true || details.EnvironmentVariables?.MANDIBLE_PORT !== String(instance.public_port)) throw new Error(`Legacy ${instance.role} plist does not identify the supervised public service.`);
+  const status = await effects.supervisorStatus(service);
+  if (!status.loaded || status.pid !== listener.pid || status.plist_path !== service.plist_path) throw new Error(`Legacy ${instance.role} listener is not owned by its exact launchd service.`);
+  return { domain: service.domain, label: service.label, plist_path: service.plist_path, plist_data: plist.toString("base64"), plist_digest: digestBytes(plist), loaded: status.loaded, enabled: status.enabled };
+}
+
+function assertSupervisorPlist(captured) {
+  const actual = fs.readFileSync(captured.plist_path);
+  if (digestBytes(actual) !== captured.plist_digest || actual.toString("base64") !== captured.plist_data) throw new Error(`Supervised legacy plist drifted: ${captured.plist_path}`);
+}
+
+function parseLaunchdPlist(plistPath) {
+  const result = spawnSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", plistPath], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`Cannot parse supervised legacy plist: ${plistPath}`);
+  return JSON.parse(result.stdout);
+}
+
+function digestBytes(value) { return createHash("sha256").update(value).digest("hex"); }
+
+async function assertLegacySupervisorOwns(instance, legacy, listener, effects) {
+  assertSupervisorPlist(legacy.supervisor);
+  const status = await effects.supervisorStatus(instance.legacy.lifecycle);
+  if (!status.loaded || status.pid !== listener.pid || status.plist_path !== legacy.supervisor.plist_path || status.enabled !== legacy.supervisor.enabled) throw new Error(`Legacy ${instance.role} launchd ownership or enabled state drifted.`);
+}
+
+async function ensureSupervisedLegacyStopped(journalPath, journal, instance, effects) {
+  const service = instance.legacy.lifecycle;
+  const captured = journal.legacy[instance.role].supervisor;
+  const key = `legacy.${instance.role}.stop`;
+  assertSupervisorPlist(captured);
+  let working = beginIntent(journalPath, journal, key, { lifecycle: "launchd", supervisor: captured });
+  let status = await effects.supervisorStatus(service);
+  if (status.enabled) {
+    if (!status.loaded || status.plist_path !== captured.plist_path) throw new Error(`Legacy ${instance.role} launchd service ownership drifted before disable.`);
+    const observed = await observeBoundListener(effects, instance.public_port, stableLegacyExpectation(instance), `legacy ${instance.role} before disable`);
+    if (status.pid !== observed.listener.pid) throw new Error(`Legacy ${instance.role} launchd service does not own its public listener.`);
+    working = beginIntent(journalPath, working, `legacy.${instance.role}.disable`, { service });
+    await effects.supervisorDisable(service);
+    status = await effects.supervisorStatus(service);
+    if (status.enabled) throw new Error(`Legacy ${instance.role} launchd service remained enabled.`);
+    working = finishIntent(journalPath, working, `legacy.${instance.role}.disable`);
+  }
+  status = await effects.supervisorStatus(service);
+  if (status.loaded) {
+    if (status.plist_path !== captured.plist_path || !status.pid) throw new Error(`Legacy ${instance.role} launchd service ownership drifted before bootout.`);
+    const listener = await effects.discoverListener(instance.public_port);
+    if (!listener || listener.pid !== status.pid) throw new Error(`Legacy ${instance.role} launchd process does not own its public listener.`);
+    const health = await effects.health(instance.public_port);
+    assertHealth(health, stableLegacyExpectation(instance), `legacy ${instance.role} before bootout`);
+    working = beginIntent(journalPath, working, `legacy.${instance.role}.bootout`, { service });
+    await effects.supervisorBootout(service);
+  }
+  await effects.waitSupervisorStopped(service, instance.public_port);
+  status = await effects.supervisorStatus(service);
+  if (status.loaded || status.enabled || await effects.discoverListener(instance.public_port) || await effects.portOpen(instance.public_port)) throw new Error(`Legacy ${instance.role} supervised service or public port remained active.`);
+  working = finishIntent(journalPath, working, `legacy.${instance.role}.bootout`);
+  working = finishIntent(journalPath, working, key, { service_absent: true, public_port_released: true });
+  return persist(journalPath, working, { legacy: { ...working.legacy, [instance.role]: { ...working.legacy[instance.role], stopped: true } } });
+}
+
+async function ensureSupervisedLegacyRestored(journalPath, journal, instance, effects) {
+  const service = instance.legacy.lifecycle;
+  const captured = journal.legacy[instance.role].supervisor;
+  const stopKey = `legacy.${instance.role}.stop`;
+  const restoreKey = `legacy.${instance.role}.restore`;
+  if (!journal.runtime.intents[stopKey]) return journal;
+  assertSupervisorPlist(captured);
+  let working = journal;
+  let status = await effects.supervisorStatus(service);
+  if (intentDone(working, restoreKey)) {
+    if (status.loaded) {
+      const observed = await observeBoundListener(effects, instance.public_port, stableLegacyExpectation(instance), `restored legacy ${instance.role}`);
+      if (status.pid !== observed.listener.pid || status.plist_path !== captured.plist_path || status.enabled !== captured.enabled || !observed.health.startup_epoch || observed.health.startup_epoch === instance.legacy.expected.startup_epoch) throw new Error(`Restored legacy ${instance.role} receipt no longer matches its launchd-owned healthy listener.`);
+      return working;
+    }
+    if (await effects.discoverListener(instance.public_port) || await effects.portOpen(instance.public_port)) throw new Error(`Restored legacy ${instance.role} port is unexpectedly occupied.`);
+    working = retryIntent(journalPath, working, restoreKey);
+  }
+  if (!intentDone(working, stopKey) && status.loaded) {
+    const observed = await observeBoundListener(effects, instance.public_port, stableLegacyExpectation(instance), `legacy ${instance.role} before bootout`);
+    if (status.pid !== observed.listener.pid || status.plist_path !== captured.plist_path) throw new Error(`Legacy ${instance.role} service ownership drifted before rollback.`);
+    if (captured.enabled && !status.enabled) {
+      working = beginIntent(journalPath, working, `legacy.${instance.role}.enable`, { service });
+      await effects.supervisorEnable(service);
+      status = await effects.supervisorStatus(service);
+      if (!status.enabled || !status.loaded || status.pid !== observed.listener.pid) throw new Error(`Legacy ${instance.role} launchd enabled state did not restore.`);
+      working = finishIntent(journalPath, working, `legacy.${instance.role}.enable`);
+    }
+    return finishIntent(journalPath, working, stopKey, { effect: "not-applied" });
+  }
+  working = beginIntent(journalPath, working, restoreKey, { lifecycle: "launchd", supervisor: captured });
+  if (captured.enabled && !status.enabled) {
+    working = beginIntent(journalPath, working, `legacy.${instance.role}.enable`, { service });
+    await effects.supervisorEnable(service);
+    status = await effects.supervisorStatus(service);
+    if (!status.enabled) throw new Error(`Legacy ${instance.role} launchd service did not re-enable.`);
+    working = finishIntent(journalPath, working, `legacy.${instance.role}.enable`);
+  }
+  if (!captured.enabled && status.enabled) {
+    working = beginIntent(journalPath, working, `legacy.${instance.role}.disable.restore`, { service });
+    await effects.supervisorDisable(service);
+    status = await effects.supervisorStatus(service);
+    if (status.enabled) throw new Error(`Legacy ${instance.role} launchd service did not restore disabled state.`);
+    working = finishIntent(journalPath, working, `legacy.${instance.role}.disable.restore`);
+  }
+  if (!status.loaded) {
+    const listener = await effects.discoverListener(instance.public_port);
+    if (listener || await effects.portOpen(instance.public_port)) throw new Error(`Legacy ${instance.role} public port is owned unexpectedly before bootstrap.`);
+    if (!status.enabled) {
+      working = beginIntent(journalPath, working, `legacy.${instance.role}.enable.bootstrap`, { service });
+      await effects.supervisorEnable(service);
+      status = await effects.supervisorStatus(service);
+      if (!status.enabled) throw new Error(`Legacy ${instance.role} launchd service did not enable for bootstrap.`);
+      working = finishIntent(journalPath, working, `legacy.${instance.role}.enable.bootstrap`);
+    }
+    working = beginIntent(journalPath, working, `legacy.${instance.role}.bootstrap`, { service });
+    await effects.supervisorBootstrap(service);
+    await effects.waitHealth(instance.public_port, stableLegacyExpectation(instance));
+  }
+  const observed = await observeBoundListener(effects, instance.public_port, stableLegacyExpectation(instance), `restored legacy ${instance.role}`);
+  status = await effects.supervisorStatus(service);
+  if (!captured.enabled && status.enabled) {
+    working = beginIntent(journalPath, working, `legacy.${instance.role}.disable.restore`, { service });
+    await effects.supervisorDisable(service);
+    status = await effects.supervisorStatus(service);
+    if (status.enabled) throw new Error(`Legacy ${instance.role} launchd service did not restore disabled state.`);
+    working = finishIntent(journalPath, working, `legacy.${instance.role}.disable.restore`);
+  }
+  if (!status.loaded || status.pid !== observed.listener.pid || status.plist_path !== captured.plist_path || status.enabled !== captured.enabled) throw new Error(`Restored legacy ${instance.role} listener is not owned by the captured launchd service.`);
+  if (!observed.health.startup_epoch || observed.health.startup_epoch === instance.legacy.expected.startup_epoch) throw new Error(`Restored legacy ${instance.role} did not prove a new startup epoch.`);
+  working = finishIntent(journalPath, working, `legacy.${instance.role}.bootstrap`);
+  working = finishIntent(journalPath, working, restoreKey, { listener: observed.listener, startup_epoch: observed.health.startup_epoch });
+  return persist(journalPath, working, { legacy: { ...working.legacy, [instance.role]: { ...working.legacy[instance.role], restored_epoch: observed.health.startup_epoch } } });
+}
+
+async function proveSupervisedLegacySuspended(journalPath, journal, effects) {
+  let working = journal;
+  for (const instance of journal.manifest.instances) {
+    if (instance.legacy.lifecycle?.kind !== "launchd") continue;
+    const captured = working.legacy[instance.role].supervisor;
+    assertSupervisorPlist(captured);
+    const status = await effects.supervisorStatus(instance.legacy.lifecycle);
+    if (status.loaded || status.enabled || !intentDone(working, `legacy.${instance.role}.stop`)) throw new Error(`Legacy ${instance.role} launchd service is not durably suspended at completion.`);
+    const listener = await effects.discoverListener(instance.public_port);
+    assertSameProcess(listener, working.runtime.gateway, `gateway on ${instance.public_port}`);
+    working = persist(journalPath, working, { legacy: { ...working.legacy, [instance.role]: { ...working.legacy[instance.role], supervisor_suspended: true } } });
+  }
+  return working;
 }
 
 async function ensureCandidate(journalPath, journal, instance, migration, effects) {
@@ -538,7 +697,11 @@ function validateManifest(manifest) {
     if (!Number.isInteger(backend) || backend < 1024 || backend === 19420 || backend === 19421 || backendPorts.has(backend)) throw new Error("Candidate backends must use distinct non-public loopback ports.");
     backendPorts.add(backend);
     validateProcess(instance.candidate.process, `candidate ${instance.role}`);
-    validateProcess(instance.legacy.restore, `legacy ${instance.role} restore`);
+    if (instance.legacy.lifecycle?.kind === "launchd") {
+      if (instance.role !== "main" || typeof instance.legacy.lifecycle.domain !== "string" || !/^gui\/\d+$/.test(instance.legacy.lifecycle.domain) || Number(instance.legacy.lifecycle.domain.slice(4)) !== process.getuid?.() || typeof instance.legacy.lifecycle.label !== "string" || !/^[A-Za-z0-9._-]+$/.test(instance.legacy.lifecycle.label) || !path.isAbsolute(instance.legacy.lifecycle.plist_path ?? "")) throw new Error("Supervised legacy lifecycle requires the current user's pinned main-role launchd domain, label, and absolute plist path.");
+      if (instance.legacy.restore) throw new Error("Supervised legacy lifecycle must restore through launchd, not a direct process control.");
+    } else if (!instance.legacy.lifecycle || instance.legacy.lifecycle.kind === "unmanaged") validateProcess(instance.legacy.restore, `legacy ${instance.role} restore`);
+    else throw new Error(`Unsupported legacy lifecycle for ${instance.role}.`);
     if (!instance.legacy.expected?.startup_epoch || instance.legacy.expected.role !== instance.role) throw new Error(`Legacy ${instance.role} requires an exact startup epoch and role.`);
     for (const key of ["startup_commit_hash", "db_path"]) {
       if (!instance.legacy.expected[key]) throw new Error(`Legacy ${instance.role} health proof is missing ${key}.`);
@@ -625,8 +788,39 @@ function systemEffects() {
       child.unref();
     },
     startControl: async (control) => runSync(control),
+    supervisorStatus: launchdStatus,
+    waitSupervisorStopped: (service, port) => waitUntil(async () => {
+      const status = launchdStatus(service);
+      return !status.loaded && !status.enabled && !await discoverListener(port) && !await portOpen(port);
+    }, `launchd ${service.domain}/${service.label} and port ${port} to stop`),
+    supervisorDisable: (service) => launchdCommand("disable", `${service.domain}/${service.label}`),
+    supervisorBootout: (service) => launchdCommand("bootout", `${service.domain}/${service.label}`),
+    supervisorEnable: (service) => launchdCommand("enable", `${service.domain}/${service.label}`),
+    supervisorBootstrap: (service) => launchdCommand("bootstrap", service.domain, service.plist_path),
     stopPid,
   };
+}
+
+function launchdCommand(action, ...args) {
+  const result = spawnSync("/bin/launchctl", [action, ...args], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`launchctl ${action} failed: ${(result.stderr || result.stdout || "no output").trim()}`);
+}
+
+function launchdStatus(service) {
+  const target = `${service.domain}/${service.label}`;
+  const disabled = spawnSync("/bin/launchctl", ["print-disabled", service.domain], { encoding: "utf8" });
+  if (disabled.status !== 0) throw new Error(`Cannot inspect launchd enabled state for ${target}.`);
+  const escapedLabel = service.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const enabledMatch = new RegExp(`"${escapedLabel}"\\s*=>\\s*(enabled|disabled)`).exec(disabled.stdout);
+  if (!enabledMatch) throw new Error(`Launchd enabled state for ${target} is absent or ambiguous.`);
+  const printed = spawnSync("/bin/launchctl", ["print", target], { encoding: "utf8" });
+  if (printed.status !== 0) {
+    if (!printed.stderr.includes(`Could not find service "${service.label}"`)) throw new Error(`Cannot inspect launchd service ${target}: ${printed.stderr.trim()}`);
+    return { loaded: false, enabled: enabledMatch[1] === "enabled", pid: null, plist_path: null };
+  }
+  const plistPath = /^\s*path = (.+)$/m.exec(printed.stdout)?.[1] ?? null;
+  const pid = Number(/^\s*pid = (\d+)$/m.exec(printed.stdout)?.[1]);
+  return { loaded: true, enabled: enabledMatch[1] === "enabled", pid: Number.isInteger(pid) && pid > 0 ? pid : null, plist_path: plistPath };
 }
 
 function discoverListener(port) {
