@@ -38,7 +38,8 @@
     "targets": ["dmg", "app"],
     "resources": {
       "../scripts/local-ca-trust.mjs": "local-ca-trust.mjs",
-      "../scripts/pinned-caddy.mjs": "pinned-caddy.mjs"
+      "../scripts/pinned-caddy.mjs": "pinned-caddy.mjs",
+      "resources/local-ca-trust-helper": "local-ca-trust-helper"
     },
     "icon": [
       "icons/32x32.png",
