@@ -28,6 +28,8 @@ const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
 // be removed. Deliberately anchored so no label outside it can ever match.
 const LEGACY_PREVIEW_LABEL_PATTERN = /^bio\.mll\.mandible\.preview\./;
 const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)?$/;
+const LOCAL_SESSION_CUTOVER_SCHEMA = "mandible-local-session-cutover@1";
+const LOCAL_SESSION_CUTOVER_STATES = new Set(["preparing", "prepared", "activating", "migration", "completing", "normal_pending", "rolling_back", "complete", "rolled_back", "recovery_failed"]);
 const LEGACY_PREVIEW_CONTRACT_DRIFT = new Set([
   "MANDIBLE_INSTANCE_ID",
   "MANDIBLE_INSTALLATION_ID",
@@ -60,6 +62,7 @@ async function runCli() {
     if (command === "seed-agents-review" && !args.artifactVersion) {
       throw new Error("seed-agents-review requires --artifact-version");
     }
+    assertOrdinaryPreviewLifecycleAllowed();
     const result = command === "cleanup"
       ? await cleanupPreviewCache(args)
       : command === "seed-briefing-demo" ? await seedBriefingDemo(args) : await main(args);
@@ -76,6 +79,7 @@ async function runCli() {
 }
 
 async function main(options) {
+  assertOrdinaryPreviewLifecycleAllowed();
   // Runs before any reuse decision. A surviving legacy job is a supervised
   // preview: booting it out frees its port and makes the reuse check see the
   // truth, so the next start is an ordinary unsupervised child process.
@@ -200,8 +204,6 @@ async function createOrReusePreview(options) {
       instanceEnv: previewIsolationEnv(preview.root, sourceDb),
     };
   }
-
-  assertOrdinaryPreviewLifecycleAllowed();
 
   fs.mkdirSync(preview.root, { recursive: true });
   fs.rmSync(path.join(preview.root, "preview-browser-enrollment.json"), { force: true });
@@ -1783,8 +1785,24 @@ function localSessionAuthorityDir() {
 
 function assertOrdinaryPreviewLifecycleAllowed() {
   const journalPath = path.join(localSessionAuthorityDir(), "cutover.json");
-  const journal = readJsonFile(journalPath);
-  if (!journal || journal.state === "complete" || journal.state === "rolled_back") return;
+  if (!fs.existsSync(journalPath)) return;
+  let journal;
+  try {
+    journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+  } catch {
+    throw new Error(`Local-session cutover journal is unreadable: ${journalPath}`);
+  }
+  if (journal.schema !== LOCAL_SESSION_CUTOVER_SCHEMA || !LOCAL_SESSION_CUTOVER_STATES.has(journal.state)) {
+    throw new Error(`Local-session cutover journal has an invalid schema or state: ${journalPath}`);
+  }
+  if (journal.state === "complete") {
+    if (journal.runtime?.gateway_mode === "normal" && journal.runtime?.intents?.["preview.promote"]?.status === "done") return;
+    throw new Error(`Completed local-session cutover journal lacks its normal gateway or preview-promotion receipt: ${journalPath}`);
+  }
+  if (journal.state === "rolled_back") {
+    if (journal.runtime?.intents?.["files.restore"]?.status === "done" && journal.runtime?.intents?.["registrations.restore"]?.status === "done") return;
+    throw new Error(`Rolled-back local-session cutover journal lacks restoration receipts: ${journalPath}`);
+  }
   throw new Error(
     `Local-session cutover is ${journal.state}; ordinary preview lifecycle is disabled until it completes or rolls back.`,
   );

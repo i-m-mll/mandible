@@ -1591,6 +1591,30 @@ describe("iab-preview launcher", () => {
     expect(fs.readdirSync(previewRoot).filter((entry) => entry.startsWith("mandible-"))).toEqual(["mandible-legacy.db"]);
   });
 
+  it("checks the cutover journal before launchd cleanup or existing-preview refresh", () => {
+    const repo = createRepo();
+    git(["checkout", "-b", "integration/test-preview"], repo);
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
+    tempRoots.push(previewBase);
+    const env = previewLauncherEnv(previewBase);
+    const authorityDir = path.join(env.MANDIBLE_HOME, "config", "local-sessions");
+    fs.mkdirSync(authorityDir, { recursive: true });
+    fs.writeFileSync(path.join(authorityDir, "cutover.json"), JSON.stringify({ schema: "mandible-local-session-cutover@1", state: "activating" }));
+    const commandLog = path.join(previewBase, "launchctl.log");
+    const launchctlShim = path.join(previewBase, "launchctl");
+    fs.writeFileSync(launchctlShim, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(commandLog)}\n`);
+    fs.chmodSync(launchctlShim, 0o755);
+
+    const result = spawnSync(process.execPath, [SCRIPT, "--json", "--dry-run"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...env, MANDIBLE_IAB_PREVIEW_LAUNCHCTL: launchctlShim },
+    });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout).error).toContain("cutover is activating");
+    expect(fs.existsSync(commandLog)).toBe(false);
+  });
+
   it("does not reuse a preview daemon that owns the shared file-RPC spool", async () => {
     const repo = createRepo();
     git(["checkout", "-b", "integration/test-preview"], repo);
