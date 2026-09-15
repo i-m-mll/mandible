@@ -1,0 +1,30 @@
+{
+  "status": "ok",
+  "uptime": 31254.548,
+  "version": "0.1.0",
+  "startup_epoch": "legacy-preview",
+  "startup_commit": {
+    "hash": "9c742815004da7d1c07476760a0e44ba3f607928",
+    "summary": "Merge feature/c5fe0c4-chat-auth-spacing-delivery: Preserve browser authentication and normalize Chat spacing",
+    "date": "2026-09-14 15:06:23 -0400"
+  },
+  "instance": {
+    "role": "preview",
+    "operational_mutations": "reject",
+    "operational_mutations_overridden": true,
+    "briefing_response_mutations": "allow",
+    "preview_browser_enrollment": "allow",
+    "preview_root": "/tmp/mandible-preview",
+    "db_path": "/tmp/mandible-preview/mandible.db",
+    "db_path_source": "iab-preview-copy",
+    "source_db_path": "/tmp/mandible-production.db",
+    "source_db_path_source": "env"
+  },
+  "file_rpc_dir": "/tmp/mandible-preview/agent-rpc",
+  "ready": true,
+  "warm": true,
+  "client_auth": {
+    "mode": "compat",
+    "authority_id": "authority_fixture"
+  }
+}

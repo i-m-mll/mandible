@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { runCutoverCommand } from "../scripts/local-session-cutover.mjs";
 
+const capturedLegacyHealth = JSON.parse(fs.readFileSync(new URL("./fixtures/local-session-legacy-health-9c742815.json", import.meta.url), "utf8"));
+
 const roots = new Set<string>();
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.clear(); });
 
@@ -40,10 +42,6 @@ function fixture() {
           role,
           startup_epoch: `legacy-${role}`,
           startup_commit_hash: `legacy-commit-${role}`,
-          instance_id: instanceId,
-          installation_id: "authority-test",
-          public_origin: publicOrigin,
-          backend_generation: `legacy-${role}`,
           db_path: role === "preview" ? oldDb : path.join(root, "production.db"),
         },
         restore: { command: "/usr/bin/true", args: [], env: { MANDIBLE_INSTANCE_ROLE: role } },
@@ -125,7 +123,7 @@ function fixture() {
 }
 
 function lifecycle(fx: ReturnType<typeof fixture>) {
-  type Listener = { pid: number; fingerprint: string; kind: "legacy" | "candidate" | "gateway"; role?: "main" | "preview"; mode?: "migration" | "normal"; epoch?: string };
+  type Listener = { pid: number; fingerprint: string; kind: "legacy" | "candidate" | "gateway"; role?: "main" | "preview"; mode?: "migration" | "normal"; epoch?: string; token?: string };
   const listeners = new Map<number, Listener>();
   const intentProcesses = new Map<string, Listener>();
   const events: string[] = [];
@@ -134,6 +132,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
   let interruptBeforeBindRole: string | null = null;
   let interruptAfterNextStop = false;
   let failReloadOnce = false;
+  const unhealthyRoles = new Set<string>();
   for (const instance of fx.manifest.instances) listeners.set(instance.public_port, { pid: ++nextPid, fingerprint: `process-${nextPid}`, kind: "legacy", role: instance.role, epoch: instance.legacy.expected.startup_epoch });
 
   const candidateHealth = (instance: (typeof fx.manifest.instances)[number], mode: "migration" | "normal") => ({
@@ -159,20 +158,17 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
     if (!listener) return null;
     const instance = fx.manifest.instances.find((entry) => entry.public_port === port || entry.candidate.backend_port === port)!;
     if (listener.kind === "legacy") return {
-      ready: true,
-      warm: true,
+      ...capturedLegacyHealth,
       startup_epoch: listener.epoch,
-      startup_commit: { hash: `legacy-commit-${instance.role}` },
+      startup_commit: { ...capturedLegacyHealth.startup_commit, hash: `legacy-commit-${instance.role}` },
       instance: {
+        ...capturedLegacyHealth.instance,
         role: listener.role,
-        instance_id: instance.candidate.instance_id,
-        installation_id: instance.legacy.expected.installation_id,
-        public_origin: instance.legacy.expected.public_origin,
-        backend_generation: instance.legacy.expected.backend_generation,
         db_path: instance.legacy.expected.db_path,
       },
     };
-    return candidateHealth(instance, listener.mode ?? "migration");
+    const candidate = candidateHealth(instance, listener.mode ?? "migration");
+    return unhealthyRoles.has(instance.role) ? { ...candidate, ready: false, warm: false } : candidate;
   };
 
   return {
@@ -182,6 +178,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
     interruptBeforeBind(role: string) { interruptBeforeBindRole = role; },
     interruptNextStop() { interruptAfterNextStop = true; },
     failNextReload() { failReloadOnce = true; },
+    makeCandidateUnhealthy(role: string) { unhealthyRoles.add(role); },
     effects: {
       health,
       waitHealth: async (port: number) => {
@@ -200,7 +197,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
         return listener ? { pid: listener.pid, fingerprint: listener.fingerprint } : null;
       },
       discoverIntentProcess: async (token: string) => {
-        const process = intentProcesses.get(token);
+        const process = intentProcesses.get(token) ?? [...listeners.values()].find((listener) => listener.token === token);
         return process ? { pid: process.pid, fingerprint: process.fingerprint } : null;
       },
       matchesProcess: () => true,
@@ -215,7 +212,10 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
         if (role) {
           const instance = fx.manifest.instances.find((entry) => entry.role === role)!;
           const mode = overlay.MANDIBLE_LEGACY_CONVERSION === "allow" ? "migration" : "normal";
-          const candidate = { pid, fingerprint: `process-${pid}`, kind: "candidate" as const, role, mode };
+          const candidate = { pid, fingerprint: `process-${pid}`, kind: "candidate" as const, role, mode, token: overlay.MANDIBLE_CUTOVER_INTENT };
+          const authority = new Database(fx.authorityDb);
+          authority.prepare("UPDATE instance_registrations SET updated_at = updated_at + 1 WHERE instance_id = ?").run(instance.candidate.instance_id);
+          authority.close();
           events.push(`start:${role}:${mode}`);
           if (interruptBeforeBindRole === role) {
             interruptBeforeBindRole = null;
@@ -266,7 +266,7 @@ function registration(fx: ReturnType<typeof fixture>, instanceId: string) {
 }
 
 describe("local session first cutover", () => {
-  it("journals registration custody before CAS staging and restores the exact prior rows", async () => {
+  it("guards registration semantics while candidate startup refreshes updated_at", async () => {
     const fx = fixture();
     const life = lifecycle(fx);
     await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
@@ -274,9 +274,19 @@ describe("local session first cutover", () => {
     expect(prepared.runtime.intents["registrations.stage"].status).toBe("done");
     expect(prepared.registrations.find((entry: { instance_id: string }) => entry.instance_id === "production").before).toMatchObject({ backend_origin: "http://127.0.0.1:0", updated_at: 7 });
     expect(registration(fx, "production")).toMatchObject({ backend_origin: "http://127.0.0.1:29420" });
+    await runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects);
+    const refreshedAt = (registration(fx, "production") as { updated_at: number }).updated_at;
     await runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects);
-    expect(registration(fx, "production")).toMatchObject({ backend_origin: "http://127.0.0.1:0", updated_at: 7 });
+    expect(registration(fx, "production")).toMatchObject({ backend_origin: "http://127.0.0.1:0", updated_at: refreshedAt });
     expect(registration(fx, "preview-existing")).toBeUndefined();
+  });
+
+  it("accepts the captured pre-cutover health shape without invented identity fields", async () => {
+    const fx = fixture();
+    const life = lifecycle(fx);
+    expect(capturedLegacyHealth.instance).not.toHaveProperty("instance_id");
+    expect(capturedLegacyHealth.instance).not.toHaveProperty("installation_id");
+    await expect(runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "prepared" });
   });
 
   it("fails closed instead of overwriting registration drift during rollback", async () => {
@@ -305,6 +315,44 @@ describe("local session first cutover", () => {
     expect(active).toMatchObject({ state: "migration", gateway_mode: "migration" });
     expect(life.events.filter((event) => event === "stop:101")).toHaveLength(1);
     expect(life.events.filter((event) => event === "start:main:migration")).toHaveLength(1);
+  });
+
+  it("rolls back directly after a stop effect interrupted before its receipt", async () => {
+    const fx = fixture();
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptNextStop();
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated stop interruption");
+    const rolledBack = await runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects);
+    expect(rolledBack.state).toBe("rolled_back");
+    expect(life.events).toContain("restore:main");
+  });
+
+  it("rejects invalid activation states before backward recovery", async () => {
+    for (const state of ["migration", "normal_pending", "complete", "recovery_failed"]) {
+      const fx = fixture();
+      const life = lifecycle(fx);
+      await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+      const journal = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
+      journal.state = state;
+      if (state === "recovery_failed") journal.recovery_direction = "forward";
+      fs.writeFileSync(fx.journalPath, JSON.stringify(journal));
+      const stopCount = life.events.filter((event) => event.startsWith("stop:")).length;
+      await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow(`Cutover is ${state}`);
+      expect(JSON.parse(fs.readFileSync(fx.journalPath, "utf8")).state).toBe(state);
+      expect(life.events.filter((event) => event.startsWith("stop:")).length).toBe(stopCount);
+    }
+  });
+
+  it("stops journal-owned candidates during rollback even when health is unready", async () => {
+    const fx = fixture();
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptAfter("main");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated process interruption");
+    life.makeCandidateUnhealthy("main");
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events).toContain("restore:main");
   });
 
   it("persists the forward-only boundary before reload and journals preview promotion", async () => {

@@ -35,6 +35,7 @@ export async function runCutoverCommand(options, effects = systemEffects()) {
   if (options.command === "status") return publicState(journalPath, journal);
   if (options.command === "activate") {
     if (!options.confirmCaTrusted) throw new Error("Activation requires --confirm-ca-trusted; the cutover never changes certificate trust.");
+    requireOneState(journal, ["prepared", "activating"]);
     try {
       journal = await activate(journalPath, journal, effects);
       return publicState(journalPath, journal);
@@ -200,8 +201,20 @@ async function ensureLegacyStopped(journalPath, journal, instance, effects) {
 async function ensureLegacyRestored(journalPath, journal, instance, effects) {
   const stopKey = `legacy.${instance.role}.stop`;
   const key = `legacy.${instance.role}.restore`;
-  if (!intentDone(journal, stopKey) || intentDone(journal, key)) return journal;
-  let working = beginIntent(journalPath, journal, key, { old_startup_epoch: instance.legacy.expected.startup_epoch });
+  const stopIntent = journal.runtime.intents[stopKey];
+  if (!stopIntent || stopIntent.effect === "not-applied" || intentDone(journal, key)) return journal;
+  let working = journal;
+  if (!intentDone(working, stopKey)) {
+    const listener = await effects.discoverListener(instance.public_port);
+    if (listener) {
+      const observed = await observeBoundListener(effects, instance.public_port, instance.legacy.expected, `legacy ${instance.role}`);
+      assertSameProcess(observed.listener, working.legacy[instance.role].listener, `legacy ${instance.role}`);
+      return finishIntent(journalPath, working, stopKey, { effect: "not-applied" });
+    }
+    working = finishIntent(journalPath, working, stopKey, { effect: "reconciled-absent-listener" });
+    working = persist(journalPath, working, { legacy: { ...working.legacy, [instance.role]: { ...working.legacy[instance.role], stopped: true } } });
+  }
+  working = beginIntent(journalPath, working, key, { old_startup_epoch: instance.legacy.expected.startup_epoch });
   let listener = await effects.discoverListener(instance.public_port);
   let health = listener ? await effects.health(instance.public_port) : null;
   if (!listener) {
@@ -256,13 +269,12 @@ async function ensureCandidateStopped(journalPath, journal, instance, effects) {
   let working = beginIntent(journalPath, journal, key, { prior: current ?? null });
   const listener = await effects.discoverListener(instance.candidate.backend_port);
   if (listener) {
-    const health = await effects.health(instance.candidate.backend_port);
-    const migration = health?.client_auth?.legacy_conversion === true;
-    const observed = await observeBoundListener(effects, instance.candidate.backend_port, candidateExpectation(instance, migration), `candidate ${instance.role}`);
-    const mode = migration ? "migration" : "normal";
-    const expected = current?.listener ?? working.runtime.intents[`candidate.${instance.role}.${mode}.start`]?.listener;
-    if (expected) assertSameProcess(observed.listener, expected, `candidate ${instance.role}`);
-    await effects.stopPid(observed.listener.pid, observed.listener.fingerprint);
+    const receipt = current?.listener
+      ?? ["migration", "normal"].map((mode) => working.runtime.intents[`candidate.${instance.role}.${mode}.start`]?.listener).find(Boolean);
+    const intended = receipt ?? await findCandidateIntentProcess(working, instance, effects);
+    if (!intended) throw new Error(`Refusing to stop candidate ${instance.role}; no journal-owned process identity matches the listener.`);
+    assertSameProcess(listener, intended, `candidate ${instance.role}`);
+    await effects.stopPid(listener.pid, listener.fingerprint);
   }
   for (const mode of ["migration", "normal"]) {
     const startKey = `candidate.${instance.role}.${mode}.start`;
@@ -275,6 +287,16 @@ async function ensureCandidateStopped(journalPath, journal, instance, effects) {
   const candidates = { ...working.runtime.candidates };
   delete candidates[instance.role];
   return persist(journalPath, working, { runtime: { ...working.runtime, candidates } });
+}
+
+async function findCandidateIntentProcess(journal, instance, effects) {
+  for (const mode of ["migration", "normal"]) {
+    const key = `candidate.${instance.role}.${mode}.start`;
+    if (!journal.runtime.intents[key]) continue;
+    const process = await effects.discoverIntentProcess(intentProcessToken(journal, key));
+    if (process) return process;
+  }
+  return null;
 }
 
 async function ensureGatewayStarted(journalPath, journal, effects) {
@@ -394,10 +416,10 @@ function applyRegistrationCas(databasePath, custody, direction) {
         const current = normalizeRegistration(db.prepare("SELECT * FROM instance_registrations WHERE instance_id = ?").get(entry.instance_id));
         const from = direction === "stage" ? entry.before : entry.desired;
         const to = direction === "stage" ? entry.desired : entry.before;
-        if (sameValue(current, to)) continue;
-        if (!sameValue(current, from)) throw new Error(`Registration CAS drift for ${entry.instance_id} during ${direction}.`);
+        if (sameRegistration(current, to)) continue;
+        if (!sameRegistration(current, from)) throw new Error(`Registration CAS drift for ${entry.instance_id} during ${direction}.`);
         if (!to) db.prepare("DELETE FROM instance_registrations WHERE instance_id = ?").run(entry.instance_id);
-        else writeRegistration(db, to);
+        else writeRegistration(db, { ...to, updated_at: direction === "stage" ? Date.now() : current?.updated_at ?? to.updated_at });
       }
     })();
   } finally { db.close(); }
@@ -421,6 +443,10 @@ function registrationFromInstance(instance) {
 }
 
 function normalizeRegistration(row) { return row ? Object.fromEntries([...REGISTRATION_KEYS, "updated_at"].map((key) => [key, row[key]])) : null; }
+function sameRegistration(left, right) {
+  if (!left || !right) return left === right;
+  return sameValue(Object.fromEntries(REGISTRATION_KEYS.map((key) => [key, left[key]])), Object.fromEntries(REGISTRATION_KEYS.map((key) => [key, right[key]])));
+}
 
 function candidateExpectation(instance, migration) {
   const env = instance.candidate.process.env;
@@ -467,7 +493,7 @@ function validateManifest(manifest) {
     validateProcess(instance.candidate.process, `candidate ${instance.role}`);
     validateProcess(instance.legacy.restore, `legacy ${instance.role} restore`);
     if (!instance.legacy.expected?.startup_epoch || instance.legacy.expected.role !== instance.role) throw new Error(`Legacy ${instance.role} requires an exact startup epoch and role.`);
-    for (const key of ["startup_commit_hash", "instance_id", "installation_id", "public_origin", "backend_generation", "db_path"]) {
+    for (const key of ["startup_commit_hash", "db_path"]) {
       if (!instance.legacy.expected[key]) throw new Error(`Legacy ${instance.role} health proof is missing ${key}.`);
     }
     const env = instance.candidate.process.env ?? {};
