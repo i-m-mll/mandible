@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import { ProcessGroupSupervisor } from "./process-group-supervisor.mjs";
 
@@ -9,8 +10,6 @@ const root = process.cwd();
 const relativeTest = "test/extended/iab-preview-launcher.test.ts";
 const testPath = path.join(root, relativeTest);
 const vitest = path.join(root, "node_modules", "vitest", "vitest.mjs");
-const rssLimitKiB = 950_000;
-const supervisor = new ProcessGroupSupervisor();
 const lines = fs.readFileSync(testPath, "utf8")
   .split("\n")
   .flatMap((line, index) => /^\s+it\(/.test(line) ? [index + 1] : []);
@@ -42,8 +41,8 @@ function processTreeRss(rootPid) {
   return rows.filter((row) => descendants.has(row.pid)).reduce((total, row) => total + row.rss, 0);
 }
 
-async function runShard(shard) {
-  const child = spawn(process.execPath, [
+function spawnVitestShard(shard) {
+  return spawn(process.execPath, [
     vitest,
     "run",
     "--config", "vitest.iab-preview.config.ts",
@@ -54,18 +53,36 @@ async function runShard(shard) {
     env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=384" },
     stdio: "inherit",
   });
+}
+
+export async function runIabPreviewTests({
+  supervisor,
+  selectedShards = shards,
+  spawnShard = spawnVitestShard,
+  measureRssKiB = (child) => processTreeRss(child.pid) + Math.ceil(process.memoryUsage().rss / 1024),
+  rssLimitKiB = 950_000,
+  monitorIntervalMs = 100,
+} = {}) {
+  if (!supervisor) throw new Error("The IAB preview phase requires one caller-owned process-group supervisor.");
+  for (const shard of selectedShards) {
+    await runShard({ supervisor, shard, spawnShard, measureRssKiB, rssLimitKiB, monitorIntervalMs });
+  }
+}
+
+async function runShard({ supervisor, shard, spawnShard, measureRssKiB, rssLimitKiB, monitorIntervalMs }) {
+  const child = spawnShard(shard);
   supervisor.attach(child);
   let peakKiB = 0;
   let memoryKilled = false;
   const monitor = setInterval(() => {
     if (!child.pid) return;
-    const totalKiB = processTreeRss(child.pid) + Math.ceil(process.memoryUsage().rss / 1024);
+    const totalKiB = measureRssKiB(child);
     peakKiB = Math.max(peakKiB, totalKiB);
     if (totalKiB >= rssLimitKiB && !memoryKilled) {
       memoryKilled = true;
       void supervisor.stopActive("SIGTERM");
     }
-  }, 100);
+  }, monitorIntervalMs);
   let result;
   try {
     result = await supervisor.settle(child);
@@ -78,8 +95,12 @@ async function runShard(shard) {
   if (result.code !== 0) throw new Error(`IAB preview shard ${shard.label} failed (${result.signal ?? result.code}).`);
 }
 
-try {
-  for (const shard of shards) await runShard(shard);
-} finally {
-  await supervisor.close();
+const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
+if (invokedPath === import.meta.url) {
+  const supervisor = new ProcessGroupSupervisor();
+  try {
+    await runIabPreviewTests({ supervisor });
+  } finally {
+    await supervisor.close();
+  }
 }

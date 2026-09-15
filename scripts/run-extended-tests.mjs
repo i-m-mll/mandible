@@ -5,6 +5,7 @@ import { readdirSync } from "node:fs";
 import path from "node:path";
 import { inheritedExtendedBaselines } from "./check-extended-baseline.mjs";
 import { ProcessGroupSupervisor } from "./process-group-supervisor.mjs";
+import { runIabPreviewTests } from "./run-iab-preview-tests.mjs";
 
 const root = process.cwd();
 const vitestCli = "node_modules/vitest/vitest.mjs";
@@ -101,7 +102,7 @@ try {
         ]);
       }
     }
-    if (!ordinaryOnly) await runPhase("iab-preview", "scripts/run-iab-preview-tests.mjs");
+    if (!ordinaryOnly) await runIabPreviewTests({ supervisor });
   }
 } finally {
   await supervisor.close();
