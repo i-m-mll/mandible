@@ -2351,11 +2351,13 @@ describe('app shell', () => {
 });
 
 describe('SettingsView', () => {
-  it('shows a browser handoff to native certificate setup without a trust-install API', () => {
+  it('offers only the native setup handoff from the browser', () => {
     render(h(SettingsView, { settings: {}, onSave: async () => undefined }));
     const action = screen.getByRole('link', { name: 'Open macOS setup action' });
     expect(action.getAttribute('href')).toBe('mandible://connections/setup');
-    expect(screen.getByText(/browser does not install system trust or authorize a session/i)).toBeTruthy();
+    const handoff = action.closest('.settings-view__daemon-card');
+    expect(handoff).not.toBeNull();
+    expect(within(handoff!).queryByRole('button')).toBeNull();
   });
 
   it('exposes and saves every app theme mode through the labelled Appearance select', async () => {
