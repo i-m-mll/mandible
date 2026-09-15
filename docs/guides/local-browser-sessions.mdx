@@ -1,0 +1,39 @@
+# Local browser sessions
+
+Mandible browser access uses one durable installation authority and one opaque, host-only cookie per browser environment. Renderer code never receives the reusable session credential. CLI and file-RPC clients continue to use explicit bearer or capability credentials, but browser requests cannot fall back to them.
+
+## One-time setup
+
+1. Run `npm run local-front-door -- initialize`. This explicit, idempotent step establishes the installation authority before any daemon can create browser sessions.
+2. Start the production daemon on its loopback backend (port `29420`).
+3. Run `npm run local-front-door -- install`. This downloads Caddy `2.11.3` for the current macOS architecture and verifies the release SHA-256 pinned in `scripts/local-front-door.mjs`.
+4. Start the front door with `npm run local-front-door -- run`.
+5. Explicitly trust Caddy's local root certificate using the operator-controlled system flow. Mandible does not install certificate trust itself.
+
+The registered production origin is `https://app.mandible.localhost:19420`. The Caddy admin API and every backend listener remain loopback-only. Redirects and ambient proxy discovery are disabled for native enrollment.
+
+## Pair a browser once
+
+An unpaired browser displays a short reference. Approve that exact reference from an authenticated operator terminal:
+
+```sh
+mandible user pair <reference>
+```
+
+Return to the browser and choose **Complete pairing**. The pairing secret is held only in a short-lived HttpOnly cookie. Approval creates a new independent session family; it never evicts another environment to make room.
+
+Log out revokes only the current family. “Log out everywhere” revokes every family for that user. If the daemon is unavailable during logout, the browser records a revocation-pending marker and refuses further authenticated use until it can submit the revocation.
+
+## Preview isolation
+
+The preview launcher preserves public port `19421`, but gives each preview a distinct registered `.mandible.localhost` hostname and an unprivileged loopback backend port. It copies and sanitizes the ledger, registers the preview's exact origin, generation, effect ceiling, and writable roots, then reloads the front door.
+
+Preview requests are authorized by the production authority and forwarded with a signed five-second installation context. Cookies and bearer credentials are stripped before the preview backend. The standard preview ceiling permits only ledger reads, writes to the copied ledger, and files beneath the registered preview root. Protected auth, production/shared files, external processes, provider sends, network publication, background delivery, and shared maintenance fail closed even for the operator.
+
+## Migration and rollback
+
+Migration is an explicit, temporary phase. Stop the old daemon, start the new production daemon on its backend with `MANDIBLE_LEGACY_CONVERSION=allow`, then run the front door with `npm run local-front-door -- run-migration`. This temporary configuration serves the new UI at the exact old HTTP origins and exposes only the one-time HTTPS cookie ingress; it deliberately does not bind the final production or preview origins. A browser at an old origin can then exchange its protected legacy session once. Mandible keeps the old view state in the durable conversion transaction, installs the new host-only cookie at the migration ingress, restores that state after the final origin opens, and only then tombstones the legacy fingerprint and removes its exact file entry. Retries return the same replacement family, and a restored legacy file cannot resurrect a completed conversion.
+
+After every browser has converted, stop the migration front door, restart the daemon without `MANDIBLE_LEGACY_CONVERSION`, and start the normal front door with `npm run local-front-door -- run`. The normal configuration omits both migration listeners, and the daemon rejects the old-origin exception. New previews derive a restricted child family automatically from the active production browser family through a one-time top-level transfer; the production cookie is never sent to the preview host. Revoking the production family also revokes all of its derived preview families. There is no compatibility mode or bearer fallback.
+
+Rollback means stopping the new front door and restoring an earlier complete Mandible release and its matching configuration. Do not re-enable the deleted fragment, localStorage, anonymous SSE, WebSocket-subprotocol, or global-fetch credential paths piecemeal. Preserve `~/.mandible/config/local-sessions/` while investigating so session and registration custody remains auditable.

@@ -1,12 +1,10 @@
 // Client authentication (umbrella 8e2e8b2 / issue 708dc4c).
 //
-// Local client authentication for the dashboard, Tauri, agents, and file-RPC:
-// per-user bearer tokens hashed at rest, a compat/strict mode gate wired at the
-// HTTP + file-RPC boundary, an unattributed-write telemetry ratchet, a
-// filesystem-anchored operator bootstrap token, and a browser handshake route.
-// State lives in wave-1 tables (api_token credentials), the existing `settings`
-// KV table (mode only), filesystem secrets (pepper, bootstrap token), and
-// in-memory telemetry — no new migration.
+// Local client authentication for native clients, agents, and file-RPC:
+// per-user bearer tokens hashed at rest, an always-strict HTTP + file-RPC
+// boundary, an unattributed-write telemetry ratchet, and a filesystem-anchored
+// operator bootstrap token restricted to one-shot native enrollment. Browser
+// sessions are owned separately by session-authority.ts and use cookies + CSRF.
 
 export { ClientAuthenticator, type ClientAuthenticatorOptions } from "./authenticator.js";
 export {

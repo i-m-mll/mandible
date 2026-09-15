@@ -10,12 +10,16 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { startDaemon, type DaemonHandle } from "../../src/index.js";
+import { mintApiToken } from "../../src/client-auth/tokens.js";
+import { setupOperator } from "../../src/users/store.js";
 
 interface TempPaths {
   dir: string;
   dbPath: string;
   pidFilePath: string;
 }
+
+let authToken = "";
 
 function createTempPaths(): TempPaths {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-webhook-"));
@@ -65,6 +69,7 @@ function postJson(
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(data),
+          Authorization: `Bearer ${authToken}`,
         },
       },
       (res) => {
@@ -95,6 +100,7 @@ function getJson(
         port,
         path: urlPath,
         method: "GET",
+        headers: { Authorization: `Bearer ${authToken}` },
       },
       (res) => {
         let raw = "";
@@ -126,7 +132,11 @@ describe.sequential("webhook ingestion", () => {
       dbPath: temp.dbPath,
       pidFilePath: temp.pidFilePath,
       handleSignals: false,
+      clientAuthDir: path.join(temp.dir, "client-auth"),
     });
+    const operator = setupOperator(daemon.db, { display_name: "Webhook test operator" });
+    const pepper = fs.readFileSync(path.join(temp.dir, "client-auth", "pepper"), "utf8").trim();
+    authToken = mintApiToken(daemon.db, pepper, operator.id, { label: "webhook-test" }).token;
   });
 
   afterEach(async () => {

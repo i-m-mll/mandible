@@ -14,6 +14,7 @@ afterEach(() => {
 const inventory = {
   anchored: [
     'ui/src/components/console/TerminalPane.tsx',
+    'ui/src/chat/ChatFailureNotice.tsx',
     'ui/src/views/auth.tsx',
     'ui/src/views/conversations.tsx',
     'ui/src/views/spaces/SpacesViewShell.tsx',

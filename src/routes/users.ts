@@ -1,5 +1,6 @@
 import { getDb } from "../db.js";
 import { redactCredential } from "../credential-redaction.js";
+import { PRODUCTION_EFFECTS } from "../security/effect-policy.js";
 import type { ClientAuthenticator } from "../client-auth/authenticator.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import {
@@ -326,6 +327,7 @@ export function registerUserRoutes(
         method: "api_token" as const,
         credential_id: null,
         source: "in_process" as const,
+        effect_ceiling: PRODUCTION_EFFECTS,
       };
       const projectAccess = evaluateProjectAccess(db, {
         identity,
@@ -469,6 +471,10 @@ export function registerUserRoutes(
       const target = resolveUserOrThrow(db, req.params.ref);
       requireSelfOrOperator(db, req, target.id);
       const body = bodyRecord(req);
+      // Lifecycle status is an operator-owned credential boundary. In
+      // particular, a retired account must never use one lingering client
+      // identity to make itself active again.
+      if ("status" in body) requireOperator(db, req);
       const user = updateUser(db, target.id, {
         display_name: optionalString(body, "display_name"),
         email: "email" in body ? (optionalString(body, "email") ?? null) : undefined,

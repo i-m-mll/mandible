@@ -1,9 +1,10 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentDispatchDialog } from '../../ui/src/components/agent-dispatch/AgentDispatchDialog';
 import { LedgerIssueDetail } from '../../ui/src/components/ledger/IssueDetail';
 import type { LedgerIssueDetailProjection } from '../../ui/src/api';
+import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -14,6 +15,7 @@ function jsonResponse(payload: unknown, status = 200): Response {
 
 afterEach(() => {
   cleanup();
+  __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
 });
 
@@ -33,6 +35,12 @@ describe('issue header launch-agent affordance', () => {
   it('offers a confirm-first launch item without dispatching from the menu click', async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/client-auth/whoami') {
+        return jsonResponse({ authenticated: true, session: {
+          family_id: 'agent-dispatch-test', audience: 'production', csrf_token: 'csrf',
+          effect_ceiling: ['agent:dispatch'],
+        } });
+      }
       const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
       calls.push({ url: String(input), body });
       return jsonResponse({ plan: {
@@ -47,8 +55,8 @@ describe('issue header launch-agent affordance', () => {
     fireEvent.click(screen.getByText('Launch agent…'));
 
     expect(await screen.findByTestId('agent-dispatch-dialog')).toBeTruthy();
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({
+    await waitFor(() => expect(calls.some((call) => call.url === '/api/agent-dispatch/preview')).toBe(true));
+    expect(calls.find((call) => call.url === '/api/agent-dispatch/preview')).toMatchObject({
       url: '/api/agent-dispatch/preview',
       body: { subject: { kind: 'issue', issue_ref: 'ce83a84' } },
     });

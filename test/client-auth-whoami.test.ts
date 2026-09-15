@@ -1,156 +1,53 @@
-// Issue 499c148 — GET /api/client-auth/whoami reports the identity the daemon
-// actually resolves for the calling request, across every client-auth path.
+// @vitest-environment node
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
-import { openDb, setDb, type Db } from "../src/db.js";
-import { Router } from "../src/server.js";
-import { registerClientAuthRoutes } from "../src/routes/client-auth.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
-import { setClientAuthMode } from "../src/client-auth/mode.js";
+import { openDb, setDb, type Db } from "../src/db.js";
+import { registerClientAuthRoutes } from "../src/routes/client-auth.js";
+import { Router } from "../src/server.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 
-let tempDir = "";
-let db: Db;
-let authenticator: ClientAuthenticator;
-let router: Router;
-
-function whoami(credential?: string | null) {
-  return router.invoke({
-    method: "GET",
-    url: "/api/client-auth/whoami",
-    credential: credential ?? null,
-    transport: "http",
-  });
-}
-
+let root = ""; let db: Db; let auth: ClientAuthenticator; let router: Router;
 beforeEach(() => {
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-whoami-"));
-  db = openDb(path.join(tempDir, "mandible.db"));
-  setDb(db);
-  authenticator = new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "client-auth") });
-  router = new Router({ clientAuth: authenticator });
-  registerClientAuthRoutes(router, authenticator);
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-whoami-"));
+  db = openDb(path.join(root, "mandible.db")); setDb(db);
+  auth = new ClientAuthenticator(db, { secretsDir: path.join(root, "client-auth") });
+  router = new Router({ clientAuth: auth }); registerClientAuthRoutes(router, auth);
 });
-
-afterEach(() => {
-  db.close();
-  fs.rmSync(tempDir, { recursive: true, force: true });
-});
+afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+const whoami = (credential?: string | null) => router.invoke({ method: "GET", url: "/api/client-auth/whoami", credential: credential ?? null, transport: "http" });
 
 describe("GET /api/client-auth/whoami", () => {
-  it("reports an unauthenticated caller instead of failing", async () => {
-    const response = await whoami(null);
-
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({
-      authenticated: false,
-      mode: "compat",
-      user: null,
-      evidence_method: null,
-      source: null,
-      ephemeral_purpose: null,
-      credential: null,
-      audience: authenticator.authorityId(),
-      failure_reason: "unknown",
+  it("reports an unauthenticated caller without compatibility state", async () => {
+    expect((await whoami()).body).toEqual({
+      authenticated: false, user: null, evidence_method: null, source: null,
+      ephemeral_purpose: null, credential: null, audience: auth.authorityId(), failure_reason: "unknown",
     });
   });
 
-  it("treats an unrecognized bearer as unauthenticated", async () => {
-    const response = await whoami("not-a-real-token");
-
-    expect(response.body).toMatchObject({ authenticated: false, user: null });
-  });
-
-  it("names the user and the credential label behind an api_token", async () => {
-    const agent = createUser(db, {
-      slug: "claude-code",
-      kind: "agent",
-      display_name: "Claude Code",
-    });
-    const minted = authenticator.mintApiToken(agent.id, { label: "claude-code-agent" });
-
-    const response = await whoami(minted.token);
-
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      authenticated: true,
-      mode: "compat",
-      user: {
-        id: agent.id,
-        slug: "claude-code",
-        kind: "agent",
-        display_name: "Claude Code",
-      },
-      evidence_method: "api_token",
-      source: "http_bearer",
-      ephemeral_purpose: null,
-      credential: {
-        id: minted.credential.id,
-        type: "api_token",
-        label: "claude-code-agent",
-        status: "active",
-      },
+  it("names the exact user and durable credential", async () => {
+    const user = createUser(db, { slug: "agent-x", kind: "agent", display_name: "Agent X" });
+    const issued = auth.mintApiToken(user.id, { label: "agent-token" });
+    expect((await whoami(issued.token)).body).toMatchObject({
+      authenticated: true, user: { id: user.id, slug: user.slug, kind: "agent" },
+      evidence_method: "api_token", source: "http_bearer",
+      credential: { id: issued.credential.id, label: "agent-token", status: "active" },
     });
   });
 
-  // The incident this issue came from: an agent session inherited the human
-  // operator's token. whoami has to name the human, not the agent the session
-  // claims to be, or it cannot be used as a pre-flight self-check.
-  it("names the operator when an operator token is the effective credential", async () => {
-    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
-    const minted = authenticator.mintApiToken(operator.id, { label: "mll-cli" });
-
-    const response = await whoami(minted.token);
-
-    expect(response.body).toMatchObject({
-      authenticated: true,
-      user: { id: operator.id, kind: "human" },
-      evidence_method: "api_token",
-      credential: { label: "mll-cli" },
+  it("does not confuse an operator credential with an agent", async () => {
+    const operator = setupOperator(db, { display_name: "Operator", email: "op@example.com" });
+    const issued = auth.mintApiToken(operator.id, { label: "operator-token" });
+    expect((await whoami(issued.token)).body).toMatchObject({
+      authenticated: true, user: { id: operator.id, kind: "human" }, credential: { label: "operator-token" },
     });
   });
 
-  it("reports an ephemeral dashboard session with no credential row", async () => {
-    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
-    const session = authenticator.issueDashboardToken({
-      user_id: operator.id,
-      slug: operator.slug,
-    });
-
-    const response = await whoami(session.token);
-
-    expect(response.body).toMatchObject({
-      authenticated: true,
-      user: { id: operator.id, slug: operator.slug, kind: "human" },
-      evidence_method: "ephemeral",
-      ephemeral_purpose: "dashboard_handshake",
-      credential: null,
-    });
-  });
-
-  it("does not expose an operator bootstrap proof as a general identity", async () => {
-    setupOperator(db, { display_name: "Op", email: "op@example.com" });
-    const bootstrap = authenticator.bootstrapToken();
-    expect(bootstrap).toBeTruthy();
-
-    const response = await whoami(bootstrap);
-
-    expect(response.body).toMatchObject({
-      authenticated: false,
-      user: null,
-      evidence_method: null,
-      failure_reason: "unknown",
-    });
-  });
-
-  it("reports the current client-auth mode alongside the identity", async () => {
-    setClientAuthMode(db, "strict");
-
-    const response = await whoami(null);
-
-    expect(response.body).toMatchObject({ mode: "strict", authenticated: false });
+  it("rejects unknown and bootstrap credentials", async () => {
+    setupOperator(db, { display_name: "Operator", email: "op@example.com" });
+    expect((await whoami("unknown")).body).toMatchObject({ authenticated: false });
+    expect((await whoami(auth.bootstrapToken())).body).toMatchObject({ authenticated: false });
   });
 });

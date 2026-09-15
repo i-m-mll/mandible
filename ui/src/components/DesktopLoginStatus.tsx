@@ -3,9 +3,10 @@ import { useCallback, useEffect, useState } from 'preact/hooks';
 
 import { isDesktopShell } from '../api';
 import {
-  ensureClientAuthToken,
+  completeBrowserPairing,
   getClientAuthSessionState,
   logoutClientAuth,
+  startBrowserPairing,
   subscribeClientAuthSessionState,
   type ClientAuthSessionState,
 } from '../client-auth-token';
@@ -55,6 +56,7 @@ export function DesktopLoginStatus({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualRetryAllowed, setManualRetryAllowed] = useState(false);
+  const [pairingReference, setPairingReference] = useState<string | null>(null);
 
   useEffect(() => subscribeClientAuthSessionState(setSessionState), []);
 
@@ -98,7 +100,12 @@ export function DesktopLoginStatus({
     const reported: { message: string | null } = { message: null };
     try {
       if (!isDesktopShell()) {
-        await ensureClientAuthToken();
+        if (!pairingReference) {
+          setPairingReference(await startBrowserPairing());
+        } else {
+          await completeBrowserPairing(pairingReference);
+          setPairingReference(null);
+        }
         return;
       }
       const outcome = await retryDesktopLoginManually({
@@ -114,7 +121,7 @@ export function DesktopLoginStatus({
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [pairingReference]);
 
   const handleLogout = useCallback(async () => {
     setBusy(true);
@@ -162,10 +169,13 @@ export function DesktopLoginStatus({
         : sessionState === 'revoked'
           ? 'Session revoked'
           : 'Not logged in';
-  const actionLabel = isDesktopShell() ? 'Log in' : 'Reconnect';
+  const actionLabel = isDesktopShell() ? 'Log in' : pairingReference ? 'Complete pairing' : 'Pair browser';
+  const pairingHint = pairingReference
+    ? `Approve ${pairingReference} with: mandible user pair ${pairingReference}`
+    : null;
 
   if (placement === 'rail') {
-    const statusDescription = error ? `${sessionLabel}: ${error}` : sessionLabel;
+    const statusDescription = pairingHint ?? (error ? `${sessionLabel}: ${error}` : sessionLabel);
     return (
       <div
         className="desktop-login desktop-login--rail"
@@ -207,6 +217,7 @@ export function DesktopLoginStatus({
           {error}
         </span>
       ) : null}
+      {pairingHint ? <span className="desktop-login__error">{pairingHint}</span> : null}
     </div>
   );
 }

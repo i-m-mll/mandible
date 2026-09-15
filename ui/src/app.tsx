@@ -47,9 +47,9 @@ import {
 import type { SSEPayload, SseConnectionState } from './sse-client';
 import { acquireSharedSse, shouldSkipFallbackPoll } from './sse-shared';
 import {
-  ensureClientAuthToken,
+  browserSessionFetch,
+  initializeBrowserSession,
   getClientAuthSessionState,
-  installClientAuthFetch,
 } from './client-auth-token';
 import { recoverDesktopLoginAutomatically } from './desktop-login';
 import { keepSubmittedBriefingAnnotations } from './views/feedback/briefing-preferences';
@@ -1044,7 +1044,7 @@ function App(): JSX.Element {
   loadVisibleRouteDataRef.current = loadVisibleRouteData;
 
   const refreshRailOrder = useCallback(async (): Promise<void> => {
-    if (instanceInfo?.operational_mutations !== 'allow') return;
+    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') !== true) return;
     const request = railRequestRef.current + 1;
     railRequestRef.current = request;
     const mutationAtStart = railMutationRef.current;
@@ -1062,10 +1062,10 @@ function App(): JSX.Element {
     } catch {
       if (railRequestRef.current === request) setRailOrderReady(false);
     }
-  }, [instanceInfo?.operational_mutations]);
+  }, [instanceInfo?.allowed_effects]);
 
   const refreshTypography = useCallback(async (): Promise<void> => {
-    if (instanceInfo?.operational_mutations !== 'allow') return;
+    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') !== true) return;
     try {
       const snapshots = await Promise.all(TYPOGRAPHY_SETTING_KEYS.map(getUserTypographySetting));
       setTypography((current) => {
@@ -1076,20 +1076,20 @@ function App(): JSX.Element {
     } catch {
       // Keep the current/default typography when authenticated settings are unavailable.
     }
-  }, [instanceInfo?.operational_mutations]);
+  }, [instanceInfo?.allowed_effects]);
 
   useEffect(() => {
-    if (instanceInfo?.operational_mutations === 'allow') void refreshTypography();
-    if (instanceInfo?.operational_mutations === 'reject') {
+    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') === true) void refreshTypography();
+    if (instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true) {
       setTypography(DEFAULT_TYPOGRAPHY_SETTINGS);
     }
-  }, [instanceInfo?.operational_mutations, refreshTypography]);
+  }, [instanceInfo?.allowed_effects, refreshTypography]);
 
   const handleTypographySave = useCallback(async (
     key: UserTypographySettingKey,
     value: string,
   ): Promise<void> => {
-    if (instanceInfo?.operational_mutations !== 'allow') {
+    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') !== true) {
       throw new Error('Typography settings are unavailable in this instance');
     }
     const previousValue = typographySettingValue(typography, key);
@@ -1107,10 +1107,10 @@ function App(): JSX.Element {
       }
       throw error;
     }
-  }, [instanceInfo?.operational_mutations, typography]);
+  }, [instanceInfo?.allowed_effects, typography]);
 
   useEffect(() => {
-    if (instanceInfo?.operational_mutations === 'reject') {
+    if (instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true) {
       railRequestRef.current += 1;
       railMutationRef.current += 1;
       railMutationPendingRef.current = false;
@@ -1120,7 +1120,7 @@ function App(): JSX.Element {
       setRailOrderReady(true);
       return;
     }
-    if (instanceInfo?.operational_mutations === 'allow') {
+    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') === true) {
       void refreshRailOrder();
       return;
     }
@@ -1129,7 +1129,7 @@ function App(): JSX.Element {
     railMutationPendingRef.current = false;
     setPendingRailOrder(null);
     setRailOrderReady(false);
-  }, [instanceInfo?.operational_mutations, refreshRailOrder]);
+  }, [instanceInfo?.allowed_effects, refreshRailOrder]);
 
   useEffect(() => {
     const reconcileVisibleRailOrder = () => {
@@ -1597,7 +1597,7 @@ function App(): JSX.Element {
     const probe = async () => {
       let health: DaemonHealthSnapshot | null = null;
       try {
-        const res = await fetch('/api/health');
+        const res = await browserSessionFetch('/api/health');
         health = res.ok ? ((await res.json()) as DaemonHealthSnapshot) : null;
       } catch {
         health = null;
@@ -1662,7 +1662,7 @@ function App(): JSX.Element {
     const startTimer = window.setTimeout(() => {
       intervalId = window.setInterval(async () => {
         try {
-          const res = await fetch('/api/health');
+          const res = await browserSessionFetch('/api/health');
           if (!res.ok) return; // not up yet — keep polling
           const data = (await res.json()) as DaemonHealthSnapshot;
           setDaemonWarm(daemonIsWarm(data));
@@ -2101,7 +2101,7 @@ function App(): JSX.Element {
     icon: LogsIcon,
   };
 
-  const previewMutationsRejected = instanceInfo?.operational_mutations === 'reject';
+  const previewMutationsRejected = Boolean(instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true);
   const railOrderPreference = previewMutationsRejected && previewRailOrder
     ? previewRailOrder
     : parseAppRailOrderSetting(railOrderSetting);
@@ -2144,8 +2144,10 @@ function App(): JSX.Element {
     focusItemId?: string,
   ) => {
     if (!railOrderReady || railMutationPendingRef.current) return;
-    const capability = instanceInfo?.operational_mutations;
-    if (capability !== 'allow' && capability !== 'reject') {
+    const capability = instanceInfo
+      ? instanceInfo.allowed_effects?.includes('maintenance:shared') === true
+      : null;
+    if (capability === null) {
       setRailAnnouncement('Navigation order is unavailable. The previous order has been retained.');
       return;
     }
@@ -2827,10 +2829,9 @@ function App(): JSX.Element {
 
 const mountNode = typeof document !== 'undefined' ? document.getElementById('app') : null;
 if (mountNode) {
-  // Issue 708dc4c — attach the client-auth token to every /api request, then
-  // acquire one via the handshake before first render so operator mutations
-  // authenticate (in strict mode too, using a token persisted during compat).
-  installClientAuthFetch();
+  // Establish the origin-bound cookie session before first render so unsafe
+  // requests have the session's CSRF value. Browser bearer tokens and URL
+  // credentials are never used here.
   // Adopt the page-local binding before the first route parse. The parameter
   // deliberately remains in the hash and is preserved through navigation.
   adoptAgentSessionFragment();
@@ -2838,7 +2839,7 @@ if (mountNode) {
   if (isRenderableTab(initialRoute.tab)) {
     void ROUTE_CHUNK_LOADERS[initialRoute.tab]?.();
   }
-  void ensureClientAuthToken()
+  void initializeBrowserSession()
     .then(() => {
       // Issue 54b5677 — in the desktop shell the bootstrap proof is usually
       // gone, so a webview without an operator session asks the shell to enroll

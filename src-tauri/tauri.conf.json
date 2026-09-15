@@ -11,6 +11,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "url": "https://app.mandible.localhost:19420",
         "title": "Mandible",
         "width": 1400,
         "height": 900,

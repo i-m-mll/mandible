@@ -18,15 +18,17 @@ import {
   createLedgerIssue as createSharedLedgerIssue,
   createLedgerProject,
 } from "../helpers/ledger-fixtures.js";
+import { authenticatedTestIdentity } from "../helpers/authenticated-router.js";
 
 let tempDir = "";
 let db: Db;
+let testOperator: ReturnType<typeof setupOperator>;
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-migration-"));
   db = openDb(path.join(tempDir, "mandible.db"));
   setDb(db);
-  setupOperator(db, { display_name: "Route test operator" });
+  testOperator = setupOperator(db, { display_name: "Route test operator" });
 });
 
 afterEach(() => {
@@ -107,6 +109,7 @@ class TestIssueServer implements IssueServer {
       params: request.params ?? {},
       query: request.query ?? {},
       body: request.body,
+      client_identity: authenticatedTestIdentity(testOperator),
     }, response);
     return response;
   }

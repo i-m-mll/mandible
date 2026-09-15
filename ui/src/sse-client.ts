@@ -1,7 +1,7 @@
 import type { MandibleEvent } from '../../src/contracts';
 import {
+  browserSessionFetch,
   getClientAuthSessionState,
-  getStoredToken,
   isTerminalClientAuthState,
 } from './client-auth-token';
 
@@ -23,7 +23,6 @@ export type SseStateHandler = (state: SseConnectionState, meta: { reconnected: b
 export type SSEClientOptions = {
   url?: string;
   fetchImpl?: typeof fetch;
-  EventSourceImpl?: typeof EventSource;
   backoffMs?: number;
   maxBackoffMs?: number;
 };
@@ -31,13 +30,11 @@ export type SSEClientOptions = {
 export class SSEClient {
   private url: string;
   private fetchImpl: typeof fetch;
-  private EventSourceImpl: typeof EventSource | null;
   private backoffMs: number;
   private maxBackoffMs: number;
   private listeners: Map<string, Set<SSEHandler>> = new Map();
   private stateListeners: Set<SseStateHandler> = new Set();
   private abortController: AbortController | null = null;
-  private eventSource: EventSource | null = null;
   private connecting = false;
   private retryTimer: number | null = null;
   private currentBackoff: number;
@@ -52,25 +49,16 @@ export class SSEClient {
   constructor(options: SSEClientOptions = {}) {
     this.url = options.url || '/api/events/subscribe';
     this.fetchImpl = options.fetchImpl || fetch.bind(window);
-    this.EventSourceImpl = options.EventSourceImpl
-      ?? (typeof EventSource === 'function' ? EventSource : null);
     this.backoffMs = options.backoffMs ?? 500;
     this.maxBackoffMs = options.maxBackoffMs ?? 15000;
     this.currentBackoff = this.backoffMs;
   }
 
   connect(): void {
-    if (this.abortController || this.eventSource || this.connecting || this.closed) {
+    if (this.abortController || this.connecting || this.closed) {
       return;
     }
     this.setState('connecting');
-    // Client-auth (user-system): with a stored token, subscribe over a POST
-    // fetch stream so the token rides the global Authorization wrapper instead
-    // of a URL query param; without one, fall back to an anonymous EventSource.
-    if (!getStoredToken()) {
-      this.openAnonymousEventSource();
-      return;
-    }
     this.connecting = true;
     void this.openFetchStream();
   }
@@ -83,16 +71,12 @@ export class SSEClient {
     }
     this.abortController?.abort();
     this.abortController = null;
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
-    }
     this.connecting = false;
     this.setState('idle');
   }
 
   /**
-   * Tear down the live stream/EventSource and cancel any pending retry, but KEEP
+   * Tear down the authenticated fetch stream and cancel any pending retry, but KEEP
    * the registered listeners and clear the terminal `closed` flag so a
    * subsequent connect() reconnects with a fresh backoff. This is the
    * shared-singleton teardown path: the class instance is reused, only its
@@ -105,10 +89,6 @@ export class SSEClient {
     }
     this.abortController?.abort();
     this.abortController = null;
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
-    }
     this.connecting = false;
     this.closed = false;
     this.currentBackoff = this.backoffMs;
@@ -186,52 +166,17 @@ export class SSEClient {
     this.setState('open', reconnected);
   }
 
-  private openAnonymousEventSource(): void {
-    if (!this.EventSourceImpl) {
-      this.setState('down');
-      this.scheduleReconnect();
-      return;
-    }
-    const legacyUrl = this.url === '/api/events/subscribe' ? '/api/events' : this.url;
-    const source = new this.EventSourceImpl(legacyUrl);
-
-    // Use addEventListener for the message handler -- more reliable across
-    // browsers than assigning to onmessage, and works identically for
-    // unnamed SSE events (server sends "data:" without an "event:" line).
-    source.addEventListener('message', (event: MessageEvent) => {
-      this.handleMessage(event.data);
-    });
-
-    source.onerror = () => {
-      // Only manually reconnect when EventSource has given up (readyState
-      // CLOSED = 2).  When readyState is CONNECTING (0), the browser is
-      // already retrying on its own -- closing the source here would destroy
-      // that automatic reconnection and create a gap where events are lost.
-      if (source.readyState === 2) {
-        this.setState('down');
-        this.scheduleReconnect();
-      }
-    };
-
-    source.onopen = () => {
-      this.markOpened();
-    };
-
-    this.eventSource = source;
-  }
-
   private async openFetchStream(): Promise<void> {
     const controller = new AbortController();
     this.abortController = controller;
     let shouldReconnect = false;
     try {
-      // Fetch can carry Authorization through the global client-auth wrapper;
-      // unlike EventSource, no bearer credential is placed in the URL.
-      const response = await this.fetchImpl(this.url, {
+      // The authenticated POST stream uses the shared cookie and CSRF boundary.
+      const response = await browserSessionFetch(this.url, {
         method: 'POST',
         headers: { Accept: 'text/event-stream' },
         signal: controller.signal,
-      });
+      }, this.fetchImpl);
       if (response.status === 401 || response.status === 403) {
         this.setState('down');
         return;
@@ -293,10 +238,6 @@ export class SSEClient {
   private scheduleReconnect(): void {
     if (this.retryTimer || this.closed) {
       return;
-    }
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
     }
     this.retryTimer = window.setTimeout(() => {
       this.retryTimer = null;

@@ -10,6 +10,7 @@ import { registerProjectRoutes } from "../src/routes/projects.js";
 import { resolveLedgerIssueLinkFromDb } from "../src/routes/redirects.js";
 import { Router } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
+import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 
 let db: Db;
 let router: Router;
@@ -23,9 +24,9 @@ const fakeScanner = {
 beforeEach(() => {
   db = new Database(":memory:");
   migrate(db);
-  setupOperator(db, { display_name: "Route test operator" });
+  const operator = setupOperator(db, { display_name: "Route test operator" });
   setDb(db);
-  router = new Router();
+  router = authenticatedTestRouter(operator);
   registerProjectRoutes(router);
 });
 

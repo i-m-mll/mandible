@@ -6,12 +6,11 @@ import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  evaluateInstanceMutation,
+  operationalMutationCategoryForPath,
   OPERATIONAL_MUTATION_EXEMPT_ROUTES,
   OPERATIONAL_ROUTE_CATEGORIES,
   UNSAFE_MUTATION_METHODS,
 } from "../src/instance-policy.js";
-import type { InstanceInfo } from "../src/types.js";
 
 type RecordedRequest = {
   method: string;
@@ -247,22 +246,11 @@ function writeRouteMutationCategories(payload: unknown): string {
 // Any instance that refuses operational mutations makes evaluateInstanceMutation
 // report the category it derived, which is the authoritative answer cli/api.sh
 // has to reproduce. It keeps the private categorizer private.
-const CATEGORY_PROBE_INSTANCE: InstanceInfo = {
-  role: "preview",
-  operational_mutations: "reject",
-  operational_mutations_overridden: false,
-  briefing_response_mutations: "reject",
-  db_path: null,
-  db_path_source: "default",
-};
-
 function authoritativeCategory(method: string, pathname: string): string | null {
-  const decision = evaluateInstanceMutation(CATEGORY_PROBE_INSTANCE, method, pathname);
-  if (decision.allowed) {
-    return null;
-  }
-  const category = decision.body.category;
-  return typeof category === "string" ? category : null;
+  const key = `${method.toUpperCase()} ${pathname}`;
+  if (!UNSAFE_MUTATION_METHODS.has(method.toUpperCase())
+      || OPERATIONAL_MUTATION_EXEMPT_ROUTES.has(key)) return null;
+  return operationalMutationCategoryForPath(method, pathname);
 }
 
 // Issue 97cf613 exported these tables so both TypeScript gates share one copy;

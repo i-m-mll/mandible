@@ -5,8 +5,7 @@
   "windows": ["main"],
   "remote": {
     "urls": [
-      "http://127.0.0.1:19420",
-      "http://localhost:19420"
+      "https://app.mandible.localhost:19420"
     ]
   },
   "permissions": [

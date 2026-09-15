@@ -7,6 +7,7 @@ import { resolveInstanceInfo } from "../../src/instance-policy.js";
 import { registerAgentDispatchRoutes } from "../../src/routes/agent-dispatch.js";
 import { registerOperationalIncidentRoutes } from "../../src/routes/operational-incidents.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../../src/server.js";
+import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
 import { TASK_INVENTORY_EXECUTORS_KEY } from "../../src/task-inventory.js";
 import { createUser, OPERATOR_SETTING_KEY } from "../../src/users/store.js";
 
@@ -31,6 +32,7 @@ class SlugGate implements ClientAuthGate {
       method: ephemeral ? "ephemeral" : "api_token",
       credential_id: null,
       source,
+      effect_ceiling: PRODUCTION_EFFECTS,
     } : null;
   }
 

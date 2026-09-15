@@ -19,6 +19,7 @@ import { createBriefingBundle } from "../../src/feedback/briefing-bundles.js";
 import { bindBriefingDestinationOwner, createBriefingGroup } from "../../src/feedback/briefing-groups.js";
 import { registerBriefingDestinationRoute } from "../../src/feedback/briefing-composer.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
+import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
 
 class SlugGate implements ClientAuthGate {
   constructor(private readonly db: () => Db) {}
@@ -29,7 +30,7 @@ class SlugGate implements ClientAuthGate {
     const user = this.db().prepare("SELECT id, slug FROM users WHERE slug = ?")
       .get(slug) as { id: string; slug: string } | undefined;
     return user ? { user_id: user.id, slug: user.slug, method: ephemeral ? "ephemeral" : "api_token",
-      credential_id: null, source: "in_process" } : null;
+      credential_id: null, source: "in_process", effect_ceiling: PRODUCTION_EFFECTS } : null;
   }
   mode() { return "compat" as const; }
   recordUnattributedWrite() {}
@@ -39,6 +40,26 @@ let db: Db;
 let router: Router;
 let root: string;
 let humanId: string;
+
+function copiedPreviewInstance() {
+  const previewRoot = path.join(root, "preview");
+  return resolveInstanceInfo({
+    env: {
+      MANDIBLE_INSTANCE_ROLE: "preview",
+      MANDIBLE_INSTANCE_ID: "preview-briefing-routes",
+      MANDIBLE_INSTALLATION_ID: "test-installation",
+      MANDIBLE_PUBLIC_ORIGIN: "https://preview-briefing-routes.mandible.localhost:19421",
+      MANDIBLE_BACKEND_GENERATION: "test-generation",
+      MANDIBLE_PREVIEW_ROOT: previewRoot,
+      MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
+      MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
+      MANDIBLE_ARTIFACT_DIR: path.join(previewRoot, "artifacts"),
+      MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.join(root, "source", "artifacts"),
+    },
+    dbPath: path.join(previewRoot, "preview.db"),
+    sourceDbPath: path.join(root, "source", "source.db"),
+  });
+}
 
 function payload(overrides: Record<string, unknown> = {}) {
   return {
@@ -57,11 +78,13 @@ function payload(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.mocked(broadcast).mockClear();
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-briefing-routes-"));
-  fs.writeFileSync(path.join(root, "source.db"), "");
-  fs.copyFileSync(path.join(root, "source.db"), path.join(root, "preview.db"));
-  db = new Database(path.join(root, "preview.db"));
+  fs.mkdirSync(path.join(root, "source", "artifacts"), { recursive: true });
+  fs.mkdirSync(path.join(root, "preview", "artifacts"), { recursive: true });
+  fs.writeFileSync(path.join(root, "source", "source.db"), "");
+  fs.copyFileSync(path.join(root, "source", "source.db"), path.join(root, "preview", "preview.db"));
+  db = new Database(path.join(root, "preview", "preview.db"));
   migrate(db);
-  setSetting(db, "artifact_root", root);
+  setSetting(db, "artifact_root", path.join(root, "preview", "artifacts"));
   createUser(db, { slug: "agent-schedule", kind: "agent", display_name: "Publisher" });
   humanId = createUser(db, { slug: "human", kind: "human", display_name: "Human" }).id;
   router = new Router({ clientAuth: new SlugGate(() => db) });
@@ -113,24 +136,21 @@ describe("plural Briefing routes", () => {
       body: { code: "operator_required" } });
     const rejectMode = new Router({
       clientAuth: new SlugGate(() => db),
-      instance: resolveInstanceInfo({
-        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
-        dbPath: path.join(root, "preview.db"), sourceDbPath: path.join(root, "source.db"),
-      }),
+      instance: copiedPreviewInstance(),
     });
     registerBriefingRoutes(rejectMode, db);
     expect(await rejectMode.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
       credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: true } });
     expect(await rejectMode.invoke({ method: "POST", url: "/api/briefing-destination-routes",
-      credential: "human", body: manifest })).toMatchObject({ status: 403,
-      body: { error: "instance_mutation_forbidden" } });
+      credential: "human", body: manifest })).toMatchObject({ status: 200,
+      body: { changed: true, routes: [{ action: "create" }] } });
     expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
-      credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: true,
-      routes: [{ action: "create", group_id: group.id, logical_artifact_id: logical.artifact_id }] } });
-    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_destination_routes").get()).toEqual({ n: 0 });
+      credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: false,
+      routes: [{ action: "unchanged", group_id: group.id, logical_artifact_id: logical.artifact_id }] } });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_destination_routes").get()).toEqual({ n: 1 });
     expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes",
-      credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: true,
-      routes: [{ action: "create" }] } });
+      credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: false,
+      routes: [{ action: "unchanged" }] } });
     expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes",
       credential: "human", body: manifest })).toMatchObject({ status: 200, body: { changed: false,
       routes: [{ action: "unchanged" }] } });
@@ -901,18 +921,14 @@ describe("plural Briefing routes", () => {
     }
   });
 
-  it("allows an authenticated active human to freeze responses on an isolated reject-mode copy", async () => {
+  it("allows local Briefing writes on an isolated preview copy", async () => {
     const published = await router.invoke({
       method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule",
     });
     const ids = published.body as { briefing_id: string; round_id: string };
     const preview = new Router({
       clientAuth: new SlugGate(() => db),
-      instance: resolveInstanceInfo({
-        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
-        dbPath: path.join(root, "preview.db"),
-        sourceDbPath: path.join(root, "source.db"),
-      }),
+      instance: copiedPreviewInstance(),
     });
     registerBriefingRoutes(preview, db);
 
@@ -965,7 +981,7 @@ describe("plural Briefing routes", () => {
 
     expect(await preview.invoke({
       method: "POST", url: "/api/briefings/runs", credential: "agent-schedule", body: payload({ run_key: "blocked" }),
-    })).toMatchObject({ status: 403, body: { error: "instance_mutation_forbidden" } });
+    })).toMatchObject({ status: 200, body: { quiet: false } });
   });
 
   it("keeps operator response authority aligned with the exact selected copied-preview round", async () => {
@@ -977,11 +993,7 @@ describe("plural Briefing routes", () => {
     setSetting(db, "user.operator_id", operator.id);
     const preview = new Router({
       clientAuth: new SlugGate(() => db),
-      instance: resolveInstanceInfo({
-        env: { MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_OPERATIONAL_MUTATIONS: "reject" },
-        dbPath: path.join(root, "preview.db"),
-        sourceDbPath: path.join(root, "source.db"),
-      }),
+      instance: copiedPreviewInstance(),
     });
     registerBriefingRoutes(preview, db);
 
@@ -1010,11 +1022,7 @@ describe("plural Briefing routes", () => {
     db.prepare("UPDATE users SET status = 'retired' WHERE id = ?").run(inactive.id);
     const preview = new Router({
       clientAuth: new SlugGate(() => db),
-      instance: resolveInstanceInfo({
-        env: { MANDIBLE_INSTANCE_ROLE: "preview" },
-        dbPath: path.join(root, "preview.db"),
-        sourceDbPath: path.join(root, "source.db"),
-      }),
+      instance: copiedPreviewInstance(),
     });
     registerBriefingRoutes(preview, db);
     const request = (credential?: string) => preview.invoke({

@@ -25,6 +25,7 @@ import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { formatRelativeTime } from '../lib/format';
+import { browserSessionFetch } from '../client-auth-token';
 
 export type WorkRepo = {
   id?: string;
@@ -817,7 +818,7 @@ export function WorkOverviewView({
   const fetchRepos = async (withExcluded: boolean) => {
     try {
       const url = withExcluded ? '/api/work/repos?include_excluded=true' : '/api/work/repos';
-      const res = await fetch(url);
+      const res = await browserSessionFetch(url);
       if (res.ok) {
         const data = await res.json() as WorkRepo[];
         setRepos(Array.isArray(data) ? data : []);
@@ -1130,7 +1131,7 @@ export function WorkOverviewView({
 
   const handleUpdateRepo = async (id: string, patch: { name?: string; excluded?: boolean }) => {
     try {
-      const res = await fetch(`/api/work/repos/${encodeURIComponent(id)}`, {
+      const res = await browserSessionFetch(`/api/work/repos/${encodeURIComponent(id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
@@ -1146,7 +1147,7 @@ export function WorkOverviewView({
 
   const handleRemoveRepo = async (id: string) => {
     try {
-      const res = await fetch(`/api/work/repos/${encodeURIComponent(id)}`, {
+      const res = await browserSessionFetch(`/api/work/repos/${encodeURIComponent(id)}`, {
         method: 'DELETE',
       });
       if (res.ok) {
@@ -1161,7 +1162,7 @@ export function WorkOverviewView({
   const handleAddRepo = async () => {
     setAddError(null);
     try {
-      const res = await fetch('/api/work/repos/add', {
+      const res = await browserSessionFetch('/api/work/repos/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ root: addPath }),

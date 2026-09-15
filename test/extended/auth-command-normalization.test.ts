@@ -14,7 +14,10 @@ import type { AuthHookManager } from "../../src/auth-hooks.js";
 import { setDb, type Db } from "../../src/db.js";
 import { registerAuthRoutes } from "../../src/routes/auth.js";
 import { Router } from "../../src/server.js";
-import { createMigratedDb as createSharedMigratedDb } from "../helpers/ledger-fixtures.js";
+import { createLedgerIssue, createMigratedDb as createSharedMigratedDb } from "../helpers/ledger-fixtures.js";
+import { authenticatedTestRouter } from "../helpers/authenticated-router.js";
+import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
+import { addCredential } from "../../src/users/store.js";
 
 // Issue 08a5f04 — channel-server compatibility with approve-time canonical
 // command enforcement:
@@ -125,10 +128,10 @@ function createMergeRepo(headBranches: string[]): string {
     fs.writeFileSync(path.join(repo, `${branch.replace(/\//g, "_")}.txt`), `${branch}\n`);
     git(repo, ["add", "."]);
     // The auth gate requires Mandible-Issue trailers on non-merge commits.
-    git(repo, ["commit", "-m", `work on ${branch}\n\nMandible-Issue: norm123`]);
+    git(repo, ["commit", "-m", `work on ${branch}\n\nMandible-Issue: abc1234`]);
     git(repo, ["checkout", "main"]);
   }
-  return repo;
+  return fs.realpathSync(repo);
 }
 
 function createMigratedDb(): Db {
@@ -142,15 +145,39 @@ function createMigratedDb(): Db {
   });
 }
 
-function registerWorkRepo(db: Db, repoRoot: string): void {
+function registerWorkRepo(db: Db, repoRoot: string): string {
+  const project = resolveProjectForCheckout(db, {
+    root: fs.realpathSync(repoRoot),
+    name: path.basename(repoRoot),
+    workRepoId: path.basename(repoRoot),
+    defaultBranch: "main",
+  });
   db.prepare(
     `INSERT OR REPLACE INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
      VALUES (?, ?, ?, ?, 1, 0)`,
-  ).run(path.basename(repoRoot), fs.realpathSync(repoRoot), path.basename(repoRoot), "main");
+  ).run(path.basename(repoRoot), repoRoot, path.basename(repoRoot), "main");
+  return project.project.id;
 }
 
-function createHarness(db: Db): { router: Router; queue: AuthQueue } {
-  const router = new Router();
+function createHarness(db: Db, repoRoot: string, branch: string): { router: Router; queue: AuthQueue } {
+  const agent = db.prepare("SELECT id, slug FROM users WHERE slug = 'cmd-norm-agent'").get() as { id: string; slug: string };
+  const credential = addCredential(db, agent.id, {
+    type: "api_token",
+    fingerprint: `cmd-norm-${branch}`,
+  });
+  const projectId = registerWorkRepo(db, repoRoot);
+  const issue = createLedgerIssue(db, {
+    project_id: projectId,
+    title: "Command normalization delivery",
+    aliases: [{ alias_kind: "git_bug_short", alias: "abc1234" }],
+  });
+  db.prepare(
+    `INSERT INTO work_units
+      (id, issue_id, repo_id, branch, kind, state, created_at, activated_at, last_commit_at,
+       ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+     VALUES (?, ?, ?, ?, 'solo', 'committed', 1, 1, 1, ?, ?, ?, 1)`,
+  ).run(`wu-${branch}`, "abc1234", projectId, branch, issue.id, agent.id, credential.id);
+  const router = authenticatedTestRouter(agent, { credentialId: credential.id });
   const queue = new AuthQueue({
     db,
     executor: async () => ({
@@ -183,9 +210,8 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
     const repo = createMergeRepo(["feature/channel-legacy"]);
     const db = createMigratedDb();
     setDb(db);
-    const { router, queue } = createHarness(db);
+    const { router, queue } = createHarness(db, repo, "feature/channel-legacy");
     try {
-      registerWorkRepo(db, repo);
 
       // Exactly what the channel tool submits when it cannot resolve the base
       // pre-submission: legacy single-source command, no base_branch.
@@ -198,9 +224,10 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
           head_branch: "feature/channel-legacy",
           cwd: repo,
           session_id: "cmd-norm-session",
+          issue_references: ["abc1234"],
         },
       });
-      expect(result.status).toBe(201);
+      expect(result.status, JSON.stringify(result.body)).toBe(201);
       const requestId = (result.body as { request_id: string }).request_id;
 
       // The reviewed row is already canonical: base resolved server-side and
@@ -223,9 +250,8 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
     const repo = createMergeRepo(["feature/channel-canonical"]);
     const db = createMigratedDb();
     setDb(db);
-    const { router, queue } = createHarness(db);
+    const { router, queue } = createHarness(db, repo, "feature/channel-canonical");
     try {
-      registerWorkRepo(db, repo);
 
       const result = await router.invoke({
         method: "POST",
@@ -237,6 +263,7 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
           base_branch: "main",
           cwd: repo,
           session_id: "cmd-norm-session",
+          issue_references: ["abc1234"],
         },
       });
       expect(result.status).toBe(201);
@@ -258,9 +285,8 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
     const repo = createMergeRepo(["feature/channel-mutant"]);
     const db = createMigratedDb();
     setDb(db);
-    const { router, queue } = createHarness(db);
+    const { router, queue } = createHarness(db, repo, "feature/channel-mutant");
     try {
-      registerWorkRepo(db, repo);
 
       const mutant = "mandible auth merge feature/channel-mutant --force";
       const result = await router.invoke({
@@ -273,6 +299,7 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
           base_branch: "main",
           cwd: repo,
           session_id: "cmd-norm-session",
+          issue_references: ["abc1234"],
         },
       });
       expect(result.status).toBe(201);

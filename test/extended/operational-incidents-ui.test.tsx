@@ -621,15 +621,14 @@ describe('incident_reconnect_refetches_visible_route_and_badges', () => {
 
     const source = MockEventSource.instances[0];
     expect(source).toBeTruthy();
-    source.onopen?.();
     const before = requests.filter((url) => url === '/api/dashboard/badges').length;
 
-    // Drop and re-open: the coordinator reports `reconnected`, which is the
-    // only convergence path because the server has no event replay.
+    // Fail the authenticated fetch stream. The client reconnects with a fresh
+    // stream and reports `reconnected`; the server has no event replay.
     source.readyState = 2;
-    source.onerror?.();
-    source.readyState = 1;
-    source.onopen?.();
+    for (const listener of source.listeners.get('error') ?? []) {
+      listener(new MessageEvent('error'));
+    }
 
     await waitFor(() => {
       expect(requests.filter((url) => url === '/api/dashboard/badges').length)

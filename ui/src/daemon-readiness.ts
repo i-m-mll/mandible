@@ -33,8 +33,8 @@ export interface DaemonHealthSnapshot {
   };
   instance?: {
     role: 'main' | 'preview' | 'dev' | 'test';
-    operational_mutations: 'allow' | 'reject';
-    operational_mutations_overridden: boolean;
+    instance_id: string;
+    allowed_effects: string[];
     db_path: string | null;
     db_path_source: string | null;
     source_db_path?: string | null;

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/pr
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DelegatedSigningSection } from "../../ui/src/views/settings";
+import { __resetBrowserSessionForTests } from "../../ui/src/client-auth-token";
 
 function response(body: unknown): Promise<Response> {
   return Promise.resolve(new Response(JSON.stringify(body), {
@@ -29,12 +30,19 @@ const configured = {
 
 afterEach(() => {
   cleanup();
+  __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
 });
 
 describe("delegated signing settings", () => {
   it("requires confirmation, removes key material, and refreshes visible status", async () => {
     const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/client-auth/whoami") {
+        return response({ authenticated: true, session: {
+          family_id: "settings-signing-test", audience: "production", csrf_token: "csrf",
+          effect_ceiling: ["config:write"],
+        } });
+      }
       expect(String(input)).toBe("/api/auth/clearances/signing");
       return response(init?.method === "DELETE"
         ? { ...configured.signing, configured: false, public_key: null }
@@ -45,13 +53,14 @@ describe("delegated signing settings", () => {
     render(<DelegatedSigningSection />);
     const remove = await screen.findByRole("button", { name: "Remove" });
     fireEvent.click(remove);
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls.some(([input]) => String(input) === "/api/auth/clearances/signing")).toBe(true);
     expect(screen.getByRole("alertdialog")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Remove key material" }));
     await waitFor(() => expect(screen.getByText("Delegated signing material removed")).toBeTruthy());
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(fetch.mock.calls[1]?.[1]).toMatchObject({ method: "DELETE" });
+    expect(fetch.mock.calls.find(([input, init]) =>
+      String(input) === "/api/auth/clearances/signing" && init?.method === "DELETE")?.[1])
+      .toMatchObject({ method: "DELETE" });
     expect(screen.getByRole("button", { name: "Set up" })).toBeTruthy();
   });
 });

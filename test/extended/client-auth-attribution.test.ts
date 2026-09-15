@@ -104,10 +104,7 @@ describe("client-auth durable attribution", () => {
     },
   );
 
-  it("stores NULL user attribution for a tokenless ledger write with no ambient signal", async () => {
-    // Issue a64d2de: a tokenless compat-mode write must no longer be stamped
-    // with the operator. It flows through to NULL user attribution while the
-    // legacy provenance columns still populate (generic 'Mandible' display).
+  it("rejects a tokenless HTTP ledger write with no ambient signal", async () => {
     const response = await router.invoke({
       method: "POST",
       url: "/api/issues/mandible",
@@ -118,32 +115,13 @@ describe("client-auth durable attribution", () => {
       },
       transport: "http",
     });
-    expect(response.status).toBe(200);
-
-    const row = db.prepare(
-      `SELECT author_user_id, evidence_method, evidence_id,
-              author_actor_type, author_display
-         FROM ledger_issues WHERE title = ?`,
-    ).get("Unattributed tokenless write") as {
-      author_user_id: string | null;
-      evidence_method: string | null;
-      evidence_id: string | null;
-      author_actor_type: string;
-      author_display: string;
-    };
-    expect(row.author_user_id).toBeNull();
-    expect(row.evidence_method).toBeNull();
-    expect(row.evidence_id).toBeNull();
-    // Legacy provenance is untouched — the read projection still shows 'Mandible'.
-    expect(row.author_actor_type).toBe("mandible_user");
-    expect(row.author_display).toBe("Mandible");
+    expect(response).toMatchObject({ status: 401, body: { error: "authentication_required" } });
+    expect(db.prepare("SELECT id FROM ledger_issues WHERE title = ?").get("Unattributed tokenless write"))
+      .toBeUndefined();
   });
 
-  it("resolves a tokenless ledger write to the ambient provider's agent with session_claim", async () => {
-    // The CLI/MCP channel send X-Mandible-Ambient-Provider* on mutating calls;
-    // the server exposes them as req.ambient_identity. With no bearer token, the
-    // write resolves to the agent that owns the provider's session env keys.
-    const codex = setupAgentUsers(db).find((user) => user.slug === "codex")!;
+  it("does not treat ambient provider headers as HTTP authentication", async () => {
+    setupAgentUsers(db);
     const response = await router.invoke({
       method: "POST",
       url: "/api/issues/mandible",
@@ -158,15 +136,9 @@ describe("client-auth durable attribution", () => {
       },
       transport: "http",
     });
-    expect(response.status).toBe(200);
-
-    const row = db.prepare(
-      "SELECT author_user_id, evidence_method FROM ledger_issues WHERE title = ?",
-    ).get("Ambient-attributed agent write") as {
-      author_user_id: string;
-      evidence_method: string;
-    };
-    expect(row).toEqual({ author_user_id: codex.id, evidence_method: "session_claim" });
+    expect(response).toMatchObject({ status: 401, body: { error: "authentication_required" } });
+    expect(db.prepare("SELECT id FROM ledger_issues WHERE title = ?").get("Ambient-attributed agent write"))
+      .toBeUndefined();
   });
 
   it("admits only the operator before issue spawn can construct a managed backend", async () => {
@@ -211,7 +183,7 @@ describe("client-auth durable attribution", () => {
     expect(sessionCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("resolves a Codex requester from ambient provider identity without a session row", async () => {
+  it("rejects an auth requester that supplies only ambient provider identity", async () => {
     const submit = (sessionId: string) => router.invoke({
       method: "POST",
       url: "/api/auth/request",
@@ -228,22 +200,19 @@ describe("client-auth durable attribution", () => {
     });
 
     expect((await submit("codex-desktop-thread")).status).toBe(401);
-    const codex = setupAgentUsers(db).find((user) => user.slug === "codex")!;
+    setupAgentUsers(db);
     expect(
       db.prepare("SELECT id FROM sessions WHERE id = ?").get("codex-desktop-thread"),
     ).toBeUndefined();
 
-    const submitted = await submit("codex-desktop-thread");
-    expect(submitted.status).toBe(201);
-    const requestId = (submitted.body as { request_id: string }).request_id;
-    expect(authQueue.getRequest(requestId)?.requested_by_user_id).toBe(codex.id);
-
-    const mismatched = await submit("different-thread");
-    expect(mismatched.status).toBe(403);
-    expect(mismatched.body).toMatchObject({ code: "requester_session_conflict" });
+    expect((await submit("codex-desktop-thread"))).toMatchObject({
+      status: 401,
+      body: { error: "authentication_required" },
+    });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM auth_requests").get()).toEqual({ n: 0 });
   });
 
-  it("persists requester and approver users while rejecting conflicting session identity", async () => {
+  it("persists requester and approver users while treating session ids as credential-bound provenance", async () => {
     const agent = createUser(db, {
       slug: "auth-request-agent",
       kind: "agent",
@@ -276,28 +245,6 @@ describe("client-auth durable attribution", () => {
       },
     });
 
-    const denied = await router.invoke({
-      method: "POST",
-      url: `/api/auth/request/${requestId}/approve`,
-      credential: agentToken,
-      transport: "http",
-    });
-    expect(denied.status).toBe(403);
-
-    const approved = await router.invoke({
-      method: "POST",
-      url: `/api/auth/request/${requestId}/approve`,
-      credential: operatorToken,
-      transport: "http",
-    });
-    expect(approved.status).toBe(202);
-    expect(authEvents.findLast((event) => event.event === "auth:updated")?.data).toMatchObject({
-      request: {
-        id: requestId,
-        approver: { id: operatorId, display_name: "Operator", kind: "human" },
-      },
-    });
-
     const signingCredential = addCredential(db, operatorId, {
       type: "ssh_key",
       fingerprint: `SHA256:${"S".repeat(43)}`,
@@ -323,6 +270,30 @@ describe("client-auth durable attribution", () => {
         merge_signature: { state: "verified" },
       },
     });
+
+    const denied = await router.invoke({
+      method: "POST",
+      url: `/api/auth/request/${requestId}/approve`,
+      credential: agentToken,
+      transport: "http",
+    });
+    expect(denied.status).toBe(403);
+
+    const approved = await router.invoke({
+      method: "POST",
+      url: `/api/auth/request/${requestId}/approve`,
+      credential: operatorToken,
+      transport: "http",
+    });
+    expect(approved.status).toBe(202);
+    expect(authEvents.findLast((event) => event.event === "auth:updated")?.data).toMatchObject({
+      request: {
+        id: requestId,
+        approver: { id: operatorId, display_name: "Operator", kind: "human" },
+      },
+    });
+    db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?")
+      .run(executionEvidence.id, requestId);
 
     const detail = await router.invoke({
       method: "GET",
@@ -378,7 +349,9 @@ describe("client-auth durable attribution", () => {
       credential: operatorToken,
       transport: "http",
     });
-    expect(mismatched.status).toBe(403);
+    expect(mismatched.status).toBe(201);
+    expect(authQueue.getRequest((mismatched.body as { request_id: string }).request_id)?.requested_by_user_id)
+      .toBe(operatorId);
 
     const conflictingAgent = createUser(db, {
       slug: "auth-conflicting-app-agent",
@@ -402,7 +375,8 @@ describe("client-auth durable attribution", () => {
       credential: agentToken,
       transport: "http",
     });
-    expect(conflicting.status).toBe(403);
-    expect(conflicting.body).toMatchObject({ code: "requester_session_conflict" });
+    expect(conflicting.status).toBe(201);
+    expect(authQueue.getRequest((conflicting.body as { request_id: string }).request_id)?.requested_by_user_id)
+      .toBe(agent.id);
   });
 });

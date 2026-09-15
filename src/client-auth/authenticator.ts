@@ -1,13 +1,9 @@
 // The client-authentication gate wired into the HTTP/file-RPC boundary.
 //
 // Responsibilities:
-//   - Resolve a presented bearer/capability token to a user identity, from two
-//     sources: persisted api_token credentials (CLI/agent tokens) and bounded
-//     ephemeral tokens (dashboard session, operator bootstrap-token file,
-//     per-agent file-RPC capability tokens). The dashboard session fingerprint
-//     and bounded renewal deadline are held in a protected file so strict-mode
-//     renewal survives daemon restart without persisting reusable bearer bytes.
-//   - Report the current mode (compat | strict).
+//   - Resolve explicit bearer/capability tokens for CLI, file-RPC, and native
+//     enrollment. Browser authority is the separate opaque-cookie session store.
+//   - Report the mandatory strict mode.
 //   - Count unattributed writes (the strict-mode readiness ratchet).
 //   - Own the operator's bootstrap token: a daemon-lifetime ephemeral token
 //     written to a 0600 file (never embedded in any HTTP response) so a same-user
@@ -17,7 +13,10 @@
 // (groups/permissions) and evidence persistence are separate umbrella children.
 
 import type { Db } from "../db.js";
+import fs from "node:fs";
+import path from "node:path";
 import type { InstanceInfo } from "../types.js";
+import { PRODUCTION_EFFECTS } from "../security/effect-policy.js";
 import { getOperator, getUserById } from "../users/store.js";
 import type {
   ClientAuthRequestContext,
@@ -30,12 +29,9 @@ import {
   defaultClientAuthDir,
   loadOrCreatePepper,
   loadOrCreateClientAuthAuthorityId,
-  MAX_DASHBOARD_SESSIONS,
-  readDashboardSessions,
-  writeDashboardSessions,
-  type StoredDashboardSession,
+  readLegacyDashboardSessions,
+  retireLegacyDashboardSessions,
   writeBootstrapTokenFile,
-  writePreviewBrowserEnrollmentProof,
 } from "./secret-store.js";
 import {
   ClientAuthTelemetry,
@@ -50,14 +46,22 @@ import {
   verifyApiToken,
   type MintedToken,
 } from "./tokens.js";
+import {
+  LocalSessionAuthority,
+  type BrowserSession,
+  type BrowserSessionRevocation,
+  type InstanceRegistration,
+  type IssuedBrowserSession,
+  type LegacyConversion,
+  type PairingTransaction,
+  type PreviewTransfer,
+} from "./session-authority.js";
 
 interface EphemeralEntry {
   identity: { user_id: string; slug: string };
   purpose: string;
   createdAt: number;
   expiresAt: number | null;
-  /** Hard deadline for handshake-only renewal of an expired dashboard token. */
-  renewUntil: number | null;
 }
 
 /**
@@ -76,10 +80,6 @@ export function wrapSessionPurpose(sessionId: string): string {
 export interface ClientAuthenticatorOptions {
   /** Override the filesystem secrets directory (tests). Defaults to config dir. */
   secretsDir?: string;
-  /** Expiry for restart-stable dashboard sessions (tests may shorten). */
-  dashboardSessionTtlMs?: number;
-  /** Bounded handshake-only renewal grace after dashboard expiry (tests may shorten). */
-  dashboardSessionRenewalGraceMs?: number;
   /** TTL backstop for wrap-time session-scoped agent tokens (tests may shorten). */
   wrapSessionTtlMs?: number;
   /** Grace before an exchanged token must have a registered session row. */
@@ -93,24 +93,23 @@ export interface ClientAuthenticatorOptions {
   /** Exact daemon instance policy and epoch used for preview-only enrollment. */
   instance?: InstanceInfo;
   startupEpoch?: string;
+  /** Explicit initialization is used only by install/setup and isolated tests. */
+  initializeSessionAuthority?: boolean;
+  sessionAuthorityDir?: string;
+  contextVerificationKeyPem?: string;
 }
 
-const DEFAULT_DASHBOARD_SESSION_TTL_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_WRAP_SESSION_TTL_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_WRAP_SESSION_PRE_REGISTRATION_GRACE_MS = 10 * 60 * 1_000;
 const DEFAULT_MAX_WRAP_SESSION_TOKENS = 64;
-const DEFAULT_DASHBOARD_SESSION_RENEWAL_GRACE_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_EPHEMERAL_TTL_MS = 15 * 60 * 1_000;
 const OPERATOR_BOOTSTRAP_TTL_MS = 5 * 60 * 1_000;
 const DEFAULT_MAX_EPHEMERAL_TOKENS = 256;
-export const PREVIEW_BROWSER_ENROLLMENT_PURPOSE_PREFIX = "preview_browser_enrollment:";
 
 export class ClientAuthenticator implements ClientAuthGate {
   private readonly ephemeral = new Map<string, EphemeralEntry>();
   private readonly telemetry = new ClientAuthTelemetry();
   private readonly secretsDir: string;
-  private readonly dashboardSessionTtlMs: number;
-  private readonly dashboardSessionRenewalGraceMs: number;
   private readonly wrapSessionTtlMs: number;
   private readonly wrapSessionPreRegistrationGraceMs: number;
   private readonly maxWrapSessionTokens: number;
@@ -119,23 +118,18 @@ export class ClientAuthenticator implements ClientAuthGate {
   /** Pepper is loaded from the filesystem ONCE at construction (startup). */
   private readonly pepper: string;
   private readonly clientAuthAuthorityId: string;
-  /** Presented dashboard fingerprint keyed by the exact authenticate() result. */
-  private readonly presentedDashboardSessions = new WeakMap<object, string>();
-  private readonly expiredDashboardFingerprints = new Set<string>();
-  private readonly revokedDashboardFingerprints = new Set<string>();
+  private readonly instance: InstanceInfo | null;
+  private readonly sessionAuthority: LocalSessionAuthority;
+  private readonly ownsSessionAuthority: boolean;
+  private readonly contextVerificationKeyPem: string | null;
+  private readonly revocationListeners = new Set<(scope: BrowserSessionRevocation) => void>();
   private bootstrapRaw: string | null = null;
-  private previewEnrollmentRaw: string | null = null;
-  private readonly previewEnrollment: { previewRoot: string; startupEpoch: string } | null;
 
   constructor(
     private readonly db: Db,
     options: ClientAuthenticatorOptions = {},
   ) {
     this.secretsDir = options.secretsDir ?? defaultClientAuthDir();
-    this.dashboardSessionTtlMs = options.dashboardSessionTtlMs
-      ?? DEFAULT_DASHBOARD_SESSION_TTL_MS;
-    this.dashboardSessionRenewalGraceMs = options.dashboardSessionRenewalGraceMs
-      ?? DEFAULT_DASHBOARD_SESSION_RENEWAL_GRACE_MS;
     this.wrapSessionTtlMs = options.wrapSessionTtlMs ?? DEFAULT_WRAP_SESSION_TTL_MS;
     this.wrapSessionPreRegistrationGraceMs = options.wrapSessionPreRegistrationGraceMs
       ?? DEFAULT_WRAP_SESSION_PRE_REGISTRATION_GRACE_MS;
@@ -148,26 +142,46 @@ export class ClientAuthenticator implements ClientAuthGate {
       options.maxEphemeralTokens ?? DEFAULT_MAX_EPHEMERAL_TOKENS,
     );
     this.now = options.now ?? Date.now;
-    this.previewEnrollment = options.instance?.preview_browser_enrollment === "allow"
-      && options.instance.preview_root
-      && options.startupEpoch
-      ? { previewRoot: options.instance.preview_root, startupEpoch: options.startupEpoch }
-      : null;
+    this.instance = options.instance ?? null;
     this.pepper = loadOrCreatePepper(db, this.secretsDir);
-    this.clientAuthAuthorityId = loadOrCreateClientAuthAuthorityId(this.secretsDir);
-    this.restoreDashboardSession();
+    this.clientAuthAuthorityId = options.instance?.installation_id
+      ?? loadOrCreateClientAuthAuthorityId(this.secretsDir);
+    this.ownsSessionAuthority = options.instance?.role !== "preview";
+    this.sessionAuthority = new LocalSessionAuthority(
+      options.sessionAuthorityDir ?? (options.secretsDir
+        ? path.join(this.secretsDir, "local-sessions")
+        : path.join(path.dirname(this.secretsDir), "local-sessions")),
+      options.instance?.installation_id ?? this.clientAuthAuthorityId,
+      {
+        initialize: options.initializeSessionAuthority ?? this.ownsSessionAuthority,
+        now: this.now,
+      },
+    );
+    this.contextVerificationKeyPem = options.contextVerificationKeyPem
+      ?? (process.env.MANDIBLE_CONTEXT_VERIFICATION_KEY
+        ? fs.readFileSync(process.env.MANDIBLE_CONTEXT_VERIFICATION_KEY, "utf8")
+        : this.sessionAuthority.verificationKeyPem());
+    retireLegacyDashboardSessions(this.sessionAuthority.retiredLegacyFingerprints(), this.secretsDir);
   }
 
   authorityId(): string {
     return this.clientAuthAuthorityId;
   }
 
+  instanceId(): string {
+    return this.instance?.instance_id ?? "production";
+  }
+
+  instanceRegistration(instanceId: string): InstanceRegistration | null {
+    return this.sessionAuthority.instance(instanceId);
+  }
+
+  productionRegistration(): InstanceRegistration | null {
+    return this.sessionAuthority.instances().find((entry) => entry.role === "main") ?? null;
+  }
+
   classifyFailure(credential: string | null | undefined): "expired" | "revoked" | "unknown" {
-    const token = normalizeBearer(credential);
-    if (!token) return "unknown";
-    const fingerprint = fingerprintForToken(this.pepper, token);
-    if (this.expiredDashboardFingerprints.has(fingerprint)) return "expired";
-    if (this.revokedDashboardFingerprints.has(fingerprint)) return "revoked";
+    void credential;
     return "unknown";
   }
 
@@ -183,42 +197,25 @@ export class ClientAuthenticator implements ClientAuthGate {
     const token = normalizeBearer(credential);
     if (!token) return null;
 
-    // Ephemeral tokens (bootstrap / handshake / file-RPC capability) take
+    // Ephemeral tokens (native enrollment / file-RPC capability) take
     // precedence: they are daemon-lifetime secrets minted by the daemon itself.
     const key = fingerprintForToken(this.pepper, token);
     const eph = this.ephemeral.get(key);
     if (eph) {
       if (
-        (eph.purpose === "operator_bootstrap"
-          || eph.purpose.startsWith(PREVIEW_BROWSER_ENROLLMENT_PURPOSE_PREFIX))
-        && (context?.method !== "POST" || context.pathname !== "/api/client-auth/handshake")
+        eph.purpose === "operator_bootstrap"
+        && (context?.method !== "POST" || context.pathname !== "/api/client-auth/native-enrollment")
       ) {
         return null;
       }
       const now = this.now();
       if (eph.expiresAt !== null && eph.expiresAt <= now) {
-        const renewableDashboard = eph.purpose === "dashboard_handshake"
-          && eph.renewUntil !== null
-          && eph.renewUntil > now;
-        if (!renewableDashboard) {
-          this.ephemeral.delete(key);
-          if (eph.purpose === "dashboard_handshake") {
-            this.persistDashboardSessions();
-          }
-          return null;
-        }
-        // An expired dashboard token is never a general bearer credential. It
-        // is accepted only by the protected handshake during a bounded grace
-        // window, allowing an open/suspended dashboard to rotate without a
-        // daemon restart.
-        if (context?.method !== "POST" || context.pathname !== "/api/client-auth/handshake") {
-          return null;
-        }
+        this.ephemeral.delete(key);
+        return null;
       }
       const currentUser = getUserById(this.db, eph.identity.user_id);
       if (!currentUser || currentUser.status !== "active") {
         this.ephemeral.delete(key);
-        if (eph.purpose === "dashboard_handshake") this.persistDashboardSessions();
         return null;
       }
       if (!this.agentSessionIdentityStillValid(eph)) {
@@ -236,10 +233,8 @@ export class ClientAuthenticator implements ClientAuthGate {
         credential_id: null,
         source,
         ephemeral_purpose: eph.purpose,
+        effect_ceiling: this.instance?.allowed_effects ?? PRODUCTION_EFFECTS,
       };
-      if (eph.purpose === "dashboard_handshake") {
-        this.presentedDashboardSessions.set(identity, key);
-      }
       if (eph.purpose === "operator_bootstrap") {
         // The filesystem proof exists only for first enrollment and is
         // consumed on its first authenticated request. Long-lived dashboard
@@ -259,9 +254,311 @@ export class ClientAuthenticator implements ClientAuthGate {
         method: "api_token",
         credential_id: verified.credentialId,
         source,
+        effect_ceiling: this.instance?.allowed_effects ?? PRODUCTION_EFFECTS,
       };
     }
     return null;
+  }
+
+  registerInstance(registration: InstanceRegistration): void {
+    if (!this.ownsSessionAuthority) throw new Error("Preview backends cannot mutate installation registrations.");
+    this.sessionAuthority.registerInstance(registration);
+  }
+
+  issueBrowserSession(identity: ResolvedClientIdentity, audience: string): IssuedBrowserSession {
+    if (!this.ownsSessionAuthority) throw new Error("Browser sessions are issued by the installation authority only.");
+    return this.sessionAuthority.issueSession(identity.user_id, identity.slug, audience, {
+      method: identity.method,
+      credential_id: identity.credential_id,
+      authenticated_at: this.now(),
+    });
+  }
+
+  authenticateLegacyBrowserSession(raw: string | null | undefined): ResolvedClientIdentity | null {
+    const token = normalizeBearer(raw);
+    if (!token) return null;
+    const fingerprint = fingerprintForToken(this.pepper, token);
+    if (this.sessionAuthority.isLegacyFingerprintRetired(fingerprint)) return null;
+    const legacy = readLegacyDashboardSessions(this.secretsDir).find(
+      (row) => row.token_fingerprint === fingerprint && row.renew_until > this.now(),
+    );
+    if (!legacy) return null;
+    const user = getUserById(this.db, legacy.user_id);
+    if (!user || user.status !== "active" || user.slug !== legacy.slug) return null;
+    return {
+      user_id: user.id,
+      slug: user.slug,
+      method: "legacy_browser_session",
+      credential_id: null,
+      source: "legacy_browser_conversion",
+      ephemeral_purpose: "legacy_dashboard_conversion",
+      effect_ceiling: this.instance?.allowed_effects ?? PRODUCTION_EFFECTS,
+      legacy_fingerprint: fingerprint,
+      legacy_authenticated_at: legacy.created_at,
+    };
+  }
+
+  authenticateBrowserSession(raw: string | null | undefined): ResolvedClientIdentity | null {
+    const result = this.classifyBrowserSession(raw);
+    return result.state === "active" ? result.identity : null;
+  }
+
+  authenticateBrowserSessionForAudience(
+    raw: string | null | undefined,
+    audience: string,
+  ): ResolvedClientIdentity | null {
+    const result = this.classifyBrowserSession(raw, audience);
+    return result.state === "active" ? result.identity : null;
+  }
+
+  classifyBrowserSession(
+    raw: string | null | undefined,
+    audience = this.instance?.instance_id,
+  ): { state: "active" | "missing" | "wrong_audience" | "expired" | "revoked"; identity: ResolvedClientIdentity | null } {
+    if (!raw || !audience) return { state: "missing", identity: null };
+    const result = this.sessionAuthority.classify(raw, audience);
+    if (result.state !== "active") return { state: result.state, identity: null };
+    const user = getUserById(this.db, result.session.user_id);
+    if (!user || user.status !== "active" || user.slug !== result.session.slug) {
+      const scope = this.sessionAuthority.revokeUser(result.session.user_id);
+      if (scope) this.emitRevocation(scope);
+      return { state: "revoked", identity: null };
+    }
+    return { state: "active", identity: this.identityFromBrowserSession(result.session, "browser_cookie") };
+  }
+
+  async signPreviewContext(identity: ResolvedClientIdentity, previewInstanceId: string): Promise<string> {
+    if (!this.ownsSessionAuthority || !identity.session_family || !identity.audience) {
+      throw new Error("A live browser session is required for preview authorization.");
+    }
+    return this.sessionAuthority.signPreviewContext({
+      family_id: identity.session_family,
+      root_family_id: identity.root_session_family ?? identity.session_family,
+      user_id: identity.user_id,
+      slug: identity.slug,
+      audience: identity.audience,
+      effect_ceiling: identity.effect_ceiling,
+      csrf_token: identity.csrf_token ?? "",
+      expires_at: this.now(),
+      absolute_expires_at: this.now(),
+      evidence: {
+        method: identity.method,
+        credential_id: identity.credential_id,
+        authenticated_at: this.now(),
+      },
+    }, previewInstanceId);
+  }
+
+  async authenticateInternalContext(compact: string | null | undefined): Promise<ResolvedClientIdentity | null> {
+    if (!compact || !this.instance || !this.contextVerificationKeyPem) return null;
+    const session = await LocalSessionAuthority.verifyPreviewContext(
+      compact,
+      this.contextVerificationKeyPem,
+      {
+        instance_id: this.instance.instance_id,
+        installation_id: this.instance.installation_id,
+        role: this.instance.role === "preview" ? "preview" : "main",
+        public_origin: this.instance.public_origin,
+        backend_origin: "http://127.0.0.1:0",
+        backend_generation: this.instance.backend_generation,
+        effect_ceiling: this.instance.allowed_effects,
+        writable_roots: this.instance.writable_roots,
+      },
+    );
+    if (!session) return null;
+    const user = getUserById(this.db, session.user_id);
+    if (!user || user.status !== "active") return null;
+    return this.identityFromBrowserSession(session, "installation_context");
+  }
+
+  validateBrowserCsrf(identity: ResolvedClientIdentity, csrf: string | null | undefined): boolean {
+    if (!identity.session_family || !identity.csrf_token) return false;
+    if (identity.source === "installation_context") return csrf === identity.csrf_token;
+    return Boolean(this.sessionAuthority && csrf === identity.csrf_token);
+  }
+
+  beginPairing(audience: string, returnPath: string): PairingTransaction {
+    if (!this.ownsSessionAuthority) throw new Error("Pairing is owned by the installation authority.");
+    return this.sessionAuthority.beginPairing(audience, returnPath);
+  }
+
+  beginPreviewTransfer(audience: string, returnPath: string): PreviewTransfer {
+    if (!this.ownsSessionAuthority) throw new Error("Preview transfers are owned by the installation authority.");
+    return this.sessionAuthority.beginPreviewTransfer(audience, returnPath);
+  }
+
+  authorizePreviewTransfer(reference: string, identity: ResolvedClientIdentity): InstanceRegistration {
+    if (!this.ownsSessionAuthority || identity.source !== "browser_cookie" || !identity.session_family
+        || !identity.root_session_family || !identity.audience) {
+      throw new Error("A production browser session is required to authorize preview access.");
+    }
+    return this.sessionAuthority.authorizePreviewTransfer(reference, {
+      family_id: identity.session_family,
+      root_family_id: identity.root_session_family,
+      user_id: identity.user_id,
+      slug: identity.slug,
+      audience: identity.audience,
+      effect_ceiling: identity.effect_ceiling,
+      csrf_token: identity.csrf_token ?? "",
+      expires_at: this.now(),
+      absolute_expires_at: this.now(),
+      evidence: { method: identity.method, credential_id: identity.credential_id, authenticated_at: this.now() },
+    });
+  }
+
+  completePreviewTransfer(reference: string, secret: string): IssuedBrowserSession | null {
+    if (!this.ownsSessionAuthority) throw new Error("Preview transfers are owned by the installation authority.");
+    return this.sessionAuthority.completePreviewTransfer(reference, secret);
+  }
+
+  previewTransferReturnPath(reference: string): string | null {
+    return this.sessionAuthority.previewTransferReturnPath(reference);
+  }
+
+  beginLegacyConversion(
+    identity: ResolvedClientIdentity,
+    rawLegacyToken: string,
+    returnPath: string,
+    browserState: Record<string, string>,
+    legacyOrigin: string,
+    targetAudience: string,
+  ): LegacyConversion {
+    if (identity.source !== "legacy_browser_conversion"
+        || !identity.legacy_fingerprint || identity.legacy_authenticated_at === undefined) {
+      throw new Error("A verified legacy browser session is required for conversion.");
+    }
+    const exactTargetAudience = this.legacyConversionTarget(legacyOrigin, targetAudience);
+    return this.sessionAuthority.beginLegacyConversion({
+      raw_legacy_token: rawLegacyToken,
+      legacy_fingerprint: identity.legacy_fingerprint,
+      user_id: identity.user_id,
+      slug: identity.slug,
+      target_audience: exactTargetAudience,
+      return_path: returnPath,
+      browser_state: browserState,
+      authenticated_at: identity.legacy_authenticated_at,
+    });
+  }
+
+  private legacyConversionTarget(origin: string, targetAudience: string): string {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(parsed.hostname)) {
+      throw new Error("Legacy browser origin is not in the migration inventory.");
+    }
+    const target = this.sessionAuthority.instance(targetAudience);
+    if (!target) throw new Error("Legacy browser origin is not bound to a registered replacement instance.");
+    if (parsed.port === "19420" && target.role === "main") return target.instance_id;
+    if (parsed.port === "19421" && target.role === "preview"
+        && new URL(target.public_origin).port === "19421") return target.instance_id;
+    throw new Error("Legacy browser origin is not bound to a registered replacement instance.");
+  }
+
+  completeLegacyConversion(reference: string, secret: string): IssuedBrowserSession | null {
+    if (!this.ownsSessionAuthority) throw new Error("Legacy conversion completion is owned by the installation authority.");
+    return this.sessionAuthority.completeLegacyConversion(reference, secret);
+  }
+
+  legacyConversionReturnPath(reference: string): string | null {
+    return this.sessionAuthority.legacyConversionReturnPath(reference);
+  }
+
+  legacyConversionDetails(identity: ResolvedClientIdentity): {
+    browser_state: Record<string, string>;
+    return_path: string;
+    finalized: boolean;
+  } | null {
+    if (!identity.session_family || !identity.root_session_family
+        || !identity.audience) return null;
+    return this.sessionAuthority.legacyConversionDetails(this.browserSessionFromIdentity(identity));
+  }
+
+  finalizeLegacyConversion(identity: ResolvedClientIdentity): boolean {
+    if (!this.ownsSessionAuthority || !identity.session_family || !identity.root_session_family
+        || !identity.audience) return false;
+    const fingerprint = this.sessionAuthority.finalizeLegacyConversion(this.browserSessionFromIdentity(identity));
+    if (!fingerprint) return false;
+    retireLegacyDashboardSessions([fingerprint], this.secretsDir);
+    return true;
+  }
+
+  approvePairing(reference: string, userId: string): void {
+    if (!this.ownsSessionAuthority) throw new Error("Pairing is owned by the installation authority.");
+    this.sessionAuthority.approvePairing(reference, userId);
+  }
+
+  completePairing(reference: string, secret: string): IssuedBrowserSession | null {
+    if (!this.ownsSessionAuthority) throw new Error("Pairing is owned by the installation authority.");
+    return this.sessionAuthority.completePairing(reference, secret, (userId) => {
+      const user = getUserById(this.db, userId);
+      return user?.status === "active" ? user.slug : null;
+    });
+  }
+
+  revokeBrowserFamily(identity: ResolvedClientIdentity): boolean {
+    const scope = this.sessionAuthority && identity.session_family
+      ? this.sessionAuthority.revokeFamily(identity.session_family)
+      : null;
+    if (scope) this.emitRevocation(scope);
+    return Boolean(scope);
+  }
+
+  revokeAllBrowserFamilies(identity: ResolvedClientIdentity): number {
+    const scope = this.sessionAuthority.revokeUser(identity.user_id);
+    if (scope) this.emitRevocation(scope);
+    return scope?.family_ids.length ?? 0;
+  }
+
+  onBrowserSessionRevoked(listener: (scope: BrowserSessionRevocation) => void): () => void {
+    this.revocationListeners.add(listener);
+    return () => this.revocationListeners.delete(listener);
+  }
+
+  private emitRevocation(scope: BrowserSessionRevocation): void {
+    for (const listener of this.revocationListeners) listener(scope);
+  }
+
+  browserSessionMetadata(identity: ResolvedClientIdentity): Record<string, unknown> | null {
+    if (!identity.session_family || !identity.audience) return null;
+    return {
+      family_id: identity.session_family,
+      audience: identity.audience,
+      csrf_token: identity.csrf_token,
+      effect_ceiling: identity.effect_ceiling,
+    };
+  }
+
+  private identityFromBrowserSession(
+    session: BrowserSession,
+    source: ResolvedClientIdentity["source"],
+  ): ResolvedClientIdentity {
+    return {
+      user_id: session.user_id,
+      slug: session.slug,
+      method: source === "installation_context" ? "installation_context" : "browser_session",
+      credential_id: session.evidence.credential_id,
+      source,
+      effect_ceiling: session.effect_ceiling,
+      session_family: session.family_id,
+      root_session_family: session.root_family_id,
+      audience: session.audience,
+      csrf_token: session.csrf_token,
+      auth_context_expires_at: source === "installation_context" ? session.expires_at : null,
+    };
+  }
+
+  private browserSessionFromIdentity(identity: ResolvedClientIdentity): BrowserSession {
+    return {
+      family_id: identity.session_family!,
+      root_family_id: identity.root_session_family!,
+      user_id: identity.user_id,
+      slug: identity.slug,
+      audience: identity.audience!,
+      effect_ceiling: identity.effect_ceiling,
+      csrf_token: identity.csrf_token ?? "",
+      expires_at: identity.auth_context_expires_at ?? this.now() + 1,
+      absolute_expires_at: identity.auth_context_expires_at ?? this.now() + 1,
+      evidence: { method: identity.method, credential_id: identity.credential_id, authenticated_at: this.now() },
+    };
   }
 
   recordUnattributedWrite(ctx: UnattributedWriteContext): void {
@@ -279,7 +576,7 @@ export class ClientAuthenticator implements ClientAuthGate {
 
   /**
    * Register a daemon-lifetime ephemeral token bound to a user identity. Used
-   * for the dashboard handshake, the operator bootstrap-token file, and
+   * for native enrollment, the operator bootstrap-token file, and
    * per-agent file-RPC capability tokens. Returns the raw token (shown once).
    */
   issueEphemeralToken(
@@ -302,7 +599,6 @@ export class ClientAuthenticator implements ClientAuthGate {
       purpose,
       createdAt,
       expiresAt: ttlMs === null ? null : createdAt + ttlMs,
-      renewUntil: null,
     });
     if (purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)) {
       this.enforceWrapSessionLimit();
@@ -315,29 +611,7 @@ export class ClientAuthenticator implements ClientAuthGate {
   /** Revoke one daemon-lifetime capability without retaining its raw value. */
   revokeEphemeralToken(raw: string): void {
     const key = fingerprintForToken(this.pepper, raw);
-    const entry = this.ephemeral.get(key);
     this.ephemeral.delete(key);
-    if (entry?.purpose === "dashboard_handshake") this.persistDashboardSessions();
-  }
-
-  /** Revoke exactly the dashboard session presented by this request identity. */
-  revokePresentedDashboardSession(identity: object): boolean {
-    const fingerprint = this.presentedDashboardSessions.get(identity);
-    if (!fingerprint) return false;
-    const entry = this.ephemeral.get(fingerprint);
-    if (!entry || entry.purpose !== "dashboard_handshake") return false;
-    this.ephemeral.delete(fingerprint);
-    this.revokedDashboardFingerprints.add(fingerprint);
-    this.boundFailureHistory();
-    this.persistDashboardSessions();
-    return true;
-  }
-
-  dashboardSessionMetadata(identity: object): { audience: string; expires_at: number } | null {
-    const fingerprint = this.presentedDashboardSessions.get(identity);
-    const entry = fingerprint ? this.ephemeral.get(fingerprint) : null;
-    if (!entry || entry.purpose !== "dashboard_handshake" || entry.expiresAt === null) return null;
-    return { audience: this.clientAuthAuthorityId, expires_at: entry.expiresAt };
   }
 
   /**
@@ -437,50 +711,12 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   /**
-   * Rotate the operator dashboard session. The caller must already have passed
-   * requireOperator; this method never upgrades an anonymous or unrelated user.
-   * A dashboard credential replaces only the exact session it presented;
-   * durable operator credentials add a session without disturbing other
-   * browser or desktop surfaces. A bounded set of fingerprints is kept in a
-   * protected file so strict dashboards survive daemon restarts without
-   * persisting reusable bearer bytes.
-   */
-  issueDashboardToken(identity: { user_id: string; slug: string }): {
-    token: string;
-    expires_at: number;
-  } {
-    const previous = this.dashboardEntries();
-    const token = this.issueEphemeralToken(identity, "dashboard_handshake", {
-      ttlMs: this.dashboardSessionTtlMs,
-    });
-    const entry = this.ephemeral.get(fingerprintForToken(this.pepper, token));
-    if (!entry || entry.expiresAt === null) {
-      throw new Error("Failed to create expiring dashboard session.");
-    }
-    entry.renewUntil = entry.expiresAt + this.dashboardSessionRenewalGraceMs;
-    try {
-      this.enforceDashboardSessionLimit();
-      this.persistDashboardSessions();
-    } catch (error) {
-      for (const [key] of this.dashboardEntries()) this.ephemeral.delete(key);
-      for (const [key, previousEntry] of previous) {
-        this.ephemeral.set(key, previousEntry);
-      }
-      throw error;
-    }
-    return { token, expires_at: entry.expiresAt };
-  }
-
-  /**
    * The operator's bootstrap token: a daemon-lifetime ephemeral token. Lazily
    * minted and reused. Returns null when no operator is configured yet.
    */
   bootstrapToken(): string | null {
     const operator = getOperator(this.db);
     if (!operator) return null;
-    if ([...this.ephemeral.values()].some((entry) => entry.purpose === "dashboard_handshake")) {
-      return null;
-    }
     if (this.bootstrapRaw) {
       const key = fingerprintForToken(this.pepper, this.bootstrapRaw);
       const entry = this.ephemeral.get(key);
@@ -504,119 +740,16 @@ export class ClientAuthenticator implements ClientAuthGate {
    * when no operator exists.
    */
   refreshBootstrapTokenFile(): void {
-    if (this.previewEnrollment) {
-      this.revokeOperatorBootstrap();
-      return;
-    }
     writeBootstrapTokenFile(this.bootstrapToken(), this.secretsDir);
-  }
-
-  /**
-   * Publish a daemon-process proof for an isolated reject-mode preview.
-   *
-   * The raw proof is held in this process's ephemeral map and in one 0600 file
-   * beneath the verified preview root. A copied file cannot authenticate to a
-   * different process because that process has a different in-memory token and
-   * startup epoch. Authentication is additionally restricted to the handshake
-   * path above, so the proof cannot call ordinary APIs directly.
-   */
-  publishPreviewBrowserEnrollmentProof(): boolean {
-    if (!this.previewEnrollment) return false;
-    const operator = getOperator(this.db);
-    if (!operator) return false;
-    if (this.previewEnrollmentRaw) {
-      this.revokeEphemeralToken(this.previewEnrollmentRaw);
-    }
-    const purpose = `${PREVIEW_BROWSER_ENROLLMENT_PURPOSE_PREFIX}${this.previewEnrollment.startupEpoch}`;
-    const token = this.issueEphemeralToken(
-      { user_id: operator.id, slug: operator.slug },
-      purpose,
-      { ttlMs: null },
-    );
-    writePreviewBrowserEnrollmentProof({
-      version: 1,
-      pid: process.pid,
-      startup_epoch: this.previewEnrollment.startupEpoch,
-      token,
-    }, this.previewEnrollment.previewRoot);
-    this.previewEnrollmentRaw = token;
-    return true;
-  }
-
-  private restoreDashboardSession(): void {
-    const stored = readDashboardSessions(this.secretsDir);
-    if (!stored) return;
-    const operator = getOperator(this.db);
-    for (const session of stored.sessions) {
-      if (
-        session.renew_until <= this.now()
-        || !operator
-        || session.user_id !== operator.id
-      ) {
-        if (session.user_id === operator?.id) {
-          this.expiredDashboardFingerprints.add(session.token_fingerprint);
-        }
-        continue;
-      }
-      this.ephemeral.set(session.token_fingerprint, {
-        identity: { user_id: session.user_id, slug: operator.slug },
-        purpose: "dashboard_handshake",
-        createdAt: session.created_at,
-        expiresAt: session.expires_at,
-        renewUntil: session.renew_until,
-      });
-    }
-    this.enforceDashboardSessionLimit();
-    if (stored.legacy || this.dashboardEntries().length !== stored.sessions.length) {
-      this.persistDashboardSessions();
-    }
   }
 
   private evictExpired(): void {
     const now = this.now();
-    let dashboardChanged = false;
     for (const [key, entry] of this.ephemeral) {
-      if (
-        entry.expiresAt !== null
-        && entry.expiresAt <= now
-        && (entry.purpose !== "dashboard_handshake"
-          || entry.renewUntil === null
-          || entry.renewUntil <= now)
-      ) {
+      if (entry.expiresAt !== null && entry.expiresAt <= now) {
         this.ephemeral.delete(key);
-        if (entry.purpose === "dashboard_handshake") {
-          this.expiredDashboardFingerprints.add(key);
-          this.boundFailureHistory();
-          dashboardChanged = true;
-        }
       }
     }
-    if (dashboardChanged) this.persistDashboardSessions();
-  }
-
-  private dashboardEntries(): Array<[string, EphemeralEntry]> {
-    return [...this.ephemeral.entries()]
-      .filter(([, entry]) => entry.purpose === "dashboard_handshake");
-  }
-
-  private enforceDashboardSessionLimit(): void {
-    const sessions = this.dashboardEntries()
-      .sort((a, b) => a[1].createdAt - b[1].createdAt);
-    while (sessions.length > MAX_DASHBOARD_SESSIONS) {
-      this.ephemeral.delete(sessions.shift()![0]);
-    }
-  }
-
-  private persistDashboardSessions(): void {
-    const sessions: StoredDashboardSession[] = this.dashboardEntries().map(([key, entry]) => ({
-      token_fingerprint: key,
-      user_id: entry.identity.user_id,
-      slug: entry.identity.slug,
-      created_at: entry.createdAt,
-      expires_at: entry.expiresAt!,
-      renew_until: entry.renewUntil!,
-    }));
-    writeDashboardSessions(sessions, this.secretsDir);
   }
 
   private agentSessionIdentityStillValid(entry: EphemeralEntry): boolean {
@@ -686,15 +819,13 @@ export class ClientAuthenticator implements ClientAuthGate {
   private enforceEphemeralLimit(): void {
     let retained = [...this.ephemeral.values()]
       .filter((entry) => (
-        entry.purpose !== "dashboard_handshake"
-        && !entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)
+        !entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)
       ))
       .length;
     if (retained <= this.maxEphemeralTokens) return;
     const evictable = [...this.ephemeral.entries()]
       .filter(([, entry]) => (
         entry.purpose !== "operator_bootstrap"
-        && entry.purpose !== "dashboard_handshake"
         && !entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)
       ))
       .sort((a, b) => a[1].createdAt - b[1].createdAt);
@@ -705,9 +836,4 @@ export class ClientAuthenticator implements ClientAuthGate {
     }
   }
 
-  private boundFailureHistory(): void {
-    for (const set of [this.expiredDashboardFingerprints, this.revokedDashboardFingerprints]) {
-      while (set.size > 256) set.delete(set.values().next().value!);
-    }
-  }
 }

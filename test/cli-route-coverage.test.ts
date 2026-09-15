@@ -137,7 +137,7 @@ describe("CLI API route coverage", () => {
     }
   });
 
-  it("emits a fragment-only dashboard enrollment link from the protected bootstrap file", () => {
+  it("does not expose a fragment-only dashboard enrollment command", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-dashboard-link-"));
     const authDir = path.join(tempDir, "client-auth");
     fs.mkdirSync(authDir, { recursive: true });
@@ -167,11 +167,10 @@ describe("CLI API route coverage", () => {
           encoding: "utf8",
         },
       );
-      expect(result.status).toBe(0);
-      expect(result.stdout.trim()).toBe(
-        "http://127.0.0.1:19420/#/?mandible_auth=secret%20with%20spaces",
-      );
-      expect(fs.existsSync(path.join(authDir, "bootstrap-token"))).toBe(false);
+      expect(result.status).toBe(2);
+      expect(result.stdout).not.toContain("secret with spaces");
+      expect(result.stderr).not.toContain("secret with spaces");
+      expect(fs.existsSync(path.join(authDir, "bootstrap-token"))).toBe(true);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

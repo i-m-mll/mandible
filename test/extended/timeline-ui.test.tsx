@@ -18,6 +18,7 @@ import type {
   TimelineRowOccurrence,
   TimelineRowSpecInput,
 } from '../../ui/src/types/timeline';
+import { __resetBrowserSessionForTests, initializeBrowserSession } from '../../ui/src/client-auth-token';
 
 const timelineStylesheet = readFileSync('ui/src/styles/timeline.css', 'utf8');
 
@@ -44,12 +45,18 @@ function stubLocalStorage(): void {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   stubLocalStorage();
+  __resetBrowserSessionForTests();
+  await initializeBrowserSession(async () => new Response(JSON.stringify({ authenticated: true, session: {
+    family_id: 'timeline-family', audience: 'production', csrf_token: 'timeline-csrf',
+    effect_ceiling: ['ledger:read', 'ledger:write'],
+  } }), { status: 200, headers: { 'content-type': 'application/json' } }));
 });
 
 afterEach(() => {
   cleanup();
+  __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
 });
 

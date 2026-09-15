@@ -19,6 +19,7 @@ import { resolveInstanceInfo } from "../../src/instance-policy.js";
 import { FileRpcTransport } from "../../src/file-rpc-transport.js";
 import { registerTaskRoutes } from "../../src/routes/tasks.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../../src/server.js";
+import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
 import { TASK_INVENTORY_EXECUTORS_KEY } from "../../src/task-inventory.js";
 import { createManagedReminder } from "../../src/managed-reminders.js";
 import { parseManagedReminderCreateRequest } from "../../src/managed-reminder-parser.js";
@@ -55,6 +56,7 @@ class SlugGate implements ClientAuthGate {
       method: ephemeral ? "ephemeral" : "api_token",
       credential_id: null,
       source,
+      effect_ceiling: PRODUCTION_EFFECTS,
     };
   }
 
@@ -294,7 +296,7 @@ describe("POST /api/tasks/inventory", () => {
       ) as { status: number; body: Record<string, unknown> };
       expect(response("anonymous")).toMatchObject({
         status: 401,
-        body: { code: "authentication_required" },
+        body: { error: "authentication_required", operation: "tasks.inventory" },
       });
       expect(response("unmapped")).toMatchObject({
         status: 403,
@@ -363,7 +365,7 @@ describe("GET /api/tasks", () => {
       { now: NOW, projectId },
     );
 
-    const response = await router.invoke({ method: "GET", url: "/api/tasks" });
+    const response = await router.invoke({ method: "GET", url: "/api/tasks", credential: "operator" });
     expect(response.status).toBe(200);
     const tasks = (response.body as { tasks: Array<Record<string, unknown>> }).tasks;
     expect(tasks).toEqual(expect.arrayContaining([
@@ -385,14 +387,14 @@ describe("GET /api/tasks", () => {
   });
 
   it("reports an empty surface before any executor has posted", async () => {
-    const response = await router.invoke({ method: "GET", url: "/api/tasks" });
+    const response = await router.invoke({ method: "GET", url: "/api/tasks", credential: "operator" });
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ executors: [], tasks: [] });
   });
 
   it("projects the latest generation with `unknown` intact", async () => {
     await post(generation(), "agent-schedule");
-    const response = await router.invoke({ method: "GET", url: "/api/tasks" });
+    const response = await router.invoke({ method: "GET", url: "/api/tasks", credential: "operator" });
     const body = response.body as {
       executors: Array<Record<string, unknown>>;
       tasks: Array<Record<string, unknown>>;
@@ -423,7 +425,7 @@ describe("GET /api/tasks", () => {
 
   it("marks an old generation stale without a fresh post", async () => {
     await post(generation({ observed_at: Date.now() - 12 * HOUR }), "agent-schedule");
-    const response = await router.invoke({ method: "GET", url: "/api/tasks" });
+    const response = await router.invoke({ method: "GET", url: "/api/tasks", credential: "operator" });
     const body = response.body as { executors: Array<{ freshness: string }> };
     expect(body.executors[0].freshness).toBe("stale");
   });
@@ -434,7 +436,7 @@ describe("read-only instance policy", () => {
     const readOnly = new Router({
       clientAuth: new SlugGate(() => db),
       instance: resolveInstanceInfo({
-        env: { MANDIBLE_OPERATIONAL_MUTATIONS: "reject" } as NodeJS.ProcessEnv,
+        env: { MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read"]) } as NodeJS.ProcessEnv,
       }),
     });
     registerTaskRoutes(readOnly, db);
@@ -443,11 +445,18 @@ describe("read-only instance policy", () => {
       url: "/api/tasks/inventory",
       body: generation(),
       credential: "agent-schedule",
+      transport: "file-rpc",
     });
     expect(response.status).toBe(403);
-    expect(response.body).toMatchObject({ error: "instance_mutation_forbidden", category: "tasks" });
+    expect(response.body).toMatchObject({
+      error: "effect_forbidden",
+      operation: "tasks.inventory",
+      missing_effects: ["process:external"],
+    });
 
     // Reads stay available on a read-only instance.
-    expect((await readOnly.invoke({ method: "GET", url: "/api/tasks" })).status).toBe(200);
+    expect((await readOnly.invoke({
+      method: "GET", url: "/api/tasks", credential: "operator", transport: "file-rpc",
+    })).status).toBe(200);
   });
 });

@@ -48,18 +48,54 @@ export function shouldSkipFallbackPoll(
 let sharedCoordinator: CrossTabSseCoordinator | null = null;
 let refCount = 0;
 let teardownTimer: ReturnType<typeof setTimeout> | null = null;
-let EventSourceOverride: typeof EventSource | undefined;
+let testFetchImpl: typeof fetch | null = null;
+
+type EventSourceTestConstructor = new (url: string) => {
+  addEventListener(type: string, listener: EventListener): void;
+  close(): void;
+};
+
+// Transitional test adapter only: old view fixtures still expose an
+// EventSource-shaped controller, but their events enter the production
+// SSEClient as actual encoded ReadableStream chunks. There is no alternate
+// transport or parser path in application code.
+function eventSourceFixtureAsFetch(EventSourceFixture: EventSourceTestConstructor): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const pathname = new URL(String(input), window.location.href).pathname;
+    if (pathname === '/api/client-auth/whoami') {
+      return new Response(JSON.stringify({ authenticated: true, session: {
+        family_id: 'test-sse-family', audience: 'production', csrf_token: 'test-sse-csrf',
+        effect_ceiling: ['ledger:read'],
+      } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    const source = new EventSourceFixture(String(input));
+    let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const stream = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+        source.addEventListener('message', ((event: MessageEvent) => {
+          controller?.enqueue(new TextEncoder().encode(`data: ${event.data}\n\n`));
+        }) as EventListener);
+        source.addEventListener('error', (() => {
+          controller?.error(new Error('fixture stream failed'));
+          controller = null;
+        }) as EventListener);
+        init?.signal?.addEventListener('abort', () => {
+          source.close();
+          controller?.close();
+          controller = null;
+        }, { once: true });
+      },
+      cancel() { source.close(); controller = null; },
+    });
+    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  }) as typeof fetch;
+}
 
 function ensureCoordinator(): CrossTabSseCoordinator {
   if (!sharedCoordinator) {
     sharedCoordinator = new CrossTabSseCoordinator({
-      createTransport: () => new SSEClient(
-        EventSourceOverride ? { EventSourceImpl: EventSourceOverride } : {},
-      ),
-      // Unit tests that inject a fake EventSource exercise the legacy
-      // document-local seam deterministically. Cross-tab behavior has its own
-      // coordinator tests with explicit fake channels and locks.
-      ...(EventSourceOverride ? { channelFactory: null, lockManager: null } : {}),
+      createTransport: () => new SSEClient(testFetchImpl ? { fetchImpl: testFetchImpl } : {}),
     });
   }
   return sharedCoordinator;
@@ -144,16 +180,22 @@ export function acquireSharedSse(): SseHandle {
 }
 
 /**
- * Test-only reset: drops the singleton and refcount so each test starts clean,
- * optionally installing a fake EventSource used for all subsequently-created
- * shared clients.
+ * Test-only reset: drops the authenticated fetch-stream singleton and refcount
+ * so each test starts clean.
  */
-export function __resetSharedSseForTests(impl?: typeof EventSource): void {
+export function __resetSharedSseForTests(fetchImpl?: typeof fetch | EventSourceTestConstructor): void {
   cancelTeardown();
   if (sharedCoordinator) {
     sharedCoordinator.disconnect();
   }
   sharedCoordinator = null;
   refCount = 0;
-  EventSourceOverride = impl;
+  const fixture = fetchImpl ?? (typeof globalThis.EventSource === 'function'
+    ? globalThis.EventSource as unknown as EventSourceTestConstructor
+    : undefined);
+  testFetchImpl = fixture
+    ? (/^class\s/.test(Function.prototype.toString.call(fixture))
+      ? eventSourceFixtureAsFetch(fixture as EventSourceTestConstructor)
+      : fixture as typeof fetch)
+    : null;
 }

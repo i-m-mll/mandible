@@ -18,6 +18,7 @@ import { FileRpcTransport } from "../../src/file-rpc-transport.js";
 import { resolveInstanceInfo } from "../../src/instance-policy.js";
 import { registerTaskRoutes } from "../../src/routes/tasks.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../../src/server.js";
+import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
 import { taskCommandEventDigest } from "../../src/task-commands.js";
 import {
   parseTaskInventoryGeneration,
@@ -50,6 +51,7 @@ class SlugGate implements ClientAuthGate {
       method: ephemeral ? "ephemeral" : "api_token",
       credential_id: null,
       source,
+      effect_ceiling: PRODUCTION_EFFECTS,
     } : null;
   }
   mode(): "compat" { return "compat"; }

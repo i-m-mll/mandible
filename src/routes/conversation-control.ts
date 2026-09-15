@@ -52,7 +52,7 @@ export function registerConversationControlRoutes(
   options: { db?: Db; instance?: InstanceInfo } = {},
 ): void {
   const previewControlAllowed = async (conversationId: string, generation: number): Promise<boolean> => {
-    if (options.instance?.operational_mutations !== "reject") return true;
+    if (options.instance?.role !== "preview") return true;
     if (!options.db || options.instance.role !== "preview") return false;
     const spawn = options.db.prepare(`SELECT attempt_count, state FROM conversation_spawn_requests
       WHERE id = ? AND schema_version = 'mandible-conversation-spawn-request@3'`).get(conversationId) as
