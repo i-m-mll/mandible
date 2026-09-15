@@ -25,6 +25,7 @@ function fixture({ supervisedMain = false } = {}) {
   roots.add(root);
   const configPath = path.join(root, "Caddyfile");
   const metadataPath = path.join(root, "metadata.json");
+  const runScriptPath = path.join(root, "run.sh");
   const currentDbPath = path.join(root, "current.db");
   const oldDb = path.join(root, "old.db");
   const candidateDb = path.join(root, "candidate.db");
@@ -34,6 +35,7 @@ function fixture({ supervisedMain = false } = {}) {
   fs.writeFileSync(oldDb, "old");
   fs.writeFileSync(candidateDb, "candidate");
   fs.writeFileSync(metadataPath, `${JSON.stringify({ daemon: "legacy" })}\n`);
+  fs.writeFileSync(runScriptPath, "#!/bin/zsh\nexec /usr/bin/false\n", { mode: 0o755 });
   fs.symlinkSync(oldDb, currentDbPath);
 
   const instances = (["main", "preview"] as const).map((role, index) => {
@@ -41,7 +43,7 @@ function fixture({ supervisedMain = false } = {}) {
     fs.mkdirSync(credentialDirectory, { recursive: true });
     const backendPort = 29420 + index;
     const publicPort = 19420 + index;
-    const pidFile = path.join(root, `${role}.pid`);
+    const pidFile = path.join(root, role === "preview" ? "mandible.pid" : `${role}.pid`);
     const instanceId = role === "main" ? "production" : "preview-existing";
     const publicOrigin = role === "main" ? "https://app.mandible.localhost:19420" : "https://preview-existing.mandible.localhost:19421";
     return {
@@ -62,28 +64,28 @@ function fixture({ supervisedMain = false } = {}) {
         backend_port: backendPort,
         instance_id: instanceId,
         credential_directory: credentialDirectory,
-        commit: `candidate-${role}`,
+        commit: role === "preview" ? "b".repeat(40) : `candidate-${role}`,
         process: {
           command: process.execPath,
           args: ["stand-in.js"],
           cwd: root,
-          stdout_log: path.join(root, `${role}-candidate-stdout.log`),
-          stderr_log: path.join(root, `${role}-candidate-stderr.log`),
+          stdout_log: path.join(root, role === "preview" ? "stdout.log" : `${role}-candidate-stdout.log`),
+          stderr_log: path.join(root, role === "preview" ? "stderr.log" : `${role}-candidate-stderr.log`),
           env: {
             PATH: process.env.PATH,
             MANDIBLE_PORT: String(backendPort),
             MANDIBLE_DB: role === "preview" ? candidateDb : path.join(root, "production.db"),
             MANDIBLE_PID_FILE: pidFile,
-            MANDIBLE_STDERR_LOG_PATH: path.join(root, `${role}-candidate-stderr.log`),
+            MANDIBLE_STDERR_LOG_PATH: path.join(root, role === "preview" ? "stderr.log" : `${role}-candidate-stderr.log`),
             MANDIBLE_INSTANCE_ROLE: role,
             MANDIBLE_INSTANCE_ID: instanceId,
             MANDIBLE_INSTALLATION_ID: "authority-test",
             MANDIBLE_PUBLIC_ORIGIN: publicOrigin,
             MANDIBLE_CLIENT_AUTH_DIR: credentialDirectory,
-            MANDIBLE_BACKEND_GENERATION: `candidate-${role}`,
-            MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(role === "main" ? ["ledger:read", "ledger:write"] : ["ledger:read", "files:preview"]),
+            MANDIBLE_BACKEND_GENERATION: role === "preview" ? "b".repeat(40) : `candidate-${role}`,
+            MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(role === "main" ? ["ledger:read", "ledger:write"] : ["ledger:read", "ledger:write", "files:preview"]),
             MANDIBLE_WRITABLE_ROOTS: JSON.stringify(role === "main" ? [] : [root]),
-            ...(role === "preview" ? { MANDIBLE_PREVIEW_ROOT: root } : {}),
+            ...(role === "preview" ? { MANDIBLE_PREVIEW_ROOT: root, MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy", MANDIBLE_INSTANCE_SOURCE_DB: oldDb, MANDIBLE_FILE_RPC_DIR: path.join(root, "agent-rpc") } : {}),
           },
         },
       },
@@ -121,15 +123,22 @@ function fixture({ supervisedMain = false } = {}) {
         stdout_log: path.join(root, "gateway-stdout.log"), stderr_log: path.join(root, "gateway-stderr.log"), env: { PATH: process.env.PATH } },
       reload: { command: "/usr/bin/true", args: [] },
     },
-    rollback_files: [metadataPath, currentDbPath, configPath],
+    rollback_files: [metadataPath, currentDbPath, runScriptPath, configPath],
     preview_promotion: {
       metadata_path: metadataPath,
+      run_script_path: runScriptPath,
       current_db_path: currentDbPath,
       current_db_target: candidateDb,
       metadata: {
         daemon: "candidate",
         port: instances[1].candidate.backend_port,
         db: candidateDb,
+        sourceDb: oldDb,
+        branch: "integration/test-preview",
+        worktree: root,
+        runScript: runScriptPath,
+        stdoutLog: instances[1].candidate.process.stdout_log,
+        stderrLog: instances[1].candidate.process.stderr_log,
         pidFile: instances[1].candidate.process.env.MANDIBLE_PID_FILE,
         previewRoot: root,
         instanceEnv: instances[1].candidate.process.env,
@@ -139,7 +148,7 @@ function fixture({ supervisedMain = false } = {}) {
   const manifestPath = path.join(root, "manifest.json");
   const journalPath = path.join(root, "journal.json");
   fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-  return { root, configPath, metadataPath, currentDbPath, oldDb, candidateDb, authorityDb, caPaths, manifest, manifestPath, journalPath, servicePlistPath, supervisedMain,
+  return { root, configPath, metadataPath, runScriptPath, currentDbPath, oldDb, candidateDb, authorityDb, caPaths, manifest, manifestPath, journalPath, servicePlistPath, supervisedMain,
     readPlistDefinition() {
       if (fs.readFileSync(servicePlistPath, "utf8") !== renderServicePlist(serviceDefinition)) throw new Error("fake plist inspector found unrecognized plist bytes");
       return structuredClone(serviceDefinition);
@@ -157,6 +166,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
   const intentProcesses = new Map<string, Listener>();
   const events: string[] = [];
   let nextPid = 100;
+  let healthReads = 0;
   let interruptAfterStartRole: string | null = null;
   let interruptBeforeBindRole: string | null = null;
   let interruptAfterNextStop = false;
@@ -172,6 +182,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
   const candidateHealth = (instance: (typeof fx.manifest.instances)[number], mode: "migration" | "normal") => ({
     ready: true,
     warm: true,
+    uptime: ++healthReads,
     startup_epoch: `${mode}-${instance.role}`,
     startup_commit: { hash: instance.candidate.commit },
     instance: {
@@ -183,7 +194,9 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
       allowed_effects: JSON.parse(instance.candidate.process.env.MANDIBLE_ALLOWED_EFFECTS),
       writable_roots: JSON.parse(instance.candidate.process.env.MANDIBLE_WRITABLE_ROOTS),
       db_path: instance.candidate.process.env.MANDIBLE_DB,
+      ...(instance.role === "preview" ? { db_path_source: "iab-preview-copy", source_db_path: fx.oldDb } : {}),
     },
+    ...(instance.role === "preview" ? { file_rpc_dir: path.join(fx.root, "agent-rpc") } : {}),
     client_auth: { credential_directory: instance.candidate.credential_directory, legacy_conversion: mode === "migration" },
   });
 
@@ -764,6 +777,8 @@ describe("local session first cutover", () => {
 
   it("persists the forward-only boundary before reload and journals preview promotion", async () => {
     const fx = fixture();
+    (fx.manifest.preview_promotion.metadata as typeof fx.manifest.preview_promotion.metadata & { health: object }).health = { startup_commit: { hash: "legacy-commit-preview" } };
+    fs.writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
     const life = lifecycle(fx);
     await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
     await runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects);
@@ -774,19 +789,36 @@ describe("local session first cutover", () => {
     life.dropGateway();
     await runCutoverCommand({ command: "complete", journal: fx.journalPath, confirmBrowserConversion: true }, life.effects);
     expect(life.events.filter((event) => event === "start:gateway")).toHaveLength(2);
+    const promoted = JSON.parse(fs.readFileSync(fx.metadataPath, "utf8"));
+    expect(promoted.health).toMatchObject({ ready: true, warm: true, startup_epoch: "normal-preview", startup_commit: { hash: "b".repeat(40) } });
+    expect(promoted.health.startup_commit.hash).not.toBe("legacy-commit-preview");
+    expect(promoted.health.uptime).toBeUndefined();
+    expect(fs.readFileSync(fx.runScriptPath, "utf8")).toContain(`MANDIBLE_PORT='${fx.manifest.instances[1].candidate.backend_port}'`);
+    expect(fs.readFileSync(fx.runScriptPath, "utf8")).toContain("'stand-in.js'");
     const interruptedPromotion = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
     interruptedPromotion.state = "normal_pending";
     interruptedPromotion.revision += 1;
     interruptedPromotion.runtime.intents["preview.promote"].status = "pending";
     fs.writeFileSync(fx.journalPath, JSON.stringify(interruptedPromotion));
     fs.writeFileSync(fx.metadataPath, `${JSON.stringify({ daemon: "legacy" })}\n`);
+    fs.writeFileSync(fx.runScriptPath, "#!/bin/zsh\nexec /usr/bin/false\n");
     fs.rmSync(fx.currentDbPath);
     fs.symlinkSync(fx.oldDb, fx.currentDbPath);
     const completed = await runCutoverCommand({ command: "complete", journal: fx.journalPath, confirmBrowserConversion: true }, life.effects);
     expect(completed).toMatchObject({ state: "complete", gateway_mode: "normal" });
-    expect(JSON.parse(fs.readFileSync(fx.metadataPath, "utf8"))).toEqual(fx.manifest.preview_promotion.metadata);
+    expect(JSON.parse(fs.readFileSync(fx.metadataPath, "utf8"))).toEqual(promoted);
+    expect(fs.readFileSync(fx.runScriptPath, "utf8")).toBe(interruptedPromotion.runtime.intents["preview.promote"].desired.run_script);
+    expect(fs.statSync(fx.runScriptPath).mode & 0o111).not.toBe(0);
     expect(fs.realpathSync(fx.currentDbPath)).toBe(fs.realpathSync(fx.candidateDb));
     expect(JSON.parse(fs.readFileSync(fx.journalPath, "utf8")).runtime.intents["preview.promote"].status).toBe("done");
+  });
+
+  it("refuses a promotion manifest without launcher recovery custody", async () => {
+    const fx = fixture();
+    delete (fx.manifest.preview_promotion.metadata as { sourceDb?: string }).sourceDb;
+    fs.writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+    const life = lifecycle(fx);
+    await expect(runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects)).rejects.toThrow("launcher recovery paths");
   });
 
   it("recovers a completed gateway intent whose runtime receipt was not yet updated", async () => {
