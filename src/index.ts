@@ -126,6 +126,8 @@ export interface StartOptions {
   pidFilePath?: string;
   handleSignals?: boolean;
   operationalLogDbPath?: string;
+  /** Isolated client-auth state root for embedded runtimes and tests. */
+  clientAuthDir?: string;
 }
 
 export function startIngestionAfterStartupWorkScan(
@@ -234,7 +236,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // so token-bearing requests resolve to a user identity (compat mode by
   // default: unauthenticated loopback still works and unattributed writes are
   // counted; strict mode rejects anonymous mutations).
-  const clientAuth = new ClientAuthenticator(db, { instance, startupEpoch });
+  const clientAuth = new ClientAuthenticator(db, {
+    instance,
+    startupEpoch,
+    secretsDir: options.clientAuthDir,
+  });
   if (instance.role === "main") {
     clientAuth.registerInstance({
       instance_id: instance.instance_id,

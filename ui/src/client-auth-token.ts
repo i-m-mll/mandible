@@ -91,7 +91,9 @@ function retireLegacyBrowserBearer(): void {
 
 function legacyOrigin(): boolean {
   return window.location.origin === 'http://127.0.0.1:19420'
-    || window.location.origin === 'http://localhost:19420';
+    || window.location.origin === 'http://localhost:19420'
+    || window.location.origin === 'http://127.0.0.1:19421'
+    || window.location.origin === 'http://localhost:19421';
 }
 
 function legacyBearer(): string | null {
@@ -188,10 +190,15 @@ async function finishLegacyConversion(fetchImpl: typeof fetch, active: SessionPr
     headers: { Accept: 'application/json' },
   });
   const body = await readJson(response);
-  if (!response.ok || typeof body.production_origin !== 'string'
+  if (!response.ok || typeof body.target_origin !== 'string'
       || typeof body.return_path !== 'string') return;
-  const production = new URL(body.production_origin);
-  if (production.origin !== 'https://app.mandible.localhost:19420') return;
+  const target = new URL(body.target_origin);
+  const validTarget = target.origin === 'https://app.mandible.localhost:19420'
+    || (target.protocol === 'https:' && target.port === '19421'
+      && /^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(target.hostname));
+  if (!validTarget || active.audience !== (target.port === '19421'
+    ? target.hostname.replace('.mandible.localhost', '')
+    : 'production')) return;
   if (body.browser_state && typeof body.browser_state === 'object' && !Array.isArray(body.browser_state)) {
     for (const [key, value] of Object.entries(body.browser_state as Record<string, unknown>)) {
       if (typeof value === 'string' && !/auth|token|credential|secret/i.test(key)) {
@@ -207,7 +214,8 @@ async function finishLegacyConversion(fetchImpl: typeof fetch, active: SessionPr
     });
     if (!finalized.ok) return;
   }
-  window.location.replace(`${production.origin}${body.return_path}`);
+  retireLegacyBrowserBearer();
+  window.location.replace(`${target.origin}${body.return_path}`);
 }
 
 async function readJson(response: Response): Promise<Record<string, unknown>> {

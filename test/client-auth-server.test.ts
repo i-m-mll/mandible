@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -262,12 +263,35 @@ describe("strict browser boundary", () => {
     auth.authorizePreviewTransfer(transfer.reference, rootIdentity);
     const preview = auth.completePreviewTransfer(transfer.reference, transfer.secret)!;
     const previewIdentity = auth.authenticateBrowserSessionForAudience(preview.token, "preview-test")!;
+    const previewEventStream = addManagedEventStream(previewIdentity);
+    expect(sse.count()).toBe(2);
     expect(auth.revokeBrowserFamily(previewIdentity)).toBe(true);
-    await Promise.all([eventStream.closed, webSocket.closed]);
+    await Promise.all([
+      eventStream.closed,
+      webSocket.closed,
+      previewEventStream.closed,
+    ]);
     expect(sse.count()).toBe(0);
     expect((await request("GET", "/api/read", undefined, headers)).status).toBe(401);
   });
 });
+
+function addManagedEventStream(identity: ReturnType<ClientAuthenticator["authenticateBrowserSessionForAudience"]>): { closed: Promise<void> } {
+  const req = new EventEmitter();
+  const res = new EventEmitter() as EventEmitter & {
+    writableLength: number;
+    writeHead: () => void;
+    write: () => boolean;
+    destroy: () => void;
+  };
+  res.writableLength = 0;
+  res.writeHead = () => undefined;
+  res.write = () => true;
+  const closed = new Promise<void>((resolve) => res.once("close", resolve));
+  res.destroy = () => { res.emit("close"); };
+  sse.addClient(req as never, res as never, [], identity);
+  return { closed };
+}
 
 function openEventStream(headers: Record<string, string>): Promise<{ closed: Promise<void> }> {
   return new Promise((resolve, reject) => {

@@ -5,7 +5,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
-import { authorizeEffects, operationForRequest, STANDARD_PREVIEW_EFFECTS } from "../src/security/effect-policy.js";
+import { authorizeEffects, operationForRequest, STANDARD_PREVIEW_EFFECTS, validatePreviewWritableRoots } from "../src/security/effect-policy.js";
 
 const roots = new Set<string>();
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.clear(); });
@@ -19,6 +19,10 @@ function preview(overrides: NodeJS.ProcessEnv = {}) {
   const copy = path.join(root, "copy.db");
   fs.writeFileSync(source, "source");
   fs.copyFileSync(source, copy);
+  const artifacts = path.join(root, "artifacts");
+  const sourceArtifacts = path.join(sourceRoot, "artifacts");
+  fs.mkdirSync(artifacts);
+  fs.mkdirSync(sourceArtifacts);
   return resolveInstanceInfo({
     env: {
       MANDIBLE_INSTANCE_ROLE: "preview",
@@ -28,6 +32,8 @@ function preview(overrides: NodeJS.ProcessEnv = {}) {
       MANDIBLE_BACKEND_GENERATION: "preview-1",
       MANDIBLE_PREVIEW_ROOT: root,
       MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS),
+      MANDIBLE_ARTIFACT_DIR: artifacts,
+      MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: sourceArtifacts,
       ...overrides,
     },
     dbPath: copy,
@@ -107,11 +113,25 @@ describe("instance effect policy", () => {
 
   it("intersects request effects with both session and preview ceilings", () => {
     const instance = preview();
-    const session = { effect_ceiling: ["ledger:read", "ledger:write", "auth:protected"] as const };
+    const session = { effect_ceiling: ["ledger:read", "ledger:write", "files:preview", "auth:protected"] as const };
     expect(authorizeEffects(instance, session, operationForRequest("GET", "/api/issues"))).toEqual({ allowed: true });
     expect(authorizeEffects(instance, session, operationForRequest("POST", "/api/issues"))).toEqual({ allowed: true });
     expect(authorizeEffects(instance, session, operationForRequest("GET", "/api/auth/requests"))).toMatchObject({ allowed: false });
     expect(authorizeEffects(instance, session, operationForRequest("POST", "/api/webhooks"))).toMatchObject({ allowed: false });
+    expect(operationForRequest("POST", "/api/artifacts/versions")).toMatchObject({
+      effects: ["ledger:write", "files:preview"],
+    });
+  });
+
+  it("proves preview artifact custody is a distinct directory below the preview root", () => {
+    const instance = preview();
+    const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-production-artifacts-"));
+    roots.add(sourceRoot);
+    expect(() => validatePreviewWritableRoots(instance)).not.toThrow();
+    expect(() => validatePreviewWritableRoots({
+      ...instance,
+      artifact_root: sourceRoot,
+    })).toThrow("escapes registered custody");
   });
 
   it("rejects every unclassified write and explicitly guards external-open operations", () => {

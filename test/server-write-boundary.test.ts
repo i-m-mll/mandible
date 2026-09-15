@@ -74,7 +74,13 @@ describe("daemon write boundary", () => {
     expect((await requestJson("POST", "/api/client-auth/legacy-conversion/complete", {}, {
       ...hostile,
       "X-Mandible-Legacy-Migration": "complete-v1",
+      "X-Mandible-Legacy-Origin": "http://127.0.0.1:19420",
     })).body).toEqual({ ok: true });
+    expect((await requestJson("POST", "/api/client-auth/legacy-conversion/complete", {}, {
+      ...hostile,
+      "X-Mandible-Legacy-Migration": "complete-v1",
+      "X-Mandible-Legacy-Origin": "null",
+    })).body).toMatchObject({ reason: "cross_site_fetch" });
   });
 
   it("allows browser same-origin writes from the daemon origin", async () => {

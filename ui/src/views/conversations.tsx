@@ -2719,7 +2719,7 @@ export function ConversationsView({
 
   const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
-  const previewMutationsRejected = !instance?.allowed_effects.includes('ledger:write');
+  const previewMutationsRejected = Boolean(instance && instance.allowed_effects?.includes('ledger:write') !== true);
   const isConversationPinned = useCallback((conversation: Conversation): boolean => {
     if (!previewMutationsRejected) return conversation.starred;
     return Object.prototype.hasOwnProperty.call(chatViewState.previewPinOverrides, conversation.id)
@@ -3361,6 +3361,7 @@ export function ConversationsView({
         setRetainedSelection(entry.conversation);
       }
       await updateConversationArchive(entry.conversation.id, archived);
+      await queryClient.invalidateQueries({ queryKey: conversationKeys.sidebars() });
       await fetchConversationGroups();
     } catch (error) {
       setSidebarToast({

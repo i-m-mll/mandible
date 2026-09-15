@@ -32,6 +32,7 @@ export type Operation = {
 
 const READ_OPERATION: Operation = { id: "ledger.read", effects: ["ledger:read"] };
 const LOCAL_WRITE_OPERATION: Operation = { id: "ledger.write", effects: ["ledger:write"] };
+const PREVIEW_FILE_WRITE_OPERATION: Operation = { id: "artifacts.bytes", effects: ["ledger:write", "files:preview"] };
 
 const EXACT_OPERATIONS = new Map<string, Operation>([
   ["GET /api/health", { id: "health.read", effects: [] }],
@@ -154,6 +155,13 @@ export function operationForRequest(method: string, pathname: string): Operation
   }
   if (normalizedMethod === "GET" || normalizedMethod === "HEAD") return READ_OPERATION;
   if (!new Set(["POST", "PUT", "PATCH", "DELETE"]).has(normalizedMethod)) return null;
+  // Artifact mutations are not ledger-only: versions, bundles, and drafts can
+  // materialize managed bytes in the configured CAS. Production sessions also
+  // carry files:preview; previews may exercise these routes only because their
+  // artifact root is separately proven to be private preview custody.
+  if (pathname === "/api/artifacts" || pathname.startsWith("/api/artifacts/")) {
+    return PREVIEW_FILE_WRITE_OPERATION;
+  }
   for (const prefix of LOCAL_WRITE_PREFIXES) {
     if (pathname === prefix || pathname.startsWith(`${prefix}/`)) return LOCAL_WRITE_OPERATION;
   }
@@ -211,6 +219,21 @@ export function validatePreviewWritableRoots(instance: InstanceInfo): void {
     const canonical = canonicalDirectory(root);
     if (canonical !== previewRoot && !inside(previewRoot, canonical)) {
       throw new Error(`Preview writable root escapes registered custody: ${root}`);
+    }
+  }
+  const configuredArtifactRoot = instance.artifact_root;
+  if (!configuredArtifactRoot) {
+    throw new Error("Preview startup requires an explicit private artifact root.");
+  }
+  const artifactRoot = canonicalDirectory(configuredArtifactRoot);
+  if (!inside(previewRoot, artifactRoot)) {
+    throw new Error("Preview artifact root escapes registered custody.");
+  }
+  const sourceArtifactRoot = instance.source_artifact_root;
+  if (sourceArtifactRoot) {
+    const sourceRoot = canonicalDirectory(sourceArtifactRoot);
+    if (sameFile(artifactRoot, sourceRoot) || inside(previewRoot, sourceRoot)) {
+      throw new Error("Preview artifact root aliases production or source custody.");
     }
   }
 }

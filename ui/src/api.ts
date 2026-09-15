@@ -115,6 +115,9 @@ export type InstanceInfo = {
   backend_generation: string;
   allowed_effects: string[];
   writable_roots: string[];
+  preview_root?: string | null;
+  artifact_root?: string | null;
+  source_artifact_root?: string | null;
   db_path: string | null;
   db_path_source: string | null;
   source_db_path?: string | null;

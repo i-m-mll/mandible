@@ -93,6 +93,12 @@ export function resolveInstanceInfo(options: {
   const resolvedPreviewRoot = env.MANDIBLE_PREVIEW_ROOT
     ? path.resolve(env.MANDIBLE_PREVIEW_ROOT)
     : null;
+  const resolvedArtifactRoot = env.MANDIBLE_ARTIFACT_DIR
+    ? path.resolve(env.MANDIBLE_ARTIFACT_DIR)
+    : null;
+  const resolvedSourceArtifactRoot = env.MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR
+    ? path.resolve(env.MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR)
+    : null;
   const instanceId = env.MANDIBLE_INSTANCE_ID?.trim()
     || (role === "main" ? "production" : "");
   const installationId = resolveInstallationId(env);
@@ -127,6 +133,8 @@ export function resolveInstanceInfo(options: {
     allowed_effects: allowedEffects,
     writable_roots: writableRoots,
     preview_root: resolvedPreviewRoot,
+    artifact_root: resolvedArtifactRoot,
+    source_artifact_root: resolvedSourceArtifactRoot,
     db_path: resolvedDbPath,
     db_path_source: dbPathSource,
     source_db_path: resolvedSourceDbPath,
@@ -231,6 +239,7 @@ function normalizeRole(value: string | undefined): InstanceRole {
 }
 
 function exactOrigin(value: string): string {
+  if (!value) return "";
   const parsed = new URL(value);
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.pathname !== "/"
       || parsed.search || parsed.hash || !parsed.port) {

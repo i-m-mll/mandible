@@ -813,6 +813,7 @@ describe('compact detail pane shell', () => {
     const composer = overlayControl?.querySelector('.conv-compose');
     expect(composer).toBeTruthy();
     const tokensCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/tokens.css'), 'utf8');
+    const baseCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/base.css'), 'utf8');
     const messageBlocksCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/message-blocks.css'), 'utf8');
     expect(tokensCss).toContain('--radius-chat-surface: 18px;');
     expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
@@ -821,9 +822,9 @@ describe('compact detail pane shell', () => {
     expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__select\s*\{[^}]*width:\s*auto;[^}]*min-width:\s*44px;[^}]*field-sizing:\s*content;/s);
     expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);
     expect(conversationCss).toMatch(/\.conv-detail__body \.user-bubble__text :where\(p, li, blockquote, dd\)[^{]*\{[^}]*font-size:\s*var\(--text-lg\);/s);
-    expect(conversationCss).toMatch(/\.conv-compose__send\s*\{[^}]*--conv-compose-send-hit-size:\s*34px;[^}]*--conv-compose-send-visual-size:\s*25\.5px;[^}]*--conv-compose-send-icon-size:\s*17px;/s);
-    expect(conversationCss).toMatch(/\.conv-compose__send::before\s*\{[^}]*width:\s*var\(--conv-compose-send-visual-size\);[^}]*height:\s*var\(--conv-compose-send-visual-size\);/s);
-    expect(conversationCss).toMatch(/\.conv-compose__send > svg\s*\{[^}]*width:\s*var\(--conv-compose-send-icon-size\);[^}]*height:\s*var\(--conv-compose-send-icon-size\);/s);
+    expect(conversationCss).toMatch(/\.conv-compose__send\s*\{[^}]*--chat-circle-action-visual-size:\s*25\.5px;[^}]*--chat-circle-action-icon-size:\s*17px;/s);
+    expect(baseCss).toMatch(/\.chat-circle-action::before\s*\{[^}]*width:\s*var\(--chat-circle-action-visual-size\);[^}]*height:\s*var\(--chat-circle-action-visual-size\);/s);
+    expect(baseCss).toMatch(/\.chat-circle-action > svg\s*\{[^}]*width:\s*var\(--chat-circle-action-icon-size\);[^}]*height:\s*var\(--chat-circle-action-icon-size\);/s);
     expect(conversationCss).not.toContain('@container (max-width: 700px)');
     expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
@@ -838,7 +839,7 @@ describe('compact detail pane shell', () => {
     expect(api.exportConversationBlocks).toHaveBeenCalledWith(conversation.id, { format: 'markdown' });
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open markdown' }));
-    expect(open).toHaveBeenCalledWith('blob:conversation-markdown', '_blank', 'noopener,noreferrer');
+    await waitFor(() => expect(open).toHaveBeenCalledWith('blob:conversation-markdown', '_blank', 'noopener,noreferrer'));
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     expect(screen.queryByRole('menuitem', { name: 'Message filters' })).toBeNull();
     expect(body?.querySelector('.conv-filter-bar')).toBeNull();
@@ -1210,28 +1211,24 @@ describe('compact detail pane shell', () => {
   });
 
   it('keeps Codex provisional assistant content until its durable replacement arrives', async () => {
-    const messageListeners = new Set<(event: MessageEvent) => void>();
-    class ProviderEventSource {
-      readyState = 1;
-      onerror: (() => void) | null = null;
-      onopen: (() => void) | null = null;
-      addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
-        if (type === 'message' && typeof listener === 'function') {
-          messageListeners.add(listener as (event: MessageEvent) => void);
-        }
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const sseFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/client-auth/whoami') {
+        return new Response(JSON.stringify({ authenticated: true, session: {
+          family_id: 'provider-event-test', audience: 'production', csrf_token: 'csrf',
+          effect_ceiling: ['ledger:read'],
+        } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
-        if (type === 'message' && typeof listener === 'function') {
-          messageListeners.delete(listener as (event: MessageEvent) => void);
-        }
-      }
-      close(): void { this.readyState = 2; }
-    }
-    vi.stubGlobal('EventSource', ProviderEventSource);
-    __resetSharedSseForTests(ProviderEventSource as unknown as typeof EventSource);
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+          init?.signal?.addEventListener('abort', () => controller.close(), { once: true });
+        },
+      }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    });
+    __resetSharedSseForTests(sseFetch as typeof fetch);
     const emit = (data: unknown) => {
-      const event = new MessageEvent('message', { data: JSON.stringify(data) });
-      messageListeners.forEach((listener) => listener(event));
+      streamController?.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`));
     };
 
     const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
@@ -1247,6 +1244,7 @@ describe('compact detail pane shell', () => {
     });
     renderConversationDetail(scopedConversation);
     expect(await screen.findByText(transcriptBlock.content)).toBeTruthy();
+    await waitFor(() => expect(streamController).not.toBeNull());
 
     const liveAssistant: ChatItem = {
       type: 'message',

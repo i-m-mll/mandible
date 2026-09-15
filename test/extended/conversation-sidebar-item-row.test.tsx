@@ -10,6 +10,7 @@ import type {
 } from '../../ui/src/api.js';
 import { CHAT_VIEW_STATE_KEY } from '../../ui/src/views/conversation-view-state.js';
 import { ConversationsView } from '../../ui/src/views/conversations.js';
+import { queryClient } from '../../ui/src/query/client.js';
 
 const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
 const chatHistoryStylesheet = readFileSync('ui/src/styles/chat-history.css', 'utf8');
@@ -29,6 +30,7 @@ vi.mock('@xterm/xterm', () => ({
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
 beforeEach(() => {
+  queryClient.clear();
   const rows = new Map<string, string>();
   const storage = {
     get length() { return rows.size; },
@@ -50,6 +52,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  queryClient.clear();
   window.localStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -317,6 +320,7 @@ describe('conversation sidebar labeled-item rows', () => {
     await waitFor(() => expect(openExternally).toHaveBeenCalledWith(navigable.id));
 
     cleanup();
+    queryClient.clear();
     const unavailable = { ...conversation, id: 'without-capability', external_navigation: undefined };
     vi.mocked(api.getConversationSidebar).mockResolvedValue(sidebarResponse([unavailable]));
     render(

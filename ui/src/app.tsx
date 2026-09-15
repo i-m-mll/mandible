@@ -1044,7 +1044,7 @@ function App(): JSX.Element {
   loadVisibleRouteDataRef.current = loadVisibleRouteData;
 
   const refreshRailOrder = useCallback(async (): Promise<void> => {
-    if (instanceInfo?.allowed_effects.includes('maintenance:shared') !== true) return;
+    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') !== true) return;
     const request = railRequestRef.current + 1;
     railRequestRef.current = request;
     const mutationAtStart = railMutationRef.current;
@@ -1065,7 +1065,7 @@ function App(): JSX.Element {
   }, [instanceInfo?.allowed_effects]);
 
   const refreshTypography = useCallback(async (): Promise<void> => {
-    if (instanceInfo?.allowed_effects.includes('maintenance:shared') !== true) return;
+    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') !== true) return;
     try {
       const snapshots = await Promise.all(TYPOGRAPHY_SETTING_KEYS.map(getUserTypographySetting));
       setTypography((current) => {
@@ -1079,8 +1079,8 @@ function App(): JSX.Element {
   }, [instanceInfo?.allowed_effects]);
 
   useEffect(() => {
-    if (instanceInfo?.allowed_effects.includes('maintenance:shared') === true) void refreshTypography();
-    if (instanceInfo?.allowed_effects.includes('maintenance:shared') === false) {
+    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') === true) void refreshTypography();
+    if (instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true) {
       setTypography(DEFAULT_TYPOGRAPHY_SETTINGS);
     }
   }, [instanceInfo?.allowed_effects, refreshTypography]);
@@ -1089,7 +1089,7 @@ function App(): JSX.Element {
     key: UserTypographySettingKey,
     value: string,
   ): Promise<void> => {
-    if (instanceInfo?.allowed_effects.includes('maintenance:shared') !== true) {
+    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') !== true) {
       throw new Error('Typography settings are unavailable in this instance');
     }
     const previousValue = typographySettingValue(typography, key);
@@ -1110,7 +1110,7 @@ function App(): JSX.Element {
   }, [instanceInfo?.allowed_effects, typography]);
 
   useEffect(() => {
-    if (instanceInfo?.allowed_effects.includes('maintenance:shared') === false) {
+    if (instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true) {
       railRequestRef.current += 1;
       railMutationRef.current += 1;
       railMutationPendingRef.current = false;
@@ -1120,7 +1120,7 @@ function App(): JSX.Element {
       setRailOrderReady(true);
       return;
     }
-    if (instanceInfo?.allowed_effects.includes('maintenance:shared') === true) {
+    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') === true) {
       void refreshRailOrder();
       return;
     }
@@ -2101,7 +2101,7 @@ function App(): JSX.Element {
     icon: LogsIcon,
   };
 
-  const previewMutationsRejected = instanceInfo?.allowed_effects.includes('maintenance:shared') === false;
+  const previewMutationsRejected = Boolean(instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true);
   const railOrderPreference = previewMutationsRejected && previewRailOrder
     ? previewRailOrder
     : parseAppRailOrderSetting(railOrderSetting);
@@ -2145,7 +2145,7 @@ function App(): JSX.Element {
   ) => {
     if (!railOrderReady || railMutationPendingRef.current) return;
     const capability = instanceInfo
-      ? instanceInfo.allowed_effects.includes('maintenance:shared')
+      ? instanceInfo.allowed_effects?.includes('maintenance:shared') === true
       : null;
     if (capability === null) {
       setRailAnnouncement('Navigation order is unavailable. The previous order has been retained.');

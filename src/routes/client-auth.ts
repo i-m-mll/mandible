@@ -273,7 +273,9 @@ export function registerClientAuthRoutes(
       finalized: details?.finalized ?? false,
       browser_state: details?.browser_state ?? null,
       return_path: details?.return_path ?? null,
-      production_origin: authenticator.productionRegistration()?.public_origin ?? null,
+      target_origin: identity.audience
+        ? authenticator.instanceRegistration(identity.audience)?.public_origin ?? null
+        : null,
     });
   }, { fileRpc: "deny", countUnattributed: false });
 

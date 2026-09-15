@@ -29,7 +29,7 @@
     "postinstall": "node scripts/fix-pty-permissions.js",
     "test": "node scripts/run-vitest.js run",
     "test:browser": "node scripts/run-vitest.js run --config vitest.browser.config.ts",
-    "test:extended": "node scripts/run-vitest.js run --config vitest.extended.config.ts",
+    "test:extended": "node scripts/run-extended-tests.mjs",
     "test:quarantine": "node scripts/run-vitest.js run --config vitest.quarantine.config.ts",
     "test:coverage": "node scripts/run-vitest.js run --coverage",
     "tauri": "tauri dev",

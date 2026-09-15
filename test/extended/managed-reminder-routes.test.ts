@@ -11,6 +11,7 @@ import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
 import { addGrant, setProjectRestricted } from "../../src/permissions/store.js";
 import { registerManagedReminderRoutes } from "../../src/routes/reminders.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../../src/server.js";
+import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
 import { createUser } from "../../src/users/store.js";
 
 const NOW = Date.parse("2026-08-14T12:00:00Z");
@@ -32,6 +33,7 @@ class SlugGate implements ClientAuthGate {
           method: "api_token",
           credential_id: null,
           source,
+          effect_ceiling: PRODUCTION_EFFECTS,
         }
       : null;
   }
@@ -134,7 +136,7 @@ describe("managed reminder route admission", () => {
       ) as { status: number; body: Record<string, unknown> };
       expect(response("anonymous")).toMatchObject({
         status: 401,
-        body: { code: "authentication_required" },
+        body: { error: "authentication_required", operation: "delivery.background" },
       });
       expect(response("authorized")).toMatchObject({ status: 201, body: { stored: true } });
     } finally {

@@ -302,7 +302,7 @@ async function createOrReusePreview(options) {
 
 async function seedBriefingDemo(options) {
   const custody = validateBriefingDemoCustody();
-  buildServer(custody.worktree);
+  if (!options.noBuild) buildServer(custody.worktree);
 
   const manifest = await materializeProjectedBriefingDemo(custody);
   return {
@@ -673,10 +673,11 @@ function parseArgs(argv, commandName) {
 }
 
 function parseSeedBriefingDemoArgs(argv) {
-  const options = { help: false, json: false };
+  const options = { help: false, json: false, noBuild: false };
   for (const arg of argv) {
     if (arg === "--help" || arg === "-h") options.help = true;
     else if (arg === "--json") options.json = true;
+    else if (arg === "--no-build") options.noBuild = true;
     else throw new Error(`Unknown argument for seed-briefing-demo: ${arg}`);
   }
   return options;
@@ -1636,6 +1637,7 @@ function describeCommandResult(command, args, result) {
 
 function writeRunScript(runScript, details) {
   const env = previewInstanceEnv(details);
+  fs.mkdirSync(env.MANDIBLE_ARTIFACT_DIR, { recursive: true, mode: 0o700 });
   const content = `#!/bin/zsh
 set -euo pipefail
 cd ${shellQuote(details.worktree)}
@@ -1655,6 +1657,7 @@ ${Object.entries(env).map(([key, value]) => `  ${key}=${shellQuote(String(value)
  */
 function previewIsolationEnv(previewRoot, sourceDb) {
   const conversationsDir = path.join(previewRoot, "conversations");
+  const artifactRoot = path.join(previewRoot, "artifacts");
   return {
     MANDIBLE_INSTANCE_ROLE: "preview",
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
@@ -1662,6 +1665,10 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
     MANDIBLE_PREVIEW_ROOT: previewRoot,
+    MANDIBLE_ARTIFACT_DIR: artifactRoot,
+    MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.resolve(
+      process.env.MANDIBLE_ARTIFACT_DIR?.trim() || path.join(mandibleHome(), "artifacts"),
+    ),
     MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
     MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
     // Recyclable writable state stays under the preview root. Client-auth is

@@ -2036,7 +2036,7 @@ export function AuthQueueView({
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const operationalMutationsAllowed = !instance || instance.allowed_effects.includes('auth:protected');
+  const operationalMutationsAllowed = !instance || instance.allowed_effects?.includes('auth:protected') === true;
   const instanceMutationBlocked = Boolean(instance && !operationalMutationsAllowed);
   const instanceLabel = instance?.role ?? 'main';
   const instanceDbLabel = instance?.db_path ? compactPath(instance.db_path) : null;

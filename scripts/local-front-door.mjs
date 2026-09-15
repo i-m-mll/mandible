@@ -69,12 +69,19 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
   const globalOptions = "{\n  admin 127.0.0.1:2019\n  local_certs\n  auto_https disable_redirects\n}";
   const migrationIngress = instances.map((entry) => {
     const publicUrl = new URL(entry.public_origin);
+    const legacyPort = entry.role === "preview" ? "19421" : "19420";
     return [
     `https://${publicUrl.hostname}:19419 {`,
     "  bind 127.0.0.1 ::1",
     "  tls internal",
     "  header -Server",
-    "  handle /api/client-auth/legacy-conversion/complete {",
+    "  @verified_legacy_completion {",
+    "    method POST",
+    "    path /api/client-auth/legacy-conversion/complete",
+    `    header Origin http://127.0.0.1:${legacyPort} http://localhost:${legacyPort}`,
+    "    header Sec-Fetch-Site cross-site",
+    "  }",
+    "  handle @verified_legacy_completion {",
     `    reverse_proxy ${productionBackend.origin} {`,
     `      header_up Host ${productionPublic.host}`,
     `      header_up Origin ${productionPublic.origin}`,
@@ -84,6 +91,7 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     `      header_up X-Mandible-Target-Instance ${entry.instance_id}`,
     "      header_up -X-Mandible-Legacy-Migration",
     "      header_up X-Mandible-Legacy-Migration complete-v1",
+    "      header_up X-Mandible-Legacy-Origin {http.request.header.Origin}",
     "    }",
     "  }",
     "  respond 404",
@@ -127,7 +135,11 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     ];
     if (entry.role === "preview") {
       shared.push(
-        "  handle / {",
+        "  @preview_bootstrap {",
+        "    path /",
+        "    not header Cookie *__Host-mandible-session=*",
+        "  }",
+        "  handle @preview_bootstrap {",
         "    rewrite * /api/client-auth/preview-bootstrap",
         `    reverse_proxy ${productionBackend.origin} {`,
         `      header_up Host ${new URL(production.public_origin).host}`,

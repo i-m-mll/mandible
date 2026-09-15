@@ -157,6 +157,8 @@ export interface InstanceInfo {
   allowed_effects: readonly import("./security/effect-policy.js").Effect[];
   writable_roots: readonly string[];
   preview_root?: string | null;
+  artifact_root?: string | null;
+  source_artifact_root?: string | null;
   db_path: string | null;
   db_path_source: string | null;
   source_db_path?: string | null;

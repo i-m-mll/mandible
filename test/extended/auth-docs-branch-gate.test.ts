@@ -9,7 +9,10 @@ import { AuthAutoApproveManager } from "../../src/auth-auto-approve.js";
 import { setDb, type Db } from "../../src/db.js";
 import { registerAuthRoutes } from "../../src/routes/auth.js";
 import { Router } from "../../src/server.js";
-import { createMigratedDb as createSharedMigratedDb } from "../helpers/ledger-fixtures.js";
+import { createLedgerIssue, createMigratedDb as createSharedMigratedDb } from "../helpers/ledger-fixtures.js";
+import { authenticatedTestRouter } from "../helpers/authenticated-router.js";
+import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
+import { addCredential } from "../../src/users/store.js";
 
 // Child issue 8921e84 (regression-only half): the `Mandible-Issue:` trailer
 // gate in src/routes/auth.ts ALREADY rejects bare-commit branches. Docs-branch
@@ -66,14 +69,21 @@ function createDocsRepo(docsBranch: string, docsCommitMessage: string): string {
   git(repo, ["add", "."]);
   git(repo, ["commit", "-m", docsCommitMessage]);
   git(repo, ["checkout", "main"]);
-  return repo;
+  return fs.realpathSync(repo);
 }
 
-function registerWorkRepo(db: Db, repoRoot: string): void {
+function registerWorkRepo(db: Db, repoRoot: string): string {
+  const project = resolveProjectForCheckout(db, {
+    root: fs.realpathSync(repoRoot),
+    name: path.basename(repoRoot),
+    workRepoId: path.basename(repoRoot),
+    defaultBranch: "main",
+  });
   db.prepare(
     `INSERT OR REPLACE INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
      VALUES (?, ?, ?, ?, 1, 0)`,
-  ).run(path.basename(repoRoot), fs.realpathSync(repoRoot), path.basename(repoRoot), "main");
+  ).run(path.basename(repoRoot), repoRoot, path.basename(repoRoot), "main");
+  return project.project.id;
 }
 
 async function submitDocsMerge(
@@ -81,7 +91,24 @@ async function submitDocsMerge(
   repo: string,
   docsBranch: string,
 ): Promise<{ status: number; body: unknown }> {
-  const router = new Router();
+  const agent = db.prepare("SELECT id, slug FROM users WHERE slug = 'docs-auth-agent'").get() as { id: string; slug: string };
+  const credential = addCredential(db, agent.id, {
+    type: "api_token",
+    fingerprint: `docs-auth-${docsBranch}`,
+  });
+  const projectId = registerWorkRepo(db, repo);
+  const issue = createLedgerIssue(db, {
+    project_id: projectId,
+    title: "Docs delivery",
+    aliases: [{ alias_kind: "git_bug_short", alias: "d0c5123" }],
+  });
+  db.prepare(
+    `INSERT INTO work_units
+      (id, issue_id, repo_id, branch, kind, state, created_at, activated_at, last_commit_at,
+       ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+     VALUES (?, ?, ?, ?, 'solo', 'committed', 1, 1, 1, ?, ?, ?, 1)`,
+  ).run(`wu-${docsBranch}`, "d0c5123", projectId, docsBranch, issue.id, agent.id, credential.id);
+  const router = authenticatedTestRouter(agent, { credentialId: credential.id });
   const queue = new AuthQueue({ db });
   try {
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
@@ -97,6 +124,7 @@ async function submitDocsMerge(
         base_branch: "main",
         head_branch: docsBranch,
         cwd: repo,
+        issue_references: ["d0c5123"],
       },
     });
   } finally {
@@ -111,7 +139,6 @@ describe("auth.ts Mandible-Issue gate (docs-branch promotion regression)", () =>
     const db = createMigratedDb();
     setDb(db);
     try {
-      registerWorkRepo(db, repo);
       const result = await submitDocsMerge(db, repo, docsBranch);
 
       expect(result.status).toBe(400);
@@ -127,12 +154,11 @@ describe("auth.ts Mandible-Issue gate (docs-branch promotion regression)", () =>
     const docsBranch = "docs/spaces";
     const repo = createDocsRepo(
       docsBranch,
-      "doc export\n\nMandible-Issue: docs123",
+      "doc export\n\nMandible-Issue: d0c5123",
     );
     const db = createMigratedDb();
     setDb(db);
     try {
-      registerWorkRepo(db, repo);
       const result = await submitDocsMerge(db, repo, docsBranch);
 
       // The gate passes (201 created). This confirms the regression test is

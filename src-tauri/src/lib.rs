@@ -10,6 +10,9 @@ use tauri::{command, AppHandle, Manager};
 
 const DEFAULT_PORT: u16 = 29420;
 const PRODUCTION_ORIGIN: &str = "https://app.mandible.localhost:19420";
+fn admits_native_command_origin(origin: &str) -> bool {
+    origin == PRODUCTION_ORIGIN
+}
 const DEFAULT_LAUNCH_MODE: &str = "on_demand";
 /// Generic-password service holding the operator's durable bearer credential.
 /// Same item the CLI falls back to in unmarked operator terminals (issue 9283a50).
@@ -163,7 +166,7 @@ fn enrollment_precheck(app: &AppHandle) -> Result<(), String> {
     let url = window
         .url()
         .map_err(|error| format!("failed to inspect desktop origin: {error}"))?;
-    if url.origin().ascii_serialization() != PRODUCTION_ORIGIN {
+    if !admits_native_command_origin(&url.origin().ascii_serialization()) {
         return Err(
             "native enrollment is available only to the registered production origin".to_string(),
         );
@@ -880,7 +883,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_credential, read_client_auth_bootstrap, resolve_user_path_from, PRODUCTION_ORIGIN};
+    use super::{
+        admits_native_command_origin, extract_credential, read_client_auth_bootstrap,
+        resolve_user_path_from, PRODUCTION_ORIGIN,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -905,8 +911,20 @@ mod tests {
     #[test]
     fn privileged_native_enrollment_is_pinned_to_https_production() {
         assert_eq!(PRODUCTION_ORIGIN, "https://app.mandible.localhost:19420");
-        assert!(!PRODUCTION_ORIGIN.contains("preview"));
-        assert!(!PRODUCTION_ORIGIN.starts_with("http://"));
+        assert!(admits_native_command_origin(PRODUCTION_ORIGIN));
+        for denied in [
+            "https://preview-0123456789abcdef.mandible.localhost:19421",
+            "http://127.0.0.1:19420",
+            "http://localhost:19420",
+            "http://127.0.0.1:19421",
+            "http://localhost:19421",
+            "https://app.mandible.localhost:19421",
+        ] {
+            assert!(
+                !admits_native_command_origin(denied),
+                "unexpected native admission: {denied}"
+            );
+        }
     }
 
     #[test]

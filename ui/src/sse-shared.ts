@@ -1,7 +1,6 @@
 import {
   SSEClient,
   type SSEHandler,
-  type SSEPayload,
   type SseConnectionState,
   type SseStateHandler,
 } from './sse-client';
@@ -49,49 +48,54 @@ export function shouldSkipFallbackPoll(
 let sharedCoordinator: CrossTabSseCoordinator | null = null;
 let refCount = 0;
 let teardownTimer: ReturnType<typeof setTimeout> | null = null;
-let testEventSource: typeof EventSource | null = null;
+let testFetchImpl: typeof fetch | null = null;
 
-function legacyTestTransport(): SSEClient {
-  if (!testEventSource) return new SSEClient();
-  const EventSourceCtor = testEventSource;
-  const handlers = new Map<string, Set<SSEHandler>>();
-  const stateHandlers = new Set<SseStateHandler>();
-  let source: EventSource | null = null;
-  let state: SseConnectionState = 'idle';
-  const setState = (next: SseConnectionState) => {
-    state = next;
-    stateHandlers.forEach((handler) => handler(next, { reconnected: false }));
-  };
-  return {
-    connect() {
-      if (source) return;
-      setState('connecting');
-      source = new EventSourceCtor('/api/events');
-      source.addEventListener('message', ((event: MessageEvent) => {
-        try {
-          const payload = JSON.parse(event.data) as SSEPayload;
-          handlers.get(payload.type)?.forEach((handler) => handler(payload));
-          handlers.get('*')?.forEach((handler) => handler(payload));
-        } catch { /* test transport ignores malformed frames */ }
-      }) as EventListener);
-      setState('open');
-    },
-    close() { source?.close(); source = null; setState('idle'); },
-    disconnect() { source?.close(); source = null; setState('idle'); },
-    getState: () => state,
-    onState(handler: SseStateHandler) { stateHandlers.add(handler); return () => { stateHandlers.delete(handler); }; },
-    on(type: string, handler: SSEHandler) {
-      const bucket = handlers.get(type) ?? new Set<SSEHandler>();
-      bucket.add(handler); handlers.set(type, bucket);
-      return () => { bucket.delete(handler); };
-    },
-  } as unknown as SSEClient;
+type EventSourceTestConstructor = new (url: string) => {
+  addEventListener(type: string, listener: EventListener): void;
+  close(): void;
+};
+
+// Transitional test adapter only: old view fixtures still expose an
+// EventSource-shaped controller, but their events enter the production
+// SSEClient as actual encoded ReadableStream chunks. There is no alternate
+// transport or parser path in application code.
+function eventSourceFixtureAsFetch(EventSourceFixture: EventSourceTestConstructor): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const pathname = new URL(String(input), window.location.href).pathname;
+    if (pathname === '/api/client-auth/whoami') {
+      return new Response(JSON.stringify({ authenticated: true, session: {
+        family_id: 'test-sse-family', audience: 'production', csrf_token: 'test-sse-csrf',
+        effect_ceiling: ['ledger:read'],
+      } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    const source = new EventSourceFixture(String(input));
+    let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const stream = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+        source.addEventListener('message', ((event: MessageEvent) => {
+          controller?.enqueue(new TextEncoder().encode(`data: ${event.data}\n\n`));
+        }) as EventListener);
+        source.addEventListener('error', (() => {
+          controller?.error(new Error('fixture stream failed'));
+          controller = null;
+        }) as EventListener);
+        init?.signal?.addEventListener('abort', () => {
+          source.close();
+          controller?.close();
+          controller = null;
+        }, { once: true });
+      },
+      cancel() { source.close(); controller = null; },
+    });
+    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  }) as typeof fetch;
 }
 
 function ensureCoordinator(): CrossTabSseCoordinator {
   if (!sharedCoordinator) {
     sharedCoordinator = new CrossTabSseCoordinator({
-      createTransport: () => legacyTestTransport(),
+      createTransport: () => new SSEClient(testFetchImpl ? { fetchImpl: testFetchImpl } : {}),
     });
   }
   return sharedCoordinator;
@@ -179,12 +183,19 @@ export function acquireSharedSse(): SseHandle {
  * Test-only reset: drops the authenticated fetch-stream singleton and refcount
  * so each test starts clean.
  */
-export function __resetSharedSseForTests(eventSource?: typeof EventSource): void {
+export function __resetSharedSseForTests(fetchImpl?: typeof fetch | EventSourceTestConstructor): void {
   cancelTeardown();
   if (sharedCoordinator) {
     sharedCoordinator.disconnect();
   }
   sharedCoordinator = null;
   refCount = 0;
-  testEventSource = eventSource ?? null;
+  const fixture = fetchImpl ?? (typeof globalThis.EventSource === 'function'
+    ? globalThis.EventSource as unknown as EventSourceTestConstructor
+    : undefined);
+  testFetchImpl = fixture
+    ? (/^class\s/.test(Function.prototype.toString.call(fixture))
+      ? eventSourceFixtureAsFetch(fixture as EventSourceTestConstructor)
+      : fixture as typeof fetch)
+    : null;
 }

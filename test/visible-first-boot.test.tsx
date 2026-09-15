@@ -122,6 +122,7 @@ describe("visible-first dashboard boot", () => {
     render(h(App, {}));
     await vi.runAllTicks();
     await Promise.resolve();
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
     const source = MockEventSource.instances[0];
     expect(source).toBeTruthy();
     // Freshness is now connection health (open socket + a signal within

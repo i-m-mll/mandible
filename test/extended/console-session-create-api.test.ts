@@ -1,15 +1,26 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ConversationSpawnApiError, invalidateApiGetCache, listCanonicalProjects, startProviderChat } from '../../ui/src/api';
+import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
+
+function authenticatedWhoami(): Response {
+  return new Response(JSON.stringify({ authenticated: true, session: {
+    family_id: 'console-api-test', audience: 'production', csrf_token: 'csrf',
+    effect_ceiling: ['conversation:spawn'],
+  } }), { status: 200, headers: { 'content-type': 'application/json' } });
+}
 
 afterEach(() => {
   invalidateApiGetCache();
+  __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
 });
 
 describe('console session creation payload', () => {
   it('posts only the version-2 UUID, provider, and canonical placement', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ session: {} }), {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/client-auth/whoami'
+      ? authenticatedWhoami()
+      : new Response(JSON.stringify({ session: {} }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     }));
@@ -21,7 +32,8 @@ describe('console session creation payload', () => {
       { kind: 'project', project_id: 'project-1', checkout_id: 'checkout-1' },
     );
 
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+    const spawnCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/conversation-spawns');
+    expect(JSON.parse(String(spawnCall?.[1]?.body))).toEqual({
       schema: 'mandible-conversation-spawn-request@3',
       idempotency_key: '10000000-0000-4000-8000-000000000001',
       provider: 'codex',
@@ -75,7 +87,13 @@ describe('console session creation payload', () => {
   });
 
   it('forwards caller cancellation without adding a second browser deadline', async () => {
-    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input) === '/api/client-auth/whoami'
+      ? Promise.resolve(authenticatedWhoami())
+      : new Promise<Response>((_resolve, reject) => {
+      if (init?.signal?.aborted) {
+        reject(init.signal.reason);
+        return;
+      }
       init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
     }));
     vi.stubGlobal('fetch', fetchMock);
@@ -88,8 +106,8 @@ describe('console session creation payload', () => {
     );
     controller.abort(new DOMException('abandoned', 'AbortError'));
     await expect(result).rejects.toMatchObject({ name: 'AbortError' });
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal);
+    const spawnCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/conversation-spawns');
+    expect(spawnCall?.[1]?.signal).toBe(controller.signal);
   });
 });
 

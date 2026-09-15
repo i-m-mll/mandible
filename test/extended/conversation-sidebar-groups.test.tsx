@@ -454,9 +454,22 @@ describe('conversation sidebar groups', () => {
     ['codex', 'project', 'return'],
     ['claude_code', 'project', 'click'],
   ] as const)('keeps one accepted %s %s identity through readiness and its immediate first submit', async (provider, placementKind, submitKind) => {
-    FakeEventSource.instances = [];
-    __resetSharedSseForTests(FakeEventSource as unknown as typeof EventSource);
-    vi.stubGlobal('EventSource', FakeEventSource);
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const sseFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/client-auth/whoami') {
+        return new Response(JSON.stringify({ authenticated: true, session: {
+          family_id: 'spawn-reconcile-test', audience: 'production', csrf_token: 'csrf',
+          effect_ceiling: ['ledger:read'],
+        } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+          init?.signal?.addEventListener('abort', () => controller.close(), { once: true });
+        },
+      }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    });
+    __resetSharedSseForTests(sseFetch as typeof fetch);
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
     const id = `10000000-0000-4000-8000-0000000000${provider === 'codex' ? '1' : '2'}${placementKind === 'project' ? '1' : '0'}`;
     vi.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue(id as `${string}-${string}-${string}-${string}-${string}`);
@@ -522,15 +535,20 @@ describe('conversation sidebar groups', () => {
     fireEvent.click(await screen.findByRole('button', { name: provider === 'codex' ? 'Start with Codex (OpenAI)' : 'Start with Claude' }));
     const row = await screen.findByRole('button', { name: provider === 'codex' ? 'Open conversation New Codex chat' : 'Open conversation New Claude chat' });
     expect(row.getAttribute('aria-current')).toBe('true');
-    expect(await screen.findByText('No messages yet')).toBeTruthy();
     const composer = await screen.findByPlaceholderText('Message...') as HTMLTextAreaElement;
+    const transcript = document.querySelector('.conv-transcript');
+    expect(transcript).toBeTruthy();
+    expect(transcript?.querySelectorAll('[data-chat-event]').length).toBe(0);
     fireEvent.input(composer, { target: { value: 'First message' } });
     if (submitKind === 'return') fireEvent.keyDown(composer, { key: 'Enter' });
     else fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(await screen.findByText('First message')).toBeTruthy();
     expect(submit).not.toHaveBeenCalled();
 
-    FakeEventSource.instances[0].emit({ type: 'conversation-spawn:updated', data: { spawn: spawnReceipt(id, provider, placement, 'ready') } });
+    await waitFor(() => expect(streamController).not.toBeNull());
+    streamController?.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({
+      type: 'conversation-spawn:updated', data: { spawn: spawnReceipt(id, provider, placement, 'ready') },
+    })}\n\n`));
     expect(await screen.findByPlaceholderText('Message...')).toBe(composer);
     await waitFor(() => expect(submit).toHaveBeenCalledOnce());
     expect(submit).toHaveBeenCalledWith(

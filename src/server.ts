@@ -439,7 +439,7 @@ export class Router implements RouteRegistrar {
       response,
       input.ambient_identity,
       input.credential,
-      input.transport ?? "file-rpc",
+      input.transport ?? "in-process",
       input.signal,
     );
     if (!handled) {
@@ -590,7 +590,7 @@ export class Router implements RouteRegistrar {
           response.status(403).json({ error: "csrf_required" });
           return true;
         }
-        if (UNSAFE_METHODS.has(normalizedMethod) && !clientIdentity
+        if (transport !== "in-process" && UNSAFE_METHODS.has(normalizedMethod) && !clientIdentity
             && !STRICT_ANONYMOUS_HTTP_ROUTES.has(pathname)) {
           const telemetryTransport = transport === "http" ? "http" : "file-rpc";
           if (gate.mode() === "strict") {
@@ -611,7 +611,11 @@ export class Router implements RouteRegistrar {
         }
       }
 
-      if (gate) {
+      // Direct invocation is a trusted process-local composition boundary.
+      // HTTP and file-RPC are ingress and must satisfy both the instance and
+      // credential effect ceilings; treating an omitted test/internal
+      // transport as file-RPC would invent a remote caller that does not exist.
+      if (gate && transport !== "in-process") {
         const operation = operationForRequest(normalizedMethod, pathname);
         const effectDecision = authorizeEffects(this.instance, clientIdentity, operation);
         if (!effectDecision.allowed) {
@@ -1306,10 +1310,15 @@ function validateDaemonWriteBoundary(
 
 function isBoundLegacyConversionCompletion(req: http.IncomingMessage, pathname: string): boolean {
   if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
+  const legacyOrigin = firstHeader(req, "x-mandible-legacy-origin");
+  const target = firstHeader(req, "x-mandible-target-instance");
+  if (!legacyOrigin || !target || !LEGACY_BROWSER_ORIGINS.has(legacyOrigin)) return false;
   return (req.method ?? "GET").toUpperCase() === "POST"
     && pathname === "/api/client-auth/legacy-conversion/complete"
     && firstHeader(req, "x-mandible-legacy-migration") === "complete-v1"
-    && Boolean(firstHeader(req, "x-mandible-target-instance"));
+    // The gateway accepts only a cross-site form POST from one inventoried old
+    // origin, then rewrites Host/Origin before the daemon sees the request.
+    && firstHeader(req, "sec-fetch-site") === "cross-site";
 }
 
 function validateDaemonBrowserBoundary(

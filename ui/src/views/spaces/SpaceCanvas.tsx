@@ -713,7 +713,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     return protectedPositions;
   }, []);
 
-  const previewMutationsDisabled = Boolean(instance && !instance.allowed_effects.includes('ledger:write'));
+  const previewMutationsDisabled = Boolean(instance && instance.allowed_effects?.includes('ledger:write') !== true);
 
   const markPositionsPreviewDisabled = useCallback((
     positions: Record<string, { x: number; y: number }>,

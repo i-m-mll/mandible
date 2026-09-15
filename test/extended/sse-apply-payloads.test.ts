@@ -4,6 +4,7 @@ import {
   shouldSkipFallbackPoll,
   __resetSharedSseForTests,
 } from '../../ui/src/sse-shared';
+import { __resetBrowserSessionForTests, initializeBrowserSession } from '../../ui/src/client-auth-token';
 import {
   applyConversationAppendPayload,
   mergeConversationSummaryIntoList,
@@ -22,6 +23,7 @@ class FakeEventSource {
   onerror: (() => void) | null = null;
   closed = false;
   private messageListeners = new Set<(event: MessageEvent) => void>();
+  private errorListeners = new Set<() => void>();
 
   constructor(url: string) {
     this.url = url;
@@ -30,6 +32,7 @@ class FakeEventSource {
 
   addEventListener(type: string, listener: (event: MessageEvent) => void): void {
     if (type === 'message') this.messageListeners.add(listener);
+    if (type === 'error') this.errorListeners.add(listener as unknown as () => void);
   }
 
   removeEventListener(): void {}
@@ -47,6 +50,7 @@ class FakeEventSource {
   error(): void {
     this.readyState = 2;
     this.onerror?.();
+    for (const listener of this.errorListeners) listener();
   }
 
   emit(payload: Record<string, unknown>): void {
@@ -110,17 +114,22 @@ function block(id: string, position: number): ConversationBlock {
 }
 
 describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    __resetBrowserSessionForTests();
+    await initializeBrowserSession(async () => new Response(JSON.stringify({ authenticated: true, session: {
+      family_id: 'family-sse', audience: 'production', csrf_token: 'csrf-sse', effect_ceiling: ['ledger:read'],
+    } }), { status: 200, headers: { 'content-type': 'application/json' } }));
     reset();
   });
 
   afterEach(() => {
     __resetSharedSseForTests();
+    __resetBrowserSessionForTests();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it('applies a burst of append events in order with zero refetches', () => {
+  it('applies a burst of append events in order with zero refetches', async () => {
     let current: ConvWithBlocks = conversation([block('b0', 0)]);
     let refetches = 0;
 
@@ -153,12 +162,12 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       });
     }
 
+    await vi.waitFor(() => expect(current.blocks.map((b) => b.id)).toEqual(['b0', 'b1', 'b2', 'b3', 'b4', 'b5']));
     expect(refetches).toBe(0);
-    expect(current.blocks.map((b) => b.id)).toEqual(['b0', 'b1', 'b2', 'b3', 'b4', 'b5']);
     expect(current.block_count).toBe(6);
   });
 
-  it('signals exactly one detail refetch on a sequence gap', () => {
+  it('signals exactly one detail refetch on a sequence gap', async () => {
     let current: ConvWithBlocks = conversation([block('b0', 0)]);
     let refetches = 0;
 
@@ -184,11 +193,11 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       data: { id: 'conv-1', block_count: 3, append: { from_position: 2, blocks: [block('b2', 2)] } },
     });
 
-    expect(refetches).toBe(1);
+    await vi.waitFor(() => expect(refetches).toBe(1));
     expect(current.blocks.map((b) => b.id)).toEqual(['b0']); // unchanged
   });
 
-  it('coalesces three conversation:new events into one list refetch after the debounce', () => {
+  it('coalesces three conversation:new events into one list refetch after the debounce', async () => {
     vi.useFakeTimers();
     let listFetches = 0;
     let refetchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -209,13 +218,14 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
     es.emit({ type: 'conversation:new', data: { id: 'conv-a' } });
     es.emit({ type: 'conversation:new', data: { id: 'conv-b' } });
     es.emit({ type: 'conversation:new', data: { id: 'conv-c' } });
+    await vi.advanceTimersByTimeAsync(0);
     expect(listFetches).toBe(0); // still pending
 
-    vi.advanceTimersByTime(1000);
+    await vi.advanceTimersByTimeAsync(1000);
     expect(listFetches).toBe(1);
   });
 
-  it('merges a monotonic summary in place and refetches on unknown id', () => {
+  it('merges a monotonic summary in place and refetches on unknown id', async () => {
     let list: Conversation[] = [conversation([]), { ...conversation([]), id: 'conv-2', block_count: 2 }];
     let refetches = 0;
 
@@ -235,15 +245,15 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
     es.open();
 
     es.emit({ type: 'conversation:updated', data: { id: 'conv-1', block_count: 4, title: 'Renamed' } });
-    expect(list[0].block_count).toBe(4);
+    await vi.waitFor(() => expect(list[0].block_count).toBe(4));
     expect(list[0].title).toBe('Renamed');
     expect(refetches).toBe(0);
 
     es.emit({ type: 'conversation:updated', data: { id: 'conv-unknown', block_count: 9 } });
-    expect(refetches).toBe(1);
+    await vi.waitFor(() => expect(refetches).toBe(1));
   });
 
-  it('treats a heartbeat as a freshness-only signal (no dispatch side effects)', () => {
+  it('treats a heartbeat as a freshness-only signal (no dispatch side effects)', async () => {
     let freshAt = 0;
     let dispatches = 0;
 
@@ -259,11 +269,11 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
     es.open();
 
     es.emit({ type: 'heartbeat', data: { timestamp: 1234 } });
-    expect(freshAt).toBe(1234);
+    await vi.waitFor(() => expect(freshAt).toBe(1234));
     expect(dispatches).toBe(0);
   });
 
-  it('fires the reconnect resync exactly once per real reconnect', () => {
+  it('fires the reconnect resync exactly once per real reconnect', async () => {
     vi.useFakeTimers();
     let resyncs = 0;
 
@@ -277,9 +287,9 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
     expect(resyncs).toBe(0);
 
     es1.error();
-    vi.advanceTimersByTime(500);
+    await vi.advanceTimersByTimeAsync(500);
     FakeEventSource.instances[1].open(); // reopen: reconnect
-    expect(resyncs).toBe(1);
+    await vi.waitFor(() => expect(resyncs).toBe(1));
   });
 
   it('poll gate: skips while open+fresh, fires when the socket is not open or stale', () => {

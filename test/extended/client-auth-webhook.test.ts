@@ -141,7 +141,7 @@ describe("client-auth operator webhook delivery", () => {
   });
 
   it("protects manual delivery of a queued webhook", async () => {
-    const queued = await ingest({});
+    const queued = await ingest({}, operatorToken);
     const webhookId = (queued.body as { id: string }).id;
     const denied = await router.invoke({
       method: "POST",
@@ -186,7 +186,7 @@ describe("client-auth operator webhook delivery", () => {
     const branch = await ingest({ target_branch: "feature/agent" }, agentToken);
     expect(branch.status).toBe(403);
 
-    const queued = await ingest({});
+    const queued = await ingest({}, operatorToken);
     const webhookId = (queued.body as { id: string }).id;
     const manual = await router.invoke({
       method: "POST",
