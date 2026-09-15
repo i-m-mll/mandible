@@ -42,6 +42,26 @@ guard let pem = String(data: bytes, encoding: .utf8),
 NSApplication.shared.setActivationPolicy(.accessory)
 NSApplication.shared.activate(ignoringOtherApps: true)
 
+while true {
+    let alert = NSAlert()
+    alert.messageText = "Set up secure local connections for this Mac account?"
+    alert.informativeText = "This is a one-time setup. macOS may ask you to authorize it. Mandible will not ask for your password."
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: "Continue")
+    alert.addButton(withTitle: "Details…")
+    let response = alert.runModal()
+    if response == .alertThirdButtonReturn {
+        let details = NSAlert()
+        details.messageText = "Secure local connections details"
+        details.informativeText = "Mandible pins this installation's Caddy HTTPS root and signing key. macOS will store the certificate and a per-user SSL trust rule for this account, not a computer-wide administrator rule. The SSL rule is not limited to Mandible hostnames; keep the signing key private. Root SHA-256: \(expectedDigest). To remove this trust later, use this account's Keychain Access certificate settings."
+        details.addButton(withTitle: "Back")
+        details.runModal()
+        continue
+    }
+    guard response == .alertSecondButtonReturn else { fail("setup canceled before any trust change") }
+    break
+}
+
 let addQuery: [String: Any] = [
     kSecClass as String: kSecClassCertificate,
     kSecValueRef as String: certificate,

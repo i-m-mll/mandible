@@ -338,7 +338,8 @@ function systemTrustEffects(paths) {
         fs.writeFileSync(snapshot, regularBytes(paths.rootCert, "Caddy root certificate"), { flag: "wx", mode: 0o600 });
         if (digest(regularBytes(snapshot, "approval certificate snapshot")) !== rootDigestValue) throw new Error("Caddy root changed before the approval snapshot; no trust was installed.");
         context.assertHeld();
-        const result = spawnSync(nativeTrustHelper(), [snapshot, rootDigestValue], { encoding: "utf8", timeout: 60_000 });
+        // Human authorization is not an automated readiness timeout.
+        const result = spawnSync(nativeTrustHelper(), [snapshot, rootDigestValue], { encoding: "utf8" });
         if (result.error || result.status !== 0) throw new Error(`This Mac did not complete secure local connections setup. macOS owns any account authentication; Mandible does not ask for a password. ${(result.stderr || result.stdout || result.error?.message || "Approval was declined or unavailable.").trim()}`);
         context.assertHeld();
         if (rootDigest(paths) !== rootDigestValue) throw new Error("Caddy root changed during macOS approval; the prepared setup remains pinned but cannot be marked trusted.");

@@ -163,19 +163,9 @@ fn resolve_ca_trust_helper(app: &AppHandle) -> Result<PathBuf, String> {
 fn show_native_setup_result(app: &AppHandle, headline: &str, detail: &str) {
     match resolve_ca_trust_helper(app) {
         Ok(helper) => {
-            match Command::new(helper).arg("--result").arg(headline).arg(detail).spawn() {
-                Ok(mut child) => {
-                    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-                    loop {
-                        match child.try_wait() {
-                            Ok(Some(status)) if status.success() => break,
-                            Ok(Some(status)) => { eprintln!("could not show secure-local-connections result: native alert exited with {status}; {headline}: {detail}"); break; }
-                            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
-                            Ok(None) => { let _ = child.kill(); let _ = child.wait(); eprintln!("secure-local-connections result alert timed out; {headline}: {detail}"); break; }
-                            Err(error) => { let _ = child.kill(); let _ = child.wait(); eprintln!("could not show secure-local-connections result: {error}; {headline}: {detail}"); break; }
-                        }
-                    }
-                }
+            match Command::new(helper).arg("--result").arg(headline).arg(detail).status() {
+                Ok(status) if status.success() => (),
+                Ok(status) => eprintln!("could not show secure-local-connections result: native alert exited with {status}; {headline}: {detail}"),
                 Err(error) => eprintln!("could not show secure-local-connections result: {error}; {headline}: {detail}"),
             }
         }
