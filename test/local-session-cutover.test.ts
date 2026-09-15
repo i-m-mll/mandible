@@ -13,7 +13,12 @@ const capturedLegacyHealth = JSON.parse(fs.readFileSync(new URL("./fixtures/loca
 const roots = new Set<string>();
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.clear(); });
 
-function fixture() {
+function renderServicePlist(definition: { Label: string; KeepAlive: boolean; ProgramArguments: string[]; EnvironmentVariables: Record<string, string>; StandardOutPath: string; StandardErrorPath: string }) {
+  const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${xml(definition.Label)}</string><key>KeepAlive</key><true/><key>ProgramArguments</key><array>${definition.ProgramArguments.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array><key>EnvironmentVariables</key><dict>${Object.entries(definition.EnvironmentVariables).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join("")}</dict><key>StandardOutPath</key><string>${xml(definition.StandardOutPath)}</string><key>StandardErrorPath</key><string>${xml(definition.StandardErrorPath)}</string></dict></plist>\n`;
+}
+
+function fixture({ supervisedMain = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-session-cutover-"));
   roots.add(root);
   const configPath = path.join(root, "Caddyfile");
@@ -21,6 +26,9 @@ function fixture() {
   const currentDbPath = path.join(root, "current.db");
   const oldDb = path.join(root, "old.db");
   const candidateDb = path.join(root, "candidate.db");
+  const servicePlistPath = path.join(root, "com.mll.mandible.plist");
+  let serviceDefinition = { Label: "com.mll.mandible", KeepAlive: true, ProgramArguments: [process.execPath, path.join(root, "production-daemon.js")], EnvironmentVariables: { MANDIBLE_PORT: "19420", MANDIBLE_DB: path.join(root, "production.db"), PATH: process.env.PATH ?? "/usr/bin:/bin" }, StandardOutPath: path.join(root, "launchd-stdout.log"), StandardErrorPath: path.join(root, "launchd-stderr.log") };
+  if (supervisedMain) fs.writeFileSync(servicePlistPath, renderServicePlist(serviceDefinition));
   fs.writeFileSync(oldDb, "old");
   fs.writeFileSync(candidateDb, "candidate");
   fs.writeFileSync(metadataPath, `${JSON.stringify({ daemon: "legacy" })}\n`);
@@ -39,13 +47,14 @@ function fixture() {
       public_port: publicPort,
       legacy: {
         credential_directory: credentialDirectory,
+        ...(role === "main" && supervisedMain ? { lifecycle: { kind: "launchd", domain: `gui/${process.getuid?.()}`, label: "com.mll.mandible", plist_path: servicePlistPath } } : { lifecycle: { kind: "unmanaged" } }),
         expected: {
           role,
           startup_epoch: `legacy-${role}`,
           startup_commit_hash: `legacy-commit-${role}`,
           db_path: role === "preview" ? oldDb : path.join(root, "production.db"),
         },
-        restore: { command: "/usr/bin/true", args: [], env: { MANDIBLE_INSTANCE_ROLE: role } },
+        ...(role === "main" && supervisedMain ? {} : { restore: { command: "/usr/bin/true", args: [], env: { MANDIBLE_INSTANCE_ROLE: role } } }),
       },
       candidate: {
         backend_port: backendPort,
@@ -116,7 +125,16 @@ function fixture() {
   const manifestPath = path.join(root, "manifest.json");
   const journalPath = path.join(root, "journal.json");
   fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-  return { root, configPath, metadataPath, currentDbPath, oldDb, candidateDb, authorityDb, manifest, manifestPath, journalPath };
+  return { root, configPath, metadataPath, currentDbPath, oldDb, candidateDb, authorityDb, manifest, manifestPath, journalPath, servicePlistPath, supervisedMain,
+    readPlistDefinition() {
+      if (fs.readFileSync(servicePlistPath, "utf8") !== renderServicePlist(serviceDefinition)) throw new Error("fake plist inspector found unrecognized plist bytes");
+      return structuredClone(serviceDefinition);
+    },
+    writePlistDefinition(definition: typeof serviceDefinition) {
+      serviceDefinition = structuredClone(definition);
+      fs.writeFileSync(servicePlistPath, renderServicePlist(serviceDefinition));
+    },
+  };
 }
 
 function lifecycle(fx: ReturnType<typeof fixture>) {
@@ -130,6 +148,9 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
   let interruptAfterNextStop = false;
   let failReloadOnce = false;
   const unhealthyRoles = new Set<string>();
+  const supervisor = { loaded: fx.supervisedMain, enabled: fx.supervisedMain, plist_path: fx.servicePlistPath, definition: fx.supervisedMain ? fx.readPlistDefinition() : null };
+  let interruptSupervisorEffect: "disable" | "bootout" | "bootstrap" | null = null;
+  let interruptBeforeSupervisorDisable = false;
   for (const instance of fx.manifest.instances) listeners.set(instance.public_port, { pid: ++nextPid, fingerprint: `process-${nextPid}`, kind: "legacy", role: instance.role, epoch: instance.legacy.expected.startup_epoch });
 
   const candidateHealth = (instance: (typeof fx.manifest.instances)[number], mode: "migration" | "normal") => ({
@@ -183,6 +204,19 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
       return { pid: replacement.pid, fingerprint: replacement.fingerprint };
     },
     makeCandidateUnhealthy(role: string) { unhealthyRoles.add(role); },
+    interruptSupervisor(effect: "disable" | "bootout" | "bootstrap") { interruptSupervisorEffect = effect; },
+    interruptBeforeDisable() { interruptBeforeSupervisorDisable = true; },
+    supervisorState() { return { ...supervisor }; },
+    driftSupervisorPath() { supervisor.plist_path = `${fx.servicePlistPath}.other`; },
+    exitSupervisedProcess() { listeners.delete(19420); events.push("supervisor:process-exit"); },
+    replaceSupervisedProcess() {
+      const pid = ++nextPid;
+      const replacement = { pid, fingerprint: `process-${pid}`, kind: "legacy" as const, role: "main" as const, epoch: `respawn-main-${pid}` };
+      listeners.set(19420, replacement);
+      events.push("supervisor:replacement");
+      return replacement;
+    },
+    occupyPublicPort() { const pid = ++nextPid; listeners.set(19420, { pid, fingerprint: `process-${pid}`, kind: "candidate", role: "main" }); },
     effects: {
       health,
       waitHealth: async (port: number) => {
@@ -245,6 +279,11 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
         events.push(`stop:${pid}`);
         for (const [port, listener] of listeners) if (listener.pid === pid && listener.fingerprint === fingerprint) listeners.delete(port);
         for (const [token, process] of intentProcesses) if (process.pid === pid && process.fingerprint === fingerprint) intentProcesses.delete(token);
+        if (fx.supervisedMain && supervisor.loaded && supervisor.enabled && pid === 101) {
+          const replacementPid = ++nextPid;
+          listeners.set(19420, { pid: replacementPid, fingerprint: `process-${replacementPid}`, kind: "legacy", role: "main", epoch: `respawn-main-${replacementPid}` });
+          events.push("respawn:main");
+        }
         if (interruptAfterNextStop) {
           interruptAfterNextStop = false;
           const error = new Error("simulated stop interruption") as Error & { cutoverInterruption: boolean };
@@ -259,6 +298,38 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
         listeners.set(instance.public_port, { pid, fingerprint: `process-${pid}`, kind: "legacy", role, epoch: `restored-${role}-${pid}` });
         events.push(`restore:${role}`);
       },
+      inspectSupervisorPlist: async () => fx.readPlistDefinition(),
+      supervisorStatus: async () => {
+        if (interruptBeforeSupervisorDisable && fs.existsSync(fx.journalPath) && JSON.parse(fs.readFileSync(fx.journalPath, "utf8")).runtime.intents["legacy.main.stop"]?.status === "pending") {
+          interruptBeforeSupervisorDisable = false;
+          const error = new Error("simulated interruption after stop intent before disable") as Error & { cutoverInterruption: boolean };
+          error.cutoverInterruption = true;
+          throw error;
+        }
+        return { loaded: supervisor.loaded, enabled: supervisor.enabled, pid: supervisor.loaded ? (listeners.get(19420)?.kind === "legacy" ? listeners.get(19420)!.pid : null) : null, plist_path: supervisor.loaded ? supervisor.plist_path : null,
+          definition: supervisor.loaded && supervisor.definition ? { program: supervisor.definition.ProgramArguments[0], arguments: supervisor.definition.ProgramArguments, environment: { ...Object.fromEntries(Object.entries(supervisor.definition.EnvironmentVariables).reverse()), OSLogRateLimit: "64", XPC_SERVICE_NAME: "com.mll.mandible" }, stdout_path: supervisor.definition.StandardOutPath, stderr_path: supervisor.definition.StandardErrorPath, keepalive: supervisor.definition.KeepAlive } : null };
+      },
+      waitSupervisorStopped: async () => { if (supervisor.loaded || supervisor.enabled || listeners.has(19420)) throw new Error("supervised service or port did not stop"); },
+      supervisorDisable: async () => {
+        supervisor.enabled = false;
+        events.push("supervisor:disable");
+        if (interruptSupervisorEffect === "disable") { interruptSupervisorEffect = null; const error = new Error("simulated supervisor disable interruption") as Error & { cutoverInterruption: boolean }; error.cutoverInterruption = true; throw error; }
+      },
+      supervisorBootout: async () => {
+        supervisor.loaded = false;
+        listeners.delete(19420);
+        events.push("supervisor:bootout");
+        if (interruptSupervisorEffect === "bootout") { interruptSupervisorEffect = null; const error = new Error("simulated supervisor bootout interruption") as Error & { cutoverInterruption: boolean }; error.cutoverInterruption = true; throw error; }
+      },
+      supervisorEnable: async () => { supervisor.enabled = true; events.push("supervisor:enable"); },
+      supervisorBootstrap: async () => {
+        supervisor.definition = fx.readPlistDefinition();
+        supervisor.loaded = true;
+        const pid = ++nextPid;
+        listeners.set(19420, { pid, fingerprint: `process-${pid}`, kind: "legacy", role: "main", epoch: `restored-main-${pid}` });
+        events.push("supervisor:bootstrap");
+        if (interruptSupervisorEffect === "bootstrap") { interruptSupervisorEffect = null; const error = new Error("simulated supervisor bootstrap interruption") as Error & { cutoverInterruption: boolean }; error.cutoverInterruption = true; throw error; }
+      },
     },
   };
 }
@@ -270,6 +341,197 @@ function registration(fx: ReturnType<typeof fixture>, instanceId: string) {
 }
 
 describe("local session first cutover", () => {
+  it("suspends a KeepAlive production service instead of stopping its PID and restores through launchd", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await life.effects.stopPid(101, "process-101");
+    expect(life.events).toContain("respawn:main");
+    const respawned = life.listeners.get(19420)!;
+    fx.manifest.instances[0].legacy.expected.startup_epoch = respawned.epoch!;
+    fs.writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    const prepared = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
+    expect(prepared.legacy.main.supervisor).toMatchObject({ domain: `gui/${process.getuid?.()}`, label: "com.mll.mandible", loaded: true, enabled: true });
+    await runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects);
+    expect(life.events).toEqual(expect.arrayContaining(["supervisor:disable", "supervisor:bootout"]));
+    expect(life.events.filter((event) => event === "stop:101")).toHaveLength(1);
+    expect(life.events.filter((event) => event === "respawn:main")).toHaveLength(1);
+    expect(life.supervisorState()).toMatchObject({ loaded: false, enabled: false });
+    await runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects);
+    expect(life.events).toEqual(expect.arrayContaining(["supervisor:enable", "supervisor:bootstrap"]));
+    expect(life.supervisorState()).toMatchObject({ loaded: true, enabled: true });
+    expect(JSON.parse(fs.readFileSync(fx.journalPath, "utf8")).legacy.main.restored_epoch).toMatch(/^restored-main-/);
+  });
+
+  it("reconciles supervisor disable and bootout effects interrupted before receipts", async () => {
+    for (const effect of ["disable", "bootout"] as const) {
+      const fx = fixture({ supervisedMain: true });
+      const life = lifecycle(fx);
+      await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+      life.interruptSupervisor(effect);
+      await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow(`simulated supervisor ${effect} interruption`);
+      await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).resolves.toMatchObject({ state: "migration" });
+      expect(life.events.filter((event) => event === `supervisor:${effect}`)).toHaveLength(1);
+      await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    }
+  });
+
+  it("rolls back directly after supervisor disable without bootout or a fake restart", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptSupervisor("disable");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated supervisor disable interruption");
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events).toContain("supervisor:enable");
+    expect(life.events).not.toContain("supervisor:bootstrap");
+    expect(life.supervisorState()).toMatchObject({ loaded: true, enabled: true });
+  });
+
+  it("replays a not-applied stop receipt after interruption before the rolled-back transition", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptSupervisor("disable");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated supervisor disable interruption");
+    await runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects);
+    const interrupted = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
+    expect(interrupted.runtime.intents["legacy.main.stop"].effect).toBe("not-applied");
+    interrupted.state = "rolling_back";
+    delete interrupted.rolled_back_at;
+    fs.writeFileSync(fx.journalPath, JSON.stringify(interrupted));
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events).not.toContain("supervisor:bootstrap");
+    expect(life.events.filter((event) => event === "supervisor:enable")).toHaveLength(1);
+  });
+
+  it("records and replays a verified launchd replacement after stop intent but before disable", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptBeforeDisable();
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated interruption after stop intent before disable");
+    const interrupted = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
+    expect(interrupted.runtime.intents["legacy.main.stop"].status).toBe("pending");
+    expect(life.events).not.toContain("supervisor:disable");
+    const replacement = life.replaceSupervisedProcess();
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    const firstRollback = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
+    expect(firstRollback.runtime.intents["legacy.main.stop"]).toMatchObject({ status: "done", effect: "restored-replacement", listener: { pid: replacement.pid, fingerprint: replacement.fingerprint }, startup_epoch: replacement.epoch });
+    expect(firstRollback.legacy.main.restored_epoch).toBe(replacement.epoch);
+    firstRollback.state = "rolling_back";
+    delete firstRollback.rolled_back_at;
+    fs.writeFileSync(fx.journalPath, JSON.stringify(firstRollback));
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events).not.toContain("supervisor:disable");
+    expect(life.events).not.toContain("supervisor:bootout");
+    expect(life.events).not.toContain("supervisor:bootstrap");
+  });
+
+  it("reconciles a loaded launchd service whose process exited during disable", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptSupervisor("disable");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated supervisor disable interruption");
+    life.exitSupervisedProcess();
+    expect((await life.effects.supervisorStatus()).pid).toBeNull();
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).resolves.toMatchObject({ state: "migration" });
+    expect(life.events.filter((event) => event === "supervisor:bootout")).toHaveLength(1);
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events.filter((event) => event === "supervisor:bootstrap")).toHaveLength(1);
+  });
+
+  it("rolls back a loaded launchd service without a PID instead of assuming HTTP readiness", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptSupervisor("disable");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated supervisor disable interruption");
+    life.exitSupervisedProcess();
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events).toEqual(expect.arrayContaining(["supervisor:bootout", "supervisor:bootstrap"]));
+  });
+
+  it("refuses a foreign public listener while launchd has no PID", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptSupervisor("disable");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated supervisor disable interruption");
+    life.exitSupervisedProcess();
+    life.occupyPublicPort();
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).rejects.toThrow("unexpected process");
+    expect(life.events).not.toContain("supervisor:bootout");
+    expect(life.events).not.toContain("supervisor:bootstrap");
+  });
+
+  it("rolls back directly after launchd bootout before its receipt", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptSupervisor("bootout");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated supervisor bootout interruption");
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events.filter((event) => event === "supervisor:bootout")).toHaveLength(1);
+    expect(life.events.filter((event) => event === "supervisor:bootstrap")).toHaveLength(1);
+  });
+
+  it("reconciles launchd bootstrap interrupted before its receipt", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    await runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects);
+    life.interruptSupervisor("bootstrap");
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).rejects.toThrow("simulated supervisor bootstrap interruption");
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events.filter((event) => event === "supervisor:bootstrap")).toHaveLength(1);
+  });
+
+  it("refuses supervised plist drift before changing launchd state", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    fs.appendFileSync(fx.servicePlistPath, "drift");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("plist drifted");
+    expect(life.events).not.toContain("supervisor:disable");
+    expect(life.events).not.toContain("supervisor:bootout");
+  });
+
+  it("refuses a supervisor record that does not own the health-verified listener", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    life.driftSupervisorPath();
+    await expect(runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects)).rejects.toThrow("not owned by its exact launchd service");
+    expect(life.events).not.toContain("supervisor:disable");
+  });
+
+  it("refuses an edited plist whose executable, arguments, or complete configured environment differ from the loaded definition", async () => {
+    for (const mutation of ["executable", "arguments", "environment", "environment-removal"] as const) {
+      const fx = fixture({ supervisedMain: true });
+      const life = lifecycle(fx);
+      const edited = fx.readPlistDefinition();
+      if (mutation === "executable") edited.ProgramArguments[0] = "/usr/bin/other-node";
+      if (mutation === "arguments") edited.ProgramArguments[1] = "/tmp/other-daemon.js";
+      if (mutation === "environment") edited.EnvironmentVariables.PATH = "/changed/path";
+      if (mutation === "environment-removal") delete (edited.EnvironmentVariables as Record<string, string | undefined>).MANDIBLE_DB;
+      fx.writePlistDefinition(edited);
+      await expect(runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects)).rejects.toThrow("loaded launchd");
+      expect(life.events).not.toContain("supervisor:disable");
+    }
+  });
+
+  it("records production service suspension while the normal gateway owns 19420", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    await runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects);
+    await expect(runCutoverCommand({ command: "complete", journal: fx.journalPath, confirmBrowserConversion: true }, life.effects)).resolves.toMatchObject({ state: "complete" });
+    const completed = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
+    expect(completed.legacy.main.supervisor_suspended).toBe(true);
+    expect(life.supervisorState()).toMatchObject({ loaded: false, enabled: false });
+  });
+
   it("guards registration semantics while candidate startup refreshes updated_at", async () => {
     const fx = fixture();
     const life = lifecycle(fx);
