@@ -12,13 +12,33 @@ function waitForExit(child) {
   });
 }
 
-function signalGroup(child, signal) {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+function signalGroup(groupId, signal) {
+  if (!groupId) return;
   try {
-    process.kill(-child.pid, signal);
+    process.kill(-groupId, signal);
   } catch (error) {
     if (error?.code !== "ESRCH") throw error;
   }
+}
+
+function groupExists(groupId) {
+  if (!groupId) return false;
+  try {
+    process.kill(-groupId, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForGroupExit(groupId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (groupExists(groupId)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return true;
 }
 
 export class ProcessGroupSupervisor {
@@ -45,7 +65,8 @@ export class ProcessGroupSupervisor {
   attach(child) {
     if (this.#active) throw new Error("A process group is already active.");
     if (this.#interrupted) throw new Error(`Runner interrupted by ${this.#interrupted}.`);
-    this.#active = child;
+    if (!child.pid) throw new Error("Cannot supervise a child without a process-group ID.");
+    this.#active = { child, groupId: child.pid };
   }
 
   async stopActive(signal = "SIGTERM") {
@@ -55,11 +76,25 @@ export class ProcessGroupSupervisor {
   }
 
   async settle(child) {
-    const result = await waitForExit(child);
-    if (this.#cleanup) await this.#cleanup;
-    if (this.#active === child) this.#active = null;
-    this.#cleanup = null;
-    return result;
+    try {
+      const result = await waitForExit(child);
+      if (this.#cleanup) {
+        await this.#cleanup;
+      } else if (this.#active?.child === child && groupExists(this.#active.groupId)) {
+        await this.stopActive("SIGTERM");
+      }
+      return result;
+    } catch (error) {
+      try {
+        if (this.#active?.child === child) await this.stopActive("SIGTERM");
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Child failed and its process group could not be cleaned up.");
+      }
+      throw error;
+    } finally {
+      if (this.#active?.child === child) this.#active = null;
+      this.#cleanup = null;
+    }
   }
 
   async close() {
@@ -79,14 +114,15 @@ export class ProcessGroupSupervisor {
     });
   }
 
-  async #terminate(child, signal) {
-    signalGroup(child, signal);
-    const exited = waitForExit(child);
-    const graceful = await Promise.race([
-      exited.then(() => true),
-      new Promise((resolve) => setTimeout(() => resolve(false), this.#graceMs)),
-    ]);
-    if (!graceful) signalGroup(child, "SIGKILL");
-    await exited;
+  async #terminate({ child, groupId }, signal) {
+    signalGroup(groupId, signal);
+    const leaderExit = waitForExit(child);
+    if (!await waitForGroupExit(groupId, this.#graceMs)) {
+      signalGroup(groupId, "SIGKILL");
+      if (!await waitForGroupExit(groupId, this.#graceMs)) {
+        throw new Error(`Process group ${groupId} survived SIGKILL.`);
+      }
+    }
+    await leaderExit;
   }
 }

@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import path from "node:path";
 import { inheritedExtendedBaselines } from "./check-extended-baseline.mjs";
+import { ProcessGroupSupervisor } from "./process-group-supervisor.mjs";
 
 const root = process.cwd();
 const vitestCli = "node_modules/vitest/vitest.mjs";
@@ -12,7 +13,7 @@ const rawArgs = process.argv.slice(2);
 const defaultOnly = rawArgs[0] === "--default";
 const ordinaryOnly = rawArgs[0] === "--ordinary-only";
 const ordinaryArgs = ordinaryOnly ? rawArgs.slice(1) : rawArgs;
-let activeChild = null;
+const supervisor = new ProcessGroupSupervisor();
 
 function processTreeRss(rootPid) {
   const snapshot = spawnSync("ps", ["-axo", "pid=,ppid=,rss="], { encoding: "utf8" });
@@ -35,14 +36,6 @@ function processTreeRss(rootPid) {
   return rows.filter((row) => descendants.has(row.pid)).reduce((total, row) => total + row.rss, 0);
 }
 
-function terminateActive(signal = "SIGTERM") {
-  if (!activeChild?.pid) return;
-  try { process.kill(-activeChild.pid, signal); } catch {}
-}
-
-process.on("SIGINT", () => terminateActive("SIGINT"));
-process.on("SIGTERM", () => terminateActive("SIGTERM"));
-
 async function runPhase(label, script, args = []) {
   const child = spawn(process.execPath, [path.join(root, script), ...args], {
     cwd: root,
@@ -53,7 +46,7 @@ async function runPhase(label, script, args = []) {
     },
     stdio: "inherit",
   });
-  activeChild = child;
+  supervisor.attach(child);
   let peakKiB = 0;
   let memoryKilled = false;
   const monitor = setInterval(() => {
@@ -62,49 +55,54 @@ async function runPhase(label, script, args = []) {
     peakKiB = Math.max(peakKiB, totalKiB);
     if (totalKiB >= rssLimitKiB && !memoryKilled) {
       memoryKilled = true;
-      terminateActive();
+      void supervisor.stopActive("SIGTERM");
     }
   }, 100);
-  const result = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
-  });
-  clearInterval(monitor);
-  activeChild = null;
+  let result;
+  try {
+    result = await supervisor.settle(child);
+  } finally {
+    clearInterval(monitor);
+  }
   process.stdout.write(`extended phase ${label} peak_rss_kib=${peakKiB} memory_killed=${memoryKilled}\n`);
   if (memoryKilled) throw new Error(`Extended phase ${label} exceeded ${rssLimitKiB} KiB aggregate RSS.`);
+  if (supervisor.interruptedSignal()) throw new Error(`Extended runner interrupted by ${supervisor.interruptedSignal()}.`);
   if (result.code !== 0) throw new Error(`Extended phase ${label} failed (${result.signal ?? result.code}).`);
 }
 
-if (defaultOnly) {
-  await runPhase("default", vitestCli, [
-    "run", "--config", "vitest.config.ts", "--maxWorkers=1", "--fileParallelism=false",
-  ]);
-} else {
-  await runPhase("baseline", "scripts/check-extended-baseline.mjs");
-  const vitestArgs = ["run", "--config", "vitest.extended.config.ts", "--maxWorkers=1", "--fileParallelism=false"];
-  if (ordinaryArgs.length > 0) {
-    await runPhase("ordinary-subset", vitestCli, [...vitestArgs, ...ordinaryArgs]);
-  } else {
-    const excluded = new Set([
-      "test/extended/iab-preview-launcher.test.ts",
-      "test/extended/artifact-ingest-pool.test.ts",
-      ...inheritedExtendedBaselines.keys(),
+try {
+  if (defaultOnly) {
+    await runPhase("default", vitestCli, [
+      "run", "--config", "vitest.config.ts", "--maxWorkers=1", "--fileParallelism=false",
     ]);
-    const files = readdirSync(path.join(root, "test", "extended"))
-      .filter((name) => /\.test\.tsx?$/.test(name))
-      .map((name) => `test/extended/${name}`)
-      .filter((file) => !excluded.has(file))
-      .sort();
-    const batchSize = 1;
-    const batchCount = Math.ceil(files.length / batchSize);
-    for (let index = 0; index < files.length; index += batchSize) {
-      const batch = files.slice(index, index + batchSize);
-      await runPhase(`ordinary-${Math.floor(index / batchSize) + 1}-of-${batchCount}`, vitestCli, [
-        ...vitestArgs,
-        ...batch,
+  } else {
+    await runPhase("baseline", "scripts/check-extended-baseline.mjs");
+    const vitestArgs = ["run", "--config", "vitest.extended.config.ts", "--maxWorkers=1", "--fileParallelism=false"];
+    if (ordinaryArgs.length > 0) {
+      await runPhase("ordinary-subset", vitestCli, [...vitestArgs, ...ordinaryArgs]);
+    } else {
+      const excluded = new Set([
+        "test/extended/iab-preview-launcher.test.ts",
+        "test/extended/artifact-ingest-pool.test.ts",
+        ...inheritedExtendedBaselines.keys(),
       ]);
+      const files = readdirSync(path.join(root, "test", "extended"))
+        .filter((name) => /\.test\.tsx?$/.test(name))
+        .map((name) => `test/extended/${name}`)
+        .filter((file) => !excluded.has(file))
+        .sort();
+      const batchSize = 1;
+      const batchCount = Math.ceil(files.length / batchSize);
+      for (let index = 0; index < files.length; index += batchSize) {
+        const batch = files.slice(index, index + batchSize);
+        await runPhase(`ordinary-${Math.floor(index / batchSize) + 1}-of-${batchCount}`, vitestCli, [
+          ...vitestArgs,
+          ...batch,
+        ]);
+      }
     }
+    if (!ordinaryOnly) await runPhase("iab-preview", "scripts/run-iab-preview-tests.mjs");
   }
-  if (!ordinaryOnly) await runPhase("iab-preview", "scripts/run-iab-preview-tests.mjs");
+} finally {
+  await supervisor.close();
 }

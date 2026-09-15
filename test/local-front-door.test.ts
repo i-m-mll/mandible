@@ -54,4 +54,38 @@ describe("local HTTPS front door", () => {
       }
     }
   });
+
+  it("routes multiple previews normally but refuses ambiguous legacy preview migration", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-multiple-")); roots.add(home);
+    const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
+    authority.registerInstance({
+      instance_id: "production", installation_id: "install_test", role: "main",
+      public_origin: "https://app.mandible.localhost:19420", backend_origin: "http://127.0.0.1:29420",
+      backend_generation: "main-1", effect_ceiling: ["ledger:read", "ledger:write"], writable_roots: [],
+    });
+    for (const [suffix, port] of [["first", 29421], ["second", 29422]] as const) {
+      authority.registerInstance({
+        instance_id: `preview-${suffix}`, installation_id: "install_test", role: "preview",
+        public_origin: `https://preview-${suffix}.mandible.localhost:19421`, backend_origin: `http://127.0.0.1:${port}`,
+        backend_generation: `${suffix}-1`, effect_ceiling: ["ledger:read", "files:preview"], writable_roots: [],
+      });
+    }
+    authority.close();
+    const script = path.resolve("scripts/local-front-door.mjs");
+    const ordinary = spawnSync(process.execPath, [script, "configure"], {
+      env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8",
+    });
+    expect(ordinary.status, ordinary.stderr).toBe(0);
+    const config = fs.readFileSync(path.join(home, "config", "local-sessions", "Caddyfile"), "utf8");
+    expect(config).toContain("https://preview-first.mandible.localhost:19421 {");
+    expect(config).toContain("https://preview-second.mandible.localhost:19421 {");
+    expect(config).toMatch(/https:\/\/preview-first\.mandible\.localhost:19421 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29421/);
+    expect(config).toMatch(/https:\/\/preview-second\.mandible\.localhost:19421 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29422/);
+
+    const migration = spawnSync(process.execPath, [script, "configure-migration"], {
+      env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8",
+    });
+    expect(migration.status).toBe(1);
+    expect(migration.stderr).toContain("Legacy port 19421 is ambiguous across registered previews.");
+  });
 });

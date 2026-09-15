@@ -65,7 +65,7 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
   const production = instances.find((entry) => entry.role === "main");
   if (!production) fail("The production instance is not registered.");
   const previews = instances.filter((entry) => entry.role === "preview");
-  if (previews.length > 1) fail("Legacy port 19421 is ambiguous across registered previews.");
+  if (legacyConversion && previews.length > 1) fail("Legacy port 19421 is ambiguous across registered previews.");
   const productionBackend = new URL(production.backend_origin);
   const productionPublic = new URL(production.public_origin);
   const globalOptions = "{\n  admin 127.0.0.1:2019\n  local_certs\n  auto_https disable_redirects\n}";

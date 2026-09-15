@@ -16,6 +16,7 @@ it("terminates the active detached shard group when its supervisor receives TERM
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-process-group-"));
   temporaryRoots.push(root);
   const pidFile = path.join(root, "descendant.pid");
+  const leaderTermFile = path.join(root, "leader-term");
   const moduleUrl = new URL("../../scripts/process-group-supervisor.mjs", import.meta.url).href;
   const outer = spawn(process.execPath, ["--input-type=module", "-e", `
     import { spawn } from "node:child_process";
@@ -24,7 +25,10 @@ it("terminates the active detached shard group when its supervisor receives TERM
     const child = spawn(process.execPath, ["-e", ${JSON.stringify(`
       const { spawn } = require("node:child_process");
       const fs = require("node:fs");
-      process.on("SIGTERM", () => {});
+      process.on("SIGTERM", () => {
+        fs.writeFileSync(${JSON.stringify(leaderTermFile)}, "received");
+        process.exit(0);
+      });
       const descendant = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });
       fs.writeFileSync(${JSON.stringify(pidFile)}, String(descendant.pid));
       setInterval(() => {}, 1000);
@@ -38,6 +42,7 @@ it("terminates the active detached shard group when its supervisor receives TERM
   outer.kill("SIGTERM");
   await waitForExit(outer, 2_000);
   await waitUntil(() => !isAlive(descendantPid), 2_000);
+  expect(fs.existsSync(leaderTermFile)).toBe(true);
   expect(isAlive(descendantPid)).toBe(false);
 }, 6_000);
 
