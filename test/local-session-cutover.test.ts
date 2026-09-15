@@ -13,6 +13,11 @@ const capturedLegacyHealth = JSON.parse(fs.readFileSync(new URL("./fixtures/loca
 const roots = new Set<string>();
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.clear(); });
 
+function renderServicePlist(definition: { Label: string; KeepAlive: boolean; ProgramArguments: string[]; EnvironmentVariables: Record<string, string>; StandardOutPath: string; StandardErrorPath: string }) {
+  const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${xml(definition.Label)}</string><key>KeepAlive</key><true/><key>ProgramArguments</key><array>${definition.ProgramArguments.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array><key>EnvironmentVariables</key><dict>${Object.entries(definition.EnvironmentVariables).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join("")}</dict><key>StandardOutPath</key><string>${xml(definition.StandardOutPath)}</string><key>StandardErrorPath</key><string>${xml(definition.StandardErrorPath)}</string></dict></plist>\n`;
+}
+
 function fixture({ supervisedMain = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-session-cutover-"));
   roots.add(root);
@@ -22,7 +27,8 @@ function fixture({ supervisedMain = false } = {}) {
   const oldDb = path.join(root, "old.db");
   const candidateDb = path.join(root, "candidate.db");
   const servicePlistPath = path.join(root, "com.mll.mandible.plist");
-  if (supervisedMain) fs.writeFileSync(servicePlistPath, `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.mll.mandible</string><key>KeepAlive</key><true/><key>EnvironmentVariables</key><dict><key>MANDIBLE_PORT</key><string>19420</string></dict></dict></plist>\n`);
+  let serviceDefinition = { Label: "com.mll.mandible", KeepAlive: true, ProgramArguments: [process.execPath, path.join(root, "production-daemon.js")], EnvironmentVariables: { MANDIBLE_PORT: "19420", PATH: process.env.PATH ?? "/usr/bin:/bin" }, StandardOutPath: path.join(root, "launchd-stdout.log"), StandardErrorPath: path.join(root, "launchd-stderr.log") };
+  if (supervisedMain) fs.writeFileSync(servicePlistPath, renderServicePlist(serviceDefinition));
   fs.writeFileSync(oldDb, "old");
   fs.writeFileSync(candidateDb, "candidate");
   fs.writeFileSync(metadataPath, `${JSON.stringify({ daemon: "legacy" })}\n`);
@@ -41,7 +47,7 @@ function fixture({ supervisedMain = false } = {}) {
       public_port: publicPort,
       legacy: {
         credential_directory: credentialDirectory,
-        ...(role === "main" && supervisedMain ? { lifecycle: { kind: "launchd", domain: "gui/501", label: "com.mll.mandible", plist_path: servicePlistPath } } : { lifecycle: { kind: "unmanaged" } }),
+        ...(role === "main" && supervisedMain ? { lifecycle: { kind: "launchd", domain: `gui/${process.getuid?.()}`, label: "com.mll.mandible", plist_path: servicePlistPath } } : { lifecycle: { kind: "unmanaged" } }),
         expected: {
           role,
           startup_epoch: `legacy-${role}`,
@@ -119,7 +125,16 @@ function fixture({ supervisedMain = false } = {}) {
   const manifestPath = path.join(root, "manifest.json");
   const journalPath = path.join(root, "journal.json");
   fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-  return { root, configPath, metadataPath, currentDbPath, oldDb, candidateDb, authorityDb, manifest, manifestPath, journalPath, servicePlistPath, supervisedMain };
+  return { root, configPath, metadataPath, currentDbPath, oldDb, candidateDb, authorityDb, manifest, manifestPath, journalPath, servicePlistPath, supervisedMain,
+    readPlistDefinition() {
+      if (fs.readFileSync(servicePlistPath, "utf8") !== renderServicePlist(serviceDefinition)) throw new Error("fake plist inspector found unrecognized plist bytes");
+      return structuredClone(serviceDefinition);
+    },
+    writePlistDefinition(definition: typeof serviceDefinition) {
+      serviceDefinition = structuredClone(definition);
+      fs.writeFileSync(servicePlistPath, renderServicePlist(serviceDefinition));
+    },
+  };
 }
 
 function lifecycle(fx: ReturnType<typeof fixture>) {
@@ -133,7 +148,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
   let interruptAfterNextStop = false;
   let failReloadOnce = false;
   const unhealthyRoles = new Set<string>();
-  const supervisor = { loaded: fx.supervisedMain, enabled: fx.supervisedMain, plist_path: fx.servicePlistPath };
+  const supervisor = { loaded: fx.supervisedMain, enabled: fx.supervisedMain, plist_path: fx.servicePlistPath, definition: fx.supervisedMain ? fx.readPlistDefinition() : null };
   let interruptSupervisorEffect: "disable" | "bootout" | "bootstrap" | null = null;
   for (const instance of fx.manifest.instances) listeners.set(instance.public_port, { pid: ++nextPid, fingerprint: `process-${nextPid}`, kind: "legacy", role: instance.role, epoch: instance.legacy.expected.startup_epoch });
 
@@ -191,6 +206,8 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
     interruptSupervisor(effect: "disable" | "bootout" | "bootstrap") { interruptSupervisorEffect = effect; },
     supervisorState() { return { ...supervisor }; },
     driftSupervisorPath() { supervisor.plist_path = `${fx.servicePlistPath}.other`; },
+    exitSupervisedProcess() { listeners.delete(19420); events.push("supervisor:process-exit"); },
+    occupyPublicPort() { const pid = ++nextPid; listeners.set(19420, { pid, fingerprint: `process-${pid}`, kind: "candidate", role: "main" }); },
     effects: {
       health,
       waitHealth: async (port: number) => {
@@ -272,7 +289,9 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
         listeners.set(instance.public_port, { pid, fingerprint: `process-${pid}`, kind: "legacy", role, epoch: `restored-${role}-${pid}` });
         events.push(`restore:${role}`);
       },
-      supervisorStatus: async () => ({ loaded: supervisor.loaded, enabled: supervisor.enabled, pid: supervisor.loaded ? listeners.get(19420)?.pid ?? null : null, plist_path: supervisor.loaded ? supervisor.plist_path : null }),
+      inspectSupervisorPlist: async () => fx.readPlistDefinition(),
+      supervisorStatus: async () => ({ loaded: supervisor.loaded, enabled: supervisor.enabled, pid: supervisor.loaded ? (listeners.get(19420)?.kind === "legacy" ? listeners.get(19420)!.pid : null) : null, plist_path: supervisor.loaded ? supervisor.plist_path : null,
+        definition: supervisor.loaded && supervisor.definition ? { program: supervisor.definition.ProgramArguments[0], arguments: supervisor.definition.ProgramArguments, environment: supervisor.definition.EnvironmentVariables, stdout_path: supervisor.definition.StandardOutPath, stderr_path: supervisor.definition.StandardErrorPath, keepalive: supervisor.definition.KeepAlive } : null }),
       waitSupervisorStopped: async () => { if (supervisor.loaded || supervisor.enabled || listeners.has(19420)) throw new Error("supervised service or port did not stop"); },
       supervisorDisable: async () => {
         supervisor.enabled = false;
@@ -287,6 +306,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
       },
       supervisorEnable: async () => { supervisor.enabled = true; events.push("supervisor:enable"); },
       supervisorBootstrap: async () => {
+        supervisor.definition = fx.readPlistDefinition();
         supervisor.loaded = true;
         const pid = ++nextPid;
         listeners.set(19420, { pid, fingerprint: `process-${pid}`, kind: "legacy", role: "main", epoch: `restored-main-${pid}` });
@@ -314,7 +334,7 @@ describe("local session first cutover", () => {
     fs.writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
     await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
     const prepared = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
-    expect(prepared.legacy.main.supervisor).toMatchObject({ domain: "gui/501", label: "com.mll.mandible", loaded: true, enabled: true });
+    expect(prepared.legacy.main.supervisor).toMatchObject({ domain: `gui/${process.getuid?.()}`, label: "com.mll.mandible", loaded: true, enabled: true });
     await runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects);
     expect(life.events).toEqual(expect.arrayContaining(["supervisor:disable", "supervisor:bootout"]));
     expect(life.events.filter((event) => event === "stop:101")).toHaveLength(1);
@@ -349,6 +369,61 @@ describe("local session first cutover", () => {
     expect(life.events).toContain("supervisor:enable");
     expect(life.events).not.toContain("supervisor:bootstrap");
     expect(life.supervisorState()).toMatchObject({ loaded: true, enabled: true });
+  });
+
+  it("replays a not-applied stop receipt after interruption before the rolled-back transition", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptSupervisor("disable");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated supervisor disable interruption");
+    await runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects);
+    const interrupted = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
+    expect(interrupted.runtime.intents["legacy.main.stop"].effect).toBe("not-applied");
+    interrupted.state = "rolling_back";
+    delete interrupted.rolled_back_at;
+    fs.writeFileSync(fx.journalPath, JSON.stringify(interrupted));
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events).not.toContain("supervisor:bootstrap");
+    expect(life.events.filter((event) => event === "supervisor:enable")).toHaveLength(1);
+  });
+
+  it("reconciles a loaded launchd service whose process exited during disable", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptSupervisor("disable");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated supervisor disable interruption");
+    life.exitSupervisedProcess();
+    expect((await life.effects.supervisorStatus()).pid).toBeNull();
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).resolves.toMatchObject({ state: "migration" });
+    expect(life.events.filter((event) => event === "supervisor:bootout")).toHaveLength(1);
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events.filter((event) => event === "supervisor:bootstrap")).toHaveLength(1);
+  });
+
+  it("rolls back a loaded launchd service without a PID instead of assuming HTTP readiness", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptSupervisor("disable");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated supervisor disable interruption");
+    life.exitSupervisedProcess();
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(life.events).toEqual(expect.arrayContaining(["supervisor:bootout", "supervisor:bootstrap"]));
+  });
+
+  it("refuses a foreign public listener while launchd has no PID", async () => {
+    const fx = fixture({ supervisedMain: true });
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    life.interruptSupervisor("disable");
+    await expect(runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects)).rejects.toThrow("simulated supervisor disable interruption");
+    life.exitSupervisedProcess();
+    life.occupyPublicPort();
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).rejects.toThrow("unexpected process");
+    expect(life.events).not.toContain("supervisor:bootout");
+    expect(life.events).not.toContain("supervisor:bootstrap");
   });
 
   it("rolls back directly after launchd bootout before its receipt", async () => {
@@ -389,6 +464,20 @@ describe("local session first cutover", () => {
     life.driftSupervisorPath();
     await expect(runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects)).rejects.toThrow("not owned by its exact launchd service");
     expect(life.events).not.toContain("supervisor:disable");
+  });
+
+  it("refuses an edited plist whose executable or arguments differ from the loaded definition", async () => {
+    for (const mutation of ["executable", "arguments", "environment"] as const) {
+      const fx = fixture({ supervisedMain: true });
+      const life = lifecycle(fx);
+      const edited = fx.readPlistDefinition();
+      if (mutation === "executable") edited.ProgramArguments[0] = "/usr/bin/other-node";
+      if (mutation === "arguments") edited.ProgramArguments[1] = "/tmp/other-daemon.js";
+      if (mutation === "environment") edited.EnvironmentVariables.PATH = "/usr/bin:/bin";
+      fx.writePlistDefinition(edited);
+      await expect(runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects)).rejects.toThrow("loaded launchd");
+      expect(life.events).not.toContain("supervisor:disable");
+    }
   });
 
   it("records production service suspension while the normal gateway owns 19420", async () => {

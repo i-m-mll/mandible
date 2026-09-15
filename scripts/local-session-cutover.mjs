@@ -238,11 +238,13 @@ async function ensureLegacyRestored(journalPath, journal, instance, effects) {
 async function captureLegacySupervisor(instance, listener, effects) {
   const service = instance.legacy.lifecycle;
   const plist = fs.readFileSync(service.plist_path);
-  const details = parseLaunchdPlist(service.plist_path);
+  const details = await effects.inspectSupervisorPlist(service);
   if (details.Label !== service.label || details.KeepAlive !== true || details.EnvironmentVariables?.MANDIBLE_PORT !== String(instance.public_port)) throw new Error(`Legacy ${instance.role} plist does not identify the supervised public service.`);
   const status = await effects.supervisorStatus(service);
   if (!status.loaded || status.pid !== listener.pid || status.plist_path !== service.plist_path) throw new Error(`Legacy ${instance.role} listener is not owned by its exact launchd service.`);
-  return { domain: service.domain, label: service.label, plist_path: service.plist_path, plist_data: plist.toString("base64"), plist_digest: digestBytes(plist), loaded: status.loaded, enabled: status.enabled };
+  const definition = supervisorDefinition(details);
+  assertLoadedSupervisorDefinition(status, definition, instance.role);
+  return { domain: service.domain, label: service.label, plist_path: service.plist_path, plist_data: plist.toString("base64"), plist_digest: digestBytes(plist), definition, loaded: status.loaded, enabled: status.enabled };
 }
 
 function assertSupervisorPlist(captured) {
@@ -250,10 +252,45 @@ function assertSupervisorPlist(captured) {
   if (digestBytes(actual) !== captured.plist_digest || actual.toString("base64") !== captured.plist_data) throw new Error(`Supervised legacy plist drifted: ${captured.plist_path}`);
 }
 
-function parseLaunchdPlist(plistPath) {
+export function inspectLaunchdPlist(plistPath) {
   const result = spawnSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", plistPath], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`Cannot parse supervised legacy plist: ${plistPath}`);
   return JSON.parse(result.stdout);
+}
+
+function supervisorDefinition(details) {
+  const args = details.ProgramArguments;
+  if (!Array.isArray(args) || args.length === 0 || args.some((arg) => typeof arg !== "string" || !arg)) throw new Error("Supervised legacy plist requires explicit ProgramArguments.");
+  const program = details.Program ?? args[0];
+  if (typeof program !== "string" || !path.isAbsolute(program)) throw new Error("Supervised legacy plist requires an absolute executable.");
+  const environment = details.EnvironmentVariables ?? {};
+  if (Object.entries(environment).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string")) throw new Error("Supervised legacy plist has invalid environment values.");
+  return { program, arguments: args, environment, stdout_path: details.StandardOutPath ?? null, stderr_path: details.StandardErrorPath ?? null, keepalive: true };
+}
+
+function assertLoadedSupervisorDefinition(status, expected, role) {
+  if (!status.loaded || !status.definition || status.definition.program !== expected.program || !sameValue(status.definition.arguments, expected.arguments) || status.definition.keepalive !== true) throw new Error(`Legacy ${role} loaded launchd executable or arguments drifted from its plist.`);
+  for (const key of ["MANDIBLE_PORT", "PATH", "HOME", "DEVELOPER_DIR"]) if (status.definition.environment?.[key] !== expected.environment[key]) throw new Error(`Legacy ${role} loaded launchd environment drifted from its plist: ${key}.`);
+  for (const [key, value] of Object.entries(expected.environment)) if (status.definition.environment?.[key] !== value) throw new Error(`Legacy ${role} loaded launchd environment drifted from its plist: ${key}.`);
+  if (status.definition.stdout_path !== expected.stdout_path) throw new Error(`Legacy ${role} loaded launchd stdout path drifted from its plist.`);
+  if (status.definition.stderr_path !== expected.stderr_path) throw new Error(`Legacy ${role} loaded launchd stderr path drifted from its plist.`);
+}
+
+function assertLoadedSupervisorService(status, captured, role) {
+  if (status.loaded && status.plist_path !== captured.plist_path) throw new Error(`Legacy ${role} launchd service path drifted.`);
+  if (status.loaded) assertLoadedSupervisorDefinition(status, captured.definition, role);
+}
+
+async function observeSupervisedPort(instance, status, effects, label) {
+  const listener = await effects.discoverListener(instance.public_port);
+  if (!listener) {
+    if (await effects.portOpen(instance.public_port)) throw new Error(`Legacy ${instance.role} public port is occupied by an unidentifiable listener.`);
+    return null;
+  }
+  if (!status.loaded || !status.pid || listener.pid !== status.pid) throw new Error(`Legacy ${instance.role} public port is owned by an unexpected process.`);
+  const health = await effects.health(instance.public_port);
+  assertHealth(health, stableLegacyExpectation(instance), label);
+  return { listener, health };
 }
 
 function digestBytes(value) { return createHash("sha256").update(value).digest("hex"); }
@@ -261,6 +298,7 @@ function digestBytes(value) { return createHash("sha256").update(value).digest("
 async function assertLegacySupervisorOwns(instance, legacy, listener, effects) {
   assertSupervisorPlist(legacy.supervisor);
   const status = await effects.supervisorStatus(instance.legacy.lifecycle);
+  assertLoadedSupervisorService(status, legacy.supervisor, instance.role);
   if (!status.loaded || status.pid !== listener.pid || status.plist_path !== legacy.supervisor.plist_path || status.enabled !== legacy.supervisor.enabled) throw new Error(`Legacy ${instance.role} launchd ownership or enabled state drifted.`);
 }
 
@@ -271,10 +309,9 @@ async function ensureSupervisedLegacyStopped(journalPath, journal, instance, eff
   assertSupervisorPlist(captured);
   let working = beginIntent(journalPath, journal, key, { lifecycle: "launchd", supervisor: captured });
   let status = await effects.supervisorStatus(service);
+  assertLoadedSupervisorService(status, captured, instance.role);
+  await observeSupervisedPort(instance, status, effects, `legacy ${instance.role} before disable`);
   if (status.enabled) {
-    if (!status.loaded || status.plist_path !== captured.plist_path) throw new Error(`Legacy ${instance.role} launchd service ownership drifted before disable.`);
-    const observed = await observeBoundListener(effects, instance.public_port, stableLegacyExpectation(instance), `legacy ${instance.role} before disable`);
-    if (status.pid !== observed.listener.pid) throw new Error(`Legacy ${instance.role} launchd service does not own its public listener.`);
     working = beginIntent(journalPath, working, `legacy.${instance.role}.disable`, { service });
     await effects.supervisorDisable(service);
     status = await effects.supervisorStatus(service);
@@ -282,12 +319,9 @@ async function ensureSupervisedLegacyStopped(journalPath, journal, instance, eff
     working = finishIntent(journalPath, working, `legacy.${instance.role}.disable`);
   }
   status = await effects.supervisorStatus(service);
+  assertLoadedSupervisorService(status, captured, instance.role);
   if (status.loaded) {
-    if (status.plist_path !== captured.plist_path || !status.pid) throw new Error(`Legacy ${instance.role} launchd service ownership drifted before bootout.`);
-    const listener = await effects.discoverListener(instance.public_port);
-    if (!listener || listener.pid !== status.pid) throw new Error(`Legacy ${instance.role} launchd process does not own its public listener.`);
-    const health = await effects.health(instance.public_port);
-    assertHealth(health, stableLegacyExpectation(instance), `legacy ${instance.role} before bootout`);
+    await observeSupervisedPort(instance, status, effects, `legacy ${instance.role} before bootout`);
     working = beginIntent(journalPath, working, `legacy.${instance.role}.bootout`, { service });
     await effects.supervisorBootout(service);
   }
@@ -308,26 +342,42 @@ async function ensureSupervisedLegacyRestored(journalPath, journal, instance, ef
   assertSupervisorPlist(captured);
   let working = journal;
   let status = await effects.supervisorStatus(service);
+  assertLoadedSupervisorService(status, captured, instance.role);
+  if (working.runtime.intents[stopKey]?.effect === "not-applied") {
+    if (!status.loaded || status.enabled !== captured.enabled) throw new Error(`Legacy ${instance.role} not-applied stop receipt lost its original launchd service.`);
+    const observed = await observeBoundListener(effects, instance.public_port, instance.legacy.expected, `original legacy ${instance.role}`);
+    if (status.pid !== observed.listener.pid) throw new Error(`Legacy ${instance.role} not-applied stop receipt lost listener ownership.`);
+    assertSameProcess(observed.listener, working.legacy[instance.role].listener, `original legacy ${instance.role}`);
+    return working;
+  }
   if (intentDone(working, restoreKey)) {
     if (status.loaded) {
-      const observed = await observeBoundListener(effects, instance.public_port, stableLegacyExpectation(instance), `restored legacy ${instance.role}`);
-      if (status.pid !== observed.listener.pid || status.plist_path !== captured.plist_path || status.enabled !== captured.enabled || !observed.health.startup_epoch || observed.health.startup_epoch === instance.legacy.expected.startup_epoch) throw new Error(`Restored legacy ${instance.role} receipt no longer matches its launchd-owned healthy listener.`);
-      return working;
+      const observed = await observeSupervisedPort(instance, status, effects, `restored legacy ${instance.role}`);
+      if (observed) {
+        if (status.enabled !== captured.enabled || !observed.health.startup_epoch || observed.health.startup_epoch === instance.legacy.expected.startup_epoch) throw new Error(`Restored legacy ${instance.role} receipt no longer matches its launchd-owned healthy listener.`);
+        return working;
+      }
     }
     if (await effects.discoverListener(instance.public_port) || await effects.portOpen(instance.public_port)) throw new Error(`Restored legacy ${instance.role} port is unexpectedly occupied.`);
     working = retryIntent(journalPath, working, restoreKey);
   }
   if (!intentDone(working, stopKey) && status.loaded) {
-    const observed = await observeBoundListener(effects, instance.public_port, stableLegacyExpectation(instance), `legacy ${instance.role} before bootout`);
-    if (status.pid !== observed.listener.pid || status.plist_path !== captured.plist_path) throw new Error(`Legacy ${instance.role} service ownership drifted before rollback.`);
-    if (captured.enabled && !status.enabled) {
-      working = beginIntent(journalPath, working, `legacy.${instance.role}.enable`, { service });
-      await effects.supervisorEnable(service);
-      status = await effects.supervisorStatus(service);
-      if (!status.enabled || !status.loaded || status.pid !== observed.listener.pid) throw new Error(`Legacy ${instance.role} launchd enabled state did not restore.`);
-      working = finishIntent(journalPath, working, `legacy.${instance.role}.enable`);
+    const observed = await observeSupervisedPort(instance, status, effects, `legacy ${instance.role} before rollback`);
+    if (observed) {
+      if (captured.enabled && !status.enabled) {
+        working = beginIntent(journalPath, working, `legacy.${instance.role}.enable`, { service });
+        await effects.supervisorEnable(service);
+        status = await effects.supervisorStatus(service);
+        assertLoadedSupervisorService(status, captured, instance.role);
+        if (!status.enabled || !status.loaded || status.pid !== observed.listener.pid) throw new Error(`Legacy ${instance.role} launchd enabled state did not restore.`);
+        working = finishIntent(journalPath, working, `legacy.${instance.role}.enable`);
+      }
+      return finishIntent(journalPath, working, stopKey, { effect: "not-applied" });
     }
-    return finishIntent(journalPath, working, stopKey, { effect: "not-applied" });
+  }
+  if (!intentDone(working, stopKey)) {
+    working = await ensureSupervisedLegacyStopped(journalPath, working, instance, effects);
+    status = await effects.supervisorStatus(service);
   }
   working = beginIntent(journalPath, working, restoreKey, { lifecycle: "launchd", supervisor: captured });
   if (captured.enabled && !status.enabled) {
@@ -357,9 +407,23 @@ async function ensureSupervisedLegacyRestored(journalPath, journal, instance, ef
     working = beginIntent(journalPath, working, `legacy.${instance.role}.bootstrap`, { service });
     await effects.supervisorBootstrap(service);
     await effects.waitHealth(instance.public_port, stableLegacyExpectation(instance));
+  } else if (!await observeSupervisedPort(instance, status, effects, `restored legacy ${instance.role}`)) {
+    working = await ensureSupervisedLegacyStopped(journalPath, working, instance, effects);
+    status = await effects.supervisorStatus(service);
+    if (!status.enabled) {
+      working = beginIntent(journalPath, working, `legacy.${instance.role}.enable.bootstrap`, { service });
+      await effects.supervisorEnable(service);
+      status = await effects.supervisorStatus(service);
+      if (!status.enabled) throw new Error(`Legacy ${instance.role} launchd service did not enable for bootstrap.`);
+      working = finishIntent(journalPath, working, `legacy.${instance.role}.enable.bootstrap`);
+    }
+    working = retryIntent(journalPath, working, `legacy.${instance.role}.bootstrap`);
+    await effects.supervisorBootstrap(service);
+    await effects.waitHealth(instance.public_port, stableLegacyExpectation(instance));
   }
   const observed = await observeBoundListener(effects, instance.public_port, stableLegacyExpectation(instance), `restored legacy ${instance.role}`);
   status = await effects.supervisorStatus(service);
+  assertLoadedSupervisorService(status, captured, instance.role);
   if (!captured.enabled && status.enabled) {
     working = beginIntent(journalPath, working, `legacy.${instance.role}.disable.restore`, { service });
     await effects.supervisorDisable(service);
@@ -788,9 +852,10 @@ function systemEffects() {
       child.unref();
     },
     startControl: async (control) => runSync(control),
-    supervisorStatus: launchdStatus,
+    inspectSupervisorPlist: (service) => inspectLaunchdPlist(service.plist_path),
+    supervisorStatus: inspectLaunchdService,
     waitSupervisorStopped: (service, port) => waitUntil(async () => {
-      const status = launchdStatus(service);
+      const status = inspectLaunchdService(service);
       return !status.loaded && !status.enabled && !await discoverListener(port) && !await portOpen(port);
     }, `launchd ${service.domain}/${service.label} and port ${port} to stop`),
     supervisorDisable: (service) => launchdCommand("disable", `${service.domain}/${service.label}`),
@@ -806,7 +871,7 @@ function launchdCommand(action, ...args) {
   if (result.status !== 0) throw new Error(`launchctl ${action} failed: ${(result.stderr || result.stdout || "no output").trim()}`);
 }
 
-function launchdStatus(service) {
+export function inspectLaunchdService(service) {
   const target = `${service.domain}/${service.label}`;
   const disabled = spawnSync("/bin/launchctl", ["print-disabled", service.domain], { encoding: "utf8" });
   if (disabled.status !== 0) throw new Error(`Cannot inspect launchd enabled state for ${target}.`);
@@ -820,7 +885,22 @@ function launchdStatus(service) {
   }
   const plistPath = /^\s*path = (.+)$/m.exec(printed.stdout)?.[1] ?? null;
   const pid = Number(/^\s*pid = (\d+)$/m.exec(printed.stdout)?.[1]);
-  return { loaded: true, enabled: enabledMatch[1] === "enabled", pid: Number.isInteger(pid) && pid > 0 ? pid : null, plist_path: plistPath };
+  const argumentsBlock = /^\targuments = \{\n([\s\S]*?)^\t\}/m.exec(printed.stdout)?.[1];
+  const environmentBlock = /^\tenvironment = \{\n([\s\S]*?)^\t\}/m.exec(printed.stdout)?.[1];
+  const argumentsList = argumentsBlock?.split("\n").map((line) => /^\t\t(.+)$/.exec(line)?.[1]).filter(Boolean) ?? null;
+  const environment = environmentBlock ? Object.fromEntries(environmentBlock.split("\n").flatMap((line) => {
+    const match = /^\t\t([A-Za-z_][A-Za-z0-9_]*) => (.*)$/.exec(line);
+    return match ? [[match[1], match[2]]] : [];
+  })) : null;
+  const definition = {
+    program: /^\tprogram = (.+)$/m.exec(printed.stdout)?.[1] ?? null,
+    arguments: argumentsList,
+    environment,
+    stdout_path: /^\tstdout path = (.+)$/m.exec(printed.stdout)?.[1] ?? null,
+    stderr_path: /^\tstderr path = (.+)$/m.exec(printed.stdout)?.[1] ?? null,
+    keepalive: /^\tproperties = .*\bkeepalive\b/m.test(printed.stdout),
+  };
+  return { loaded: true, enabled: enabledMatch[1] === "enabled", pid: Number.isInteger(pid) && pid > 0 ? pid : null, plist_path: plistPath, definition };
 }
 
 function discoverListener(port) {
