@@ -123,7 +123,7 @@ async function complete(journalPath, journal, effects) {
     : journal;
   try {
     for (const instance of working.manifest.instances) {
-      if (working.runtime.candidates?.[instance.role]?.mode === "normal") {
+      if (working.runtime.candidates?.[instance.role]?.mode === "normal" || working.runtime.intents[`candidate.${instance.role}.normal.start`]) {
         working = await ensureCandidate(journalPath, working, instance, false, effects);
         continue;
       }
@@ -134,6 +134,7 @@ async function complete(journalPath, journal, effects) {
     effects.configureGateway(working.manifest.gateway, "normal");
     assertGatewayConfig(working.manifest.gateway.config_path, "normal");
     working = finishIntent(journalPath, working, "gateway.configure.normal");
+    working = await ensureGatewayStarted(journalPath, working, effects, "normal");
     working = beginIntent(journalPath, working, "gateway.reload.normal", { mode: "normal" });
     effects.reloadGateway(working.manifest.gateway);
     for (const instance of working.manifest.instances) await effects.waitPort(instance.public_port);
@@ -245,6 +246,11 @@ async function ensureCandidate(journalPath, journal, instance, migration, effect
   }
   working = beginIntent(journalPath, working, key, { expectation: candidateExpectation(instance, migration), process_token: processToken });
   let listener = await effects.discoverListener(instance.candidate.backend_port);
+  if (listener) {
+    const intended = await effects.discoverIntentProcess(processToken);
+    if (!intended) throw new Error(`Candidate ${instance.role} listener is not owned by its pending ${mode} start intent.`);
+    assertSameProcess(listener, intended, `candidate ${instance.role}`);
+  }
   if (!listener) {
     if (await effects.portOpen(instance.candidate.backend_port)) throw new Error(`Candidate ${instance.role} backend port is occupied by an unidentified listener.`);
     const pendingProcess = await effects.discoverIntentProcess(processToken);
@@ -299,8 +305,8 @@ async function findCandidateIntentProcess(journal, instance, effects) {
   return null;
 }
 
-async function ensureGatewayStarted(journalPath, journal, effects) {
-  const key = "gateway.start.migration";
+async function ensureGatewayStarted(journalPath, journal, effects, mode = "migration") {
+  const key = `gateway.start.${mode}`;
   const processToken = intentProcessToken(journal, key);
   let working = journal;
   if (intentDone(working, key)) {
@@ -311,18 +317,26 @@ async function ensureGatewayStarted(journalPath, journal, effects) {
     }
     working = retryIntent(journalPath, working, key);
   }
-  working = beginIntent(journalPath, working, key, { mode: "migration", process_token: processToken });
+  working = beginIntent(journalPath, working, key, { mode, process_token: processToken });
   let listener = await discoverGateway(working.manifest, effects);
-  if (listener && !working.runtime.gateway && !effects.matchesProcess(listener, working.manifest.gateway.process)) throw new Error("Public ports are owned by a process that does not match the gateway start intent.");
+  if (listener) {
+    const intended = await effects.discoverIntentProcess(processToken);
+    const prior = intended ?? working.runtime.gateway;
+    if (prior) assertSameProcess(listener, prior, "gateway");
+    else if (!effects.matchesProcess(listener, working.manifest.gateway.process)) throw new Error("Public ports are owned by a process that does not match the gateway start intent.");
+  }
   if (!listener) {
     const pendingProcess = await effects.discoverIntentProcess(processToken);
     if (!pendingProcess) await effects.startProcess(working.manifest.gateway.process, { MANDIBLE_CUTOVER_INTENT: processToken });
     for (const instance of working.manifest.instances) await effects.waitPort(instance.public_port);
     listener = await discoverGateway(working.manifest, effects);
+    const intended = await effects.discoverIntentProcess(processToken);
+    if (!intended) throw new Error(`${mode} gateway listener is not owned by its pending start intent.`);
+    assertSameProcess(listener, intended, `${mode} gateway`);
   }
-  if (!listener) throw new Error("Migration gateway has no single discoverable listener process.");
+  if (!listener) throw new Error(`${mode} gateway has no single discoverable listener process.`);
   working = finishIntent(journalPath, working, key, { listener });
-  return persist(journalPath, working, { runtime: { ...working.runtime, gateway: listener, gateway_mode: "migration" } });
+  return persist(journalPath, working, { runtime: { ...working.runtime, gateway: listener, gateway_mode: mode } });
 }
 
 async function ensureGatewayStopped(journalPath, journal, effects) {
@@ -411,6 +425,7 @@ function registrationCustody(manifest) {
 function applyRegistrationCas(databasePath, custody, direction) {
   const db = new Database(databasePath);
   try {
+    db.pragma("foreign_keys = ON");
     db.transaction(() => {
       for (const entry of custody) {
         const current = normalizeRegistration(db.prepare("SELECT * FROM instance_registrations WHERE instance_id = ?").get(entry.instance_id));
@@ -418,12 +433,29 @@ function applyRegistrationCas(databasePath, custody, direction) {
         const to = direction === "stage" ? entry.desired : entry.before;
         if (sameRegistration(current, to)) continue;
         if (!sameRegistration(current, from)) throw new Error(`Registration CAS drift for ${entry.instance_id} during ${direction}.`);
-        if (!to) db.prepare("DELETE FROM instance_registrations WHERE instance_id = ?").run(entry.instance_id);
+        if (!to) {
+          if (!registrationIsReferenced(db, entry.instance_id)) db.prepare("DELETE FROM instance_registrations WHERE instance_id = ?").run(entry.instance_id);
+        }
         else writeRegistration(db, { ...to, updated_at: direction === "stage" ? Date.now() : current?.updated_at ?? to.updated_at });
       }
     })();
   } finally { db.close(); }
 }
+
+function registrationIsReferenced(db, instanceId) {
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all();
+  for (const { name } of tables) {
+    const table = quoteIdentifier(name);
+    for (const foreignKey of db.prepare(`PRAGMA foreign_key_list(${table})`).all()) {
+      if (foreignKey.table !== "instance_registrations" || foreignKey.to !== "instance_id") continue;
+      const column = quoteIdentifier(foreignKey.from);
+      if (db.prepare(`SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`).get(instanceId)) return true;
+    }
+  }
+  return false;
+}
+
+function quoteIdentifier(value) { return `"${String(value).replaceAll('"', '""')}"`; }
 
 function writeRegistration(db, row) {
   db.prepare(`INSERT INTO instance_registrations (

@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { runCutoverCommand } from "../scripts/local-session-cutover.mjs";
+import { LocalSessionAuthority } from "../src/client-auth/session-authority.js";
 
 const capturedLegacyHealth = JSON.parse(fs.readFileSync(new URL("./fixtures/local-session-legacy-health-9c742815.json", import.meta.url), "utf8"));
 
@@ -76,18 +77,14 @@ function fixture() {
   });
   fs.writeFileSync(instances[0].candidate.process.env.MANDIBLE_DB, "production");
 
-  const authorityDb = path.join(root, "sessions.db");
-  const authority = new Database(authorityDb);
-  authority.exec(`CREATE TABLE instance_registrations (
-    instance_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL, role TEXT NOT NULL,
-    public_origin TEXT NOT NULL UNIQUE, backend_origin TEXT NOT NULL,
-    backend_generation TEXT NOT NULL, effect_ceiling_json TEXT NOT NULL,
-    writable_roots_json TEXT NOT NULL, updated_at INTEGER NOT NULL
-  )`);
-  authority.prepare(`INSERT INTO instance_registrations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    "production", "authority-test", "main", "https://app.mandible.localhost:19420",
-    "http://127.0.0.1:0", "legacy-main", "[]", "[]", 7,
-  );
+  const authorityDirectory = path.join(root, "authority");
+  const authorityDb = path.join(authorityDirectory, "sessions.db");
+  const authority = new LocalSessionAuthority(authorityDirectory, "authority-test", { initialize: true, now: () => 7 });
+  authority.registerInstance({
+    instance_id: "production", installation_id: "authority-test", role: "main",
+    public_origin: "https://app.mandible.localhost:19420", backend_origin: "http://127.0.0.1:0",
+    backend_generation: "legacy-main", effect_ceiling: [], writable_roots: [],
+  });
   authority.close();
 
   const manifest = {
@@ -178,6 +175,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
     interruptBeforeBind(role: string) { interruptBeforeBindRole = role; },
     interruptNextStop() { interruptAfterNextStop = true; },
     failNextReload() { failReloadOnce = true; },
+    dropGateway() { for (const [port, listener] of listeners) if (listener.kind === "gateway") listeners.delete(port); },
     makeCandidateUnhealthy(role: string) { unhealthyRoles.add(role); },
     effects: {
       health,
@@ -232,7 +230,7 @@ function lifecycle(fx: ReturnType<typeof fixture>) {
             throw error;
           }
         } else {
-          const gateway = { pid, fingerprint: `process-${pid}`, kind: "gateway" as const };
+          const gateway = { pid, fingerprint: `process-${pid}`, kind: "gateway" as const, token: overlay.MANDIBLE_CUTOVER_INTENT };
           for (const instance of fx.manifest.instances) listeners.set(instance.public_port, gateway);
           events.push("start:gateway");
         }
@@ -301,6 +299,31 @@ describe("local session first cutover", () => {
     expect(JSON.parse(fs.readFileSync(fx.journalPath, "utf8"))).toMatchObject({ state: "recovery_failed", recovery_direction: "rollback" });
   });
 
+  it("retains newly referenced registrations and restores legacy listeners under the real authority schema", async () => {
+    const fx = fixture();
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    await runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects);
+    const db = new Database(fx.authorityDb);
+    db.pragma("foreign_keys = ON");
+    db.prepare(`INSERT INTO browser_sessions (
+      family_id, root_family_id, token_digest, csrf_digest, user_id, slug, audience,
+      effect_ceiling_json, evidence_json, created_at, last_activity_at, expires_at,
+      absolute_expires_at, revoked_at, legacy_fingerprint
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`)
+      .run("family-preview", "family-preview", "token", "csrf", "user", "operator", "preview-existing", "[]", "{}", 1, 1, 10, 20, "legacy-proof");
+    db.prepare(`INSERT INTO legacy_conversions (
+      reference, secret_digest, legacy_fingerprint, user_id, slug, target_audience,
+      return_path, browser_state_json, authenticated_at, created_at, expires_at,
+      issued_family_id, verified_at, retired_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
+      .run("conversion", "secret", "conversion-proof", "user", "operator", "preview-existing", "/", "{}", 1, 1, 10, "family-preview", 2);
+    db.close();
+    await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).resolves.toMatchObject({ state: "rolled_back" });
+    expect(registration(fx, "preview-existing")).toMatchObject({ backend_origin: "http://127.0.0.1:29421" });
+    expect(life.events).toEqual(expect.arrayContaining(["restore:main", "restore:preview"]));
+  });
+
   it("reconciles stopped and started processes after write-ahead intents without repeating effects", async () => {
     const fx = fixture();
     const life = lifecycle(fx);
@@ -315,6 +338,20 @@ describe("local session first cutover", () => {
     expect(active).toMatchObject({ state: "migration", gateway_mode: "migration" });
     expect(life.events.filter((event) => event === "stop:101")).toHaveLength(1);
     expect(life.events.filter((event) => event === "start:main:migration")).toHaveLength(1);
+  });
+
+  it("reconciles a normal candidate started before its receipt without selecting the migration receipt", async () => {
+    const fx = fixture();
+    const life = lifecycle(fx);
+    await runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects);
+    await runCutoverCommand({ command: "activate", journal: fx.journalPath, confirmCaTrusted: true }, life.effects);
+    life.interruptAfter("main");
+    await expect(runCutoverCommand({ command: "complete", journal: fx.journalPath, confirmBrowserConversion: true }, life.effects)).rejects.toThrow("simulated process interruption");
+    const interrupted = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
+    expect(interrupted.runtime.intents["candidate.main.migration.start"].status).toBe("done");
+    expect(interrupted.runtime.intents["candidate.main.normal.start"].status).toBe("pending");
+    await expect(runCutoverCommand({ command: "complete", journal: fx.journalPath, confirmBrowserConversion: true }, life.effects)).resolves.toMatchObject({ state: "complete" });
+    expect(life.events.filter((event) => event === "start:main:normal")).toHaveLength(1);
   });
 
   it("rolls back directly after a stop effect interrupted before its receipt", async () => {
@@ -364,7 +401,9 @@ describe("local session first cutover", () => {
     await expect(runCutoverCommand({ command: "complete", journal: fx.journalPath, confirmBrowserConversion: true }, life.effects)).rejects.toThrow("forward-only");
     expect(JSON.parse(fs.readFileSync(fx.journalPath, "utf8"))).toMatchObject({ state: "recovery_failed", recovery_direction: "forward", runtime: { gateway_mode: "normal_pending" } });
     await expect(runCutoverCommand({ command: "rollback", journal: fx.journalPath }, life.effects)).rejects.toThrow("forward-only");
+    life.dropGateway();
     await runCutoverCommand({ command: "complete", journal: fx.journalPath, confirmBrowserConversion: true }, life.effects);
+    expect(life.events.filter((event) => event === "start:gateway")).toHaveLength(2);
     const interruptedPromotion = JSON.parse(fs.readFileSync(fx.journalPath, "utf8"));
     interruptedPromotion.state = "normal_pending";
     interruptedPromotion.revision += 1;
