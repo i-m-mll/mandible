@@ -29,6 +29,7 @@ describe("local HTTPS front door", () => {
       const result = spawnSync(process.execPath, [script, command], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8" });
       expect(result.status, result.stderr).toBe(0);
       const config = fs.readFileSync(path.join(home, "config", "local-sessions", "Caddyfile"), "utf8");
+      expect(config).toContain("skip_install_trust");
       expect(config.includes("legacy-conversion/complete")).toBe(contains);
       if (contains) {
         expect(config).toContain("http://127.0.0.1:19420, http://localhost:19420");

@@ -68,7 +68,7 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
   if (legacyConversion && previews.length > 1) fail("Legacy port 19421 is ambiguous across registered previews.");
   const productionBackend = new URL(production.backend_origin);
   const productionPublic = new URL(production.public_origin);
-  const globalOptions = "{\n  admin 127.0.0.1:2019\n  local_certs\n  auto_https disable_redirects\n}";
+  const globalOptions = "{\n  admin 127.0.0.1:2019\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}";
   const migrationIngress = instances.map((entry) => {
     const publicUrl = new URL(entry.public_origin);
     const legacyPort = entry.role === "preview" ? "19421" : "19420";
