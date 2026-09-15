@@ -8,12 +8,37 @@ import Database from "better-sqlite3";
 import { openDb } from "../src/db.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { addCredential, setupOperator } from "../src/users/store.js";
-import { sanitizePreviewDatabase } from "../scripts/iab-preview.mjs";
+import { reloadLocalFrontDoor, sanitizePreviewDatabase } from "../scripts/iab-preview.mjs";
 
 const roots = new Set<string>();
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.clear(); });
 
 describe("preview database sanitization", () => {
+  it("does not reload an old-storage preview gateway into an empty pinned CA", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-old-ca-")); roots.add(home);
+    const oldStorage = path.join(home, "old-default-caddy-storage");
+    fs.mkdirSync(oldStorage, { recursive: true });
+    fs.writeFileSync(path.join(oldStorage, "root.crt"), "old-root");
+    const config = path.join(home, "config", "local-sessions", "Caddyfile");
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(config, `{\n storage file_system ${JSON.stringify(oldStorage)}\n}\n`);
+    const binary = path.join(home, "runtime", "caddy", "2.11.3", "caddy");
+    const marker = path.join(home, "reload-invoked");
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, `#!/bin/sh\nprintf x > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+    const previousHome = process.env.MANDIBLE_HOME;
+    process.env.MANDIBLE_HOME = home;
+    try {
+      expect(() => reloadLocalFrontDoor()).toThrow("Secure local connections are not set up");
+      expect(fs.existsSync(marker)).toBe(false);
+      expect(fs.readFileSync(config, "utf8")).toContain(oldStorage);
+      expect(fs.existsSync(path.join(home, "config", "local-sessions", "caddy-storage"))).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.MANDIBLE_HOME;
+      else process.env.MANDIBLE_HOME = previousHome;
+    }
+  });
+
   it("removes capability-bearing state without deleting referenced provenance", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-sanitize-")); roots.add(root);
     const databasePath = path.join(root, "preview.db");
