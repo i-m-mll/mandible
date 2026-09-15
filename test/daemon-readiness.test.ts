@@ -6,7 +6,7 @@
 import http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createServer, Router } from "../src/server.js";
+import { createServer, Router, type ClientAuthGate } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import {
   isDaemonReady,
@@ -29,6 +29,7 @@ function startServer(opts: {
   isWarm?: () => boolean;
   isRebuilding?: () => boolean;
   startupEpoch?: string;
+  clientAuth?: ClientAuthGate;
 }): Promise<TestServer> {
   const router = new Router();
   const server = createServer({
@@ -39,6 +40,7 @@ function startServer(opts: {
     router,
     getStartupInfo: () => null,
     startupEpoch: opts.startupEpoch,
+    clientAuth: opts.clientAuth,
     isReady: opts.isReady,
     isWarm: opts.isWarm,
     isRebuilding: opts.isRebuilding,
@@ -161,6 +163,27 @@ describe("/api/health readiness", () => {
   it("exposes a per-start epoch independently of startup commit compatibility", async () => {
     await startServer({ startupEpoch: "daemon-start-2" });
     expect((await getHealth()).startup_epoch).toBe("daemon-start-2");
+  });
+
+  it("exposes the exact credential directory and legacy-conversion mode used by cutover", async () => {
+    const prior = process.env.MANDIBLE_LEGACY_CONVERSION;
+    process.env.MANDIBLE_LEGACY_CONVERSION = "allow";
+    try {
+      await startServer({
+        clientAuth: {
+          mode: () => "strict",
+          credentialDirectory: () => "/tmp/mandible-test-client-auth",
+        } as ClientAuthGate,
+      });
+      expect((await getHealth()).client_auth).toMatchObject({
+        mode: "strict",
+        credential_directory: "/tmp/mandible-test-client-auth",
+        legacy_conversion: true,
+      });
+    } finally {
+      if (prior === undefined) delete process.env.MANDIBLE_LEGACY_CONVERSION;
+      else process.env.MANDIBLE_LEGACY_CONVERSION = prior;
+    }
   });
 });
 

@@ -139,6 +139,8 @@ export interface HealthResponse {
   // telemetry ratchet. Present only when the daemon wires a client-auth gate.
   client_auth?: {
     mode: "compat" | "strict";
+    credential_directory?: string;
+    legacy_conversion?: boolean;
     authority_id?: string;
     telemetry?: unknown;
   };

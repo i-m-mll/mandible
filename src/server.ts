@@ -133,6 +133,7 @@ export interface ClientAuthGate {
   recordUnattributedWrite(record: UnattributedWriteRecord): void;
   telemetrySnapshot?(): unknown;
   authorityId?(): string;
+  credentialDirectory?(): string;
   classifyFailure?(credential: string | null | undefined): "expired" | "revoked" | "unknown";
   authenticateBrowserSession?(credential: string | null | undefined): ResolvedClientIdentity | null;
   authenticateBrowserSessionForAudience?(
@@ -819,6 +820,10 @@ export function createServer(options: ServerOptions): http.Server {
         ? {
             client_auth: {
               mode: options.clientAuth.mode(),
+              ...(options.clientAuth.credentialDirectory
+                ? { credential_directory: options.clientAuth.credentialDirectory() }
+                : {}),
+              legacy_conversion: process.env.MANDIBLE_LEGACY_CONVERSION === "allow",
               ...(options.clientAuth.authorityId
                 ? { authority_id: options.clientAuth.authorityId() }
                 : {}),
