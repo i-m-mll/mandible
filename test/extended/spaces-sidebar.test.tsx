@@ -142,7 +142,7 @@ describe('SpacesSidebar render + grouping', () => {
     expect(alphaGroup.classList.contains('sidebar-group-node--folder')).toBe(true);
     expect(
       alphaGroup.querySelector('[data-testid="spaces-group-header-proj-a"]')
-        ?.classList.contains('sidebar-group-node__header'),
+        ?.classList.contains('sidebar-reorder-handle'),
     ).toBe(true);
     expect(scroll.contains(topLevelGroup)).toBe(true);
     expect(scroll.contains(alphaGroup)).toBe(true);
@@ -283,17 +283,14 @@ describe('SpacesSidebar foldable headers', () => {
   });
 });
 
-describe('SpacesSidebar drag-reorder', () => {
+describe('SpacesSidebar reorder', () => {
   it('reorders project headers and persists the order across remount', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
     const { unmount } = render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
     await screen.findByText('Roadmap');
 
-    const headerA = screen.getByTestId('spaces-group-header-proj-a');
-    const headerB = screen.getByTestId('spaces-group-header-proj-b');
-    fireEvent.dragStart(headerA);
-    fireEvent.dragOver(headerB);
-    fireEvent.drop(headerB);
+    const headerA = screen.getByRole('button', { name: /^Alpha/ });
+    fireEvent.keyDown(headerA, { key: 'ArrowDown', ctrlKey: true, shiftKey: true });
 
     // Beta now precedes Alpha.
     const scroll = screen.getByTestId('spaces-tree-scroll');

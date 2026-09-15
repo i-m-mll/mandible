@@ -23,6 +23,7 @@
 //     intent. Backend refreshes reconcile data without resetting them.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useSidebarReorder } from '../../hooks/useSidebarReorder';
 
 import {
   listSpacesGrouped,
@@ -267,10 +268,6 @@ export function SpacesSidebar({
   const [spaceSort, setSpaceSort] = useState<SpaceSort>(() => loadSpaceSort());
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => loadCollapseState());
   const [order, setOrder] = useState<string[]>(() => loadOrder());
-  const [dragKey, setDragKey] = useState<string | null>(null);
-  // Mirror dragKey in a ref so the drop handler reads the live source without
-  // nesting one setState updater inside another (which preact may batch/drop).
-  const dragKeyRef = useRef<string | null>(null);
   const [popover, setPopover] = useState<CreatePopover | null>(null);
   const [blankTitle, setBlankTitle] = useState('');
   const [createError, setCreateError] = useState<string | null>(null);
@@ -432,35 +429,15 @@ export function SpacesSidebar({
     });
   }, []);
 
-  // --- drag reorder of project headers ---
-  const beginDrag = useCallback((key: string) => {
-    dragKeyRef.current = key;
-    setDragKey(key);
-  }, []);
-
-  const endDrag = useCallback(() => {
-    dragKeyRef.current = null;
-    setDragKey(null);
-  }, []);
-
-  const handleDrop = useCallback(
-    (targetKey: string) => {
-      const sourceKey = dragKeyRef.current;
-      endDrag();
-      if (!sourceKey || sourceKey === targetKey) return;
-      // Compute the next order from the current displayed (ordered) groups.
-      const currentKeys = orderedProjectGroups.map((kg) => kg.key);
-      const from = currentKeys.indexOf(sourceKey);
-      const to = currentKeys.indexOf(targetKey);
-      if (from === -1 || to === -1) return;
-      const nextKeys = [...currentKeys];
-      nextKeys.splice(from, 1);
-      nextKeys.splice(to, 0, sourceKey);
-      setOrder(nextKeys);
-      persistOrder(nextKeys);
+  const projectReorder = useSidebarReorder({
+    ids: orderedProjectGroups.map((group) => group.key),
+    disabled: Boolean(needle),
+    label: (id) => orderedProjectGroups.find((group) => group.key === id)?.group.project_name ?? id,
+    onCommit: (ids) => {
+      setOrder(ids);
+      persistOrder(ids);
     },
-    [orderedProjectGroups, endDrag],
-  );
+  });
 
   // --- create affordance ---
   const openChooser = useCallback(
@@ -770,7 +747,7 @@ export function SpacesSidebar({
     >
       {/* SCROLLING region — the `.view-sidebar__body` owns overflow; this just
           carries the test-id + content padding (no own scroll, no double bar). */}
-      <div className="spaces-tree__scroll" data-testid="spaces-tree-scroll">
+      <div className="spaces-tree__scroll" data-testid="spaces-tree-scroll" {...projectReorder.list}>
         {/* keep test-id + content; scroll lives on .view-sidebar__body */}
         <SidebarLeadingActionRow
           label="New space"
@@ -778,6 +755,7 @@ export function SpacesSidebar({
           testId="create-top-level"
           onPress={() => openChooser({ kind: 'top-level' })}
         />
+        {projectReorder.assistive}
 
         {loading && groups.length === 0 ? (
           <p className="spaces-tree__status">Loading spaces…</p>
@@ -830,16 +808,7 @@ export function SpacesSidebar({
                   projectName,
                 }),
               }}
-              drag={{
-                active: dragKey === kg.key,
-                onStart: () => beginDrag(kg.key),
-                onOver: (event) => event.preventDefault(),
-                onDrop: (event) => {
-                  event.preventDefault();
-                  handleDrop(kg.key);
-                },
-                onEnd: endDrag,
-              }}
+              reorder={projectReorder.binding(kg.key)}
             >
               {kg.group.spaces.map((space) => renderSpaceRow(space, kg.group.project_key))}
             </SidebarGroupNode>

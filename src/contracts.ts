@@ -126,6 +126,18 @@ export type UserSettingUpdatedEvent = {
   revision: number;
 };
 
+export type SidebarOrderPreferenceValue = {
+  pinnedConversationIds: string[] | null;
+  briefingTopLevelIds: string[] | null;
+};
+
+export type SidebarOrderPreference = {
+  version: 1;
+  key: "sidebar_order";
+  value: SidebarOrderPreferenceValue;
+  revision: number;
+};
+
 export type AuthRequestStatus =
   | "pending"
   | "executing"

@@ -1,3 +1,5 @@
+import { moveSidebarItem, reconcileSidebarOrder } from './components/shared/sidebar-order';
+
 export const APP_RAIL_ORDER_SETTING_KEY = 'app_rail_order';
 export const APP_RAIL_ORDER_VERSION = 1 as const;
 export const APP_RAIL_PREVIEW_ORDER_STORAGE_KEY = 'mandible.appRail.previewOrder:v1';
@@ -111,17 +113,7 @@ export function reconcileAppRailOrder(
   canonicalIds: readonly string[],
   savedIds: readonly string[],
 ): string[] {
-  const canonicalSet = new Set(canonicalIds);
-  const seen = new Set<string>();
-  const recognized = savedIds.filter((id) => {
-    if (!canonicalSet.has(id) || seen.has(id)) return false;
-    seen.add(id);
-    return true;
-  });
-  return [
-    ...recognized,
-    ...canonicalIds.filter((id) => !seen.has(id)),
-  ];
+  return reconcileSidebarOrder(canonicalIds, savedIds);
 }
 
 export function moveAppRailItem(
@@ -129,11 +121,5 @@ export function moveAppRailItem(
   itemId: string,
   targetId: string,
 ): string[] {
-  const from = ids.indexOf(itemId);
-  const to = ids.indexOf(targetId);
-  if (from < 0 || to < 0 || from === to) return [...ids];
-  const next = [...ids];
-  next.splice(from, 1);
-  next.splice(to, 0, itemId);
-  return next;
+  return moveSidebarItem(ids, itemId, targetId);
 }
