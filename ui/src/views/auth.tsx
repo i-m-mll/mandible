@@ -12,6 +12,7 @@ import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { ContextualAction } from '../components/shared/ContextualAction';
 import { EntityTimestamps } from '../components/shared/EntityTimestamps';
 import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
@@ -49,6 +50,17 @@ import {
 import { AuthChangeBreakdown } from './AuthChangeBreakdown';
 
 const RETAINED_FINALIZED_AUTH_KEY = 'mandible.auth.retained-finalized-selection';
+
+type AuthActionRetry =
+  | { kind: 'approve' }
+  | { kind: 'reject' }
+  | { kind: 'retry' }
+  | { kind: 'veto'; action: AuthRequestAction; vetoed: boolean };
+
+type AuthActionError = {
+  message: string;
+  retry: AuthActionRetry;
+};
 
 export type AuthRequestType =
   | 'merge'
@@ -746,6 +758,7 @@ function AuthRequestDetail({
   actionBundle,
   actions,
   executionOutput,
+  notice,
   onUpdateField,
   mutationsAllowed = true,
   autoShowConsoleOnApproval = true,
@@ -759,6 +772,7 @@ function AuthRequestDetail({
   actionBundle?: JSX.Element | null;
   actions?: JSX.Element | null;
   executionOutput?: string;
+  notice?: JSX.Element | null;
   onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
   mutationsAllowed?: boolean;
   autoShowConsoleOnApproval?: boolean;
@@ -1017,6 +1031,7 @@ function AuthRequestDetail({
       bodyClassName={`auth-detail__body${viewMode === 'console' ? ' auth-detail__body--console' : ''}`}
       headerRef={headerRef}
       subheader={subheader}
+      notice={notice}
       overlays={overlays}
       header={(
         <DetailPaneHeader
@@ -2034,8 +2049,7 @@ export function AuthQueueView({
     });
   }, []);
 
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [actionErrors, setActionErrors] = useState<Map<string, AuthActionError>>(() => new Map());
   const operationalMutationsAllowed = !instance || instance.allowed_effects?.includes('auth:protected') === true;
   const instanceMutationBlocked = Boolean(instance && !operationalMutationsAllowed);
   const instanceLabel = instance?.role ?? 'main';
@@ -2054,27 +2068,36 @@ export function AuthQueueView({
     </DetailPaneNotice>
   ) : null;
 
-  const showToast = useCallback((message: string) => {
-    setToastMessage(message);
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-    }
-    toastTimerRef.current = setTimeout(() => {
-      setToastMessage(null);
-      toastTimerRef.current = null;
-    }, 4000);
+  const clearActionError = useCallback((requestId: string) => {
+    setActionErrors((prev) => {
+      if (!prev.has(requestId)) return prev;
+      const next = new Map(prev);
+      next.delete(requestId);
+      return next;
+    });
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current) {
-        clearTimeout(toastTimerRef.current);
-      }
-    };
+  const setActionError = useCallback((
+    requestId: string,
+    error: unknown,
+    fallback: string,
+    retry: AuthActionRetry,
+  ) => {
+    const message = error instanceof Error ? error.message : fallback;
+    setActionErrors((prev) => {
+      const next = new Map(prev);
+      next.set(requestId, { message, retry });
+      return next;
+    });
   }, []);
 
   const runAction = useCallback(
-    (id: string, action: (requestId: string) => void | Promise<void>, onError?: (err: unknown) => void) => {
+    (
+      id: string,
+      action: (requestId: string) => void | Promise<void>,
+      fallbackError: string,
+      retry: AuthActionRetry,
+    ) => {
       // Bug: 645f8a8 — block all mutating actions while the daemon is not ready
       // (rebuilding / starting). The buttons are also disabled, but gate here too
       // so no mutation POST can fire from a keyboard/programmatic trigger.
@@ -2084,6 +2107,7 @@ export function AuthQueueView({
       if (!id || inFlightRef.current.has(id)) {
         return;
       }
+      clearActionError(id);
       setInFlightState((prev) => {
         const next = new Set(prev);
         next.add(id);
@@ -2091,7 +2115,7 @@ export function AuthQueueView({
       });
       Promise.resolve(action(id))
         .catch((err) => {
-          onError?.(err);
+          setActionError(id, err, fallbackError, retry);
         })
         .finally(() => {
           setInFlightState((prev) => {
@@ -2104,20 +2128,16 @@ export function AuthQueueView({
           });
         });
     },
-    [setInFlightState, daemonReady, operationalMutationsAllowed],
+    [clearActionError, setActionError, setInFlightState, daemonReady, operationalMutationsAllowed],
   );
 
   const handleApprove = useCallback(
-    (id: string) => runAction(id, onApprove, (err) => {
-      // Bug: 58d93ee — surface approval errors (e.g. missing command) via toast
-      const message = err instanceof Error ? err.message : 'Approval failed. Try again.';
-      showToast(message);
-    }),
-    [runAction, onApprove, showToast],
+    (id: string) => runAction(id, onApprove, 'Approval failed. Try again.', { kind: 'approve' }),
+    [runAction, onApprove],
   );
 
   const handleReject = useCallback(
-    (id: string) => runAction(id, onReject),
+    (id: string) => runAction(id, onReject, 'Rejection failed. Try again.', { kind: 'reject' }),
     [runAction, onReject],
   );
 
@@ -2142,7 +2162,7 @@ export function AuthQueueView({
         next.add(id);
         return next;
       });
-      runAction(id, onRetry, undefined);
+      runAction(id, onRetry, 'Retry failed. Try again.', { kind: 'retry' });
       // Clean up retryingIds when inFlight clears (use a microtask to stay in sync)
       Promise.resolve().then(() => {
         // retryingIds is cleaned when inFlight clears — watch via effect below
@@ -2172,10 +2192,10 @@ export function AuthQueueView({
   const handleToggleActionVeto = useCallback(
     (requestId: string, action: AuthRequestAction, vetoed: boolean) => {
       if (!operationalMutationsAllowed) {
-        showToast('Auth mutations are disabled on this Mandible preview instance.');
         return;
       }
       if (inFlightActionIdsRef.current.has(action.id)) return;
+      clearActionError(requestId);
       setInFlightActionIds((prev) => {
         const next = new Set(prev);
         next.add(action.id);
@@ -2184,7 +2204,12 @@ export function AuthQueueView({
       });
       setAuthRequestActionVeto(requestId, action.id, vetoed)
         .then((updated) => updateActionForRequest(requestId, updated))
-        .catch((err) => showToast(err instanceof Error ? err.message : 'Action veto update failed.'))
+        .catch((err) => setActionError(
+          requestId,
+          err,
+          'Action veto update failed.',
+          { kind: 'veto', action, vetoed },
+        ))
         .finally(() => {
           setInFlightActionIds((prev) => {
             const next = new Set(prev);
@@ -2194,8 +2219,24 @@ export function AuthQueueView({
           });
         });
     },
-    [operationalMutationsAllowed, showToast, updateActionForRequest],
+    [clearActionError, operationalMutationsAllowed, setActionError, updateActionForRequest],
   );
+
+  const retryActionError = useCallback((requestId: string, retry: AuthActionRetry) => {
+    switch (retry.kind) {
+      case 'approve':
+        handleApprove(requestId);
+        return;
+      case 'reject':
+        handleReject(requestId);
+        return;
+      case 'retry':
+        handleRetry(requestId);
+        return;
+      case 'veto':
+        handleToggleActionVeto(requestId, retry.action, retry.vetoed);
+    }
+  }, [handleApprove, handleReject, handleRetry, handleToggleActionVeto]);
 
   const [rejectConfirmId, setRejectConfirmId] = useState<string | null>(null);
   const rejectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2679,11 +2720,6 @@ export function AuthQueueView({
 
   return (
     <div className="auth-sidebar-layout">
-      {toastMessage && (
-        <div className="auth-toast auth-toast--floating" role="status">
-          {toastMessage}
-        </div>
-      )}
       <ViewSidebar
         {...VIEW_SIDEBAR_GEOMETRY.auth}
         className="auth-sidebar"
@@ -2907,6 +2943,7 @@ export function AuthQueueView({
           const failureSummary = isFailed ? buildFailureSummary(request, outputs) : null;
           const isHistory = isHistoryStatus(status, exitCode);
           const requestActions = actionLists.get(id) ?? (Array.isArray(request.actions) ? request.actions : []);
+          const actionError = actionErrors.get(id) ?? null;
           return (
             <AuthRequestDetail
               request={request}
@@ -2915,6 +2952,34 @@ export function AuthQueueView({
               attemptCount={attemptCount}
               branchMerged={isHistory && !isFailed && isBranchMerged(request, branchesByRepo)}
               executionOutput={outputs[id]}
+              notice={actionError ? (
+                <DetailPaneNotice
+                  severity="error"
+                  density="compact"
+                  title="Auth action failed"
+                  actions={(
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn--ghost"
+                        disabled={inFlight.has(id)}
+                        onClick={() => retryActionError(id, actionError.retry)}
+                      >
+                        Retry
+                      </button>
+                      <ContextualAction
+                        aria-label="Dismiss auth error"
+                        title="Dismiss auth error"
+                        onClick={() => clearActionError(id)}
+                      >
+                        ×
+                      </ContextualAction>
+                    </>
+                  )}
+                >
+                  {actionError.message}
+                </DetailPaneNotice>
+              ) : null}
               actionBundle={requestActions.length > 0 ? (
                 <AuthActionBundle
                   request={request}

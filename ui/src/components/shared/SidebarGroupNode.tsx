@@ -2,6 +2,8 @@ import type { ComponentChildren, JSX } from 'preact';
 import { ContextualAction } from './ContextualAction';
 import { DisclosureChevronIcon } from './DisclosureChevronIcon';
 import { SidebarDisclosureRegion } from './SidebarDisclosureRegion';
+import { SidebarReorderHandle } from './SidebarReorderHandle';
+import type { SidebarReorderBinding } from './sidebar-order';
 
 type SidebarGroupNodeCommonProps = {
   id: string;
@@ -18,6 +20,7 @@ type SidebarGroupNodeCommonProps = {
   bodyAs?: 'div' | 'ul';
   className?: string;
   bodyClassName?: string;
+  bodyAttributes?: { 'data-sidebar-reorder-list': string };
   showDisclosure?: boolean;
   canShowMore?: boolean;
   loadingMore?: boolean;
@@ -35,13 +38,7 @@ type SidebarGroupNodeCommonProps = {
     /** Keep the action visible while this group is expanded. */
     persistentWhenExpanded?: boolean;
   };
-  drag?: {
-    active: boolean;
-    onStart(): void;
-    onOver(event: JSX.TargetedDragEvent<HTMLDivElement>): void;
-    onDrop(event: JSX.TargetedDragEvent<HTMLDivElement>): void;
-    onEnd(): void;
-  };
+  reorder?: SidebarReorderBinding;
 };
 
 export type SidebarGroupNodeProps = SidebarGroupNodeCommonProps & (
@@ -84,13 +81,14 @@ export function SidebarGroupNode({
   bodyAs = 'div',
   className = '',
   bodyClassName = '',
+  bodyAttributes,
   showDisclosure = true,
   canShowMore = false,
   loadingMore = false,
   onShowMore,
   testIds,
   action,
-  drag,
+  reorder,
 }: SidebarGroupNodeProps): JSX.Element {
   const headingId = `${id}-heading`;
   const disclosureId = `${id}-disclosure`;
@@ -129,18 +127,13 @@ export function SidebarGroupNode({
 
   return (
     <section
-      className={`sidebar-group-node sidebar-group-node--${presentation}${expanded ? ' sidebar-group-node--expanded' : ''}${selection ? ' sidebar-group-node--selectable' : ''}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${drag ? ' sidebar-group-node--draggable' : ''}${drag?.active ? ' sidebar-group-node--dragging' : ''}${className ? ` ${className}` : ''}`}
+      className={`sidebar-group-node sidebar-group-node--${presentation}${expanded ? ' sidebar-group-node--expanded' : ''}${selection ? ' sidebar-group-node--selectable' : ''}${leadingIcon ? ' sidebar-group-node--with-icon' : ''}${count === undefined ? ' sidebar-group-node--without-count' : ''}${countVisibility === 'interaction' ? ' sidebar-group-node--interaction-count' : ''}${reorder ? ' sidebar-reorder-item' : ''}${reorder?.dragging ? ' sidebar-reorder-item--dragging' : ''}${reorder?.dropTarget ? ' sidebar-reorder-item--drop-target' : ''}${className ? ` ${className}` : ''}`}
       aria-labelledby={headingId}
       data-testid={testIds?.root}
     >
       <div
         className={`sidebar-group-node__header contextual-action-owner${selection?.selected ? ' sidebar-group-node__header--selected' : ''}`}
-        draggable={drag ? true : undefined}
-        data-testid={testIds?.dragHandle}
-        onDragStart={drag?.onStart}
-        onDragOver={drag?.onOver}
-        onDrop={drag?.onDrop}
-        onDragEnd={drag?.onEnd}
+        {...reorder?.root}
         onClick={toggleFromHeader}
       >
         <button
@@ -153,6 +146,9 @@ export function SidebarGroupNode({
           aria-label={selection?.label}
           aria-description={headingDescription}
           data-testid={testIds?.heading}
+          aria-describedby={reorder?.control['aria-describedby']}
+          aria-keyshortcuts={reorder?.control['aria-keyshortcuts']}
+          onKeyDown={reorder?.control.onKeyDown}
           onClick={activateHeading}
         >
           {leadingIcon ? <span className="sidebar-group-node__leading" aria-hidden="true">{leadingIcon}</span> : null}
@@ -172,8 +168,13 @@ export function SidebarGroupNode({
             <DisclosureChevronIcon expanded={expanded} />
           </button>
         ) : null}
+        {reorder ? (
+          <span className="sidebar-group-node__reorder-slot contextual-action-group">
+            <SidebarReorderHandle binding={reorder} testId={testIds?.dragHandle} />
+          </span>
+        ) : null}
         {action ? (
-          <span className={`sidebar-group-node__action-slot contextual-action-group${action.persistentWhenExpanded && expanded ? ' contextual-action-group--persistent' : ''}`}>
+          <span className={`sidebar-group-node__action-slot contextual-action-group${action?.persistentWhenExpanded && expanded ? ' contextual-action-group--persistent' : ''}`}>
             <ContextualAction
               className="sidebar-group-node__action"
               aria-label={action.label}
@@ -192,6 +193,7 @@ export function SidebarGroupNode({
         expanded={expanded}
         contentAs={bodyAs}
         contentClassName={bodyClassName}
+        contentAttributes={bodyAttributes}
       >
         {body}
       </SidebarDisclosureRegion>

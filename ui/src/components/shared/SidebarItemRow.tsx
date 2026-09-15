@@ -3,6 +3,8 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { ContextualAction } from './ContextualAction';
 import { OfficialProviderMark, type OfficialProviderMarkKind } from './OfficialProviderMark';
+import { SidebarReorderHandle } from './SidebarReorderHandle';
+import type { SidebarReorderBinding } from './sidebar-order';
 
 export type SidebarItemRowProps = {
   label: string;
@@ -20,6 +22,7 @@ export type SidebarItemRowProps = {
   ariaCurrent?: 'true';
   onSelect(): void;
   onKeyDown?: JSX.KeyboardEventHandler<HTMLButtonElement>;
+  reorder?: SidebarReorderBinding;
 };
 
 export type SidebarLeadingActionRowProps = {
@@ -64,6 +67,7 @@ export function SidebarItemRow({
   ariaCurrent,
   onSelect,
   onKeyDown,
+  reorder,
 }: SidebarItemRowProps): JSX.Element {
   const rowRef = useRef<HTMLDivElement>(null);
   const trailingRef = useRef<HTMLSpanElement>(null);
@@ -91,7 +95,11 @@ export function SidebarItemRow({
   }, [actions, provider, syncTrailingWidth, trailingReveal]);
 
   return (
-    <div ref={rowRef} className={`sidebar-item-row contextual-action-owner${selected ? ' sidebar-item-row--selected' : ''}${provider?.mark ? ' sidebar-item-row--has-provider-mark' : ''}${trailingReveal === 'persistent-pin' ? ' sidebar-item-row--persistent-pin' : ''}${className ? ` ${className}` : ''}`}>
+    <div
+      ref={rowRef}
+      {...reorder?.root}
+      className={`sidebar-item-row contextual-action-owner${selected ? ' sidebar-item-row--selected' : ''}${provider?.mark ? ' sidebar-item-row--has-provider-mark' : ''}${trailingReveal === 'persistent-pin' ? ' sidebar-item-row--persistent-pin' : ''}${reorder ? ' sidebar-reorder-item' : ''}${reorder?.dragging ? ' sidebar-reorder-item--dragging' : ''}${reorder?.dropTarget ? ' sidebar-reorder-item--drop-target' : ''}${className ? ` ${className}` : ''}`}
+    >
       <button
         ref={selectRef}
         type="button"
@@ -102,7 +110,12 @@ export function SidebarItemRow({
         tabIndex={tabIndex}
         title={label}
         onClick={onSelect}
-        onKeyDown={onKeyDown}
+        aria-describedby={reorder?.control['aria-describedby']}
+        aria-keyshortcuts={reorder?.control['aria-keyshortcuts']}
+        onKeyDown={(event) => {
+          reorder?.control.onKeyDown(event);
+          if (!event.defaultPrevented) onKeyDown?.(event);
+        }}
       >
         <span className="sidebar-item-row__content">
           {leading ? <span className="sidebar-item-row__leading">{leading}</span> : null}
@@ -110,7 +123,7 @@ export function SidebarItemRow({
           {badges ? <span className="sidebar-item-row__badges">{badges}</span> : null}
         </span>
       </button>
-      {provider?.mark || actions ? (
+      {provider?.mark || actions || reorder ? (
         <span
           ref={(element) => {
             trailingRef.current = element;
@@ -118,6 +131,11 @@ export function SidebarItemRow({
           }}
           className="sidebar-item-row__trailing contextual-action-scope"
         >
+          {reorder ? (
+            <span className="sidebar-item-row__reorder contextual-action-group">
+              <SidebarReorderHandle binding={reorder} />
+            </span>
+          ) : null}
           {actions ? <span className={`sidebar-item-row__actions contextual-action-group${trailingReveal === 'persistent-pin' ? ' contextual-action-group--persistent' : ''}`}>{actions}</span> : null}
           {provider?.mark ? (
             <span className="sidebar-item-row__provider">

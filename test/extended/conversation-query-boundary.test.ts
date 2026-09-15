@@ -101,7 +101,9 @@ describe('Chat Query authority', () => {
       .toEqual({ kind: 'position', value: 42, limit: null });
     expect(conversationKeys.sidebarPage(filters, 'pinned', 'cursor-1'))
       .not.toEqual(conversationKeys.sidebarPage(filters, 'chats', 'cursor-1'));
-    expect(conversationKeys.sidebarInitial(filters)[3]).toMatchObject({ project_ids: ['p1', 'p2'], pinned_ids: ['a', 'b'] });
+    expect(conversationKeys.sidebarInitial(filters)[3]).toMatchObject({ project_ids: ['p1', 'p2'], pinned_ids: ['b', 'a'] });
+    expect(conversationKeys.sidebarInitial({ limit: 5 })[3])
+      .not.toEqual(conversationKeys.sidebarInitial({ limit: 5, pinned_ids: [] })[3]);
   });
 
   it('cancels an obsolete observed read when rapid selection removes its observer', async () => {

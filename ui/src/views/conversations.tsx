@@ -138,6 +138,9 @@ import {
   type ConversationSidebarFilters,
 } from '../query/conversationKeys';
 import { queryClient as appQueryClient } from '../query/client';
+import { useSidebarOrderPreference } from '../hooks/useSidebarOrderPreference';
+import { useSidebarReorder } from '../hooks/useSidebarReorder';
+import type { SidebarReorderBinding } from '../components/shared/sidebar-order';
 
 // ── Toast notification ──
 
@@ -2332,6 +2335,7 @@ function ChatEntryItem({
   onRenameSession,
   onOpenExternally,
   onToggleArchived,
+  reorder,
 }: {
   entry: ChatEntry;
   isSelected: boolean;
@@ -2343,6 +2347,7 @@ function ChatEntryItem({
   onRenameSession?: (label: string | null) => void;
   onOpenExternally?: () => void;
   onToggleArchived?: () => void;
+  reorder?: SidebarReorderBinding;
 }): JSX.Element {
   const conversation = entry.conversation;
   const session = entry.session;
@@ -2399,6 +2404,7 @@ function ChatEntryItem({
       selected={isSelected}
       ariaCurrent={isSelected ? 'true' : undefined}
       className={`chat-history-item${isSubAgent ? ' chat-history-item--subagent' : ''}`}
+      reorder={reorder}
       onSelect={onClick}
       leading={isSubAgent ? <span className="conv-subagent-indicator" title="Sub-agent">&#x2937;</span> : undefined}
       badges={hasBadges ? (
@@ -2598,6 +2604,7 @@ export function ConversationsView({
   const conversationLifecycle = chatViewState.conversationLifecycle;
   const [retainedSelection, setRetainedSelection] = useState<ConversationSidebarConversation | null>(null);
   const [shownProjects, setShownProjects, shownProjectsState] = useChatProjectSelection();
+  const sidebarOrder = useSidebarOrderPreference();
   const sidebarGroupLimit = normalizeSidebarGroupLimit(rawSidebarGroupLimit);
   const [canonicalProjects, setCanonicalProjects] = useState<CanonicalProject[]>([]);
   const [canonicalProjectsReady, setCanonicalProjectsReady] = useState(false);
@@ -2721,11 +2728,14 @@ export function ConversationsView({
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
   const previewMutationsRejected = Boolean(instance && instance.allowed_effects?.includes('ledger:write') !== true);
   const isConversationPinned = useCallback((conversation: Conversation): boolean => {
+    if (sidebarOrder.value.pinnedConversationIds !== null) {
+      return sidebarOrder.value.pinnedConversationIds.includes(conversation.id);
+    }
     if (!previewMutationsRejected) return conversation.starred;
     return Object.prototype.hasOwnProperty.call(chatViewState.previewPinOverrides, conversation.id)
       ? chatViewState.previewPinOverrides[conversation.id]
       : conversation.starred;
-  }, [chatViewState.previewPinOverrides, previewMutationsRejected]);
+  }, [chatViewState.previewPinOverrides, previewMutationsRejected, sidebarOrder.value.pinnedConversationIds]);
 
   const liveSessions = useMemo(() => {
     return consoleSessions
@@ -2851,23 +2861,27 @@ export function ConversationsView({
       project_ids: projectIds,
       lifecycle: conversationLifecycle,
     };
-    if (previewMutationsRejected) {
-      const pinnedIds = Object.entries(chatViewState.previewPinOverrides)
+    if (sidebarOrder.value.pinnedConversationIds !== null) {
+      params.pinned_ids = sidebarOrder.value.pinnedConversationIds;
+    } else if (previewMutationsRejected) {
+      params.pinned_ids = Object.entries(chatViewState.previewPinOverrides)
         .flatMap(([id, pinned]) => pinned ? [id] : []);
-      if (pinnedIds.length > 0) params.pinned_ids = pinnedIds;
     }
     if (sourceFilter !== 'all') params.source = sourceFilter;
     if (starredOnly) params.starred = true;
     if (hideEmpty) params.min_blocks = 1;
     applyConversationSearchParams(params, search, searchMode);
     return params;
-  }, [chatViewState.previewPinOverrides, conversationLifecycle, hideEmpty, previewMutationsRejected, selectedProjectIds, sourceFilter, starredOnly, sort, search, searchMode]);
+  }, [chatViewState.previewPinOverrides, conversationLifecycle, hideEmpty, previewMutationsRejected, selectedProjectIds, sidebarOrder.value.pinnedConversationIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
   const sidebarFiltersJson = JSON.stringify(sidebarRequestParams(sidebarGroupLimit));
   const sidebarFilters = useMemo(
     () => JSON.parse(sidebarFiltersJson) as ConversationSidebarFilters,
     [sidebarFiltersJson],
   );
+  // A preference outage must not blank the entire Chat sidebar. Until the
+  // per-user order is available, render the durable conversation projection
+  // with its legacy starred grouping and keep reordering disabled.
   const sidebarEnabled = canonicalProjectsReady && shownProjectsState.ready;
   const sidebarQueryKey = useMemo(() => conversationKeys.sidebarInitial(sidebarFilters), [sidebarFilters]);
   const fetchSidebarInitial = useCallback(
@@ -3155,7 +3169,7 @@ export function ConversationsView({
       group.entries = group.kind === 'pinned'
         ? orderByPinnedIds(
           group.entries,
-          chatViewState.pinnedConversationIds,
+          sidebarOrder.value.pinnedConversationIds ?? chatViewState.pinnedConversationIds,
           (entry) => entry.conversation?.id ?? `session:${entry.session?.id ?? entry.key}`,
           compareEntries,
         )
@@ -3169,10 +3183,11 @@ export function ConversationsView({
       pinned: visibleGroups.find((group) => group.kind === 'pinned') ?? null,
       projects: visibleGroups
         .filter((group) => group.kind === 'project')
-        .sort((left, right) => left.label.localeCompare(right.label)),
+        .sort((left, right) => shownProjects.findIndex((entry) => entry.projectId === left.canonicalProjectId)
+          - shownProjects.findIndex((entry) => entry.projectId === right.canonicalProjectId)),
       chats: visibleGroups.find((group) => group.kind === 'chats') ?? null,
     };
-  }, [chatViewState.pinnedConversationIds, conversationLifecycle, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sort]);
+  }, [chatViewState.pinnedConversationIds, conversationLifecycle, displayedConversations, isConversationPinned, liveByProviderSession, liveSessions, registeredProjects, selectedProjectIds, shownProjects, sidebarOrder.value.pinnedConversationIds, sort]);
 
   useEffect(() => {
     if (selection?.type !== 'session') return;
@@ -3185,6 +3200,7 @@ export function ConversationsView({
   }, [displayedConversations, handleNavigateConversation, liveSessions, selection]);
 
   useEffect(() => {
+    if (sidebarOrder.value.pinnedConversationIds !== null) return;
     const effectivePinnedIds = displayedConversations
       .flatMap((group) => group.conversations)
       .filter((conversation) => pendingPinIntents.current.get(conversation.id) ?? isConversationPinned(conversation))
@@ -3196,7 +3212,7 @@ export function ConversationsView({
         ? current
         : { ...current, pinnedConversationIds: reconciled };
     });
-  }, [displayedConversations, isConversationPinned, setChatViewState]);
+  }, [displayedConversations, isConversationPinned, setChatViewState, sidebarOrder.value.pinnedConversationIds]);
 
   const firstChatEntry =
     chatSections.pinned?.entries[0] ??
@@ -3308,37 +3324,38 @@ export function ConversationsView({
 
   const handleToggleEntryPin = async (entry: ChatEntry) => {
     if (!entry.conversation) return;
-    const conversationId = entry.conversation.id;
-    const starred = !isConversationPinned(entry.conversation);
-    if (previewMutationsRejected) {
-      pendingPinIntents.current.set(conversationId, starred);
-      pendingPinFocusKey.current = entry.key;
-      setChatViewState((current) => ({
-        ...current,
-        pinnedConversationIds: starred
-          ? reconcileOrderedPinIds(current.pinnedConversationIds, [conversationId])
-          : current.pinnedConversationIds.filter((id) => id !== conversationId),
-        previewPinOverrides: {
-          ...current.previewPinOverrides,
-          [conversationId]: starred,
-        },
-      }));
+    if (!sidebarOrder.ready) {
+      setSidebarToast({ message: sidebarOrder.notice ?? 'Sidebar order is still reconnecting.', type: 'error' });
       return;
     }
+    const conversationId = entry.conversation.id;
     try {
-      const updated = await updateConversation(conversationId, { starred });
-      pendingPinIntents.current.set(conversationId, starred);
+      let current = sidebarOrder.value.pinnedConversationIds;
+      if (current === null) {
+        const first = await getConversations({ starred: true, exclude_subagents: true, limit: 200 });
+        if (first.total > 1000) throw new Error('Too many legacy stars to migrate safely');
+        const pages = await Promise.all(Array.from(
+          { length: Math.ceil(first.total / 200) - 1 },
+          (_, index) => getConversations({
+            starred: true,
+            exclude_subagents: true,
+            limit: 200,
+            offset: (index + 1) * 200,
+          }),
+        ));
+        const legacyIds = [first, ...pages].flatMap((page) => page.conversations.map((conversation) => conversation.id));
+        current = reconcileOrderedPinIds(chatViewState.pinnedConversationIds, legacyIds);
+      }
+      const pinned = !current.includes(conversationId);
+      pendingPinIntents.current.set(conversationId, pinned);
       pendingPinFocusKey.current = entry.key;
-      updateConversationInList(updated);
-      setChatViewState((current) => ({
-        ...current,
-        pinnedConversationIds: starred
-          ? reconcileOrderedPinIds(current.pinnedConversationIds, [conversationId])
-          : current.pinnedConversationIds.filter((id) => id !== conversationId),
-      }));
+      sidebarOrder.patch({
+        pinnedConversationIds: pinned
+          ? reconcileOrderedPinIds(current, [conversationId])
+          : current.filter((id) => id !== conversationId),
+      });
     } catch {
-      pendingPinIntents.current.delete(conversationId);
-      // keep the current list state if persistence fails
+      setSidebarToast({ message: 'Pinned chats could not be migrated without losing unseen entries.', type: 'error' });
     }
   };
 
@@ -3531,7 +3548,25 @@ export function ConversationsView({
     }
   };
 
-  const renderEntry = (entry: ChatEntry) => (
+  const pinnedReorder = useSidebarReorder({
+    ids: sidebarOrder.value.pinnedConversationIds
+      ?? chatSections.pinned?.entries.flatMap((entry) => entry.conversation ? [entry.conversation.id] : [])
+      ?? [],
+    disabled: !sidebarOrder.ready,
+    label: (id) => getConversationTitle(chatSections.pinned?.entries.find((entry) => entry.conversation?.id === id)?.conversation),
+    onCommit: (ids) => sidebarOrder.patch({ pinnedConversationIds: ids }),
+  });
+  const projectReorder = useSidebarReorder({
+    ids: shownProjects.map((project) => project.projectId),
+    disabled: !shownProjectsState.ready,
+    label: (id) => registeredProjects.find((project) => project.id === id)?.label ?? id,
+    onCommit: (ids) => setShownProjects((current) => ids.flatMap((id) => {
+      const project = current.find((candidate) => candidate.projectId === id);
+      return project ? [project] : [];
+    })),
+  });
+
+  const renderEntry = (entry: ChatEntry, reorder?: SidebarReorderBinding) => (
     <ChatEntryItem
       key={entry.key}
       entry={entry}
@@ -3553,6 +3588,7 @@ export function ConversationsView({
         ? () => { void handleOpenExternally(entry); }
         : undefined}
       onToggleArchived={entry.conversation ? () => { void handleToggleArchived(entry); } : undefined}
+      reorder={reorder}
       onClick={() => {
         if (newChatDraft?.state === 'choosing') discardDraft();
         if (entry.kind === 'conversation' && entry.conversation) {
@@ -3704,6 +3740,17 @@ export function ConversationsView({
                 onPress={() => openNewSession()}
               />
             </div>
+            {sidebarOrder.notice ? (
+              <DetailPaneNotice
+                severity="warning"
+                density="compact"
+                title="Sidebar order unavailable"
+                testId="chat-sidebar-order-notice"
+                actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { void sidebarOrder.reload(); }}>Retry</button>}
+              >
+                {sidebarOrder.notice}
+              </DetailPaneNotice>
+            ) : null}
 
             {chatSections.pinned ? (() => {
               const group = chatSections.pinned;
@@ -3719,8 +3766,13 @@ export function ConversationsView({
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
                   loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}
+                  bodyAttributes={pinnedReorder.list}
                 >
-                  {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
+                  {pinnedReorder.assistive}
+                  {group.entries.slice(0, target).map((entry) => renderEntry(
+                    entry,
+                    entry.conversation ? pinnedReorder.binding(entry.conversation.id) : undefined,
+                  ))}
                 </SidebarGroupNode>
               );
             })() : null}
@@ -3738,7 +3790,9 @@ export function ConversationsView({
                   onPress: openProjectChooser,
                   persistentWhenExpanded: chatSections.projects.length === 0,
                 }}
+                bodyAttributes={projectReorder.list}
               >
+              {projectReorder.assistive}
               {projectChooserOpen ? (
                 <div className="chat-project-chooser" role="group" aria-label="Choose a shown project">
                   <select aria-label="Registered project" value={projectChooserSelection} onInput={(event) => setProjectChooserSelection(event.currentTarget.value)}>
@@ -3784,6 +3838,7 @@ export function ConversationsView({
                     canShowMore={group.entries.length > target || group.nextCursor !== null}
                     loadingMore={loadingMoreKeys.has(group.key)}
                     onShowMore={() => { void showMore(group); }}
+                    reorder={group.canonicalProjectId ? projectReorder.binding(group.canonicalProjectId) : undefined}
                   >
                     {newChatDraft
                       && newChatDraft.state !== 'abandoned'

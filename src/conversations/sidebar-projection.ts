@@ -171,10 +171,12 @@ export function buildConversationSidebar<Row extends ConversationSidebarRow>(opt
   cursor?: string;
   projects?: ConversationSidebarProject[];
   requestedProjectIds?: string[];
+  pinnedIds?: string[];
 }): ConversationSidebarGroup<Row>[] {
   const pinned: Row[] = [];
   const chats: Row[] = [];
   const requestedIds = new Set(options.requestedProjectIds ?? []);
+  const pinnedIds = options.pinnedIds ? new Set(options.pinnedIds) : null;
   const projectRows = new Map<string, Row[]>(
     (options.requestedProjectIds ?? []).map((id) => [id, []]),
   );
@@ -186,7 +188,7 @@ export function buildConversationSidebar<Row extends ConversationSidebarRow>(opt
       canonical_project_id: project?.id ?? null,
       canonical_project_key: project?.project_key ?? null,
     } as Row;
-    if (row.starred === 1) {
+    if (pinnedIds ? pinnedIds.has(row.id) : row.starred === 1) {
       pinned.push(row);
       continue;
     }
@@ -224,9 +226,14 @@ export function buildConversationSidebar<Row extends ConversationSidebarRow>(opt
     ? groups.filter((group) => group.key === options.groupKey)
     : groups;
   return selected.map((group) => {
-    const sorted = [...group.rows].sort((left, right) => (
-      compareConversationSidebarRows(left, right, options.sort)
-    ));
+    const pinnedPositions = group.kind === "pinned" && options.pinnedIds
+      ? new Map(options.pinnedIds.map((id, index) => [id, index]))
+      : null;
+    const sorted = [...group.rows].sort((left, right) => pinnedPositions
+      ? (pinnedPositions.get(left.id) ?? Number.MAX_SAFE_INTEGER)
+        - (pinnedPositions.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+        || compareConversationSidebarRows(left, right, options.sort)
+      : compareConversationSidebarRows(left, right, options.sort));
     const page = paginate(
       sorted,
       group.key,

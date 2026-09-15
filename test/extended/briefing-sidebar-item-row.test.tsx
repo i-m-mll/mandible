@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { useState } from 'preact/hooks';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as api from '../../ui/src/api';
 import { briefingRoute } from '../../ui/src/routing';
 import {
   normalizeBriefingBundles,
@@ -155,8 +156,18 @@ function PersistedHarness(): JSX.Element {
   );
 }
 
+beforeEach(() => {
+  vi.spyOn(api, 'getSidebarOrderPreference').mockResolvedValue({
+    version: 1, key: 'sidebar_order', value: { pinnedConversationIds: null, briefingTopLevelIds: null }, revision: 0,
+  });
+  vi.spyOn(api, 'updateSidebarOrderPreference').mockImplementation(async (value, revision) => ({
+    version: 1, key: 'sidebar_order', value, revision: revision + 1,
+  }));
+});
+
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -211,12 +222,15 @@ describe('Briefing sidebar row actions', () => {
     expect(groups[0].updates[0].members.map((member) => member.briefing.label)).toEqual(['First', 'Second']);
   });
 
-  it('selects a group separately from its chevron and previews proposals without replacing Current', () => {
+  it('selects a group separately from its reorder handle and chevron without replacing Current', async () => {
     render(<GroupHarness />);
 
     const groupSelect = screen.getByRole('button', { name: 'Select Briefing group Release review' });
     const group = groupSelect.closest('.sidebar-group-node') as HTMLElement;
+    const reorderHandle = await within(group).findByRole('button', { name: 'Reorder Release review' });
     const disclosure = within(group).getByRole('button', { name: 'Collapse Release review' });
+    expect(reorderHandle.dataset.sidebarReorderHandle).toBe(`group:${groupedUpdates.id}`);
+    expect(groupSelect.hasAttribute('data-sidebar-reorder-handle')).toBe(false);
     expect(disclosure.getAttribute('aria-expanded')).toBe('true');
     expect(within(group).getByRole('button', { name: 'Select briefing First briefing' })).toBeTruthy();
 
