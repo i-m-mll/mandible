@@ -809,6 +809,34 @@ describe("CLI instance mutation preflight", () => {
     }
   });
 
+  it.each([
+    ["main", ["ledger:read", "maintenance:shared"], true],
+    ["preview", ["ledger:read", "ledger:write", "files:preview"], false],
+  ] as const)("checks canonical effects before %s operational mutations", async (role, allowedEffects, allowed) => {
+    const target = await listenForInstancePreflight({ instance: {
+      role,
+      allowed_effects: allowedEffects,
+      db_path: role === "main" ? "/tmp/mandible-main.db" : "/tmp/mandible-preview.db",
+      source_db_path: role === "preview" ? "/tmp/mandible-main.db" : null,
+    } });
+    try {
+      const result = await runBash([
+        "set -euo pipefail",
+        "source cli/api.sh",
+        "tmp_response=$(mktemp)",
+        "status=$(api_send_capture POST /api/ledger/issues/abc/comments '{\"message\":\"Check\"}' \"$tmp_response\")",
+        "printf '%s\\n' \"$status\"",
+        "cat \"$tmp_response\"",
+      ].join("\n"), target.port);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(allowed ? "200\n" : "403\n");
+      expect(target.requests.some((request) => request.method === "POST" && request.url === "/api/ledger/issues/abc/comments"))
+        .toBe(allowed);
+    } finally {
+      await target.close();
+    }
+  });
+
   it("reports exhausted transient metadata unavailability as retryable without sending the mutation", async () => {
     const busyResponses = Array.from({ length: 2 }, () => ({
       status: 503,

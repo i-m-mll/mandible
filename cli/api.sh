@@ -987,7 +987,7 @@ api_operational_mutation_category() {
   # and the TypeScript set in sync; test/cli-instance-preflight.test.ts fails on
   # drift.
   case "${method} ${pathname}" in
-    "POST /api/auth/check"|"POST /api/briefing-destination-routes/plan"|"POST /api/client-auth/pairing/start"|"POST /api/client-auth/pairing/complete"|"POST /api/client-auth/renew"|"POST /api/client-auth/logout"|"POST /api/timeline/project"|"PUT /api/host-preferences/app-theme"|"PUT /api/host-preferences/chat-shown-projects") return 1 ;;
+    "POST /api/auth/check"|"POST /api/briefing-destination-routes/plan"|"POST /api/client-auth/pairing/start"|"POST /api/client-auth/pairing/complete"|"POST /api/client-auth/recovery/finalize"|"POST /api/client-auth/renew"|"POST /api/client-auth/logout"|"POST /api/timeline/project"|"PUT /api/host-preferences/app-theme"|"PUT /api/host-preferences/chat-shown-projects") return 1 ;;
   esac
 
   if generated_category="$(api_generated_operational_mutation_category "$method" "$pathname")"; then
@@ -1157,8 +1157,11 @@ api_instance_metadata_valid() {
     .instance
     and (.instance.role | type == "string")
     and (.instance.role | IN("main", "preview", "dev", "test"))
-    and (.instance.operational_mutations | type == "string")
-    and (.instance.operational_mutations | IN("allow", "reject"))
+    and (if (.instance | has("allowed_effects")) then
+      (.instance.allowed_effects | type == "array" and all(.[]; type == "string"))
+    else
+      (.instance.operational_mutations | type == "string" and IN("allow", "reject"))
+    end)
   ' "$input_file" >/dev/null 2>&1
 }
 
@@ -1272,7 +1275,9 @@ api_preflight_operational_mutation() {
   fi
 
   role=$(jq -r '.instance.role' "$tmp_response")
-  policy=$(jq -r '.instance.operational_mutations' "$tmp_response")
+  policy=$(jq -r 'if (.instance | has("allowed_effects")) then
+    if (.instance.allowed_effects | index("maintenance:shared")) != null then "allow" else "reject" end
+  else .instance.operational_mutations end' "$tmp_response")
   if [[ "$role" == "main" && "$policy" == "allow" ]]; then
     rm -f "$tmp_response"
     return 0
