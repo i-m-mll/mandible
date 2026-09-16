@@ -967,7 +967,7 @@ export function attachWebSocketUpgrade(
     // (transported in Sec-WebSocket-Protocol, never the URL) before attaching
     // to the privileged operator backend. Per-user authorization for ordinary
     // terminal sessions remains deferred to the permissions child.
-    const boundary = validateDaemonBrowserBoundary(req, instance, true);
+    const boundary = validateDaemonBrowserBoundary(req, instance, true, false);
     if (!boundary.ok) {
       socket.write(
         "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
@@ -1314,7 +1314,10 @@ function validateDaemonWriteBoundary(
       ? { ok: true }
       : { ok: false, reason: "invalid_legacy_conversion_ingress" };
   }
-  return validateDaemonBrowserBoundary(req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod));
+  return validateDaemonBrowserBoundary(
+    req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod),
+    normalizedMethod === "GET" && pathname === "/",
+  );
 }
 
 function isBoundLegacyConversionCompletion(
@@ -1345,6 +1348,7 @@ function validateDaemonBrowserBoundary(
   req: http.IncomingMessage,
   instance: InstanceInfo,
   requireOrigin: boolean,
+  allowDocumentNavigation: boolean,
 ): WriteBoundaryResult {
   const hostHeader = firstHeader(req, "host");
   const host = parseHostHeader(hostHeader);
@@ -1354,11 +1358,19 @@ function validateDaemonBrowserBoundary(
   }
 
   const secFetchSite = firstHeader(req, "sec-fetch-site")?.toLowerCase();
-  if (secFetchSite === "cross-site") {
+  const origin = firstHeader(req, "origin");
+  const isTopLevelDocumentNavigation = allowDocumentNavigation
+    && firstHeader(req, "sec-fetch-mode") === "navigate"
+    && firstHeader(req, "sec-fetch-dest") === "document"
+    && !origin;
+  if (secFetchSite === "cross-site" && !isTopLevelDocumentNavigation) {
     return { ok: false, reason: "cross_site_fetch" };
   }
 
-  const origin = firstHeader(req, "origin");
+  const forwardedInstance = firstHeader(req, "x-mandible-instance-id");
+  if (forwardedInstance && forwardedInstance !== instance.instance_id) {
+    return { ok: false, reason: "instance_mismatch" };
+  }
   if (!origin) {
     return requireOrigin ? { ok: false, reason: "origin_required" } : { ok: true };
   }
@@ -1371,11 +1383,6 @@ function validateDaemonBrowserBoundary(
   if (parsedOrigin.origin !== instance.public_origin) {
     return { ok: false, reason: "origin_mismatch" };
   }
-  const forwardedInstance = firstHeader(req, "x-mandible-instance-id");
-  if (forwardedInstance && forwardedInstance !== instance.instance_id) {
-    return { ok: false, reason: "instance_mismatch" };
-  }
-
   return { ok: true };
 }
 

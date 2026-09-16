@@ -99,6 +99,38 @@ it("carries more than 64 eligible settings, a draft, and auth-view state without
   expect(restored.window.localStorage.length).toBe(92);
 });
 
+it("preserves app-cache choices while refetching oversized instance data", () => {
+  const dom = new JSDOM("<!doctype html>", { url: "http://127.0.0.1:19420" });
+  const storage = dom.window.localStorage;
+  const choices = {
+    settings: { "auth.sidebar.width": "320", "timeline.zoom": "2" },
+    selectedAuthId: "request-1",
+    selectedInboxItemId: "inbox-2",
+  };
+  const original = JSON.stringify({ v: 2, state: {
+    authQueue: [{ body: "x".repeat(2_000_000) }],
+    authHistory: [], workRepos: [], workBranches: [], issueRepos: [],
+    inboxData: [], consoleSessions: [], ...choices,
+  } });
+  storage.setItem("mandible_state_cache", original);
+  storage.setItem("mandible.briefing.draft:v2:test", "unsent answer");
+  const exported = exportLegacyBrowserState(storage);
+  expect(JSON.parse(exported.mandible_state_cache)).toEqual({ v: 2, state: choices });
+  expect(exported["mandible.briefing.draft:v2:test"]).toBe("unsent answer");
+  expect(storage.getItem("mandible_state_cache")).toBe(original);
+
+  const restored = new JSDOM("<!doctype html>", { url: "https://app.mandible.localhost:19420" });
+  restoreLegacyBrowserState(restored.window.localStorage, exported);
+  expect(JSON.parse(restored.window.localStorage.getItem("mandible_state_cache")!))
+    .toEqual({ v: 2, state: choices });
+});
+
+it("blocks unknown app-cache fields rather than silently dropping user state", () => {
+  const dom = new JSDOM("<!doctype html>", { url: "http://127.0.0.1:19420" });
+  dom.window.localStorage.setItem("mandible_state_cache", JSON.stringify({ v: 2, state: { newChoice: "keep me" } }));
+  expect(() => exportLegacyBrowserState(dom.window.localStorage)).toThrow("unknown field");
+});
+
 it("visibly blocks conversion above the entry bound rather than sending a truncated state", async () => {
   const dom = new JSDOM("<!doctype html><body></body>", { url: "http://127.0.0.1:19420/#/timeline" });
   Object.assign(globalThis, { window: dom.window, document: dom.window.document });

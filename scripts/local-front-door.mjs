@@ -100,7 +100,7 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     "  header -Server",
     "  handle /api/client-auth/legacy-conversion/prepare {",
     `    reverse_proxy ${backend.origin} {`,
-    "      header_up Host {http.request.host}",
+    "      header_up Host {http.request.hostport}",
     "      header_up Origin {http.request.header.Origin}",
     `      header_up X-Mandible-Target-Instance ${entry.instance_id}`,
     "      header_up -Cookie",

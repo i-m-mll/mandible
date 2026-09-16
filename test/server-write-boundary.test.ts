@@ -126,6 +126,21 @@ describe("daemon write boundary", () => {
     expect(response.body).toMatchObject({ error: "forbidden", reason: "cross_site_fetch" });
   });
 
+  it("admits only a top-level document navigation from another app origin", async () => {
+    const navigation = {
+      Host: "app.mandible.localhost:19420",
+      "Sec-Fetch-Site": "cross-site",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Dest": "document",
+    };
+    expect(await requestStatus("GET", "/", navigation)).toBe(200);
+    expect((await requestJson("GET", "/api/read", undefined, navigation)).body)
+      .toMatchObject({ reason: "cross_site_fetch" });
+    expect(await requestStatus("GET", "/", { ...navigation, "Sec-Fetch-Dest": "iframe" })).toBe(403);
+    expect(await requestStatus("GET", "/", { ...navigation, Origin: "https://example.com" })).toBe(403);
+    expect(await requestStatus("GET", "/", { ...navigation, Host: "example.com:19420" })).toBe(403);
+  });
+
   it("rejects cross-origin browser WebSocket upgrades", async () => {
     const response = await requestUpgrade("/terminal/session-1", {
       Origin: "https://example.com",
@@ -214,6 +229,18 @@ function requestJson(
     );
     req.on("error", reject);
     req.end(data);
+  });
+}
+
+function requestStatus(method: string, path: string, headers: Record<string, string>): Promise<number> {
+  const { port } = requireServer();
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: "127.0.0.1", port, path, method, headers }, (res) => {
+      res.resume();
+      res.on("end", () => resolve(res.statusCode ?? 500));
+    });
+    req.on("error", reject);
+    req.end();
   });
 }
 

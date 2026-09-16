@@ -10,12 +10,44 @@ export const LEGACY_BROWSER_STATE_MAX_BYTES = 256 * 1024;
 
 const credentialKeys = new Set([LEGACY_BEARER_STORAGE_KEY, PENDING_LOGOUT_STORAGE_KEY]);
 const encoder = new TextEncoder();
+const APP_CACHE_KEY = "mandible_state_cache";
+const appCacheFields = new Set([
+  "authQueue", "authHistory", "workRepos", "workBranches", "issueRepos",
+  "inboxData", "consoleSessions", "settings", "selectedAuthId", "selectedInboxItemId",
+]);
+const appCacheIntentFields = ["settings", "selectedAuthId", "selectedInboxItemId"] as const;
 
 export class LegacyBrowserStateError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "LegacyBrowserStateError";
   }
+}
+
+// The old app cache mixes a few user choices with megabytes of API responses.
+// Transfer only the choices; each destination refetches its own server data.
+function projectAppCache(raw: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new LegacyBrowserStateError("The old app cache could not be read; migration was stopped without discarding it.");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
+      (parsed as { v?: unknown }).v !== 2 ||
+      typeof (parsed as { state?: unknown }).state !== "object" ||
+      (parsed as { state?: unknown }).state === null ||
+      Array.isArray((parsed as { state?: unknown }).state)) {
+    throw new LegacyBrowserStateError("The old app cache has an unknown format; migration was stopped without discarding it.");
+  }
+  const state = (parsed as { state: Record<string, unknown> }).state;
+  if (Object.keys(state).some((field) => !appCacheFields.has(field))) {
+    throw new LegacyBrowserStateError("The old app cache has an unknown field; migration was stopped without discarding it.");
+  }
+  const intent = Object.fromEntries(appCacheIntentFields
+    .filter((field) => Object.hasOwn(state, field))
+    .map((field) => [field, state[field]]));
+  return JSON.stringify({ v: 2, state: intent });
 }
 
 export function validateLegacyBrowserState(value: unknown): Record<string, string> {
@@ -53,10 +85,13 @@ export function exportLegacyBrowserState(storage: Pick<Storage, "length" | "key"
       if (credentialKeys.has(key)) continue;
       const item = storage.getItem(key);
       if (item === null) throw new LegacyBrowserStateError("Legacy browser storage changed during export; migration was stopped.");
-      entries.push([key, item]);
+      entries.push([key, key === APP_CACHE_KEY ? projectAppCache(item) : item]);
       if (entries.length > LEGACY_BROWSER_STATE_MAX_ENTRIES) break;
     }
-    if (storage.length !== length || entries.some(([key, item]) => storage.getItem(key) !== item)) {
+    if (storage.length !== length || entries.some(([key, item]) => {
+      const current = storage.getItem(key);
+      return current === null || (key === APP_CACHE_KEY ? projectAppCache(current) : current) !== item;
+    })) {
       throw new LegacyBrowserStateError("Legacy browser storage changed during export; migration was stopped.");
     }
   } catch (error) {

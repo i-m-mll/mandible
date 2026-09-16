@@ -61,6 +61,7 @@ describe("local HTTPS front door", () => {
         expect(config).toContain("https://preview-existing.mandible.localhost:19419");
         expect(config).toContain("header_up X-Mandible-Target-Instance preview-existing");
         expect(config).toContain("header_up X-Mandible-Legacy-Migration complete-v1");
+        expect(config).toContain("header_up Host {http.request.hostport}");
         expect(config).toContain("header Origin http://127.0.0.1:19420\n    header Origin http://localhost:19420");
         expect(config).toContain("header Origin http://127.0.0.1:19421\n    header Origin http://localhost:19421");
         expect(config).toContain("header Sec-Fetch-Site cross-site");
