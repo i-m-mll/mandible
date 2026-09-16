@@ -16,6 +16,7 @@ err() {
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
 cd "$repo_root"
 
+dependency_command="${MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND:-npm install --ignore-scripts --no-audit --no-fund}"
 build_command="${MANDIBLE_POST_MERGE_BUILD_COMMAND:-npm run build}"
 desktop_command="${MANDIBLE_POST_MERGE_DESKTOP_COMMAND:-bash cli/install-desktop-app.sh}"
 
@@ -64,6 +65,8 @@ else
 fi
 
 if [[ "$build_needed" == "true" ]]; then
+  err "[post-merge-build] aligning dependencies from package-lock.json"
+  bash -lc "$dependency_command"
   err "[post-merge-build] running: ${build_command}"
   bash -lc "$build_command"
   err "[post-merge-build] generated local build artifacts"
