@@ -387,6 +387,11 @@ describe("strict browser boundary", () => {
       });
       expect(preparedPage.status).toBe(200);
       expect(preparedPage.body).toContain("Browser session prepared");
+      if (targetAudience === "production") {
+        expect(preparedPage.body).toContain("Review browser connection requests");
+      } else {
+        expect(preparedPage.body).not.toContain("Review browser connection requests");
+      }
       const redirectedPage = await requestAt(port, "GET", "/api/client-auth/legacy-conversion/prepared", undefined, {
         Host: "app.mandible.localhost:19420", Cookie: cookie,
         "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document",

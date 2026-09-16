@@ -269,7 +269,10 @@ export function registerClientAuthRoutes(
       sendJson(res, 401, { error: "replacement_browser_session_required" });
       return;
     }
-    res.html?.(migrationPreparedPage(identity.audience === authenticator.instanceId()));
+    res.html?.(migrationPreparedPage(
+      typeof identity.audience === "string"
+        && authenticator.instanceRegistration(identity.audience)?.role === "main",
+    ));
   }, { fileRpc: "deny", countUnattributed: false });
 
   router.get("/api/client-auth/legacy-conversion/verify", (req, res) => {
