@@ -84,7 +84,10 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     `      header_up X-Mandible-Target-Instance ${entry.instance_id}`,
     "      header_up -X-Mandible-Legacy-Migration",
     "      header_up X-Mandible-Legacy-Migration complete-v1",
-    "      header_up X-Mandible-Legacy-Origin {http.request.header.Origin}",
+    // The matcher verified the incoming Origin above. Inject the normalized
+    // route identity, not a placeholder that may observe the rewritten
+    // upstream Origin and erase the provenance the daemon requires.
+    `      header_up X-Mandible-Legacy-Origin http://127.0.0.1:${legacyPort}`,
     "    }",
     "  }",
     "  respond 404",
