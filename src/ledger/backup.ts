@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
 import { getMandibleHomePath, getUserHome } from "../platform-paths.js";
 
@@ -323,8 +324,33 @@ export function getUnclassifiedBackupTables(db: Db): string[] {
 export function writeMetadataBackup(db: Db, destination?: string | null): MetadataBackupResult {
   const outputPath = resolveMetadataBackupPath(destination);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  const sql = buildMetadataBackupSql(db);
-  fs.writeFileSync(outputPath, sql, "utf8");
+  const temporaryPath = path.join(
+    path.dirname(outputPath),
+    `.${path.basename(outputPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  const file = fs.openSync(temporaryPath, "wx", 0o600);
+  try {
+    db.transaction(() => {
+      let buffer = "";
+      let first = true;
+      for (const line of metadataBackupLines(db)) {
+        buffer += `${first ? "" : "\n"}${line}`;
+        first = false;
+        if (buffer.length >= 256 * 1024) {
+          writeAll(file, buffer);
+          buffer = "";
+        }
+      }
+      if (buffer) writeAll(file, buffer);
+    })();
+    fs.fsyncSync(file);
+    fs.closeSync(file);
+    fs.renameSync(temporaryPath, outputPath);
+  } catch (error) {
+    try { fs.closeSync(file); } catch { /* already closed */ }
+    try { fs.unlinkSync(temporaryPath); } catch { /* preserve the original failure */ }
+    throw error;
+  }
   const stat = fs.statSync(outputPath);
   return {
     path: outputPath,
@@ -333,9 +359,25 @@ export function writeMetadataBackup(db: Db, destination?: string | null): Metada
   };
 }
 
+function writeAll(file: number, text: string): void {
+  const bytes = Buffer.from(text, "utf8");
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = fs.writeSync(file, bytes, offset, bytes.length - offset);
+    if (written <= 0) throw new Error("Metadata backup write made no progress.");
+    offset += written;
+  }
+}
+
 export function buildMetadataBackupSql(db: Db): string {
+  // Fixture and in-memory callers only. The scheduled writer streams the same
+  // generator so production-sized backups never materialize one giant string.
+  return Array.from(metadataBackupLines(db)).join("\n");
+}
+
+function* metadataBackupLines(db: Db): Generator<string> {
   const timestamp = new Date().toISOString();
-  const lines = [
+  yield* [
     "-- Mandible metadata backup",
     `-- Generated: ${timestamp}`,
     `-- Tables: ${METADATA_BACKUP_TABLES.join(" ")}`,
@@ -351,29 +393,26 @@ export function buildMetadataBackupSql(db: Db): string {
       .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name = ?")
       .get(table) as SqliteMasterTable | undefined;
     if (!tableInfo?.sql) {
-      lines.push(`-- Table missing in this database: ${table}`, "");
+      yield `-- Table missing in this database: ${table}`;
+      yield "";
       continue;
     }
 
     const columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as TableColumn[];
     const columnNames = columns.map((column) => column.name);
-    const rows = db.prepare(`SELECT * FROM ${quoteIdentifier(table)}`).all() as Array<
-      Record<string, unknown>
-    >;
-
-    lines.push(
+    yield* [
       "-- ============================================",
       `-- Table: ${table}`,
       "-- ============================================",
       `${tableInfo.sql};`,
       `DELETE FROM ${quoteIdentifier(table)};`,
-    );
+    ];
 
-    if (rows.length > 0 && columnNames.length > 0) {
+    if (columnNames.length > 0) {
       const quotedColumns = columnNames.map(quoteIdentifier).join(", ");
-      for (const row of rows) {
+      for (const row of db.prepare(`SELECT * FROM ${quoteIdentifier(table)}`).iterate() as Iterable<Record<string, unknown>>) {
         const values = columnNames.map((column) => sqlLiteral(row[column])).join(", ");
-        lines.push(`INSERT INTO ${quoteIdentifier(table)} (${quotedColumns}) VALUES (${values});`);
+        yield `INSERT INTO ${quoteIdentifier(table)} (${quotedColumns}) VALUES (${values});`;
       }
     }
 
@@ -395,14 +434,13 @@ export function buildMetadataBackupSql(db: Db): string {
       .all(table) as Array<{ sql: string | null }>;
     for (const index of indexes) {
       if (index.sql) {
-        lines.push(`${index.sql};`);
+        yield `${index.sql};`;
       }
     }
-    lines.push("");
+    yield "";
   }
 
-  lines.push("COMMIT;", "PRAGMA foreign_keys=ON;", "");
-  return lines.join("\n");
+  yield* ["COMMIT;", "PRAGMA foreign_keys=ON;", ""];
 }
 
 function quoteIdentifier(identifier: string): string {

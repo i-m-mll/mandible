@@ -303,6 +303,29 @@ describe("backup routes", () => {
     expect(dump).toContain("idx_project_artifact_assoc_target");
   });
 
+  it("streams the same restorable SQL through an atomic backup file", async () => {
+    const { db } = await setupBackupRoutes();
+    const { buildMetadataBackupSql, writeMetadataBackup } = await import("../src/ledger/backup.js");
+    const destination = path.join(tempHome, "streamed-metadata.sql");
+    fs.writeFileSync(destination, "previous backup", "utf8");
+
+    const result = writeMetadataBackup(db, destination);
+    const streamed = fs.readFileSync(destination, "utf8");
+    const expected = buildMetadataBackupSql(db);
+    const withoutTimestamp = (sql: string) => sql.replace(/^-- Generated: .*$/m, "-- Generated: <timestamp>");
+    expect(withoutTimestamp(streamed)).toBe(withoutTimestamp(expected));
+    expect(result.size_bytes).toBe(Buffer.byteLength(streamed));
+    expect(fs.readdirSync(tempHome).some((name) => name.endsWith(".tmp"))).toBe(false);
+
+    const restored = new Database(":memory:");
+    try {
+      restored.exec(streamed);
+      expect(restored.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      restored.close();
+    }
+  });
+
   it("round-trips an actual trash custody row with canonical parents", async () => {
     const { db } = await setupBackupRoutes();
     const { buildMetadataBackupSql } = await import("../src/ledger/backup.js");
