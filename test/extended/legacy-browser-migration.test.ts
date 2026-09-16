@@ -125,6 +125,21 @@ it("preserves app-cache choices while refetching oversized instance data", () =>
     .toEqual({ v: 2, state: choices });
 });
 
+it("leaves old-origin detail caches intact but does not transfer refetchable data", () => {
+  const dom = new JSDOM("<!doctype html>", { url: "http://127.0.0.1:19421" });
+  const storage = dom.window.localStorage;
+  const detail = "x".repeat(391_158);
+  storage.setItem("mandible:detail-cache:v2", JSON.stringify({ version: 2, entries: [] }));
+  storage.setItem("mandible:detail-cache:v2:e:1277", detail);
+  storage.setItem("mandible:detail-cache:v1", detail);
+  storage.setItem("mandible.briefing.draft:v2:test", "unsent answer");
+
+  expect(exportLegacyBrowserState(storage)).toEqual({
+    "mandible.briefing.draft:v2:test": "unsent answer",
+  });
+  expect(storage.getItem("mandible:detail-cache:v2:e:1277")).toBe(detail);
+});
+
 it("blocks unknown app-cache fields rather than silently dropping user state", () => {
   const dom = new JSDOM("<!doctype html>", { url: "http://127.0.0.1:19420" });
   dom.window.localStorage.setItem("mandible_state_cache", JSON.stringify({ v: 2, state: { newChoice: "keep me" } }));

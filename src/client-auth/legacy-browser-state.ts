@@ -7,6 +7,12 @@ export const LEGACY_BROWSER_STATE_MAX_ENTRIES = 512;
 export const LEGACY_BROWSER_STATE_MAX_KEY_BYTES = 512;
 export const LEGACY_BROWSER_STATE_MAX_VALUE_BYTES = 64 * 1024;
 export const LEGACY_BROWSER_STATE_MAX_BYTES = 256 * 1024;
+// Detail entries are a refetchable server-data tier, never user choices. Keep
+// the old-origin copies intact, but do not move megabytes of stale data into
+// a newly isolated origin.
+export const DETAIL_CACHE_INDEX_KEY = "mandible:detail-cache:v2";
+export const DETAIL_CACHE_ENTRY_KEY_PREFIX = `${DETAIL_CACHE_INDEX_KEY}:e:`;
+export const LEGACY_DETAIL_CACHE_KEY = "mandible:detail-cache:v1";
 
 const credentialKeys = new Set([LEGACY_BEARER_STORAGE_KEY, PENDING_LOGOUT_STORAGE_KEY]);
 const encoder = new TextEncoder();
@@ -16,6 +22,11 @@ const appCacheFields = new Set([
   "inboxData", "consoleSessions", "settings", "selectedAuthId", "selectedInboxItemId",
 ]);
 const appCacheIntentFields = ["settings", "selectedAuthId", "selectedInboxItemId"] as const;
+
+function refetchableDetailCacheKey(key: string): boolean {
+  return key === LEGACY_DETAIL_CACHE_KEY || key === DETAIL_CACHE_INDEX_KEY
+    || key.startsWith(DETAIL_CACHE_ENTRY_KEY_PREFIX);
+}
 
 export class LegacyBrowserStateError extends Error {
   constructor(message: string) {
@@ -85,7 +96,7 @@ export function exportLegacyBrowserState(storage: Pick<Storage, "length" | "key"
     for (let index = 0; index < length; index += 1) {
       const key = storage.key(index);
       if (key === null) throw new LegacyBrowserStateError("Legacy browser storage changed during export; migration was stopped.");
-      if (credentialKeys.has(key)) continue;
+      if (credentialKeys.has(key) || refetchableDetailCacheKey(key)) continue;
       const item = storage.getItem(key);
       if (item === null) throw new LegacyBrowserStateError("Legacy browser storage changed during export; migration was stopped.");
       entries.push([key, key === APP_CACHE_KEY ? projectAppCache(item) : item]);
