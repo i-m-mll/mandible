@@ -3,9 +3,13 @@ import { useCallback, useEffect, useState } from 'preact/hooks';
 
 import { isDesktopShell } from '../api';
 import {
-  ensureClientAuthToken,
+  beginLegacyBrowserRecovery,
+  completeBrowserPairing,
+  getBrowserSessionMigrationFailure,
   getClientAuthSessionState,
+  isLegacyBrowserOrigin,
   logoutClientAuth,
+  startBrowserPairing,
   subscribeClientAuthSessionState,
   type ClientAuthSessionState,
 } from '../client-auth-token';
@@ -55,10 +59,16 @@ export function DesktopLoginStatus({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualRetryAllowed, setManualRetryAllowed] = useState(false);
+  const [pairingReference, setPairingReference] = useState<string | null>(null);
 
   useEffect(() => subscribeClientAuthSessionState(setSessionState), []);
 
   useEffect(() => {
+    if (sessionState === 'migration-blocked') {
+      setManualRetryAllowed(false);
+      setBusy(false);
+      return;
+    }
     if (sessionState === 'enrolled') {
       resetDesktopLoginRecoveryEpisode();
       setManualRetryAllowed(false);
@@ -98,7 +108,16 @@ export function DesktopLoginStatus({
     const reported: { message: string | null } = { message: null };
     try {
       if (!isDesktopShell()) {
-        await ensureClientAuthToken();
+        if (isLegacyBrowserOrigin()) {
+          beginLegacyBrowserRecovery();
+          return;
+        }
+        if (!pairingReference) {
+          setPairingReference(await startBrowserPairing());
+        } else {
+          await completeBrowserPairing(pairingReference);
+          setPairingReference(null);
+        }
         return;
       }
       const outcome = await retryDesktopLoginManually({
@@ -111,10 +130,12 @@ export function DesktopLoginStatus({
       } else if (outcome === 'failed') {
         setError(reported.message ?? 'Enrollment did not produce an operator session.');
       }
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Could not reconnect this browser.');
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [pairingReference]);
 
   const handleLogout = useCallback(async () => {
     setBusy(true);
@@ -124,6 +145,25 @@ export function DesktopLoginStatus({
       setBusy(false);
     }
   }, []);
+
+  if (sessionState === 'migration-blocked') {
+    const message = getBrowserSessionMigrationFailure()
+      ?? 'Existing browser state could not be migrated. Keep this profile intact and ask the operator to resolve it before conversion.';
+    return placement === 'rail' ? (
+      <div className="desktop-login desktop-login--rail" role="alert" title={message}>
+        <span className="app-rail__item" aria-label="Browser migration blocked">
+          <span className="app-rail__icon"><DesktopLoginIcon /></span>
+          {showRailLabel ? <span className="app-rail__label">Migration blocked</span> : null}
+        </span>
+        <span className="sr-only">{message}</span>
+      </div>
+    ) : (
+      <div className="desktop-login" role="alert">
+        <span className="desktop-login__label">Migration blocked</span>
+        <span className="desktop-login__error">{message}</span>
+      </div>
+    );
+  }
 
   if (busy) {
     return null;
@@ -162,10 +202,15 @@ export function DesktopLoginStatus({
         : sessionState === 'revoked'
           ? 'Session revoked'
           : 'Not logged in';
-  const actionLabel = isDesktopShell() ? 'Log in' : 'Reconnect';
+  const actionLabel = isDesktopShell() ? 'Log in'
+    : isLegacyBrowserOrigin() ? 'Reconnect browser'
+      : pairingReference ? 'Complete pairing' : 'Pair browser';
+  const pairingHint = pairingReference
+    ? `Approve ${pairingReference} with: mandible user pair ${pairingReference}`
+    : null;
 
   if (placement === 'rail') {
-    const statusDescription = error ? `${sessionLabel}: ${error}` : sessionLabel;
+    const statusDescription = pairingHint ?? (error ? `${sessionLabel}: ${error}` : sessionLabel);
     return (
       <div
         className="desktop-login desktop-login--rail"
@@ -207,6 +252,7 @@ export function DesktopLoginStatus({
           {error}
         </span>
       ) : null}
+      {pairingHint ? <span className="desktop-login__error">{pairingHint}</span> : null}
     </div>
   );
 }

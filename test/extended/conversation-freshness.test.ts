@@ -23,6 +23,7 @@ import { ConversationSourceReader } from "../../src/conversations/source-reader.
 import { getConversationStructureCache } from "../../src/conversations/structure-cache.js";
 import { sourceFilesystemIdentity } from "../../src/conversations/source-observer.js";
 import { FileRpcTransport } from "../../src/file-rpc-transport.js";
+import { resolveInstanceInfo } from "../../src/instance-policy.js";
 
 let tempDir = "";
 let db: Db;
@@ -199,7 +200,7 @@ describe("exact conversation freshness", () => {
     expect(bySession.conversationId).toBe(seeded.id);
     expect(ingests).toBe(1);
 
-    const router = new Router();
+    const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
     registerConversationRoutes(router);
     const detail = await router.invoke({ method: "GET", url: "/api/conversations/concurrent-session?target=latest" });
     const blocks = await router.invoke({ method: "GET", url: "/api/conversations/concurrent-session/blocks" });

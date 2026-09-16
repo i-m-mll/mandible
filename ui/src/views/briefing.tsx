@@ -85,7 +85,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     } catch (cause) {
       if (!signal.aborted && request === sequence.current) {
         setError(isApiErrorStatus(cause, 401) || isApiErrorStatus(cause, 403)
-          ? null
+          ? 'Authentication is required to load Briefings.'
           : cause instanceof Error ? cause.message : String(cause));
       }
     }

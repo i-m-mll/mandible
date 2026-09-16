@@ -175,10 +175,10 @@ describe("session identity mismatch detection", () => {
     expect(row).toEqual({ identity_mismatch_at: null, identity_mismatch_json: null });
   });
 
-  it("treats an unauthenticated registration as indeterminate, not a mismatch", async () => {
+  it("rejects unauthenticated registration before mismatch evaluation", async () => {
     const response = await register(null);
 
-    expect((response.body as { identity_warning: unknown }).identity_warning).toBeNull();
+    expect(response).toMatchObject({ status: 401, body: { error: "authentication_required" } });
     expect(readSessionIdentityMismatch(db, "channel-session")).toBeNull();
     expect(evaluateSessionIdentity(db, "channel-session", null)).toEqual({
       status: "indeterminate",
@@ -222,10 +222,9 @@ describe("session identity mismatch detection", () => {
 
     const response = await register(null);
 
-    // Unauthenticated is not evidence the misconfiguration was fixed, so the
-    // flag survives and the warning keeps being reported.
-    expect((response.body as { identity_warning: Record<string, unknown> | null }).identity_warning)
-      .toMatchObject({ client: { user_id: operatorId } });
+    // Unauthenticated ingress is rejected and is not evidence the
+    // misconfiguration was fixed, so the recorded flag survives.
+    expect(response).toMatchObject({ status: 401, body: { error: "authentication_required" } });
     expect(readSessionIdentityMismatch(db, "channel-session")).not.toBeNull();
   });
 

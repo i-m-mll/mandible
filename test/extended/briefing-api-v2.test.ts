@@ -30,17 +30,18 @@ function payload() {
 }
 
 describe('Briefing v2 UI projection', () => {
-  it('normalizes the explicit response capability and fails missing or malformed values closed', () => {
+  it('normalizes the typed instance effect ceiling and fails missing or malformed values closed', () => {
     const base = {
-      role: 'preview', operational_mutations: 'reject', operational_mutations_overridden: true,
+      role: 'preview', instance_id: 'preview-test', installation_id: 'test-installation',
+      public_origin: 'https://preview-test.mandible.localhost:19421', backend_generation: 'test',
+      writable_roots: ['/tmp/preview'],
       db_path: '/tmp/copy.db', db_path_source: 'start_options',
       source_db_path: '/tmp/source.db', source_db_path_source: 'start_options',
     };
-    expect(normalizeInstanceInfo({ ...base, briefing_response_mutations: 'allow' })?.briefing_response_mutations).toBe('allow');
-    expect(normalizeInstanceInfo({ ...base, briefing_response_mutations: 'reject' })?.briefing_response_mutations).toBe('reject');
-    expect(normalizeInstanceInfo(base)?.briefing_response_mutations).toBe('reject');
-    expect(normalizeInstanceInfo({ ...base, briefing_response_mutations: 'sometimes' })?.briefing_response_mutations).toBe('reject');
-    expect(normalizeInstanceInfo({ ...base, operational_mutations: 'sometimes', briefing_response_mutations: 'allow' })).toBeNull();
+    expect(normalizeInstanceInfo({ ...base, allowed_effects: ['ledger:read', 'ledger:write', 'files:preview'] })?.allowed_effects)
+      .toEqual(['ledger:read', 'ledger:write', 'files:preview']);
+    expect(normalizeInstanceInfo(base)).toBeNull();
+    expect(normalizeInstanceInfo({ ...base, allowed_effects: ['ledger:read', 42] })).toBeNull();
   });
 
   it('accepts the active profile, all six exact values, and backend option order', () => {

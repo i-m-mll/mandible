@@ -10,7 +10,8 @@ import {
 import { addProject } from "../src/ledger/project-registry.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerLedgerChangeRoutes } from "../src/routes/ledger-changes.js";
-import { Router } from "../src/server.js";
+import { setupOperator } from "../src/users/store.js";
+import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 
 let db: Db;
 
@@ -146,7 +147,7 @@ describe("bounded ledger change feed", () => {
 
   it("exposes the same contract through the file-RPC-safe HTTP route", async () => {
     const project = addProject(db, { project_key: "alpha" });
-    const router = new Router();
+    const router = authenticatedTestRouter(setupOperator(db, { display_name: "Change feed test operator" }));
     registerLedgerChangeRoutes(router, db);
     const response = await router.invoke({ method: "GET", url: "/api/ledger/changes?project=alpha" });
     expect(response.status).toBe(200);

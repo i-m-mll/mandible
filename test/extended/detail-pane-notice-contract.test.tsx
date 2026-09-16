@@ -17,6 +17,7 @@ const inventory = {
     'ui/src/components/console/TerminalPane.tsx',
     'ui/src/views/auth.tsx',
     'ui/src/views/conversations.tsx',
+    'ui/src/views/feedback/CollectionsSidebar.tsx',
     'ui/src/views/spaces/SpacesViewShell.tsx',
     'ui/src/views/tasks.tsx',
     'ui/src/views/timeline.tsx',

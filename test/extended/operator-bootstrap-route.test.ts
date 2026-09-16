@@ -59,20 +59,15 @@ describe("operator bootstrap ledger boundary", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("records a tokenless HTTP write as unattributed without an operator (issue a64d2de)", async () => {
-    // Fail-closed attribution redesign (issue a64d2de): a tokenless compat-mode
-    // HTTP ledger write is NO LONGER stamped with the local operator, and it is
-    // no longer rejected with setup guidance. It flows through to NULL user
-    // attribution (generic 'Mandible' provenance via the legacy columns). The
-    // retained `operator_not_configured` boundary applies only to trusted
-    // in-process / operator-run local CLI writes, not to this anonymous HTTP path.
+  it("rejects a tokenless HTTP write without an operator (issue a64d2de)", async () => {
     const written = await router.invoke({
       method: "POST",
       url: `/api/ledger/issues/${issueId}/comments`,
-      body: { message: "Tokenless compat-mode comment." },
+      body: { message: "Tokenless HTTP comment." },
+      transport: "http",
     });
 
-    expect(written.status).toBe(200);
+    expect(written.status).toBe(401);
     expect(logger).not.toHaveBeenCalledWith(
       "error",
       "route_handler_error",
@@ -81,10 +76,6 @@ describe("operator bootstrap ledger boundary", () => {
     expect(db.prepare(
       `SELECT author_user_id, evidence_method, body
        FROM ledger_comments WHERE issue_id = ?`,
-    ).get(issueId)).toEqual({
-      author_user_id: null,
-      evidence_method: null,
-      body: "Tokenless compat-mode comment.",
-    });
+    ).get(issueId)).toBeUndefined();
   });
 });

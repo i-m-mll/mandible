@@ -2050,7 +2050,7 @@ export function AuthQueueView({
   }, []);
 
   const [actionErrors, setActionErrors] = useState<Map<string, AuthActionError>>(() => new Map());
-  const operationalMutationsAllowed = !instance || instance.operational_mutations === 'allow';
+  const operationalMutationsAllowed = !instance || instance.allowed_effects?.includes('auth:protected') === true;
   const instanceMutationBlocked = Boolean(instance && !operationalMutationsAllowed);
   const instanceLabel = instance?.role ?? 'main';
   const instanceDbLabel = instance?.db_path ? compactPath(instance.db_path) : null;

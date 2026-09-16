@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { parse as parseCookie } from "cookie";
 import http from "node:http";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -8,11 +9,12 @@ import {
   type AmbientProviderIdentity,
 } from "./ambient-provider-identity.js";
 import {
-  evaluateInstanceMutation,
   operationalMutationCategoryForPath,
   resolveInstanceInfo,
   UNSAFE_MUTATION_METHODS as UNSAFE_METHODS,
 } from "./instance-policy.js";
+import { authorizeEffects, operationForRequest } from "./security/effect-policy.js";
+import { COOKIE_NAME, PAIRING_COOKIE_NAME, TRANSFER_COOKIE_NAME } from "./client-auth/session-authority.js";
 import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
 import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";
@@ -66,9 +68,14 @@ export interface RequestLike {
   // itself performs authentication only, not authorization.
   client_identity?: ResolvedClientIdentity | null;
   /** Classified auth failure; raw bearer material is never exposed to routes. */
-  client_auth_failure?: "expired" | "revoked" | "unknown";
+  client_auth_failure?: "expired" | "revoked" | "wrong_audience" | "unknown";
   /** Aborts when the underlying HTTP client disconnects before a response completes. */
   signal?: AbortSignal;
+  browser_pairing_secret?: string | null;
+  browser_transfer_secret?: string | null;
+  legacy_browser_credential?: string | null;
+  legacy_browser_origin?: string | null;
+  target_instance_id?: string | null;
 }
 
 // --- Client authentication gate (issue 708dc4c) ---
@@ -78,9 +85,9 @@ export type ClientAuthMode = "compat" | "strict";
 export interface ResolvedClientIdentity {
   user_id: string;
   slug: string;
-  method: "api_token" | "ephemeral";
+  method: "api_token" | "ephemeral" | "browser_session" | "installation_context" | "legacy_browser_session";
   credential_id: string | null;
-  source: "http_bearer" | "file_rpc_capability" | "bootstrap" | "in_process";
+  source: "http_bearer" | "browser_cookie" | "installation_context" | "legacy_browser_conversion" | "file_rpc_capability" | "bootstrap" | "in_process";
   /**
    * Issue 499c148 — which daemon-minted ephemeral credential answered
    * (`dashboard_handshake`, `operator_bootstrap`, `agent_session:<id>`). Set
@@ -88,6 +95,14 @@ export interface ResolvedClientIdentity {
    * input, and deliberately absent for api_token identities.
    */
   ephemeral_purpose?: string | null;
+  effect_ceiling: readonly import("./security/effect-policy.js").Effect[];
+  session_family?: string | null;
+  root_session_family?: string | null;
+  audience?: string | null;
+  csrf_token?: string | null;
+  auth_context_expires_at?: number | null;
+  legacy_fingerprint?: string | null;
+  legacy_authenticated_at?: number;
 }
 
 export interface ClientAuthRequestContext {
@@ -118,14 +133,35 @@ export interface ClientAuthGate {
   recordUnattributedWrite(record: UnattributedWriteRecord): void;
   telemetrySnapshot?(): unknown;
   authorityId?(): string;
+  credentialDirectory?(): string;
   classifyFailure?(credential: string | null | undefined): "expired" | "revoked" | "unknown";
+  authenticateBrowserSession?(credential: string | null | undefined): ResolvedClientIdentity | null;
+  authenticateBrowserSessionForAudience?(
+    credential: string | null | undefined,
+    audience: string,
+  ): ResolvedClientIdentity | null;
+  classifyBrowserSession?(
+    credential: string | null | undefined,
+    audience?: string,
+  ): { state: "active" | "missing" | "wrong_audience" | "expired" | "revoked"; identity: ResolvedClientIdentity | null };
+  authenticateInternalContext?(credential: string | null | undefined): Promise<ResolvedClientIdentity | null>;
+  validateBrowserCsrf?(identity: ResolvedClientIdentity, csrf: string | null | undefined): boolean;
+  authenticateLegacyBrowserSession?(credential: string | null | undefined): ResolvedClientIdentity | null;
 }
 
 const STRICT_ANONYMOUS_HTTP_ROUTES = new Set([
   "/api/health",
   "/api/instance",
-  "/api/client-auth/handshake",
+  "/api/client-auth/pairing/start",
+  "/api/client-auth/pairing/complete",
+  "/api/client-auth/preview-transfer/prepare",
+  "/api/client-auth/preview-bootstrap",
+  "/api/client-auth/preview-transfer/complete",
+  "/api/client-auth/legacy-conversion/prepare",
+  "/api/client-auth/legacy-conversion/complete",
+  "/api/client-auth/recovery/start",
   "/api/client-auth/whoami",
+  "/api/users/setup",
 ]);
 
 /** Presentation transport for a credential, used to label the resolved source. */
@@ -139,7 +175,7 @@ function clientAuthSourceForTransport(
 
 export interface ResponseLike {
   status(code: number): ResponseLike;
-  header?(name: string, value: string): ResponseLike;
+  header?(name: string, value: string | string[]): ResponseLike;
   json(payload: unknown): void;
   empty?(): void;
   html?(payload: string): void;
@@ -160,10 +196,8 @@ export type FileRpcPolicy = "allow" | "deny" | {
 
 export interface RouteOptions {
   fileRpc: FileRpcPolicy;
-  // Issue 708dc4c — set false on infrastructure mutations (e.g. the client-auth
-  // handshake) that should NOT count toward the unattributed-write ratchet, so
-  // the operator's own dashboard boot does not keep the counter permanently
-  // above zero and mask readiness for strict mode. Defaults to true.
+  // Infrastructure mutations may opt out of historical unattributed-write
+  // telemetry. Authorization never depends on this counter.
   countUnattributed?: boolean;
 }
 
@@ -235,7 +269,7 @@ function compileRoute(pattern: string): { regex: RegExp; paramNames: string[] } 
 class HttpResponse implements ResponseLike {
   private _statusCode = 200;
   private _sent = false;
-  private readonly headers: Record<string, string> = {};
+  private readonly headers: Record<string, string | string[]> = {};
 
   constructor(private res: http.ServerResponse) {}
 
@@ -244,7 +278,7 @@ class HttpResponse implements ResponseLike {
     return this;
   }
 
-  header(name: string, value: string): ResponseLike {
+  header(name: string, value: string | string[]): ResponseLike {
     this.headers[name] = value;
     return this;
   }
@@ -272,6 +306,7 @@ class HttpResponse implements ResponseLike {
     if (this._sent) return;
     this._sent = true;
     this.res.writeHead(this._statusCode, {
+      ...this.headers,
       "Content-Type": "text/html; charset=utf-8",
       "Content-Length": Buffer.byteLength(payload),
       "Cache-Control": "no-store",
@@ -283,6 +318,7 @@ class HttpResponse implements ResponseLike {
     if (this._sent) return;
     this._sent = true;
     this.res.writeHead(this._statusCode, {
+      ...this.headers,
       "Content-Type": contentType,
       "Content-Length": Buffer.byteLength(payload),
       "Cache-Control": "no-store",
@@ -301,7 +337,7 @@ class CapturedResponse implements ResponseLike {
     return this;
   }
 
-  header(_name: string, _value: string): ResponseLike {
+  header(_name: string, _value: string | string[]): ResponseLike {
     return this;
   }
 
@@ -405,7 +441,7 @@ export class Router implements RouteRegistrar {
       response,
       input.ambient_identity,
       input.credential,
-      input.transport ?? "file-rpc",
+      input.transport ?? "in-process",
       input.signal,
     );
     if (!handled) {
@@ -434,15 +470,39 @@ export class Router implements RouteRegistrar {
       }
     }
     try {
+      const cookies = parseCookie(headerValue(req.headers.cookie) ?? "");
+      const browserRequest = isBrowserRequest(req.headers);
+      const legacyBrowserConversion = isLegacyBrowserConversionRequest(req);
+      const legacyBrowserRecovery = isBoundLegacyRecoveryStart(req, this.instance);
+      if (browserRequest && headerValue(req.headers.authorization) && !legacyBrowserConversion) {
+        new HttpResponse(res).status(400).json({
+          error: "browser_bearer_forbidden",
+          message: "Browser requests authenticate only with the host-only session cookie.",
+        });
+        return true;
+      }
       return await this.dispatch(
         method,
         req.url ?? "/",
         body,
         new HttpResponse(res),
         ambientIdentityFromHeaders(req.headers),
-        bearerFromHeaders(req.headers),
+        legacyBrowserConversion
+          ? bearerFromHeaders(req.headers)
+          : browserRequest ? cookies[COOKIE_NAME] ?? null : bearerFromHeaders(req.headers),
         "http",
         abortController.signal,
+        {
+          browserRequest,
+          csrf: headerValue(req.headers["x-mandible-csrf"]),
+          internalContext: headerValue(req.headers["x-mandible-session-context"]),
+          pairingSecret: cookies[PAIRING_COOKIE_NAME] ?? null,
+          transferSecret: cookies[TRANSFER_COOKIE_NAME] ?? null,
+          targetInstanceId: headerValue(req.headers["x-mandible-target-instance"]),
+          legacyBrowserConversion,
+          legacyBrowserOrigin: legacyBrowserConversion ? headerValue(req.headers.origin)
+            : legacyBrowserRecovery ? headerValue(req.headers["x-mandible-legacy-origin"]) : undefined,
+        },
       );
     } finally {
       req.removeListener("aborted", abort);
@@ -459,6 +519,16 @@ export class Router implements RouteRegistrar {
     credential?: string | null,
     transport: "http" | "file-rpc" | "in-process" = "in-process",
     signal?: AbortSignal,
+    httpAuth?: {
+      browserRequest: boolean;
+      csrf?: string;
+      internalContext?: string;
+      pairingSecret?: string | null;
+      transferSecret?: string | null;
+      targetInstanceId?: string;
+      legacyBrowserConversion?: boolean;
+      legacyBrowserOrigin?: string;
+    },
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
     const url = new URL(requestUrl, "http://localhost");
@@ -471,27 +541,38 @@ export class Router implements RouteRegistrar {
     if (match) {
       const { route, params } = match;
 
-      const mutationDecision = evaluateInstanceMutation(this.instance, normalizedMethod, pathname, body);
-      if (!mutationDecision.allowed) {
-        response.status(mutationDecision.status).json(mutationDecision.body);
-        return true;
-      }
-
       // Issue 708dc4c — client-authentication gate. Resolve the presented token
       // to a client identity (attached to the request for downstream
       // attribution). Strict HTTP uses one identity boundary for reads and
       // writes; compat mode counts unattributed writes. When no gate is wired
       // (tests/legacy), this block is skipped.
       let clientIdentity: ResolvedClientIdentity | null = null;
-      let clientAuthFailure: "expired" | "revoked" | "unknown" = "unknown";
+      let clientAuthFailure: "expired" | "revoked" | "wrong_audience" | "unknown" = "unknown";
       const gate = this.options.clientAuth;
       if (gate) {
-        clientIdentity = gate.authenticate(
-          credential,
-          clientAuthSourceForTransport(transport),
-          { method: normalizedMethod, pathname },
-        );
-        if (!clientIdentity) clientAuthFailure = gate.classifyFailure?.(credential) ?? "unknown";
+        clientIdentity = httpAuth?.legacyBrowserConversion && gate.authenticateLegacyBrowserSession
+          ? gate.authenticateLegacyBrowserSession(credential)
+          : httpAuth?.internalContext && gate.authenticateInternalContext
+          ? await gate.authenticateInternalContext(httpAuth.internalContext)
+          : httpAuth?.browserRequest && httpAuth.targetInstanceId
+            && gate.authenticateBrowserSessionForAudience
+            ? gate.authenticateBrowserSessionForAudience(credential, httpAuth.targetInstanceId)
+          : httpAuth?.browserRequest && gate.authenticateBrowserSession
+            ? gate.authenticateBrowserSession(credential)
+            : gate.authenticate(
+                credential,
+                clientAuthSourceForTransport(transport),
+                { method: normalizedMethod, pathname },
+              );
+        if (!clientIdentity) {
+          const browserFailure = httpAuth?.browserRequest && gate.classifyBrowserSession
+            ? gate.classifyBrowserSession(credential, httpAuth.targetInstanceId).state
+            : null;
+          clientAuthFailure = browserFailure === "wrong_audience" ? "wrong_audience"
+            : browserFailure === "expired" ? "expired"
+              : browserFailure === "revoked" ? "revoked"
+                : gate.classifyFailure?.(credential) ?? "unknown";
+        }
         if (
           transport === "http"
           && gate.mode() === "strict"
@@ -504,7 +585,17 @@ export class Router implements RouteRegistrar {
           });
           return true;
         }
-        if (UNSAFE_METHODS.has(normalizedMethod) && !clientIdentity) {
+        if (
+          httpAuth?.browserRequest
+          && UNSAFE_METHODS.has(normalizedMethod)
+          && (clientIdentity?.source === "browser_cookie" || clientIdentity?.source === "installation_context")
+          && !gate.validateBrowserCsrf?.(clientIdentity, httpAuth.csrf)
+        ) {
+          response.status(403).json({ error: "csrf_required" });
+          return true;
+        }
+        if (transport !== "in-process" && UNSAFE_METHODS.has(normalizedMethod) && !clientIdentity
+            && !STRICT_ANONYMOUS_HTTP_ROUTES.has(pathname)) {
           const telemetryTransport = transport === "http" ? "http" : "file-rpc";
           if (gate.mode() === "strict") {
             response.status(401).json({
@@ -524,6 +615,24 @@ export class Router implements RouteRegistrar {
         }
       }
 
+      // Direct invocation is a trusted process-local composition boundary.
+      // HTTP and file-RPC are ingress and must satisfy both the instance and
+      // credential effect ceilings; treating an omitted test/internal
+      // transport as file-RPC would invent a remote caller that does not exist.
+      if (gate && transport !== "in-process") {
+        const operation = operationForRequest(normalizedMethod, pathname);
+        const effectDecision = authorizeEffects(this.instance, clientIdentity, operation);
+        if (!effectDecision.allowed) {
+          response.status(effectDecision.code === "authentication_required" ? 401 : 403).json({
+            error: effectDecision.code,
+            operation: operation?.id ?? null,
+            missing_effects: effectDecision.missing,
+            instance_id: this.instance.instance_id,
+          });
+          return true;
+        }
+      }
+
       const query: Record<string, string> = {};
       url.searchParams.forEach((value, key) => {
         query[key] = value;
@@ -539,6 +648,11 @@ export class Router implements RouteRegistrar {
         client_identity: clientIdentity,
         client_auth_failure: clientAuthFailure,
         signal,
+        browser_pairing_secret: httpAuth?.pairingSecret ?? null,
+        browser_transfer_secret: httpAuth?.transferSecret ?? null,
+        legacy_browser_credential: httpAuth?.legacyBrowserConversion ? credential ?? null : null,
+        legacy_browser_origin: httpAuth?.legacyBrowserOrigin ?? null,
+        target_instance_id: httpAuth?.targetInstanceId ?? null,
       };
 
       try {
@@ -617,6 +731,32 @@ function bearerFromHeaders(headers: http.IncomingHttpHeaders): string | null {
   return headerValue(headers["authorization"]) ?? null;
 }
 
+function isBrowserRequest(headers: http.IncomingHttpHeaders): boolean {
+  return headerValue(headers.origin) !== undefined
+    || headerValue(headers["sec-fetch-site"]) !== undefined
+    || headerValue(headers.cookie) !== undefined;
+}
+
+const LEGACY_BROWSER_ORIGINS = new Set([
+  "http://127.0.0.1:19420",
+  "http://localhost:19420",
+  "http://127.0.0.1:19421",
+  "http://localhost:19421",
+]);
+
+function isLegacyBrowserConversionRequest(req: http.IncomingMessage): boolean {
+  if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
+  if ((req.method ?? "GET").toUpperCase() !== "POST") return false;
+  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  if (pathname !== "/api/client-auth/legacy-conversion/prepare") return false;
+  const origin = headerValue(req.headers.origin);
+  const host = headerValue(req.headers.host);
+  if (!origin || !host) return false;
+  return LEGACY_BROWSER_ORIGINS.has(origin)
+    && new URL(origin).host.toLowerCase() === host.toLowerCase()
+    && headerValue(req.headers["sec-fetch-site"])?.toLowerCase() !== "cross-site";
+}
+
 // --- Server creation ---
 
 export interface ServerOptions {
@@ -683,6 +823,10 @@ export function createServer(options: ServerOptions): http.Server {
         ? {
             client_auth: {
               mode: options.clientAuth.mode(),
+              ...(options.clientAuth.credentialDirectory
+                ? { credential_directory: options.clientAuth.credentialDirectory() }
+                : {}),
+              legacy_conversion: process.env.MANDIBLE_LEGACY_CONVERSION === "allow",
               ...(options.clientAuth.authorityId
                 ? { authority_id: options.clientAuth.authorityId() }
                 : {}),
@@ -731,40 +875,50 @@ export function createServer(options: ServerOptions): http.Server {
       }
     });
 
-    const boundary = validateDaemonWriteBoundary(req, method, isApi);
+    const boundary = validateDaemonWriteBoundary(req, method, pathname, isApi, instance);
     if (!boundary.ok) {
       logger("warn", "request_forbidden", { method, pathname, reason: boundary.reason });
       writeJsonResponse(res, 403, { error: "forbidden", reason: boundary.reason });
       return;
     }
 
-    // SSE endpoints handled directly (long-lived connections don't fit the router)
-    if (pathname === "/api/events" && method === "GET") {
-      // Compat-mode EventSource clients may remain anonymous. Query-string
-      // bearer tokens are deliberately ignored; strict dashboards use the
-      // authenticated POST stream below.
-      if (options.clientAuth?.mode() === "strict") {
+    if (pathname === "/api/events/subscribe" && method === "POST") {
+      const cookies = parseCookie(headerValue(req.headers.cookie) ?? "");
+      const browserRequest = isBrowserRequest(req.headers);
+      if (browserRequest && headerValue(req.headers.authorization)) {
+        writeJsonResponse(res, 400, { error: "browser_bearer_forbidden" });
+        return;
+      }
+      const identity = options.clientAuth?.authenticateBrowserSession?.(cookies[COOKIE_NAME])
+        ?? (await options.clientAuth?.authenticateInternalContext?.(
+          headerValue(req.headers["x-mandible-session-context"]),
+        ))
+        ?? (!browserRequest
+          ? options.clientAuth?.authenticate(
+              bearerFromHeaders(req.headers),
+              "http_bearer",
+              { method, pathname },
+            )
+          : null)
+        ?? null;
+      if (!identity) {
         writeJsonResponse(res, 401, {
           error: "authentication_required",
-          reason: "client_auth_strict_mode",
+          reason: "browser_session_required",
         });
         return;
       }
-      const topics = parseTopics(url?.searchParams, null);
-      sse.addClient(req, res, topics, null);
-      return;
-    }
-
-    if (pathname === "/api/events/subscribe" && method === "POST") {
-      const identity = options.clientAuth?.authenticate(
-        bearerFromHeaders(req.headers),
-        "http_bearer",
-      ) ?? null;
-      if (options.clientAuth?.mode() === "strict" && !identity) {
-        writeJsonResponse(res, 401, {
-          error: "authentication_required",
-          reason: "client_auth_strict_mode",
-        });
+      const eventDecision = authorizeEffects(instance, identity, operationForRequest(method, pathname));
+      if (!eventDecision.allowed) {
+        writeJsonResponse(res, 403, { error: eventDecision.code, missing_effects: eventDecision.missing });
+        return;
+      }
+      if ((identity.source === "browser_cookie" || identity.source === "installation_context")
+          && !options.clientAuth?.validateBrowserCsrf?.(
+            identity,
+            headerValue(req.headers["x-mandible-csrf"]),
+          )) {
+        writeJsonResponse(res, 403, { error: "csrf_required" });
         return;
       }
       const body = await readIncomingBody(req);
@@ -807,7 +961,8 @@ export function attachWebSocketUpgrade(
     req: http.IncomingMessage,
     socket: import("stream").Duplex,
     head: Buffer
-  ) => void
+  ) => void,
+  instance: InstanceInfo = resolveInstanceInfo(),
 ): void {
   server.on("upgrade", (req, socket, head) => {
     // Issue 708dc4c: all WebSocket upgrades retain the browser boundary. The
@@ -815,7 +970,7 @@ export function attachWebSocketUpgrade(
     // (transported in Sec-WebSocket-Protocol, never the URL) before attaching
     // to the privileged operator backend. Per-user authorization for ordinary
     // terminal sessions remains deferred to the permissions child.
-    const boundary = validateDaemonBrowserBoundary(req);
+    const boundary = validateDaemonBrowserBoundary(req, instance, true, false);
     if (!boundary.ok) {
       socket.write(
         "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
@@ -1102,12 +1257,9 @@ function isNotModified(header: string | string[] | undefined, mtime: Date): bool
 }
 
 function injectBootstrapData(html: string, instance: InstanceInfo): string {
-  // Issue 708dc4c — the served HTML carries NO client-auth token. Embedding a
-  // token here would expose operator identity to any loopback-response reader
-  // (SSRF, misconfigured proxy). The dashboard instead acquires an ephemeral
-  // token via POST /api/client-auth/handshake (which passes the browser write
-  // boundary), and the same-user CLI reads the operator bootstrap token from a
-  // 0600 file. Only non-secret instance metadata is injected.
+  // The served HTML carries no client-auth credential. The browser pairs into
+  // an HttpOnly host cookie, while this bootstrap contains public instance
+  // registration metadata only.
   const json = JSON.stringify({ instance }).replace(/[<>&]/g, (char) => {
     switch (char) {
       case "<":
@@ -1148,40 +1300,115 @@ type WriteBoundaryResult = { ok: true } | { ok: false; reason: string };
 function validateDaemonWriteBoundary(
   req: http.IncomingMessage,
   method: string,
+  pathname: string,
   isApi: boolean,
+  instance: InstanceInfo,
 ): WriteBoundaryResult {
   const normalizedMethod = method.toUpperCase();
-  if (!isApi || !UNSAFE_METHODS.has(normalizedMethod)) {
+  if (!isBrowserRequest(req.headers)) {
     return { ok: true };
   }
-
-  return validateDaemonBrowserBoundary(req);
+  if (pathname === "/api/client-auth/legacy-conversion/prepare"
+      && isLegacyBrowserConversionRequest(req)) {
+    return { ok: true };
+  }
+  if (pathname === "/api/client-auth/legacy-conversion/complete") {
+    return isBoundLegacyConversionCompletion(req, pathname, instance)
+      ? { ok: true }
+      : { ok: false, reason: "invalid_legacy_conversion_ingress" };
+  }
+  if (pathname === "/api/client-auth/recovery/start") {
+    return isBoundLegacyRecoveryStart(req, instance)
+      ? { ok: true }
+      : { ok: false, reason: "invalid_browser_recovery_ingress" };
+  }
+  return validateDaemonBrowserBoundary(
+    req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod),
+    normalizedMethod === "GET" && (pathname === "/"
+      || (process.env.MANDIBLE_LEGACY_CONVERSION === "allow"
+        && pathname === "/api/client-auth/legacy-conversion/prepared")),
+  );
 }
 
-function validateDaemonBrowserBoundary(req: http.IncomingMessage): WriteBoundaryResult {
+function isBoundLegacyRecoveryStart(req: http.IncomingMessage, instance: InstanceInfo): boolean {
+  if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
+  const legacyOrigin = firstHeader(req, "x-mandible-legacy-origin");
+  const target = firstHeader(req, "x-mandible-target-instance");
+  if (!legacyOrigin || !target || !LEGACY_BROWSER_ORIGINS.has(legacyOrigin)) return false;
+  const registered = new URL(instance.public_origin);
   const host = parseHostHeader(firstHeader(req, "host"));
-  if (!host || !isLoopbackHostname(host.hostname)) {
+  return (req.method ?? "GET").toUpperCase() === "POST"
+    && new URL(req.url ?? "/", "http://localhost").pathname === "/api/client-auth/recovery/start"
+    && Boolean(host && `${host.hostname}:${host.port}` === registered.host.toLowerCase())
+    && firstHeader(req, "origin") === registered.origin
+    && firstHeader(req, "x-mandible-legacy-recovery") === "state-v1"
+    && new URL(legacyOrigin).port === (target === instance.instance_id ? "19420" : "19421")
+    && firstHeader(req, "sec-fetch-site") === "cross-site";
+}
+
+function isBoundLegacyConversionCompletion(
+  req: http.IncomingMessage,
+  pathname: string,
+  instance: InstanceInfo,
+): boolean {
+  if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
+  const legacyOrigin = firstHeader(req, "x-mandible-legacy-origin");
+  const target = firstHeader(req, "x-mandible-target-instance");
+  if (!legacyOrigin || !target || !LEGACY_BROWSER_ORIGINS.has(legacyOrigin)) return false;
+  const registered = new URL(instance.public_origin);
+  const host = parseHostHeader(firstHeader(req, "host"));
+  const origin = firstHeader(req, "origin");
+  const legacyPort = new URL(legacyOrigin).port;
+  return (req.method ?? "GET").toUpperCase() === "POST"
+    && pathname === "/api/client-auth/legacy-conversion/complete"
+    && Boolean(host && `${host.hostname}:${host.port}` === registered.host.toLowerCase())
+    && origin === registered.origin
+    && firstHeader(req, "x-mandible-legacy-migration") === "complete-v1"
+    && legacyPort === (target === instance.instance_id ? "19420" : "19421")
+    // The gateway accepts only a cross-site form POST from one inventoried old
+    // origin, then rewrites Host/Origin before the daemon sees the request.
+    && firstHeader(req, "sec-fetch-site") === "cross-site";
+}
+
+function validateDaemonBrowserBoundary(
+  req: http.IncomingMessage,
+  instance: InstanceInfo,
+  requireOrigin: boolean,
+  allowDocumentNavigation: boolean,
+): WriteBoundaryResult {
+  const hostHeader = firstHeader(req, "host");
+  const host = parseHostHeader(hostHeader);
+  const registered = new URL(instance.public_origin);
+  if (!host || `${host.hostname}:${host.port}` !== registered.host.toLowerCase()) {
     return { ok: false, reason: "invalid_host" };
   }
 
   const secFetchSite = firstHeader(req, "sec-fetch-site")?.toLowerCase();
-  if (secFetchSite === "cross-site") {
+  const origin = firstHeader(req, "origin");
+  const isTopLevelDocumentNavigation = allowDocumentNavigation
+    && firstHeader(req, "sec-fetch-mode") === "navigate"
+    && firstHeader(req, "sec-fetch-dest") === "document"
+    && !origin;
+  if (secFetchSite === "cross-site" && !isTopLevelDocumentNavigation) {
     return { ok: false, reason: "cross_site_fetch" };
   }
 
-  const origin = firstHeader(req, "origin");
-  if (!origin) {
-    return { ok: true };
+  const forwardedInstance = firstHeader(req, "x-mandible-instance-id");
+  if (forwardedInstance && forwardedInstance !== instance.instance_id) {
+    return { ok: false, reason: "instance_mismatch" };
   }
-
-  const parsedOrigin = parseOriginHeader(origin);
-  if (!parsedOrigin || !isLoopbackHostname(parsedOrigin.hostname)) {
+  if (!origin) {
+    return requireOrigin ? { ok: false, reason: "origin_required" } : { ok: true };
+  }
+  let parsedOrigin: URL;
+  try {
+    parsedOrigin = new URL(origin);
+  } catch {
     return { ok: false, reason: "invalid_origin" };
   }
-  if (parsedOrigin.port !== host.port) {
-    return { ok: false, reason: "origin_port_mismatch" };
+  if (parsedOrigin.origin !== instance.public_origin) {
+    return { ok: false, reason: "origin_mismatch" };
   }
-
   return { ok: true };
 }
 
@@ -1208,28 +1435,8 @@ function parseHostHeader(value: string | undefined): { hostname: string; port: s
   }
 }
 
-function parseOriginHeader(value: string): { hostname: string; port: string } | null {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return null;
-    }
-    return {
-      hostname: normalizeHostname(url.hostname),
-      port: url.port,
-    };
-  } catch {
-    return null;
-  }
-}
-
 function normalizeHostname(hostname: string): string {
   return hostname.toLowerCase().replace(/^\[|\]$/g, "");
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  const normalized = normalizeHostname(hostname);
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function resolveRootDir(): string {

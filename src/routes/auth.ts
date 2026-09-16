@@ -369,7 +369,17 @@ export function registerAuthRoutes(
     }
     try {
       const current = authQueue.getRequest(req.params.id);
-      if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
+      if (!current) {
+        const resolved = resolvePrefix(getDb(), "auth_requests", "id", req.params.id);
+        if (!resolved.ok && resolved.error === "ambiguous") {
+          res.status(409).json({
+            error: `Ambiguous prefix '${req.params.id}' — matches ${resolved.count} requests. Use a longer prefix.`,
+          });
+          return;
+        }
+        res.status(404).json({ error: "Auth request not found." });
+        return;
+      }
       const control = authMutationControl(req, res, current, body, true);
       if (!control) return;
       const updated = authQueue.update(req.params.id, result.payload, control.actor,

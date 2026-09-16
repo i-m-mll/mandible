@@ -4,6 +4,21 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../../src/server.js";
+import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
+import { migrate } from "../../src/db.js";
+import { setupOperator } from "../../src/users/store.js";
+
+function testIdentity(db: Database.Database): NonNullable<RequestLike["client_identity"]> {
+  const operator = setupOperator(db, { slug: "settings-test", display_name: "Settings Test" });
+  return {
+    user_id: operator.id,
+    slug: operator.slug,
+    method: "api_token",
+    credential_id: "settings-test-credential",
+    source: "in_process",
+    effect_ceiling: PRODUCTION_EFFECTS,
+  };
+}
 
 class TestRoutes implements RouteRegistrar {
   private readonly handlers = new Map<string, RouteHandler>();
@@ -53,13 +68,7 @@ function createResponse(): ResponseLike & { statusCode: number; payload: unknown
 
 function createSettingsDb(): Database.Database {
   const db = new Database(":memory:");
-  db.exec(`
-    CREATE TABLE settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `);
+  migrate(db);
   return db;
 }
 
@@ -92,13 +101,8 @@ describe("settings routes", () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-rail-order-"));
     const dbPath = path.join(tempHome, "settings.db");
     let db = new Database(dbPath);
-    db.exec(`
-      CREATE TABLE settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
+    migrate(db);
+    const identity = testIdentity(db);
     const { setDb } = await import("../../src/db.js");
     const { registerSettingsRoutes } = await import("../../src/routes/settings.js");
     setDb(db);
@@ -116,6 +120,7 @@ describe("settings routes", () => {
       params: { key: "app_rail_order" },
       query: {},
       body: { value },
+      client_identity: identity,
     }, put);
     expect(put.statusCode).toBe(200);
     db.close();
@@ -144,6 +149,7 @@ describe("settings routes", () => {
     vi.resetModules();
 
     const db = createSettingsDb();
+    const identity = testIdentity(db);
     const { setDb } = await import("../../src/db.js");
     const { registerSettingsRoutes } = await import("../../src/routes/settings.js");
     setDb(db);
@@ -157,6 +163,7 @@ describe("settings routes", () => {
       params: { key: "reaper_enabled" },
       query: {},
       body: { value: "false" },
+      client_identity: identity,
     };
 
     await routes.handler("PUT", "/api/settings/:key")(req, res);
@@ -195,6 +202,7 @@ describe("settings routes", () => {
     vi.resetModules();
 
     const db = createSettingsDb();
+    const identity = testIdentity(db);
     db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)").run(
       "instructions.targets",
       JSON.stringify([{ path: path.join(tempHome, "old.md"), mode: "managed-block" }]),
@@ -233,6 +241,7 @@ describe("settings routes", () => {
         postExport: "bin/compile-agent-instructions",
         cleanupRemovedTargets: true,
       },
+      client_identity: identity,
     }, putRes);
 
     expect(putRes.statusCode).toBe(200);
@@ -255,6 +264,7 @@ describe("settings routes", () => {
         resetToDefaults: true,
         cleanupRemovedTargets: false,
       },
+      client_identity: identity,
     }, resetRes);
     expect(resetRes.statusCode).toBe(200);
     expect(resetRes.payload).toMatchObject({

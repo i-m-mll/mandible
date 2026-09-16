@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import http from "node:http";
@@ -11,6 +13,7 @@ import Database from "better-sqlite3";
 
 import { openDb } from "../../src/db.js";
 import { setSetting } from "../../src/client-auth/settings-kv.js";
+import { LocalSessionAuthority } from "../../src/client-auth/session-authority.js";
 import { retireBriefingV1ToCustody } from "../../src/feedback/migrate-legacy.js";
 import { RICH_BRIEFING_DEMO } from "../../src/feedback/rich-briefing-demo.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
@@ -22,6 +25,7 @@ const execFileAsync = promisify(execFile);
 
 let tempRoots: string[] = [];
 let previewServer: http.Server | null = null;
+const previewServers = new Set<http.Server>();
 
 // Previews are ordinary detached child processes now, so these tests really do
 // launch one. Every pid this file is responsible for is tracked here and killed
@@ -33,6 +37,37 @@ let standInPidFiles: string[] = [];
 // Above macOS's pid ceiling, so `kill(pid, 0)` is guaranteed to report it dead.
 // Used wherever a preview pid file must name a process that cannot exist.
 const UNREACHABLE_PID = 999_999;
+
+function previewLauncherEnv(previewBase: string): NodeJS.ProcessEnv {
+  const mandibleHome = path.join(previewBase, "mandible-home");
+  const clientAuthDir = path.join(mandibleHome, "config", "client-auth");
+  const authorityDir = path.join(mandibleHome, "config", "local-sessions");
+  fs.mkdirSync(clientAuthDir, { recursive: true });
+  fs.mkdirSync(path.join(mandibleHome, "artifacts"), { recursive: true });
+  const authorityFile = path.join(clientAuthDir, "authority-id");
+  if (!fs.existsSync(authorityFile)) fs.writeFileSync(authorityFile, "authority_iab_test\n", { mode: 0o600 });
+  const authority = new LocalSessionAuthority(authorityDir, "authority_iab_test", { initialize: true });
+  authority.registerInstance({
+    instance_id: "production",
+    installation_id: "authority_iab_test",
+    role: "main",
+    public_origin: "https://app.mandible.localhost:19420",
+    backend_origin: "http://127.0.0.1:29420",
+    backend_generation: "test-production",
+    effect_ceiling: ["ledger:read", "ledger:write", "maintenance:shared"],
+    writable_roots: [],
+  });
+  authority.close();
+  const caddy = path.join(mandibleHome, "runtime", "caddy", "2.11.3", "caddy");
+  fs.mkdirSync(path.dirname(caddy), { recursive: true });
+  if (!fs.existsSync(caddy)) fs.writeFileSync(caddy, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  return {
+    ...process.env,
+    MANDIBLE_PREVIEW_BASE_DIR: previewBase,
+    MANDIBLE_HOME: mandibleHome,
+    MANDIBLE_ARTIFACT_DIR: path.join(mandibleHome, "artifacts"),
+  };
+}
 
 function readPidFile(filePath: string): number | null {
   try {
@@ -208,17 +243,14 @@ function byteInventory(root: string): string[] {
   return entries.sort();
 }
 
-function runLauncherExport(name: "createProjectedSnapshot" | "materializeProjectedBriefingDemo" | "materializeProjectedAgentsReview" | "seedProjectedConversationStructureCache", details: object) {
-  const source = `
-    const launcher = await import(${JSON.stringify(pathToFileURL(SCRIPT).href)});
-    const result = await launcher[${JSON.stringify(name)}](${JSON.stringify(details)});
-    process.stdout.write(JSON.stringify(result));
-  `;
-  return spawnSync(process.execPath, ["--input-type=module", "--eval", source], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env: process.env,
-  });
+async function runLauncherExport(name: "createProjectedSnapshot" | "materializeProjectedBriefingDemo" | "materializeProjectedAgentsReview" | "seedProjectedConversationStructureCache", details: object) {
+  try {
+    const launcher = await import("../../scripts/iab-preview.mjs");
+    const result = await launcher[name](details as never);
+    return { status: 0, stdout: JSON.stringify(result), stderr: "" };
+  } catch (error) {
+    return { status: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function createSeedFixture() {
@@ -231,6 +263,7 @@ function createSeedFixture() {
   tempRoots.push(previewBase, sourceRoot);
   const previewRoot = path.join(previewBase, slugify(branch));
   fs.mkdirSync(previewRoot, { recursive: true });
+  fs.mkdirSync(path.join(sourceRoot, "artifacts"), { recursive: true });
   const db = path.join(previewRoot, "mandible-20260818-120000.db");
   openDb(db).close();
   const sourceDb = path.join(sourceRoot, "source.db");
@@ -239,13 +272,17 @@ function createSeedFixture() {
   const instanceEnv = {
     MANDIBLE_DB: db,
     MANDIBLE_INSTANCE_ROLE: "preview",
-    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
+    MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
+    MANDIBLE_ARTIFACT_DIR: path.join(previewRoot, "artifacts"),
+    MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.join(sourceRoot, "artifacts"),
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
     MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
   };
   const health = {
     instance: {
       role: "preview",
+      allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
       operational_mutations: "reject",
       db_path_source: "iab-preview-copy",
       db_path: db,
@@ -258,7 +295,7 @@ function createSeedFixture() {
   return {
     worktree, branch, previewBase, previewRoot, db, sourceRoot, sourceDb, metadata, metadataPath,
     env: {
-      ...process.env,
+      ...previewLauncherEnv(previewBase),
       GIT_DIR: path.join(branchRepo, ".git"),
       GIT_WORK_TREE: worktree,
       MANDIBLE_PREVIEW_BASE_DIR: previewBase,
@@ -623,20 +660,24 @@ function fileHashFromText(value: string): string {
 }
 
 function runSeed(fixture: ReturnType<typeof createSeedFixture>, extraArgs: string[] = []) {
-  return spawnSync(process.execPath, [SCRIPT, "seed-briefing-demo", "--json", ...extraArgs], {
+  return spawnSync(process.execPath, [SCRIPT, "seed-briefing-demo", "--json", "--no-build", ...extraArgs], {
     cwd: fixture.worktree,
     encoding: "utf8",
     env: fixture.env,
   });
 }
 
-afterEach(() => {
+afterEach(async () => {
   // Stop the daemons before removing the directories they are running out of.
   killStandInProcesses();
-  if (previewServer) {
-    previewServer.close();
-    previewServer = null;
+  for (const server of previewServers) {
+    server.closeAllConnections();
+    if (server.listening) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   }
+  previewServers.clear();
+  previewServer = null;
   for (const root of tempRoots) {
     // `dist` inside a fixture repo is a tree of symlinks into the real build.
     // Recursive removal unlinks symlinks rather than following them, so the
@@ -705,6 +746,7 @@ function listenForHealth(
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
   });
+  previewServers.add(previewServer);
 
   return new Promise((resolve) => {
     previewServer!.listen(0, "127.0.0.1", () => {
@@ -749,22 +791,33 @@ function previewContractEnv(details: {
   pidFile: string;
 }): Record<string, string> {
   const conversations = path.join(details.previewRoot, "conversations");
-  const clientAuthDir = path.join(
-    `${path.dirname(details.previewRoot)}.authorities`,
-    path.basename(details.previewRoot),
-    "client-auth",
-  );
+  const instanceId = `preview-${createHash("sha256").update(details.previewRoot).digest("hex").slice(0, 16)}`;
+  const mandibleHome = path.join(path.dirname(details.previewRoot), "mandible-home");
   return {
     MANDIBLE_PORT: String(details.port),
     MANDIBLE_DB: details.db,
     MANDIBLE_PID_FILE: details.pidFile,
     MANDIBLE_INSTANCE_ROLE: "preview",
-    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+    MANDIBLE_INSTANCE_ID: instanceId,
+    MANDIBLE_INSTALLATION_ID: "authority_iab_test",
+    MANDIBLE_PUBLIC_ORIGIN: `https://${instanceId}.mandible.localhost:19421`,
+    MANDIBLE_BACKEND_GENERATION: "preview-generation",
+    MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR: path.join(mandibleHome, "config", "local-sessions"),
+    MANDIBLE_CONTEXT_VERIFICATION_KEY: path.join(mandibleHome, "config", "local-sessions", "context-verification-key.pem"),
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
     MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
+    MANDIBLE_ARTIFACT_DIR: path.join(details.previewRoot, "artifacts"),
+    MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.join(mandibleHome, "artifacts"),
+    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
+    MANDIBLE_WRITABLE_ROOTS: JSON.stringify([details.previewRoot]),
     MANDIBLE_FILE_RPC_DIR: path.join(details.previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(details.previewRoot, "config"),
-    MANDIBLE_CLIENT_AUTH_DIR: clientAuthDir,
+    MANDIBLE_CLIENT_AUTH_DIR: path.join(
+      mandibleHome,
+      "preview-authorities",
+      path.basename(details.previewRoot),
+      "client-auth",
+    ),
     MANDIBLE_PREVIEW_ROOT: details.previewRoot,
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversations, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversations, "search-cache.db"),
@@ -858,6 +911,7 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
     startup_commit: { hash: oldHead, summary: "old", date: "" },
     instance: {
       role: "preview",
+      allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
       operational_mutations: "reject",
       preview_browser_enrollment: "allow",
       db_path: db,
@@ -915,7 +969,7 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
     healthPath,
     refreshedHealthPath,
     env: {
-      ...process.env,
+      ...previewLauncherEnv(previewBase),
       PATH: `${shimDir}:${process.env.PATH}`,
       MANDIBLE_PREVIEW_BASE_DIR: previewBase,
     },
@@ -923,7 +977,7 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
 }
 
 describe("iab-preview launcher", () => {
-  it("seeds only exact projected conversation versions into the isolated structure cache", () => {
+  it("seeds only exact projected conversation versions into the isolated structure cache", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-structure-cache-"));
     tempRoots.push(root);
     const projectedDb = path.join(root, "preview.db");
@@ -962,7 +1016,7 @@ describe("iab-preview launcher", () => {
     `);
     source.close();
 
-    const result = runLauncherExport("seedProjectedConversationStructureCache", {
+    const result = await runLauncherExport("seedProjectedConversationStructureCache", {
       sourceCache,
       targetCache,
       projectedDb,
@@ -983,19 +1037,19 @@ describe("iab-preview launcher", () => {
     seeded.close();
   });
 
-  it("rejects malformed agents-review refs before touching the launcher-owned copy", () => {
+  it("rejects malformed agents-review refs before touching the launcher-owned copy", async () => {
     const fixture = createSeedFixture();
-    const before = fs.readFileSync(fixture.db);
-    const result = runLauncherExport("materializeProjectedAgentsReview", {
+    const before = fileHash(fixture.db);
+    const result = await runLauncherExport("materializeProjectedAgentsReview", {
       worktree: fixture.worktree, previewRoot: fixture.previewRoot, db: fixture.db,
       sourceDb: fixture.sourceDb, artifactVersionRef: "artifact-version:bad!",
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("artifact version ref is missing or malformed");
-    expect(fs.readFileSync(fixture.db)).toEqual(before);
+    expect(fileHash(fixture.db)).toBe(before);
   });
 
-  it("seeds one committed link-custody v3 artifact idempotently without touching source bytes", () => {
+  it("seeds one committed link-custody v3 artifact idempotently without touching source bytes", async () => {
     const fixture = createSeedFixture();
     const repo = createRepo();
     const reviewPath = path.join(repo, "AGENTS.review.md");
@@ -1015,9 +1069,9 @@ describe("iab-preview launcher", () => {
     const sourceHash = fileHash(reviewPath);
     const details = { worktree: fixture.worktree, previewRoot: fixture.previewRoot, db: fixture.db,
       sourceDb: fixture.sourceDb, artifactVersionRef: artifact.version.id };
-    const first = runLauncherExport("materializeProjectedAgentsReview", details);
+    const first = await runLauncherExport("materializeProjectedAgentsReview", details);
     expect(first.status, first.stderr).toBe(0);
-    const second = runLauncherExport("materializeProjectedAgentsReview", details);
+    const second = await runLauncherExport("materializeProjectedAgentsReview", details);
     expect(second.status, second.stderr).toBe(0);
     expect(JSON.parse(second.stdout).round_id).toBe(JSON.parse(first.stdout).round_id);
     const seeded = new Database(fixture.db, { readonly: true });
@@ -1063,7 +1117,7 @@ describe("iab-preview launcher", () => {
     tempRoots.push(targetRoot);
     const targetDb = path.join(targetRoot, "mandible-20260819-120000.db");
 
-    const projectionResult = runLauncherExport("createProjectedSnapshot", {
+    const projectionResult = await runLauncherExport("createProjectedSnapshot", {
       sourceDb: source.db,
       dbCopy: targetDb,
       worktree: source.worktree,
@@ -1095,8 +1149,8 @@ describe("iab-preview launcher", () => {
       .get(projection.briefingDemo.briefing.id)).toEqual({ n: 2 });
     projected.close();
 
-    const afterFirst = fs.readFileSync(targetDb);
-    const secondResult = runLauncherExport("materializeProjectedBriefingDemo", {
+    const afterFirst = fileHash(targetDb);
+    const secondResult = await runLauncherExport("materializeProjectedBriefingDemo", {
       worktree: source.worktree,
       previewRoot: targetRoot,
       db: targetDb,
@@ -1107,7 +1161,7 @@ describe("iab-preview launcher", () => {
     expect(second.result).toBe("already-present");
     expect(second.briefing).toEqual(projection.briefingDemo.briefing);
     expect(second.rounds).toEqual(projection.briefingDemo.rounds);
-    expect(fs.readFileSync(targetDb)).toEqual(afterFirst);
+    expect(fileHash(targetDb)).toBe(afterFirst);
     expect(fileHash(source.db)).toBe(sourceHash);
     expect(byteInventory(sourceArtifactRoot)).toEqual(sourceArtifactInventory);
   }, 30_000);
@@ -1125,7 +1179,7 @@ describe("iab-preview launcher", () => {
     tempRoots.push(targetRoot);
     const targetDb = path.join(targetRoot, "mandible-20260819-120000.db");
 
-    const result = runLauncherExport("createProjectedSnapshot", {
+    const result = await runLauncherExport("createProjectedSnapshot", {
       sourceDb: source.db,
       dbCopy: targetDb,
       worktree: source.worktree,
@@ -1175,14 +1229,14 @@ describe("iab-preview launcher", () => {
     expect(upgraded.pragma("foreign_key_check")).toEqual([]);
     upgraded.close();
 
-    const afterFirst = fs.readFileSync(fixture.db);
+    const afterFirst = fileHash(fixture.db);
     const second = runSeed(fixture);
     expect(second.status, `${second.stderr}\n${second.stdout}`).toBe(0);
     const secondPayload = JSON.parse(second.stdout);
     expect(secondPayload.status).toBe("already-present");
     expect(secondPayload.briefing).toEqual(firstPayload.briefing);
     expect(secondPayload.rounds).toEqual(firstPayload.rounds);
-    expect(fs.readFileSync(fixture.db)).toEqual(afterFirst);
+    expect(fileHash(fixture.db)).toBe(afterFirst);
     expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
     expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
   }, 30_000);
@@ -1194,13 +1248,13 @@ describe("iab-preview launcher", () => {
     db.prepare("UPDATE briefing_legacy_custody SET disposition = 'sealed_ambiguous' WHERE briefing_id = ?")
       .run(retired.briefingId);
     db.close();
-    const before = fs.readFileSync(fixture.db);
+    const before = fileHash(fixture.db);
     const sourceHash = fileHash(fixture.sourceDb);
 
     const result = runSeed(fixture);
     expect(result.status).toBe(1);
     expect(result.stdout).toContain("partial or conflicting: retired v1 custody integrity");
-    expect(fs.readFileSync(fixture.db)).toEqual(before);
+    expect(fileHash(fixture.db)).toBe(before);
     expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
   }, 30_000);
 
@@ -1231,7 +1285,7 @@ describe("iab-preview launcher", () => {
       },
     });
     expect(firstPayload.rounds).toHaveLength(2);
-    const dbAfterFirst = fs.readFileSync(fixture.db);
+    const dbAfterFirst = fileHash(fixture.db);
     const countsAfterFirst = new Database(fixture.db, { readonly: true });
     const firstCounts = {
       briefings: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM briefings").get(),
@@ -1249,7 +1303,7 @@ describe("iab-preview launcher", () => {
     expect(secondPayload.status).toBe("already-present");
     expect(secondPayload.briefing.id).toBe(firstPayload.briefing.id);
     expect(secondPayload.rounds).toEqual(firstPayload.rounds);
-    expect(fs.readFileSync(fixture.db)).toEqual(dbAfterFirst);
+    expect(fileHash(fixture.db)).toBe(dbAfterFirst);
     const dbAfterSecond = new Database(fixture.db, { readonly: true });
     expect({
       briefings: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM briefings").get(),
@@ -1270,11 +1324,11 @@ describe("iab-preview launcher", () => {
     const conflicting = new Database(fixture.db);
     conflicting.prepare("UPDATE users SET status = 'retired' WHERE slug = 'briefing-demo-reviewer'").run();
     conflicting.close();
-    const beforeConflictCheck = fs.readFileSync(fixture.db);
+    const beforeConflictCheck = fileHash(fixture.db);
     const conflictResult = runSeed(fixture);
     expect(conflictResult.status).toBe(1);
     expect(conflictResult.stdout).toContain("partial or conflicting");
-    expect(fs.readFileSync(fixture.db)).toEqual(beforeConflictCheck);
+    expect(fileHash(fixture.db)).toBe(beforeConflictCheck);
     expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
     expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
   }, 30_000);
@@ -1283,10 +1337,6 @@ describe("iab-preview launcher", () => {
     ["branch drift", (fixture: ReturnType<typeof createSeedFixture>) => ({ ...fixture.metadata, branch: "integration/unrelated" })],
     ["worktree drift", (fixture: ReturnType<typeof createSeedFixture>) => ({ ...fixture.metadata, worktree: path.dirname(fixture.worktree) })],
     ["previewRoot drift", (fixture: ReturnType<typeof createSeedFixture>) => ({ ...fixture.metadata, previewRoot: fixture.sourceRoot })],
-    ["preview policy drift", (fixture: ReturnType<typeof createSeedFixture>) => ({
-      ...fixture.metadata,
-      instanceEnv: { ...fixture.metadata.instanceEnv, MANDIBLE_OPERATIONAL_MUTATIONS: "allow" },
-    })],
     ["metadata policy drift", (fixture: ReturnType<typeof createSeedFixture>) => ({
       ...fixture.metadata,
       health: { instance: { ...fixture.metadata.health.instance, role: "main" } },
@@ -1304,10 +1354,10 @@ describe("iab-preview launcher", () => {
     const sourceHash = fileHash(fixture.sourceDb);
     const sourceInventory = inventory(fixture.sourceRoot);
     fs.writeFileSync(fixture.metadataPath, JSON.stringify(mutate(fixture)), "utf8");
-    const before = fs.readFileSync(fixture.db);
+    const before = fileHash(fixture.db);
     const result = runSeed(fixture);
     expect(result.status).toBe(1);
-    expect(fs.readFileSync(fixture.db)).toEqual(before);
+    expect(fileHash(fixture.db)).toBe(before);
     expect(fs.existsSync(path.join(fixture.previewRoot, "rich-briefing-demo-artifacts"))).toBe(false);
     expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
     expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
@@ -1346,10 +1396,10 @@ describe("iab-preview launcher", () => {
       const arrangedArgs = arrange(fixture);
       const sourceHash = fileHash(fixture.sourceDb);
       const sourceInventory = inventory(fixture.sourceRoot);
-      const before = fs.readFileSync(fixture.db);
+      const before = fileHash(fixture.db);
       const result = runSeed(fixture, arrangedArgs);
       expect(result.status).toBe(1);
-      expect(fs.readFileSync(fixture.db)).toEqual(before);
+      expect(fileHash(fixture.db)).toBe(before);
       expect(fs.existsSync(path.join(fixture.previewRoot, "rich-briefing-demo-artifacts"))).toBe(false);
       expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
       expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
@@ -1373,10 +1423,7 @@ describe("iab-preview launcher", () => {
     ], {
       cwd: repo,
       encoding: "utf8",
-      env: {
-        ...process.env,
-        MANDIBLE_PREVIEW_BASE_DIR: previewBase,
-      },
+      env: previewLauncherEnv(previewBase),
     });
 
     expect(result.status).toBe(0);
@@ -1384,25 +1431,17 @@ describe("iab-preview launcher", () => {
     const previewConversations = path.join(previewRoot, "conversations");
     expect(payload.instanceEnv).toMatchObject({
       MANDIBLE_INSTANCE_ROLE: "preview",
-      MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
       MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
       MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
+      MANDIBLE_ARTIFACT_DIR: path.join(previewRoot, "artifacts"),
       MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
       MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
-      MANDIBLE_CLIENT_AUTH_DIR: path.join(
-        `${previewBase}.authorities`,
-        "integration-test-preview",
-        "client-auth",
-      ),
       MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(previewConversations, "structure.db"),
       MANDIBLE_CONVERSATION_CACHE_DB: path.join(previewConversations, "search-cache.db"),
       MANDIBLE_STDERR_LOG_PATH: path.join(previewRoot, "stderr.log"),
       MANDIBLE_CLI_CACHE_DIR: path.join(previewRoot, "cli"),
     });
-    expect(payload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR.startsWith(`${previewRoot}${path.sep}`))
-      .toBe(false);
-
-    // These four keys are the shared-resource leak this contract closes: a
+    // These five keys are the shared-resource leak this contract closes: a
     // preview used to open the live conversations index read-write on the same
     // inode as the live daemon, rotate the live daemon's log file on its own
     // timer, and overwrite every file in the shared CLI cache. Every writable
@@ -1421,6 +1460,7 @@ describe("iab-preview launcher", () => {
       "MANDIBLE_CONVERSATION_CACHE_DB",
       "MANDIBLE_STDERR_LOG_PATH",
       "MANDIBLE_CLI_CACHE_DIR",
+      "MANDIBLE_ARTIFACT_DIR",
     ]) {
       expect(String(payload.instanceEnv[key]).startsWith(`${previewRoot}${path.sep}`)).toBe(true);
     }
@@ -1461,16 +1501,118 @@ describe("iab-preview launcher", () => {
     ], {
       cwd: repo,
       encoding: "utf8",
-      env: {
-        ...process.env,
-        MANDIBLE_PREVIEW_BASE_DIR: previewBase,
-      },
+      env: previewLauncherEnv(previewBase),
     });
 
     expect(result.status).toBe(0);
     const payload = JSON.parse(result.stdout);
     expect(payload.status).toBe("dry-run");
     expect(payload.mode).toBe("current-integration");
+  });
+
+  it("requires the coordinated cutover for the exact legacy preview instead of allocating another origin", async () => {
+    const repo = createRepo();
+    git(["checkout", "-b", "integration/test-preview"], repo);
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
+    tempRoots.push(previewBase);
+    const previewRoot = path.join(previewBase, "integration-test-preview");
+    const fileRpcDir = path.join(previewRoot, "agent-rpc");
+    const credentialDir = path.join(previewBase, "mandible-home", "preview-authorities", "integration-test-preview", "client-auth");
+    fs.mkdirSync(fileRpcDir, { recursive: true });
+    fs.mkdirSync(credentialDir, { recursive: true });
+    const db = path.join(previewRoot, "mandible-legacy.db");
+    const sourceDb = path.join(repo, "source.db");
+    const pidFile = path.join(previewRoot, "mandible.pid");
+    fs.writeFileSync(db, "legacy copy");
+    fs.writeFileSync(sourceDb, "source");
+    fs.writeFileSync(pidFile, `${process.pid}\n`);
+    fs.symlinkSync(db, path.join(previewRoot, "current.db"));
+    const port = await listenForHealth({
+      ready: true,
+      warm: true,
+      startup_epoch: "legacy-preview",
+      startup_commit: { hash: gitOutput(["rev-parse", "HEAD"], repo), summary: "legacy", date: "" },
+      instance: {
+        role: "preview",
+        operational_mutations: "reject",
+        db_path: db,
+        db_path_source: "iab-preview-copy",
+        source_db_path: sourceDb,
+      },
+      file_rpc_dir: fileRpcDir,
+    });
+    const instanceEnv = previewContractEnv({ port, db, sourceDb, previewRoot, pidFile });
+    for (const key of [
+      "MANDIBLE_INSTANCE_ID",
+      "MANDIBLE_INSTALLATION_ID",
+      "MANDIBLE_PUBLIC_ORIGIN",
+      "MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR",
+      "MANDIBLE_CONTEXT_VERIFICATION_KEY",
+      "MANDIBLE_ARTIFACT_DIR",
+      "MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR",
+      "MANDIBLE_ALLOWED_EFFECTS",
+      "MANDIBLE_WRITABLE_ROOTS",
+    ]) delete instanceEnv[key];
+    fs.writeFileSync(path.join(previewRoot, "metadata.json"), JSON.stringify({
+      branch: "integration/test-preview",
+      worktree: repo,
+      port,
+      db,
+      sourceDb,
+      previewRoot,
+      instanceEnv,
+    }));
+
+    const launcherEnv = previewLauncherEnv(previewBase);
+    const previousBase = process.env.MANDIBLE_PREVIEW_BASE_DIR;
+    const previousHome = process.env.MANDIBLE_HOME;
+    process.env.MANDIBLE_PREVIEW_BASE_DIR = previewBase;
+    process.env.MANDIBLE_HOME = path.join(previewBase, "mandible-home");
+    try {
+      const launcher = await import(`${pathToFileURL(SCRIPT).href}?legacy-cutover=${Date.now()}`);
+      const existing = await launcher.healthyExistingPreview("integration/test-preview", { worktree: repo });
+      expect(existing?.legacyContractDrift).toBeTruthy();
+    } finally {
+      if (previousBase === undefined) delete process.env.MANDIBLE_PREVIEW_BASE_DIR;
+      else process.env.MANDIBLE_PREVIEW_BASE_DIR = previousBase;
+      if (previousHome === undefined) delete process.env.MANDIBLE_HOME;
+      else process.env.MANDIBLE_HOME = previousHome;
+    }
+
+    const result = await execFileAsync(process.execPath, [SCRIPT, "--json", "--no-build"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: launcherEnv,
+    }).then(
+      () => { throw new Error("legacy preview launch unexpectedly succeeded"); },
+      (error: { stdout?: string }) => error,
+    );
+    expect(JSON.parse(result.stdout ?? "{}").error).toContain("coordinated local-session cutover");
+    expect(fs.readdirSync(previewRoot).filter((entry) => entry.startsWith("mandible-"))).toEqual(["mandible-legacy.db"]);
+  });
+
+  it("checks the cutover journal before launchd cleanup or existing-preview refresh", () => {
+    const repo = createRepo();
+    git(["checkout", "-b", "integration/test-preview"], repo);
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
+    tempRoots.push(previewBase);
+    const env = previewLauncherEnv(previewBase);
+    const authorityDir = path.join(env.MANDIBLE_HOME, "config", "local-sessions");
+    fs.mkdirSync(authorityDir, { recursive: true });
+    fs.writeFileSync(path.join(authorityDir, "cutover.json"), JSON.stringify({ schema: "mandible-local-session-cutover@1", state: "activating" }));
+    const commandLog = path.join(previewBase, "launchctl.log");
+    const launchctlShim = path.join(previewBase, "launchctl");
+    fs.writeFileSync(launchctlShim, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(commandLog)}\n`);
+    fs.chmodSync(launchctlShim, 0o755);
+
+    const result = spawnSync(process.execPath, [SCRIPT, "--json", "--dry-run"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...env, MANDIBLE_IAB_PREVIEW_LAUNCHCTL: launchctlShim },
+    });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout).error).toContain("cutover is activating");
+    expect(fs.existsSync(commandLog)).toBe(false);
   });
 
   it("does not reuse a preview daemon that owns the shared file-RPC spool", async () => {
@@ -1485,6 +1627,7 @@ describe("iab-preview launcher", () => {
       ready: true,
       instance: {
         role: "preview",
+        allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
         operational_mutations: "reject",
       },
       file_rpc_dir: sharedFileRpcDir,
@@ -1511,10 +1654,7 @@ describe("iab-preview launcher", () => {
     ], {
       cwd: repo,
       encoding: "utf8",
-      env: {
-        ...process.env,
-        MANDIBLE_PREVIEW_BASE_DIR: previewBase,
-      },
+      env: previewLauncherEnv(previewBase),
     });
 
     expect(result.status).toBe(0);
@@ -1546,6 +1686,7 @@ describe("iab-preview launcher", () => {
       startup_commit: { hash: currentHead, summary: "current", date: "" },
       instance: {
         role: "preview",
+        allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
         operational_mutations: "reject",
         preview_browser_enrollment: "allow",
         db_path: db,
@@ -1569,7 +1710,7 @@ describe("iab-preview launcher", () => {
     const reuse = await execFileAsync(process.execPath, [SCRIPT, "--dry-run", "--json"], {
       cwd: repo,
       encoding: "utf8",
-      env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
+      env: previewLauncherEnv(previewBase),
     });
     expect(JSON.parse(reuse.stdout)).toMatchObject({
       status: "dry-run",
@@ -1602,6 +1743,7 @@ describe("iab-preview launcher", () => {
       startup_commit: { hash: head, summary: "current", date: "" },
       instance: {
         role: "preview",
+        allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
         operational_mutations: "reject",
         preview_browser_enrollment: "allow",
         db_path: db,
@@ -1635,7 +1777,7 @@ describe("iab-preview launcher", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ ready: true, warm: true });
   });
 
-  it("exchanges the process proof and returns only a verified dashboard session fragment", async () => {
+  it("returns clean preview URLs and never places session credentials in a fragment", async () => {
     const repo = createRepo();
     git(["checkout", "-b", "integration/test-preview"], repo);
     const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
@@ -1657,7 +1799,7 @@ describe("iab-preview launcher", () => {
       startup_epoch: startupEpoch,
       startup_commit: { hash: currentHead, summary: "current", date: "" },
       instance: {
-        role: "preview", operational_mutations: "reject", preview_browser_enrollment: "allow",
+        role: "preview", allowed_effects: ["ledger:read", "ledger:write", "files:preview"], preview_browser_enrollment: "allow",
       },
       file_rpc_dir: fileRpcDir,
     }, proofPath);
@@ -1685,16 +1827,17 @@ describe("iab-preview launcher", () => {
       }),
     };
     fs.writeFileSync(path.join(previewRoot, "metadata.json"), JSON.stringify(metadata), "utf8");
-
     const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
       cwd: repo,
       encoding: "utf8",
-      env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
+      env: previewLauncherEnv(previewBase),
+    }).catch((error: { stdout?: string; stderr?: string }) => {
+      throw new Error([error.stderr, error.stdout].filter(Boolean).join("\n"));
     });
 
     const payload = JSON.parse(result.stdout);
     expect(payload.status).toBe("already-running");
-    expect(payload.browserEnrollment).toBe("existing-profile-session");
+    expect(payload.browserEnrollment).toBe("cookie-or-pairing");
     expect(new URL(payload.freshUrl).hash).not.toContain("mandible_auth");
     expect(payload.pairingUrl).toBeUndefined();
     expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
@@ -1705,185 +1848,18 @@ describe("iab-preview launcher", () => {
     const reused = await execFileAsync(process.execPath, [SCRIPT, "--json", "--pair-browser"], {
       cwd: repo,
       encoding: "utf8",
-      env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
+      env: previewLauncherEnv(previewBase),
     });
     const reusedPayload = JSON.parse(reused.stdout);
     expect(reusedPayload.status).toBe("already-running");
-    expect(reusedPayload.browserEnrollment).toBe("verified-pairing-session");
+    expect(reusedPayload.browserEnrollment).toBe("interactive-pairing");
     expect(new URL(reusedPayload.freshUrl).hash).not.toContain("mandible_auth");
-    expect(new URL(reusedPayload.pairingUrl).hash)
-      .toContain("mandible_auth=preview+dashboard+session+1");
+    expect(new URL(reusedPayload.pairingUrl).hash).not.toContain("mandible_auth");
     expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
       .not.toContain("preview dashboard session");
   });
 
-  it("keeps one paired authority through live legacy upgrade and clean restore", async () => {
-    const repo = createRepo();
-    git(["checkout", "-b", "integration/test-preview"], repo);
-    fs.mkdirSync(path.join(repo, "scripts"));
-    fs.copyFileSync(
-      path.join(process.cwd(), "scripts", "project-db-snapshot.mjs"),
-      path.join(repo, "scripts", "project-db-snapshot.mjs"),
-    );
-    fs.symlinkSync(path.join(process.cwd(), "cli"), path.join(repo, "cli"));
-    fs.cpSync(path.join(process.cwd(), "dist"), path.join(repo, "dist"), { recursive: true });
-    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(repo, "node_modules"));
-    fs.symlinkSync(path.join(process.cwd(), "ui"), path.join(repo, "ui"));
-
-    const sourceDb = path.join(repo, "source.db");
-    const source = openDb(sourceDb);
-    setupOperator(source, { display_name: "Preview Operator", email: "preview@example.invalid" });
-    source.close();
-
-    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-lifecycle-"));
-    const authorityBase = `${previewBase}.authorities`;
-    tempRoots.push(previewBase, authorityBase);
-    const previewRoot = path.join(previewBase, "integration-test-preview");
-    const port = await findUnusedPort();
-    const env = { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase };
-
-    const first = await execFileAsync(process.execPath, [
-      SCRIPT, "--json", "--no-build", "--db", sourceDb, "--port", String(port), "--pair-browser",
-    ], { cwd: repo, encoding: "utf8", env }).catch((error: { stdout?: string; stderr?: string }) => {
-      throw new Error([error.stderr, error.stdout].filter(Boolean).join("\n"));
-    });
-    const firstPayload = JSON.parse(first.stdout);
-    const token = new URL(firstPayload.pairingUrl).hash
-      .match(/[?&]mandible_auth=([^&]+)/)?.[1];
-    expect(token).toBeTruthy();
-    const dashboardToken = decodeURIComponent(token!);
-    const firstAuthority = firstPayload.health.client_auth.authority_id;
-    expect(firstAuthority).toMatch(/^authority_/);
-    expect(firstPayload.port).toBe(port);
-
-    const firstPid = readPidFile(firstPayload.pidFile);
-    expect(firstPid).not.toBeNull();
-    process.kill(firstPid!, "SIGTERM");
-    await vi.waitFor(() => expect(isProcessAlive(firstPid!)).toBe(false), { timeout: 5_000 });
-    const legacyClientAuthDir = path.join(previewRoot, "config", "client-auth");
-    fs.mkdirSync(path.dirname(legacyClientAuthDir), { recursive: true });
-    fs.renameSync(firstPayload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR, legacyClientAuthDir);
-    const legacyRunScript = fs.readFileSync(firstPayload.runScript, "utf8")
-      .replaceAll(firstPayload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR, legacyClientAuthDir);
-    fs.writeFileSync(firstPayload.runScript, legacyRunScript, { mode: 0o755 });
-    const implicitLegacyMetadata = JSON.parse(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"));
-    delete implicitLegacyMetadata.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR;
-    fs.writeFileSync(path.join(previewRoot, "metadata.json"), JSON.stringify(implicitLegacyMetadata), "utf8");
-
-    const legacyChild = spawn("/bin/zsh", [firstPayload.runScript], {
-      cwd: repo,
-      detached: true,
-      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("MANDIBLE_"))),
-      stdio: "ignore",
-    });
-    legacyChild.unref();
-    await vi.waitFor(async () => {
-      const legacyPid = readPidFile(firstPayload.pidFile);
-      expect(legacyPid).not.toBeNull();
-      expect(legacyPid).not.toBe(firstPid);
-      expect((await requestPreviewWhoami(port, dashboardToken)).status).toBe(200);
-    }, { timeout: 10_000 });
-
-    const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-npm-"));
-    tempRoots.push(shimDir);
-    fs.writeFileSync(path.join(shimDir, "npm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    const upgradeEnv = { ...env, PATH: `${shimDir}:${process.env.PATH}` };
-    const upgrade = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: repo,
-      encoding: "utf8",
-      env: upgradeEnv,
-    }).catch((error: { stdout?: string; stderr?: string }) => {
-      throw new Error([error.stderr, error.stdout].filter(Boolean).join("\n"));
-    });
-    const upgradePayload = JSON.parse(upgrade.stdout);
-    expect(upgradePayload).toMatchObject({
-      status: "refreshed",
-      branch: "integration/test-preview",
-      port,
-      browserEnrollment: "existing-profile-session",
-      clientAuthAuthority: {
-        status: "migrated",
-        path: firstPayload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR,
-      },
-    });
-    expect(fs.existsSync(legacyClientAuthDir)).toBe(false);
-    expect(upgradePayload.health.client_auth.authority_id).toBe(firstAuthority);
-
-    fs.mkdirSync(legacyClientAuthDir, { recursive: true });
-    for (const name of ["authority-id", "pepper"]) {
-      fs.copyFileSync(
-        path.join(firstPayload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR, name),
-        path.join(legacyClientAuthDir, name),
-      );
-      fs.chmodSync(path.join(legacyClientAuthDir, name), 0o600);
-    }
-    const paired = await execFileAsync(process.execPath, [SCRIPT, "--json", "--pair-browser"], {
-      cwd: repo,
-      encoding: "utf8",
-      env: upgradeEnv,
-    });
-    const pairedPayload = JSON.parse(paired.stdout);
-    const pairedTokenMatch = new URL(pairedPayload.pairingUrl).hash.match(/[?&]mandible_auth=([^&]+)/)?.[1];
-    expect(pairedTokenMatch).toBeTruthy();
-    const pairedToken = decodeURIComponent(pairedTokenMatch!);
-    expect(fs.existsSync(path.join(firstPayload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR, "dashboard-session.json")))
-      .toBe(true);
-    expect(fs.existsSync(path.join(legacyClientAuthDir, "dashboard-session.json"))).toBe(false);
-
-    const upgradedPid = readPidFile(upgradePayload.pidFile);
-    expect(upgradedPid).not.toBeNull();
-    process.kill(upgradedPid!, "SIGTERM");
-    await vi.waitFor(() => expect(isProcessAlive(upgradedPid!)).toBe(false), { timeout: 5_000 });
-    fs.writeFileSync(path.join(previewRoot, "recyclable-marker"), "delete me", "utf8");
-
-    const restored = await execFileAsync(process.execPath, [
-      SCRIPT, "--json", "--no-build", "--db", sourceDb, "--port", String(port),
-    ], { cwd: repo, encoding: "utf8", env }).catch((error: { stdout?: string; stderr?: string }) => {
-      throw new Error([error.stderr, error.stdout].filter(Boolean).join("\n"));
-    });
-    const restoredPayload = JSON.parse(restored.stdout);
-    expect(restoredPayload).toMatchObject({
-      status: "started",
-      branch: "integration/test-preview",
-      port,
-      browserEnrollment: "existing-profile-session",
-      clientAuthAuthority: {
-        status: "retired-legacy-shadow",
-        path: firstPayload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR,
-      },
-    });
-    expect(restoredPayload.pairingUrl).toBeUndefined();
-    expect(new URL(restoredPayload.freshUrl).hash).not.toContain("mandible_auth");
-    expect(restoredPayload.health.client_auth.authority_id).toBe(firstAuthority);
-    expect(fs.existsSync(legacyClientAuthDir)).toBe(false);
-    expect(fs.existsSync(path.join(previewRoot, "recyclable-marker"))).toBe(false);
-
-    const whoami = await requestPreviewWhoami(port, dashboardToken);
-    expect(whoami).toMatchObject({
-      status: 200,
-      body: {
-        authenticated: true,
-        user: { kind: "human" },
-        ephemeral_purpose: "dashboard_handshake",
-        audience: firstAuthority,
-      },
-    });
-    expect(await requestPreviewWhoami(port, pairedToken)).toMatchObject({
-      status: 200,
-      body: {
-        authenticated: true,
-        user: { kind: "human" },
-        ephemeral_purpose: "dashboard_handshake",
-        audience: firstAuthority,
-      },
-    });
-
-    const restoredPid = readPidFile(restoredPayload.pidFile);
-    expect(restoredPid).not.toBeNull();
-    standInPids.push(restoredPid!);
-  }, 60_000);
-
-  it("emits no browser URL when the exchanged identity is not a verified human", async () => {
+  it("emits no browser URL when preview metadata has no registered public origin", async () => {
     const previewRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-enrollment-"));
     tempRoots.push(previewRoot);
     const proofPath = path.join(previewRoot, "preview-browser-enrollment.json");
@@ -1896,7 +1872,7 @@ describe("iab-preview launcher", () => {
     const health = {
       startup_epoch: startupEpoch,
       instance: {
-        role: "preview", operational_mutations: "reject", preview_browser_enrollment: "allow",
+        role: "preview", allowed_effects: ["ledger:read", "ledger:write", "files:preview"], preview_browser_enrollment: "allow",
       },
     };
     const port = await listenForHealth(health, proofPath, { verifiedHuman: false });
@@ -1915,7 +1891,7 @@ describe("iab-preview launcher", () => {
       cwd: process.cwd(), encoding: "utf8",
     });
     const payload = JSON.parse(result.stdout);
-    expect(payload).toMatchObject({ ok: false, error: expect.stringContaining("identity verification failed") });
+    expect(payload).toMatchObject({ ok: false, error: expect.stringContaining("no registered public origin") });
     expect(payload.freshUrl).toBeUndefined();
   });
 
@@ -1953,7 +1929,11 @@ describe("iab-preview launcher", () => {
     // run.sh is the single launch contract, so it must pin the whole isolation
     // environment rather than inherit any of it.
     const runScript = fs.readFileSync(fixture.runScript, "utf8");
-    for (const [key, value] of Object.entries(fixture.metadata.instanceEnv)) {
+    const refreshedInstanceEnv = {
+      ...fixture.metadata.instanceEnv,
+      MANDIBLE_BACKEND_GENERATION: fixture.currentHead,
+    };
+    for (const [key, value] of Object.entries(refreshedInstanceEnv)) {
       expect(runScript).toContain(`${key}='${value}'`);
     }
 
@@ -1986,114 +1966,6 @@ describe("iab-preview launcher", () => {
     expect(daemonPid).not.toBe(running);
   }, 60_000);
 
-  it.each([
-    { recordedClientAuthDir: "legacy" },
-    { recordedClientAuthDir: "missing" },
-  ])("upgrades a live preview with $recordedClientAuthDir client-auth metadata before reusing its port", async ({
-    recordedClientAuthDir,
-  }) => {
-    const fixture = await createRefreshFixture();
-    fs.copyFileSync(fixture.refreshedHealthPath, fixture.healthPath);
-    const running = spawnStandInDaemon(path.join(fixture.previewRoot, "legacy-live.pid"));
-    fs.writeFileSync(fixture.pidFile, `${running}\n`, "utf8");
-    fs.writeFileSync(path.join(fixture.previewRoot, "preview-browser-enrollment.json"), JSON.stringify({
-      version: 1,
-      pid: running,
-      startup_epoch: "preview-refresh-fixture",
-      token: "legacy preview process proof",
-    }), { mode: 0o600 });
-
-    const legacyClientAuthDir = path.join(fixture.previewRoot, "config", "client-auth");
-    fs.mkdirSync(legacyClientAuthDir, { recursive: true });
-    fs.writeFileSync(path.join(legacyClientAuthDir, "authority-id"), "authority_preserved\n", { mode: 0o600 });
-    fs.writeFileSync(path.join(legacyClientAuthDir, "pepper"), "pepper_preserved\n", { mode: 0o600 });
-    fs.writeFileSync(path.join(legacyClientAuthDir, "dashboard-sessions.json"), "saved browser session\n", {
-      mode: 0o600,
-    });
-    const legacyInstanceEnv = { ...fixture.metadata.instanceEnv };
-    if (recordedClientAuthDir === "missing") {
-      delete legacyInstanceEnv.MANDIBLE_CLIENT_AUTH_DIR;
-    } else {
-      legacyInstanceEnv.MANDIBLE_CLIENT_AUTH_DIR = legacyClientAuthDir;
-    }
-    const legacyMetadata = {
-      ...fixture.metadata,
-      instanceEnv: legacyInstanceEnv,
-      health: JSON.parse(fs.readFileSync(fixture.refreshedHealthPath, "utf8")),
-    };
-    fs.writeFileSync(fixture.metadataPath, JSON.stringify(legacyMetadata), "utf8");
-
-    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    });
-
-    const payload = JSON.parse(result.stdout);
-    const durableClientAuthDir = fixture.metadata.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR;
-    expect(payload.status).toBe("refreshed");
-    expect(payload.port).toBe(fixture.metadata.port);
-    expect(payload.restartLifecycle.stopped).toEqual({ pid: running, outcome: "terminated" });
-    expect(isProcessAlive(running)).toBe(false);
-    expect(payload.clientAuthAuthority).toEqual({ status: "migrated", path: durableClientAuthDir });
-    expect(payload.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR).toBe(durableClientAuthDir);
-    expect(fs.readFileSync(path.join(durableClientAuthDir, "authority-id"), "utf8"))
-      .toBe("authority_preserved\n");
-    expect(fs.readFileSync(path.join(durableClientAuthDir, "dashboard-sessions.json"), "utf8"))
-      .toBe("saved browser session\n");
-    expect(fs.existsSync(legacyClientAuthDir)).toBe(false);
-
-    await vi.waitFor(() => expect(readPidFile(fixture.markerPidFile)).not.toBeNull(), { timeout: 5_000 });
-    const daemonPid = readPidFile(fixture.markerPidFile);
-    expect(daemonPid).not.toBeNull();
-    expect(daemonPid).not.toBe(running);
-  }, 60_000);
-
-  it("refuses to retire a legacy auth shadow with conflicting immutable authority bytes", async () => {
-    const fixture = await createRefreshFixture();
-    fs.copyFileSync(fixture.refreshedHealthPath, fixture.healthPath);
-    const running = spawnStandInDaemon(path.join(fixture.previewRoot, "legacy-conflict.pid"));
-    fs.writeFileSync(fixture.pidFile, `${running}\n`, "utf8");
-    fs.writeFileSync(path.join(fixture.previewRoot, "preview-browser-enrollment.json"), JSON.stringify({
-      version: 1,
-      pid: running,
-      startup_epoch: "preview-refresh-fixture",
-      token: "legacy conflict process proof",
-    }), { mode: 0o600 });
-
-    const legacyClientAuthDir = path.join(fixture.previewRoot, "config", "client-auth");
-    const durableClientAuthDir = fixture.metadata.instanceEnv.MANDIBLE_CLIENT_AUTH_DIR;
-    for (const [dir, authority] of [
-      [legacyClientAuthDir, "authority_legacy"],
-      [durableClientAuthDir, "authority_durable"],
-    ]) {
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, "authority-id"), `${authority}\n`, { mode: 0o600 });
-      fs.writeFileSync(path.join(dir, "pepper"), "matching_pepper\n", { mode: 0o600 });
-    }
-    fs.writeFileSync(fixture.metadataPath, JSON.stringify({
-      ...fixture.metadata,
-      instanceEnv: {
-        ...fixture.metadata.instanceEnv,
-        MANDIBLE_CLIENT_AUTH_DIR: legacyClientAuthDir,
-      },
-      health: JSON.parse(fs.readFileSync(fixture.refreshedHealthPath, "utf8")),
-    }), "utf8");
-
-    await expect(execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    })).rejects.toMatchObject({
-      code: 1,
-      stdout: expect.stringContaining("immutable authority bytes"),
-    });
-    expect(isProcessAlive(running)).toBe(true);
-    expect(fs.existsSync(legacyClientAuthDir)).toBe(true);
-    expect(fs.existsSync(durableClientAuthDir)).toBe(true);
-    expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
-  });
-
   it("refuses to race an unverified process on an explicitly requested port", async () => {
     const repo = createRepo();
     git(["checkout", "-b", "integration/test-preview"], repo);
@@ -2112,7 +1984,7 @@ describe("iab-preview launcher", () => {
     ], {
       cwd: repo,
       encoding: "utf8",
-      env: { ...process.env, MANDIBLE_PREVIEW_BASE_DIR: previewBase },
+      env: previewLauncherEnv(previewBase),
     })).rejects.toMatchObject({
       code: 1,
       stdout: expect.stringContaining(`port ${occupiedPort} is already occupied`),

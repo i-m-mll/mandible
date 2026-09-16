@@ -26,6 +26,7 @@ import {
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { appColors } from '../theme';
+import { browserSessionFetch } from '../client-auth-token';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { useRegisterAppRightSidebar } from '../app-shell';
@@ -202,7 +203,7 @@ async function getGraph(params: GraphFetchParams): Promise<GraphPayload> {
   if (params.limit) q.set('limit', String(params.limit));
   if (params.nodeTypes && params.nodeTypes.length > 0) q.set('node_type', params.nodeTypes.join(','));
   if (params.edgeTypes && params.edgeTypes.length > 0) q.set('edge_type', params.edgeTypes.join(','));
-  const r = await fetch(`/api/graph?${q.toString()}`);
+  const r = await browserSessionFetch(`/api/graph?${q.toString()}`);
   if (!r.ok) throw new Error(`graph fetch failed: ${r.status}`);
   return r.json() as Promise<GraphPayload>;
 }

@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import { CURRENT_SCHEMA_VERSION, openDb, migrate } from "../src/db.js";
 import { startDaemon } from "../src/index.js";
 import { autoStartDaemon, checkHealth, stopDaemon, waitForHealth } from "../src/lifecycle.js";
-import type { SSEEvent } from "../src/types.js";
 
 interface TempPaths {
   dir: string;
@@ -53,31 +52,6 @@ async function getAvailablePort(): Promise<number> {
   });
 }
 
-async function readSseEvent(
-  res: http.IncomingMessage,
-  predicate: (event: SSEEvent) => boolean = () => true,
-): Promise<SSEEvent> {
-  return new Promise((resolve, reject) => {
-    let buffer = "";
-    res.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
-      let index = buffer.indexOf("\n\n");
-      while (index >= 0) {
-        const raw = buffer.slice(0, index);
-        buffer = buffer.slice(index + 2);
-        const parsed = parseSse(raw);
-        if (parsed && predicate(parsed)) {
-          resolve(parsed);
-          return;
-        }
-        index = buffer.indexOf("\n\n");
-      }
-    });
-    res.on("error", reject);
-    res.on("end", () => reject(new Error("SSE closed before event")));
-  });
-}
-
 async function waitForNoHealth(
   port: number,
   timeoutMs: number = 3000,
@@ -92,27 +66,6 @@ async function waitForNoHealth(
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   return false;
-}
-
-function parseSse(raw: string): SSEEvent | null {
-  const lines = raw.split("\n");
-  let data: string | null = null;
-  for (const line of lines) {
-    if (line.startsWith(":")) {
-      continue;
-    }
-    if (line.startsWith("data:")) {
-      data = line.slice("data:".length).trim();
-    }
-  }
-  if (!data) {
-    return null;
-  }
-  try {
-    return JSON.parse(data) as SSEEvent;
-  } catch {
-    return null;
-  }
 }
 
 describe.sequential("mandible daemon", () => {
@@ -161,7 +114,7 @@ describe.sequential("mandible daemon", () => {
     }
   });
 
-  it("streams SSE events", async () => {
+  it("does not expose the retired anonymous GET SSE endpoint", async () => {
     const port = await getAvailablePort();
     if (!port) {
       return;
@@ -180,31 +133,17 @@ describe.sequential("mandible daemon", () => {
       method: "GET"
     });
 
-    const sent: SSEEvent = {
-      type: "session:registered",
-      data: { ok: true },
-      timestamp: new Date().toISOString()
-    };
-
-    const eventPromise = new Promise<SSEEvent>((resolve, reject) => {
-      request.on("response", async (res) => {
-        setTimeout(() => {
-          daemon.sse.broadcast(sent);
-        }, 50);
-        try {
-          const event = await readSseEvent(res, (candidate) => candidate.type === sent.type);
-          resolve(event);
-        } catch (error) {
-          reject(error);
-        }
+    const response = new Promise<number>((resolve, reject) => {
+      request.on("response", (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode ?? 500));
       });
+      request.on("error", reject);
     });
 
     request.end();
 
-    const received = await eventPromise;
-    expect(received.type).toBe(sent.type);
-    expect(received.data).toEqual(sent.data);
+    expect(await response).toBe(404);
 
     await daemon.close();
   });

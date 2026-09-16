@@ -48,7 +48,7 @@ set -euo pipefail
 
 export GIT_OPTIONAL_LOCKS=0
 export MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
-export MANDIBLE_BASE="${MANDIBLE_BASE:-http://127.0.0.1:${MANDIBLE_PORT}}"
+export MANDIBLE_BASE="${MANDIBLE_BASE:-${MANDIBLE_PUBLIC_ORIGIN:-https://app.mandible.localhost:19420}}"
 
 # Resolve script's own directory robustly — no realpath (not standard on macOS)
 MANDIBLE_BIN_DIR="$(cd "$(dirname "$0")" && pwd -P)"

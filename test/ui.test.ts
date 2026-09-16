@@ -47,6 +47,7 @@ import {
   spacesRouteFromHash,
 } from '../ui/src/routing';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
+import { __resetBrowserSessionForTests, initializeBrowserSession } from '../ui/src/client-auth-token';
 import {
   AppShellProvider,
   RightSidebarIcon,
@@ -166,7 +167,19 @@ vi.mock('@xterm/addon-fit', () => ({
   },
 }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  __resetBrowserSessionForTests();
+  await initializeBrowserSession(async () => new Response(JSON.stringify({
+    authenticated: true,
+    session: {
+      family_id: 'test-family', audience: 'production', csrf_token: 'test-csrf',
+      effect_ceiling: [
+        'ledger:read', 'ledger:write', 'files:preview', 'files:production',
+        'auth:protected', 'auth:credentials', 'process:external', 'provider:send',
+        'network:publish', 'delivery:background', 'maintenance:shared',
+      ],
+    },
+  }), { status: 200, headers: { 'content-type': 'application/json' } }));
   reactFlowMockState.mountCount = 0;
   reactFlowMockState.unmountCount = 0;
   vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
@@ -182,6 +195,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetBrowserSessionForTests();
   invalidateApiGetCache();
   cleanup();
   __resetSharedSseForTests();
@@ -541,8 +555,13 @@ function installPointerEventForTest(): void {
 
 const previewInstance: InstanceInfo = {
   role: 'preview',
-  operational_mutations: 'reject',
-  operational_mutations_overridden: true,
+  instance_id: 'preview-test',
+  installation_id: 'install-test',
+  public_origin: 'https://preview-test.mandible.localhost:19421',
+  backend_generation: 'preview-1',
+  allowed_effects: ['ledger:read'],
+  writable_roots: ['/tmp'],
+  preview_root: '/tmp',
   db_path: '/tmp/mandible-preview.db',
   db_path_source: 'iab-preview-copy',
   source_db_path: '/tmp/mandible-main.db',
@@ -551,7 +570,7 @@ const previewInstance: InstanceInfo = {
 
 const writablePreviewInstance: InstanceInfo = {
   ...previewInstance,
-  operational_mutations: 'allow',
+  allowed_effects: ['ledger:read', 'ledger:write', 'maintenance:shared'],
 };
 
 describe('App routing', () => {
@@ -785,8 +804,7 @@ describe('App routing', () => {
       readFileSync('src-tauri/capabilities/default.json', 'utf8'),
     ) as { remote?: { urls?: string[] }; permissions?: string[] };
 
-    expect(capability.remote?.urls).toContain('http://127.0.0.1:19420');
-    expect(capability.remote?.urls).toContain('http://localhost:19420');
+    expect(capability.remote?.urls).toEqual(['https://app.mandible.localhost:19420']);
     expect(capability.permissions).toContain('deep-link:default');
   });
 
@@ -1650,7 +1668,7 @@ describe('app shell', () => {
     await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
     const movedSpaces = screen.getByRole('link', { name: 'Spaces' });
     expect(document.activeElement).toBe(movedSpaces);
-    expect(screen.getByRole('status').textContent).toContain('Spaces moved to position');
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Spaces moved to position'));
     const persistedOrder = railGroupLinks(first.container, 'secondary').map((link) => link.dataset.railItem);
     expect(persistedOrder.indexOf('spaces')).toBeLessThan(persistedOrder.indexOf('graph'));
 
@@ -2333,6 +2351,15 @@ describe('app shell', () => {
 });
 
 describe('SettingsView', () => {
+  it('offers only the native setup handoff from the browser', () => {
+    render(h(SettingsView, { settings: {}, onSave: async () => undefined }));
+    const action = screen.getByRole('link', { name: 'Open macOS setup action' });
+    expect(action.getAttribute('href')).toBe('mandible://connections/setup');
+    const handoff = action.closest('.settings-view__daemon-card');
+    expect(handoff).not.toBeNull();
+    expect(within(handoff!).queryByRole('button')).toBeNull();
+  });
+
   it('exposes and saves every app theme mode through the labelled Appearance select', async () => {
     const onSave = vi.fn(async () => undefined);
 
@@ -4558,7 +4585,8 @@ describe('API contract helpers', () => {
 
     await updateConversation('c1', { starred: true });
 
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const mutation = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    const body = JSON.parse(String(mutation?.[1]?.body));
     expect(body.starred).toBe(true);
   });
 });

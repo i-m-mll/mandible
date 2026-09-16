@@ -20,6 +20,9 @@ describe("desktop bootstrap build", () => {
     fs.mkdirSync(path.join(root, "src-tauri", "bootstrap"), { recursive: true });
     fs.mkdirSync(path.join(root, "dist"), { recursive: true });
     fs.copyFileSync(path.join(process.cwd(), "scripts", "make-dist.sh"), path.join(root, "scripts", "make-dist.sh"));
+    const trustHelper = path.join(root, "scripts", "build-local-ca-trust-helper.sh");
+    fs.writeFileSync(trustHelper, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(trustHelper, 0o755);
     for (const file of ["index.html", "bootstrap.css", "bootstrap.js"]) {
       fs.writeFileSync(path.join(root, "src-tauri", "bootstrap", file), `${file}\n`);
     }
@@ -35,5 +38,6 @@ describe("desktop bootstrap build", () => {
 
     const config = JSON.parse(fs.readFileSync(path.join(process.cwd(), "src-tauri", "tauri.conf.json"), "utf8"));
     expect(config.build.frontendDist).toBe("dist");
+    expect(config.app.windows[0]).not.toHaveProperty("url");
   });
 });

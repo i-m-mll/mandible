@@ -2,17 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import type {
   InstanceInfo,
-  InstanceMutationDecision,
   InstanceRole,
-  OperationalMutationPolicy,
 } from "./types.js";
+import {
+  effectsForInstance,
+  type Effect,
+} from "./security/effect-policy.js";
+import { getMandibleConfigPath } from "./platform-paths.js";
 
-// Issue 97cf613 — this module is the single source of truth for operational
-// mutation classification. Both gates (the per-request gate in
-// `evaluateInstanceMutation` and the per-route gate behind
-// `Router.listRoutePolicies` in server.ts) import these tables; they must never
-// be copied. Keep this module dependency-light (node:fs + node:path + type-only imports)
-// so server.ts can import it without creating a cycle.
+// Retained only as a reporting taxonomy for request telemetry. Authorization
+// is exclusively the typed effect policy in security/effect-policy.ts.
 export const UNSAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "POST",
   "PUT",
@@ -24,11 +23,10 @@ export const UNSAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
 // available on instances that reject operational mutations.
 export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/auth/check",
-  // The browser handshake rotates bounded, ephemeral client-auth state only;
-  // it does not mutate the ledger or authorize a different identity. Preview
-  // dashboards need it to exchange their one-time bootstrap proof before any
-  // identity-scoped reads can succeed.
-  "POST /api/client-auth/handshake",
+  "POST /api/client-auth/pairing/start",
+  "POST /api/client-auth/pairing/complete",
+  "POST /api/client-auth/recovery/finalize",
+  "POST /api/client-auth/renew",
   "POST /api/client-auth/logout",
   // Chat project visibility is host/user view intent stored outside both the
   // ledger and copied preview DB. Main and reject-mode previews deliberately
@@ -75,12 +73,6 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   { prefix: "/api/work", category: "work" },
 ];
 
-const ACTOR_SCOPED_BRIEFING_RESPONSE_ROUTE =
-  /^\/api\/briefings\/[^/]+\/rounds\/[^/]+\/(?:answers|annotations|submit)$/;
-const PREVIEW_CONVERSATION_SPAWN_ROUTE = /^\/api\/conversation-spawns(?:\/[0-9a-f-]+\/retry|\/[0-9a-f-]+)?$/i;
-const PREVIEW_CONVERSATION_CONTROL_ROUTE = /^\/api\/conversations\/[^/]+\/control\/(?:submit|stop)$/;
-const PREVIEW_CONVERSATION_METADATA_ROUTE = /^\/api\/conversations\/[^/]+$/;
-
 export function resolveInstanceInfo(options: {
   env?: NodeJS.ProcessEnv;
   dbPath?: string | null;
@@ -90,8 +82,6 @@ export function resolveInstanceInfo(options: {
 } = {}): InstanceInfo {
   const env = options.env ?? process.env;
   const role = normalizeRole(env.MANDIBLE_INSTANCE_ROLE);
-  const operationalMutations = normalizeMutationPolicy(env.MANDIBLE_OPERATIONAL_MUTATIONS)
-    ?? (role === "main" ? "allow" : "reject");
   const dbPath = options.dbPath ?? env.MANDIBLE_DB ?? null;
   const dbPathSource = options.dbPathSource
     ?? env.MANDIBLE_INSTANCE_DB_PATH_SOURCE
@@ -104,30 +94,66 @@ export function resolveInstanceInfo(options: {
   const resolvedPreviewRoot = env.MANDIBLE_PREVIEW_ROOT
     ? path.resolve(env.MANDIBLE_PREVIEW_ROOT)
     : null;
-  const isolatedDatabaseCopy = hasIsolatedDatabaseCopy(resolvedDbPath, resolvedSourceDbPath);
-  const briefingResponseMutations = operationalMutations === "allow"
-    || isolatedDatabaseCopy
-    ? "allow"
-    : "reject";
-  const previewBrowserEnrollment = role === "preview"
-    && operationalMutations === "reject"
-    && isolatedDatabaseCopy
-    && isPathWithinRoot(resolvedDbPath, resolvedPreviewRoot)
-    ? "allow"
-    : "reject";
+  const resolvedArtifactRoot = env.MANDIBLE_ARTIFACT_DIR
+    ? path.resolve(env.MANDIBLE_ARTIFACT_DIR)
+    : null;
+  const resolvedSourceArtifactRoot = env.MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR
+    ? path.resolve(env.MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR)
+    : null;
+  const instanceId = env.MANDIBLE_INSTANCE_ID?.trim()
+    || (role === "main" ? "production" : "");
+  const installationId = resolveInstallationId(env);
+  const publicOrigin = exactOrigin(
+    env.MANDIBLE_PUBLIC_ORIGIN
+      || (role === "main" ? "https://app.mandible.localhost:19420" : ""),
+  );
+  const backendGeneration = env.MANDIBLE_BACKEND_GENERATION?.trim()
+    || (role === "main" ? "production" : "");
+  if (!instanceId || !publicOrigin || !backendGeneration) {
+    throw new Error("Preview startup requires an exact instance id, public origin, and backend generation.");
+  }
+  if (role === "preview" && (
+    !hasIsolatedDatabaseCopy(resolvedDbPath, resolvedSourceDbPath)
+    || !isPathWithinRoot(resolvedDbPath, resolvedPreviewRoot)
+    || isPathAtOrWithinRoot(resolvedSourceDbPath, resolvedPreviewRoot)
+  )) {
+    throw new Error("Preview startup requires an isolated copied database beneath its registered root.");
+  }
+  const writableRoots = parseWritableRoots(env.MANDIBLE_WRITABLE_ROOTS, resolvedPreviewRoot, role);
+  if (role === "preview" && writableRoots.some((root) => !isPathAtOrWithinRoot(root, resolvedPreviewRoot))) {
+    throw new Error("Preview writable roots must remain beneath the registered preview root.");
+  }
+  const allowedEffects = parseAllowedEffects(env.MANDIBLE_ALLOWED_EFFECTS, role);
 
   return {
     role,
-    operational_mutations: operationalMutations,
-    operational_mutations_overridden: env.MANDIBLE_OPERATIONAL_MUTATIONS !== undefined,
-    briefing_response_mutations: briefingResponseMutations,
-    preview_browser_enrollment: previewBrowserEnrollment,
+    instance_id: instanceId,
+    installation_id: installationId,
+    public_origin: publicOrigin,
+    backend_generation: backendGeneration,
+    allowed_effects: allowedEffects,
+    writable_roots: writableRoots,
     preview_root: resolvedPreviewRoot,
+    artifact_root: resolvedArtifactRoot,
+    source_artifact_root: resolvedSourceArtifactRoot,
     db_path: resolvedDbPath,
     db_path_source: dbPathSource,
     source_db_path: resolvedSourceDbPath,
     source_db_path_source: sourceDbPathSource,
   };
+}
+
+function resolveInstallationId(env: NodeJS.ProcessEnv): string {
+  const explicit = env.MANDIBLE_INSTALLATION_ID?.trim();
+  if (explicit) return explicit;
+  if (env !== process.env) return "test-installation";
+  const authorityPath = getMandibleConfigPath("client-auth", "authority-id");
+  if (!fs.existsSync(authorityPath)) {
+    throw new Error("Local installation authority is missing; run `npm run local-front-door -- initialize` first.");
+  }
+  const value = fs.readFileSync(authorityPath, "utf8").trim();
+  if (!value) throw new Error("Local installation authority is empty.");
+  return value;
 }
 
 function isPathWithinRoot(candidate: string | null, root: string | null): boolean {
@@ -142,104 +168,18 @@ function isPathWithinRoot(candidate: string | null, root: string | null): boolea
   }
 }
 
-export function evaluateInstanceMutation(
-  instance: InstanceInfo,
-  method: string,
-  pathname: string,
-  body?: unknown,
-): InstanceMutationDecision {
-  const category = operationalMutationCategoryForPath(method, pathname);
-  if (!category || instance.operational_mutations === "allow") {
-    return { allowed: true };
+function isPathAtOrWithinRoot(candidate: string | null, root: string | null): boolean {
+  if (candidate === null || root === null) return false;
+  try {
+    const relative = path.relative(fs.realpathSync.native(root), fs.realpathSync.native(candidate));
+    return !relative.startsWith("..") && !path.isAbsolute(relative);
+  } catch {
+    return false;
   }
-  if (
-    instance.briefing_response_mutations === "allow"
-    && isActorScopedBriefingResponseMutation(method, pathname)
-  ) {
-    return { allowed: true };
-  }
-  if (isIsolatedPreviewConversationSpawnMutation(instance, method, pathname)) {
-    return { allowed: true };
-  }
-  if (isIsolatedPreviewConversationControlMutation(instance, method, pathname)) {
-    return { allowed: true };
-  }
-  if (isIsolatedPreviewConversationArchiveMutation(instance, method, pathname, body)) {
-    return { allowed: true };
-  }
-
-  return {
-    allowed: false,
-    status: 403,
-    body: {
-      error: "instance_mutation_forbidden",
-      message: "This Mandible instance is not allowed to perform operational mutations.",
-      category,
-      instance_role: instance.role,
-      operational_mutations: instance.operational_mutations,
-    },
-  };
 }
 
 export function allowsOperationalMutations(instance: InstanceInfo): boolean {
-  return instance.operational_mutations === "allow";
-}
-
-export function isActorScopedBriefingResponseMutation(method: string, pathname: string): boolean {
-  return method.toUpperCase() === "POST" && ACTOR_SCOPED_BRIEFING_RESPONSE_ROUTE.test(pathname);
-}
-
-export function isIsolatedPreviewConversationSpawnMutation(
-  instance: InstanceInfo,
-  method: string,
-  pathname: string,
-): boolean {
-  const normalizedMethod = method.toUpperCase();
-  const lifecycleMethod = normalizedMethod === "POST" || normalizedMethod === "DELETE";
-  return lifecycleMethod
-    && PREVIEW_CONVERSATION_SPAWN_ROUTE.test(pathname)
-    && (normalizedMethod !== "DELETE" || !pathname.endsWith("/retry"))
-    && isIsolatedLauncherPreview(instance);
-}
-
-export function isIsolatedPreviewConversationArchiveMutation(
-  instance: InstanceInfo,
-  method: string,
-  pathname: string,
-  body: unknown,
-): boolean {
-  if (method.toUpperCase() !== "PATCH" || !PREVIEW_CONVERSATION_METADATA_ROUTE.test(pathname)) {
-    return false;
-  }
-  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
-  const fields = Object.keys(body);
-  if (fields.length !== 1 || fields[0] !== "archived"
-      || typeof (body as { archived?: unknown }).archived !== "boolean") {
-    return false;
-  }
-  return isIsolatedLauncherPreview(instance);
-}
-
-function isIsolatedLauncherPreview(instance: InstanceInfo): boolean {
-  return instance.role === "preview"
-    && instance.operational_mutations === "reject"
-    && instance.db_path_source === "iab-preview-copy"
-    && hasIsolatedDatabaseCopy(instance.db_path, instance.source_db_path ?? null)
-    && isPathWithinRoot(instance.db_path, instance.preview_root ?? null);
-}
-
-export function isIsolatedPreviewConversationControlMutation(
-  instance: InstanceInfo,
-  method: string,
-  pathname: string,
-): boolean {
-  return method.toUpperCase() === "POST"
-    && PREVIEW_CONVERSATION_CONTROL_ROUTE.test(pathname)
-    && instance.role === "preview"
-    && instance.operational_mutations === "reject"
-    && instance.db_path_source === "iab-preview-copy"
-    && hasIsolatedDatabaseCopy(instance.db_path, instance.source_db_path ?? null)
-    && isPathWithinRoot(instance.db_path, instance.preview_root ?? null);
+  return instance.allowed_effects.includes("maintenance:shared");
 }
 
 function hasIsolatedDatabaseCopy(dbPath: string | null, sourceDbPath: string | null): boolean {
@@ -299,24 +239,33 @@ function normalizeRole(value: string | undefined): InstanceRole {
   return "main";
 }
 
-function normalizeMutationPolicy(value: string | undefined): OperationalMutationPolicy | null {
-  const normalized = value?.trim().toLowerCase();
-  if (
-    normalized === "allow"
-    || normalized === "allowed"
-    || normalized === "1"
-    || normalized === "true"
-  ) {
-    return "allow";
+function exactOrigin(value: string): string {
+  if (!value) return "";
+  const parsed = new URL(value);
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.pathname !== "/"
+      || parsed.search || parsed.hash || !parsed.port) {
+    throw new Error(`Invalid registered HTTPS origin: ${value}`);
   }
-  if (
-    normalized === "reject"
-    || normalized === "deny"
-    || normalized === "denied"
-    || normalized === "0"
-    || normalized === "false"
-  ) {
-    return "reject";
+  return parsed.origin;
+}
+
+function parseWritableRoots(raw: string | undefined, previewRoot: string | null, role: InstanceRole): string[] {
+  if (raw?.trim()) {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string" || !path.isAbsolute(value))) {
+      throw new Error("MANDIBLE_WRITABLE_ROOTS must be a JSON array of absolute paths.");
+    }
+    return parsed.map((value) => path.resolve(value));
   }
-  return null;
+  return role === "preview" && previewRoot ? [previewRoot] : [];
+}
+
+function parseAllowedEffects(raw: string | undefined, role: InstanceRole): readonly Effect[] {
+  const defaults = effectsForInstance(role);
+  if (!raw?.trim()) return defaults;
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed) || parsed.some((value) => !defaults.includes(value as Effect))) {
+    throw new Error("MANDIBLE_ALLOWED_EFFECTS exceeds the role's effect ceiling.");
+  }
+  return [...new Set(parsed as Effect[])];
 }

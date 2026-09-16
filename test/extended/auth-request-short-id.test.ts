@@ -7,10 +7,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../../src/auth-queue.js";
 import { AuthAutoApproveManager } from "../../src/auth-auto-approve.js";
+import { appendAuthLifecycleEvent, authRequestSnapshot } from "../../src/auth-lifecycle.js";
 import { migrate, setDb, type Db } from "../../src/db.js";
 import { registerAuthRoutes } from "../../src/routes/auth.js";
 import { Router } from "../../src/server.js";
-import { setupOperator } from "../../src/users/store.js";
+import { addCredential, setupOperator } from "../../src/users/store.js";
+import { authenticatedTestRouter } from "../helpers/authenticated-router.js";
 
 let db: Db | null = null;
 
@@ -23,11 +25,23 @@ function setup(): { router: Router; queue: AuthQueue; db: Db } {
   db = new Database(":memory:");
   migrate(db);
   setDb(db);
-  setupOperator(db, { slug: "auth-short-id-test", display_name: "Auth Short Id Test" });
-  const router = new Router();
+  const operator = setupOperator(db, { slug: "auth-short-id-test", display_name: "Auth Short Id Test" });
+  const credential = addCredential(db, operator.id, {
+    type: "api_token",
+    fingerprint: `auth-short-id-${Math.random()}`,
+  });
+  const router = authenticatedTestRouter(operator, { credentialId: credential.id });
   const queue = new AuthQueue({ db });
   registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
   return { router, queue, db };
+}
+
+function insertLegacyRequest(database: Db, id: string, title: string): void {
+  database.prepare(
+    `INSERT INTO auth_requests
+      (id, command, title, status, created_at, updated_at, expires_at, output, type)
+     VALUES (?, 'echo fixture', ?, 'pending', 1, 1, 9999999999999, '', 'config-change')`,
+  ).run(id, title);
 }
 
 describe("GET /api/auth/request/:id short-form ids", () => {
@@ -49,23 +63,8 @@ describe("GET /api/auth/request/:id short-form ids", () => {
 
   it("reports an ambiguous prefix as 409 instead of silently picking", async () => {
     const { router, queue, db: database } = setup();
-    const first = queue.submit({
-      command: "mandible auth merge feature/one --into main",
-      title: "First",
-    });
-    const second = queue.submit({
-      command: "mandible auth merge feature/two --into main",
-      title: "Second",
-    });
-    // Force a shared 8-char prefix — randomUUID ids never collide naturally.
-    database.prepare("UPDATE auth_requests SET id = ? WHERE id = ?").run(
-      "aaaabbbb-1111-4111-8111-111111111111",
-      first.id,
-    );
-    database.prepare("UPDATE auth_requests SET id = ? WHERE id = ?").run(
-      "aaaabbbb-2222-4222-8222-222222222222",
-      second.id,
-    );
+    insertLegacyRequest(database, "aaaabbbb-1111-4111-8111-111111111111", "First");
+    insertLegacyRequest(database, "aaaabbbb-2222-4222-8222-222222222222", "Second");
 
     const response = await router.invoke({
       method: "GET",
@@ -117,7 +116,8 @@ describe("PUT /api/auth/request/:id short-form ids", () => {
   it("updates through full and unambiguous short ids", async () => {
     const { router, queue } = setup();
     const request = queue.submit({
-      command: "mandible auth merge feature/update --into main",
+      type: "config-change",
+      command: "echo update",
       title: "Before",
       merge_head_sha: "1111111111111111111111111111111111111111",
     });
@@ -125,9 +125,14 @@ describe("PUT /api/auth/request/:id short-form ids", () => {
     const fullResponse = await router.invoke({
       method: "PUT",
       url: `/api/auth/request/${request.id}`,
-      body: { title: "Full-id update" },
+      body: {
+        title: "Full-id update",
+        operator_recovery: true,
+        expected_revision: 1,
+        expected_custody_generation: 0,
+      },
     });
-    expect(fullResponse.status).toBe(200);
+    expect(fullResponse.status, JSON.stringify(fullResponse.body)).toBe(200);
     expect((fullResponse.body as { title: string }).title).toBe("Full-id update");
 
     const shortResponse = await router.invoke({
@@ -136,6 +141,9 @@ describe("PUT /api/auth/request/:id short-form ids", () => {
       body: {
         title: "Short-id update",
         merge_head_sha: "2222222222222222222222222222222222222222",
+        operator_recovery: true,
+        expected_revision: 2,
+        expected_custody_generation: 0,
       },
     });
 
@@ -154,7 +162,8 @@ describe("PUT /api/auth/request/:id short-form ids", () => {
   it("invalidates the canonical request's retained candidate through a short id", async () => {
     const { router, queue, db: database } = setup();
     const request = queue.submit({
-      command: "mandible auth merge feature/candidate --into main",
+      type: "config-change",
+      command: "echo candidate",
       title: "Candidate",
       merge_head_sha: "1111111111111111111111111111111111111111",
     });
@@ -163,14 +172,27 @@ describe("PUT /api/auth/request/:id short-form ids", () => {
         merge_preflight_queue_fingerprint = ?, merge_candidate_tree_sha = ?,
         merge_candidate_pin_sha = ?, merge_atomic_enabled = 1 WHERE id = ?`,
     ).run("a".repeat(40), "queue", "b".repeat(40), "c".repeat(40), request.id);
+    appendAuthLifecycleEvent(database, {
+      requestId: request.id,
+      eventType: "revised",
+      priorStatus: "pending",
+      nextStatus: "pending",
+      priorSnapshot: authRequestSnapshot(database, request.id),
+      occurredAt: Date.now(),
+    });
 
     const response = await router.invoke({
       method: "PUT",
       url: `/api/auth/request/${request.id.slice(0, 8)}`,
-      body: { merge_head_sha: "2222222222222222222222222222222222222222" },
+      body: {
+        merge_head_sha: "2222222222222222222222222222222222222222",
+        operator_recovery: true,
+        expected_revision: 2,
+        expected_custody_generation: 0,
+      },
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(queue.getRequest(request.id)).toMatchObject({
       merge_head_sha: "2222222222222222222222222222222222222222",
       merge_preflight_base_sha: null,
@@ -183,12 +205,10 @@ describe("PUT /api/auth/request/:id short-form ids", () => {
 
   it("rejects ambiguous prefixes without changing either request", async () => {
     const { router, queue, db: database } = setup();
-    const first = queue.submit({ command: "echo one", title: "First" });
-    const second = queue.submit({ command: "echo two", title: "Second" });
     const firstId = "aaaabbbb-1111-4111-8111-111111111111";
     const secondId = "aaaabbbb-2222-4222-8222-222222222222";
-    database.prepare("UPDATE auth_requests SET id = ? WHERE id = ?").run(firstId, first.id);
-    database.prepare("UPDATE auth_requests SET id = ? WHERE id = ?").run(secondId, second.id);
+    insertLegacyRequest(database, firstId, "First");
+    insertLegacyRequest(database, secondId, "Second");
 
     const response = await router.invoke({
       method: "PUT",

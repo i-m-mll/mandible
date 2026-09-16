@@ -48,11 +48,16 @@ curl http://localhost:19420/api/health
 
 ## Server-Sent Events (SSE)
 
-### GET /api/events
+### POST /api/events/subscribe
 
 Subscribe to the SSE event stream. Long-lived connection. Heartbeat comments are sent every 15 seconds to keep the connection alive.
 
-**Query params:**
+This is the only browser event transport. It requires an authenticated session
+and uses the same-origin fetch client so the request carries its HttpOnly cookie
+and session-bound CSRF value. There is no anonymous GET or `EventSource`
+fallback.
+
+**JSON body or query params:**
 
 | Param | Type | Description |
 |---|---|---|
@@ -74,15 +79,11 @@ data: {"type":"auth:resolved","data":{"request_id":"...","status":"completed"},"
 | `mandible:rebuilding` | Daemon is about to restart for a rebuild |
 
 ```bash
-curl -N http://localhost:19420/api/events
-curl -N "http://localhost:19420/api/events?topic=auth:"
+curl -N -X POST https://app.mandible.localhost:19420/api/events/subscribe \
+  -H "Authorization: Bearer $MANDIBLE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"topics":["auth:"]}'
 ```
-
-### POST /api/events/subscribe
-
-Alternative SSE subscription that accepts topic configuration in the request body (for clients that cannot set query params on EventSource).
-
-**Request body or query params:** Same topic filtering as GET.
 
 ## Logs
 

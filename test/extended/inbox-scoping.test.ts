@@ -30,11 +30,14 @@ import { registerAuthRoutes } from "../../src/routes/auth.js";
 import { registerInboxRoutes } from "../../src/routes/inbox.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../../src/server.js";
 import type { SseEvent } from "../../src/types.js";
-import { addBinding, createUser, setupOperator } from "../../src/users/store.js";
+import { addBinding, addCredential, createUser, setupOperator } from "../../src/users/store.js";
+import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
+import { createLedgerIssue, createLedgerProject } from "../helpers/ledger-fixtures.js";
 
 // --- DB helpers ---------------------------------------------------------
 
 let testRequesterUserId = "";
+let testRequesterCredentialId = "";
 
 function setupInMemoryDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
@@ -43,6 +46,10 @@ function setupInMemoryDb(): InstanceType<typeof Database> {
   testRequesterUserId = setupOperator(db, {
     slug: "inbox-auth-test",
     display_name: "Inbox Auth Test",
+  }).id;
+  testRequesterCredentialId = addCredential(db, testRequesterUserId, {
+    type: "api_token",
+    fingerprint: `inbox-auth-test-${Math.random()}`,
   }).id;
   setDb(db);
   return db;
@@ -88,26 +95,36 @@ function seedAuthRow(db: InstanceType<typeof Database>, seed: AuthRowSeed): void
 
 function registerWorkRepo(db: InstanceType<typeof Database>, repoRoot: string): void {
   setDb(db);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS work_repos (
-      id TEXT NOT NULL,
-      root TEXT NOT NULL,
-      name TEXT NOT NULL,
-      default_branch TEXT NOT NULL DEFAULT '',
-      dir_exists INTEGER NOT NULL DEFAULT 1,
-      excluded INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (root)
-    );
-  `);
+  const root = realpathSync(repoRoot);
+  const project = createLedgerProject(db, root, {
+    name: path.basename(root),
+    workRepoId: path.basename(root),
+    defaultBranch: "main",
+  });
   db.prepare(
     `INSERT OR REPLACE INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
-     VALUES (@id, @root, @name, @default_branch, 1, 0)`
+     VALUES (@id, @root, @name, @default_branch, 1, 0)`,
   ).run({
-    id: path.basename(repoRoot),
-    root: realpathSync(repoRoot),
-    name: path.basename(repoRoot),
+    id: path.basename(root),
+    root,
+    name: path.basename(root),
     default_branch: "main",
   });
+  const issue = createLedgerIssue(db, {
+    project_id: project.project.id,
+    title: "Inbox auth delivery fixture",
+    alias: "abc1234",
+  });
+  const insertWorkUnit = db.prepare(
+    `INSERT INTO work_units
+      (id, issue_id, repo_id, branch, kind, state, created_at, activated_at, last_commit_at,
+       ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+     VALUES (?, 'abc1234', ?, ?, 'solo', 'committed', 1, 1, 1, ?, ?, ?, 1)`,
+  );
+  for (const branch of ["feature/mandible-issue", "feature/large-diff"]) {
+    insertWorkUnit.run(`wu-${branch}`, project.project.id, branch, issue.id,
+      testRequesterUserId, testRequesterCredentialId);
+  }
 }
 
 function createAuthMergeFixtureRepo(tempDir: string): string {
@@ -1217,9 +1234,10 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
           cwd: repoRoot,
           base_branch: "main",
           head_branch: "feature/mandible-issue",
+          issue_references: ["abc1234"],
         },
       });
-      expect(accepted.statusCode).toBe(201);
+      expect(accepted.statusCode, JSON.stringify(accepted.body)).toBe(201);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -1314,6 +1332,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
           cwd: featureWorktree,
           base_branch: "main",
           head_branch: "feature/mandible-issue",
+          issue_references: ["abc1234"],
         },
       });
 
@@ -1346,6 +1365,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
           target_repo_root: repoRoot,
           base_branch: "main",
           head_branch: "feature/mandible-issue",
+          issue_references: ["abc1234"],
         },
       });
 
@@ -1388,6 +1408,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
           repo: "repo",
           base_branch: "main",
           head_branch: "feature/mandible-issue",
+          issue_references: ["abc1234"],
         },
       });
 
@@ -1411,7 +1432,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
     }
   });
 
-  it("preserves explicit auth merge review metadata when clients provide it", async () => {
+  it("replaces client-provided auth merge review metadata with server evidence", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-metadata-explicit-"));
     try {
       const repoRoot = createAuthMergeFixtureRepo(tempDir);
@@ -1428,6 +1449,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
           target_repo_root: repoRoot,
           base_branch: "main",
           head_branch: "feature/mandible-issue",
+          issue_references: ["abc1234"],
           files_changed: 9,
           additions: 8,
           deletions: 7,
@@ -1439,10 +1461,10 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       expect(response.statusCode).toBe(201);
       const requestId = (response.body as { request_id: string }).request_id;
       const request = queue.getRequest(requestId);
-      expect(request?.files_changed).toBe(9);
-      expect(request?.additions).toBe(8);
-      expect(request?.deletions).toBe(7);
-      expect(request?.diff_summary).toBe("client diff");
+      expect(request?.files_changed).toBe(1);
+      expect(request?.additions).toBe(1);
+      expect(request?.deletions).toBe(0);
+      expect(request?.diff_summary).toContain("README.md");
       expect(request?.commit_message).toBe("client commit");
       db.close();
     } finally {
@@ -1450,7 +1472,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
     }
   });
 
-  it("does not collect diff previews when clients provide complete auth merge metadata", async () => {
+  it("collects bounded server evidence even when clients provide complete auth merge metadata", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-metadata-large-explicit-"));
     try {
       const repoRoot = createLargeAuthMergeFixtureRepo(tempDir);
@@ -1467,6 +1489,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
           target_repo_root: repoRoot,
           base_branch: "main",
           head_branch: "feature/large-diff",
+          issue_references: ["abc1234"],
           files_changed: 9,
           additions: 8,
           deletions: 7,
@@ -1478,10 +1501,10 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       expect(response.statusCode).toBe(201);
       const requestId = (response.body as { request_id: string }).request_id;
       const request = queue.getRequest(requestId);
-      expect(request?.files_changed).toBe(9);
-      expect(request?.additions).toBe(8);
-      expect(request?.deletions).toBe(7);
-      expect(request?.diff_summary).toBe("client diff");
+      expect(request?.files_changed).toBe(1);
+      expect(request?.additions).toBe(1);
+      expect(request?.deletions).toBe(0);
+      expect(request?.diff_summary).toContain("README.md");
       expect(request?.commit_message).toBe("client commit");
       db.close();
     } finally {
@@ -1506,6 +1529,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
           target_repo_root: repoRoot,
           base_branch: "main",
           head_branch: "feature/large-diff",
+          issue_references: ["abc1234"],
         },
       });
 
@@ -1823,8 +1847,9 @@ class TestRouteRegistrar implements RouteRegistrar {
         user_id: testRequesterUserId,
         slug: "inbox-auth-test",
         method: "api_token",
-        credential_id: null,
+        credential_id: testRequesterCredentialId,
         source: "in_process",
+        effect_ceiling: PRODUCTION_EFFECTS,
       }
     } satisfies RequestLike, response);
     return response;

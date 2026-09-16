@@ -737,7 +737,7 @@ describe('Briefing sidebar row actions', () => {
     expect(row.classList.contains('sidebar-item-row--selected')).toBe(true);
     expect(row.classList.contains('sidebar-item-row--persistent-pin')).toBe(false);
     expect(sidebarItemRowStylesheet).not.toMatch(
-      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|provider-mark|actions)/,
+      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|actions)/,
     );
     selected.focus();
     expect(document.activeElement).toBe(selected);

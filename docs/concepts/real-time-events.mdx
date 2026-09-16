@@ -1,13 +1,16 @@
 # Real-time events
 
-Mandible uses Server-Sent Events (SSE) to push every state mutation to connected clients. The dashboard subscribes on load and re-renders immediately when events arrive. No polling loop is needed --- though a 10-second fallback poll exists as a safety net.
+Mandible uses authenticated Server-Sent Events (SSE) to push state mutations to connected clients. The dashboard subscribes with the same explicit cookie-and-CSRF fetch client used for other requests. A bounded reconciliation poll remains a safety net.
 
 ## Connecting
 
-Open an SSE connection to the events endpoint:
+Open an SSE connection with an explicit non-browser credential:
 
 ```bash
-curl -N http://localhost:19420/api/events
+curl -N -X POST https://app.mandible.localhost:19420/api/events/subscribe \
+  -H "Authorization: Bearer $MANDIBLE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 ```
 
 You'll receive a stream of `data:` lines, each containing a JSON event:
@@ -42,32 +45,20 @@ Every event has three fields:
 
 ## Topic filtering
 
-You can subscribe to a subset of events by passing topic prefixes as query parameters:
+You can subscribe to a subset of events in the JSON request body:
 
 ```bash
-# Only auth events
-curl -N "http://localhost:19420/api/events?topic=auth:"
-
-# Auth and session events
-curl -N "http://localhost:19420/api/events?topic=auth:&topic=session:"
-
-# Multiple topics in one parameter (comma-separated)
-curl -N "http://localhost:19420/api/events?topic=auth:,session:"
+curl -N -X POST https://app.mandible.localhost:19420/api/events/subscribe \
+  -H "Authorization: Bearer $MANDIBLE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"topics":["auth:","session:"]}'
 ```
 
 Topic matching is prefix-based: `topic=auth:` matches `auth:new`, `auth:resolved`, `auth:lifecycle`, `auth:output`, and any other event whose type starts with `auth:`.
 
-Without a topic parameter, the client receives all events.
-
-### POST subscription
-
-For clients that need to subscribe with a request body (e.g., when the topic list is long), use the POST endpoint:
-
-```bash
-curl -N -X POST http://localhost:19420/api/events/subscribe \
-  -H 'Content-Type: application/json' \
-  -d '{"topics": ["auth:", "session:", "console:"]}'
-```
+Without a topic list, the authenticated client receives all events. The old
+anonymous `GET /api/events` endpoint and browser `EventSource` path do not
+exist.
 
 ## Event types by topic
 
@@ -181,31 +172,17 @@ The dashboard uses this to show a "daemon restarted" notification with version i
 
 When building an SSE client for Mandible:
 
-1. **Connect to `/api/events`** with appropriate topic filters
+1. **POST to `/api/events/subscribe`** with an authenticated fetch and topic filters
 2. **Parse `data:` lines** as JSON --- each line is one complete event
 3. **Ignore `:` lines** (comments and heartbeats)
-4. **Handle reconnection** --- the `EventSource` API (browser) or equivalent does this automatically. Mandible doesn't use event IDs or `Last-Event-Id` replay, so reconnected clients may miss events during the gap. Poll the relevant HTTP endpoint once on reconnection to catch up.
+4. **Handle reconnection** with bounded backoff. Mandible doesn't use event IDs or `Last-Event-Id` replay, so reconcile the relevant HTTP endpoint once after reconnection.
 5. **Filter by `type`** in your handler --- even with topic filtering, you'll receive multiple event types per topic
 
 ```javascript
-const source = new EventSource('/api/events?topic=auth:,session:');
-
-source.onmessage = (event) => {
-  const parsed = JSON.parse(event.data);
-
-  switch (parsed.type) {
-    case 'session:registered':
-      // Handle new session
-      break;
-    case 'auth:resolved':
-      // Handle auth completion
-      break;
-    // ...
-  }
-};
-
-source.onerror = () => {
-  // Connection lost --- EventSource will auto-reconnect.
-  // Optionally poll HTTP endpoints to catch up on missed events.
-};
+const response = await browserSessionFetch('/api/events/subscribe', {
+  method: 'POST',
+  body: JSON.stringify({ topics: ['auth:', 'session:'] }),
+});
+const reader = response.body.getReader();
+// Decode complete SSE lines, then reconnect with bounded backoff on EOF.
 ```

@@ -1,15 +1,13 @@
 // Authorization checks for client-auth management routes (finding 2).
 //
-// Token mint/list/revoke and mode flips are self-administration surfaces: an
+// Token mint/list/revoke surfaces are self-administration surfaces: an
 // unauthenticated caller must never mint tokens for arbitrary users, revoke
-// others' credentials, or flip the mode. These helpers enforce, independent of
-// compat/strict mode (the mode gate governs ordinary mutations; these routes are
-// always guarded because they administer authentication itself).
+// others' credentials, or alter authentication state. These routes are always
+// guarded because they administer authentication itself.
 //
-// Bootstrappability: the filesystem bootstrap token gives same-user CLI calls
-// an authenticated identity and can enroll the dashboard through a fragment
-// that is stripped before API traffic. The handshake never authenticates an
-// anonymous caller.
+// Bootstrappability: the filesystem bootstrap token is accepted only by the
+// one-shot native-enrollment route. Browser enrollment uses pairing and never
+// accepts a bearer token or URL credential.
 //
 // This is deliberately narrow — authentication-material administration only, not
 // general project authorization, which is the permissions umbrella child.
@@ -22,7 +20,6 @@ import {
 import { getOperatorId } from "../users/store.js";
 import type { AmbientProviderIdentity } from "../ambient-provider-identity.js";
 import type {
-  ClientAuthGate,
   RequestLike,
   ResolvedClientIdentity,
   RouteHandler,
@@ -105,48 +102,16 @@ export function attributionForRequest(db: Db, req: unknown): AttributionContext 
   return null;
 }
 
-const WEBSOCKET_AUTH_PROTOCOL_PREFIX = "mandible-auth.";
-
-/** Read a bearer from a WebSocket subprotocol header without putting it in the URL. */
-export function credentialFromWebSocketProtocols(
-  header: string | string[] | undefined,
-): string | null {
-  const values = (Array.isArray(header) ? header.join(",") : header ?? "")
-    .split(",")
-    .map((value) => value.trim());
-  const protocol = values.find((value) => value.startsWith(WEBSOCKET_AUTH_PROTOCOL_PREFIX));
-  return protocol?.slice(WEBSOCKET_AUTH_PROTOCOL_PREFIX.length) || null;
-}
-
-/** Authenticate an operator-terminal upgrade using its header-only credential. */
-export function authorizeOperatorWebSocket(
-  db: Db,
-  gate: ClientAuthGate,
-  protocolHeader: string | string[] | undefined,
-  pathname: string,
-): boolean {
-  const identity = gate.authenticate(
-    credentialFromWebSocketProtocols(protocolHeader),
-    "http_bearer",
-    { method: "GET", pathname },
-  );
-  return identity !== null && isOperator(db, identity);
-}
-
-/** Require an operator bearer for any terminal that can activate a client credential. */
+/** One target-aware WebSocket authorization path; browser credentials never ride a subprotocol. */
 export function authorizeManagedSessionWebSocket(
   db: Db,
-  gate: ClientAuthGate,
-  protocolHeader: string | string[] | undefined,
-  pathname: string,
+  identity: ResolvedClientIdentity | null,
+  ownerUserId: string | null,
   credentialBearing: boolean,
 ): boolean {
-  return !credentialBearing || authorizeOperatorWebSocket(
-    db,
-    gate,
-    protocolHeader,
-    pathname,
-  );
+  if (!identity || !identity.effect_ceiling.includes("process:external")) return false;
+  if (credentialBearing) return isOperator(db, identity);
+  return ownerUserId === identity.user_id || isOperator(db, identity);
 }
 
 /** Require an authenticated OPERATOR (401 if anonymous, 403 if non-operator). */

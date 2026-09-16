@@ -1,4 +1,5 @@
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
+import { browserSessionFetch } from './client-auth-token';
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
@@ -110,9 +111,15 @@ export type AuthRequestAction = ContractAuthRequestAction;
 
 export type InstanceInfo = {
   role: 'main' | 'preview' | 'dev' | 'test';
-  operational_mutations: 'allow' | 'reject';
-  operational_mutations_overridden: boolean;
-  briefing_response_mutations: 'allow' | 'reject';
+  instance_id: string;
+  installation_id: string;
+  public_origin: string;
+  backend_generation: string;
+  allowed_effects: string[];
+  writable_roots: string[];
+  preview_root?: string | null;
+  artifact_root?: string | null;
+  source_artifact_root?: string | null;
   db_path: string | null;
   db_path_source: string | null;
   source_db_path?: string | null;
@@ -123,17 +130,26 @@ export function normalizeInstanceInfo(value: unknown): InstanceInfo | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Partial<InstanceInfo>;
   if ((candidate.role !== 'main' && candidate.role !== 'preview' && candidate.role !== 'dev' && candidate.role !== 'test')
-      || (candidate.operational_mutations !== 'allow' && candidate.operational_mutations !== 'reject')
-      || typeof candidate.operational_mutations_overridden !== 'boolean'
+      || typeof candidate.instance_id !== 'string'
+      || typeof candidate.installation_id !== 'string'
+      || typeof candidate.public_origin !== 'string'
+      || typeof candidate.backend_generation !== 'string'
+      || !Array.isArray(candidate.allowed_effects)
+      || candidate.allowed_effects.some((effect) => typeof effect !== 'string')
+      || !Array.isArray(candidate.writable_roots)
+      || candidate.writable_roots.some((root) => typeof root !== 'string')
       || (typeof candidate.db_path !== 'string' && candidate.db_path !== null)
       || (typeof candidate.db_path_source !== 'string' && candidate.db_path_source !== null)
       || (candidate.source_db_path !== undefined && typeof candidate.source_db_path !== 'string' && candidate.source_db_path !== null)
       || (candidate.source_db_path_source !== undefined && typeof candidate.source_db_path_source !== 'string' && candidate.source_db_path_source !== null)) return null;
   return {
     role: candidate.role,
-    operational_mutations: candidate.operational_mutations,
-    operational_mutations_overridden: candidate.operational_mutations_overridden,
-    briefing_response_mutations: candidate.briefing_response_mutations === 'allow' ? 'allow' : 'reject',
+    instance_id: candidate.instance_id,
+    installation_id: candidate.installation_id,
+    public_origin: candidate.public_origin,
+    backend_generation: candidate.backend_generation,
+    allowed_effects: candidate.allowed_effects as string[],
+    writable_roots: candidate.writable_roots as string[],
     db_path: candidate.db_path,
     db_path_source: candidate.db_path_source,
     ...(candidate.source_db_path !== undefined ? { source_db_path: candidate.source_db_path } : {}),
@@ -324,7 +340,7 @@ async function apiGet(path: string, init: RequestInit = {}): Promise<Response> {
   if (init.headers) {
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
   }
-  const response = await fetch(path, { ...init, headers });
+  const response = await browserSessionFetch(path, { ...init, headers });
   if (!response.ok) {
     await throwOnError(response, 'GET', path);
   }
@@ -351,7 +367,7 @@ async function throwOnError(response: Response, method: string, path: string): P
 type JsonWriteMethod = 'POST' | 'PATCH' | 'PUT';
 
 async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown): Promise<Response> {
-  const response = await fetch(path, {
+  const response = await browserSessionFetch(path, {
     method,
     headers: {
       ...DEFAULT_HEADERS,
@@ -370,7 +386,7 @@ const apiPatch = (path: string, body?: unknown): Promise<Response> => apiWrite('
 const apiPut = (path: string, body?: unknown): Promise<Response> => apiWrite('PUT', path, body);
 
 async function apiDelete(path: string): Promise<Response> {
-  const response = await fetch(path, {
+  const response = await browserSessionFetch(path, {
     method: 'DELETE',
     headers: DEFAULT_HEADERS,
   });
@@ -817,7 +833,7 @@ export async function registerProviderSession(input: {
 
 export async function navigateSession(sessionId: string): Promise<void> {
   const path = `/api/sessions/${encodeURIComponent(sessionId)}/navigate`;
-  const response = await fetch(path, {
+  const response = await browserSessionFetch(path, {
     method: 'POST',
     headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
   });
@@ -933,7 +949,7 @@ export async function approveAuthRequest(requestId: string): Promise<void> {
   const path = `/api/auth/request/${encodeURIComponent(requestId)}/approve`;
   let response: Response;
   try {
-    response = await fetch(path, {
+    response = await browserSessionFetch(path, {
       method: 'POST',
       headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
       signal: controller.signal,
@@ -1095,7 +1111,7 @@ export async function getWorkRepoAudit(repoId: string): Promise<WorkRepoAudit> {
  * outcome facts from non-2xx responses.
  */
 export async function createTrashEntry(request: TrashCreateRequest): Promise<TrashCreateResult> {
-  const response = await fetch('/api/v1/trash', {
+  const response = await browserSessionFetch('/api/v1/trash', {
     method: 'POST',
     headers: {
       ...DEFAULT_HEADERS,
@@ -1120,7 +1136,7 @@ export async function getProjectTimeline(
   input: ProjectTimelineInput,
   signal?: AbortSignal,
 ): Promise<ProjectTimelineProjection> {
-  const response = await fetch('/api/timeline/project', {
+  const response = await browserSessionFetch('/api/timeline/project', {
     method: 'POST',
     headers: {
       ...DEFAULT_HEADERS,
@@ -1971,7 +1987,7 @@ export async function getConsoleLanePolicy(): Promise<ConsoleLanePolicy> {
 }
 
 export async function updateSetting(key: string, value: string): Promise<void> {
-  const response = await fetch(`/api/settings/${encodeURIComponent(key)}`, {
+  const response = await browserSessionFetch(`/api/settings/${encodeURIComponent(key)}`, {
     method: 'PUT',
     headers: {
       ...DEFAULT_HEADERS,
@@ -1993,7 +2009,7 @@ export async function getInstructionDeliverySettings(): Promise<InstructionDeliv
 export async function updateInstructionDeliverySettings(
   request: UpdateInstructionDeliveryRequest,
 ): Promise<InstructionDeliverySettings> {
-  const response = await fetch('/api/settings/instructions-delivery', {
+  const response = await browserSessionFetch('/api/settings/instructions-delivery', {
     method: 'PUT',
     headers: {
       ...DEFAULT_HEADERS,
@@ -2092,7 +2108,7 @@ export async function startProviderChat(
   placement: { kind: 'projectless' } | { kind: 'project'; project_id: string; checkout_id: string },
   options: { signal?: AbortSignal } = {},
 ): Promise<{ conversation_id: string; spawn: ContractConversationSpawnReceipt }> {
-  const response = await fetch('/api/conversation-spawns', {
+  const response = await browserSessionFetch('/api/conversation-spawns', {
     method: 'POST',
     headers: {
       ...DEFAULT_HEADERS,
@@ -2158,7 +2174,7 @@ export async function retryProviderChat(id: string, expectedGeneration: number):
 
 export async function cancelProviderChat(id: string, expectedGeneration: number): Promise<ContractConversationSpawnReceipt> {
   const path = `/api/conversation-spawns/${encodeURIComponent(id)}`;
-  const response = await fetch(path, {
+  const response = await browserSessionFetch(path, {
     method: 'DELETE',
     headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify({ expected_generation: expectedGeneration }),
@@ -2354,7 +2370,7 @@ export async function updateBackupSettings(settings: {
   interval_hours?: number;
   destination?: string;
 }): Promise<void> {
-  const response = await fetch('/api/backup/settings', {
+  const response = await browserSessionFetch('/api/backup/settings', {
     method: 'PUT',
     headers: {
       ...DEFAULT_HEADERS,
@@ -2611,7 +2627,7 @@ export async function submitConversationControl(
             ? 'resume-message-anchor'
             : (() => { throw new Error(`Conversation control is ${capability.kind}`); })();
   const path = `/api/conversations/${encodeURIComponent(snapshot.conversation_id)}/control/submit`;
-  const response = await fetch(path, {
+  const response = await browserSessionFetch(path, {
     method: 'POST',
     headers: {
       ...DEFAULT_HEADERS,
@@ -2882,6 +2898,21 @@ export async function restartDesktopDaemon(): Promise<DesktopDaemonStatus> {
   return invokeDesktop<DesktopDaemonStatus>('daemon_restart');
 }
 
+export type SecureLocalConnectionsStatus = {
+  state: 'not_set_up' | 'untracked_root' | 'prepared' | 'trusted';
+  storage_root: string;
+  root_digest: string | null;
+  verified_at: string | null;
+};
+
+export async function getSecureLocalConnectionsStatus(): Promise<SecureLocalConnectionsStatus> {
+  return invokeDesktop<SecureLocalConnectionsStatus>('secure_local_connections_status');
+}
+
+export async function setupSecureLocalConnections(): Promise<SecureLocalConnectionsStatus> {
+  return invokeDesktop<SecureLocalConnectionsStatus>('secure_local_connections_setup');
+}
+
 /**
  * Where the desktop shell reads the credential it enrolls this webview with:
  * the one-shot operator bootstrap file, or the durable `mandible-operator`
@@ -2890,14 +2921,10 @@ export async function restartDesktopDaemon(): Promise<DesktopDaemonStatus> {
 export type DesktopEnrollmentSource = 'bootstrap' | 'keychain';
 
 /**
- * Ask the desktop shell to enroll this webview. The shell reads the local
- * credential, redeems it for a bounded dashboard session against the daemon,
- * and navigates with only that session in a URL fragment — no durable
- * credential is returned across IPC or exposed to this renderer, so `true`
- * means "a session was injected". `route` keeps the operator on their current
- * view instead of resetting it. The keychain command deliberately accepts no
- * retry-control argument: renderer input cannot decide whether Rust may read
- * the durable credential.
+ * Ask the desktop shell to enroll this webview. Rust reads the local
+ * credential, redeems it at the exact production origin, and installs the
+ * returned HttpOnly cookie through Tauri's cookie API. No credential crosses
+ * IPC or enters a URL. `route` preserves the current clean application route.
  */
 export async function enrollDesktopClientAuth(
   source: DesktopEnrollmentSource,
@@ -3125,7 +3152,7 @@ export async function createBriefingFromArtifactVersion(input: {
   comparison_base_artifact_version_ref?: string;
   title: string;
 }): Promise<CreateBriefingFromArtifactVersionResult> {
-  const response = await fetch('/api/briefings', {
+  const response = await browserSessionFetch('/api/briefings', {
     method: 'POST',
     headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -3504,7 +3531,7 @@ export async function updateProjectAccessSettings(
   projectRef: string,
   restricted: boolean,
 ): Promise<ProjectAccessSettings> {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectRef)}/access`, {
+  const response = await browserSessionFetch(`/api/projects/${encodeURIComponent(projectRef)}/access`, {
     method: 'PATCH',
     headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify({ restricted }),

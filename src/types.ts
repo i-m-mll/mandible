@@ -139,6 +139,8 @@ export interface HealthResponse {
   // telemetry ratchet. Present only when the daemon wires a client-auth gate.
   client_auth?: {
     mode: "compat" | "strict";
+    credential_directory?: string;
+    legacy_conversion?: boolean;
     authority_id?: string;
     telemetry?: unknown;
   };
@@ -149,24 +151,21 @@ export type OperationalMutationPolicy = "allow" | "reject";
 
 export interface InstanceInfo {
   role: InstanceRole;
-  operational_mutations: OperationalMutationPolicy;
-  operational_mutations_overridden: boolean;
-  briefing_response_mutations: OperationalMutationPolicy;
-  /**
-   * Whether this exact process may publish a filesystem proof used only to
-   * enroll a preview browser through the client-auth handshake.
-   */
-  preview_browser_enrollment: OperationalMutationPolicy;
+  /** Stable authority registration, never derived from a port or worktree. */
+  instance_id: string;
+  installation_id: string;
+  public_origin: string;
+  backend_generation: string;
+  allowed_effects: readonly import("./security/effect-policy.js").Effect[];
+  writable_roots: readonly string[];
   preview_root?: string | null;
+  artifact_root?: string | null;
+  source_artifact_root?: string | null;
   db_path: string | null;
   db_path_source: string | null;
   source_db_path?: string | null;
   source_db_path_source?: string | null;
 }
-
-export type InstanceMutationDecision =
-  | { allowed: true }
-  | { allowed: false; status: 403 | 409; body: Record<string, unknown> };
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 

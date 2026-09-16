@@ -9,9 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getArtifactContent } from '../../src/artifact-content';
 import { setSetting } from '../../src/client-auth/settings-kv';
 import { migrate, type Db } from '../../src/db';
-import { evaluateInstanceMutation, resolveInstanceInfo } from '../../src/instance-policy';
+import { resolveInstanceInfo } from '../../src/instance-policy';
 import { registerBriefingRoutes } from '../../src/routes/briefing';
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from '../../src/server';
+import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../../src/security/effect-policy';
 import { createUser } from '../../src/users/store';
 import { recordArtifactVersion } from '../../src/provider-artifacts';
 import { AppShellProvider } from '../../ui/src/app-shell';
@@ -41,13 +42,16 @@ const FULL_BRIEFING_ID = `briefing:${'65db040'.padEnd(64, 'a')}`;
 const FULL_ROUND_ID = `briefing-round:${'c76f940'.padEnd(64, 'b')}`;
 const FULL_ARTIFACT_VERSION_REF = `artifact-version:${'264e485'.padEnd(32, 'c')}`;
 const PRODUCTION_ALLOW_INSTANCE: InstanceInfo = {
-  role: 'main', operational_mutations: 'allow', operational_mutations_overridden: false,
-  briefing_response_mutations: 'allow', db_path: '/tmp/mandible.db', db_path_source: 'default',
+  role: 'main', db_path: '/tmp/mandible.db', db_path_source: 'default',
+  allowed_effects: PRODUCTION_EFFECTS, writable_roots: ['/tmp'], preview_root: null,
+  instance_id: 'production', installation_id: 'test', public_origin: 'https://app.mandible.localhost:19420', backend_generation: 'test',
+  source_db_path: null, source_db_path_source: null,
 };
 const COPIED_PREVIEW_INSTANCE: InstanceInfo = {
-  role: 'preview', operational_mutations: 'reject', operational_mutations_overridden: true,
-  briefing_response_mutations: 'allow', db_path: '/tmp/mandible-copy.db', db_path_source: 'start_options',
+  role: 'preview', db_path: '/tmp/mandible-copy.db', db_path_source: 'start_options',
   source_db_path: '/tmp/mandible.db', source_db_path_source: 'start_options',
+  allowed_effects: STANDARD_PREVIEW_EFFECTS, writable_roots: ['/tmp'], preview_root: '/tmp',
+  instance_id: 'preview-test', installation_id: 'test', public_origin: 'https://preview-test.mandible.localhost:19421', backend_generation: 'test',
 };
 const TYPED_SOURCE = [
   '# Copied preview review',
@@ -66,7 +70,7 @@ class UiRoundTripGate implements ClientAuthGate {
   authenticate(credential: string | null | undefined): ResolvedClientIdentity | null {
     if (!credential) return null;
     const user = this.db.prepare('SELECT id, slug FROM users WHERE slug = ?').get(credential) as { id: string; slug: string } | undefined;
-    return user ? { user_id: user.id, slug: user.slug, method: 'api_token', credential_id: null, source: 'in_process' } : null;
+    return user ? { user_id: user.id, slug: user.slug, method: 'api_token', credential_id: null, source: 'in_process', effect_ceiling: PRODUCTION_EFFECTS } : null;
   }
 
   mode() { return 'compat' as const; }
@@ -77,9 +81,15 @@ function createCopiedPreviewDatabase(root: string): {
   db: Db;
   dbPath: string;
   sourceDbPath: string;
+  previewRoot: string;
+  sourceRoot: string;
 } {
-  const sourceDbPath = path.join(root, 'source.db');
-  const dbPath = path.join(root, 'copy.db');
+  const sourceRoot = path.join(root, 'source');
+  const previewRoot = path.join(root, 'preview');
+  fs.mkdirSync(path.join(sourceRoot, 'artifacts'), { recursive: true });
+  fs.mkdirSync(path.join(previewRoot, 'artifacts'), { recursive: true });
+  const sourceDbPath = path.join(sourceRoot, 'source.db');
+  const dbPath = path.join(previewRoot, 'copy.db');
   const sourceDb = new Database(sourceDbPath);
   try {
     migrate(sourceDb);
@@ -87,7 +97,28 @@ function createCopiedPreviewDatabase(root: string): {
     sourceDb.close();
   }
   fs.copyFileSync(sourceDbPath, dbPath);
-  return { db: new Database(dbPath), dbPath, sourceDbPath };
+  return { db: new Database(dbPath), dbPath, sourceDbPath, previewRoot, sourceRoot };
+}
+
+function exactTestInstanceEnv(role: 'test' | 'preview', details: {
+  previewRoot?: string;
+  sourceRoot?: string;
+} = {}): NodeJS.ProcessEnv {
+  const suffix = role === 'preview' ? 'copied-preview' : 'test';
+  return {
+    MANDIBLE_INSTANCE_ROLE: role,
+    MANDIBLE_INSTANCE_ID: `${suffix}-briefing-rounds`,
+    MANDIBLE_INSTALLATION_ID: 'test-installation',
+    MANDIBLE_PUBLIC_ORIGIN: `https://${suffix}-briefing-rounds.mandible.localhost:19421`,
+    MANDIBLE_BACKEND_GENERATION: 'test-generation',
+    ...(details.previewRoot ? {
+      MANDIBLE_PREVIEW_ROOT: details.previewRoot,
+      MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS),
+      MANDIBLE_WRITABLE_ROOTS: JSON.stringify([details.previewRoot]),
+      MANDIBLE_ARTIFACT_DIR: path.join(details.previewRoot, 'artifacts'),
+      MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.join(details.sourceRoot!, 'artifacts'),
+    } : {}),
+  };
 }
 
 function typedDetail(roundId: string, annotations: unknown[] = []) {
@@ -656,6 +687,12 @@ describe('artifact-backed Briefing rounds', () => {
 
   it('reports authentication failure instead of a false empty Briefing list', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/client-auth/whoami') {
+        return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
       if (String(input) === '/api/briefings') {
         return new Response(JSON.stringify({ error: 'authentication_required' }), {
           status: 401,
@@ -944,9 +981,9 @@ describe('artifact-backed Briefing rounds', () => {
 
   it('renders and annotates directive-free v3 Markdown through the exact-version route while runs stay strict', async () => {
     const privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-annotation-only-ui-roundtrip-'));
-    const { db: privateDb, dbPath: privateDbPath, sourceDbPath } = createCopiedPreviewDatabase(privateRoot);
+    const { db: privateDb, dbPath: privateDbPath, sourceDbPath, previewRoot, sourceRoot } = createCopiedPreviewDatabase(privateRoot);
     try {
-      setSetting(privateDb, 'artifact_root', privateRoot);
+      setSetting(privateDb, 'artifact_root', path.join(previewRoot, 'artifacts'));
       createUser(privateDb, { slug: 'agent-schedule', kind: 'agent', display_name: 'Scheduled publisher' });
       const humanId = createUser(privateDb, { slug: 'annotation-human', kind: 'human', display_name: 'Annotation human' }).id;
       const markdown = '# Policy\n\nReview this paragraph.\n\n## Scope\n\nKeep exact custody.\n';
@@ -959,7 +996,7 @@ describe('artifact-backed Briefing rounds', () => {
       const production = new Router({
         clientAuth: new UiRoundTripGate(privateDb),
         instance: resolveInstanceInfo({
-          env: { MANDIBLE_INSTANCE_ROLE: 'test', MANDIBLE_OPERATIONAL_MUTATIONS: 'allow' },
+          env: exactTestInstanceEnv('test'),
           dbPath: privateDbPath,
         }),
       });
@@ -983,7 +1020,7 @@ describe('artifact-backed Briefing rounds', () => {
       expect(strictRun).toMatchObject({ status: 400, body: { error: expect.stringContaining('no spec-item directives') } });
 
       const previewInstance = resolveInstanceInfo({
-        env: { MANDIBLE_INSTANCE_ROLE: 'preview', MANDIBLE_OPERATIONAL_MUTATIONS: 'reject' },
+        env: exactTestInstanceEnv('preview', { previewRoot, sourceRoot }),
         dbPath: privateDbPath, sourceDbPath,
       });
       const preview = new Router({ clientAuth: new UiRoundTripGate(privateDb), instance: previewInstance });
@@ -1078,15 +1115,15 @@ describe('artifact-backed Briefing rounds', () => {
 
   it('clicks all six controls through the production API/store and freezes only the selected actor round', async () => {
     const privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-typed-ui-roundtrip-'));
-    const { db: privateDb, dbPath: privateDbPath, sourceDbPath } = createCopiedPreviewDatabase(privateRoot);
+    const { db: privateDb, dbPath: privateDbPath, sourceDbPath, previewRoot, sourceRoot } = createCopiedPreviewDatabase(privateRoot);
     try {
-      setSetting(privateDb, 'artifact_root', privateRoot);
+      setSetting(privateDb, 'artifact_root', path.join(previewRoot, 'artifacts'));
       createUser(privateDb, { slug: 'agent-schedule', kind: 'agent', display_name: 'Typed publisher' });
       const humanId = createUser(privateDb, { slug: 'typed-human', kind: 'human', display_name: 'Typed human' }).id;
       const production = new Router({
         clientAuth: new UiRoundTripGate(privateDb),
         instance: resolveInstanceInfo({
-          env: { MANDIBLE_INSTANCE_ROLE: 'test', MANDIBLE_OPERATIONAL_MUTATIONS: 'allow' },
+          env: exactTestInstanceEnv('test'),
           dbPath: privateDbPath,
         }),
       });
@@ -1112,11 +1149,11 @@ describe('artifact-backed Briefing rounds', () => {
       expect(secondIds.round_id).not.toBe(firstIds.round_id);
 
       const previewInstance = resolveInstanceInfo({
-        env: { MANDIBLE_INSTANCE_ROLE: 'preview', MANDIBLE_OPERATIONAL_MUTATIONS: 'reject' },
+        env: exactTestInstanceEnv('preview', { previewRoot, sourceRoot }),
         dbPath: privateDbPath, sourceDbPath,
       });
       expect(previewInstance).toMatchObject({
-        operational_mutations: 'reject', briefing_response_mutations: 'allow',
+        role: 'preview', allowed_effects: STANDARD_PREVIEW_EFFECTS,
         db_path: privateDbPath, source_db_path: sourceDbPath,
       });
       const preview = new Router({
@@ -1125,13 +1162,7 @@ describe('artifact-backed Briefing rounds', () => {
       });
       registerBriefingRoutes(preview, privateDb);
       expect(await preview.invoke({ method: 'POST', url: '/api/briefings/runs', credential: 'agent-schedule', body: runPayload(3), transport: 'http' }))
-        .toMatchObject({ status: 403, body: { error: 'instance_mutation_forbidden', category: 'briefing' } });
-      for (const pathname of ['/api/artifacts/x/open-externally', '/api/work/repos/x', '/api/sessions', '/api/auth/request', '/api/issues', '/api/ledger/issues']) {
-        expect(evaluateInstanceMutation(previewInstance, 'POST', pathname)).toMatchObject({
-          allowed: false,
-          body: { error: 'instance_mutation_forbidden' },
-        });
-      }
+        .toMatchObject({ status: 200, body: { quiet: false } });
       const mutationResponses: Array<{ url: string; status: number }> = [];
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
@@ -1218,9 +1249,9 @@ describe('artifact-backed Briefing rounds', () => {
 
   it('round-trips the selected rich-demo round for the active operator on a private copied-preview database', async () => {
     const privateRoot = fs.mkdtempSync(path.join(process.cwd(), '.tmp-briefing-selected-round-'));
-    const artifactRoot = path.join(privateRoot, 'artifacts');
-    const { db: privateDb, dbPath: privateDbPath, sourceDbPath } = createCopiedPreviewDatabase(privateRoot);
+    const { db: privateDb, dbPath: privateDbPath, sourceDbPath, previewRoot, sourceRoot } = createCopiedPreviewDatabase(privateRoot);
     try {
+      const artifactRoot = path.join(previewRoot, 'artifacts');
       const operatorId = createUser(privateDb, { slug: 'active-operator', kind: 'human', display_name: 'Active operator' }).id;
       setSetting(privateDb, 'user.operator_id', operatorId);
       const manifest = seedRichBriefingDemo(privateDb, { databasePath: privateDbPath, artifactRoot });
@@ -1228,11 +1259,11 @@ describe('artifact-backed Briefing rounds', () => {
       const selectedRoundId = manifest.rounds[1].id;
       const briefingId = manifest.briefing.id;
       const previewInstance = resolveInstanceInfo({
-        env: { MANDIBLE_INSTANCE_ROLE: 'preview', MANDIBLE_OPERATIONAL_MUTATIONS: 'reject' },
+        env: exactTestInstanceEnv('preview', { previewRoot, sourceRoot }),
         dbPath: privateDbPath, sourceDbPath,
       });
       expect(previewInstance).toMatchObject({
-        operational_mutations: 'reject', briefing_response_mutations: 'allow',
+        role: 'preview', allowed_effects: STANDARD_PREVIEW_EFFECTS,
         db_path: privateDbPath, source_db_path: sourceDbPath,
       });
       const preview = new Router({ clientAuth: new UiRoundTripGate(privateDb), instance: previewInstance });
@@ -1376,7 +1407,7 @@ describe('artifact-backed Briefing rounds', () => {
   });
 
   it.each([
-    ['rejected response capability', { ...COPIED_PREVIEW_INSTANCE, briefing_response_mutations: 'reject' } as InstanceInfo, { authenticated: true, user: { id: 'human-1', kind: 'human' } }, 'valid'],
+    ['rejected response capability', { ...COPIED_PREVIEW_INSTANCE, allowed_effects: ['ledger:read'] } as InstanceInfo, { authenticated: true, user: { id: 'human-1', kind: 'human' } }, 'valid'],
     ['missing instance capability', null, { authenticated: true, user: { id: 'human-1', kind: 'human' } }, 'valid'],
     ['agent identity', COPIED_PREVIEW_INSTANCE, { authenticated: true, user: { id: 'agent-1', kind: 'agent' } }, 'valid'],
     ['anonymous identity', COPIED_PREVIEW_INSTANCE, { authenticated: false, user: null }, 'valid'],

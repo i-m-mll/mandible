@@ -7,6 +7,7 @@ export interface MandibleSuiteOptions {
    * allowed to be slow.
    */
   timingContract?: boolean;
+  exclude?: string[];
 }
 
 /**
@@ -17,6 +18,7 @@ export function mandibleVitestConfig(include: string[], options: MandibleSuiteOp
   return defineConfig({
     test: {
       include,
+      ...(options.exclude ? { exclude: options.exclude } : {}),
       // jsdom remains the default. The auth-queue files opt into `node`
       // locally with an `@vitest-environment node` docblock (issue 9e40a31):
       // they touch no DOM, and building one per fork is pure cost. Flipping the

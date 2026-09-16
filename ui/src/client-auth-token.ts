@@ -1,190 +1,269 @@
-// Browser-profile client authentication.
-//
-// Each Mandible instance owns a stable protected authority directory. The raw
-// bounded session stays in this browser origin; the server stores only its
-// fingerprint. The public authority id lets the browser recognize that a
-// different daemon temporarily occupied the same port without presenting or
-// discarding its credential.
+// One browser-session client for fetch, SSE, and WebSocket transports.
+// The reusable session credential is an HttpOnly host-only cookie; renderer
+// code owns only the session-bound CSRF value returned by whoami.
+import {
+  exportLegacyBrowserState,
+  LEGACY_BEARER_STORAGE_KEY,
+  LegacyBrowserStateError,
+  PENDING_LOGOUT_STORAGE_KEY,
+  restoreLegacyBrowserState,
+} from '../../src/client-auth/legacy-browser-state';
 
-const STORAGE_KEY = 'mandible.client_auth.token';
-const HANDSHAKE_PATH = '/api/client-auth/handshake';
 const WHOAMI_PATH = '/api/client-auth/whoami';
-const HEALTH_PATH = '/api/health';
+const RENEW_PATH = '/api/client-auth/renew';
 const LOGOUT_PATH = '/api/client-auth/logout';
-const WEBSOCKET_AUTH_PROTOCOL_PREFIX = 'mandible-auth.';
-
-type StoredClientAuthSession = {
-  version: 1;
-  token: string;
-  audience: string | null;
-  expires_at: number | null;
-};
+const PENDING_LOGOUT_KEY = PENDING_LOGOUT_STORAGE_KEY;
+const PREVIEW_TRANSFER_ATTEMPT_KEY = 'mandible.preview_transfer.attempted_at';
 
 export type ClientAuthSessionState =
   | 'enrolled'
-  | 'unauthenticated'
+  | 'signed-out'
   | 'unreachable'
   | 'wrong-audience'
   | 'expired'
-  | 'revoked';
+  | 'revoked'
+  | 'incompatible'
+  | 'migration-blocked';
 
-let sessionState: ClientAuthSessionState = 'unauthenticated';
-let currentAudience: string | null = null;
-const sessionStateListeners = new Set<(state: ClientAuthSessionState) => void>();
+type SessionProjection = {
+  family_id: string;
+  audience: string;
+  csrf_token: string;
+  effect_ceiling: string[];
+  expires_at?: number;
+  absolute_expires_at?: number;
+};
 
-export class ClientAuthRenewalCoordinator {
-  private pending: Promise<string | null> | null = null;
-
-  run(operation: () => Promise<string | null>): Promise<string | null> {
-    if (this.pending) return this.pending;
-    this.pending = operation().finally(() => {
-      this.pending = null;
-    });
-    return this.pending;
-  }
-}
-
-const renewalCoordinator = new ClientAuthRenewalCoordinator();
+let state: ClientAuthSessionState = 'signed-out';
+let session: SessionProjection | null = null;
+let pending: Promise<ClientAuthSessionState> | null = null;
+let renewal: Promise<boolean> | null = null;
+let legacyBearerRetired = false;
+let migrationFailure: string | null = null;
+const listeners = new Set<(value: ClientAuthSessionState) => void>();
 
 export function getClientAuthSessionState(): ClientAuthSessionState {
-  return sessionState;
+  return state;
 }
 
-export function isTerminalClientAuthState(
-  state: ClientAuthSessionState = sessionState,
-): boolean {
-  return state === 'unauthenticated'
-    || state === 'wrong-audience'
-    || state === 'expired'
-    || state === 'revoked';
+export function getBrowserSessionMigrationFailure(): string | null {
+  return migrationFailure;
+}
+
+export function isTerminalClientAuthState(value = state): boolean {
+  return value === 'signed-out' || value === 'wrong-audience'
+    || value === 'expired' || value === 'revoked' || value === 'incompatible'
+    || value === 'migration-blocked';
 }
 
 export function subscribeClientAuthSessionState(
-  listener: (state: ClientAuthSessionState) => void,
+  listener: (value: ClientAuthSessionState) => void,
 ): () => void {
-  sessionStateListeners.add(listener);
-  return () => sessionStateListeners.delete(listener);
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }
 
-function setSessionState(next: ClientAuthSessionState): void {
-  if (next === sessionState) return;
-  sessionState = next;
-  for (const listener of [...sessionStateListeners]) listener(next);
+function publish(next: ClientAuthSessionState): ClientAuthSessionState {
+  if (state === next) return next;
+  state = next;
+  for (const listener of listeners) listener(next);
+  return next;
 }
 
-function storage(): Storage | null {
+function pendingLogout(): boolean {
   try {
-    return typeof window !== 'undefined' ? window.localStorage : null;
+    return window.localStorage.getItem(PENDING_LOGOUT_KEY) === '1';
   } catch {
-    return null;
+    return false;
   }
 }
 
-function storedSession(): StoredClientAuthSession | null {
+function setPendingLogout(value: boolean): void {
   try {
-    const raw = storage()?.getItem(STORAGE_KEY)?.trim();
-    if (!raw) return null;
-    if (!raw.startsWith('{')) {
-      return { version: 1, token: raw, audience: null, expires_at: null };
-    }
-    const parsed = JSON.parse(raw) as Partial<StoredClientAuthSession>;
-    if (parsed.version !== 1 || typeof parsed.token !== 'string' || !parsed.token) return null;
-    return {
-      version: 1,
-      token: parsed.token,
-      audience: typeof parsed.audience === 'string' ? parsed.audience : null,
-      expires_at: typeof parsed.expires_at === 'number' ? parsed.expires_at : null,
-    };
+    if (value) window.localStorage.setItem(PENDING_LOGOUT_KEY, '1');
+    else window.localStorage.removeItem(PENDING_LOGOUT_KEY);
   } catch {
-    return null;
+    // A storage-disabled browser still stays signed out for this page lifetime.
   }
 }
 
-export function getStoredToken(): string | null {
-  return storedSession()?.token ?? null;
-}
-
-export function clientAuthWebSocketProtocols(): string[] {
-  const token = getStoredToken();
-  return token ? ['mandible', `${WEBSOCKET_AUTH_PROTOCOL_PREFIX}${token}`] : ['mandible'];
-}
-
-function setStoredSession(
-  token: string,
-  audience: string | null,
-  expiresAt: number | null,
-): void {
-  try {
-    storage()?.setItem(STORAGE_KEY, JSON.stringify({
-      version: 1,
-      token,
-      audience,
-      expires_at: expiresAt,
-    } satisfies StoredClientAuthSession));
-  } catch {
-    // A storage-disabled browser can still use the session for this page load.
-  }
-}
-
-function setLegacyToken(token: string): void {
-  try {
-    storage()?.setItem(STORAGE_KEY, token);
-  } catch {
-    // The authenticated request below will report the unavailable store.
-  }
-}
-
-function clearStoredSession(): void {
-  try {
-    storage()?.removeItem(STORAGE_KEY);
-  } catch {
-    // Explicit logout has still dropped the renderer's in-memory state.
-  }
-}
-
-function adoptTokenFromUrlFragment(): void {
-  if (typeof window === 'undefined') return;
+function retireLegacyBrowserBearer(): void {
+  if (legacyBearerRetired) return;
+  legacyBearerRetired = true;
+  try { window.localStorage.removeItem(LEGACY_BEARER_STORAGE_KEY); } catch { /* storage disabled */ }
   const hash = window.location.hash;
-  const queryIndex = hash.indexOf('?');
-  if (queryIndex < 0) return;
-  const route = hash.slice(0, queryIndex);
-  const params = new URLSearchParams(hash.slice(queryIndex + 1));
-  const token = params.get('mandible_auth');
-  if (!token) return;
-  setLegacyToken(token);
+  const queryAt = hash.indexOf('?');
+  if (queryAt < 0) return;
+  const route = hash.slice(0, queryAt);
+  const params = new URLSearchParams(hash.slice(queryAt + 1));
+  if (!params.has('mandible_auth')) return;
   params.delete('mandible_auth');
-  const remaining = params.toString();
-  window.history.replaceState(
-    null,
-    '',
-    `${window.location.pathname}${window.location.search}${route}${remaining ? `?${remaining}` : ''}`,
-  );
+  const cleanHash = `${route}${params.size > 0 ? `?${params}` : ''}`;
+  window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${cleanHash}`);
 }
 
-function requestUrl(input: RequestInfo | URL): string {
-  if (typeof input === 'string') return input;
-  if (input instanceof URL) return input.toString();
-  return input.url;
+function legacyOrigin(): boolean {
+  return window.location.origin === 'http://127.0.0.1:19420'
+    || window.location.origin === 'http://localhost:19420'
+    || window.location.origin === 'http://127.0.0.1:19421'
+    || window.location.origin === 'http://localhost:19421';
 }
 
-function sameOriginApiPath(url: string): string | null {
+export function isLegacyBrowserOrigin(): boolean {
+  return legacyOrigin();
+}
+
+export function beginLegacyBrowserRecovery(): void {
+  if (!legacyOrigin()) throw new Error('Browser recovery is available only from the old Mandible address.');
+  const state = exportLegacyBrowserState(window.localStorage);
+  const form = document.createElement('form');
+  form.method = 'post';
+  form.action = 'https://app.mandible.localhost:19419/api/client-auth/recovery/start';
+  for (const [name, value] of [
+    ['return_path', `${window.location.pathname}${window.location.search}${window.location.hash}`],
+    ['browser_state', JSON.stringify(state)],
+  ] as const) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.append(input);
+  }
+  document.body.append(form);
+  form.submit();
+}
+
+function legacyBearer(): string | null {
   try {
-    const resolved = new URL(url, window.location.origin);
-    return resolved.origin === window.location.origin && resolved.pathname.startsWith('/api')
-      ? resolved.pathname
-      : null;
+    const raw = window.localStorage.getItem(LEGACY_BEARER_STORAGE_KEY)?.trim();
+    if (!raw) return null;
+    if (!raw.startsWith('{')) return raw;
+    const parsed = JSON.parse(raw) as { token?: unknown };
+    return typeof parsed.token === 'string' && parsed.token ? parsed.token : null;
   } catch {
     return null;
   }
 }
 
-function stateForFailure(reason: unknown): ClientAuthSessionState {
-  if (reason === 'expired') return 'expired';
-  if (reason === 'revoked') return 'revoked';
-  return 'unauthenticated';
+async function beginLegacyConversion(fetchImpl: typeof fetch): Promise<boolean> {
+  if (!legacyOrigin()) return false;
+  const token = legacyBearer();
+  if (!token) return false;
+  const response = await fetchImpl('/api/client-auth/legacy-conversion/prepare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      return_path: `${window.location.pathname}${window.location.search}${window.location.hash}`,
+      browser_state: exportLegacyBrowserState(window.localStorage),
+    }),
+  });
+  const body = await readJson(response);
+  if (!response.ok || typeof body.reference !== 'string' || typeof body.secret !== 'string'
+      || typeof body.complete_url !== 'string') return false;
+  const complete = new URL(body.complete_url);
+  const exactMigrationHost = complete.hostname === 'app.mandible.localhost'
+    || /^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(complete.hostname);
+  if (complete.protocol !== 'https:' || !exactMigrationHost || complete.port !== '19419'
+      || complete.pathname !== '/api/client-auth/legacy-conversion/complete'
+      || complete.username || complete.password || complete.search || complete.hash) {
+    return false;
+  }
+  const form = document.createElement('form');
+  form.method = 'post';
+  form.action = complete.href;
+  for (const [name, value] of [['reference', body.reference], ['secret', body.secret]] as const) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.append(input);
+  }
+  document.body.append(form);
+  form.submit();
+  return true;
 }
 
-async function responseJson(response: Response): Promise<Record<string, unknown>> {
+async function beginPreviewTransfer(fetchImpl: typeof fetch): Promise<boolean> {
+  if (!/^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(window.location.hostname)) return false;
+  const now = Date.now();
+  try {
+    const prior = Number(window.sessionStorage.getItem(PREVIEW_TRANSFER_ATTEMPT_KEY) ?? 0);
+    if (Number.isFinite(prior) && now - prior < 60_000) return false;
+    window.sessionStorage.setItem(PREVIEW_TRANSFER_ATTEMPT_KEY, String(now));
+  } catch {
+    // The server-side one-time transaction still bounds retries without storage.
+  }
+  const response = await fetchImpl('/api/client-auth/preview-transfer/prepare', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ return_path: `${window.location.pathname}${window.location.search}${window.location.hash}` }),
+  });
+  const body = await readJson(response);
+  if (!response.ok || typeof body.authorize_url !== 'string') return false;
+  const authorize = new URL(body.authorize_url);
+  if (authorize.origin !== 'https://app.mandible.localhost:19420'
+      || authorize.pathname !== '/api/client-auth/preview-transfer/authorize') return false;
+  window.location.assign(authorize.href);
+  return true;
+}
+
+async function finishLegacyConversion(fetchImpl: typeof fetch, active: SessionProjection): Promise<void> {
+  const response = await fetchImpl('/api/client-auth/legacy-conversion/state', {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  });
+  const body = await readJson(response);
+  if (!response.ok || typeof body.target_origin !== 'string'
+      || typeof body.return_path !== 'string') return;
+  const target = new URL(body.target_origin);
+  const validTarget = target.origin === 'https://app.mandible.localhost:19420'
+    || (target.protocol === 'https:' && target.port === '19421'
+      && /^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(target.hostname));
+  if (!validTarget || active.audience !== (target.port === '19421'
+    ? target.hostname.replace('.mandible.localhost', '')
+    : 'production')) return;
+  if (body.browser_state === null || body.browser_state === undefined) {
+    throw new LegacyBrowserStateError('Legacy browser state is missing from the pending conversion; this profile was not finalized.');
+  }
+  restoreLegacyBrowserState(window.localStorage, body.browser_state);
+  if (body.finalized !== true) {
+    const finalized = await fetchImpl('/api/client-auth/legacy-conversion/finalize', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-Mandible-CSRF': active.csrf_token },
+    });
+    if (!finalized.ok) return;
+  }
+  retireLegacyBrowserBearer();
+  window.location.replace(`${target.origin}${body.return_path}`);
+}
+
+async function finishBrowserRecovery(fetchImpl: typeof fetch, active: SessionProjection): Promise<void> {
+  if (!/^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(window.location.hostname)) return;
+  const response = await fetchImpl('/api/client-auth/recovery/state', {
+    credentials: 'same-origin', headers: { Accept: 'application/json' },
+  });
+  if (response.status === 404) return;
+  const body = await readJson(response);
+  if (!response.ok || typeof body.return_path !== 'string') {
+    throw new LegacyBrowserStateError('Saved browser state is unavailable; this profile was not finalized.');
+  }
+  const returnUrl = new URL(body.return_path, window.location.origin);
+  if (returnUrl.origin !== window.location.origin || !body.return_path.startsWith('/')
+      || body.return_path.startsWith('//')) {
+    throw new LegacyBrowserStateError('Saved browser destination is invalid; this profile was not finalized.');
+  }
+  restoreLegacyBrowserState(window.localStorage, body.browser_state);
+  const finalized = await fetchImpl('/api/client-auth/recovery/finalize', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'X-Mandible-CSRF': active.csrf_token },
+  });
+  if (!finalized.ok) throw new LegacyBrowserStateError('Saved browser state was restored but could not be finalized; retry safely.');
+  window.location.replace(returnUrl.href);
+}
+
+async function readJson(response: Response): Promise<Record<string, unknown>> {
   try {
     const body = await response.clone().json();
     return body && typeof body === 'object' && !Array.isArray(body)
@@ -195,155 +274,188 @@ async function responseJson(response: Response): Promise<Record<string, unknown>
   }
 }
 
-async function readAudience(fetchImpl: typeof fetch): Promise<string | null> {
-  const response = await fetchImpl(HEALTH_PATH, { headers: { Accept: 'application/json' } });
-  if (!response.ok) return null;
-  const body = await responseJson(response);
-  const auth = body.client_auth && typeof body.client_auth === 'object'
-    ? body.client_auth as Record<string, unknown>
-    : null;
-  return typeof auth?.authority_id === 'string' ? auth.authority_id : null;
-}
-
-async function renewStoredSession(
-  fetchImpl: typeof fetch,
-  expectedToken: string,
-): Promise<string | null> {
-  return renewalCoordinator.run(async () => {
-    try {
-      const audience = await readAudience(fetchImpl);
-      currentAudience = audience;
-      const stored = storedSession();
-      if (!stored || stored.token !== expectedToken) return stored?.token ?? null;
-      if (stored.audience && audience && stored.audience !== audience) {
-        setSessionState('wrong-audience');
-        return null;
-      }
-      const response = await fetchImpl(HANDSHAKE_PATH, {
-        method: 'POST',
-        headers: { Accept: 'application/json', Authorization: `Bearer ${expectedToken}` },
-      });
-      const body = await responseJson(response);
-      if (!response.ok) {
-        setSessionState(response.status === 401 || response.status === 403
-          ? stateForFailure(body.reason ?? body.code)
-          : 'unreachable');
-        return null;
-      }
-      if (typeof body.token !== 'string' || !body.token) {
-        setSessionState('unreachable');
-        return null;
-      }
-      const nextAudience = typeof body.audience === 'string' ? body.audience : audience;
-      if (audience && nextAudience && audience !== nextAudience) {
-        setSessionState('wrong-audience');
-        return null;
-      }
-      setStoredSession(
-        body.token,
-        nextAudience,
-        typeof body.expires_at === 'number' ? body.expires_at : null,
-      );
-      setSessionState('enrolled');
-      return body.token;
-    } catch {
-      setSessionState('unreachable');
-      return null;
-    }
-  });
-}
-
-let installed = false;
-
-export function installClientAuthFetch(): void {
-  if (installed || typeof window === 'undefined' || typeof window.fetch !== 'function') return;
-  installed = true;
-  const originalFetch = window.fetch.bind(window);
-
-  window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
-    const path = sameOriginApiPath(requestUrl(input));
-    if (!path || path === HEALTH_PATH || path === '/api/instance') {
-      return originalFetch(input, init);
-    }
-    const stored = storedSession();
-    if (!stored) return originalFetch(input, init);
-    if (stored.audience && currentAudience && stored.audience !== currentAudience) {
-      setSessionState('wrong-audience');
-      return new Response(JSON.stringify({
-        error: 'authentication_required',
-        reason: 'wrong_audience',
-      }), { status: 401, headers: { 'Content-Type': 'application/json' } });
-    }
-    const headers = new Headers(
-      init.headers ?? (input instanceof Request ? input.headers : undefined),
-    );
-    const attachedStoredToken = !headers.has('Authorization');
-    if (attachedStoredToken) headers.set('Authorization', `Bearer ${stored.token}`);
-    const retryInput = input instanceof Request ? input.clone() : input;
-    const response = await originalFetch(input, { ...init, headers });
-    if (response.status !== 401 || !attachedStoredToken || path === HANDSHAKE_PATH) {
-      return response;
-    }
-    const renewed = await renewStoredSession(originalFetch, stored.token);
-    if (!renewed) return response;
-    headers.set('Authorization', `Bearer ${renewed}`);
-    return originalFetch(retryInput, { ...init, headers });
+function projection(value: unknown): SessionProjection | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.family_id !== 'string' || typeof row.audience !== 'string'
+      || typeof row.csrf_token !== 'string' || !Array.isArray(row.effect_ceiling)) return null;
+  return {
+    family_id: row.family_id,
+    audience: row.audience,
+    csrf_token: row.csrf_token,
+    effect_ceiling: row.effect_ceiling.filter((item): item is string => typeof item === 'string'),
+    ...(typeof row.expires_at === 'number' ? { expires_at: row.expires_at } : {}),
+    ...(typeof row.absolute_expires_at === 'number'
+      ? { absolute_expires_at: row.absolute_expires_at }
+      : {}),
   };
 }
 
-export async function ensureClientAuthToken(): Promise<string | null> {
-  adoptTokenFromUrlFragment();
-  const stored = storedSession();
-  if (!stored) {
-    setSessionState('unauthenticated');
-    return null;
-  }
+export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(window)): Promise<ClientAuthSessionState> {
+  if (pending) return pending;
+  pending = (async () => {
+    try {
+      if (legacyOrigin()) {
+        const started = await beginLegacyConversion(fetchImpl);
+        return publish(started ? 'signed-out' : 'unreachable');
+      }
+      retireLegacyBrowserBearer();
+      if (pendingLogout()) {
+        const inspected = await fetchImpl(WHOAMI_PATH, {
+          credentials: 'same-origin',
+          headers: { Accept: 'application/json' },
+        });
+        const inspectedBody = await readJson(inspected);
+        const pendingSession = projection(inspectedBody.session);
+        const logout = await fetchImpl(LOGOUT_PATH, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: pendingSession?.csrf_token ? { 'X-Mandible-CSRF': pendingSession.csrf_token } : {},
+        });
+        if (!logout.ok && logout.status !== 401) return publish('unreachable');
+        setPendingLogout(false);
+        session = null;
+        return publish('signed-out');
+      }
+      const response = await fetchImpl(WHOAMI_PATH, {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      });
+      const body = await readJson(response);
+      if (!response.ok || body.authenticated !== true) {
+        session = null;
+        const reason = body.failure_reason;
+        if (!reason || reason === 'unknown') await beginPreviewTransfer(fetchImpl);
+        return publish(reason === 'expired' ? 'expired'
+          : reason === 'revoked' ? 'revoked'
+            : reason === 'wrong_audience' ? 'wrong-audience' : 'signed-out');
+      }
+      const next = projection(body.session);
+      if (!next) {
+        session = null;
+        return publish('incompatible');
+      }
+      session = next;
+      if (body.legacy_conversion_pending === true) await finishLegacyConversion(fetchImpl, next);
+      await finishBrowserRecovery(fetchImpl, next);
+      return publish('enrolled');
+    } catch (error) {
+      if (error instanceof LegacyBrowserStateError) {
+        migrationFailure = error.message;
+        session = null;
+        return publish('migration-blocked');
+      }
+      return publish('unreachable');
+    }
+  })().finally(() => {
+    pending = null;
+  });
+  return pending;
+}
+
+function requestPath(input: RequestInfo | URL): string | null {
   try {
-    currentAudience = await readAudience(fetch.bind(window));
-    if (stored.audience && currentAudience && stored.audience !== currentAudience) {
-      setSessionState('wrong-audience');
-      return stored.token;
-    }
-    const response = await fetch(WHOAMI_PATH, { headers: { Accept: 'application/json' } });
-    const body = await responseJson(response);
-    if (!response.ok) {
-      setSessionState(response.status === 401 || response.status === 403
-        ? stateForFailure(body.reason ?? body.code)
-        : 'unreachable');
-      return stored.token;
-    }
-    if (response.ok
-        && body.authenticated === true
-        && body.evidence_method === 'ephemeral'
-        && body.ephemeral_purpose === 'dashboard_handshake') {
-      const audience = typeof body.audience === 'string' ? body.audience : currentAudience;
-      const session = body.session && typeof body.session === 'object'
-        ? body.session as Record<string, unknown>
-        : null;
-      setStoredSession(
-        stored.token,
-        audience,
-        typeof session?.expires_at === 'number' ? session.expires_at : stored.expires_at,
-      );
-      setSessionState('enrolled');
-      return stored.token;
-    }
-    const renewed = await renewStoredSession(fetch.bind(window), stored.token);
-    if (renewed) return renewed;
-    if (sessionState === 'unreachable' || sessionState === 'wrong-audience') return stored.token;
-    setSessionState(stateForFailure(body.failure_reason));
-    return stored.token;
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const resolved = new URL(raw, window.location.origin);
+    return resolved.origin === window.location.origin ? resolved.pathname : null;
   } catch {
-    setSessionState('unreachable');
-    return stored.token;
+    return null;
   }
 }
 
-export async function logoutClientAuth(): Promise<void> {
-  try {
-    await fetch(LOGOUT_PATH, { method: 'POST', headers: { Accept: 'application/json' } });
-  } finally {
-    clearStoredSession();
-    setSessionState('unauthenticated');
+export async function browserSessionFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  fetchImpl: typeof fetch = fetch.bind(window),
+): Promise<Response> {
+  const path = requestPath(input);
+  if (!path?.startsWith('/api/')) return fetchImpl(input, init);
+  const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+  const unsafe = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+  if (pendingLogout()) {
+    return new Response(JSON.stringify({ error: 'revocation_pending' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
+  if (unsafe && !session && path !== WHOAMI_PATH && !path.startsWith('/api/client-auth/pairing/')) {
+    await initializeBrowserSession(fetchImpl);
+  }
+  const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
+  if (unsafe && session?.csrf_token) headers.set('X-Mandible-CSRF', session.csrf_token);
+  const request = input instanceof Request ? input.clone() : input;
+  const response = await fetchImpl(input, { ...init, credentials: 'same-origin', headers });
+  if (response.status !== 401 || path.startsWith('/api/client-auth/')) return response;
+  renewal ??= (async () => {
+    const renewed = await fetchImpl(RENEW_PATH, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: session?.csrf_token ? { 'X-Mandible-CSRF': session.csrf_token } : {},
+    });
+    if (!renewed.ok) {
+      const body = await readJson(renewed);
+      session = null;
+      publish(body.error === 'session_revoked' ? 'revoked' : 'expired');
+      return false;
+    }
+    const renewedBody = await readJson(renewed);
+    session = projection(renewedBody.session);
+    if (!session) publish('incompatible');
+    return Boolean(session);
+  })().finally(() => { renewal = null; });
+  if (!await renewal) {
+    return response;
+  }
+  const activeSession = session;
+  if (!activeSession) return response;
+  headers.set('X-Mandible-CSRF', activeSession.csrf_token);
+  return fetchImpl(request, { ...init, credentials: 'same-origin', headers });
+}
+
+export async function startBrowserPairing(): Promise<string> {
+  const response = await browserSessionFetch('/api/client-auth/pairing/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ return_path: `${window.location.pathname}${window.location.search}${window.location.hash}` }),
+  });
+  const body = await readJson(response);
+  if (!response.ok || typeof body.reference !== 'string') throw new Error('Unable to start browser pairing.');
+  return body.reference;
+}
+
+export async function completeBrowserPairing(reference: string): Promise<ClientAuthSessionState> {
+  const response = await browserSessionFetch('/api/client-auth/pairing/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reference }),
+  });
+  if (!response.ok) throw new Error(response.status === 409 ? 'Pairing has not been approved yet.' : 'Pairing failed.');
+  return initializeBrowserSession();
+}
+
+export async function logoutClientAuth(fetchImpl: typeof fetch = fetch.bind(window)): Promise<void> {
+  try {
+    const response = await fetchImpl(LOGOUT_PATH, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: session?.csrf_token ? { 'X-Mandible-CSRF': session.csrf_token } : {},
+    });
+    if (!response.ok && response.status !== 401) throw new Error('logout unavailable');
+    setPendingLogout(false);
+  } catch {
+    setPendingLogout(true);
+  } finally {
+    session = null;
+    publish('signed-out');
+  }
+}
+
+export function __resetBrowserSessionForTests(): void {
+  state = 'signed-out';
+  session = null;
+  pending = null;
+  renewal = null;
+  legacyBearerRetired = false;
+  migrationFailure = null;
+  listeners.clear();
 }

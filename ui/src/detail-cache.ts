@@ -1,11 +1,16 @@
-const STORAGE_PREFIX = 'mandible:detail-cache';
-const CACHE_VERSION = 2;
+import {
+  DETAIL_CACHE_ENTRY_KEY_PREFIX,
+  DETAIL_CACHE_INDEX_KEY,
+  LEGACY_DETAIL_CACHE_KEY,
+} from '../../src/client-auth/legacy-browser-state';
+
 // The index holds only lightweight per-entry metadata. Each cached value lives
 // in its own `${ENTRY_KEY_PREFIX}<id>` key so a read parses the small index plus
 // exactly one value blob, never the whole cross-namespace envelope.
-const INDEX_KEY = `${STORAGE_PREFIX}:v${CACHE_VERSION}`;
-const ENTRY_KEY_PREFIX = `${INDEX_KEY}:e:`;
-const LEGACY_KEYS = ['mandible:detail-cache:v1'];
+const INDEX_KEY = DETAIL_CACHE_INDEX_KEY;
+const ENTRY_KEY_PREFIX = DETAIL_CACHE_ENTRY_KEY_PREFIX;
+const LEGACY_KEYS = [LEGACY_DETAIL_CACHE_KEY];
+const CACHE_VERSION = 2;
 
 const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 const MAX_ENTRIES = 48;

@@ -11,6 +11,7 @@ import { API_TOKEN_PREFIX, fingerprintForToken } from "../../src/client-auth/tok
 import { credentialMaskFor } from "../../src/credential-leak-scan.js";
 import { registerConversationRoutes } from "../../src/routes/conversations.js";
 import { Router } from "../../src/server.js";
+import { resolveInstanceInfo } from "../../src/instance-policy.js";
 import { addCredential, createUser } from "../../src/users/store.js";
 
 let tempDir = "";
@@ -228,7 +229,7 @@ describe("Claude provider title ingestion", () => {
       block_count: indexed.block_count,
     });
 
-    const router = new Router();
+    const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
     registerConversationRoutes(router);
     const sidebar = await router.invoke({
       method: "GET",

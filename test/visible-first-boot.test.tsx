@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetSharedSseForTests } from "../ui/src/sse-shared";
+import { __resetBrowserSessionForTests } from "../ui/src/client-auth-token";
 import { h } from "preact";
 
 import { App } from "../ui/src/app";
@@ -40,9 +41,10 @@ function jsonResponse(body: unknown): Promise<Response> {
 
 describe("visible-first dashboard boot", () => {
   beforeEach(() => {
+    __resetBrowserSessionForTests();
     MockEventSource.instances = [];
     vi.stubGlobal("EventSource", MockEventSource);
-    __resetSharedSseForTests();
+    __resetSharedSseForTests(MockEventSource as unknown as typeof EventSource);
     vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
       matches: false,
       media: query,
@@ -57,6 +59,7 @@ describe("visible-first dashboard boot", () => {
   });
 
   afterEach(() => {
+    __resetBrowserSessionForTests();
     invalidateApiGetCache();
     cleanup();
     vi.useRealTimers();
@@ -119,6 +122,7 @@ describe("visible-first dashboard boot", () => {
     render(h(App, {}));
     await vi.runAllTicks();
     await Promise.resolve();
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
     const source = MockEventSource.instances[0];
     expect(source).toBeTruthy();
     // Freshness is now connection health (open socket + a signal within

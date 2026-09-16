@@ -246,7 +246,7 @@ describe("restricted project route enforcement", () => {
     expect(JSON.parse(abortedRow.error_json!)).toMatchObject({ code: "provider_startup_cancelled" });
   });
 
-  it("admits preview submit and stop only for a preview-created controller owned at the exact generation", async () => {
+  it("denies preview provider sends even for a preview-created controller", async () => {
     const previewRoot = path.join(tempDir, "preview");
     fs.mkdirSync(previewRoot);
     const previewDb = path.join(previewRoot, "mandible.db");
@@ -256,7 +256,12 @@ describe("restricted project route enforcement", () => {
     const instance = resolveInstanceInfo({
       env: {
         MANDIBLE_INSTANCE_ROLE: "preview",
-        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+        MANDIBLE_INSTANCE_ID: "preview-permissions",
+        MANDIBLE_INSTALLATION_ID: "test-installation",
+        MANDIBLE_PUBLIC_ORIGIN: "https://preview-permissions.mandible.localhost:19421",
+        MANDIBLE_BACKEND_GENERATION: "test-generation",
+        MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
+        MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
         MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
         MANDIBLE_PREVIEW_ROOT: previewRoot,
       },
@@ -304,10 +309,10 @@ describe("restricted project route enforcement", () => {
 
     expect(await submit()).toMatchObject({
       status: 403,
-      body: { error: "preview_conversation_control_forbidden" },
+      body: { error: "effect_forbidden" },
     });
     owned = true;
-    expect((await submit()).status).toBe(202);
+    expect((await submit()).status).toBe(403);
     expect((await submit("copied-historical-chat")).status).toBe(403);
     expect((await submit(conversationId, 2)).status).toBe(403);
     expect((await previewRouter.invoke({
@@ -316,9 +321,9 @@ describe("restricted project route enforcement", () => {
       credential: token,
       transport: "http",
       body: { generation: 1 },
-    })).status).toBe(200);
-    expect(control.submit).toHaveBeenCalledOnce();
-    expect(control.stop).toHaveBeenCalledOnce();
+    })).status).toBe(403);
+    expect(control.submit).not.toHaveBeenCalled();
+    expect(control.stop).not.toHaveBeenCalled();
   });
 
   it("denies restricted issue, artifact, and work reads and restores them with read access", async () => {

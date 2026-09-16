@@ -5,6 +5,7 @@ import { addProject } from "../../src/ledger/project-registry.js";
 import { registerIssueRoutes } from "../../src/routes/issues.js";
 import { Router } from "../../src/server.js";
 import { setupOperator } from "../../src/users/store.js";
+import { authenticatedTestRouter } from "../helpers/authenticated-router.js";
 
 let db: Db;
 let router: Router;
@@ -18,10 +19,10 @@ const fakeScanner = {
 beforeEach(() => {
   db = new Database(":memory:");
   migrate(db);
-  setupOperator(db, { display_name: "Issue route precedence operator" });
+  const operator = setupOperator(db, { display_name: "Issue route precedence operator" });
   setDb(db);
   addProject(db, { project_key: "mandible", display_name: "Mandible" });
-  router = new Router();
+  router = authenticatedTestRouter(operator);
   registerIssueRoutes(router, fakeScanner);
 });
 
