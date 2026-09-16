@@ -419,6 +419,16 @@ describe("local session first cutover", () => {
     expect(fs.readFileSync(victim, "utf8")).toBe("preserve-victim");
   });
 
+  it("rejects a missing candidate artifact root before changing the live listeners", async () => {
+    const fx = fixture();
+    const life = lifecycle(fx);
+    fx.manifest.instances[1].candidate.process.env.MANDIBLE_ARTIFACT_DIR = path.join(fx.root, "missing-artifacts");
+    fs.writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+    await expect(runCutoverCommand({ command: "prepare", manifest: fx.manifestPath, journal: fx.journalPath }, life.effects))
+      .rejects.toThrow("Candidate preview artifact directory is missing");
+    expect(fs.existsSync(fx.journalPath)).toBe(false);
+  });
+
   it("refuses removed macOS CA trust before stopping any old public listener", async () => {
     const fx = fixture({ supervisedMain: true });
     const life = lifecycle(fx);

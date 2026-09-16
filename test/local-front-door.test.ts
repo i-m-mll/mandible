@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalSessionAuthority } from "../src/client-auth/session-authority.js";
 import { localCaPaths } from "../scripts/local-ca-trust.mjs";
+import { pinnedCaddyBinary } from "../scripts/pinned-caddy.mjs";
 
 const roots = new Set<string>();
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.clear(); });
@@ -44,6 +45,13 @@ describe("local HTTPS front door", () => {
       const result = spawnSync(process.execPath, [script, command], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8" });
       expect(result.status, result.stderr).toBe(0);
       const config = fs.readFileSync(path.join(home, "config", "local-sessions", "Caddyfile"), "utf8");
+      const installedCaddy = pinnedCaddyBinary(path.join(os.homedir(), ".mandible"));
+      if (fs.existsSync(installedCaddy)) {
+        const adapted = spawnSync(installedCaddy, ["adapt", "--config", "-", "--adapter", "caddyfile"], {
+          input: config, encoding: "utf8",
+        });
+        expect(adapted.status, adapted.stderr).toBe(0);
+      }
       expect(config).toContain("skip_install_trust");
       expect(config).toContain(`storage file_system ${JSON.stringify(path.join(home, "config", "local-sessions", "caddy-storage"))}`);
       expect(config.includes("legacy-conversion/complete")).toBe(contains);
@@ -53,8 +61,8 @@ describe("local HTTPS front door", () => {
         expect(config).toContain("https://preview-existing.mandible.localhost:19419");
         expect(config).toContain("header_up X-Mandible-Target-Instance preview-existing");
         expect(config).toContain("header_up X-Mandible-Legacy-Migration complete-v1");
-        expect(config).toContain("header Origin http://127.0.0.1:19420 http://localhost:19420");
-        expect(config).toContain("header Origin http://127.0.0.1:19421 http://localhost:19421");
+        expect(config).toContain("header Origin http://127.0.0.1:19420\n    header Origin http://localhost:19420");
+        expect(config).toContain("header Origin http://127.0.0.1:19421\n    header Origin http://localhost:19421");
         expect(config).toContain("header Sec-Fetch-Site cross-site");
         expect(config).toMatch(/http:\/\/127\.0\.0\.1:19420, http:\/\/localhost:19420 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29420[\s\S]*?X-Mandible-Target-Instance production/);
         expect(config).toMatch(/http:\/\/127\.0\.0\.1:19421, http:\/\/localhost:19421 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29421[\s\S]*?X-Mandible-Target-Instance preview-existing/);

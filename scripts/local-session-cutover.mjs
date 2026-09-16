@@ -712,6 +712,10 @@ async function preflightCandidates(manifest, effects) {
     if (!fs.existsSync(instance.candidate.process.command)) throw new Error(`Candidate ${instance.role} executable is missing: ${instance.candidate.process.command}`);
     if (instance.candidate.process.cwd && !fs.statSync(instance.candidate.process.cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`Candidate ${instance.role} working directory is missing: ${instance.candidate.process.cwd}`);
     if (!fs.existsSync(instance.candidate.process.env.MANDIBLE_DB)) throw new Error(`Candidate ${instance.role} database is missing: ${instance.candidate.process.env.MANDIBLE_DB}`);
+    const artifactDirectory = instance.candidate.process.env.MANDIBLE_ARTIFACT_DIR;
+    if (artifactDirectory && !fs.statSync(artifactDirectory, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new Error(`Candidate ${instance.role} artifact directory is missing: ${artifactDirectory}`);
+    }
     if (!fs.existsSync(instance.legacy.credential_directory)) throw new Error(`Legacy ${instance.role} credential directory is missing: ${instance.legacy.credential_directory}`);
     if (path.resolve(instance.candidate.credential_directory) !== path.resolve(instance.legacy.credential_directory)) throw new Error(`Candidate ${instance.role} must retain the exact legacy credential directory.`);
     if (await effects.portOpen(instance.candidate.backend_port)) throw new Error(`Candidate ${instance.role} backend port ${instance.candidate.backend_port} is occupied.`);

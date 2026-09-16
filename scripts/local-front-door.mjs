@@ -70,7 +70,8 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     "  @verified_legacy_completion {",
     "    method POST",
     "    path /api/client-auth/legacy-conversion/complete",
-    `    header Origin http://127.0.0.1:${legacyPort} http://localhost:${legacyPort}`,
+    `    header Origin http://127.0.0.1:${legacyPort}`,
+    `    header Origin http://localhost:${legacyPort}`,
     "    header Sec-Fetch-Site cross-site",
     "  }",
     "  handle @verified_legacy_completion {",
@@ -193,7 +194,14 @@ function install() {
 function configure({ legacyConversion = false } = {}) {
   requireTrustedCa();
   fs.mkdirSync(authorityDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(configPath, caddyfile(readInstances(), { legacyConversion }), { mode: 0o600 });
+  const config = caddyfile(readInstances(), { legacyConversion });
+  if (fs.existsSync(binary)) {
+    const adapted = spawnSync(binary, ["adapt", "--config", "-", "--adapter", "caddyfile"], {
+      input: config, encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
+    });
+    if (adapted.status !== 0) fail(`Local HTTPS configuration is invalid: ${adapted.stderr.trim()}`);
+  }
+  fs.writeFileSync(configPath, config, { mode: 0o600 });
   fs.chmodSync(configPath, 0o600);
 }
 
