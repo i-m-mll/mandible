@@ -1324,7 +1324,9 @@ function validateDaemonWriteBoundary(
   }
   return validateDaemonBrowserBoundary(
     req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod),
-    normalizedMethod === "GET" && pathname === "/",
+    normalizedMethod === "GET" && (pathname === "/"
+      || (process.env.MANDIBLE_LEGACY_CONVERSION === "allow"
+        && pathname === "/api/client-auth/legacy-conversion/prepared")),
   );
 }
 
