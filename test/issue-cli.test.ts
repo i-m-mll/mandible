@@ -107,8 +107,8 @@ function runBash(
   extraEnv: Record<string, string> = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   // Drop any leaked dev-shell MANDIBLE_BASE so it cannot route the CLI invoked
-  // by the bash script to a real daemon; call sites supply MANDIBLE_PORT or an
-  // explicit MANDIBLE_BASE via extraEnv when they need one.
+  // by the bash script to a real daemon; call sites supply an explicit
+  // MANDIBLE_BASE via extraEnv when they need a test stub.
   const { MANDIBLE_BASE: _leakedBase, ...baseEnv } = process.env;
   return new Promise((resolve) => {
     const child = spawn("bash", ["-c", script], {
@@ -1515,7 +1515,7 @@ describe("issue CLI body revisions", () => {
     const addedFromStdin = await runBash(
       `printf '%s' '[{"issue":"stdin","digest":"digest-stdin"}]' | "${CLI}" issue checkpoint add abc --kind closeout --payload -`,
       process.cwd(),
-      { MANDIBLE_PORT: String(port) },
+      { MANDIBLE_BASE: `http://127.0.0.1:${port}` },
     );
     expect(addedFromStdin.status).toBe(0);
     expect(requestBodies.at(-1)).toMatchObject({
