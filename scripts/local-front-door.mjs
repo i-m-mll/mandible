@@ -82,7 +82,6 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     "      header_up -Cookie",
     "      header_up -X-Mandible-Session-Context",
     `      header_up X-Mandible-Target-Instance ${entry.instance_id}`,
-    "      header_up -X-Mandible-Legacy-Migration",
     "      header_up X-Mandible-Legacy-Migration complete-v1",
     // The matcher verified the incoming Origin above. Inject the normalized
     // route identity, not a placeholder that may observe the rewritten
