@@ -63,9 +63,12 @@ export function validateLegacyBrowserState(value: unknown): Record<string, strin
     if (credentialKeys.has(key)) {
       throw new LegacyBrowserStateError("Legacy browser state contains a reusable credential or session control key; migration was stopped.");
     }
-    if (!key || encoder.encode(key).length > LEGACY_BROWSER_STATE_MAX_KEY_BYTES || typeof item !== "string" ||
-        encoder.encode(item).length > LEGACY_BROWSER_STATE_MAX_VALUE_BYTES) {
-      throw new LegacyBrowserStateError("Legacy browser state contains an invalid or oversized entry; migration was stopped without discarding it.");
+    const keyBytes = encoder.encode(key).length;
+    const valueBytes = typeof item === "string" ? encoder.encode(item).length : null;
+    if (!key || keyBytes > LEGACY_BROWSER_STATE_MAX_KEY_BYTES || valueBytes === null ||
+        valueBytes > LEGACY_BROWSER_STATE_MAX_VALUE_BYTES) {
+      const keyLabel = keyBytes <= LEGACY_BROWSER_STATE_MAX_KEY_BYTES ? JSON.stringify(key) : "an oversized key";
+      throw new LegacyBrowserStateError(`Legacy browser state entry ${keyLabel} has ${keyBytes} key bytes and ${valueBytes ?? "non-text"} value bytes; migration was stopped without discarding it.`);
     }
   }
   const result = Object.fromEntries(entries) as Record<string, string>;
