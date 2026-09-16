@@ -4,7 +4,7 @@
 export const LEGACY_BEARER_STORAGE_KEY = "mandible.client_auth.token";
 export const PENDING_LOGOUT_STORAGE_KEY = "mandible.session.revocation_pending";
 export const LEGACY_BROWSER_STATE_MAX_ENTRIES = 512;
-export const LEGACY_BROWSER_STATE_MAX_KEY_BYTES = 160;
+export const LEGACY_BROWSER_STATE_MAX_KEY_BYTES = 512;
 export const LEGACY_BROWSER_STATE_MAX_VALUE_BYTES = 64 * 1024;
 export const LEGACY_BROWSER_STATE_MAX_BYTES = 256 * 1024;
 

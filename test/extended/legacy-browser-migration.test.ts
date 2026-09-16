@@ -148,10 +148,14 @@ it("visibly blocks conversion above the entry bound rather than sending a trunca
 
 it("refuses oversized UTF-8 drafts and exact credential keys without rejecting auth-view settings", () => {
   expect(() => validateLegacyBrowserState({ "mandible.briefing.draft:v2:test": "🙂".repeat(16_385) }))
-    .toThrow("oversized entry");
+    .toThrow("value bytes");
   expect(() => validateLegacyBrowserState({ "mandible.client_auth.token": "reusable-bearer" }))
     .toThrow("reusable credential");
   expect(validateLegacyBrowserState({ "sidebar-width:auth": "320" })).toEqual({ "sidebar-width:auth": "320" });
+  const longViewKey = `view:${"x".repeat(195)}`;
+  expect(validateLegacyBrowserState({ [longViewKey]: "saved view" })).toEqual({ [longViewKey]: "saved view" });
+  expect(() => validateLegacyBrowserState({ ["x".repeat(513)]: "saved view" }))
+    .toThrow("oversized key");
   expect(() => validateLegacyBrowserState(Object.fromEntries(Array.from({ length: 5 }, (_, index) => [`view:${index}`, "x".repeat(60_000)]))))
     .toThrow("byte migration limit");
 });
