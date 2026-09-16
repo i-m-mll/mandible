@@ -13,6 +13,48 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 const DEFAULT_PORT: u16 = 29420;
 const PRODUCTION_ORIGIN: &str = "https://app.mandible.localhost:19420";
+const LEGACY_PRODUCTION_ORIGIN: &str = "http://127.0.0.1:19420";
+
+fn dashboard_origin_from_cutover(raw: Option<&[u8]>) -> &'static str {
+    let Some(raw) = raw else {
+        return PRODUCTION_ORIGIN;
+    };
+    let Ok(journal) = serde_json::from_slice::<serde_json::Value>(raw) else {
+        return PRODUCTION_ORIGIN;
+    };
+    if journal["schema"] != "mandible-local-session-cutover@1" {
+        return PRODUCTION_ORIGIN;
+    }
+    let expected_main = journal["manifest"]["instances"]
+        .as_array()
+        .is_some_and(|instances| {
+            instances.iter().any(|instance| {
+                instance["role"] == "main"
+                    && instance["public_port"] == 19420
+                    && instance["candidate"]["instance_id"] == "production"
+            })
+        });
+    if !expected_main {
+        return PRODUCTION_ORIGIN;
+    }
+    match journal["state"].as_str() {
+        Some(
+            "preparing" | "prepared" | "activating" | "migration" | "rolling_back" | "rolled_back"
+            | "recovery_failed",
+        ) => LEGACY_PRODUCTION_ORIGIN,
+        _ => PRODUCTION_ORIGIN,
+    }
+}
+
+fn desktop_dashboard_origin() -> &'static str {
+    let journal = fs::read(
+        mandible_config_dir()
+            .join("local-sessions")
+            .join("cutover.json"),
+    )
+    .ok();
+    dashboard_origin_from_cutover(journal.as_deref())
+}
 fn admits_native_command_origin(origin: &str) -> bool {
     origin == PRODUCTION_ORIGIN
 }
@@ -73,6 +115,7 @@ struct DaemonStatus {
     log_file: String,
     detail: Option<String>,
     healthy: bool,
+    dashboard_origin: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -102,7 +145,10 @@ fn resolve_ca_setup_script(app: &AppHandle) -> Result<PathBuf, String> {
     Err("secure-local-connections setup resource is missing from the desktop app".to_string())
 }
 
-fn run_ca_setup_command(app: &AppHandle, command_name: &str) -> Result<SecureLocalConnectionsStatus, String> {
+fn run_ca_setup_command(
+    app: &AppHandle,
+    command_name: &str,
+) -> Result<SecureLocalConnectionsStatus, String> {
     let script = resolve_ca_setup_script(app)?;
     let node = resolve_node_binary(app)?;
     let output = Command::new(node)
@@ -130,7 +176,10 @@ fn secure_connections_renderer_precheck(app: &AppHandle) -> Result<(), String> {
         .url()
         .map_err(|error| format!("failed to inspect desktop origin: {error}"))?;
     if !admits_native_command_origin(&url.origin().ascii_serialization()) {
-        return Err("secure-local-connections setup is available only from the production desktop origin".to_string());
+        return Err(
+            "secure-local-connections setup is available only from the production desktop origin"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -142,7 +191,9 @@ fn secure_local_connections_status(app: AppHandle) -> Result<SecureLocalConnecti
 }
 
 #[command]
-async fn secure_local_connections_setup(app: AppHandle) -> Result<SecureLocalConnectionsStatus, String> {
+async fn secure_local_connections_setup(
+    app: AppHandle,
+) -> Result<SecureLocalConnectionsStatus, String> {
     secure_connections_renderer_precheck(&app)?;
     tauri::async_runtime::spawn_blocking(move || run_ca_setup_command(&app, "setup"))
         .await
@@ -152,11 +203,17 @@ async fn secure_local_connections_setup(app: AppHandle) -> Result<SecureLocalCon
 fn resolve_ca_trust_helper(app: &AppHandle) -> Result<PathBuf, String> {
     let script = resolve_ca_setup_script(app)?;
     let bundled = script.with_file_name("local-ca-trust-helper");
-    if bundled.is_file() { return Ok(bundled); }
-    let source = script.parent().and_then(Path::parent)
+    if bundled.is_file() {
+        return Ok(bundled);
+    }
+    let source = script
+        .parent()
+        .and_then(Path::parent)
         .map(|root| root.join("src-tauri/resources/local-ca-trust-helper"))
         .ok_or_else(|| "failed to resolve native trust helper source".to_string())?;
-    if source.is_file() { return Ok(source); }
+    if source.is_file() {
+        return Ok(source);
+    }
     Err("native macOS trust helper is missing from the desktop app".to_string())
 }
 
@@ -169,7 +226,9 @@ fn show_native_setup_result(app: &AppHandle, headline: &str, detail: &str) {
                 Err(error) => eprintln!("could not show secure-local-connections result: {error}; {headline}: {detail}"),
             }
         }
-        Err(error) => eprintln!("could not show secure-local-connections result: {error}; {headline}: {detail}"),
+        Err(error) => eprintln!(
+            "could not show secure-local-connections result: {error}; {headline}: {detail}"
+        ),
     }
 }
 
@@ -183,12 +242,16 @@ fn launch_native_ca_setup(handle: AppHandle, active: Arc<AtomicBool>) {
     }
     std::thread::spawn(move || {
         match run_ca_setup_command(&handle, "setup") {
-            Ok(_) => show_native_setup_result(&handle,
+            Ok(_) => show_native_setup_result(
+                &handle,
                 "Secure local connections are ready for this Mac account.",
-                "You can now open Mandible in this browser. Browser sign-in is separate."),
-            Err(error) => show_native_setup_result(&handle,
+                "You can now open Mandible in this browser. Browser sign-in is separate.",
+            ),
+            Err(error) => show_native_setup_result(
+                &handle,
                 "Secure local connections setup did not finish.",
-                &error),
+                &error,
+            ),
         }
         active.store(false, Ordering::Release);
     });
@@ -218,6 +281,9 @@ fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
     let status = get_daemon_status(&app)?;
     if status.healthy || status.state == "starting" {
         return Ok(status);
+    }
+    if status.dashboard_origin == LEGACY_PRODUCTION_ORIGIN {
+        return Err("Mandible is changing its local connection. Restart the existing Mandible service before opening the desktop app.".to_string());
     }
     if status.state == "port_conflict" {
         return Ok(status);
@@ -680,7 +746,12 @@ fn resolve_user_path_from(raw: &str, home: &std::path::Path) -> PathBuf {
 
 fn get_daemon_status(app: &AppHandle) -> Result<DaemonStatus, String> {
     let config = read_desktop_config(app).unwrap_or_default();
-    let port = daemon_port();
+    let dashboard_origin = desktop_dashboard_origin();
+    let port = if dashboard_origin == LEGACY_PRODUCTION_ORIGIN {
+        19420
+    } else {
+        daemon_port()
+    };
     let pid_file = pid_file_path();
     let log_file = log_file_path();
     let pid = read_pid_file(pid_file.clone());
@@ -720,6 +791,7 @@ fn get_daemon_status(app: &AppHandle) -> Result<DaemonStatus, String> {
         log_file: log_file.display().to_string(),
         detail,
         healthy,
+        dashboard_origin: dashboard_origin.to_string(),
     })
 }
 
@@ -1086,8 +1158,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        admits_native_command_origin, bind_session_cookie_to_production, extract_credential,
-        is_secure_connections_setup_link, read_client_auth_bootstrap, resolve_user_path_from,
+        admits_native_command_origin, bind_session_cookie_to_production,
+        dashboard_origin_from_cutover, extract_credential, is_secure_connections_setup_link,
+        read_client_auth_bootstrap, resolve_user_path_from, LEGACY_PRODUCTION_ORIGIN,
         PRODUCTION_ORIGIN,
     };
     use std::fs;
@@ -1103,9 +1176,19 @@ mod tests {
 
     #[test]
     fn native_ca_setup_deep_link_has_one_exact_target() {
-        assert!(is_secure_connections_setup_link(&tauri::Url::parse("mandible://connections/setup").expect("URL")));
-        for denied in ["mandible://connections/setup?auto=1", "mandible://connections/setup/", "mandible://connections/status", "mandible://preview/connections/setup", "https://app.mandible.localhost:19420/connections/setup"] {
-            assert!(!is_secure_connections_setup_link(&tauri::Url::parse(denied).expect("URL")));
+        assert!(is_secure_connections_setup_link(
+            &tauri::Url::parse("mandible://connections/setup").expect("URL")
+        ));
+        for denied in [
+            "mandible://connections/setup?auto=1",
+            "mandible://connections/setup/",
+            "mandible://connections/status",
+            "mandible://preview/connections/setup",
+            "https://app.mandible.localhost:19420/connections/setup",
+        ] {
+            assert!(!is_secure_connections_setup_link(
+                &tauri::Url::parse(denied).expect("URL")
+            ));
         }
     }
 
@@ -1136,6 +1219,37 @@ mod tests {
                 "unexpected native admission: {denied}"
             );
         }
+    }
+
+    #[test]
+    fn desktop_uses_the_old_browser_origin_only_while_conversion_or_rollback_requires_it() {
+        let mut journal = serde_json::json!({
+            "schema": "mandible-local-session-cutover@1",
+            "state": "migration",
+            "manifest": {"instances": [{
+                "role": "main", "public_port": 19420,
+                "candidate": {"instance_id": "production"}
+            }]}
+        });
+        let selected = |value: &serde_json::Value| {
+            let raw = serde_json::to_vec(value).expect("journal");
+            dashboard_origin_from_cutover(Some(&raw))
+        };
+        assert_eq!(selected(&journal), LEGACY_PRODUCTION_ORIGIN);
+        journal["state"] = "rolled_back".into();
+        assert_eq!(selected(&journal), LEGACY_PRODUCTION_ORIGIN);
+        journal["state"] = "normal_pending".into();
+        assert_eq!(selected(&journal), PRODUCTION_ORIGIN);
+        journal["state"] = "complete".into();
+        assert_eq!(selected(&journal), PRODUCTION_ORIGIN);
+        journal["state"] = "migration".into();
+        journal["manifest"]["instances"][0]["candidate"]["instance_id"] = "other".into();
+        assert_eq!(selected(&journal), PRODUCTION_ORIGIN);
+        assert_eq!(dashboard_origin_from_cutover(None), PRODUCTION_ORIGIN);
+        assert_eq!(
+            dashboard_origin_from_cutover(Some(b"not json")),
+            PRODUCTION_ORIGIN
+        );
     }
 
     #[test]

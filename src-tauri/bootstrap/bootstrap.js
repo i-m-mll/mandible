@@ -64,32 +64,20 @@
   }
 
   async function redirectToDashboard(status) {
-    try {
-      // Rust performs the one-time fragment navigation internally so the raw
-      // bootstrap proof is never returned to JavaScript across Tauri IPC.
-      const enrolled = await invoke("client_auth_enroll");
-      if (enrolled === true) return;
-    } catch {
-      // A missing or invalid protected file must not become an anonymous
-      // operator credential. The durable keychain path below remains safe to
-      // try because Rust independently verifies the same-user daemon.
+    // The native status command selects one registered public browser origin.
+    // The old origin is needed only while saved browser state is being moved;
+    // native enrollment runs from the final HTTPS origin after navigation.
+    if (status.dashboard_origin !== "http://127.0.0.1:19420"
+        && status.dashboard_origin !== "https://app.mandible.localhost:19420") {
+      statusCopy.textContent = "Mandible could not verify the local dashboard address.";
+      return;
     }
-    try {
-      // The one-shot proof is normally gone after the first enrollment. Redeem
-      // the durable keychain credential for a bounded dashboard session before
-      // the first dashboard request so the shell never flashes anonymous UI.
-      const enrolled = await invoke("client_auth_keychain_enroll", { route: "/" });
-      if (enrolled === true) return;
-    } catch {
-      // No keychain item or a refused enrollment falls through to the honest
-      // anonymous dashboard, where renderer recovery and manual login remain.
-    }
-    window.location.replace(`http://127.0.0.1:${status.port}`);
+    window.location.replace(status.dashboard_origin);
   }
 
   async function refreshStatus() {
     if (!hasTauri()) {
-      window.location.replace("http://127.0.0.1:19420");
+      window.location.replace("https://app.mandible.localhost:19420");
       return;
     }
 
