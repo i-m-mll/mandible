@@ -146,7 +146,7 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     "  }",
     "  @legacy_verify {",
     "    method GET",
-    "    path /api/client-auth/legacy-conversion/verify",
+    "    path /api/client-auth/legacy-conversion/verify /api/client-auth/legacy-conversion/prepared",
     "  }",
     "  handle @legacy_verify {",
     `    reverse_proxy ${new URL(entry.backend_origin).origin} {`,

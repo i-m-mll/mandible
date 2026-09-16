@@ -84,6 +84,13 @@ function htmlEscape(value: string): string {
   })[character]!);
 }
 
+function migrationPreparedPage(showBrowserApprovals: boolean): string {
+  const approvals = showBrowserApprovals
+    ? '<p><a href="/api/client-auth/recovery/requests">Review browser connection requests</a> in the desktop app if a Codex browser needs reconnecting.</p>'
+    : '';
+  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'"><title>Mandible migration prepared</title><main style="font:16px system-ui;max-width:42rem;margin:4rem auto"><h1>Browser session prepared</h1><p id="verification" role="status">Checking this browser's new session…</p><p>Mandible will restore this browser's saved view state when the final secure address opens.</p>${approvals}<p>If the new HTTPS page cannot load, <a href="mandible://connections/setup">open the macOS setup action</a> in the installed Mandible app. It is a one-time setup for secure local connections on this Mac account; this browser page cannot install trust.</p></main><script>fetch('/api/client-auth/legacy-conversion/verify',{credentials:'same-origin'}).then(response=>{document.getElementById('verification').textContent=response.ok?'This browser is connected. The final address can now restore its saved view.':'This browser could not verify its new session. Keep this page open and retry.'}).catch(()=>{document.getElementById('verification').textContent='Session verification is temporarily unavailable. Keep this page open and retry.'})</script>`;
+}
+
 function migrationOrigin(authenticator: ClientAuthenticator, targetAudience: string): string {
   const target = authenticator.instanceRegistration(targetAudience);
   if (!target) throw new Error("The migration target is not registered.");
@@ -247,10 +254,22 @@ export function registerClientAuthRoutes(
         return;
       }
       setSessionCookie(res, session.token, session.absolute_expires_at);
-      res.html?.("<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'\"><title>Mandible migration prepared</title><main style=\"font:16px system-ui;max-width:42rem;margin:4rem auto\"><h1>Browser session prepared</h1><p id=\"verification\" role=\"status\">Checking this browser's new session…</p><p>Mandible will restore this browser's saved view state when the final secure address opens.</p><p><a href=\"/api/client-auth/recovery/requests\">Review browser connection requests</a> in the desktop app if a Codex browser needs reconnecting.</p><p>If the new HTTPS page cannot load, <a href=\"mandible://connections/setup\">open the macOS setup action</a> in the installed Mandible app. It is a one-time setup for secure local connections on this Mac account; this browser page cannot install trust.</p></main><script>fetch('/api/client-auth/legacy-conversion/verify',{credentials:'same-origin'}).then(response=>{document.getElementById('verification').textContent=response.ok?'This browser is connected. The final address can now restore its saved view.':'This browser could not verify its new session. Keep this page open and retry.'}).catch(()=>{document.getElementById('verification').textContent='Session verification is temporarily unavailable. Keep this page open and retry.'})</script>");
+      res.status(303);
+      res.header?.("Location", "/api/client-auth/legacy-conversion/prepared");
+      res.header?.("Cache-Control", "no-store");
+      res.empty?.();
     } catch (error) {
       handleError(res, error);
     }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.get("/api/client-auth/legacy-conversion/prepared", (req, res) => {
+    const identity = req.client_identity;
+    if (!identity || identity.source !== "browser_cookie" || !authenticator.legacyConversionDetails(identity)) {
+      sendJson(res, 401, { error: "replacement_browser_session_required" });
+      return;
+    }
+    res.html?.(migrationPreparedPage(identity.audience === authenticator.instanceId()));
   }, { fileRpc: "deny", countUnattributed: false });
 
   router.get("/api/client-auth/legacy-conversion/verify", (req, res) => {

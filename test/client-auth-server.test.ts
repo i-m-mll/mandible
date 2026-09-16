@@ -377,9 +377,16 @@ describe("strict browser boundary", () => {
         "X-Mandible-Legacy-Origin": legacyOrigin,
         "X-Mandible-Target-Instance": targetAudience,
       });
-      expect(completed.status).toBe(200);
+      expect(completed.status).toBe(303);
+      expect(completed.headers.location).toBe("/api/client-auth/legacy-conversion/prepared");
       const cookie = String(completed.headers["set-cookie"]?.[0] ?? "").split(";", 1)[0];
       expect(cookie).toMatch(/^__Host-mandible-session=/);
+      const preparedPage = await requestAt(port, "GET", "/api/client-auth/legacy-conversion/prepared", undefined, {
+        Host: "app.mandible.localhost:19420", Origin: origin, Cookie: cookie,
+        "X-Mandible-Target-Instance": targetAudience,
+      });
+      expect(preparedPage.status).toBe(200);
+      expect(preparedPage.body).toContain("Browser session prepared");
       const whoami = await requestAt(port, "GET", "/api/client-auth/whoami", undefined, {
         Host: "app.mandible.localhost:19420", Origin: origin, Cookie: cookie,
         "X-Mandible-Target-Instance": targetAudience,

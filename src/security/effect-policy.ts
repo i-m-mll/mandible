@@ -51,6 +51,7 @@ const EXACT_OPERATIONS = new Map<string, Operation>([
   ["POST /api/client-auth/preview-transfer/complete", { id: "session.preview_transfer.complete", effects: [] }],
   ["POST /api/client-auth/legacy-conversion/prepare", { id: "session.legacy_conversion.prepare", effects: [] }],
   ["POST /api/client-auth/legacy-conversion/complete", { id: "session.legacy_conversion.complete", effects: [] }],
+  ["GET /api/client-auth/legacy-conversion/prepared", { id: "session.legacy_conversion.prepared", effects: [] }],
   ["GET /api/client-auth/legacy-conversion/verify", { id: "session.legacy_conversion.verify", effects: [] }],
   ["GET /api/client-auth/legacy-conversion/state", { id: "session.legacy_conversion.state", effects: [] }],
   ["POST /api/client-auth/legacy-conversion/finalize", { id: "session.legacy_conversion.finalize", effects: [] }],
