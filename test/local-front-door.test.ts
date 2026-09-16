@@ -85,6 +85,8 @@ describe("local HTTPS front door", () => {
         expect(config).toContain("https://preview-existing.mandible.localhost:19421 {");
         expect(config).toContain("rewrite * /api/client-auth/preview-bootstrap");
         expect(config).toContain("not header Cookie *__Host-mandible-session=*");
+        expect(config).toContain("header_up X-Mandible-Session-Context {http.request.header.X-Mandible-Session-Context}");
+        expect(config).not.toContain("header_up -X-Mandible-Session-Context\n      header_up X-Mandible-Session-Context {http.request.header.X-Mandible-Session-Context}");
         expect(config.indexOf("rewrite * /api/client-auth/preview-bootstrap"))
           .toBeLessThan(config.indexOf("forward_auth"));
       }

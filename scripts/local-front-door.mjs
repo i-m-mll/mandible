@@ -238,7 +238,6 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
         "      header_up -Authorization",
         "      header_up -Cookie",
         "      header_up -X-Mandible-Target-Instance",
-        "      header_up -X-Mandible-Session-Context",
         "      header_up X-Mandible-Session-Context {http.request.header.X-Mandible-Session-Context}",
         "    }",
         "  }",
