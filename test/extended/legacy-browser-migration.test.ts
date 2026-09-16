@@ -4,6 +4,7 @@ import { JSDOM } from "jsdom";
 import { afterEach, expect, it } from "vitest";
 import {
   __resetBrowserSessionForTests,
+  beginLegacyBrowserRecovery,
   getBrowserSessionMigrationFailure,
   initializeBrowserSession,
 } from "../../ui/src/client-auth-token.js";
@@ -20,6 +21,21 @@ const originalDocument = globalThis.document;
 afterEach(() => {
   __resetBrowserSessionForTests();
   Object.assign(globalThis, { window: originalWindow, document: originalDocument });
+});
+
+it("reconnects an expired preview profile with state but never its old bearer", () => {
+  const dom = new JSDOM("<!doctype html><body></body>", { url: "http://127.0.0.1:19421/#/console?conversation=test" });
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document });
+  dom.window.localStorage.setItem("mandible.client_auth.token", "expired-secret");
+  dom.window.localStorage.setItem("mandible.briefing.draft:v2:test", "unsent answer");
+  let submitted: HTMLFormElement | null = null;
+  dom.window.HTMLFormElement.prototype.submit = function submit() { submitted = this; };
+  beginLegacyBrowserRecovery();
+  expect(submitted?.action).toBe("https://app.mandible.localhost:19419/api/client-auth/recovery/start");
+  const inputs = Object.fromEntries([...submitted!.querySelectorAll("input")].map((input) => [input.name, input.value]));
+  expect(inputs.return_path).toBe("/#/console?conversation=test");
+  expect(JSON.parse(inputs.browser_state)).toEqual({ "mandible.briefing.draft:v2:test": "unsent answer" });
+  expect(dom.window.localStorage.getItem("mandible.client_auth.token")).toBe("expired-secret");
 });
 
 it.each([

@@ -16,6 +16,7 @@ import { getDb } from "../db.js";
 import type { ClientAuthenticator } from "../client-auth/authenticator.js";
 import {
   ClientAuthzError,
+  requireIdentity,
   requireOperator,
   requireSelfOrOperator,
 } from "../client-auth/authz.js";
@@ -246,7 +247,7 @@ export function registerClientAuthRoutes(
         return;
       }
       setSessionCookie(res, session.token, session.absolute_expires_at);
-      res.html?.("<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>Mandible migration prepared</title><main style=\"font:16px system-ui;max-width:42rem;margin:4rem auto\"><h1>Browser session prepared</h1><p>The replacement session is verified after the HTTPS cutover. You can close this tab; Mandible will restore this browser's saved view state when the final origin opens.</p><p>If the new HTTPS page cannot load, <a href=\"mandible://connections/setup\">open the macOS setup action</a> in the installed Mandible app. It is a one-time setup for secure local connections on this Mac account; this browser page cannot install trust.</p></main>");
+      res.html?.("<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>Mandible migration prepared</title><main style=\"font:16px system-ui;max-width:42rem;margin:4rem auto\"><h1>Browser session prepared</h1><p>The replacement session is verified after the HTTPS cutover. Mandible will restore this app's saved view state when the final origin opens.</p><p><a href=\"/api/client-auth/recovery/requests\">Review browser connection requests</a> in this desktop app if a Codex browser needs reconnecting.</p><p>If the new HTTPS page cannot load, <a href=\"mandible://connections/setup\">open the macOS setup action</a> in the installed Mandible app. It is a one-time setup for secure local connections on this Mac account; this browser page cannot install trust.</p></main>");
     } catch (error) {
       handleError(res, error);
     }
@@ -371,6 +372,106 @@ export function registerClientAuthRoutes(
       }
       setSessionCookie(res, session.token, session.absolute_expires_at);
       sendJson(res, 200, { session: publicSession(session) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/recovery/start", (req, res) => {
+    try {
+      if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow" || !req.legacy_browser_origin || !req.target_instance_id) {
+        sendJson(res, 403, { error: "invalid_browser_recovery_ingress" });
+        return;
+      }
+      const source = authenticator.instanceRegistration(req.target_instance_id);
+      if (!source || (new URL(req.legacy_browser_origin).port === "19421") !== (source.role === "preview")) {
+        sendJson(res, 403, { error: "invalid_browser_recovery_source" });
+        return;
+      }
+      const body = requestBody(req);
+      const rawState = optionalString(body, "browser_state");
+      if (!rawState) throw new Error("Saved browser state is required for recovery.");
+      const state = validateLegacyBrowserState(JSON.parse(rawState));
+      const recovery = authenticator.beginBrowserRecovery(
+        source.instance_id, optionalString(body, "return_path") ?? "/", state,
+      );
+      res.header?.("Set-Cookie", serialize(PAIRING_COOKIE_NAME, recovery.secret, cookieOptions(600)));
+      res.header?.("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'");
+      const reference = htmlEscape(recovery.reference);
+      res.html?.(`<!doctype html><meta charset="utf-8"><title>Reconnect Mandible</title><main style="font:16px system-ui;max-width:36rem;margin:4rem auto;line-height:1.5"><h1>Reconnect this browser</h1><p>Your saved workspace has been held for this browser. Open the Mandible desktop app and approve the pending browser connection there. This connects the Codex browser profile once; new preview tabs will use the same login.</p><p>Connection code: <strong>${reference}</strong></p><p><button id="finish">I approved it in Mandible</button></p><p id="result" role="status"></p></main><script>document.getElementById('finish').onclick=async()=>{const result=document.getElementById('result');result.textContent='Checking approval…';try{const response=await fetch('/api/client-auth/pairing/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reference:'${reference}'})});if(!response.ok){result.textContent=response.status===409?'Not approved yet. Approve it in the Mandible desktop app, then try again.':'Could not finish connecting this browser.';return}const body=await response.json();const proof=await fetch('/api/client-auth/recovery/verify',{method:'POST',headers:{'X-Mandible-CSRF':body.session.csrf_token}});if(!proof.ok){result.textContent='The new session was issued, but verification needs a retry. Keep this tab open.';return}result.textContent='Browser connected. Keep this tab open until Mandible switches to secure previews.'}catch{result.textContent='Connection unavailable. Try again without closing this tab.'}}</script>`);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.get("/api/client-auth/recovery/requests", (req, res) => {
+    try {
+      if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") throw new Error("Browser recovery is not active.");
+      const identity = requireOperator(getDb(), req);
+      if (identity.source !== "browser_cookie" || !identity.csrf_token) throw new Error("Open this page from the connected Mandible desktop app.");
+      const pending = authenticator.pendingBrowserRecoveries();
+      const rows = pending.map((item) => `<li><strong>${htmlEscape(item.reference)}</strong> — ${htmlEscape(item.source_audience)} preview; ${item.browser_state_entries} saved settings <button data-reference="${htmlEscape(item.reference)}">Approve</button></li>`).join("");
+      res.header?.("Cache-Control", "no-store");
+      res.header?.("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'");
+      res.html?.(`<!doctype html><meta charset="utf-8"><title>Browser connections</title><main style="font:16px system-ui;max-width:36rem;margin:4rem auto;line-height:1.5"><h1>Browser connections</h1><p>Approve only a connection you started in your Codex browser. This gives that browser profile access to your Mandible account; it does not approve every computer browser.</p>${pending.length ? `<ul>${rows}</ul>` : '<p>No browser connections are waiting.</p>'}<p id="result" role="status"></p></main><script>document.querySelectorAll('button[data-reference]').forEach(button=>button.onclick=async()=>{const result=document.getElementById('result');const reference=button.dataset.reference;result.textContent='Approving '+reference+'…';try{const response=await fetch('/api/client-auth/recovery/approve',{method:'POST',headers:{'Content-Type':'application/json','X-Mandible-CSRF':${JSON.stringify(identity.csrf_token)}},body:JSON.stringify({reference})});result.textContent=response.ok?'Approved. Return to the Codex browser and finish connecting.':'Could not approve this connection.';if(response.ok)button.disabled=true}catch{result.textContent='Connection unavailable. Try again.'}})</script>`);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/recovery/approve", (req, res) => {
+    try {
+      if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") throw new Error("Browser recovery is not active.");
+      const identity = requireOperator(getDb(), req);
+      if (identity.source !== "browser_cookie") throw new Error("Desktop browser approval requires an active session.");
+      const reference = (optionalString(bodyRecord(req), "reference") ?? "").trim();
+      if (!authenticator.pendingBrowserRecoveries().some((item) => item.reference === reference)) {
+        sendJson(res, 404, { error: "recovery_not_pending" });
+        return;
+      }
+      authenticator.approvePairing(reference, identity.user_id);
+      sendJson(res, 200, { approved: true, reference });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/recovery/verify", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      const recovery = authenticator.verifyBrowserRecovery(identity);
+      if (!recovery) {
+        sendJson(res, 404, { error: "recovery_not_found" });
+        return;
+      }
+      sendJson(res, 200, { verified: true, target_audience: recovery.source_audience });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.get("/api/client-auth/recovery/state", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      const recovery = authenticator.browserRecoveryState(identity);
+      if (!recovery) {
+        sendJson(res, 404, { error: "recovery_not_found" });
+        return;
+      }
+      sendJson(res, 200, recovery);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  router.post("/api/client-auth/recovery/finalize", (req, res) => {
+    try {
+      const identity = requireIdentity(req);
+      if (!authenticator.finalizeBrowserRecovery(identity)) {
+        sendJson(res, 404, { error: "recovery_not_found" });
+        return;
+      }
+      sendJson(res, 200, { finalized: true });
     } catch (error) {
       handleError(res, error);
     }

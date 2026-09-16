@@ -159,6 +159,7 @@ const STRICT_ANONYMOUS_HTTP_ROUTES = new Set([
   "/api/client-auth/preview-transfer/complete",
   "/api/client-auth/legacy-conversion/prepare",
   "/api/client-auth/legacy-conversion/complete",
+  "/api/client-auth/recovery/start",
   "/api/client-auth/whoami",
   "/api/users/setup",
 ]);
@@ -472,6 +473,7 @@ export class Router implements RouteRegistrar {
       const cookies = parseCookie(headerValue(req.headers.cookie) ?? "");
       const browserRequest = isBrowserRequest(req.headers);
       const legacyBrowserConversion = isLegacyBrowserConversionRequest(req);
+      const legacyBrowserRecovery = isBoundLegacyRecoveryStart(req, this.instance);
       if (browserRequest && headerValue(req.headers.authorization) && !legacyBrowserConversion) {
         new HttpResponse(res).status(400).json({
           error: "browser_bearer_forbidden",
@@ -498,7 +500,8 @@ export class Router implements RouteRegistrar {
           transferSecret: cookies[TRANSFER_COOKIE_NAME] ?? null,
           targetInstanceId: headerValue(req.headers["x-mandible-target-instance"]),
           legacyBrowserConversion,
-          legacyBrowserOrigin: legacyBrowserConversion ? headerValue(req.headers.origin) : undefined,
+          legacyBrowserOrigin: legacyBrowserConversion ? headerValue(req.headers.origin)
+            : legacyBrowserRecovery ? headerValue(req.headers["x-mandible-legacy-origin"]) : undefined,
         },
       );
     } finally {
@@ -1314,10 +1317,31 @@ function validateDaemonWriteBoundary(
       ? { ok: true }
       : { ok: false, reason: "invalid_legacy_conversion_ingress" };
   }
+  if (pathname === "/api/client-auth/recovery/start") {
+    return isBoundLegacyRecoveryStart(req, instance)
+      ? { ok: true }
+      : { ok: false, reason: "invalid_browser_recovery_ingress" };
+  }
   return validateDaemonBrowserBoundary(
     req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod),
     normalizedMethod === "GET" && pathname === "/",
   );
+}
+
+function isBoundLegacyRecoveryStart(req: http.IncomingMessage, instance: InstanceInfo): boolean {
+  if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
+  const legacyOrigin = firstHeader(req, "x-mandible-legacy-origin");
+  const target = firstHeader(req, "x-mandible-target-instance");
+  if (!legacyOrigin || !target || !LEGACY_BROWSER_ORIGINS.has(legacyOrigin)) return false;
+  const registered = new URL(instance.public_origin);
+  const host = parseHostHeader(firstHeader(req, "host"));
+  return (req.method ?? "GET").toUpperCase() === "POST"
+    && new URL(req.url ?? "/", "http://localhost").pathname === "/api/client-auth/recovery/start"
+    && Boolean(host && `${host.hostname}:${host.port}` === registered.host.toLowerCase())
+    && firstHeader(req, "origin") === registered.origin
+    && firstHeader(req, "x-mandible-legacy-recovery") === "state-v1"
+    && new URL(legacyOrigin).port === (target === instance.instance_id ? "19420" : "19421")
+    && firstHeader(req, "sec-fetch-site") === "cross-site";
 }
 
 function isBoundLegacyConversionCompletion(

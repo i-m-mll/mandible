@@ -3,9 +3,11 @@ import { useCallback, useEffect, useState } from 'preact/hooks';
 
 import { isDesktopShell } from '../api';
 import {
+  beginLegacyBrowserRecovery,
   completeBrowserPairing,
   getBrowserSessionMigrationFailure,
   getClientAuthSessionState,
+  isLegacyBrowserOrigin,
   logoutClientAuth,
   startBrowserPairing,
   subscribeClientAuthSessionState,
@@ -106,6 +108,10 @@ export function DesktopLoginStatus({
     const reported: { message: string | null } = { message: null };
     try {
       if (!isDesktopShell()) {
+        if (isLegacyBrowserOrigin()) {
+          beginLegacyBrowserRecovery();
+          return;
+        }
         if (!pairingReference) {
           setPairingReference(await startBrowserPairing());
         } else {
@@ -124,6 +130,8 @@ export function DesktopLoginStatus({
       } else if (outcome === 'failed') {
         setError(reported.message ?? 'Enrollment did not produce an operator session.');
       }
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Could not reconnect this browser.');
     } finally {
       setBusy(false);
     }
@@ -194,7 +202,9 @@ export function DesktopLoginStatus({
         : sessionState === 'revoked'
           ? 'Session revoked'
           : 'Not logged in';
-  const actionLabel = isDesktopShell() ? 'Log in' : pairingReference ? 'Complete pairing' : 'Pair browser';
+  const actionLabel = isDesktopShell() ? 'Log in'
+    : isLegacyBrowserOrigin() ? 'Reconnect browser'
+      : pairingReference ? 'Complete pairing' : 'Pair browser';
   const pairingHint = pairingReference
     ? `Approve ${pairingReference} with: mandible user pair ${pairingReference}`
     : null;

@@ -67,6 +67,11 @@ export type PairingTransaction = {
   expires_at: number;
 };
 
+export type BrowserRecovery = PairingTransaction & {
+  source_audience: string;
+  browser_state_entries: number;
+};
+
 export type PreviewTransfer = {
   reference: string;
   secret: string;
@@ -215,6 +220,50 @@ export class LocalSessionAuthority {
     return { reference, secret, audience, return_path: normalizedReturn, expires_at: expiresAt };
   }
 
+  beginBrowserRecovery(sourceAudience: string, returnPath: string, browserState: Record<string, string>): BrowserRecovery {
+    const source = this.requiredInstance(sourceAudience);
+    const production = this.instances().find((entry) => entry.role === "main");
+    if (!production) throw new Error("Production browser enrollment is unavailable.");
+    const stateJson = JSON.stringify(browserState);
+    if (Buffer.byteLength(stateJson) > LEGACY_BROWSER_STATE_MAX_BYTES) {
+      throw new Error("Browser recovery state is too large.");
+    }
+    const pending = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM browser_recoveries AS recovery
+      JOIN pairing_transactions AS pairing ON pairing.reference = recovery.reference
+      WHERE pairing.expires_at > ? AND pairing.consumed_at IS NULL
+    `).get(this.now()) as { count: number };
+    if (pending.count >= 8) throw new Error("Too many browser reconnections are pending; let an earlier request expire.");
+    return this.db.transaction(() => {
+      const pairing = this.beginPairing(production.instance_id, "/");
+      this.db.prepare(`
+        INSERT INTO browser_recoveries (
+          reference, source_audience, return_path, browser_state_json,
+          created_at, expires_at, issued_family_id, verified_at, restored_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      `).run(pairing.reference, source.instance_id,
+        validateReturnPath(returnPath), stateJson, this.now(), this.now() + DEFAULT_ABSOLUTE_MS);
+      return { ...pairing, source_audience: source.instance_id,
+        browser_state_entries: Object.keys(browserState).length };
+    })();
+  }
+
+  pendingBrowserRecoveries(): Array<{ reference: string; source_audience: string; return_path: string; browser_state_entries: number; expires_at: number }> {
+    return (this.db.prepare(`
+      SELECT recovery.reference, recovery.source_audience,
+        recovery.return_path, recovery.browser_state_json, pairing.expires_at
+      FROM browser_recoveries AS recovery
+      JOIN pairing_transactions AS pairing ON pairing.reference = recovery.reference
+      WHERE pairing.expires_at > ? AND pairing.approved_user_id IS NULL AND pairing.consumed_at IS NULL
+      ORDER BY recovery.created_at ASC
+    `).all(this.now()) as Array<Record<string, unknown>>).map((row) => ({
+      reference: String(row.reference), source_audience: String(row.source_audience),
+      return_path: String(row.return_path),
+      browser_state_entries: Object.keys(JSON.parse(String(row.browser_state_json)) as Record<string, string>).length,
+      expires_at: Number(row.expires_at),
+    }));
+  }
+
   approvePairing(reference: string, userId: string): void {
     const result = this.db.prepare(`
       UPDATE pairing_transactions
@@ -241,8 +290,39 @@ export class LocalSessionAuthority {
       });
       this.db.prepare("UPDATE pairing_transactions SET consumed_at = ? WHERE reference = ?")
         .run(this.now(), reference);
+      this.db.prepare("UPDATE browser_recoveries SET issued_family_id = ? WHERE reference = ?")
+        .run(issued.family_id, reference);
       return issued;
     })();
+  }
+
+  verifyBrowserRecovery(rootFamilyId: string): { source_audience: string; return_path: string } | null {
+    const row = this.db.prepare(`
+      SELECT source_audience, return_path FROM browser_recoveries
+      WHERE issued_family_id = ? AND expires_at > ?
+    `).get(rootFamilyId, this.now()) as { source_audience: string; return_path: string } | undefined;
+    if (!row) return null;
+    this.db.prepare("UPDATE browser_recoveries SET verified_at = COALESCE(verified_at, ?) WHERE issued_family_id = ?")
+      .run(this.now(), rootFamilyId);
+    return row;
+  }
+
+  browserRecoveryState(rootFamilyId: string, audience: string): { browser_state: Record<string, string>; return_path: string } | null {
+    const row = this.db.prepare(`
+      SELECT browser_state_json, return_path FROM browser_recoveries
+      WHERE issued_family_id = ? AND source_audience = ? AND verified_at IS NOT NULL
+        AND restored_at IS NULL AND expires_at > ?
+    `).get(rootFamilyId, audience, this.now()) as { browser_state_json: string; return_path: string } | undefined;
+    return row ? { browser_state: JSON.parse(row.browser_state_json) as Record<string, string>, return_path: row.return_path } : null;
+  }
+
+  finalizeBrowserRecovery(rootFamilyId: string, audience: string): boolean {
+    const result = this.db.prepare(`
+      UPDATE browser_recoveries SET restored_at = COALESCE(restored_at, ?)
+      WHERE issued_family_id = ? AND source_audience = ? AND verified_at IS NOT NULL
+        AND expires_at > ?
+    `).run(this.now(), rootFamilyId, audience, this.now());
+    return result.changes === 1;
   }
 
   issueSession(
@@ -754,6 +834,17 @@ export class LocalSessionAuthority {
         expires_at INTEGER NOT NULL,
         approved_user_id TEXT,
         consumed_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS browser_recoveries (
+        reference TEXT PRIMARY KEY REFERENCES pairing_transactions(reference),
+        source_audience TEXT NOT NULL REFERENCES instance_registrations(instance_id),
+        return_path TEXT NOT NULL,
+        browser_state_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        issued_family_id TEXT UNIQUE REFERENCES browser_sessions(family_id),
+        verified_at INTEGER,
+        restored_at INTEGER
       );
       CREATE TABLE IF NOT EXISTS preview_transfers (
         reference TEXT PRIMARY KEY,

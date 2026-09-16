@@ -103,6 +103,30 @@ describe("local browser session authority", () => {
     authority.close();
   });
 
+  it("binds expired-browser recovery to one approved production family and one preview's saved state", () => {
+    const { authority } = fixture();
+    const state = { "mandible.briefing.draft:v2:test": "unsent answer", "sidebar-width:auth": "320" };
+    const recovery = authority.beginBrowserRecovery("preview-test", "/#/console?conversation=test", state);
+    expect(recovery.audience).toBe("production");
+    expect(authority.pendingBrowserRecoveries()).toMatchObject([{ reference: recovery.reference, source_audience: "preview-test", browser_state_entries: 2 }]);
+    expect(authority.completePairing(recovery.reference, recovery.secret, () => "operator")).toBeNull();
+    authority.approvePairing(recovery.reference, "user_1");
+    expect(authority.completePairing(recovery.reference, "stolen-reference-without-secret", () => "operator")).toBeNull();
+    const issued = authority.completePairing(recovery.reference, recovery.secret, () => "operator");
+    expect(issued?.audience).toBe("production");
+    expect(authority.completePairing(recovery.reference, recovery.secret, () => "operator")).toBeNull();
+    expect(authority.browserRecoveryState(issued!.root_family_id, "preview-test")).toBeNull();
+    expect(authority.verifyBrowserRecovery(issued!.root_family_id)).toMatchObject({ source_audience: "preview-test" });
+    expect(authority.browserRecoveryState(issued!.root_family_id, "production")).toBeNull();
+    expect(authority.browserRecoveryState(issued!.root_family_id, "preview-test")).toEqual({
+      browser_state: state, return_path: "/#/console?conversation=test",
+    });
+    expect(authority.finalizeBrowserRecovery(issued!.root_family_id, "production")).toBe(false);
+    expect(authority.finalizeBrowserRecovery(issued!.root_family_id, "preview-test")).toBe(true);
+    expect(authority.browserRecoveryState(issued!.root_family_id, "preview-test")).toBeNull();
+    authority.close();
+  });
+
   it("rejects foreign return origins, wrong browser secrets, and forged preview contexts", async () => {
     const { authority } = fixture();
     expect(() => authority.beginPairing("preview-test", "https://evil.invalid/return")).toThrow(

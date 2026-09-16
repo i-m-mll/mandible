@@ -62,6 +62,61 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
   const migrationIngress = instances.map((entry) => {
     const publicUrl = new URL(entry.public_origin);
     const legacyPort = entry.role === "preview" ? "19421" : "19420";
+    const recoveryIngress = entry.role !== "main" ? [] : [
+      ...instances.flatMap((source) => {
+        const sourcePort = source.role === "preview" ? "19421" : "19420";
+        const matcher = `recovery_from_${source.role}`;
+        return [
+          `  @${matcher} {`,
+          "    method POST",
+          "    path /api/client-auth/recovery/start",
+          `    header Origin http://127.0.0.1:${sourcePort}`,
+          `    header Origin http://localhost:${sourcePort}`,
+          "    header Sec-Fetch-Site cross-site",
+          "  }",
+          `  handle @${matcher} {`,
+          `    reverse_proxy ${productionBackend.origin} {`,
+          `      header_up Host ${productionPublic.host}`,
+          `      header_up Origin ${productionPublic.origin}`,
+          "      header_up -Authorization",
+          "      header_up -Cookie",
+          "      header_up -X-Mandible-Session-Context",
+          `      header_up X-Mandible-Target-Instance ${source.instance_id}`,
+          "      header_up X-Mandible-Legacy-Recovery state-v1",
+          `      header_up X-Mandible-Legacy-Origin http://127.0.0.1:${sourcePort}`,
+          "    }",
+          "  }",
+        ];
+      }),
+      "  @recovery_get {",
+      "    method GET",
+      "    path /api/client-auth/recovery/requests",
+      "  }",
+      "  @recovery_post {",
+      "    method POST",
+      "    path /api/client-auth/recovery/approve /api/client-auth/recovery/verify /api/client-auth/pairing/complete",
+      `    header Origin https://${productionPublic.hostname}:19419`,
+      "    header Sec-Fetch-Site same-origin",
+      "  }",
+      "  handle @recovery_get {",
+      `    reverse_proxy ${productionBackend.origin} {`,
+      `      header_up Host ${productionPublic.host}`,
+      `      header_up Origin ${productionPublic.origin}`,
+      "      header_up -Authorization",
+      "      header_up -X-Mandible-Session-Context",
+      "      header_up -X-Mandible-Target-Instance",
+      "    }",
+      "  }",
+      "  handle @recovery_post {",
+      `    reverse_proxy ${productionBackend.origin} {`,
+      `      header_up Host ${productionPublic.host}`,
+      `      header_up Origin ${productionPublic.origin}`,
+      "      header_up -Authorization",
+      "      header_up -X-Mandible-Session-Context",
+      "      header_up -X-Mandible-Target-Instance",
+      "    }",
+      "  }",
+    ];
     return [
     `https://${publicUrl.hostname}:19419 {`,
     "  bind 127.0.0.1 ::1",
@@ -89,6 +144,7 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     `      header_up X-Mandible-Legacy-Origin http://127.0.0.1:${legacyPort}`,
     "    }",
     "  }",
+    ...recoveryIngress,
     "  respond 404",
     "}",
   ].join("\n");

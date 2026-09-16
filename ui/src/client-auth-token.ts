@@ -109,6 +109,30 @@ function legacyOrigin(): boolean {
     || window.location.origin === 'http://localhost:19421';
 }
 
+export function isLegacyBrowserOrigin(): boolean {
+  return legacyOrigin();
+}
+
+export function beginLegacyBrowserRecovery(): void {
+  if (!legacyOrigin()) throw new Error('Browser recovery is available only from the old Mandible address.');
+  const state = exportLegacyBrowserState(window.localStorage);
+  const form = document.createElement('form');
+  form.method = 'post';
+  form.action = 'https://app.mandible.localhost:19419/api/client-auth/recovery/start';
+  for (const [name, value] of [
+    ['return_path', `${window.location.pathname}${window.location.search}${window.location.hash}`],
+    ['browser_state', JSON.stringify(state)],
+  ] as const) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.append(input);
+  }
+  document.body.append(form);
+  form.submit();
+}
+
 function legacyBearer(): string | null {
   try {
     const raw = window.localStorage.getItem(LEGACY_BEARER_STORAGE_KEY)?.trim();
@@ -215,6 +239,30 @@ async function finishLegacyConversion(fetchImpl: typeof fetch, active: SessionPr
   window.location.replace(`${target.origin}${body.return_path}`);
 }
 
+async function finishBrowserRecovery(fetchImpl: typeof fetch, active: SessionProjection): Promise<void> {
+  if (!/^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(window.location.hostname)) return;
+  const response = await fetchImpl('/api/client-auth/recovery/state', {
+    credentials: 'same-origin', headers: { Accept: 'application/json' },
+  });
+  if (response.status === 404) return;
+  const body = await readJson(response);
+  if (!response.ok || typeof body.return_path !== 'string') {
+    throw new LegacyBrowserStateError('Saved browser state is unavailable; this profile was not finalized.');
+  }
+  const returnUrl = new URL(body.return_path, window.location.origin);
+  if (returnUrl.origin !== window.location.origin || !body.return_path.startsWith('/')
+      || body.return_path.startsWith('//')) {
+    throw new LegacyBrowserStateError('Saved browser destination is invalid; this profile was not finalized.');
+  }
+  restoreLegacyBrowserState(window.localStorage, body.browser_state);
+  const finalized = await fetchImpl('/api/client-auth/recovery/finalize', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'X-Mandible-CSRF': active.csrf_token },
+  });
+  if (!finalized.ok) throw new LegacyBrowserStateError('Saved browser state was restored but could not be finalized; retry safely.');
+  window.location.replace(returnUrl.href);
+}
+
 async function readJson(response: Response): Promise<Record<string, unknown>> {
   try {
     const body = await response.clone().json();
@@ -289,6 +337,7 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
       }
       session = next;
       if (body.legacy_conversion_pending === true) await finishLegacyConversion(fetchImpl, next);
+      await finishBrowserRecovery(fetchImpl, next);
       return publish('enrolled');
     } catch (error) {
       if (error instanceof LegacyBrowserStateError) {

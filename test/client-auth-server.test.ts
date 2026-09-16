@@ -132,6 +132,47 @@ afterEach(async () => {
 });
 
 describe("strict browser boundary", () => {
+  it("accepts saved-state recovery only through the bound old-origin ingress", async () => {
+    const prior = process.env.MANDIBLE_LEGACY_CONVERSION;
+    process.env.MANDIBLE_LEGACY_CONVERSION = "allow";
+    try {
+      const headers = {
+        Host: "app.mandible.localhost:19420",
+        Origin: origin,
+        "Sec-Fetch-Site": "cross-site",
+        "X-Mandible-Target-Instance": "preview-test",
+        "X-Mandible-Legacy-Origin": "http://127.0.0.1:19421",
+        "X-Mandible-Legacy-Recovery": "state-v1",
+      };
+      const body = { return_path: "/#/console?conversation=test", browser_state: JSON.stringify({ "sidebar-width:auth": "320" }) };
+      expect((await requestRaw("POST", "/api/client-auth/recovery/start", body, {
+        ...headers, "X-Mandible-Legacy-Recovery": "wrong",
+      })).status).toBe(403);
+      expect((await requestRaw("POST", "/api/client-auth/recovery/start", body, {
+        ...headers, "X-Mandible-Legacy-Origin": "http://127.0.0.1:19420",
+      })).status).toBe(403);
+      const accepted = await requestRaw("POST", "/api/client-auth/recovery/start", body, headers);
+      expect(accepted.status).toBe(200);
+      expect(accepted.body).toContain("Reconnect this browser");
+      expect(auth.pendingBrowserRecoveries()).toMatchObject([{ source_audience: "preview-test", browser_state_entries: 1 }]);
+      const reference = auth.pendingBrowserRecoveries()[0]!.reference;
+      expect((await request("POST", "/api/client-auth/recovery/approve", { reference }, {
+        Host: "app.mandible.localhost:19420", Origin: origin, "Sec-Fetch-Site": "same-origin",
+      })).status).toBe(401);
+      expect((await request("POST", "/api/client-auth/recovery/approve", { reference }, {
+        Host: "app.mandible.localhost:19420", Origin: origin, "Sec-Fetch-Site": "same-origin",
+        Cookie: `${COOKIE_NAME}=${browser.token}`,
+      })).status).toBe(403);
+      expect((await request("POST", "/api/client-auth/recovery/approve", { reference }, {
+        Host: "app.mandible.localhost:19420", Origin: origin, "Sec-Fetch-Site": "same-origin",
+        Cookie: `${COOKIE_NAME}=${browser.token}`, "X-Mandible-CSRF": browser.csrf_token,
+      })).status).toBe(200);
+    } finally {
+      if (prior === undefined) delete process.env.MANDIBLE_LEGACY_CONVERSION;
+      else process.env.MANDIBLE_LEGACY_CONVERSION = prior;
+    }
+  });
+
   it("serves a public preview bootstrap while keeping private preview reads authenticated", async () => {
     const headers = {
       Host: "app.mandible.localhost:19420",

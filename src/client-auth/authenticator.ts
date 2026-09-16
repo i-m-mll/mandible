@@ -50,6 +50,7 @@ import {
   LocalSessionAuthority,
   type BrowserSession,
   type BrowserSessionRevocation,
+  type BrowserRecovery,
   type InstanceRegistration,
   type IssuedBrowserSession,
   type LegacyConversion,
@@ -384,6 +385,34 @@ export class ClientAuthenticator implements ClientAuthGate {
   beginPairing(audience: string, returnPath: string): PairingTransaction {
     if (!this.ownsSessionAuthority) throw new Error("Pairing is owned by the installation authority.");
     return this.sessionAuthority.beginPairing(audience, returnPath);
+  }
+
+  beginBrowserRecovery(sourceAudience: string, returnPath: string, browserState: Record<string, string>): BrowserRecovery {
+    if (!this.ownsSessionAuthority) throw new Error("Browser recovery is owned by the installation authority.");
+    return this.sessionAuthority.beginBrowserRecovery(sourceAudience, returnPath, browserState);
+  }
+
+  pendingBrowserRecoveries(): ReturnType<LocalSessionAuthority["pendingBrowserRecoveries"]> {
+    if (!this.ownsSessionAuthority) throw new Error("Browser recovery is owned by the installation authority.");
+    return this.sessionAuthority.pendingBrowserRecoveries();
+  }
+
+  verifyBrowserRecovery(identity: ResolvedClientIdentity): ReturnType<LocalSessionAuthority["verifyBrowserRecovery"]> {
+    if (!this.ownsSessionAuthority || identity.source !== "browser_cookie"
+        || !identity.root_session_family || identity.audience !== this.instance?.instance_id) return null;
+    return this.sessionAuthority.verifyBrowserRecovery(identity.root_session_family);
+  }
+
+  browserRecoveryState(identity: ResolvedClientIdentity): ReturnType<LocalSessionAuthority["browserRecoveryState"]> {
+    if (!this.sessionAuthority || (identity.source !== "browser_cookie" && identity.source !== "installation_context")
+        || !identity.root_session_family || !identity.audience) return null;
+    return this.sessionAuthority.browserRecoveryState(identity.root_session_family, identity.audience);
+  }
+
+  finalizeBrowserRecovery(identity: ResolvedClientIdentity): boolean {
+    if (!this.sessionAuthority || (identity.source !== "browser_cookie" && identity.source !== "installation_context")
+        || !identity.root_session_family || !identity.audience) return false;
+    return this.sessionAuthority.finalizeBrowserRecovery(identity.root_session_family, identity.audience);
   }
 
   beginPreviewTransfer(audience: string, returnPath: string): PreviewTransfer {
