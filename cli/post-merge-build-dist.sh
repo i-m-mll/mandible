@@ -83,3 +83,8 @@ if [[ "$instruction_install_needed" == "true" ]]; then
   bash cli/instructions.sh install
   err "[post-merge-build] installed managed instruction fragments"
 fi
+
+# A completed local-session cutover runs behind launchd from a stable runner.
+# Only publish the protected checkout as runnable after every build/install
+# step above succeeds; the daemon's self-merge exit then loads these bytes.
+node scripts/local-session-production-runner.mjs mark-ready

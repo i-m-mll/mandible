@@ -41,10 +41,15 @@ function runHookAfterMerge(
   const tracePath = path.join(tempDir, "trace");
   const desktopTracePath = path.join(tempDir, "desktop-trace");
   fs.mkdirSync(cliDir, { recursive: true });
+  fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
   fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
   fs.writeFileSync(path.join(home, ".codex", "AGENTS.md"), "# Codex\n\nLocal policy.\n", "utf8");
 
   copyCliFile("post-merge-build-dist.sh", cliDir);
+  fs.copyFileSync(
+    path.join(process.cwd(), "scripts", "local-session-production-runner.mjs"),
+    path.join(repo, "scripts", "local-session-production-runner.mjs"),
+  );
   copyCliFile("instructions.sh", cliDir);
   copyCliFile("instructions-contract.json", cliDir);
   // instructions.sh's settings helper requires two shared modules from the same
