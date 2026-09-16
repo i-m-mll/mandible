@@ -61,6 +61,7 @@ describe("local HTTPS front door", () => {
         expect(config).toContain("https://preview-existing.mandible.localhost:19419");
         expect(config).toContain("header_up X-Mandible-Target-Instance preview-existing");
         expect(config).toContain("header_up X-Mandible-Legacy-Migration complete-v1");
+        expect(config).toContain("path /api/client-auth/legacy-conversion/verify");
         expect(config).toContain("path /api/client-auth/recovery/start");
         expect(config).toContain("header_up X-Mandible-Legacy-Recovery state-v1");
         expect(config).toContain("path /api/client-auth/recovery/approve /api/client-auth/recovery/verify /api/client-auth/pairing/complete");

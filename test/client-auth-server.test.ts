@@ -385,6 +385,11 @@ describe("strict browser boundary", () => {
         "X-Mandible-Target-Instance": targetAudience,
       });
       expect(whoami.body).toMatchObject({ authenticated: true, audience: targetAudience });
+      const verified = await requestAt(port, "GET", "/api/client-auth/legacy-conversion/verify", undefined, {
+        Host: "app.mandible.localhost:19420", Origin: origin, Cookie: cookie,
+        "X-Mandible-Target-Instance": targetAudience,
+      });
+      expect(verified).toMatchObject({ status: 200, body: { verified: true, audience: targetAudience } });
       const restored = await requestAt(port, "GET", "/api/client-auth/legacy-conversion/state", undefined, {
         Host: "app.mandible.localhost:19420", Origin: origin, Cookie: cookie,
         "X-Mandible-Target-Instance": targetAudience,
