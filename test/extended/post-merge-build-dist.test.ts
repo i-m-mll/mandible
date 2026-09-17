@@ -120,6 +120,7 @@ exec "$REAL_GIT" "$@"
     env: {
       ...hookEnv,
       HOME: home,
+      MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND: 'printf "dependencies\\n" >> "$MANDIBLE_TEST_TRACE"',
       MANDIBLE_POST_MERGE_BUILD_COMMAND: 'printf "build\\n" >> "$MANDIBLE_TEST_TRACE"',
       MANDIBLE_POST_MERGE_DESKTOP_COMMAND:
         'printf "desktop\\n" >> "$MANDIBLE_TEST_DESKTOP_TRACE"',
@@ -172,7 +173,7 @@ describe("post-merge build hook", () => {
       expect(result.stderr).toContain("[post-merge-build] generated local build artifacts");
       expect(result.stderr).toContain("no native desktop changes detected");
       expect(result.stderr).toContain("[post-merge-build] installed managed instruction fragments");
-      expect(fs.readFileSync(result.tracePath, "utf8")).toBe("build\n");
+      expect(fs.readFileSync(result.tracePath, "utf8")).toBe("dependencies\nbuild\n");
       expect(fs.existsSync(result.desktopTracePath)).toBe(false);
       expect(fs.readFileSync(path.join(result.home, ".claude", "CLAUDE.md"), "utf8")).toContain(
         "Mandible Interface Contract",
@@ -203,7 +204,7 @@ describe("post-merge build hook", () => {
     const result = runHookAfterMerge("package.json");
 
     expect(result.status, result.stderr).toBe(0);
-    expect(fs.readFileSync(result.tracePath, "utf8")).toBe("build\n");
+    expect(fs.readFileSync(result.tracePath, "utf8")).toBe("dependencies\nbuild\n");
     expect(fs.readFileSync(result.desktopTracePath, "utf8")).toBe("desktop\n");
   });
 
