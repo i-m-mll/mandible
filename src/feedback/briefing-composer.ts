@@ -32,6 +32,7 @@ export type BriefingDestinationRouteDeclaration = Omit<
   "logical_artifact_id" | "template_version" | "contribution_template" | "slots"
 > & {
   logical_artifact_ref: string;
+  expected_revision?: string;
   template: {
     version: number;
     contribution_template: string;
@@ -49,6 +50,7 @@ export type BriefingDestinationRoutePlan = {
   changed: boolean;
   routes: Array<{
     route_key: string;
+    current_revision: string | null;
     action: "create" | "update" | "unchanged";
     publication_mode: BriefingDestinationPublicationMode;
     group_id: string;
@@ -276,7 +278,7 @@ export function parseBriefingDestinationRouteManifest(value: unknown): BriefingD
   }
   const routes = manifest.routes.map((raw, index) => {
     const route = object(raw, `routes[${index}]`);
-    only(route, ["route_key", "logical_artifact_ref", "publication_mode", "heading", "composer_kind", "template", "limits"],
+    only(route, ["route_key", "logical_artifact_ref", "publication_mode", "heading", "composer_kind", "template", "limits", "expected_revision"],
       `routes[${index}]`);
     if (route.publication_mode !== "reviewed-document" && route.publication_mode !== "published-report") {
       throw new BriefingStoreError(`routes[${index}].publication_mode must be reviewed-document or published-report`);
@@ -294,6 +296,9 @@ export function parseBriefingDestinationRouteManifest(value: unknown): BriefingD
     return {
       route_key: nonblank(route.route_key, `routes[${index}].route_key`),
       logical_artifact_ref: nonblank(route.logical_artifact_ref, `routes[${index}].logical_artifact_ref`),
+      ...(route.expected_revision === undefined ? {} : {
+        expected_revision: nonblank(route.expected_revision, `routes[${index}].expected_revision`),
+      }),
       publication_mode: route.publication_mode,
       heading: nonblank(route.heading, `routes[${index}].heading`),
       composer_kind: route.composer_kind,
@@ -360,6 +365,7 @@ function routeRow(db: Db, routeKey: string): RouteRow {
 
 type ResolvedRouteDeclaration = {
   route_key: string;
+  expected_revision?: string;
   publication_mode: BriefingDestinationPublicationMode;
   group_id: string;
   logical_artifact_id: string;
@@ -397,6 +403,7 @@ function resolveRouteDeclaration(db: Db, input: BriefingDestinationRouteDeclarat
   if (unknown) throw new BriefingStoreError(`contribution template references unknown slot '${unknown}'`);
   return {
     route_key: input.route_key,
+    expected_revision: input.expected_revision,
     publication_mode: input.publication_mode,
     group_id: owner.group_id,
     logical_artifact_id: logical.target_id,
@@ -421,10 +428,15 @@ function planResolvedRoute(
       publication_mode: BriefingDestinationPublicationMode;
       active_template_version: number; max_contributions: number; max_document_bytes: number; max_directives: number;
     } | undefined;
+  const currentRevision = existing ? routeConfigurationRevision(db, route.route_key) : null;
   if (existing && (existing.logical_artifact_id !== route.logical_artifact_id
       || existing.heading !== route.heading || existing.composer_kind !== route.composer_kind)) {
     throw new BriefingStoreError("stable destination route ownership cannot be reassigned", 409,
       "briefing_destination_route_conflict");
+  }
+  if (existing && existing.publication_mode !== route.publication_mode) {
+    throw new BriefingStoreError("An existing route cannot change between reviewed-document and published-report",
+      409, "briefing_destination_policy_conflict");
   }
   const tupleOwner = db.prepare(`SELECT route_key, composer_kind FROM briefing_destination_routes
     WHERE logical_artifact_id = ? AND heading = ? LIMIT 1`)
@@ -463,6 +475,7 @@ function planResolvedRoute(
     || existing.max_directives !== route.limits.max_directives;
   return {
     route_key: route.route_key,
+    current_revision: currentRevision,
     publication_mode: route.publication_mode,
     action: !existing ? "create" : changed ? "update" : "unchanged",
     group_id: route.group_id,
@@ -473,6 +486,17 @@ function planResolvedRoute(
     template_action: existingTemplate ? "reuse" : "create",
     limits: route.limits,
   };
+}
+
+function routeConfigurationRevision(db: Db, routeKey: string): string {
+  const row = db.prepare(`SELECT r.logical_artifact_id, r.heading, r.composer_kind,
+      r.active_template_version, r.max_contributions, r.max_document_bytes, r.max_directives,
+      policy.publication_mode, template.contribution_template, template.slots_json
+    FROM briefing_destination_routes r
+    JOIN briefing_destination_policies policy ON policy.route_key = r.route_key
+    JOIN briefing_destination_templates template ON template.route_key = r.route_key
+      AND template.version = r.active_template_version WHERE r.route_key = ?`).get(routeKey);
+  return createHash("sha256").update(canonicalJson(row)).digest("hex");
 }
 
 function resolveAndPlanBriefingDestinationRoutes(
@@ -522,6 +546,11 @@ export function reconcileBriefingDestinationRoutes(
     for (const planned of plan.routes) {
       if (planned.action === "unchanged") continue;
       const route = byKey.get(planned.route_key)!;
+      if (planned.action === "update" && route.expected_revision !== planned.current_revision) {
+        throw new BriefingStoreError(`route '${planned.route_key}' changed; provide its current_revision from route plan`,
+          409, "briefing_destination_route_revision_drift",
+          { route_key: planned.route_key, current_revision: planned.current_revision });
+      }
       db.prepare(`INSERT INTO briefing_destination_routes
         (route_key, logical_artifact_id, heading, composer_kind, active_template_version,
          max_contributions, max_document_bytes, max_directives, created_at, updated_at)

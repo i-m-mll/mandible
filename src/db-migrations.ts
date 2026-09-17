@@ -14,6 +14,7 @@ import {
 import {
   BRIEFING_COMPOSER_SCHEMA_V165_SQL,
   BRIEFING_COMPOSER_SCHEMA_V171_SQL,
+  BRIEFING_DESTINATION_MUTATION_SCHEMA_SQL,
   BRIEFING_GROUP_REVIEW_SCHEMA_V167_SQL,
   BRIEFING_GROUP_SCHEMA_SQL,
 } from "./feedback/schema.js";
@@ -1072,6 +1073,11 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP TABLE briefing_group_review_destination_items_v180",
       "DROP TABLE briefing_group_review_dispositions_v180",
     ],
+  },
+  {
+    version: 182,
+    name: "briefing_destination_mutation_receipts",
+    statements: [...BRIEFING_DESTINATION_MUTATION_SCHEMA_SQL],
   },
 ];
 

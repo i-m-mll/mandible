@@ -102,11 +102,13 @@ describe("Base-relative Briefing destination composer", () => {
       bundleRefs: [], viewer }, 110);
     bindBriefingDestinationOwner(db, { logicalArtifactRef: destination.logicalArtifactId, groupRef: group.id },
       { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer, 115);
-    const manifest = (version: number, contributionTemplate = "- {{summary}} ({{evidence_ref}})") =>
+    const manifest = (version: number, contributionTemplate = "- {{summary}} ({{evidence_ref}})",
+      expectedRevision?: string) =>
       parseBriefingDestinationRouteManifest({
         schema: "mandible-briefing-destination-routes@3",
         routes: [{
           route_key: "managed.changes",
+          ...(expectedRevision ? { expected_revision: expectedRevision } : {}),
           logical_artifact_ref: destination.logicalArtifactId,
           publication_mode: "reviewed-document",
           heading: "Changes",
@@ -130,9 +132,13 @@ describe("Base-relative Briefing destination composer", () => {
       routes: [{ action: "create" }] });
     expect(reconcileBriefingDestinationRoutes(db, manifest(1), 130)).toMatchObject({ changed: false,
       routes: [{ action: "unchanged", template_action: "reuse" }] });
+    const revision = planBriefingDestinationRoutes(db, manifest(2)).routes[0].current_revision;
     expect(planBriefingDestinationRoutes(db, manifest(2))).toMatchObject({ changed: true,
       routes: [{ action: "update", active_template_version: 2, template_action: "create" }] });
-    reconcileBriefingDestinationRoutes(db, manifest(2), 140);
+    expect(() => reconcileBriefingDestinationRoutes(db, manifest(2), 140)).toThrowError(expect.objectContaining({
+      code: "briefing_destination_route_revision_drift",
+    }));
+    reconcileBriefingDestinationRoutes(db, manifest(2, undefined, revision!), 140);
     expect(inspectBriefingDestinationRoutes(db, "managed.changes")).toMatchObject({ routes: [{
       group_id: group.id, logical_artifact_id: destination.logicalArtifactId,
       active_template_version: 2, templates: [{ version: 1 }, { version: 2 }],
@@ -142,6 +148,9 @@ describe("Base-relative Briefing destination composer", () => {
     }));
     expect(() => planBriefingDestinationRoutes(db, manifest(2, "changed {{evidence_ref}}")))
       .toThrowError(expect.objectContaining({ code: "briefing_destination_template_conflict" }));
+    expect(() => planBriefingDestinationRoutes(db, {
+      ...manifest(2), routes: [{ ...manifest(2).routes[0], publication_mode: "published-report" }],
+    })).toThrowError(expect.objectContaining({ code: "briefing_destination_policy_conflict" }));
   });
 
   it("routes normalized changes, clones Base layout, and queues behind the one active proposal", () => {
