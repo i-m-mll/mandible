@@ -382,7 +382,8 @@ fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
         .ok_or_else(|| "failed to resolve daemon working directory".to_string())?;
     let repo_root = repo_root.to_path_buf();
     let port = daemon_port();
-    let log_file = log_file_path();
+    let log_file = log_file_path()?;
+    let pid_file = pid_file_path()?;
     let (log_stdout, log_stderr) = open_daemon_log(&log_file)?;
 
     let mut command = Command::new(node);
@@ -390,6 +391,7 @@ fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
         .arg(&entry)
         .current_dir(repo_root)
         .env("MANDIBLE_PORT", port.to_string())
+        .env("MANDIBLE_PID_FILE", pid_file)
         // The daemon rotates this file on a timer. Naming it explicitly makes
         // the rotation target and the actual stderr destination the same path
         // by construction rather than by both defaulting to the same constant.
@@ -408,7 +410,7 @@ fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
 
 #[command]
 fn daemon_stop(app: AppHandle) -> Result<DaemonStatus, String> {
-    if let Some(pid) = read_pid_file(pid_file_path()) {
+    if let Some(pid) = read_pid_file(pid_file_path()?) {
         signal_process(pid, "TERM")?;
         wait_for_shutdown(daemon_port(), Duration::from_secs(4));
     }
@@ -785,7 +787,7 @@ fn enrollment_daemon_registration() -> Result<(PathBuf, u16), String> {
     let raw = match fs::read(path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((pid_file_path(), daemon_port()))
+            return Ok((pid_file_path()?, daemon_port()))
         }
         Err(error) => {
             return Err(format!(
@@ -800,7 +802,7 @@ fn enrollment_daemon_registration_from_journal(raw: &[u8]) -> Result<(PathBuf, u
     let journal: serde_json::Value = serde_json::from_slice(&raw)
         .map_err(|_| "the Mandible service registration is invalid".to_string())?;
     if journal["state"] != "complete" {
-        return Ok((pid_file_path(), daemon_port()));
+        return Ok((pid_file_path()?, daemon_port()));
     }
     if journal["schema"] != "mandible-local-session-cutover@1" {
         return Err("the Mandible service registration has an unknown format".to_string());
@@ -882,6 +884,10 @@ fn mandible_home() -> PathBuf {
             return resolve_user_path(&path);
         }
     }
+    default_mandible_home()
+}
+
+fn default_mandible_home() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
@@ -921,8 +927,8 @@ fn get_daemon_status(app: &AppHandle) -> Result<DaemonStatus, String> {
     } else {
         daemon_port()
     };
-    let pid_file = pid_file_path();
-    let log_file = log_file_path();
+    let pid_file = pid_file_path()?;
+    let log_file = log_file_path()?;
     let pid = read_pid_file(pid_file.clone());
     let pid_alive = pid.map(process_alive).unwrap_or(false);
     let healthy = check_health(port);
@@ -993,6 +999,11 @@ fn write_desktop_config(app: &AppHandle, config: &DesktopConfig) -> Result<(), S
 }
 
 fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    // A disposable installation must never read or rewrite the installed
+    // app's launch-mode settings under the same bundle identifier.
+    if isolated_home_selected() || std::env::var_os("MANDIBLE_CONFIG_DIR").is_some() {
+        return Ok(mandible_config_dir().join("desktop.json"));
+    }
     let dir = app
         .path()
         .app_config_dir()
@@ -1108,12 +1119,20 @@ fn resolve_node_binary(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(PathBuf::from("node"))
 }
 
-fn pid_file_path() -> PathBuf {
-    cache_dir().join("daemon.pid")
+fn pid_file_path() -> Result<PathBuf, String> {
+    runtime_file_path(
+        std::env::var("MANDIBLE_PID_FILE").ok().as_deref(),
+        isolated_home_selected().then(mandible_home),
+        "daemon.pid",
+    )
 }
 
-fn log_file_path() -> PathBuf {
-    cache_dir().join("launchd-stderr.log")
+fn log_file_path() -> Result<PathBuf, String> {
+    runtime_file_path(
+        std::env::var("MANDIBLE_STDERR_LOG_PATH").ok().as_deref(),
+        isolated_home_selected().then(mandible_home),
+        "launchd-stderr.log",
+    )
 }
 
 /// Open the daemon log for an app-launched daemon and return append handles for
@@ -1150,12 +1169,29 @@ fn open_daemon_log(path: &Path) -> Result<(Stdio, Stdio), String> {
     Ok((Stdio::from(stdout), Stdio::from(stderr)))
 }
 
-fn cache_dir() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".cache")
-        .join("mandible")
+fn isolated_home_selected() -> bool {
+    std::env::var("MANDIBLE_HOME")
+        .is_ok_and(|value| !value.trim().is_empty() && mandible_home() != default_mandible_home())
+}
+
+fn runtime_file_path(
+    explicit: Option<&str>,
+    isolated_home: Option<PathBuf>,
+    filename: &str,
+) -> Result<PathBuf, String> {
+    if let Some(value) = explicit {
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err(format!("{filename} override must be an absolute path"));
+        }
+        return Ok(path);
+    }
+    let base = isolated_home.unwrap_or_else(|| {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+    });
+    Ok(base.join(".cache").join("mandible").join(filename))
 }
 
 fn read_pid_file(path: PathBuf) -> Option<u32> {
@@ -1260,6 +1296,22 @@ fn wait_for_shutdown(port: u16, timeout: Duration) {
 }
 
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    if isolated_home_selected() {
+        // Tauri creates configured windows before setup(), so choose the
+        // separate WebKit store before handing the context to the builder.
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                macos_supports_custom_webkit_store(),
+                "isolated Mandible desktop requires macOS 14 or newer for a separate WebKit store"
+            );
+            let identifier = isolated_webkit_store_identifier(&mandible_home());
+            for window in &mut context.config_mut().app.windows {
+                window.data_store_identifier = Some(identifier);
+            }
+        }
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
@@ -1327,8 +1379,33 @@ pub fn run() {
             zone2_status,
             zone2_bootstrap
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Mandible app");
+}
+
+#[cfg(target_os = "macos")]
+fn macos_supports_custom_webkit_store() -> bool {
+    Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|version| version.split('.').next()?.parse::<u32>().ok())
+        .is_some_and(|major| major >= 14)
+}
+
+#[cfg(target_os = "macos")]
+fn isolated_webkit_store_identifier(home: &Path) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    digest.update(b"mandible-isolated-webkit-store-v1\0");
+    digest.update(home.as_os_str().as_encoded_bytes());
+    let hash = digest.finalize();
+    let mut identifier = [0u8; 16];
+    identifier.copy_from_slice(&hash[..16]);
+    identifier
 }
 
 #[cfg(test)]
@@ -1336,10 +1413,9 @@ mod tests {
     use super::{
         admits_native_command_origin, bind_session_cookie_to_production,
         dashboard_origin_from_cutover, dashboard_origin_from_origin_migration,
-        enrollment_daemon_registration_from_journal,
-        extract_credential, is_secure_connections_setup_link, read_client_auth_bootstrap,
-        resolve_user_path_from, LEGACY_PRODUCTION_ORIGIN, MIGRATING_PRODUCTION_ORIGIN,
-        PRODUCTION_ORIGIN,
+        enrollment_daemon_registration_from_journal, extract_credential,
+        is_secure_connections_setup_link, read_client_auth_bootstrap, resolve_user_path_from,
+        LEGACY_PRODUCTION_ORIGIN, MIGRATING_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1502,6 +1578,46 @@ mod tests {
             .unwrap()
             .push(duplicate);
         assert!(resolve(&journal).is_err());
+    }
+
+    #[test]
+    fn isolated_runtime_paths_never_resolve_to_the_installed_daemon_pid() {
+        let isolated = std::path::PathBuf::from("/tmp/mandible-candidate/.mandible");
+        let pid = super::runtime_file_path(None, Some(isolated.clone()), "daemon.pid").unwrap();
+        let log =
+            super::runtime_file_path(None, Some(isolated.clone()), "launchd-stderr.log").unwrap();
+        assert_eq!(pid, isolated.join(".cache/mandible/daemon.pid"));
+        assert_eq!(log, isolated.join(".cache/mandible/launchd-stderr.log"));
+        assert_ne!(
+            pid,
+            super::runtime_file_path(None, None, "daemon.pid").unwrap()
+        );
+        assert_eq!(
+            super::runtime_file_path(
+                Some("/tmp/explicit-candidate.pid"),
+                Some(isolated),
+                "daemon.pid"
+            )
+            .unwrap(),
+            std::path::PathBuf::from("/tmp/explicit-candidate.pid"),
+        );
+        assert!(super::runtime_file_path(Some("relative.pid"), None, "daemon.pid").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn isolated_webkit_store_is_stable_per_home() {
+        let first = std::path::Path::new("/tmp/mandible-candidate-one");
+        let second = std::path::Path::new("/tmp/mandible-candidate-two");
+        // This value is durable profile identity; rebuilding must not move its storage.
+        assert_eq!(
+            super::isolated_webkit_store_identifier(first),
+            [144, 63, 64, 251, 110, 109, 174, 172, 226, 170, 98, 98, 182, 233, 54, 66]
+        );
+        assert_ne!(
+            super::isolated_webkit_store_identifier(first),
+            super::isolated_webkit_store_identifier(second)
+        );
     }
 
     #[cfg(target_os = "macos")]
