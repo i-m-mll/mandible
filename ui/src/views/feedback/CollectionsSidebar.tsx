@@ -373,18 +373,13 @@ export function CollectionsSidebar({
             {sidebarOrder.notice}
           </DetailPaneNotice>
         ) : null}
-        {loadError ? (
-          <DetailPaneNotice severity="error" density="compact" title="Briefings could not be loaded">
-            {loadError}
-          </DetailPaneNotice>
-        ) : null}
         </>
       )}
       bodyClassName="feedback-collections-sidebar__body"
     >
       <div data-testid="feedback-collections-sidebar" {...topLevelReorder.list}>
         {topLevelReorder.assistive}
-        {loadError ? (
+        {loadError && collections.length === 0 && bundles.length === 0 && groups.length === 0 ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty">Briefings remain unavailable.</p>
           </div>

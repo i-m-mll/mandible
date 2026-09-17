@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import {
   getBriefingSidebarSnapshot,
   getCachedBriefingSidebarSnapshot,
-  isApiErrorStatus,
+  ApiError,
   type BriefingBundle,
   type BriefingGroup,
   type BriefingSidebarSnapshot,
@@ -23,7 +23,7 @@ import {
   resolveBriefingGroupProjection,
 } from './feedback/briefing-group-projection';
 import { OperationalIncidentsRegion } from './operational-incidents';
-import { subscribeClientAuthSessionState } from '../client-auth-token';
+import { subscribeClientAccessState } from '../client-auth-token';
 
 export type BriefingViewProps = {
   instance: InstanceInfo | null;
@@ -46,6 +46,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     getCachedBriefingSidebarSnapshot(nowMs) ?? { briefings: [], bundles: [], groups: [] });
   const { briefings, bundles, groups } = sidebar;
   const [error, setError] = useState<string | null>(null);
+  const [accessUnavailable, setAccessUnavailable] = useState(false);
   const [sidebarLoaded, setSidebarLoaded] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const sequence = useRef(0);
@@ -81,13 +82,18 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
       if (!signal.aborted && request === sequence.current) {
         setSidebar(next);
         setSidebarLoaded(true);
+        setAccessUnavailable(false);
         setError(null);
       }
     } catch (cause) {
       if (!signal.aborted && request === sequence.current) {
-        setError(isApiErrorStatus(cause, 401) || isApiErrorStatus(cause, 403)
-          ? 'Authentication is required to load Briefings.'
-          : cause instanceof Error ? cause.message : String(cause));
+        if (cause instanceof ApiError && cause.code === 'local_access_unavailable') {
+          setAccessUnavailable(true);
+          setError(null);
+          return;
+        }
+        setAccessUnavailable(false);
+        setError(cause instanceof Error ? cause.message : String(cause));
       }
     }
   }, []);
@@ -104,8 +110,8 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     const reloadWhenVisible = () => {
       if (document.visibilityState === 'visible') setReloadNonce((value) => value + 1);
     };
-    const unsubscribe = subscribeClientAuthSessionState((state) => {
-      if (state === 'enrolled') setReloadNonce((value) => value + 1);
+    const unsubscribe = subscribeClientAccessState((state) => {
+      if (state.phase === 'ready') setReloadNonce((value) => value + 1);
     });
     window.addEventListener('focus', reloadWhenVisible);
     document.addEventListener('visibilitychange', reloadWhenVisible);
@@ -252,7 +258,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   };
 
   return (
-    <CollectionShell collections={briefings} bundles={bundles} groups={groups} loadError={error} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup} notice={error ? (
+    <CollectionShell collections={briefings} bundles={bundles} groups={groups} loadError={error ?? (accessUnavailable ? 'Local access is resuming.' : null)} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup} notice={error ? (
       <DetailPaneNotice severity="error" density="compact" title="Briefings could not be refreshed">{error}</DetailPaneNotice>
     ) : null}>
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
