@@ -91,3 +91,16 @@ fi
 # Only publish the protected checkout as runnable after every build/install
 # step above succeeds; the daemon's self-merge exit then loads these bytes.
 node scripts/local-session-production-runner.mjs mark-ready
+
+# The origin transition is deterministic post-merge work. The command is a
+# no-op without the completed old-origin cutover, and retries the same guarded
+# registration and gateway reload after an interrupted hook attempt.
+origin_journal="${MANDIBLE_HOME:-$HOME/.mandible}/config/local-sessions/origin-migration.json"
+origin_manifest_added=false
+if [[ -n "$merge_base_sha" && -n "$merge_head_sha" ]] \
+  && [[ "$(git diff --diff-filter=A --name-only "$merge_base_sha" "$merge_head_sha" -- config/canonical-origin.json)" == "config/canonical-origin.json" ]]; then
+  origin_manifest_added=true
+fi
+if [[ -f config/canonical-origin.json ]] && { [[ "$origin_manifest_added" == true ]] || [[ -f "$origin_journal" ]]; }; then
+  node scripts/local-origin-migration.mjs converge-hook
+fi

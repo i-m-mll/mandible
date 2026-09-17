@@ -36,7 +36,22 @@ case "${1-}" in
     else
       "$helper"
     fi
-    /sbin/pfctl -a "$anchor_name" -sn
+    # launchctl bootstrap queues RunAtLoad; it does not wait for the rule load.
+    loaded=false
+    attempt=0
+    while [ "$attempt" -lt 40 ]; do
+      rules=$(/sbin/pfctl -a "$anchor_name" -sn 2>/dev/null) || rules=
+      count=$(printf '%s\n' "$rules" | /usr/bin/grep -c '^rdr pass on lo0 ' || true)
+      if [ "$count" = 2 ] && printf '%s\n' "$rules" | /usr/bin/grep -Eq '^rdr pass on lo0 inet .*127\.0\.0\.1.*443.*127\.0\.0\.1.*19420' \
+        && printf '%s\n' "$rules" | /usr/bin/grep -Eq '^rdr pass on lo0 inet6 .*::1.*443.*::1.*19420'; then
+        loaded=true
+        break
+      fi
+      attempt=$((attempt + 1))
+      sleep 0.25
+    done
+    [ "$loaded" = true ] || { echo 'Mandible PF redirect did not become active; inspect the LaunchDaemon log.' >&2; exit 1; }
+    printf '%s\n' "$rules"
     ;;
   remove)
     [ -f "$anchor" ] && [ -f "$helper" ] && [ -f "$plist" ] || {
