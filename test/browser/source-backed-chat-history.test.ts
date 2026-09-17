@@ -358,7 +358,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     await client.call('Page.navigate', { url: `${origin}/source-backed-history?block=${encodeURIComponent(targetBlockId)}` });
     const exact = await waitFor('exact target focus', async () => {
       const value = await snapshot();
-      return value.focusedBlockId === targetBlockId ? value : null;
+      return value?.focusedBlockId === targetBlockId ? value : null;
     }, browser, profile);
     expect(exact.requests.some((url) => url.includes(`block=${encodeURIComponent(targetBlockId)}`))).toBe(true);
     process.stdout.write('SOURCE_BACKED_CHAT_STAGE exact\n');
