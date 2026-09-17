@@ -3657,6 +3657,7 @@ async function recordDurableConversationSource(
         conversationId,
         structuralMode,
         parentPositions,
+        currentToolPositions,
       );
       if (captured.sourceVersionId
           && captured.cached === result.conversation.block_count) {
