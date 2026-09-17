@@ -254,16 +254,16 @@ If you need to check on a request outside the dashboard:
 
 ```bash
 # By request ID
-curl -s http://localhost:19420/api/auth/request/<id>
+curl -s http://127.0.0.1:29420/api/auth/request/<id>
 
 # List the active queue
 mandible auth list
 
 # Raw API fallback for the active queue
-curl -s http://localhost:19420/api/auth/queue
+curl -s http://127.0.0.1:29420/api/auth/queue
 
 # List resolved history
-curl -s http://localhost:19420/api/auth/history?limit=10
+curl -s http://127.0.0.1:29420/api/auth/history?limit=10
 ```
 
 The queue endpoint returns pending, approved, executing, needs-rebase, expired, failed, withdrawn, superseded, and recently resolved requests — everything the user might need to act on.

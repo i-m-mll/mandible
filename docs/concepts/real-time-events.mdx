@@ -7,7 +7,7 @@ Mandible uses authenticated Server-Sent Events (SSE) to push state mutations to 
 Open an SSE connection with an explicit non-browser credential:
 
 ```bash
-curl -N -X POST https://app.mandible.localhost:19420/api/events/subscribe \
+curl -N -X POST https://mandible.localhost/api/events/subscribe \
   -H "Authorization: Bearer $MANDIBLE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{}'
@@ -48,7 +48,7 @@ Every event has three fields:
 You can subscribe to a subset of events in the JSON request body:
 
 ```bash
-curl -N -X POST https://app.mandible.localhost:19420/api/events/subscribe \
+curl -N -X POST https://mandible.localhost/api/events/subscribe \
   -H "Authorization: Bearer $MANDIBLE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"topics":["auth:","session:"]}'

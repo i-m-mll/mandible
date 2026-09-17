@@ -7,7 +7,7 @@
 //
 // Architecture: STATELESS — all state lives in the Mandible daemon, reached at
 // the base URL resolved by channel-server/base-url.ts (MANDIBLE_BASE /
-// MANDIBLE_PORT, default http://localhost:19420). This process is a thin
+// MANDIBLE_PORT, default http://127.0.0.1:29420). This process is a thin
 // adapter that:
 //   1. Exposes Mandible operations as MCP tools
 //   2. Forwards Mandible SSE events as MCP notifications

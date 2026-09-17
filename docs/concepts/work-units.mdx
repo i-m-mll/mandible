@@ -165,7 +165,7 @@ If a work unit is `open` but its branch has new commits (detected by comparing t
 When a session ends with work still in progress, it can write a continuation --- a handoff note for the next session on the same branch:
 
 ```bash
-curl -s -X PATCH http://localhost:19420/api/sessions/$MANDIBLE_SESSION_ID \
+curl -s -X PATCH http://127.0.0.1:29420/api/sessions/$MANDIBLE_SESSION_ID \
   -H 'Content-Type: application/json' \
   -d '{"continuation": "Refactored auth module. Tests pass. Still need to update the CLI wrapper and add integration tests for the new token refresh flow."}'
 ```
@@ -201,10 +201,10 @@ The API exposes work units at `/api/work-units`:
 
 ```bash
 # List all work units (with optional state/repo filters)
-curl http://localhost:19420/api/work-units?state=open&repo_id=abc
+curl http://127.0.0.1:29420/api/work-units?state=open&repo_id=abc
 
 # Get a specific work unit with liveness data
-curl http://localhost:19420/api/work-units/unit-id-here
+curl http://127.0.0.1:29420/api/work-units/unit-id-here
 ```
 
 The response includes a `liveness` overlay with `has_live_agent`, `agent_session_id`, `agent_status`, `is_processing`, and `last_activity` --- all derived at query time.

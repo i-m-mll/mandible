@@ -3,9 +3,11 @@
 # Keep the Tauri bootstrap separate from the daemon's generated dist/ tree.
 # A native build must not overwrite dist/index.js after `npm run build`.
 set -e
+node scripts/generate-canonical-origin.mjs --check
 mkdir -p src-tauri/dist
 scripts/build-local-ca-trust-helper.sh
 cp src-tauri/bootstrap/index.html src-tauri/dist/index.html
 cp src-tauri/bootstrap/bootstrap.css src-tauri/dist/bootstrap.css
 cp src-tauri/bootstrap/bootstrap.js src-tauri/dist/bootstrap.js
+cp src-tauri/bootstrap/canonical-origin.js src-tauri/dist/canonical-origin.js
 echo "desktop bootstrap assets generated"

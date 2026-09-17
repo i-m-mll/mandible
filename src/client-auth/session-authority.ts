@@ -954,12 +954,14 @@ function validateRegistration(registration: InstanceRegistration, installationId
   const publicOrigin = new URL(registration.public_origin);
   const backendOrigin = new URL(registration.backend_origin);
   for (const [raw, origin] of [[registration.public_origin, publicOrigin], [registration.backend_origin, backendOrigin]] as const) {
-    if (origin.username || origin.password || !origin.port || origin.pathname !== "/" || origin.search || origin.hash) {
+    if (origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash || raw !== origin.origin) {
       throw new Error(`Invalid instance origin: ${raw}`);
     }
   }
+  if (!backendOrigin.port) throw new Error("Instance backend origin requires an explicit loopback port.");
   if (publicOrigin.protocol !== "https:"
-      || !publicOrigin.hostname.toLowerCase().endsWith(".mandible.localhost")) {
+      || (publicOrigin.hostname.toLowerCase() !== "mandible.localhost"
+        && !publicOrigin.hostname.toLowerCase().endsWith(".mandible.localhost"))) {
     throw new Error("Instance public origin must be an exact Mandible HTTPS hostname.");
   }
   if (backendOrigin.protocol !== "http:"

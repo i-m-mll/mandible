@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 : "${MANDIBLE_PORT:=29420}"
-: "${MANDIBLE_BASE:=${MANDIBLE_PUBLIC_ORIGIN:-https://app.mandible.localhost:19420}}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/canonical-origin.sh"
+: "${MANDIBLE_BASE:=${MANDIBLE_PUBLIC_ORIGIN:-$MANDIBLE_CANONICAL_ORIGIN}}"
 
 # Run a jq filter with the shared human-facing identity contract loaded. JSON
 # output deliberately bypasses this helper so exact API authority is preserved.

@@ -143,14 +143,14 @@ npm run build
 ### Running
 
 ```bash
-# Start the daemon (default port: 19420)
+# Start the daemon (default internal port: 29420)
 npm start
 
 # Or run directly
 node dist/index.js
 
 # Open the dashboard
-open https://app.mandible.localhost:19420
+open https://mandible.localhost
 ```
 
 The daemon creates a SQLite database at `~/.mandible/mandible.db` on first run and applies all schema migrations automatically.
@@ -282,7 +282,7 @@ Persisted in the `settings` table, configurable from Settings tab:
 
 ## API Quick Reference
 
-Base URL: `https://app.mandible.localhost:19420`
+Base URL: `https://mandible.localhost`
 
 ### Auth
 

@@ -9,6 +9,7 @@ import {
   type Effect,
 } from "./security/effect-policy.js";
 import { getMandibleConfigPath } from "./platform-paths.js";
+import { PRODUCTION_ORIGIN } from "./canonical-origin.js";
 
 // Retained only as a reporting taxonomy for request telemetry. Authorization
 // is exclusively the typed effect policy in security/effect-policy.ts.
@@ -105,7 +106,7 @@ export function resolveInstanceInfo(options: {
   const installationId = resolveInstallationId(env);
   const publicOrigin = exactOrigin(
     env.MANDIBLE_PUBLIC_ORIGIN
-      || (role === "main" ? "https://app.mandible.localhost:19420" : ""),
+      || (role === "main" ? PRODUCTION_ORIGIN : ""),
   );
   const backendGeneration = env.MANDIBLE_BACKEND_GENERATION?.trim()
     || (role === "main" ? "production" : "");
@@ -243,7 +244,7 @@ function exactOrigin(value: string): string {
   if (!value) return "";
   const parsed = new URL(value);
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.pathname !== "/"
-      || parsed.search || parsed.hash || !parsed.port) {
+      || parsed.search || parsed.hash || value !== parsed.origin) {
     throw new Error(`Invalid registered HTTPS origin: ${value}`);
   }
   return parsed.origin;

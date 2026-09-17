@@ -70,7 +70,7 @@ Get pending inbox items, optionally filtered by branch and repo.
 ```
 
 ```bash
-curl "http://localhost:19420/api/inbox?branch=feature/retries&repo=/path/to/repo"
+curl "http://127.0.0.1:29420/api/inbox?branch=feature/retries&repo=/path/to/repo"
 ```
 
 ### GET /api/inbox/global
@@ -82,7 +82,7 @@ Get all unacknowledged items across all branches and repos. Same response shape 
 - Open issues include `repo_id` and `repo_name`
 
 ```bash
-curl http://localhost:19420/api/inbox/global
+curl http://127.0.0.1:29420/api/inbox/global
 ```
 
 ### POST /api/inbox/:type/:id/ack
@@ -114,7 +114,7 @@ Acknowledge an inbox item.
 - `409` — Ambiguous prefix
 
 ```bash
-curl -X POST http://localhost:19420/api/inbox/continuation/abc123/ack \
+curl -X POST http://127.0.0.1:29420/api/inbox/continuation/abc123/ack \
   -H 'Content-Type: application/json' \
   -d '{"session_id": "my-session-id"}'
 ```

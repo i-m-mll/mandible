@@ -4,10 +4,12 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { assertLocalCaIdentity, localCaPaths } from "./local-ca-trust.mjs";
+import { PRODUCTION_ORIGIN } from "./canonical-origin.mjs";
 
 const home = path.resolve(process.env.MANDIBLE_HOME || path.join(os.homedir(), ".mandible"));
 const caPaths = localCaPaths(home);
@@ -17,6 +19,7 @@ const installationAuthorityDir = path.join(home, "config", "client-auth");
 const installationAuthorityFile = path.join(installationAuthorityDir, "authority-id");
 const binary = pinnedCaddyBinary(home);
 const configPath = path.join(authorityDir, "Caddyfile");
+const uiDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "ui");
 const command = process.argv[2] ?? "status";
 
 function fail(message) {
@@ -51,14 +54,17 @@ function initializeInstallationAuthority() {
   process.stdout.write(`${JSON.stringify({ installation_authority: installationAuthorityFile, authority_id: authorityId })}\n`);
 }
 
-function caddyfile(instances, { legacyConversion = false } = {}) {
+function caddyfile(instances, { legacyConversion = false, originMigration = false } = {}) {
   const production = instances.find((entry) => entry.role === "main");
   if (!production) fail("The production instance is not registered.");
   const previews = instances.filter((entry) => entry.role === "preview");
   if (legacyConversion && previews.length > 1) fail("Legacy port 19421 is ambiguous across registered previews.");
   const productionBackend = new URL(production.backend_origin);
   const productionPublic = new URL(production.public_origin);
-  const globalOptions = `{\n  admin 127.0.0.1:2019\n  storage file_system ${JSON.stringify(caPaths.storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}`;
+  if (productionPublic.origin !== PRODUCTION_ORIGIN) fail(`Production registration must match ${PRODUCTION_ORIGIN}.`);
+  // PF forwards loopback 443 to this unprivileged listener. The backend and
+  // gateway never need to run as root after the operator installs the rule.
+  const globalOptions = `{\n  admin 127.0.0.1:2019\n${legacyConversion ? "" : "  https_port 19420\n"}  storage file_system ${JSON.stringify(caPaths.storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}`;
   const migrationIngress = instances.map((entry) => {
     const publicUrl = new URL(entry.public_origin);
     const legacyPort = entry.role === "preview" ? "19421" : "19420";
@@ -243,7 +249,34 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
         "  }",
       );
     } else {
-      shared.push(
+      if (originMigration) shared.push(
+        "  @origin_migration {",
+        "    method POST",
+        "    path /api/client-auth/recovery/start",
+        "    header Origin https://app.mandible.localhost:19420",
+        "  }",
+        "  handle @origin_migration {",
+        `    reverse_proxy ${backendUrl.origin} {`,
+        `      header_up Host ${productionPublic.host}`,
+        `      header_up Origin ${productionPublic.origin}`,
+        "      header_up X-Mandible-Origin-Migration state-v1",
+        "      header_up X-Mandible-Legacy-Origin https://app.mandible.localhost:19420",
+        `      header_up X-Mandible-Target-Instance ${entry.instance_id}`,
+        "      header_up -Authorization",
+        "      header_up -Cookie",
+        "      header_up -X-Mandible-Session-Context",
+        "    }",
+        "  }",
+        "  handle {",
+        `    reverse_proxy ${backendUrl.origin} {`,
+        "      header_up -X-Mandible-Origin-Migration",
+        "      header_up -X-Mandible-Legacy-Origin",
+        "      header_up -X-Mandible-Target-Instance",
+        "      header_up -X-Mandible-Session-Context",
+        "    }",
+        "  }",
+      );
+      else shared.push(
         `  reverse_proxy ${backendUrl.origin} {`,
         "    header_up -X-Mandible-Target-Instance",
         "    header_up -X-Mandible-Session-Context",
@@ -253,17 +286,33 @@ function caddyfile(instances, { legacyConversion = false } = {}) {
     shared.push("}");
     return shared.join("\n");
   });
-  return `${globalOptions}\n\n${blocks.join("\n\n")}\n`;
+  const oldBrowserIngress = originMigration ? [
+    "https://app.mandible.localhost:19420 {",
+    "  bind 127.0.0.1 ::1",
+    "  tls internal",
+    "  header -Server",
+    "  header Cache-Control no-store",
+    `  root * ${JSON.stringify(uiDirectory)}`,
+    "  handle /dist/origin-migration.js {",
+    "    file_server",
+    "  }",
+    "  handle {",
+    "    rewrite * /origin-migration.html",
+    "    file_server",
+    "  }",
+    "}",
+  ].join("\n") : "";
+  return `${globalOptions}\n\n${blocks.join("\n\n")}\n${oldBrowserIngress}\n`;
 }
 
 function install() {
   try { installPinnedCaddy(home); } catch (error) { fail(error.message); }
 }
 
-function configure({ legacyConversion = false } = {}) {
+function configure({ legacyConversion = false, originMigration = false } = {}) {
   requireTrustedCa();
   fs.mkdirSync(authorityDir, { recursive: true, mode: 0o700 });
-  const config = caddyfile(readInstances(), { legacyConversion });
+  const config = caddyfile(readInstances(), { legacyConversion, originMigration });
   if (fs.existsSync(binary)) {
     const adapted = spawnSync(binary, ["adapt", "--config", "-", "--adapter", "caddyfile"], {
       input: config, encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
@@ -289,6 +338,8 @@ if (command === "initialize") {
   configure();
 } else if (command === "configure-migration") {
   configure({ legacyConversion: true });
+} else if (command === "configure-origin-migration") {
+  configure({ originMigration: true });
 } else if (command === "run") {
   requireTrustedCa();
   install();
@@ -301,10 +352,16 @@ if (command === "initialize") {
   configure({ legacyConversion: true });
   const result = spawnSync(binary, ["run", "--config", configPath, "--adapter", "caddyfile"], { stdio: "inherit" });
   process.exit(result.status ?? 1);
+} else if (command === "run-origin-migration") {
+  requireTrustedCa();
+  install();
+  configure({ originMigration: true });
+  const result = spawnSync(binary, ["run", "--config", configPath, "--adapter", "caddyfile"], { stdio: "inherit" });
+  process.exit(result.status ?? 1);
 } else if (command === "status") {
   let ca;
   try { ca = assertLocalCaIdentity(caPaths); } catch (error) { fail(error.message); }
   process.stdout.write(`${JSON.stringify({ version: CADDY_VERSION, binary, config: configPath, installed: fs.existsSync(binary), instances: fs.existsSync(authorityDb) ? readInstances().length : 0, ca })}\n`);
 } else {
-  fail("Usage: local-front-door.mjs initialize|install|configure|configure-migration|run|run-migration|status");
+  fail("Usage: local-front-door.mjs initialize|install|configure|configure-migration|configure-origin-migration|run|run-migration|run-origin-migration|status");
 }

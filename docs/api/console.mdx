@@ -60,7 +60,7 @@ Create a new console session. SDK, ACP, and spawn sessions start immediately. PT
 ```
 
 ```bash
-curl -X POST http://localhost:19420/api/console/sessions \
+curl -X POST http://127.0.0.1:29420/api/console/sessions \
   -H 'Content-Type: application/json' \
   -d '{"label": "Debug helper", "command": "claude", "backend_type": "sdk"}'
 ```

@@ -8,6 +8,7 @@ import {
   PENDING_LOGOUT_STORAGE_KEY,
   restoreLegacyBrowserState,
 } from '../../src/client-auth/legacy-browser-state';
+import { PRODUCTION_ORIGIN } from '../../src/canonical-origin';
 
 const WHOAMI_PATH = '/api/client-auth/whoami';
 const RENEW_PATH = '/api/client-auth/renew';
@@ -202,7 +203,7 @@ async function beginPreviewTransfer(fetchImpl: typeof fetch): Promise<boolean> {
   const body = await readJson(response);
   if (!response.ok || typeof body.authorize_url !== 'string') return false;
   const authorize = new URL(body.authorize_url);
-  if (authorize.origin !== 'https://app.mandible.localhost:19420'
+  if (authorize.origin !== PRODUCTION_ORIGIN
       || authorize.pathname !== '/api/client-auth/preview-transfer/authorize') return false;
   window.location.assign(authorize.href);
   return true;
@@ -217,7 +218,7 @@ async function finishLegacyConversion(fetchImpl: typeof fetch, active: SessionPr
   if (!response.ok || typeof body.target_origin !== 'string'
       || typeof body.return_path !== 'string') return;
   const target = new URL(body.target_origin);
-  const validTarget = target.origin === 'https://app.mandible.localhost:19420'
+  const validTarget = target.origin === PRODUCTION_ORIGIN
     || (target.protocol === 'https:' && target.port === '19421'
       && /^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(target.hostname));
   if (!validTarget || active.audience !== (target.port === '19421'
