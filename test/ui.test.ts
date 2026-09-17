@@ -47,7 +47,7 @@ import {
   spacesRouteFromHash,
 } from '../ui/src/routing';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
-import { __resetBrowserSessionForTests, initializeBrowserSession } from '../ui/src/client-auth-token';
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
 import {
   AppShellProvider,
   RightSidebarIcon,
@@ -185,7 +185,7 @@ beforeEach(async () => {
   noticeHost.id = 'app-operational-notices';
   document.body.append(noticeHost);
   __resetBrowserSessionForTests();
-  await initializeBrowserSession(async () => new Response(JSON.stringify({
+  await ensureClientAccess(async () => new Response(JSON.stringify({
     authenticated: true,
     session: {
       family_id: 'test-family', audience: 'production', csrf_token: 'test-csrf',
@@ -1996,6 +1996,25 @@ describe('app shell', () => {
     );
     expect(appSource).toContain('id="app-operational-notices"');
     expect(appSource).not.toContain('<DesktopLoginStatus');
+  });
+
+  it('shows one actionable access failure in the main outlet without a signed-out view', async () => {
+    __resetBrowserSessionForTests();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes('/client-auth/whoami')
+        ? { authenticated: false, failure_reason: 'wrong_audience' }
+        : {},
+    ), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const mounted = render(h(App, {}));
+    await waitFor(() => expect(mounted.container.querySelectorAll(
+      '.app-content > #app-operational-notices [data-notice-source="local-access"][role="alert"]',
+    )).toHaveLength(1));
+    expect(mounted.container.querySelector('aside [role="alert"]')).toBeNull();
+    expect(mounted.container.querySelector('.desktop-login')).toBeNull();
+    const before = fetchMock.mock.calls.filter(([url]) => String(url).includes('/client-auth/whoami')).length;
+    fireEvent.click(within(mounted.container.querySelector('#app-operational-notices')!).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/client-auth/whoami'))).toHaveLength(before + 1));
   });
 
   it('renders a deep-linked issue detail while the global issue list is pending', async () => {

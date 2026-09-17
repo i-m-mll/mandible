@@ -10,9 +10,7 @@ import {
   updateChatShownProjectsPreference,
 } from '../api';
 import {
-  getClientAuthSessionState,
-  isTerminalClientAuthState,
-  subscribeClientAuthSessionState,
+  subscribeClientAccessState,
 } from '../client-auth-token';
 
 export const CHAT_VIEW_STATE_KEY = 'mandible.chat.viewState:v1';
@@ -220,8 +218,7 @@ export function useChatProjectSelection(): [
       } catch (error) {
         if (!activeRef.current) return;
         const authRequired = isApiErrorStatus(error, 401)
-          || isApiErrorStatus(error, 403)
-          || isTerminalClientAuthState(getClientAuthSessionState());
+          || isApiErrorStatus(error, 403);
         setState({
           ready: false,
           notice: error instanceof ApiError && error.code === 'local_access_unavailable'
@@ -236,8 +233,8 @@ export function useChatProjectSelection(): [
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') void load();
     };
-    const unsubscribeAuth = subscribeClientAuthSessionState((authState) => {
-      if (authState === 'enrolled') void load();
+    const unsubscribeAuth = subscribeClientAccessState((authState) => {
+      if (authState.phase === 'ready') void load();
     });
     window.addEventListener('focus', refreshWhenVisible);
     document.addEventListener('visibilitychange', refreshWhenVisible);

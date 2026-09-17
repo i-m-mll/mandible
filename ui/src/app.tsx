@@ -54,6 +54,7 @@ import {
   subscribeClientAccessState,
 } from './client-auth-token';
 import { keepSubmittedBriefingAnnotations } from './views/feedback/briefing-preferences';
+import { DetailPaneNotice } from './components/shared/DetailPaneNotice';
 import {
   daemonEpochChanged,
   daemonCommitChanged,
@@ -2665,7 +2666,23 @@ function App(): JSX.Element {
           className="app-operational-notices"
           data-testid="app-operational-notices"
           ref={setNoticeHost}
-        />
+        >
+          {clientAccess.phase === 'initializing' || clientAccess.phase === 'recovering' ? (
+            <DetailPaneNotice severity="info" source="local-access">
+              {accessEverReady ? 'Reconnecting to Mandible…' : 'Connecting to Mandible…'}
+            </DetailPaneNotice>
+          ) : null}
+        </div>
+        {clientAccess.phase === 'failed' ? (
+          <DetailPaneNotice
+            severity="error"
+            source="local-access"
+            title="Mandible connection unavailable"
+            actions={<button type="button" onClick={() => { void retryClientAccess(); }}>Retry</button>}
+          >
+            {clientAccess.failure}
+          </DetailPaneNotice>
+        ) : null}
         {rightSidebarAvailable && !rightSidebarOpen ? (
           <AppRightSidebarToggleButton
             descriptor={rightSidebar!}

@@ -2,7 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../ui/src/api';
-import { __resetBrowserSessionForTests, initializeBrowserSession } from '../../ui/src/client-auth-token';
+import { __resetBrowserSessionForTests, retryClientAccess } from '../../ui/src/client-auth-token';
 import { useSidebarOrderPreference } from '../../ui/src/hooks/useSidebarOrderPreference';
 
 afterEach(() => {
@@ -21,7 +21,7 @@ describe('sidebar order preference hook', () => {
     });
     const { result } = renderHook(() => useSidebarOrderPreference());
     await waitFor(() => expect(result.current.ready).toBe(true));
-    await act(async () => { await initializeBrowserSession(async () => { throw new Error('offline'); }); });
+    await act(async () => { await retryClientAccess(async () => { throw new Error('offline'); }); });
     expect(result.current.ready).toBe(false);
     expect(result.current.value.pinnedConversationIds).toEqual(['kept']);
     expect(result.current.notice).toBeNull();
@@ -34,7 +34,7 @@ describe('sidebar order preference hook', () => {
 
     get.mockResolvedValue({ version: 1, key: 'sidebar_order',
       value: { pinnedConversationIds: ['kept'], briefingTopLevelIds: ['group:two'] }, revision: 5 });
-    await act(async () => { await initializeBrowserSession(async () => new Response(JSON.stringify({
+    await act(async () => { await retryClientAccess(async () => new Response(JSON.stringify({
       authenticated: true, session: { family_id: 'test', audience: 'production', csrf_token: 'csrf', effect_ceiling: [] },
     }), { status: 200, headers: { 'content-type': 'application/json' } })); });
     await waitFor(() => expect(result.current.value.briefingTopLevelIds).toEqual(['group:two']));

@@ -20,11 +20,11 @@ const files = new Map([
 <html lang="en">
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action ${origin.origin}; base-uri 'none'">
-<title>Move Mandible browser state</title>
+<title>Opening Mandible</title>
 <main style="font:16px system-ui;max-width:38rem;margin:4rem auto;line-height:1.5">
-  <h1>Move this browser to Mandible's new address</h1>
-  <p>Your saved workspace settings can move to ${origin.origin}. The installed Mandible app will connect this browser after the move.</p>
-  <button id="move" type="button">Move saved workspace</button>
+  <h1>Opening Mandible at its new address</h1>
+  <p>Your saved workspace is moving with you.</p>
+  <button id="move" type="button" hidden>Retry</button>
   <p id="result" role="status"></p>
 </main>
 <script type="module" src="/dist/origin-migration.js"></script>

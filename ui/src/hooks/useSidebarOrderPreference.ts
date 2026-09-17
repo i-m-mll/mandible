@@ -7,7 +7,7 @@ import {
   updateSidebarOrderPreference,
   type SidebarOrderPreferenceValue,
 } from '../api';
-import { subscribeClientAuthSessionState } from '../client-auth-token';
+import { subscribeClientAccessState } from '../client-auth-token';
 
 export const EMPTY_SIDEBAR_ORDER: SidebarOrderPreferenceValue = {
   pinnedConversationIds: null,
@@ -62,10 +62,10 @@ export function useSidebarOrderPreference() {
   useEffect(() => {
     void load();
     const refresh = () => { if (document.visibilityState === 'visible') void load(); };
-    const unsubscribe = subscribeClientAuthSessionState((state) => {
+    const unsubscribe = subscribeClientAccessState((state) => {
       authEpochRef.current += 1;
       requestRef.current += 1;
-      if (state === 'enrolled') {
+      if (state.phase === 'ready') {
         void queueRef.current.finally(() => load());
         return;
       }
