@@ -176,6 +176,7 @@ async function listen(): Promise<void> {
     });
   });
   origin = `http://127.0.0.1:${port}`;
+  instance.public_origin = origin;
 }
 
 beforeAll(async () => {
