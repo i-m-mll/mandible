@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 : "${MANDIBLE_PORT:=29420}"
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/canonical-origin.sh"
+source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/canonical-origin.sh"
 : "${MANDIBLE_BASE:=${MANDIBLE_PUBLIC_ORIGIN:-$MANDIBLE_CANONICAL_ORIGIN}}"
 
 # Run a jq filter with the shared human-facing identity contract loaded. JSON

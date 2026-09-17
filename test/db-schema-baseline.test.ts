@@ -24,12 +24,16 @@ const FLOOR_FIXTURE = fs.readFileSync(
 );
 
 let tempDir = "";
+const priorSessionAuthorityDir = process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-schema-baseline-"));
+  process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = path.join(tempDir, "local-sessions");
 });
 
 afterEach(() => {
+  if (priorSessionAuthorityDir === undefined) delete process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
+  else process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = priorSessionAuthorityDir;
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
