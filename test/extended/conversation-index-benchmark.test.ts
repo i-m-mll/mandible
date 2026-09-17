@@ -1,7 +1,7 @@
 // Reproduce with:
 // MANDIBLE_CHAT_INDEX_BENCH=1 node scripts/run-vitest.js run --config vitest.extended.config.ts test/extended/conversation-index-benchmark.test.ts
 // An optional MANDIBLE_CHAT_INDEX_REPEATS changes the 751-block fixture multiplier.
-import { afterEach, it, expect } from 'vitest';
+import { afterEach, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -69,6 +69,26 @@ benchmark('measures cold and repeated exact-source index plus first visible wind
   const visibleAt = performance.now();
   expect(visible.status).toBe('source');
 
+  // The earlier tool call now lives only in the sparse index. An appended
+  // result referring to it should remain an append, not reparse the file.
+  fs.appendFileSync(source, `${JSON.stringify({
+    type: 'response_item', timestamp: new Date().toISOString(),
+    payload: { type: 'function_call_output', call_id: 'source-backed-tool-call', output: 'late tool result' },
+  })}\n`);
+  const laterMtime = new Date(Date.now() + 2_000);
+  fs.utimesSync(source, laterMtime, laterMtime);
+  const fullParse = vi.spyOn(CodexParser.prototype, 'parse');
+  const appendStartedAt = performance.now();
+  try {
+    await ingestBatchForWorker([source], false, true, true);
+    expect(fullParse).not.toHaveBeenCalled();
+  } finally {
+    fullParse.mockRestore();
+  }
+  const appendAt = performance.now();
+  await ingestBatchForWorker([source], true, true, true);
+  const controlFullAt = performance.now();
+
   process.stdout.write(`CHAT_INDEX_BENCH ${JSON.stringify({
     bytes: fs.statSync(source).size,
     blocks: conversation.block_count,
@@ -79,5 +99,7 @@ benchmark('measures cold and repeated exact-source index plus first visible wind
     repeated_index_ms: Math.round(repeatAt - pendingReturnedAt),
     repeated_window_ms: Math.round(visibleAt - repeatAt),
     first_visible_after_pending_ms: Math.round(visibleAt - pendingAt),
+    cross_append_tool_result_ms: Math.round(appendAt - appendStartedAt),
+    forced_full_control_ms: Math.round(controlFullAt - appendAt),
   })}\n`);
 }, 60_000);

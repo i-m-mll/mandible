@@ -23,6 +23,7 @@ import { ConversationSourceReader } from "../../src/conversations/source-reader.
 import { getConversationStructureCache } from "../../src/conversations/structure-cache.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
 import { sourceFilesystemIdentity } from "../../src/conversations/source-observer.js";
+import { CodexParser } from "../../src/parsers/codex.js";
 import { FileRpcTransport } from "../../src/file-rpc-transport.js";
 import { resolveInstanceInfo } from "../../src/instance-policy.js";
 
@@ -250,6 +251,36 @@ describe("exact conversation freshness", () => {
     const rpcResponse = JSON.parse(fs.readFileSync(path.join(rpcDir, "export.response.json"), "utf8"));
     expect(rpcResponse.status).toBe(200);
     expect(JSON.stringify(rpcResponse.body)).toContain("new exact tail");
+  });
+
+  it("links a tool result to a prior sparse tool call without reparsing the full transcript", async () => {
+    const seeded = await seed("cross-append-tool-session");
+    await appendAt(seeded.file, record({
+      type: "response_item", timestamp: "2026-08-19T00:00:03Z",
+      payload: { type: "function_call", call_id: "earlier-tool", name: "inspect", arguments: "{}" },
+    }), 2);
+    await triggerExactPathIngest(seeded.file);
+    expect((await exactContents(seeded.id)).length).toBe(3);
+    await appendAt(seeded.file, record({
+      type: "response_item", timestamp: "2026-08-19T00:00:04Z",
+      payload: { type: "function_call_output", call_id: "earlier-tool", output: "tool result tail" },
+    }), 3);
+
+    const fullParse = vi.spyOn(CodexParser.prototype, "parse");
+    try {
+      await triggerExactPathIngest(seeded.file);
+      expect(fullParse).not.toHaveBeenCalled();
+    } finally {
+      fullParse.mockRestore();
+    }
+    const read = await new ConversationSourceReader(db).readAll(seeded.id);
+    expect(read.status).toBe("source");
+    if (read.status !== "source") return;
+    const toolUse = read.value.find((block) => block.type === "tool_use");
+    const toolResult = read.value.find((block) => block.type === "tool_result");
+    expect(toolUse).toBeDefined();
+    expect(toolResult?.parent_id).toBe(toolUse?.id);
+    expect(toolResult?.content).toContain("tool result tail");
   });
 
   it("runs authoritative exact catch-up across bounded read and UTF-8 chunk boundaries", async () => {

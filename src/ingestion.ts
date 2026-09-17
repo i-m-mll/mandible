@@ -2149,6 +2149,7 @@ function resolveIncrementalToolParents(
   conversationId: string,
   result: ParseResult,
 ): void {
+  const structureCache = getConversationStructureCache(db);
   const priorToolCall = db.prepare(`
     SELECT position
       FROM conversation_structural_blocks
@@ -2162,6 +2163,11 @@ function resolveIncrementalToolParents(
   for (const block of result.blocks) {
     const toolId = block.metadata.tool_id;
     if (block.type !== "tool_result" || block.parent_id != null || !toolId?.trim()) continue;
+    const cachedPosition = structureCache.findToolPosition(conversationId, toolId);
+    if (cachedPosition !== null) {
+      block.parent_id = String(cachedPosition);
+      continue;
+    }
     const escapedToolId = toolId.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
     const parent = priorToolCall.get(
       conversationId,
