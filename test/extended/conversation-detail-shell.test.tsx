@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useRef, useState } from 'preact/hooks';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/preact';
+import { render } from './notice-test-render';
 import { CancelledError } from '@tanstack/preact-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -850,15 +851,15 @@ describe('compact detail pane shell', () => {
     renderConversationDetail(scopedConversation);
 
     const alert = await screen.findByRole('alert');
-    const shell = alert.closest('.detail-pane-shell');
-    const boundary = alert.closest('.detail-pane-shell__notice');
+    const shell = document.querySelector('.chat-detail-frame--error');
+    const boundary = alert.parentElement;
     const body = shell?.querySelector(':scope > .detail-pane-shell__body');
     const retryButton = screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
     expect(alert.textContent).toContain(sourceUnavailable);
     expect(shell?.classList.contains('chat-detail-frame--error')).toBe(true);
     expect(alert.classList.contains('detail-pane-notice--compact')).toBe(true);
-    expect(boundary?.getAttribute('data-detail-pane-slot')).toBe('notice');
-    expect(shell?.querySelector(':scope > .detail-pane-shell__notice')).toBe(boundary);
+    expect(boundary?.id).toBe('app-operational-notices');
+    expect(shell?.querySelector('.detail-pane-notice')).toBeNull();
     expect(body?.contains(alert)).toBe(false);
     expect(retryButton.disabled).toBe(false);
 
@@ -1232,7 +1233,7 @@ describe('compact detail pane shell', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('The provider could not complete this action.');
-    expect(alert.closest('[data-detail-pane-slot="notice"]')).toBeTruthy();
+    expect(alert.parentElement?.id).toBe('app-operational-notices');
     expect(container.querySelector('.stream-renderer__scroll')?.contains(alert)).toBe(false);
     expect(screen.getByText('Provider diagnostics').closest('details')?.open).toBe(false);
     expect((composer as HTMLTextAreaElement).value).toBe('Keep this draft for retry.');

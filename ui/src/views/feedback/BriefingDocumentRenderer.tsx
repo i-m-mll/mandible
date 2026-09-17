@@ -796,7 +796,7 @@ export function BriefingDocumentRenderer({
               <label htmlFor="briefing-rename-input">Briefing title</label>
               <input id="briefing-rename-input" autoFocus value={renameTitle}
                 disabled={renameBusy} onInput={(event) => setRenameTitle(event.currentTarget.value)} />
-              {renameError ? <p className="briefing-error" role="alert">{renameError}</p> : null}
+              {renameError ? <DetailPaneNotice severity="error" title="Briefing rename failed">{renameError}</DetailPaneNotice> : null}
               <div className="briefing-detail__rename-actions">
                 <button type="button" className="btn btn--ghost btn--sm" disabled={renameBusy} onClick={() => setRenameOpen(false)}>Cancel</button>
                 <button type="submit" className="briefing-primary" disabled={renameBusy || !renameTitle.trim() || renameTitle.trim() === title}>

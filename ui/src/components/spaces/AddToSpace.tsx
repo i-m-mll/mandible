@@ -15,6 +15,7 @@
 
 import type { RefObject } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../shared/DetailPaneNotice';
 
 import {
   addSpaceItem,
@@ -264,7 +265,7 @@ export function AddToSpace({
             <div className="add-to-space__status">Loading Spaces…</div>
           )}
           {load.status === 'error' && (
-            <div className="add-to-space__status add-to-space__status--error">{load.message}</div>
+            <DetailPaneNotice severity="error" title="Spaces could not be loaded">{load.message}</DetailPaneNotice>
           )}
           {load.status === 'ready' && readySectionCount === 0 && (
             <div className="add-to-space__status">No Spaces yet.</div>

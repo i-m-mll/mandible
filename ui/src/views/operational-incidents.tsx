@@ -1,6 +1,6 @@
 // Operational incident region (issue 5308097, spec §8).
 //
-// This renders the durable incident ledger at the top of the Briefing page. It
+// This renders the durable incident ledger when selected from Briefing navigation. It
 // is an OBSERVER surface, not a task controller: Mandible records what an
 // executor reported and what the operator said about it, and offers exactly two
 // forward actions — acknowledge, and prepare a reviewable fix. There is
@@ -553,13 +553,7 @@ export function OperationalIncidentsRegion({
     }
   }, [prepareFix, reload]);
 
-  const hasAnything = counts.active_unacknowledged > 0
-    || counts.active_acknowledged > 0
-    || counts.resolved > 0
-    || groups.activeUnacknowledged.length > 0
-    || groups.acknowledgedActive.length > 0
-    || groups.resolved.length > 0;
-  if (!hasAnything && !loadError) return null;
+  // An unknown list is not evidence that there are no incidents.
 
   const renderCard = (incident: OperationalIncident, tone: CardTone): JSX.Element => (
     <IncidentCard
@@ -591,12 +585,12 @@ export function OperationalIncidentsRegion({
           {counts.active_acknowledged} acknowledged and still active
         </p>
         {loadError && (
-          <DetailPaneNotice severity="error" density="compact" title="Incidents could not be refreshed">
+          <DetailPaneNotice source="incidents:refresh" severity="error" density="compact" title="Incidents could not be refreshed">
             {loadError}
           </DetailPaneNotice>
         )}
         {Object.keys(cardErrors).length > 0 && (
-          <DetailPaneNotice severity="error" density="compact" title="Incident action failed">
+          <DetailPaneNotice source="incidents:action" severity="error" density="compact" title="Incident action failed">
             {Object.entries(cardErrors).map(([id, message]) => (
               <div key={id}>{list?.incidents.find((incident) => incident.id === id)?.task ?? 'Incident'}: {message}</div>
             ))}
@@ -611,11 +605,11 @@ export function OperationalIncidentsRegion({
         >
           {groups.activeUnacknowledged.map((incident) => renderCard(incident, 'warning'))}
         </div>
-      ) : (
+      ) : list ? (
         <p className="operational-incidents__empty">
           No unacknowledged operational incidents.
         </p>
-      )}
+      ) : <p className="operational-incidents__empty">Incidents have not loaded.</p>}
 
       {counts.active_acknowledged > 0 || groups.acknowledgedActive.length > 0 ? (
         <div

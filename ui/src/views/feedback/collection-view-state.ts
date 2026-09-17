@@ -16,6 +16,7 @@ export type BriefingCollectionViewState = {
   collapsedGroupSubgroupKeys: string[];
   selectedGroupUpdateIds: Record<string, string>;
   selectedGroupId: string | null;
+  selectedSurface: 'briefing' | 'incidents';
   selectedCollectionId: string | null;
   selectedRoundIds: Record<string, string>;
 };
@@ -23,7 +24,7 @@ export const DEFAULT_BRIEFING_COLLECTION_VIEW_STATE: BriefingCollectionViewState
   collectionSourceFilter: '', pinnedOnly: false, collectionSort: 'activity', collectionLifecycle: 'active', pinnedCollectionIds: [], pinnedSectionCollapsed: false,
   collapsedBundleIds: [],
   collapsedGroupIds: [], collapsedGroupSubgroupKeys: [], selectedGroupUpdateIds: {}, selectedGroupId: null,
-  selectedCollectionId: null, selectedRoundIds: {},
+  selectedSurface: 'briefing', selectedCollectionId: null, selectedRoundIds: {},
 };
 export function normalizeBriefingCollectionViewState(value: unknown): BriefingCollectionViewState {
   const row = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -47,6 +48,7 @@ export function normalizeBriefingCollectionViewState(value: unknown): BriefingCo
     collapsedGroupSubgroupKeys: normalizeOrderedPinIds(Array.isArray(row.collapsedGroupSubgroupKeys) ? row.collapsedGroupSubgroupKeys : []),
     selectedGroupUpdateIds: Object.fromEntries(Object.entries(rawGroupUpdates).filter((entry): entry is [string, string] => Boolean(entry[0]) && typeof entry[1] === 'string' && Boolean(entry[1].trim())).slice(0, 1000)),
     selectedGroupId,
+    selectedSurface: row.selectedSurface === 'incidents' ? 'incidents' : 'briefing',
     selectedCollectionId: !selectedGroupId && typeof row.selectedCollectionId === 'string' && row.selectedCollectionId.trim() ? row.selectedCollectionId : null,
     selectedRoundIds: Object.fromEntries(Object.entries(rawRounds).filter((entry): entry is [string, string] => Boolean(entry[0]) && typeof entry[1] === 'string' && Boolean(entry[1].trim())).slice(0, 1000)),
   };

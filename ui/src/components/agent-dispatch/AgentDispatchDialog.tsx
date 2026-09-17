@@ -20,6 +20,7 @@
 // an honest failure: a spawn that could not start is shown as a failure with
 // the daemon's reason, never as a silent close.
 import { useEffect, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../shared/DetailPaneNotice';
 
 import {
   dispatchAgent,
@@ -167,9 +168,9 @@ export function AgentDispatchDialog({
         ) : null}
 
         {error ? (
-          <p className="agent-dispatch-dialog__error" role="alert" data-testid="agent-dispatch-error">
+          <DetailPaneNotice severity="error" title="Agent dispatch failed" testId="agent-dispatch-error">
             {error}
-          </p>
+          </DetailPaneNotice>
         ) : null}
 
         <div className="agent-dispatch-dialog__actions">

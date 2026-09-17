@@ -10,7 +10,8 @@
 //   - the never-registered empty state says so in those words and offers no
 //     way to create anything.
 //   - a stale executor report is visibly stale in the list.
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/preact';
+import { render } from './notice-test-render';
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

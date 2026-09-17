@@ -4,6 +4,7 @@ import type { Dispatch, StateUpdater } from 'preact/hooks';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import type { CanonicalProject, CanonicalProjectCheckout } from '../api';
 import {
+  ApiError,
   getChatShownProjectsPreference,
   isApiErrorStatus,
   updateChatShownProjectsPreference,
@@ -223,8 +224,9 @@ export function useChatProjectSelection(): [
           || isTerminalClientAuthState(getClientAuthSessionState());
         setState({
           ready: false,
-          notice: authRequired
-            ? 'Reconnect this browser to load its saved project selection.'
+          notice: error instanceof ApiError && error.code === 'local_access_unavailable'
+            ? null : authRequired
+            ? 'Project selection is unavailable until local access recovers.'
             : 'Project selection is unavailable. It will retry when Mandible reconnects.',
         });
       } finally {

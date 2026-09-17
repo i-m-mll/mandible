@@ -1,7 +1,8 @@
 // Bug: 645f8a8 — auth view mutation gate. While the daemon is not ready
 // (rebuilding / starting), the Approve button must be disabled and NO approval
 // action may fire. Once ready, Approve works normally.
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { render } from './notice-test-render';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthHooksPanel, AuthQueueView, type AuthRequest } from '../../ui/src/views/auth';
@@ -189,8 +190,8 @@ describe('AuthQueueView daemon readiness gate', () => {
     const requestHeader = document.querySelector('.auth-detail__header');
     const requestBody = document.querySelector('.auth-detail__body');
     expect(alert.textContent).toContain('Signing credential is unavailable.');
-    expect(alert.closest('[data-detail-pane-slot="notice"]')?.parentElement).toBe(requestPane);
-    expect(requestHeader?.nextElementSibling?.contains(alert)).toBe(true);
+    expect(alert.parentElement?.id).toBe('app-operational-notices');
+    expect(requestPane?.contains(alert)).toBe(false);
     expect(requestBody?.contains(alert)).toBe(false);
     expect(document.querySelector('.auth-toast')).toBeNull();
 
@@ -257,16 +258,15 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(warning).toBeTruthy();
     expect(warning?.getAttribute('data-severity')).toBe('warning');
     expect(warning?.classList.contains('detail-pane-notice')).toBe(true);
-    expect(detail?.classList.contains('auth-detail')).toBe(true);
+    expect(detail?.id).toBe('app-operational-notices');
     expect(detail?.firstElementChild).toBe(warning);
-    expect(warning?.nextElementSibling).toBe(requestPane);
+    expect(requestPane?.contains(warning as Node)).toBe(false);
     expect(requestPane?.classList.contains('detail-pane-shell')).toBe(true);
     expect(requestHeader?.classList.contains('detail-pane-shell__header')).toBe(true);
     expect(requestBody?.classList.contains('detail-pane-shell__body')).toBe(true);
     expect(requestHeader?.querySelector('.detail-pane-shell__header-primary.auth-detail__header-primary')).toBeTruthy();
     expect(canonicalHeaders).toHaveLength(1);
     expect(canonicalHeader?.classList.contains('detail-pane-header')).toBe(true);
-    expect(requestHeader && warning?.compareDocumentPosition(requestHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(requestBody?.contains(warning as Node)).toBe(false);
     expect(requestBody?.contains(requestHeader as Node)).toBe(false);
     expect(requestBody?.contains(approve)).toBe(false);
@@ -287,10 +287,10 @@ describe('AuthQueueView daemon readiness gate', () => {
     const warning = screen.getByText(/Auth actions are disabled for this copied preview queue/).closest('.detail-pane-notice')!;
     const detail = warning.parentElement;
     const empty = screen.getByText('No requests in this view').closest('.auth-detail__empty');
-    expect(detail?.classList.contains('auth-detail')).toBe(true);
+    expect(detail?.id).toBe('app-operational-notices');
     expect(warning.getAttribute('data-severity')).toBe('warning');
     expect(detail?.firstElementChild).toBe(warning);
-    expect(warning.nextElementSibling).toBe(empty);
+    expect(empty?.contains(warning)).toBe(false);
     expect(screen.getByText(/Auth actions are disabled for this copied preview queue/)).toBeTruthy();
   });
 

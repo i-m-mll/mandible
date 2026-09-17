@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
+import { cleanup, fireEvent, screen } from '@testing-library/preact';
+import { render } from './notice-test-render';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {

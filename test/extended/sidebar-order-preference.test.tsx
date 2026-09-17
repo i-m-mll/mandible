@@ -2,14 +2,44 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../ui/src/api';
+import { __resetBrowserSessionForTests, initializeBrowserSession } from '../../ui/src/client-auth-token';
 import { useSidebarOrderPreference } from '../../ui/src/hooks/useSidebarOrderPreference';
 
 afterEach(() => {
   cleanup();
+  __resetBrowserSessionForTests();
   vi.restoreAllMocks();
 });
 
 describe('sidebar order preference hook', () => {
+  it('retains confirmed host order through local access recovery and reloads when ready', async () => {
+    __resetBrowserSessionForTests();
+    const get = vi.spyOn(api, 'getSidebarOrderPreference').mockResolvedValue({
+      version: 1, key: 'sidebar_order',
+      value: { pinnedConversationIds: ['kept'], briefingTopLevelIds: ['group:one'] },
+      revision: 4,
+    });
+    const { result } = renderHook(() => useSidebarOrderPreference());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    await act(async () => { await initializeBrowserSession(async () => { throw new Error('offline'); }); });
+    expect(result.current.ready).toBe(false);
+    expect(result.current.value.pinnedConversationIds).toEqual(['kept']);
+    expect(result.current.notice).toBeNull();
+
+    get.mockRejectedValue(new api.ApiError('Local access unavailable', 503, 'local_access_unavailable'));
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    expect(result.current.value.briefingTopLevelIds).toEqual(['group:one']);
+    expect(result.current.notice).toBeNull();
+
+    get.mockResolvedValue({ version: 1, key: 'sidebar_order',
+      value: { pinnedConversationIds: ['kept'], briefingTopLevelIds: ['group:two'] }, revision: 5 });
+    await act(async () => { await initializeBrowserSession(async () => new Response(JSON.stringify({
+      authenticated: true, session: { family_id: 'test', audience: 'production', csrf_token: 'csrf', effect_ceiling: [] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })); });
+    await waitFor(() => expect(result.current.value.briefingTopLevelIds).toEqual(['group:two']));
+    expect(result.current.ready).toBe(true);
+  });
   it('loads one shared value and serializes optimistic writes without losing either field', async () => {
     vi.spyOn(api, 'getSidebarOrderPreference').mockResolvedValue({
       version: 1,

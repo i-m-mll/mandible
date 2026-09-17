@@ -53,7 +53,6 @@ import {
 } from './client-auth-token';
 import { recoverDesktopLoginAutomatically } from './desktop-login';
 import { keepSubmittedBriefingAnnotations } from './views/feedback/briefing-preferences';
-import { DesktopLoginStatus } from './components/DesktopLoginStatus';
 import {
   daemonEpochChanged,
   daemonCommitChanged,
@@ -629,6 +628,14 @@ function App(): JSX.Element {
   const [viewSidebarWidths, setViewSidebarWidths] = useState<ViewSidebarWidths>(
     readInitialViewSidebarWidths,
   );
+  const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
+  const [noticeHeight, setNoticeHeight] = useState(0);
+  useLayoutEffect(() => {
+    if (!noticeHost || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => setNoticeHeight(noticeHost.getBoundingClientRect().height));
+    observer.observe(noticeHost);
+    return () => observer.disconnect();
+  }, [noticeHost]);
   const [visitedTabs, setVisitedTabs] = useState<Set<RenderableTab>>(() => {
     const initial = parseHashRoute();
     return new Set<RenderableTab>([isRenderableTab(initial.tab) ? initial.tab : 'spaces']);
@@ -758,7 +765,8 @@ function App(): JSX.Element {
     setViewSidebarWidth,
     viewSidebarWidth,
     active: true,
-  }), [rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
+    noticeHost,
+  }), [noticeHost, rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
 
   const effectiveSettings = useMemo(() => (
     hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
@@ -2608,10 +2616,6 @@ function App(): JSX.Element {
                   {railDisplayMode === 'both' && <span className="app-rail__label">{appThemeLabel}</span>}
                   {railDisplayMode !== 'both' && <span className="app-rail__tooltip">App theme: {appThemeLabel}</span>}
                 </button>
-                <DesktopLoginStatus
-                  placement="rail"
-                  showRailLabel={railDisplayMode === 'both'}
-                />
                 {renderRailItem(logsNavItem)}
                 {renderRailItem({
                   tab: 'settings',
@@ -2625,7 +2629,14 @@ function App(): JSX.Element {
         <main
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
           data-app-surface="main"
+          style={{ '--app-operational-notice-height': `${noticeHeight}px` } as JSX.CSSProperties}
         >
+        <div
+          id="app-operational-notices"
+          className="app-operational-notices"
+          data-testid="app-operational-notices"
+          ref={setNoticeHost}
+        />
         {rightSidebarAvailable && !rightSidebarOpen ? (
           <AppRightSidebarToggleButton
             descriptor={rightSidebar!}

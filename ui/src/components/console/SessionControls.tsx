@@ -1,5 +1,6 @@
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useMemo, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../shared/DetailPaneNotice';
 import {
   getConsoleSessionOptions,
   type SessionRunOptionState,
@@ -85,7 +86,7 @@ export function SessionModelControl({
         ))}
       </select>
       {model.availability !== 'available' && <span className="session-controls__placeholder">{model.availability === 'awaiting_provider' ? 'Waiting for provider…' : 'Unavailable'}</span>}
-      {error && <span className="session-controls__error">{error}</span>}
+      {error && <DetailPaneNotice severity="error" title="Session option could not be saved">{error}</DetailPaneNotice>}
     </label>
   );
 }
@@ -176,7 +177,7 @@ export function SessionControls({
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>}
-      {error && <div className="session-controls__error">{error}</div>}
+      {error && <DetailPaneNotice severity="error" title="Session options could not be saved">{error}</DetailPaneNotice>}
     </div>
   );
 }
