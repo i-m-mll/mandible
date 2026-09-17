@@ -703,6 +703,69 @@ describe("plural Briefing routes", () => {
     expect((await router.invoke({ method: "GET", url: "/api/asks/anything", credential: "human" })).status).toBe(404);
   });
 
+  it.each(["accepted", "rejected"] as const)("reviews a manual addition with exact destination ownership (%s)", async (decision) => {
+    setSetting(db, "user.operator_id", humanId);
+    const artifact = recordArtifactVersion(db, { source_kind: "managed", content: "# Maintenance\n\nReport.\n",
+      series_key: "test:manual-review", logical_name: "Maintenance.md", role: "briefing-document",
+      media_type: "text/markdown" });
+    const published = publishBriefingFromArtifactVersion(db, {
+      title: "Maintenance", artifact_version_ref: artifact.version.id, profile: "mandible-briefing.v3",
+      responder_user_ids: [humanId],
+    });
+    if (published.outcome === "active_candidates") throw new Error("unexpected publication conflict");
+    const viewer = { userId: humanId, operator: true };
+    const base = createBriefingBundle(db, { name: "Base", briefingRefs: [], viewer });
+    const proposal = createBriefingBundle(db, { name: "Addition", briefingRefs: [published.briefing_id], viewer });
+    const group = createBriefingGroup(db, { key: "digest", name: "Digest", currentBundleRef: base.id,
+      bundleRefs: [proposal.id], viewer });
+    const logical = db.prepare("SELECT artifact_id FROM artifact_version WHERE id = ?")
+      .get(artifact.version.id) as { artifact_id: string };
+    const changes = [{ logical_artifact_ref: logical.artifact_id, expected_group_ref: null }];
+    const previewBody = { expected_base_bundle_ref: base.id, proposal_bundle_ref: proposal.id,
+      destination_changes: changes };
+    const preview = () => router.invoke({ method: "POST",
+      url: `/api/briefing-groups/${group.id}/review-candidates`, credential: "human", body: previewBody });
+    expect(await preview()).toMatchObject({ status: 200, body: { candidate: {
+      ready: false, blocker_code: "briefing_review_submission_required",
+    } } });
+    const annotation = await router.invoke({ method: "POST",
+      url: `/api/briefings/${published.briefing_id}/rounds/${published.round_id}/annotations`, credential: "human",
+      body: { annotations: [{ operation: "set", kind: "comment", start_offset: 2, end_offset: 13,
+        quote: "Maintenance", body: "Reviewed placement", replacement_text: null }] },
+    });
+    expect(annotation.status).toBe(200);
+    const annotationIds = (annotation.body as { annotation_event_ids: string[] }).annotation_event_ids;
+    expect(await router.invoke({ method: "POST",
+      url: `/api/briefings/${published.briefing_id}/rounds/${published.round_id}/submit`,
+      credential: "human", body: { answers: [], annotation_event_ids: annotationIds, supersedes_submission_id: null },
+    })).toMatchObject({ status: 200 });
+    const reviewed = await preview();
+    expect(reviewed).toMatchObject({ status: 200, body: { candidate: {
+      ready: true, composition_run_id: null, destination_changes: [{ expected_group_id: null }],
+    } } });
+    const binding = (reviewed.body as { candidate: { binding_digest: string } }).candidate.binding_digest;
+    const dispositionBody = { ...previewBody, decision, binding_digest: binding };
+    const url = `/api/briefing-groups/${group.id}/review-dispositions`;
+    for (const credential of ["agent-schedule", "session:human"]) {
+      expect(await router.invoke({ method: "POST", url, credential, body: dispositionBody }))
+        .toMatchObject({ status: 403 });
+    }
+    expect(await router.invoke({ method: "POST", url, credential: "human",
+      body: { ...dispositionBody, destination_changes: [] } }))
+      .toMatchObject({ status: 409, body: { code: "briefing_review_binding_drift" } });
+    expect(await router.invoke({ method: "POST", url, credential: "human", body: dispositionBody }))
+      .toMatchObject({ status: 200, body: { changed: true, group: {
+        current: { id: decision === "accepted" ? proposal.id : base.id }, updates: [],
+      }, disposition: { composition_run_id: null, kind: decision } } });
+    expect(db.prepare("SELECT group_id FROM briefing_destination_owners WHERE logical_artifact_id = ?")
+      .get(logical.artifact_id)).toEqual(decision === "accepted" ? { group_id: group.id } : undefined);
+    expect(await router.invoke({ method: "POST", url, credential: "human", body: dispositionBody }))
+      .toMatchObject({ status: 200, body: { changed: false } });
+    expect(await router.invoke({ method: "POST", url, credential: "human",
+      body: { ...dispositionBody, destination_changes: [] } }))
+      .toMatchObject({ status: 409, body: { code: "briefing_review_replay_drift" } });
+  });
+
   it("dispatches normalized composition runs through the idempotent plural run endpoint", async () => {
     setSetting(db, "user.operator_id", humanId);
     const source = "# Project\n\n## Maintenance\n\nExisting.\n";

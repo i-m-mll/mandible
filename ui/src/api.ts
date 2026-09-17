@@ -4798,6 +4798,7 @@ export async function dispositionBriefingGroupProposal(
     expectedBaseBundleId: string;
     proposalBundleId: string;
     bindingDigest: string;
+    destinationChanges: BriefingGroupReviewCandidate['destinationChanges'];
   },
 ): Promise<{ group: BriefingGroup; disposition: BriefingGroupDisposition; changed: boolean }> {
   const response = await apiPost(`/api/briefing-groups/${encodeURIComponent(groupId)}/review-dispositions`, {
@@ -4805,6 +4806,10 @@ export async function dispositionBriefingGroupProposal(
     expected_base_bundle_ref: input.expectedBaseBundleId,
     proposal_bundle_ref: input.proposalBundleId,
     binding_digest: input.bindingDigest,
+    destination_changes: input.destinationChanges.map((change) => ({
+      logical_artifact_ref: change.logicalArtifactId,
+      expected_group_ref: change.expectedGroupId,
+    })),
   });
   const root = briefingRecord(await parseMaybeJson(response));
   const group = normalizeBriefingGroups({ groups: [root.group] })[0];

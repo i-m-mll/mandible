@@ -114,6 +114,16 @@ export type BriefingGroupDestinationChangeInput = {
   expectedGroupRef: string | null;
 };
 
+function destinationChangeIdentity(db: Db, change: BriefingGroupDestinationChangeInput) {
+  const artifact = resolveArtifactRefReadonlyFull(db, change.logicalArtifactRef);
+  if (artifact.status !== "resolved" || artifact.target_type !== "artifact" || !artifact.target_id) {
+    throw new BriefingStoreError("Destination changes require exact logical Artifact refs", 404,
+      "artifact_not_found");
+  }
+  const expectedGroupId = change.expectedGroupRef === null ? null : resolveGroupId(db, change.expectedGroupRef);
+  return { logical_artifact_id: artifact.target_id, expected_group_id: expectedGroupId };
+}
+
 function resolveDestinationChanges(
   db: Db,
   groupId: string,
@@ -127,19 +137,16 @@ function resolveDestinationChanges(
       "briefing_destination_group_inactive");
   }
   const resolved = input.map((change) => {
-    const artifact = resolveArtifactRefReadonlyFull(db, change.logicalArtifactRef);
-    if (artifact.status !== "resolved" || artifact.target_type !== "artifact" || !artifact.target_id) {
-      throw new BriefingStoreError("Destination changes require exact logical Artifact refs", 404,
-        "artifact_not_found");
-    }
-    const expectedGroupId = change.expectedGroupRef === null ? null : resolveGroupId(db, change.expectedGroupRef);
+    const identity = destinationChangeIdentity(db, change);
+    const artifactId = identity.logical_artifact_id;
+    const expectedGroupId = identity.expected_group_id;
     const owner = db.prepare("SELECT group_id FROM briefing_destination_owners WHERE logical_artifact_id = ?")
-      .get(artifact.target_id) as { group_id: string } | undefined;
+      .get(artifactId) as { group_id: string } | undefined;
     if ((owner?.group_id ?? null) !== expectedGroupId) {
       throw new BriefingStoreError("Destination ownership changed since the proposal was reviewed", 409,
         "briefing_destination_owner_drift");
     }
-    const placements = proposalRows.filter((row) => row.artifact_id === artifact.target_id);
+    const placements = proposalRows.filter((row) => row.artifact_id === artifactId);
     if (placements.length !== 1) {
       throw new BriefingStoreError(
         "A destination move requires exactly one matching document in the proposed layout",
@@ -147,7 +154,7 @@ function resolveDestinationChanges(
         "briefing_destination_document_drift",
       );
     }
-    return { logical_artifact_id: artifact.target_id, expected_group_id: expectedGroupId };
+    return { logical_artifact_id: artifactId, expected_group_id: expectedGroupId };
   }).sort((left, right) => left.logical_artifact_id.localeCompare(right.logical_artifact_id));
   if (new Set(resolved.map((change) => change.logical_artifact_id)).size !== resolved.length) {
     throw new BriefingStoreError("Destination changes must name each logical Artifact at most once");
@@ -211,23 +218,31 @@ function humanReviewCandidate(
     input.proposalBundleId, null, null, "briefing_review_base_required",
     "Human-reviewed disposition requires an existing Base bundle.",
   );
-  const provenance = db.prepare(`SELECT run_id FROM briefing_composition_targets
-    WHERE group_id = ? AND base_bundle_id = ? AND proposal_bundle_id = ? AND outcome = 'proposed'`)
-    .get(input.groupId, input.expectedBaseBundleId, input.proposalBundleId) as { run_id: string } | undefined;
-  if (!provenance) return blockedReviewCandidate(
-    input.proposalBundleId, input.expectedBaseBundleId, null, "briefing_review_provenance_required",
-    "Human-reviewed disposition is limited to an exact recurring-composer proposal.",
-  );
+  // Composer provenance is optional for manually staged proposals, but an existing
+  // composer record must still match the exact reviewed group and Base.
+  const provenance = db.prepare(`SELECT run_id, group_id, base_bundle_id, outcome
+    FROM briefing_composition_targets WHERE proposal_bundle_id = ?`)
+    .all(input.proposalBundleId) as Array<{
+      run_id: string; group_id: string; base_bundle_id: string; outcome: string;
+    }>;
+  if (provenance.length > 1 || provenance.some((row) => row.group_id !== input.groupId
+      || row.base_bundle_id !== input.expectedBaseBundleId || row.outcome !== "proposed")) {
+    return blockedReviewCandidate(
+      input.proposalBundleId, input.expectedBaseBundleId, null, "briefing_review_provenance_drift",
+      "Composer provenance does not match this exact group, Base, and proposal.",
+    );
+  }
+  const compositionRunId = provenance[0]?.run_id ?? null;
   const baseRows = reviewBundleSnapshot(db, input.expectedBaseBundleId);
   const proposalRows = reviewBundleSnapshot(db, input.proposalBundleId);
   if (proposalRows.length === 0 || proposalRows.some((row) => row.archived_at !== null || !row.round_id
       || !row.artifact_version_id || !row.artifact_id || !row.content_hash)) return blockedReviewCandidate(
-    input.proposalBundleId, input.expectedBaseBundleId, provenance.run_id,
+    input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,
     "briefing_review_proposal_incomplete", "Every proposal member must have one active frozen Briefing round.",
   );
   if (baseRows.some((row) => row.archived_at !== null || !row.round_id
       || !row.artifact_version_id || !row.artifact_id || !row.content_hash)) return blockedReviewCandidate(
-    input.proposalBundleId, input.expectedBaseBundleId, provenance.run_id,
+    input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,
     "briefing_review_base_incomplete", "Every Base member must have one active frozen Briefing round.",
   );
   const baseLayout = reviewLayout(baseRows);
@@ -251,7 +266,7 @@ function humanReviewCandidate(
   const baseByArtifact = new Map<string, ReviewSnapshotRow>();
   for (const row of baseRows) {
     if (baseByArtifact.has(row.artifact_id!)) return blockedReviewCandidate(
-      input.proposalBundleId, input.expectedBaseBundleId, provenance.run_id,
+      input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,
       "briefing_review_base_ambiguous", "The Base contains the same logical Artifact more than once.",
     );
     baseByArtifact.set(row.artifact_id!, row);
@@ -260,7 +275,7 @@ function humanReviewCandidate(
   const items: BriefingGroupReviewItem[] = [];
   for (const [position, row] of proposalRows.entries()) {
     if (proposalArtifacts.has(row.artifact_id!)) return blockedReviewCandidate(
-      input.proposalBundleId, input.expectedBaseBundleId, provenance.run_id,
+      input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,
       "briefing_review_proposal_ambiguous", "The proposal contains the same logical Artifact more than once.", items,
     );
     proposalArtifacts.add(row.artifact_id!);
@@ -273,13 +288,13 @@ function humanReviewCandidate(
       && (row.blob_availability === "present" || row.blob_availability === "pinned")
       && row.commit_sha === null;
     if (!authoritative) return blockedReviewCandidate(
-      input.proposalBundleId, input.expectedBaseBundleId, provenance.run_id,
+      input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,
       "briefing_review_repository_authority_required",
       "Repository-backed, mixed-lineage, external, or unavailable proposal bytes require protected merge promotion.", items,
     );
     const bytes = readArtifactBytesFull(db, row.artifact_version_id!);
     if (!bytes.ok) return blockedReviewCandidate(
-      input.proposalBundleId, input.expectedBaseBundleId, provenance.run_id,
+      input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,
       "briefing_review_custody_unavailable", `Proposal artifact custody is unavailable: ${bytes.reason}.`, items,
     );
     let submissionId: string | null = null;
@@ -288,7 +303,7 @@ function humanReviewCandidate(
         WHERE round_id = ? AND actor_user_id = ? ORDER BY ordinal DESC, created_at DESC, id DESC LIMIT 1`)
         .get(row.round_id, input.operatorUserId) as { id: string } | undefined;
       if (!submission) return blockedReviewCandidate(
-        input.proposalBundleId, input.expectedBaseBundleId, provenance.run_id,
+        input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,
         "briefing_review_submission_required",
         "Submit a frozen operator review for every changed proposal document before accepting or rejecting it.", items,
       );
@@ -311,14 +326,14 @@ function humanReviewCandidate(
     });
   }
   if (!items.some((item) => item.changed) && !layoutChanged && destinationChanges.length === 0) return blockedReviewCandidate(
-    input.proposalBundleId, input.expectedBaseBundleId, provenance.run_id,
+    input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,
     "briefing_review_change_required",
     "Human-reviewed disposition requires a document, layout, or destination ownership change.", items,
   );
   const candidate = {
     expected_base_bundle_id: input.expectedBaseBundleId,
     proposal_bundle_id: input.proposalBundleId,
-    composition_run_id: provenance.run_id,
+    composition_run_id: compositionRunId,
     base_layout: baseLayout,
     proposal_layout: proposalLayout,
     base_layout_digest: baseLayoutDigest,
@@ -437,7 +452,7 @@ function readBriefingGroupHistory(
       base_layout_digest, proposal_layout_digest, created_at
     FROM briefing_group_review_dispositions WHERE group_id = ?`).all(groupId) as Array<{
       id: string; decision: "accepted" | "rejected"; expected_base_bundle_id: string;
-      proposal_bundle_id: string; composition_run_id: string; resulting_base_bundle_id: string;
+      proposal_bundle_id: string; composition_run_id: string | null; resulting_base_bundle_id: string;
       binding_digest: string; manifest_json: string; actor_user_id: string; evidence_method: string;
       credential_id: string | null; item_count: number; destination_change_count: number;
       base_layout_digest: string | null; proposal_layout_digest: string | null; created_at: number;
@@ -809,6 +824,15 @@ export function dispositionBriefingGroupProposalByHumanReview(
         throw new BriefingStoreError("Applied human-review disposition does not match this exact replay", 409,
           "briefing_review_replay_drift");
       }
+      const expectedChanges = db.prepare(`SELECT logical_artifact_id, expected_group_id
+        FROM briefing_group_review_destination_items WHERE disposition_id = ? ORDER BY position`)
+        .all(replay.id);
+      const replayChanges = (input.destinationChanges ?? []).map((change) => destinationChangeIdentity(db, change))
+        .sort((left, right) => left.logical_artifact_id.localeCompare(right.logical_artifact_id));
+      if (canonicalJson(replayChanges) !== canonicalJson(expectedChanges)) {
+        throw new BriefingStoreError("Destination changes do not match this exact replay", 409,
+          "briefing_review_replay_drift");
+      }
       return { dispositionId: replay.id, changed: false };
     }
     const group = db.prepare("SELECT current_bundle_id, archived_at FROM briefing_groups WHERE id = ?")
@@ -827,7 +851,7 @@ export function dispositionBriefingGroupProposalByHumanReview(
       groupId, expectedBaseBundleId, proposalBundleId, operatorUserId: actor.userId,
       destinationChanges: input.destinationChanges,
     });
-    if (!candidate.ready || !candidate.binding_digest || !candidate.composition_run_id) {
+    if (!candidate.ready || !candidate.binding_digest) {
       throw new BriefingStoreError(candidate.blocker_message ?? "Human-review binding is unavailable", 409,
         candidate.blocker_code ?? "briefing_review_binding_unavailable");
     }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   addSpaceItem,
+  dispositionBriefingGroupProposal,
   briefingApiCacheFamiliesForEvent,
   getBriefingSidebarSnapshot,
   getBriefings,
@@ -72,6 +73,25 @@ describe('dashboard API GET cache', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     invalidateApiGetCache();
+  });
+
+  it('sends the destination changes bound into a Briefing disposition', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ error: 'Stop after request capture' }), {
+      status: 409, headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(dispositionBriefingGroupProposal('digest', {
+      decision: 'accepted', expectedBaseBundleId: 'base', proposalBundleId: 'proposal',
+      bindingDigest: 'a'.repeat(64), destinationChanges: [{
+        logicalArtifactId: 'artifact:report', expectedGroupId: null, resultingGroupId: 'digest',
+      }],
+    })).rejects.toThrow();
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/review-dispositions'));
+    expect(call).toBeDefined();
+    const options = call![1]!;
+    expect(JSON.parse(options.body as string)).toMatchObject({
+      destination_changes: [{ logical_artifact_ref: 'artifact:report', expected_group_ref: null }],
+    });
   });
 
   it('deduplicates concurrent same-URL GETs across API helpers', async () => {

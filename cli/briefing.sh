@@ -441,7 +441,7 @@ cmd_group_review_disposition() {
     '{decision:$decision,expected_base_bundle_ref:$expected,proposal_bundle_ref:$proposal,binding_digest:$binding,
       destination_changes:$changes}')"
   response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/review-dispositions" "$payload")" \
-    || die "Failed to $action recurring Briefing proposal." 1
+    || die "Failed to $action Briefing proposal." 1
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else

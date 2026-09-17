@@ -87,7 +87,7 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
     decision TEXT NOT NULL CHECK(decision IN ('accepted','rejected')),
     expected_base_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
     proposal_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
-    composition_run_id TEXT NOT NULL REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
+    composition_run_id TEXT REFERENCES briefing_composition_runs(id) ON DELETE RESTRICT,
     resulting_base_bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
     base_layout_digest TEXT CHECK(base_layout_digest IS NULL OR (length(base_layout_digest) = 64
       AND base_layout_digest NOT GLOB '*[^0-9a-f]*')),
