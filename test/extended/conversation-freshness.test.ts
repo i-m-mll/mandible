@@ -257,10 +257,11 @@ describe("exact conversation freshness", () => {
     const seeded = await seed("cross-append-tool-session");
     await appendAt(seeded.file, record({
       type: "response_item", timestamp: "2026-08-19T00:00:03Z",
-      payload: { type: "function_call", call_id: "earlier-tool", name: "inspect", arguments: "{}" },
+      payload: { type: "function_call", id: "provider-tool-message", call_id: "earlier-tool", name: "inspect", arguments: "{}" },
     }), 2);
     await triggerExactPathIngest(seeded.file);
     expect((await exactContents(seeded.id)).length).toBe(3);
+    expect(getConversationStructureCache(db).findToolPosition(seeded.id, "earlier-tool")).toBe(2);
     await appendAt(seeded.file, record({
       type: "response_item", timestamp: "2026-08-19T00:00:04Z",
       payload: { type: "function_call_output", call_id: "earlier-tool", output: "tool result tail" },
