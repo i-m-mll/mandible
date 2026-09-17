@@ -126,6 +126,20 @@ Object.defineProperty(navigator, 'clipboard', {
 
 window.fetch = ((input: RequestInfo | URL) => {
   const url = String(input);
+  if (url === '/api/client-auth/whoami') {
+    return Promise.resolve(new Response(JSON.stringify({
+      authenticated: true,
+      session: {
+        family_id: 'chat-mount-family',
+        audience: 'production',
+        csrf_token: 'chat-mount-csrf',
+        effect_ceiling: ['ledger:read', 'ledger:write'],
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+  }
   if (url.includes(`/api/conversations/${conversationId}`) && !url.includes('/control')) {
     return Promise.resolve(new Response(JSON.stringify(positionWindow), {
       status: 200,
