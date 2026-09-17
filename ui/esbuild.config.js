@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { build, context } from 'esbuild';
+import { UI_ENTRY_POINTS } from './entry-points.mjs';
 
 const isWatch = process.argv.includes('--watch');
 const outdir = 'ui/dist';
@@ -51,7 +52,7 @@ const assetManifestPlugin = {
       if (result.errors.length > 0 || !result.metafile) return;
       const outputs = result.metafile.outputs;
       const entries = Object.entries(outputs);
-      const appEntry = entries.find(([, output]) => output.entryPoint === 'ui/src/app.tsx')?.[0];
+      const appEntry = entries.find(([, output]) => output.entryPoint === UI_ENTRY_POINTS.app)?.[0];
       if (!appEntry) throw new Error('UI build did not emit the app entry point');
 
       const routes = {};
@@ -80,7 +81,7 @@ const assetManifestPlugin = {
 };
 
 const buildOptions = {
-  entryPoints: ['ui/src/app.tsx'],
+  entryPoints: [UI_ENTRY_POINTS.app],
   bundle: true,
   outdir,
   entryNames: 'app',
@@ -107,7 +108,7 @@ const buildOptions = {
 };
 
 const originMigrationBuildOptions = {
-  entryPoints: ['ui/src/origin-migration.ts'],
+  entryPoints: [UI_ENTRY_POINTS.originMigration],
   bundle: true,
   outfile: 'ui/dist/origin-migration.js',
   format: 'esm',

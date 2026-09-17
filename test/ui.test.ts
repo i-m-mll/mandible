@@ -17,6 +17,7 @@ import {
   MAX_AUTH_OUTPUT_CHARS,
 } from '../ui/src/state';
 import { App } from '../ui/src/app';
+import { PRODUCTION_ORIGIN } from '../src/canonical-origin';
 import { APP_RAIL_PREVIEW_ORDER_STORAGE_KEY } from '../ui/src/app-rail-order';
 import {
   getWorkCompare,
@@ -821,7 +822,7 @@ describe('App routing', () => {
       readFileSync('src-tauri/capabilities/default.json', 'utf8'),
     ) as { remote?: { urls?: string[] }; permissions?: string[] };
 
-    expect(capability.remote?.urls).toEqual(['https://app.mandible.localhost:19420']);
+    expect(capability.remote?.urls).toEqual([PRODUCTION_ORIGIN]);
     expect(capability.permissions).toContain('deep-link:default');
   });
 
@@ -1573,6 +1574,10 @@ describe('app shell', () => {
     await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
       .map((link) => link.dataset.railItem)).toEqual(['auth', 'console']));
 
+    // The optimistic order precedes persistence; start the next drag only after its save completes.
+    await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Main navigation' }))
+      .getByRole('status').textContent).toContain('Chat moved to position'));
+
     const unifiedUpper = railGroupLinks(mounted.container, 'primary');
     mockRailRects(unifiedUpper);
     const projects = unifiedUpper.find((link) => link.dataset.railItem === 'work')!;
@@ -1685,7 +1690,7 @@ describe('app shell', () => {
     await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
     const movedSpaces = screen.getByRole('link', { name: 'Spaces' });
     expect(document.activeElement).toBe(movedSpaces);
-    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Spaces moved to position'));
+    await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('status').textContent).toContain('Spaces moved to position'));
     const persistedOrder = railGroupLinks(first.container, 'secondary').map((link) => link.dataset.railItem);
     expect(persistedOrder.indexOf('spaces')).toBeLessThan(persistedOrder.indexOf('graph'));
 
@@ -1727,7 +1732,7 @@ describe('app shell', () => {
     spaces.focus();
     fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
 
-    await waitFor(() => expect(screen.getByRole('status').textContent)
+    await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('status').textContent)
       .toBe('Navigation order was not saved. The previous order has been restored.'));
     expect(railGroupLinks(container, 'secondary').map((link) => link.dataset.railItem)).toEqual(original);
     await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
