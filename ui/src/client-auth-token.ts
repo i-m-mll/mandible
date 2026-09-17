@@ -36,11 +36,37 @@ type SessionProjection = {
 
 let state: ClientAuthSessionState = 'signed-out';
 let session: SessionProjection | null = null;
+let sessionRevision = 0;
 let pending: Promise<ClientAuthSessionState> | null = null;
 let renewal: Promise<boolean> | null = null;
 let legacyBearerRetired = false;
 let migrationFailure: string | null = null;
 const listeners = new Set<(value: ClientAuthSessionState) => void>();
+
+export type ClientAccessState = {
+  phase: 'initializing' | 'ready' | 'recovering' | 'failed';
+  failure: string | null;
+};
+
+let accessState: ClientAccessState = { phase: 'initializing', failure: null };
+let accessAttempt: Promise<ClientAccessState> | null = null;
+const accessListeners = new Set<(value: ClientAccessState) => void>();
+const MAX_PAUSED_READS = 128;
+let pausedReads = 0;
+
+export function getClientAccessState(): ClientAccessState { return accessState; }
+
+export function subscribeClientAccessState(listener: (value: ClientAccessState) => void): () => void {
+  accessListeners.add(listener);
+  return () => accessListeners.delete(listener);
+}
+
+function publishAccess(phase: ClientAccessState['phase'], failure: string | null = null): ClientAccessState {
+  if (accessState.phase === phase && accessState.failure === failure) return accessState;
+  accessState = { phase, failure };
+  for (const listener of accessListeners) listener(accessState);
+  return accessState;
+}
 
 export function getClientAuthSessionState(): ClientAuthSessionState {
   return state;
@@ -240,7 +266,9 @@ async function finishLegacyConversion(fetchImpl: typeof fetch, active: SessionPr
 }
 
 async function finishBrowserRecovery(fetchImpl: typeof fetch, active: SessionProjection): Promise<void> {
-  if (!/^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(window.location.hostname)) return;
+  if (window.location.hostname !== 'mandible.localhost'
+      && window.location.hostname !== 'app.mandible.localhost'
+      && !/^preview-[0-9a-f]{16}\.mandible\.localhost$/i.test(window.location.hostname)) return;
   const response = await fetchImpl('/api/client-auth/recovery/state', {
     credentials: 'same-origin', headers: { Accept: 'application/json' },
   });
@@ -315,6 +343,7 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
         if (!logout.ok && logout.status !== 401) return publish('unreachable');
         setPendingLogout(false);
         session = null;
+        sessionRevision += 1;
         return publish('signed-out');
       }
       const response = await fetchImpl(WHOAMI_PATH, {
@@ -322,8 +351,10 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
         headers: { Accept: 'application/json' },
       });
       const body = await readJson(response);
-      if (!response.ok || body.authenticated !== true) {
+      if (!response.ok) return publish('unreachable');
+      if (body.authenticated !== true) {
         session = null;
+        sessionRevision += 1;
         const reason = body.failure_reason;
         if (!reason || reason === 'unknown') await beginPreviewTransfer(fetchImpl);
         return publish(reason === 'expired' ? 'expired'
@@ -333,11 +364,14 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
       const next = projection(body.session);
       if (!next) {
         session = null;
+        sessionRevision += 1;
         return publish('incompatible');
       }
       session = next;
+      sessionRevision += 1;
       if (body.legacy_conversion_pending === true) await finishLegacyConversion(fetchImpl, next);
       await finishBrowserRecovery(fetchImpl, next);
+      publishAccess('ready');
       return publish('enrolled');
     } catch (error) {
       if (error instanceof LegacyBrowserStateError) {
@@ -351,6 +385,123 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
     pending = null;
   });
   return pending;
+}
+
+function accessFailure(reason: ClientAuthSessionState): string {
+  switch (reason) {
+    case 'revoked': return 'This installation credential was revoked. Restore operator access through the local installation.';
+    case 'wrong-audience': return 'This browser belongs to a different Mandible installation.';
+    case 'migration-blocked': return migrationFailure ?? 'Saved browser state could not be restored.';
+    case 'incompatible': return 'Mandible returned an incompatible session. Restart the local app after updating it.';
+    case 'unreachable': return 'The local Mandible service is unavailable. Check that the installed app is running.';
+    default: return 'The installed app could not establish local access for this browser.';
+  }
+}
+
+async function requestInstalledAppAccess(fetchImpl: typeof fetch): Promise<boolean> {
+  if (window.location.protocol !== 'https:'
+      || !['mandible.localhost', 'app.mandible.localhost'].includes(window.location.hostname)) return false;
+  const started = await fetchImpl('/api/client-auth/pairing/start', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ return_path: `${window.location.pathname}${window.location.search}${window.location.hash}` }),
+  });
+  const details = await readJson(started);
+  if (!started.ok || typeof details.reference !== 'string'
+      || !/^[0-9a-f]{12}$/i.test(details.reference)) return false;
+  const reference = details.reference;
+  const link = `mandible://access/approve?reference=${reference}`;
+  const opener = document.createElement('a');
+  opener.href = link;
+  opener.style.display = 'none';
+  document.body.append(opener);
+  opener.click();
+  opener.remove();
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const completed = await fetchImpl('/api/client-auth/pairing/complete', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reference }),
+    });
+    if (completed.ok) return true;
+    if (completed.status !== 409) return false;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
+}
+
+/** One access episode gates all private reads. Native proof never enters JavaScript. */
+export function ensureClientAccess(fetchImpl: typeof fetch = fetch.bind(window)): Promise<ClientAccessState> {
+  if (accessState.phase === 'ready') return Promise.resolve(accessState);
+  if (accessState.phase === 'failed') return Promise.resolve(accessState);
+  if (accessAttempt) return accessAttempt;
+  publishAccess(accessState.phase === 'initializing' ? 'initializing' : 'recovering');
+  accessAttempt = (async () => {
+    let result = await initializeBrowserSession(fetchImpl);
+    if (result === 'enrolled') return publishAccess('ready');
+    if (pendingLogout()) {
+      return publishAccess('failed', 'A prior browser revocation is pending. Restore the local service before access can resume.');
+    }
+    if (result !== 'revoked' && result !== 'wrong-audience'
+        && result !== 'incompatible' && result !== 'migration-blocked') {
+      const { isDesktopShell, enrollDesktopClientAuth } = await import('./api');
+      if (isDesktopShell()) {
+        for (const source of ['bootstrap', 'keychain'] as const) {
+          const enrolled = await enrollDesktopClientAuth(source);
+          if (!enrolled) continue;
+          result = await initializeBrowserSession(fetchImpl);
+          if (result === 'enrolled') return publishAccess('ready');
+          if (result !== 'expired' && result !== 'signed-out' && result !== 'unreachable') break;
+        }
+      } else if (await requestInstalledAppAccess(fetchImpl)) {
+        result = await initializeBrowserSession(fetchImpl);
+        if (result === 'enrolled') return publishAccess('ready');
+      }
+    }
+    return publishAccess('failed', accessFailure(result));
+  })().catch((error) => publishAccess('failed', error instanceof Error ? error.message : String(error)))
+    .finally(() => { accessAttempt = null; });
+  return accessAttempt;
+}
+
+export function retryClientAccess(fetchImpl: typeof fetch = fetch.bind(window)): Promise<ClientAccessState> {
+  if (accessState.phase === 'failed' || accessState.phase === 'ready') {
+    publishAccess('recovering');
+  }
+  return ensureClientAccess(fetchImpl);
+}
+
+function waitForReady(signal?: AbortSignal | null): Promise<void> {
+  if (accessState.phase === 'ready') return Promise.resolve();
+  if (pausedReads >= MAX_PAUSED_READS) {
+    return Promise.reject(new DOMException('Too many reads are waiting for local access.', 'AbortError'));
+  }
+  pausedReads += 1;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      if (settled) return false;
+      settled = true;
+      pausedReads -= 1;
+      unsubscribe();
+      signal?.removeEventListener('abort', abort);
+      return true;
+    };
+    const finish = () => {
+      if (!cleanup()) return;
+      resolve();
+    };
+    const abort = () => {
+      if (!cleanup()) return;
+      reject(new DOMException('The request was cancelled.', 'AbortError'));
+    };
+    const unsubscribe = subscribeClientAccessState((next) => {
+      if (next.phase === 'ready') finish();
+    });
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+  });
 }
 
 function requestPath(input: RequestInfo | URL): string | null {
@@ -370,22 +521,42 @@ export async function browserSessionFetch(
 ): Promise<Response> {
   const path = requestPath(input);
   if (!path?.startsWith('/api/')) return fetchImpl(input, init);
+  if (path === WHOAMI_PATH || path === RENEW_PATH
+      || path === '/api/client-auth/pairing/start'
+      || path === '/api/client-auth/pairing/complete'
+      || path === '/api/health') {
+    return fetchImpl(input, init);
+  }
   const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
   const unsafe = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+  const readOnly = !unsafe || path === '/api/events/subscribe';
+  const access = await ensureClientAccess(fetchImpl);
+  if (access.phase !== 'ready') {
+    if (readOnly) await waitForReady(init.signal ?? (input instanceof Request ? input.signal : undefined));
+    else return new Response(JSON.stringify({ error: 'local_access_unavailable' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   if (pendingLogout()) {
     return new Response(JSON.stringify({ error: 'revocation_pending' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (unsafe && !session && path !== WHOAMI_PATH && !path.startsWith('/api/client-auth/pairing/')) {
-    await initializeBrowserSession(fetchImpl);
-  }
   const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
   if (unsafe && session?.csrf_token) headers.set('X-Mandible-CSRF', session.csrf_token);
   const request = input instanceof Request ? input.clone() : input;
+  const requestSessionRevision = sessionRevision;
   const response = await fetchImpl(input, { ...init, credentials: 'same-origin', headers });
-  if (response.status !== 401 || path.startsWith('/api/client-auth/')) return response;
+  if (response.status !== 401) return response;
+  if (!readOnly) {
+    if (requestSessionRevision === sessionRevision) void retryClientAccess(fetchImpl);
+    return response;
+  }
+  if (requestSessionRevision !== sessionRevision && accessState.phase === 'ready') {
+    return fetchImpl(request, { ...init, credentials: 'same-origin', headers });
+  }
   renewal ??= (async () => {
     const renewed = await fetchImpl(RENEW_PATH, {
       method: 'POST',
@@ -395,16 +566,19 @@ export async function browserSessionFetch(
     if (!renewed.ok) {
       const body = await readJson(renewed);
       session = null;
+      sessionRevision += 1;
       publish(body.error === 'session_revoked' ? 'revoked' : 'expired');
       return false;
     }
     const renewedBody = await readJson(renewed);
     session = projection(renewedBody.session);
+    sessionRevision += 1;
     if (!session) publish('incompatible');
     return Boolean(session);
   })().finally(() => { renewal = null; });
   if (!await renewal) {
-    return response;
+    const restored = await retryClientAccess(fetchImpl);
+    if (restored.phase !== 'ready') return response;
   }
   const activeSession = session;
   if (!activeSession) return response;
@@ -412,10 +586,10 @@ export async function browserSessionFetch(
   return fetchImpl(request, { ...init, credentials: 'same-origin', headers });
 }
 
+// Removed with the legacy login surface at umbrella integration.
 export async function startBrowserPairing(): Promise<string> {
   const response = await browserSessionFetch('/api/client-auth/pairing/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ return_path: `${window.location.pathname}${window.location.search}${window.location.hash}` }),
   });
   const body = await readJson(response);
@@ -425,19 +599,16 @@ export async function startBrowserPairing(): Promise<string> {
 
 export async function completeBrowserPairing(reference: string): Promise<ClientAuthSessionState> {
   const response = await browserSessionFetch('/api/client-auth/pairing/complete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reference }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reference }),
   });
-  if (!response.ok) throw new Error(response.status === 409 ? 'Pairing has not been approved yet.' : 'Pairing failed.');
+  if (!response.ok) throw new Error('Pairing failed.');
   return initializeBrowserSession();
 }
 
 export async function logoutClientAuth(fetchImpl: typeof fetch = fetch.bind(window)): Promise<void> {
   try {
     const response = await fetchImpl(LOGOUT_PATH, {
-      method: 'POST',
-      credentials: 'same-origin',
+      method: 'POST', credentials: 'same-origin',
       headers: session?.csrf_token ? { 'X-Mandible-CSRF': session.csrf_token } : {},
     });
     if (!response.ok && response.status !== 401) throw new Error('logout unavailable');
@@ -453,9 +624,14 @@ export async function logoutClientAuth(fetchImpl: typeof fetch = fetch.bind(wind
 export function __resetBrowserSessionForTests(): void {
   state = 'signed-out';
   session = null;
+  sessionRevision = 0;
   pending = null;
   renewal = null;
   legacyBearerRetired = false;
   migrationFailure = null;
   listeners.clear();
+  accessState = { phase: 'initializing', failure: null };
+  accessAttempt = null;
+  accessListeners.clear();
+  pausedReads = 0;
 }

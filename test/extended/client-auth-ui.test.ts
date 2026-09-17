@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { __resetBrowserSessionForTests, browserSessionFetch, getClientAuthSessionState } from "../../ui/src/client-auth-token.js";
+import { __resetBrowserSessionForTests, browserSessionFetch, getClientAccessState, getClientAuthSessionState } from "../../ui/src/client-auth-token.js";
 import { SSEClient } from "../../ui/src/sse-client.js";
 
 const enrolled = () => new Response(JSON.stringify({
@@ -34,9 +34,37 @@ describe("cookie browser session transport", () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ authenticated: false, failure_reason: "wrong_audience" }), {
       status: 200, headers: { "content-type": "application/json" },
     })) as typeof fetch;
-    await browserSessionFetch("/api/issues", { method: "POST" }, fetchImpl);
+    const response = await browserSessionFetch("/api/issues", { method: "POST" }, fetchImpl);
     expect(getClientAuthSessionState()).toBe("wrong-audience");
+    expect(getClientAccessState().phase).toBe("failed");
+    expect(response.status).toBe(503);
     expect(fetchImpl.mock.calls.flatMap(([, init]) => [...new Headers(init?.headers).keys()])).not.toContain("authorization");
+  });
+
+  it("never replays a mutation after an access failure", async () => {
+    let writes = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("whoami")) return enrolled();
+      writes += 1;
+      return new Response(JSON.stringify({ error: "session_expired" }), { status: 401 });
+    }) as typeof fetch;
+    const response = await browserSessionFetch("/api/issues", { method: "POST" }, fetchImpl);
+    expect(response.status).toBe(401);
+    expect(writes).toBe(1);
+  });
+
+  it("pauses a private read instead of returning an empty collection while access fails", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      authenticated: false, failure_reason: "wrong_audience",
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    const read = browserSessionFetch(new Request("http://localhost:3000/api/issues", {
+      signal: controller.signal,
+    }), {}, fetchImpl);
+    await vi.waitFor(() => expect(getClientAccessState().phase).toBe("failed"));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    controller.abort();
+    await expect(read).rejects.toMatchObject({ name: "AbortError" });
   });
 });
 

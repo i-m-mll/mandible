@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{command, AppHandle, Manager};
@@ -89,6 +90,7 @@ const DEFAULT_LAUNCH_MODE: &str = "on_demand";
 const KEYCHAIN_OPERATOR_SERVICE: &str = "mandible-operator";
 static CLIENT_AUTH_BOOTSTRAP_CONSUMED: AtomicBool = AtomicBool::new(false);
 static CLIENT_AUTH_KEYCHAIN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static ACCESS_APPROVALS_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -234,6 +236,68 @@ fn show_native_setup_result(app: &AppHandle, headline: &str, detail: &str) {
 
 fn is_secure_connections_setup_link(url: &tauri::Url) -> bool {
     url.as_str() == "mandible://connections/setup"
+}
+
+fn browser_access_reference(url: &tauri::Url) -> Option<String> {
+    if url.scheme() != "mandible" || url.host_str() != Some("access")
+        || !url.username().is_empty() || url.password().is_some() || url.port().is_some()
+        || url.path() != "/approve" || url.fragment().is_some()
+    {
+        return None;
+    }
+    let mut pairs = url.query_pairs();
+    let (key, value) = pairs.next()?;
+    if key != "reference" || value.len() != 12
+        || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) || pairs.next().is_some()
+    {
+        return None;
+    }
+    Some(value.into_owned())
+}
+
+fn approve_browser_access(reference: &str) -> Result<(), String> {
+    verify_same_user_daemon()?;
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| format!("failed to create browser-access client: {error}"))?;
+    let Some(mut credential) = read_keychain_operator_token(KEYCHAIN_OPERATOR_SERVICE)? else {
+        return Err("the installed app has no operator credential".to_string());
+    };
+    if !is_credential_material(&credential) {
+        credential.fill(0);
+        return Err("the installed-app operator credential is malformed".to_string());
+    }
+    let bearer = std::str::from_utf8(&credential)
+        .map_err(|_| "operator credential is not UTF-8".to_string())?;
+    let response = client
+        .post(format!("{PRODUCTION_ORIGIN}/api/client-auth/pairing/approve"))
+        .bearer_auth(bearer)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::json!({ "reference": reference }).to_string())
+        .send();
+    credential.fill(0);
+    let response = response.map_err(|error| format!("browser-access approval failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("the daemon refused browser access (HTTP {})", response.status()));
+    }
+    Ok(())
+}
+
+fn launch_browser_access_approval(url: &tauri::Url) {
+    let Some(reference) = browser_access_reference(url) else { return; };
+    let approvals = ACCESS_APPROVALS_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    if !approvals.lock().expect("access approval lock poisoned").insert(reference.clone()) {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Err(error) = approve_browser_access(&reference) {
+            eprintln!("mandible: {error}");
+        }
+        approvals.lock().expect("access approval lock poisoned").remove(&reference);
+    });
 }
 
 fn launch_native_ca_setup(handle: AppHandle, active: Arc<AtomicBool>) {
@@ -1210,13 +1274,20 @@ pub fn run() {
             let link_handle = app.handle().clone();
             let link_active = active_ca_setup.clone();
             app.deep_link().on_open_url(move |event| {
-                if event.urls().iter().any(is_secure_connections_setup_link) {
+                let urls = event.urls();
+                if urls.iter().any(is_secure_connections_setup_link) {
                     launch_native_ca_setup(link_handle.clone(), link_active.clone());
+                }
+                for url in urls {
+                    launch_browser_access_approval(&url);
                 }
             });
             if let Some(urls) = app.deep_link().get_current()? {
                 if urls.iter().any(is_secure_connections_setup_link) {
                     launch_native_ca_setup(app.handle().clone(), active_ca_setup);
+                }
+                for url in &urls {
+                    launch_browser_access_approval(url);
                 }
             }
             Ok(())
@@ -1273,6 +1344,23 @@ mod tests {
             assert!(!is_secure_connections_setup_link(
                 &tauri::Url::parse(denied).expect("URL")
             ));
+        }
+    }
+
+    #[test]
+    fn browser_access_link_accepts_only_one_exact_reference() {
+        let good = tauri::Url::parse("mandible://access/approve?reference=A1B2C3D4E5F6").unwrap();
+        assert_eq!(super::browser_access_reference(&good).as_deref(), Some("A1B2C3D4E5F6"));
+        for raw in [
+            "mandible://access/approve?reference=A1B2C3D4E5F6&extra=1",
+            "mandible://access/approve?reference=A1B2C3D4E5F6#fragment",
+            "mandible://other/approve?reference=A1B2C3D4E5F6",
+            "mandible://user@access/approve?reference=A1B2C3D4E5F6",
+            "mandible://access:123/approve?reference=A1B2C3D4E5F6",
+            "mandible://access/approve?reference=short",
+            "mandible://access/approve?reference=A1B2C3D4E5FG",
+        ] {
+            assert!(super::browser_access_reference(&tauri::Url::parse(raw).unwrap()).is_none());
         }
     }
 
