@@ -99,7 +99,6 @@ import {
 } from '../chat';
 import { formatAbsoluteTime, truncate } from '../lib/format';
 import { acquireSharedSse } from '../sse-shared';
-import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { PreviewIcon } from '../components/icons/TabIcons';
 import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import {
@@ -587,6 +586,56 @@ function eventData<T>(payload: unknown): T | null {
   const record = payload as Record<string, unknown>;
   const data = record.data;
   return (data && typeof data === 'object' ? data : record) as T;
+}
+
+const CONVERSATION_WINDOW_PENDING_LIMIT_MS = 120_000;
+const CONVERSATION_WINDOW_MISSED_EVENT_CHECK_MS = 1_000;
+
+function waitForConversationSourceUpdate(id: string, signal: AbortSignal | undefined, remainingMs: number): Promise<void> {
+  const client = acquireSharedSse();
+  return new Promise<void>((resolve, reject) => {
+    let off = () => {};
+    let timer: number | null = null;
+    const abort = () => finish(new DOMException('Conversation read cancelled', 'AbortError'));
+    const finish = (error?: Error) => {
+      if (timer !== null) window.clearTimeout(timer);
+      off();
+      signal?.removeEventListener('abort', abort);
+      client.close();
+      if (error) reject(error); else resolve();
+    };
+    if (signal?.aborted) {
+      finish(new DOMException('Conversation read cancelled', 'AbortError'));
+      return;
+    }
+    off = client.on('conversation:updated', (payload) => {
+      if (eventData<{ id?: string }>(payload)?.id === id) finish();
+    });
+    signal?.addEventListener('abort', abort, { once: true });
+    // A completion event can cross the initial 503 response before this
+    // subscription is attached. The bounded timer checks that missed edge.
+    timer = window.setTimeout(() => finish(), Math.min(CONVERSATION_WINDOW_MISSED_EVENT_CHECK_MS, remainingMs));
+    client.connect();
+  });
+}
+
+async function readConversationWindowWhenReady(
+  id: string,
+  request: ReturnType<typeof windowRequest>,
+): Promise<ConversationPositionWindow> {
+  const deadline = Date.now() + CONVERSATION_WINDOW_PENDING_LIMIT_MS;
+  for (;;) {
+    try {
+      return await getConversationWindow(id, request);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== 'freshness_pending') throw error;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new ApiError('Chat content is temporarily unavailable. Retry to check again.', 503, 'freshness_pending');
+      }
+      await waitForConversationSourceUpdate(id, request.signal, remaining);
+    }
+  }
 }
 
 function reconcileControlSnapshot(
@@ -1117,7 +1166,7 @@ export function ConversationDetail({
   );
   const fetchConversationDetail = useCallback(
     async ({ signal }: { signal: AbortSignal }) => {
-      const incoming = await getConversationWindow(conversationId, windowRequest(windowTarget, signal));
+      const incoming = await readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal));
       if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
       const aggregateKey = conversationKeys.aggregate(conversationId);
       const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
@@ -1151,7 +1200,7 @@ export function ConversationDetail({
     const key = conversationKeys.window(conversationId, target);
     const incoming = await queryClient.fetchQuery({
       queryKey: key,
-      queryFn: ({ signal }) => getConversationWindow(conversationId, windowRequest(target, signal)),
+      queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(target, signal)),
       staleTime: 0,
     });
     if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
@@ -1961,9 +2010,7 @@ export function ConversationDetail({
         state="loading"
         header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
         ariaBusy
-      >
-        <LoadingSkeleton variant="detail" label="Loading conversation" />
-      </ChatDetailFrame>
+      >{null}</ChatDetailFrame>
     );
   }
 
@@ -1974,9 +2021,7 @@ export function ConversationDetail({
         header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
         notice={loadErrorNotice}
         ariaBusy={loading}
-      >
-        <div className="empty-state">Conversation content unavailable.</div>
-      </ChatDetailFrame>
+      >{null}</ChatDetailFrame>
     );
   }
 
@@ -2317,6 +2362,8 @@ export function ConversationDetail({
           <ChatSurface
             events={chatEvents}
             streaming={providerStreaming}
+            showEmpty={Boolean(windowQuery.isSuccess && !loading && !error
+              && aggregateQuery.data?.total === 0)}
             emptyLabel={error
                 ? 'Conversation content unavailable.'
                 : 'No messages yet'}

@@ -21,6 +21,7 @@ import { registerConversationRoutes, sendFreshnessError } from "../../src/routes
 import { Router } from "../../src/server.js";
 import { ConversationSourceReader } from "../../src/conversations/source-reader.js";
 import { getConversationStructureCache } from "../../src/conversations/structure-cache.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
 import { sourceFilesystemIdentity } from "../../src/conversations/source-observer.js";
 import { FileRpcTransport } from "../../src/file-rpc-transport.js";
 import { resolveInstanceInfo } from "../../src/instance-policy.js";
@@ -507,6 +508,26 @@ describe("exact conversation freshness", () => {
       refreshed: true,
     });
     expect(ingests).toBe(1);
+  });
+
+  it("announces same-byte reparse only after its current source index is readable", async () => {
+    const seeded = await seed("reparse-completion-event");
+    db.prepare("UPDATE conversation_sources SET parser_version = 'old' WHERE conversation_id = ?")
+      .run(seeded.id);
+    let epochAtEvent: string | null = null;
+    const events: string[] = [];
+    configureIngestionWorker(() => {}, (event, data) => {
+      if (event !== "conversation:updated" || (data as { id?: string }).id !== seeded.id) return;
+      events.push(event);
+      epochAtEvent = (db.prepare("SELECT parser_version FROM conversation_sources WHERE conversation_id = ?")
+        .get(seeded.id) as { parser_version: string }).parser_version;
+    });
+
+    await triggerExactPathIngest(seeded.file);
+
+    expect(events).toEqual(["conversation:updated"]);
+    expect(epochAtEvent).toBe(CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion);
+    expect(await exactContents(seeded.id)).toContain("hello");
   });
 
   it("refreshes one exact provider title, broadcasts once, and leaves an unchanged transcript bounded", async () => {

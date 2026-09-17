@@ -43,6 +43,7 @@ import {
 } from './renderModel';
 
 export type ChatSurfaceProps = StreamRendererProps & {
+  showEmpty?: boolean;
   activePermissionRequest?: ConsolePermissionRequest | null;
   permissionBackendType?: ConsoleBackendType;
   onPermissionRespond?: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
@@ -190,6 +191,7 @@ export function ChatSurface({
   streaming,
   elapsedSeconds,
   emptyLabel,
+  showEmpty = true,
   onSelectMessageInfo,
   selectedMessageId,
   sessionInfo,
@@ -832,14 +834,12 @@ export function ChatSurface({
       const label = `Load missing history from positions ${state.start} to ${state.end}`;
       return (
         <div className="stream-renderer__history-state" role="status" aria-live="polite">
-          {state.loadState === 'loading' ? 'Loading missing history…' : (
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => {
-              if (!transcript) return;
-              void requestHistory(key, () => transcript.loadAround(state.start));
-            }}>
-              {state.loadState === 'retry' ? `Retry: ${label}` : label}
-            </button>
-          )}
+          <button type="button" className="btn btn--ghost btn--sm" disabled={state.loadState === 'loading'} onClick={() => {
+            if (!transcript) return;
+            void requestHistory(key, () => transcript.loadAround(state.start));
+          }}>
+            {state.loadState === 'retry' ? `Retry: ${label}` : label}
+          </button>
         </div>
       );
     }
@@ -848,19 +848,18 @@ export function ChatSurface({
     const label = earlier ? 'Load earlier history' : 'Load later history';
     return (
       <div className="stream-renderer__history-state" role="status" aria-live="polite">
-        {state.loadState === 'loading' ? (earlier ? 'Loading earlier history…' : 'Loading later history…') : (
-          <button type="button" className="btn btn--ghost btn--sm" onClick={() => {
-            if (!transcript) return;
-            void requestHistory(edgeKey, earlier ? transcript.loadOlder : transcript.loadNewer);
-          }}>
-            {state.loadState === 'retry' ? `Retry: ${label}` : label}
-          </button>
-        )}
+        <button type="button" className="btn btn--ghost btn--sm" disabled={state.loadState === 'loading'} onClick={() => {
+          if (!transcript) return;
+          void requestHistory(edgeKey, earlier ? transcript.loadOlder : transcript.loadNewer);
+        }}>
+          {state.loadState === 'retry' ? `Retry: ${label}` : label}
+        </button>
       </div>
     );
   }
 
   if (!hasContent && !hasPermissionCard && !transcript) {
+    if (!showEmpty) return <div className="stream-renderer" />;
     return (
       <div className="stream-renderer">
         <div className="stream-renderer__empty">
