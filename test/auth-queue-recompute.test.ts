@@ -466,7 +466,7 @@ describe("auth queue", () => {
     // Issue 08a5f04 (review F6) — a DB failure after the ref CAS succeeded
     // leaves ref and row divergent; every later approval refuses strictly
     // (fail closed) instead of proceeding on either state.
-    it("fails closed when the DB update fails after a successful repin CAS", () => {
+    it("rolls back the candidate ref when the DB update fails after a successful repin CAS", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -499,13 +499,15 @@ describe("auth queue", () => {
         } finally {
           rawDb.prepare = realPrepare;
         }
-        // Row still records the original pin; the ref moved. The divergence is
-        // tamper-shaped and approval refuses strictly, never unpinned.
+        // The row and ref both retain the original pin. A later approval can
+        // rederive the candidate normally; the failed write legitimized nothing.
         const after = queue.getRequest(request.id)!;
         expect(after.merge_candidate_pin_sha).toBe(request.merge_candidate_pin_sha);
-        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
-        expect(queue.getRequest(request.id)?.status).toBe("pending");
-        expect(calls).toHaveLength(0);
+        expect(git(repo, ["rev-parse", `refs/mandible/auth-candidates/${request.id}`]))
+          .toBe(request.merge_candidate_pin_sha);
+        queue.approve(request.id);
+        await waitForStatus(queue, request.id, "completed");
+        expect(calls).toHaveLength(1);
       } finally {
         queue.dispose();
         db.close();

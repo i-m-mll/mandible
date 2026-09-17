@@ -103,6 +103,10 @@
       "description": "Withdraw only the caller's own pending request using the exact originating credential or session. The durable request and lifecycle history remain intact."
     },
     {
+      "name": "mandible auth candidate-repair inspect|apply <request-id> [--expected-revision <n> --expected-custody-generation <n> --expected-current-snapshot-sha256 <sha256>] [--operator-recovery] [--json]",
+      "description": "Inspect a pending merge request for candidate-only lifecycle snapshot drift, then append a guarded recovery snapshot only when exact custody, revision, reviewed fields, actions, protected-base history, and canonical candidate computations still match. Inspection is read-only; apply requires the three values returned by inspection. Ordinary lifecycle compare-and-swap remains strict."
+    },
+    {
       "name": "mandible auth replay-archives <request-id> [--json]",
       "description": "Replay Codex thread archive attempts for a completed successful merge auth request without rerunning the merge or deferred issue actions."
     },

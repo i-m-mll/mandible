@@ -18,6 +18,7 @@
 #   auth clearance <subcommand>      Manage scoped protected-merge clearances
 #   auth request <branch> [opts]     Submit auth merge request
 #   auth withdraw <id> --reason ... --expected-revision N --expected-custody-generation N
+#   auth candidate-repair inspect|apply <id> [opts]
 #   auth replay-archives <id>        Replay Codex archive attempts
 #   auth merge <branch> [opts]       Execute authenticated merge
 #   logs <subcommand>                Inspect source logs and retained daemon telemetry
@@ -113,6 +114,7 @@ Subcommands:
   clearance <subcommand>      Manage scoped protected-merge clearances
   request <branch> [opts]     Submit auth merge request
   withdraw <id> --reason ... --expected-revision N --expected-custody-generation N
+  candidate-repair inspect|apply <id> [opts]  Inspect or repair candidate-only snapshot drift
   replay-archives <id>        Replay Codex archive attempts
   merge <branch> [opts]       Execute authenticated merge
 EOF
@@ -137,6 +139,7 @@ case "${1:-}" in
       clearance) shift; exec "$MANDIBLE_CLI_DIR/auth-clearance.sh" "$@" ;;
       request) shift; exec "$MANDIBLE_CLI_DIR/auth-request.sh" "$@" ;;
       withdraw) shift; exec "$MANDIBLE_CLI_DIR/auth-withdraw.sh" "$@" ;;
+      candidate-repair) shift; exec "$MANDIBLE_CLI_DIR/auth-candidate-repair.sh" "$@" ;;
       replay-archives) shift; exec "$MANDIBLE_CLI_DIR/auth-replay-archives.sh" "$@" ;;
       merge)   shift; exec "$MANDIBLE_CLI_DIR/auth-merge.sh" "$@" ;;
       *) echo "Unknown auth subcommand: ${1:-}" >&2; usage >&2; exit 1 ;;

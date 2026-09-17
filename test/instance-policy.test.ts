@@ -117,6 +117,11 @@ describe("instance effect policy", () => {
     expect(authorizeEffects(instance, session, operationForRequest("GET", "/api/issues"))).toEqual({ allowed: true });
     expect(authorizeEffects(instance, session, operationForRequest("POST", "/api/issues"))).toEqual({ allowed: true });
     expect(authorizeEffects(instance, session, operationForRequest("GET", "/api/auth/requests"))).toMatchObject({ allowed: false });
+    for (const action of ["inspect", "apply"]) {
+      const operation = operationForRequest("POST", `/api/auth/request/abc/candidate-snapshot-repair/${action}`);
+      expect(operation?.effects).toContain("auth:protected");
+      expect(authorizeEffects(instance, session, operation)).toMatchObject({ allowed: false });
+    }
     expect(authorizeEffects(instance, session, operationForRequest("POST", "/api/webhooks"))).toMatchObject({ allowed: false });
     expect(operationForRequest("POST", "/api/artifacts/versions")).toMatchObject({
       effects: ["ledger:write", "files:preview"],

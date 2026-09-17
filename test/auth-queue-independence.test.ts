@@ -12,11 +12,86 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
+import { authRequestSnapshot, authSnapshotDigest } from "../src/auth-lifecycle.js";
 import type { SseEvent } from "../src/types.js";
-import { getOperator } from "../src/users/store.js";
-import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, createMigratedDb, createNoopHookManager, createQueue, git, insertSiblingMergeRequest, mergeResultOutput, registerWorkRepo, signedMergeIntoMain, uniqueMissingPath, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";
+import { addCredential, getOperator } from "../src/users/store.js";
+import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject, createMigratedDb, createNoopHookManager, createQueue, git, insertSiblingMergeRequest, mergeResultOutput, registerWorkRepo, signedMergeIntoMain, uniqueMissingPath, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";
 
 describe("auth queue", () => {
+  it("repairs only historical candidate drift after branch and main advance", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const queue = new AuthQueue({ db });
+    try {
+      commitOnBranch(repo, "feature/a", { "a.txt": "a\n" });
+      commitOnBranch(repo, "feature/b", { "b.txt": "b\n" });
+      commitOnBranch(repo, "feature/c", { "c.txt": "c\n" });
+      registerWorkRepo(db, repo);
+      configureSigningCredential(db, repo, "ssh_key");
+      const project = createLedgerProject(db, repo);
+      const issue = createLedgerIssue(db, project.project.id, "8420a44");
+      const operator = getOperator(db)!;
+      const credential = addCredential(db, operator.id, {
+        type: "api_token", fingerprint: `candidate-repair-${crypto.randomUUID()}`,
+      });
+      const actor = { user_id: operator.id, evidence_method: "api_token" as const,
+        credential_id: credential.id, authority_path: "custodian" as const };
+      db.prepare(`INSERT INTO work_units
+        (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
+         ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+        VALUES (?, '8420a44', ?, 'feature/b', 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
+        .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, credential.id);
+      const pending = queue.submit({
+        type: "merge", command: "mandible auth merge feature/b --into main", title: "Merge b",
+        repo: project.project.project_key, base_branch: "main", head_branch: "feature/b",
+        merge_head_sha: git(repo, ["rev-parse", "feature/b"]), cwd: repo,
+        requester_evidence_method: "api_token", requester_credential_id: credential.id,
+        require_delivery_custody: true, issue_references: ["8420a44"],
+      }, operator.id);
+      insertSiblingMergeRequest(db, repo, "merge-a", "feature/a");
+      const firstMerge = signedMergeIntoMain(repo, "feature/a");
+      queue.setResult("merge-a", 0, mergeResultOutput(firstMerge));
+      await queue.drainFinalizers();
+      const historical = queue.getRequest(pending.id)!;
+      expect(historical.merge_preflight_base_sha).toBe(firstMerge);
+      // Reproduce the old daemon's missing receipt while preserving its actual
+      // refreshed row and candidate ref. This database is disposable test state.
+      db.exec("DROP TRIGGER auth_request_lifecycle_events_immutable_delete");
+      db.prepare("DELETE FROM auth_request_lifecycle_events WHERE auth_request_id = ? AND revision = 2")
+        .run(pending.id);
+      git(repo, ["checkout", "feature/b"]);
+      writeFile(repo, "later.txt", "later\n");
+      git(repo, ["add", "later.txt"]);
+      git(repo, ["commit", "-m", "Advance reviewed branch"]);
+      git(repo, ["checkout", "main"]);
+      const secondMerge = signedMergeIntoMain(repo, "feature/c");
+      expect(secondMerge).not.toBe(firstMerge);
+      const proof = queue.inspectPendingCandidateSnapshotRepair(pending.id, actor);
+      expect(proof).toMatchObject({ lifecycle_revision: 1, custody_generation: 1,
+        current_base_sha: firstMerge });
+      expect(() => queue.repairPendingCandidateSnapshot(pending.id, actor, 1, 1, "0".repeat(64)))
+        .toThrow(AuthQueueError);
+      const otherCredential = addCredential(db, operator.id, {
+        type: "api_token", fingerprint: `candidate-repair-other-${crypto.randomUUID()}`,
+      });
+      expect(() => queue.inspectPendingCandidateSnapshotRepair(pending.id, {
+        ...actor, credential_id: otherCredential.id,
+      })).toThrow(AuthQueueError);
+      db.prepare("UPDATE auth_requests SET title = 'Tampered' WHERE id = ?").run(pending.id);
+      expect(() => queue.inspectPendingCandidateSnapshotRepair(pending.id, actor)).toThrow(AuthQueueError);
+      db.prepare("UPDATE auth_requests SET title = ? WHERE id = ?").run(pending.title, pending.id);
+      db.prepare("UPDATE auth_requests SET merge_atomic_enabled = 1 WHERE id = ?").run(pending.id);
+      expect(() => queue.inspectPendingCandidateSnapshotRepair(pending.id, actor)).toThrow(AuthQueueError);
+      db.prepare("UPDATE auth_requests SET merge_atomic_enabled = 0 WHERE id = ?").run(pending.id);
+      queue.repairPendingCandidateSnapshot(pending.id, actor, 1, 1, proof.current_snapshot_sha256);
+      expect(queue.listLifecycleEvents(pending.id).at(-1)).toMatchObject({
+        revision: 2, event_type: "revised", credential_id: credential.id,
+      });
+      expect(() => queue.inspectPendingCandidateSnapshotRepair(pending.id, actor)).toThrow(AuthQueueError);
+    } finally {
+      queue.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
   it("accepts pairwise-independent pending merge requests", () => {
     const repo = createAuthCheckRepo();
     const queue = createQueue();
@@ -610,6 +685,11 @@ describe("auth queue", () => {
       expect(refreshed?.merge_preflight_base_sha).toBe(newBase);
       expect(refreshed?.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
       expect(refreshed?.merge_candidate_pin_sha).not.toBe(originalPin);
+      const lifecycle = db.prepare(
+        "SELECT revision, snapshot_sha256 FROM auth_request_lifecycle_events WHERE auth_request_id = ? ORDER BY revision DESC LIMIT 1",
+      ).get(pendingB.id) as { revision: number; snapshot_sha256: string };
+      expect(lifecycle.revision).toBe(2);
+      expect(lifecycle.snapshot_sha256).toBe(authSnapshotDigest(authRequestSnapshot(db, pendingB.id)));
       expect(git(repo, ["rev-parse", `refs/mandible/auth-candidates/${pendingB.id}`]))
         .toBe(refreshed!.merge_candidate_pin_sha);
       expect(git(repo, ["rev-parse", `${refreshed!.merge_candidate_pin_sha}^1`])).toBe(newBase);

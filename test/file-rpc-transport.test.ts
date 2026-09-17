@@ -61,6 +61,8 @@ const legacyAllowedRoutes: Array<[method: "GET" | "POST" | "PATCH" | "PUT" | "DE
   ["POST", "/api/auth/check"],
   ["POST", "/api/auth/request"],
   ["POST", "/api/auth/request/:id/withdraw"],
+  ["POST", "/api/auth/request/:id/candidate-snapshot-repair/inspect"],
+  ["POST", "/api/auth/request/:id/candidate-snapshot-repair/apply"],
   ["POST", "/api/auth/request/:id/replay-codex-archives"],
   ["GET", "/api/auth/request/:id/actions"],
   ["POST", "/api/auth/request/:id/actions"],
@@ -461,6 +463,8 @@ describe("file RPC transport", () => {
     expect(allowsFileRpcRoute("GET", "/api/system/logs")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/auth/request")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/withdraw")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/candidate-snapshot-repair/inspect")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/candidate-snapshot-repair/apply")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/replay-codex-archives")).toBe(true);
     expect(allowsFileRpcRoute("GET", "/api/auth/request/abc/actions")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/actions")).toBe(true);
