@@ -2279,7 +2279,13 @@ export function ConversationDetail({
       overlayControl={composerOverlay}
       overlays={detailOverlays}
       ariaBusy={loading}
-      notice={controlFailureNotice ?? creationNotice ?? actionErrorNotice ?? externalNotice ?? loadErrorNotice}
+      notice={controlFailureNotice || creationNotice || actionErrorNotice || externalNotice || loadErrorNotice ? <>
+        {controlFailureNotice}
+        {creationNotice}
+        {actionErrorNotice}
+        {externalNotice}
+        {loadErrorNotice}
+      </> : null}
     >
       <div className="conv-transcript">
         <ChatEntityLinkBoundary

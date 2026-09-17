@@ -50,12 +50,14 @@ function detailTargetFromParsedRef(parsed: ParsedResourceRef): ReferenceDetailTa
 export function ReferenceDetailContent({
   target,
   presentation = 'main',
+  onErrorChange,
 }: {
   target: ReferenceDetailTarget;
   presentation?: DetailPanePresentation;
+  onErrorChange?: (error: string | null) => void;
 }): JSX.Element {
-  if (target.kind === 'issue') return <IssueReferenceDetail issueRef={target.ref} repoId={target.repoId} presentation={presentation} />;
-  if (target.kind === 'artifact') return <ArtifactReferenceDetail artifactRef={target.ref} presentation={presentation} />;
+  if (target.kind === 'issue') return <IssueReferenceDetail issueRef={target.ref} repoId={target.repoId} presentation={presentation} onErrorChange={onErrorChange} />;
+  if (target.kind === 'artifact') return <ArtifactReferenceDetail artifactRef={target.ref} presentation={presentation} onErrorChange={onErrorChange} />;
   return (
     <div className="space-reference-detail__unsupported">
       No detail panel is available for {target.label ?? target.ref}.
@@ -67,10 +69,12 @@ export function IssueReferenceDetail({
   issueRef,
   repoId,
   presentation = 'main',
+  onErrorChange,
 }: {
   issueRef: string;
   repoId?: string;
   presentation?: DetailPanePresentation;
+  onErrorChange?: (error: string | null) => void;
 }): JSX.Element {
   const loadDetail = useCallback(
     (_signal: AbortSignal) => repoId
@@ -83,8 +87,14 @@ export function IssueReferenceDetail({
     namespace: 'issue-detail',
     load: loadDetail,
   });
+  useEffect(() => {
+    onErrorChange?.(error);
+  }, [error, onErrorChange]);
+  useEffect(() => () => onErrorChange?.(null), [onErrorChange]);
 
-  if (error) return <DetailPaneNotice severity="error" title="Failed to load issue">{error}</DetailPaneNotice>;
+  if (error) return onErrorChange
+    ? <div className="space-reference-detail__empty">Issue unavailable.</div>
+    : <DetailPaneNotice severity="error" title="Failed to load issue">{error}</DetailPaneNotice>;
   if (!detail) {
     return loading
       ? <LoadingSkeleton variant="detail" label="Loading issue detail" />
@@ -115,9 +125,11 @@ export function IssueReferenceDetail({
 export function ArtifactReferenceDetail({
   artifactRef,
   presentation = 'main',
+  onErrorChange,
 }: {
   artifactRef: string;
   presentation?: DetailPanePresentation;
+  onErrorChange?: (error: string | null) => void;
 }): JSX.Element {
   const [resolution, setResolution] = useState<ArtifactResolveResult | null>(null);
   const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
@@ -133,10 +145,16 @@ export function ArtifactReferenceDetail({
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const payloadGenerationRef = useRef(0);
+  useEffect(() => {
+    onErrorChange?.(error);
+  }, [error, onErrorChange]);
+  useEffect(() => () => onErrorChange?.(null), [onErrorChange]);
 
   const loadArtifactPayload = useCallback(async (nextArtifact: ArtifactRecord, generation: number) => {
     if (generation !== payloadGenerationRef.current) return;
     setArtifact(nextArtifact);
+    setContent(null);
+    setKnowledgeBackrefs([]);
     setContentLoading(true);
     setKnowledgeLoading(true);
     setContentError(null);
@@ -222,20 +240,32 @@ export function ArtifactReferenceDetail({
       const generation = ++payloadGenerationRef.current;
       setSelectedVersionNo(versionNo);
       setError(null);
+      setArtifact(null);
+      setContent(null);
+      setKnowledgeBackrefs([]);
+      setLoading(true);
       const nextVersion = versionNo === null
         ? versions[0] ?? null
         : versions.find((version) => version.version_no === versionNo) ?? null;
-      if (!nextVersion) return;
+      if (!nextVersion) {
+        setLoading(false);
+        return;
+      }
       void getArtifact(nextVersion.artifact_id)
         .then((nextArtifact) => loadArtifactPayload(nextArtifact, generation))
         .catch((err) => {
           if (generation === payloadGenerationRef.current) setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (generation === payloadGenerationRef.current) setLoading(false);
         });
     },
     [versions, loadArtifactPayload],
   );
 
-  if (error) return <DetailPaneNotice severity="error" title="Failed to load artifact">{error}</DetailPaneNotice>;
+  if (error) return onErrorChange
+    ? <div className="space-reference-detail__empty">Artifact unavailable.</div>
+    : <DetailPaneNotice severity="error" title="Failed to load artifact">{error}</DetailPaneNotice>;
   if (!artifact) {
     return loading
       ? <LoadingSkeleton variant="detail" label="Loading artifact detail" />

@@ -568,11 +568,13 @@
 /* --- reference inspector -------------------------------------------------- */
 
 .spaces-block-editor__inspector {
+  display: flex;
+  flex-direction: column;
   flex: 0 0 clamp(180px, 28%, 320px);
   min-height: 160px;
   border-top: 1px solid var(--border, #2a2a2a);
   background: var(--bg-secondary, var(--surface, #fff));
-  overflow-y: auto;
+  overflow: hidden;
   padding: 10px;
   position: relative;
   z-index: 18;
@@ -617,6 +619,12 @@
 .spaces-block-editor__inspector-error,
 .spaces-block-editor__inspector-body {
   padding: 0.5rem 0;
+}
+
+.spaces-block-editor__inspector-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .spaces-block-editor__inspector-error,

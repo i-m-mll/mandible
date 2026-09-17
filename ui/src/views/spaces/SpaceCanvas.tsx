@@ -1677,20 +1677,25 @@ const DEFAULT_PROMOTE_LINK_TYPE: LedgerLinkType = 'references';
 
 function CanvasNodeInspector({ node }: { node: CanvasNode }): JSX.Element {
   const item = node.item;
+  const [referenceError, setReferenceError] = useState<string | null>(null);
+  useEffect(() => setReferenceError(null), [item?.ref_id, item?.ref_uri, item?.ref_type]);
   return (
     <div className="space-canvas__inspector-section" data-testid="space-canvas-node-inspector">
       <header className="space-canvas__inspector-header">
         <span>{item?.ref_type ?? 'occurrence'}</span>
       </header>
+      {referenceError && <DetailPaneNotice severity="error" density="compact" title="Reference unavailable">{referenceError}</DetailPaneNotice>}
+      <div className="space-canvas__inspector-content">
       {!item ? (
         <OccurrenceSummary node={node} />
       ) : item.ref_type === 'issue' ? (
-        <IssueReferenceDetail issueRef={item.ref_id} />
+        <IssueReferenceDetail issueRef={item.ref_id} onErrorChange={setReferenceError} />
       ) : item.ref_type === 'artifact' ? (
-        <ArtifactReferenceDetail artifactRef={item.ref_uri ?? item.ref_id} />
+        <ArtifactReferenceDetail artifactRef={item.ref_uri ?? item.ref_id} onErrorChange={setReferenceError} />
       ) : (
         <OccurrenceSummary node={node} />
       )}
+      </div>
     </div>
   );
 }
