@@ -17,6 +17,8 @@ export type CollectionShellProps = {
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
   onSelect?(collection: FeedbackCollection): void;
   onSelectGroup?(group: BriefingGroup): void;
+  onSelectIncidents?(): void;
+  confirmedLoaded?: boolean;
   children: ComponentChildren;
 };
 
@@ -31,12 +33,15 @@ export function CollectionShell({
   setViewState,
   onSelect,
   onSelectGroup,
+  onSelectIncidents,
+  confirmedLoaded = false,
   children,
 }: CollectionShellProps): JSX.Element {
-  const selectedCollectionId = viewState.selectedCollectionId;
+  const selectedCollectionId = viewState.selectedSurface === 'briefing' ? viewState.selectedCollectionId : null;
   const selectCollection = (collection: FeedbackCollection) => {
     setViewState((current) => ({
       ...current,
+      selectedSurface: 'briefing',
       selectedCollectionId: collection.id,
       selectedGroupId: null,
     }));
@@ -50,13 +55,15 @@ export function CollectionShell({
         bundles={bundles}
         groups={groups}
         loadError={loadError}
+        confirmedLoaded={confirmedLoaded}
         hidden={sidebarHidden}
         selectedCollectionId={selectedCollectionId}
-        selectedGroupId={viewState.selectedGroupId}
+        selectedGroupId={viewState.selectedSurface === 'briefing' ? viewState.selectedGroupId : null}
         viewState={viewState}
         setViewState={setViewState}
         onSelect={selectCollection}
         onSelectGroup={onSelectGroup}
+        onSelectIncidents={onSelectIncidents}
       />
       <section className="feedback-collection-shell__content" aria-label="Selected Briefing">
         {notice}

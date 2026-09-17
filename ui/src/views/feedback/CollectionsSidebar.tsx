@@ -36,6 +36,7 @@ export type CollectionsSidebarProps = {
   bundles?: readonly BriefingBundle[];
   groups?: readonly BriefingGroup[];
   loadError?: string | null;
+  confirmedLoaded?: boolean;
   hidden?: boolean;
   selectedCollectionId: string | null;
   selectedGroupId?: string | null;
@@ -43,6 +44,7 @@ export type CollectionsSidebarProps = {
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
   onSelect(collection: FeedbackCollection): void;
   onSelectGroup?(group: BriefingGroup): void;
+  onSelectIncidents?(): void;
 };
 
 export function CollectionsSidebar({
@@ -50,6 +52,7 @@ export function CollectionsSidebar({
   bundles = [],
   groups = [],
   loadError = null,
+  confirmedLoaded = false,
   hidden = false,
   selectedCollectionId,
   selectedGroupId = null,
@@ -57,6 +60,7 @@ export function CollectionsSidebar({
   setViewState,
   onSelect,
   onSelectGroup,
+  onSelectIncidents,
 }: CollectionsSidebarProps): JSX.Element {
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const filtered = useMemo(
@@ -364,6 +368,7 @@ export function CollectionsSidebar({
         />
         {sidebarOrder.notice ? (
           <DetailPaneNotice
+            source="briefing:sidebar-order"
             severity="warning"
             density="compact"
             title="Sidebar order unavailable"
@@ -373,22 +378,23 @@ export function CollectionsSidebar({
             {sidebarOrder.notice}
           </DetailPaneNotice>
         ) : null}
-        {loadError ? (
-          <DetailPaneNotice severity="error" density="compact" title="Briefings could not be loaded">
-            {loadError}
-          </DetailPaneNotice>
-        ) : null}
         </>
       )}
       bodyClassName="feedback-collections-sidebar__body"
     >
       <div data-testid="feedback-collections-sidebar" {...topLevelReorder.list}>
         {topLevelReorder.assistive}
-        {loadError ? (
+        <button
+          type="button"
+          className="feedback-collections-sidebar__incidents"
+          aria-current={viewState.selectedSurface === 'incidents' ? 'page' : undefined}
+          onClick={onSelectIncidents}
+        >Operational incidents</button>
+        {!confirmedLoaded && loadError ? (
           <div className="feedback-collections-sidebar__list">
-            <p className="feedback-collections-sidebar__empty">Briefings remain unavailable.</p>
+            <p className="feedback-collections-sidebar__empty">Briefings have not loaded.</p>
           </div>
-        ) : visibleGroups.length === 0 && visibleBundles.length === 0 && unbundled.length === 0 ? (
+        ) : !confirmedLoaded ? null : visibleGroups.length === 0 && visibleBundles.length === 0 && unbundled.length === 0 ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty" role="status">
               {collections.length === 0

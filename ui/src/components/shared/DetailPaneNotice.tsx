@@ -1,4 +1,7 @@
 import type { ComponentChildren } from 'preact';
+import { createPortal } from 'preact/compat';
+import { useId } from 'preact/hooks';
+import { useAppShell } from '../../app-shell';
 
 import './DetailPaneNotice.css';
 
@@ -13,6 +16,8 @@ export type DetailPaneNoticeProps = {
   actions?: ComponentChildren;
   className?: string;
   testId?: string;
+  /** Stable producer identity for the operational notice lifecycle. */
+  source?: string;
 };
 
 const semantics: Record<DetailPaneNoticeSeverity, { role: 'status' | 'alert'; live: 'polite' | 'assertive' }> = {
@@ -26,7 +31,7 @@ function classNames(...values: Array<string | undefined>): string {
   return values.filter(Boolean).join(' ');
 }
 
-/** A typed notice anchored above a detail or main region's scrolling body. */
+/** Operational notices render in the app workspace's single anchored outlet. */
 export function DetailPaneNotice({
   severity,
   density = 'default',
@@ -35,9 +40,12 @@ export function DetailPaneNotice({
   actions,
   className,
   testId,
-}: DetailPaneNoticeProps): JSX.Element {
+  source,
+}: DetailPaneNoticeProps): JSX.Element | null {
+  const { active, noticeHost } = useAppShell();
+  const generatedSource = useId();
   const semantic = semantics[severity];
-  return (
+  const notice = (
     <div
       className={classNames(
         'detail-pane-notice',
@@ -47,6 +55,7 @@ export function DetailPaneNotice({
       )}
       data-severity={severity}
       data-testid={testId}
+      data-notice-source={source ?? generatedSource}
       role={semantic.role}
       aria-live={semantic.live}
       aria-atomic="true"
@@ -62,4 +71,9 @@ export function DetailPaneNotice({
       ) : null}
     </div>
   );
+  if (!active) return null;
+  if (severity === 'error' || severity === 'warning') {
+    return noticeHost ? createPortal(notice, noticeHost) : null;
+  }
+  return notice;
 }

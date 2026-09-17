@@ -1011,6 +1011,31 @@ a {
   background: var(--surface-main);
 }
 
+.app-content > .app-operational-notices {
+  position: absolute;
+  top: 0;
+  left: var(--app-view-sidebar-width, 0px);
+  right: 0;
+  display: grid;
+  z-index: 20;
+}
+
+.app-content > .app-operational-notices:empty { display: none; }
+
+.app-shell:not(.app-shell--view-sidebar-open) .app-operational-notices { left: 0; }
+
+/* The sidebar keeps its full height. Only the selected main surface yields
+   vertical room when the anchored outlet has notices. */
+.app-tab-panel:not([hidden]):not(:has(.view-sidebar)) {
+  padding-top: var(--app-operational-notice-height, 0px);
+  box-sizing: border-box;
+}
+
+.app-tab-panel:not([hidden]) .view-sidebar ~ :not(.view-sidebar) {
+  padding-top: var(--app-operational-notice-height, 0px);
+  box-sizing: border-box;
+}
+
 .app-content::before {
   content: none;
 }

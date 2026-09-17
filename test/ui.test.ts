@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/preact';
+import { render as testingRender, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
@@ -167,7 +167,23 @@ vi.mock('@xterm/addon-fit', () => ({
   },
 }));
 
+const render: typeof testingRender = (view, options) => {
+  const noticeHost = document.getElementById('app-operational-notices');
+  const wrap = (content: typeof view) => h(AppShellProvider, { value: {
+    active: true,
+    noticeHost,
+    rightSidebar: null,
+    registerRightSidebar: () => () => undefined,
+    updateRightSidebar: () => undefined,
+  } }, content);
+  const result = testingRender(wrap(view), options);
+  return { ...result, rerender: (next) => result.rerender(wrap(next)) };
+};
+
 beforeEach(async () => {
+  const noticeHost = document.createElement('div');
+  noticeHost.id = 'app-operational-notices';
+  document.body.append(noticeHost);
   __resetBrowserSessionForTests();
   await initializeBrowserSession(async () => new Response(JSON.stringify({
     authenticated: true,
@@ -195,6 +211,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  document.getElementById('app-operational-notices')?.remove();
   __resetBrowserSessionForTests();
   invalidateApiGetCache();
   cleanup();
@@ -1972,20 +1989,13 @@ describe('app shell', () => {
     expect(document.documentElement.dataset.theme).toBe('dark');
   });
 
-  it('keeps desktop login in left chrome without a detail-pane overlay', () => {
+  it('owns operational notices in the main workspace without a rail login', () => {
     const appSource = readFileSync(
       `${process.cwd()}/ui/src/app.tsx`,
       'utf8',
     );
-    const footerStart = appSource.indexOf('<nav className="app-rail__footer"');
-    const footerEnd = appSource.indexOf('</nav>', footerStart);
-    const login = appSource.indexOf('<DesktopLoginStatus', footerStart);
-
-    expect(footerStart).toBeGreaterThan(-1);
-    expect(login).toBeGreaterThan(footerStart);
-    expect(login).toBeLessThan(footerEnd);
-    expect(appSource).not.toContain('app-shell__session-status');
-    expect(readResolvedStylesheet()).not.toContain('.app-shell__session-status');
+    expect(appSource).toContain('id="app-operational-notices"');
+    expect(appSource).not.toContain('<DesktopLoginStatus');
   });
 
   it('renders a deep-linked issue detail while the global issue list is pending', async () => {
@@ -2346,7 +2356,8 @@ describe('app shell', () => {
 
     const notice = (await screen.findByText('Saving disabled in copied preview instance.')).closest('.detail-pane-notice')!;
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
-    expect(notice.closest('.spaces-shell__main')?.firstElementChild).toBe(notice);
+    expect(notice.parentElement?.id).toBe('app-operational-notices');
+    expect(document.querySelector('.spaces-shell__main .detail-pane-notice')).toBeNull();
   });
 });
 
@@ -5541,11 +5552,11 @@ describe('ArtifactsView', () => {
     const error = screen.getByText('Artifact detail: artifact not found');
     const header = document.querySelector('.artifact-detail__header');
     const body = document.querySelector('.artifact-detail__pane');
-    const anchoredNotice = document.querySelector('.artifact-detail .detail-pane-shell__notice');
+    const anchoredNotice = document.querySelector('#app-operational-notices');
     expect(header).toBeTruthy();
     expect(anchoredNotice?.contains(error)).toBe(true);
+    expect(document.querySelector('.artifact-detail .detail-pane-notice')).toBeNull();
     expect(body?.contains(error)).toBe(false);
-    expect(header?.compareDocumentPosition(error) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('renders HumbleB knowledge backrefs in artifact detail', async () => {

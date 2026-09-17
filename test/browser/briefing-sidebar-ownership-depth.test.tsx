@@ -93,6 +93,7 @@ function renderSidebarMarkup(): string {
     collections={collections}
     bundles={[ungrouped]}
     groups={[group]}
+    confirmedLoaded
     selectedCollectionId={null}
     viewState={{
       collectionSourceFilter: '',
@@ -105,6 +106,7 @@ function renderSidebarMarkup(): string {
       collapsedGroupSubgroupKeys: [],
       selectedGroupUpdateIds: {},
       selectedGroupId: null,
+      selectedSurface: 'briefing',
       selectedCollectionId: null,
       selectedRoundIds: {},
     }}
