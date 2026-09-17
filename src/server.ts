@@ -473,7 +473,8 @@ export class Router implements RouteRegistrar {
       const cookies = parseCookie(headerValue(req.headers.cookie) ?? "");
       const browserRequest = isBrowserRequest(req.headers);
       const legacyBrowserConversion = isLegacyBrowserConversionRequest(req);
-      const legacyBrowserRecovery = isBoundLegacyRecoveryStart(req, this.instance);
+      const legacyBrowserRecovery = isBoundLegacyRecoveryStart(req, this.instance)
+        || isBoundOriginMigrationStart(req, this.instance);
       if (browserRequest && headerValue(req.headers.authorization) && !legacyBrowserConversion) {
         new HttpResponse(res).status(400).json({
           error: "browser_bearer_forbidden",
@@ -1318,7 +1319,7 @@ function validateDaemonWriteBoundary(
       : { ok: false, reason: "invalid_legacy_conversion_ingress" };
   }
   if (pathname === "/api/client-auth/recovery/start") {
-    return isBoundLegacyRecoveryStart(req, instance)
+    return isBoundLegacyRecoveryStart(req, instance) || isBoundOriginMigrationStart(req, instance)
       ? { ok: true }
       : { ok: false, reason: "invalid_browser_recovery_ingress" };
   }
@@ -1339,11 +1340,26 @@ function isBoundLegacyRecoveryStart(req: http.IncomingMessage, instance: Instanc
   const host = parseHostHeader(firstHeader(req, "host"));
   return (req.method ?? "GET").toUpperCase() === "POST"
     && new URL(req.url ?? "/", "http://localhost").pathname === "/api/client-auth/recovery/start"
-    && Boolean(host && `${host.hostname}:${host.port}` === registered.host.toLowerCase())
+    && Boolean(host && host.hostname === normalizeHostname(registered.hostname) && host.port === registered.port)
     && firstHeader(req, "origin") === registered.origin
     && firstHeader(req, "x-mandible-legacy-recovery") === "state-v1"
     && new URL(legacyOrigin).port === (target === instance.instance_id ? "19420" : "19421")
     && firstHeader(req, "sec-fetch-site") === "cross-site";
+}
+
+function isBoundOriginMigrationStart(req: http.IncomingMessage, instance: InstanceInfo): boolean {
+  if (process.env.MANDIBLE_ORIGIN_MIGRATION !== "allow" || instance.role !== "main") return false;
+  const oldOrigin = "https://app.mandible.localhost:19420";
+  const registered = new URL(instance.public_origin);
+  const host = parseHostHeader(firstHeader(req, "host"));
+  return (req.method ?? "GET").toUpperCase() === "POST"
+    && new URL(req.url ?? "/", "http://localhost").pathname === "/api/client-auth/recovery/start"
+    && firstHeader(req, "x-mandible-origin-migration") === "state-v1"
+    && firstHeader(req, "x-mandible-legacy-origin") === oldOrigin
+    && firstHeader(req, "x-mandible-target-instance") === instance.instance_id
+    && Boolean(host && host.hostname === normalizeHostname(registered.hostname) && host.port === registered.port)
+    && firstHeader(req, "origin") === registered.origin
+    && ["same-site", "cross-site"].includes(firstHeader(req, "sec-fetch-site") ?? "");
 }
 
 function isBoundLegacyConversionCompletion(
@@ -1361,7 +1377,7 @@ function isBoundLegacyConversionCompletion(
   const legacyPort = new URL(legacyOrigin).port;
   return (req.method ?? "GET").toUpperCase() === "POST"
     && pathname === "/api/client-auth/legacy-conversion/complete"
-    && Boolean(host && `${host.hostname}:${host.port}` === registered.host.toLowerCase())
+    && Boolean(host && host.hostname === normalizeHostname(registered.hostname) && host.port === registered.port)
     && origin === registered.origin
     && firstHeader(req, "x-mandible-legacy-migration") === "complete-v1"
     && legacyPort === (target === instance.instance_id ? "19420" : "19421")
@@ -1379,7 +1395,7 @@ function validateDaemonBrowserBoundary(
   const hostHeader = firstHeader(req, "host");
   const host = parseHostHeader(hostHeader);
   const registered = new URL(instance.public_origin);
-  if (!host || `${host.hostname}:${host.port}` !== registered.host.toLowerCase()) {
+  if (!host || host.hostname !== normalizeHostname(registered.hostname) || host.port !== registered.port) {
     return { ok: false, reason: "invalid_host" };
   }
 
@@ -1425,7 +1441,14 @@ function parseHostHeader(value: string | undefined): { hostname: string; port: s
     return null;
   }
   try {
-    const url = new URL(`http://${value}`);
+    // Host is compared with the registered HTTPS origin. Parsing as HTTPS
+    // canonicalizes an explicit :443 to the same host as an omitted port.
+    const url = new URL(`https://${value}`);
+    const raw = value.toLowerCase();
+    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash
+        || (raw !== url.host.toLowerCase() && raw !== `${url.hostname.toLowerCase()}:443`)) {
+      return null;
+    }
     return {
       hostname: normalizeHostname(url.hostname),
       port: url.port,

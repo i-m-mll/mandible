@@ -12,14 +12,14 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 // --- Base URL resolution (issue 70dffb8) ---
 
 describe("channel-server base URL", () => {
-  it("defaults to the historical loopback daemon", async () => {
+  it("defaults to the internal loopback daemon", async () => {
     const { resolveBaseUrl } = await import("../../channel-server/base-url.js");
-    expect(resolveBaseUrl({})).toBe("http://localhost:19420");
+    expect(resolveBaseUrl({})).toBe("http://127.0.0.1:29420");
   });
 
   it("honors MANDIBLE_PORT for non-default daemons", async () => {
     const { resolveBaseUrl } = await import("../../channel-server/base-url.js");
-    expect(resolveBaseUrl({ MANDIBLE_PORT: "31337" })).toBe("http://localhost:31337");
+    expect(resolveBaseUrl({ MANDIBLE_PORT: "31337" })).toBe("http://127.0.0.1:31337");
   });
 
   it("prefers an explicit MANDIBLE_BASE over MANDIBLE_PORT and trims it", async () => {
@@ -34,9 +34,9 @@ describe("channel-server base URL", () => {
     const { resolveBaseUrl } = await import("../../channel-server/base-url.js");
     // No file:// spool transport here, and the SSE bridge drives node:http.
     expect(resolveBaseUrl({ MANDIBLE_BASE: "file:///tmp/spool", MANDIBLE_PORT: "31337" }))
-      .toBe("http://localhost:31337");
-    expect(resolveBaseUrl({ MANDIBLE_BASE: "not a url" })).toBe("http://localhost:19420");
-    expect(resolveBaseUrl({ MANDIBLE_BASE: "   " })).toBe("http://localhost:19420");
+      .toBe("http://127.0.0.1:31337");
+    expect(resolveBaseUrl({ MANDIBLE_BASE: "not a url" })).toBe("http://127.0.0.1:29420");
+    expect(resolveBaseUrl({ MANDIBLE_BASE: "   " })).toBe("http://127.0.0.1:29420");
   });
 });
 
@@ -93,7 +93,7 @@ describe("channel-server client", () => {
     const { checkInboxGlobal } = await import("../../channel-server/client.js");
     await checkInboxGlobal();
     const url = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    expect(url).toBe("http://localhost:31337/api/inbox/global");
+    expect(url).toBe("http://127.0.0.1:31337/api/inbox/global");
   });
 
   it("authenticates every daemon request with its injected agent token", async () => {

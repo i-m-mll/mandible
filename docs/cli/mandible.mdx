@@ -1,13 +1,13 @@
 # mandible CLI
 
-The `mandible` command is a dispatcher that routes to subcommands. HTTP subcommands use the registered production origin at `https://app.mandible.localhost:19420`; sandboxed clients may use file RPC.
+The `mandible` command is a dispatcher that routes to subcommands. HTTP subcommands use the registered production origin at `https://mandible.localhost`; sandboxed clients may use file RPC.
 
 ## Global Environment
 
 | Variable | Description |
 |---|---|
-| `MANDIBLE_PORT` | Daemon port (default: `19420`) |
-| `MANDIBLE_BASE` | Daemon base URL (default: `https://app.mandible.localhost:19420`) |
+| `MANDIBLE_PORT` | Internal daemon port (default: `29420`) |
+| `MANDIBLE_BASE` | Browser gateway base URL (default: `https://mandible.localhost`) |
 | `MANDIBLE_SESSION_ID` | Current session ID (set by `mandible wrap`) |
 | `MANDIBLE_DB` | Database path (default: `~/.cache/mandible/mandible.db`) |
 

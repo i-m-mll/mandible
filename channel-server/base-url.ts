@@ -4,11 +4,11 @@
 // "http://localhost:19420", so a channel server pointed at a non-default
 // daemon (an IAB preview on a free port, `MANDIBLE_PORT`, an explicit
 // `MANDIBLE_BASE`) silently talked to the wrong instance. Precedence matches
-// cli/api.sh: an explicit MANDIBLE_BASE wins, otherwise the default host with
-// MANDIBLE_PORT, otherwise the historical default.
+// the internal transport contract: an explicit HTTP MANDIBLE_BASE wins,
+// otherwise the backend listener selected by MANDIBLE_PORT is used.
 
-const DEFAULT_PORT = "19420";
-const DEFAULT_HOST = "http://localhost";
+const DEFAULT_PORT = "29420";
+const DEFAULT_HOST = "http://127.0.0.1";
 
 /**
  * Resolve the Mandible daemon base URL for HTTP requests.

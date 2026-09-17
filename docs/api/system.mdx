@@ -43,7 +43,7 @@ and `backgroundBackoffMs` fields show when background ingestion is pacing work
 to protect request responsiveness.
 
 ```bash
-curl http://localhost:19420/api/health
+curl http://127.0.0.1:29420/api/health
 ```
 
 ## Server-Sent Events (SSE)
@@ -79,7 +79,7 @@ data: {"type":"auth:resolved","data":{"request_id":"...","status":"completed"},"
 | `mandible:rebuilding` | Daemon is about to restart for a rebuild |
 
 ```bash
-curl -N -X POST https://app.mandible.localhost:19420/api/events/subscribe \
+curl -N -X POST https://mandible.localhost/api/events/subscribe \
   -H "Authorization: Bearer $MANDIBLE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"topics":["auth:"]}'
@@ -117,7 +117,7 @@ Tail the structured NDJSON daemon log file.
 ```
 
 ```bash
-curl "http://localhost:19420/api/system/logs?level=warn&limit=50"
+curl "http://127.0.0.1:29420/api/system/logs?level=warn&limit=50"
 ```
 
 ## Backup
@@ -178,7 +178,7 @@ Update backup configuration. Reschedules the backup timer.
 ```
 
 ```bash
-curl -X PUT http://localhost:19420/api/backup/settings \
+curl -X PUT http://127.0.0.1:29420/api/backup/settings \
   -H 'Content-Type: application/json' \
   -d '{"enabled": true, "interval_hours": 12, "destination": "/Users/user/.mandible/backups/mandible-metadata.sql"}'
 ```

@@ -48,12 +48,13 @@
 set -euo pipefail
 
 export GIT_OPTIONAL_LOCKS=0
-export MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
-export MANDIBLE_BASE="${MANDIBLE_BASE:-${MANDIBLE_PUBLIC_ORIGIN:-https://app.mandible.localhost:19420}}"
+export MANDIBLE_PORT="${MANDIBLE_PORT:-29420}"
 
 # Resolve script's own directory robustly — no realpath (not standard on macOS)
 MANDIBLE_BIN_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 export MANDIBLE_CLI_DIR="$(cd "$MANDIBLE_BIN_DIR/../cli" && pwd -P)"
+source "$MANDIBLE_CLI_DIR/canonical-origin.sh"
+export MANDIBLE_BASE="${MANDIBLE_BASE:-${MANDIBLE_PUBLIC_ORIGIN:-$MANDIBLE_CANONICAL_ORIGIN}}"
 
 usage() {
   cat <<'EOF'

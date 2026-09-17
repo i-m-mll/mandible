@@ -13,10 +13,10 @@ node dist/index.js
 The daemon logs structured JSON to stderr. On startup you'll see:
 
 ```
-{"level":"info","message":"server_started","time":"...","port":19420}
+{"level":"info","message":"server_started","time":"...","port":29420}
 ```
 
-Complete the [local browser session setup](../guides/local-browser-sessions.mdx), then open the dashboard at [https://app.mandible.localhost:19420](https://app.mandible.localhost:19420).
+Complete the [local browser session setup](../guides/local-browser-sessions.mdx), then open the dashboard at [https://mandible.localhost](https://mandible.localhost).
 
 ## What happens on first start
 
@@ -113,7 +113,7 @@ changing daemon state:
 
 ```bash
 launchctl print "gui/$(id -u)/com.mll.mandible"
-curl -fsS http://127.0.0.1:19420/api/health | jq '{status, ready, memory, eventLoop}'
+curl -fsS http://127.0.0.1:29420/api/health | jq '{status, ready, memory, eventLoop}'
 mandible auth list --json > /tmp/mandible-auth-before-restart.json
 ```
 
@@ -124,7 +124,7 @@ environment and supervisor remain authoritative:
 
 ```bash
 launchctl kickstart -k "gui/$(id -u)/com.mll.mandible"
-until curl -fsS http://127.0.0.1:19420/api/health | jq -e '.ready == true' >/dev/null; do
+until curl -fsS http://127.0.0.1:29420/api/health | jq -e '.ready == true' >/dev/null; do
   sleep 1
 done
 mandible auth list --json > /tmp/mandible-auth-after-restart.json

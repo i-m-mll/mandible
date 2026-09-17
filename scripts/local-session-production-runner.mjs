@@ -10,6 +10,30 @@ const runtimeDir = path.join(os.homedir(), ".mandible", "config", "local-session
 const journalPath = path.join(runtimeDir, "cutover.json");
 const installedRunnerPath = path.join(runtimeDir, "production-runner.mjs");
 const readyPath = path.join(runtimeDir, "production-ready.json");
+const originMigrationPath = path.join(runtimeDir, "origin-migration.json");
+
+export function resolveRuntimeOrigin(candidateEnv, originMigration, protectedRoot) {
+  const oldOrigin = candidateEnv.MANDIBLE_PUBLIC_ORIGIN;
+  if (!originMigration) return { origin: oldOrigin, migration: false };
+  if (originMigration.schema !== "mandible-local-origin-migration@1"
+      || originMigration.instance_id !== "production"
+      || originMigration.installation_id !== candidateEnv.MANDIBLE_INSTALLATION_ID
+      || originMigration.old_origin !== oldOrigin
+      || originMigration.new_origin !== "https://mandible.localhost") {
+    throw new Error("Origin migration does not match the completed production cutover.");
+  }
+  if (originMigration.state === "prepared" || originMigration.state === "rolled_back") {
+    return { origin: oldOrigin, migration: false };
+  }
+  if (!["staged", "complete"].includes(originMigration.state) || !protectedRoot) {
+    throw new Error("Origin migration requires the exact protected production build marker.");
+  }
+  const canonical = JSON.parse(fs.readFileSync(path.join(protectedRoot, "config", "canonical-origin.json"), "utf8"));
+  if (canonical.production_origin !== originMigration.new_origin) {
+    throw new Error("Protected production origin declaration does not match migration custody.");
+  }
+  return { origin: originMigration.new_origin, migration: originMigration.state === "staged" };
+}
 
 function readCompletedProduction() {
   const journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
@@ -81,8 +105,15 @@ async function run() {
     cwd = ready.root;
     generation = ready.commit;
   }
+  const originMigration = fs.existsSync(originMigrationPath)
+    ? JSON.parse(fs.readFileSync(originMigrationPath, "utf8")) : null;
+  const runtimeOrigin = resolveRuntimeOrigin(candidate.env, originMigration,
+    fs.existsSync(readyPath) ? cwd : null);
   for (const [key, value] of Object.entries(candidate.env)) process.env[key] = value;
-  process.env.MANDIBLE_BASE = candidate.env.MANDIBLE_PUBLIC_ORIGIN;
+  process.env.MANDIBLE_PUBLIC_ORIGIN = runtimeOrigin.origin;
+  process.env.MANDIBLE_BASE = runtimeOrigin.origin;
+  if (runtimeOrigin.migration) process.env.MANDIBLE_ORIGIN_MIGRATION = "allow";
+  else delete process.env.MANDIBLE_ORIGIN_MIGRATION;
   process.env.MANDIBLE_BACKEND_GENERATION = generation;
   process.env.GIT_OPTIONAL_LOCKS = "0";
   process.chdir(cwd);
@@ -92,8 +123,10 @@ async function run() {
   await import(pathToFileURL(entry).href);
 }
 
-const command = process.argv[2];
-if (command === "install-runner") installRunner();
-else if (command === "mark-ready") console.log(JSON.stringify(markReady()));
-else if (command === "run") await run();
-else throw new Error("Usage: local-session-production-runner.mjs install-runner|mark-ready|run");
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  const command = process.argv[2];
+  if (command === "install-runner") installRunner();
+  else if (command === "mark-ready") console.log(JSON.stringify(markReady()));
+  else if (command === "run") await run();
+  else throw new Error("Usage: local-session-production-runner.mjs install-runner|mark-ready|run");
+}

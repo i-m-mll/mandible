@@ -43,7 +43,7 @@ if [ -n "$transcript_path" ]; then
 fi
 payload="${payload}}"
 
-base=${MANDIBLE_BASE:-${MANDIBLE_PUBLIC_ORIGIN:-https://app.mandible.localhost:19420}}
+base=${MANDIBLE_BASE:-${MANDIBLE_PUBLIC_ORIGIN:-https://mandible.localhost}}
 curl -fsS --connect-timeout 0.25 --max-time "${MANDIBLE_HOOK_TIMEOUT:-1}" \
   -H 'Content-Type: application/json' \
   -d "$payload" \

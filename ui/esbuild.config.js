@@ -106,10 +106,23 @@ const buildOptions = {
   plugins: [assetManifestPlugin],
 };
 
+const originMigrationBuildOptions = {
+  entryPoints: ['ui/src/origin-migration.ts'],
+  bundle: true,
+  outfile: 'ui/dist/origin-migration.js',
+  format: 'esm',
+  target: 'es2020',
+  minify: !isWatch,
+  logLevel: 'info',
+};
+
 if (isWatch) {
   const ctx = await context(buildOptions);
   await ctx.watch();
+  const migrationCtx = await context(originMigrationBuildOptions);
+  await migrationCtx.watch();
 } else {
   await fs.rm(buildOptions.outdir, { recursive: true, force: true });
   await build(buildOptions);
+  await build(originMigrationBuildOptions);
 }

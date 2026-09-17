@@ -33,7 +33,7 @@ Register a new session with Mandible.
 **Response:** `200 OK` — session object.
 
 ```bash
-curl -X POST http://localhost:19420/api/sessions/register \
+curl -X POST http://127.0.0.1:29420/api/sessions/register \
   -H 'Content-Type: application/json' \
   -d '{"id": "abc-123", "app": "claude", "pid": 12345, "cwd": "/path/to/repo"}'
 ```
@@ -54,8 +54,8 @@ List sessions with optional filtering.
 **Response:** `200 OK` — array of session objects. When `include=issues`, each session includes `issues` and `projects` arrays.
 
 ```bash
-curl http://localhost:19420/api/sessions?status=active
-curl http://localhost:19420/api/sessions?include=issues
+curl http://127.0.0.1:29420/api/sessions?status=active
+curl http://127.0.0.1:29420/api/sessions?include=issues
 ```
 
 ### GET /api/sessions/:id
@@ -69,7 +69,7 @@ Get a single session by ID. Supports prefix matching.
 - `409` — Ambiguous prefix
 
 ```bash
-curl http://localhost:19420/api/sessions/abc123
+curl http://127.0.0.1:29420/api/sessions/abc123
 ```
 
 ### PATCH /api/sessions/:id
@@ -88,7 +88,7 @@ Update session fields.
 **Response:** `200 OK` — updated session object.
 
 ```bash
-curl -X PATCH http://localhost:19420/api/sessions/abc123 \
+curl -X PATCH http://127.0.0.1:29420/api/sessions/abc123 \
   -H 'Content-Type: application/json' \
   -d '{"task": "Fixing auth bugs"}'
 ```
@@ -106,7 +106,7 @@ End a session.
 **Response:** `200 OK` — updated session object.
 
 ```bash
-curl -X PATCH http://localhost:19420/api/sessions/abc123/end \
+curl -X PATCH http://127.0.0.1:29420/api/sessions/abc123/end \
   -H 'Content-Type: application/json' \
   -d '{"status": "ended"}'
 ```
@@ -171,7 +171,7 @@ Look up a session by process ID.
 **Response:** `200 OK` — session object, or `404` if no active session matches.
 
 ```bash
-curl http://localhost:19420/api/sessions/by-pid/12345
+curl http://127.0.0.1:29420/api/sessions/by-pid/12345
 ```
 
 ### GET /api/sessions/pinned
