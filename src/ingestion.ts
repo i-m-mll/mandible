@@ -2149,6 +2149,7 @@ function resolveIncrementalToolParents(
   conversationId: string,
   result: ParseResult,
 ): void {
+  const structureCache = getConversationStructureCache(db);
   const priorToolCall = db.prepare(`
     SELECT position
       FROM conversation_structural_blocks
@@ -2162,6 +2163,11 @@ function resolveIncrementalToolParents(
   for (const block of result.blocks) {
     const toolId = block.metadata.tool_id;
     if (block.type !== "tool_result" || block.parent_id != null || !toolId?.trim()) continue;
+    const cachedPosition = structureCache.findToolPosition(conversationId, toolId);
+    if (cachedPosition !== null) {
+      block.parent_id = String(cachedPosition);
+      continue;
+    }
     const escapedToolId = toolId.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
     const parent = priorToolCall.get(
       conversationId,
@@ -2968,14 +2974,18 @@ async function ingestFilePass(
     if (!isSidechain && result.conversation.source === "claude_code") {
       linkExistingClaudeSubagents(db, result.conversation.session_id, existing.id);
     }
+    await refreshAppendState(db, filePath, stat, await countCompleteLines(filePath));
+    await recordDurableConversationSource(db, existing.id, result, filePath, "replace", result.blocks, options.strictParseErrors);
+    // The selected Chat reacts to this event by reading its source-backed
+    // window. Publish only after the locator map and disposable cache have
+    // converged; publishing before recordDurableConversationSource let the
+    // refetch race the re-index and remain pending with no later event.
     eventPublisher("conversation:updated", {
       id: existing.id,
       source: result.conversation.source,
       title: result.conversation.title,
       block_count: result.conversation.block_count,
     });
-    await refreshAppendState(db, filePath, stat, await countCompleteLines(filePath));
-    await recordDurableConversationSource(db, existing.id, result, filePath, "replace", result.blocks);
     if (isClaudeWorkflowTranscriptPath(filePath)) {
       await ingestWorkflowArtifact(filePath);
     }
@@ -3055,14 +3065,6 @@ async function ingestFilePass(
     if (!isSidechain && result.conversation.source === "claude_code") {
       linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
     }
-    if (isProviderTitleOnlyAppend) {
-      eventPublisher("conversation:updated", {
-        id: conversationId,
-        source: result.conversation.source,
-        title: result.conversation.title,
-        block_count: result.conversation.block_count,
-      });
-    }
     await refreshAppendState(
       db,
       filePath,
@@ -3082,7 +3084,16 @@ async function ingestFilePass(
         filePath,
         isDeltaAppend ? "append" : "replace",
         newBlocks,
+        options.strictParseErrors,
       );
+    }
+    if (isProviderTitleOnlyAppend) {
+      eventPublisher("conversation:updated", {
+        id: conversationId,
+        source: result.conversation.source,
+        title: result.conversation.title,
+        block_count: result.conversation.block_count,
+      });
     }
     if (isClaudeWorkflowTranscriptPath(filePath)) {
       await ingestWorkflowArtifact(filePath);
@@ -3529,6 +3540,7 @@ async function ingestFilePass(
       filePath,
       isDeltaAppend ? "append" : "replace",
       newBlocks,
+      options.strictParseErrors,
     );
   }
 
@@ -3589,6 +3601,7 @@ async function recordDurableConversationSource(
   filePath: string,
   structuralMode: "replace" | "append",
   blocks: readonly Omit<ConversationBlock, "id" | "conversation_id">[],
+  strict = false,
 ): Promise<void> {
   try {
     const legacyIds = assignConversationBlockIds(
@@ -3644,6 +3657,7 @@ async function recordDurableConversationSource(
         conversationId,
         structuralMode,
         parentPositions,
+        currentToolPositions,
       );
       if (captured.sourceVersionId
           && captured.cached === result.conversation.block_count) {
@@ -3684,6 +3698,7 @@ async function recordDurableConversationSource(
       conversation_id: conversationId,
       error: String(error),
     });
+    if (strict) throw error;
   }
 }
 

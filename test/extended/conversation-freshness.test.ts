@@ -21,7 +21,9 @@ import { registerConversationRoutes, sendFreshnessError } from "../../src/routes
 import { Router } from "../../src/server.js";
 import { ConversationSourceReader } from "../../src/conversations/source-reader.js";
 import { getConversationStructureCache } from "../../src/conversations/structure-cache.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
 import { sourceFilesystemIdentity } from "../../src/conversations/source-observer.js";
+import { CodexParser } from "../../src/parsers/codex.js";
 import { FileRpcTransport } from "../../src/file-rpc-transport.js";
 import { resolveInstanceInfo } from "../../src/instance-policy.js";
 
@@ -249,6 +251,37 @@ describe("exact conversation freshness", () => {
     const rpcResponse = JSON.parse(fs.readFileSync(path.join(rpcDir, "export.response.json"), "utf8"));
     expect(rpcResponse.status).toBe(200);
     expect(JSON.stringify(rpcResponse.body)).toContain("new exact tail");
+  });
+
+  it("links a tool result to a prior sparse tool call without reparsing the full transcript", async () => {
+    const seeded = await seed("cross-append-tool-session");
+    await appendAt(seeded.file, record({
+      type: "response_item", timestamp: "2026-08-19T00:00:03Z",
+      payload: { type: "function_call", id: "provider-tool-message", call_id: "earlier-tool", name: "inspect", arguments: "{}" },
+    }), 2);
+    await triggerExactPathIngest(seeded.file);
+    expect((await exactContents(seeded.id)).length).toBe(3);
+    expect(getConversationStructureCache(db).findToolPosition(seeded.id, "earlier-tool")).toBe(2);
+    await appendAt(seeded.file, record({
+      type: "response_item", timestamp: "2026-08-19T00:00:04Z",
+      payload: { type: "function_call_output", call_id: "earlier-tool", output: "tool result tail" },
+    }), 3);
+
+    const fullParse = vi.spyOn(CodexParser.prototype, "parse");
+    try {
+      await triggerExactPathIngest(seeded.file);
+      expect(fullParse).not.toHaveBeenCalled();
+    } finally {
+      fullParse.mockRestore();
+    }
+    const read = await new ConversationSourceReader(db).readAll(seeded.id);
+    expect(read.status).toBe("source");
+    if (read.status !== "source") return;
+    const toolUse = read.value.find((block) => block.type === "tool_use");
+    const toolResult = read.value.find((block) => block.type === "tool_result");
+    expect(toolUse).toBeDefined();
+    expect(toolResult?.parent_id).toBe(toolUse?.id);
+    expect(toolResult?.content).toContain("tool result tail");
   });
 
   it("runs authoritative exact catch-up across bounded read and UTF-8 chunk boundaries", async () => {
@@ -488,10 +521,11 @@ describe("exact conversation freshness", () => {
     expect(ingests).toBe(1);
   });
 
-  it("returns the indexed version immediately without starting read-triggered ingestion", async () => {
+  it("queues an exact source refresh for an active append instead of serving a stale selected window", async () => {
     const seeded = await seed("background-refresh-session");
     await appendAt(seeded.file, assistant("new tail", 3), 2);
     let ingests = 0;
+    const scheduleReparse = vi.fn(() => true);
     const ingest = async (file: string) => {
       ingests += 1;
       return triggerExactPathIngest(file);
@@ -500,13 +534,93 @@ describe("exact conversation freshness", () => {
     await expect(ensureExactConversationFresh(db, seeded.id, {
       ingest,
       waitForFresh: false,
-    })).resolves.toMatchObject({ conversationId: seeded.id, refreshed: false });
+      scheduleReparse,
+    })).rejects.toMatchObject({ code: "freshness_pending" });
+    expect(scheduleReparse).toHaveBeenCalledWith(seeded.file, expect.any(String), seeded.id);
     expect(ingests).toBe(0);
+
+    const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
+    registerConversationRoutes(router);
+    const pending = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
+    // The isolated fixture has no running ingestion actor. Production accepts
+    // this exact-path demand and returns freshness_pending until it catches up.
+    expect(pending.status).toBe(503);
+    expect(pending.body).toMatchObject({ error: "freshness_error" });
+
     await expect(ensureExactConversationFresh(db, seeded.id, { ingest })).resolves.toMatchObject({
       conversationId: seeded.id,
       refreshed: true,
     });
     expect(ingests).toBe(1);
+    const current = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
+    expect(current.status).toBe(200);
+    expect(JSON.stringify(current.body)).toContain("new tail");
+  });
+
+  it("reconciles an append between the selected-window freshness check and source read", async () => {
+    const seeded = await seed("read-race-session");
+    const originalReadPage = ConversationSourceReader.prototype.readPage;
+    const readPage = vi.spyOn(ConversationSourceReader.prototype, "readPage").mockImplementation(async function (...args) {
+      await appendAt(seeded.file, assistant("racing tail", 3), 2);
+      return originalReadPage.apply(this, args);
+    });
+    try {
+      const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
+      registerConversationRoutes(router);
+      const response = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
+      expect(response.status).toBe(503);
+      expect(response.body).toMatchObject({ error: "freshness_error" });
+      expect(readPage).toHaveBeenCalledOnce();
+    } finally {
+      readPage.mockRestore();
+    }
+  });
+
+  it("retries the whole selected window when exact indexing finishes after a stale page read", async () => {
+    const seeded = await seed("read-catchup-session");
+    const originalReadPage = ConversationSourceReader.prototype.readPage;
+    let first = true;
+    const readPage = vi.spyOn(ConversationSourceReader.prototype, "readPage").mockImplementation(async function (...args) {
+      if (!first) return originalReadPage.apply(this, args);
+      first = false;
+      await appendAt(seeded.file, assistant("caught-up tail", 3), 2);
+      const stale = await originalReadPage.apply(this, args);
+      expect(stale.status).toBe("stale");
+      await triggerExactPathIngest(seeded.file);
+      return stale;
+    });
+    try {
+      const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
+      registerConversationRoutes(router);
+      const pending = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
+      expect(pending.status).toBe(503);
+      expect(pending.body).toMatchObject({ error: "freshness_pending" });
+      const current = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
+      expect(current.status).toBe(200);
+      expect(JSON.stringify(current.body)).toContain("caught-up tail");
+    } finally {
+      readPage.mockRestore();
+    }
+  });
+
+  it("announces same-byte reparse only after its current source index is readable", async () => {
+    const seeded = await seed("reparse-completion-event");
+    db.prepare("UPDATE conversation_sources SET parser_version = 'old' WHERE conversation_id = ?")
+      .run(seeded.id);
+    let epochAtEvent: string | null = null;
+    const events: string[] = [];
+    configureIngestionWorker(() => {}, (event, data) => {
+      if (event !== "conversation:updated" || (data as { id?: string }).id !== seeded.id) return;
+      events.push(event);
+      epochAtEvent = (db.prepare("SELECT parser_version FROM conversation_sources WHERE conversation_id = ?")
+        .get(seeded.id) as { parser_version: string }).parser_version;
+    });
+
+    await triggerExactPathIngest(seeded.file);
+
+    expect(events).toEqual(["conversation:updated"]);
+    expect(epochAtEvent).toBe(CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion);
+    expect(await exactContents(seeded.id)).toContain("hello");
   });
 
   it("refreshes one exact provider title, broadcasts once, and leaves an unchanged transcript bounded", async () => {

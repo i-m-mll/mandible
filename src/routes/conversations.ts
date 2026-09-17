@@ -1315,6 +1315,25 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
         : Math.max(0, anchorPosition! - Math.floor((limit - 1) / 2));
       const sourcePage = await sourceReader.readPage(id, { offset: windowOffset, limit });
       if (sourcePage.status !== "source" && sourcePage.status !== "legacy") {
+        if (sourcePage.status === "stale") {
+          // The source can append after the pre-read extent check. Reconcile
+          // that race through the same exact-path freshness boundary instead
+          // of exposing a raw reader 409 for a normal active Chat.
+          try {
+            await ensureExactConversationFresh(db, id, { waitForFresh: false });
+            // An exact-path actor may finish between the failed page read and
+            // this check. The request's window/anchor was computed against the
+            // prior version, so let the client retry the whole selected read.
+            sendFreshnessError(res, new ConversationFreshnessError(
+              "freshness_pending", "conversation source refreshed; retry selected window",
+            ));
+            return;
+          } catch (error) {
+            if (sendFreshnessError(res, error)) return;
+            sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
+            return;
+          }
+        }
         sendJson(res, sourcePage.status === "not_found" ? 404 : 409, {
           error: sourcePage.reason,
           status: sourcePage.status,

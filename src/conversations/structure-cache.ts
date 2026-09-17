@@ -155,11 +155,6 @@ function toolKey(toolId: string): Buffer {
   return createHash("sha256").update(toolId).digest().subarray(0, 16);
 }
 
-function toolIdFromProviderKey(providerKey: string): string | null {
-  const match = providerKey.match(/^tool:(.*):tool_use:\d+:record:/);
-  return match?.[1] ?? null;
-}
-
 /**
  * Disposable, integer-only directory from normalized block positions to exact
  * provider JSONL record ranges. Conversation text and durable ledger metadata
@@ -293,11 +288,12 @@ export class ConversationStructureCache {
     conversationId: string,
     mode: "replace" | "append",
     parentPositions?: ReadonlyMap<number, number | null>,
+    toolPositions?: ReadonlyMap<string, number>,
   ): { captured: number; cached: number; sourceVersionId: string | null } {
     const manifest = this.manifest(mainDb, conversationId);
     if (!manifest) return { captured: 0, cached: 0, sourceVersionId: null };
     const dense = mainDb.prepare(`
-      SELECT block.position, block.type, block.role, block.provider_key,
+      SELECT block.position, block.type, block.role,
              parent.position AS parent_position,
              block.record_offset, block.record_length, block.record_ordinal,
              block.sub_block_ordinal
@@ -311,7 +307,6 @@ export class ConversationStructureCache {
       position: number;
       type: string;
       role: string;
-      provider_key: string;
       parent_position: number | null;
       record_offset: number;
       record_length: number;
@@ -346,11 +341,10 @@ export class ConversationStructureCache {
           cacheId, row.position, blockTypeCode(row.type), roleCode(row.role), parentPosition,
           row.record_offset, row.record_length, row.record_ordinal, row.sub_block_ordinal,
         );
-        const toolId = row.type === "tool_use"
-          ? toolIdFromProviderKey(row.provider_key)
-          : null;
-        if (toolId) insertTool.run(cacheId, toolKey(toolId), row.position);
         captured += 1;
+      }
+      for (const [toolId, position] of toolPositions ?? []) {
+        insertTool.run(cacheId, toolKey(toolId), position);
       }
       cached = (this.cache.prepare(
         "SELECT COUNT(*) AS count FROM cache_blocks WHERE cache_conversation_id = ?",

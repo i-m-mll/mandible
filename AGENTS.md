@@ -37,6 +37,10 @@ declared complete or the user explicitly introduces another theme.
 Mandible dataful workspaces must preserve user-visible state unless the user
 explicitly changes or resets it. Unexpected resets are bugs.
 
+Design smooth state transitions that preserve useful content instead of narrating
+internal activity. Use placeholder text only as hints in input fields. Never claim
+a conversation is empty until its emptiness has been confirmed.
+
 - Preserve per-workspace and per-project view state across tab switches,
   project switches, route changes, refreshes, daemon syncs, and app restarts
   when the state represents user intent.

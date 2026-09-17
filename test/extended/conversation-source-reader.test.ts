@@ -170,7 +170,10 @@ describe("versioned conversation source reader", () => {
     insertConversation(db, "conversation-a", filePath, parsed);
     const versionId = await record(db, "conversation-a", filePath);
     const cache = getConversationStructureCache(db);
-    expect(cache.captureDenseRows(db, "conversation-a", "replace")).toMatchObject({
+    expect(cache.captureDenseRows(db, "conversation-a", "replace", undefined, new Map(
+      parsed.blocks.filter((block) => block.type === "tool_use" && block.metadata.tool_id)
+        .map((block) => [block.metadata.tool_id!, block.position]),
+    ))).toMatchObject({
       captured: 3,
       cached: 3,
       sourceVersionId: versionId,
