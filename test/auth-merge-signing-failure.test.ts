@@ -33,6 +33,33 @@ function classify(stderr: string, skKeyInUse = false): boolean {
 }
 
 describe("daemon-context auth merge signing failures", () => {
+  it("preserves failed auth state instead of advising unaudited Git continuation", () => {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `
+          source "$1"
+          signing_key_is_sk() { return 0; }
+          report_daemon_sk_signing_failure "error: Couldn't sign message: invalid format?"
+        `,
+        "auth-merge-test",
+        AUTH_MERGE,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, MANDIBLE_AUTH_MERGE_SOURCE_ONLY: "1" },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("Preserve the current state");
+    expect(result.stderr).toContain("arranging audited recovery");
+    expect(result.stderr).toContain("fresh reviewed Mandible request");
+    expect(result.stderr).toContain("cause is not established");
+    expect(result.stderr).not.toMatch(/git .*merge --continue|grant Input Monitoring|correct staged content/i);
+  });
+
   it("suppresses the editor at every merge --continue call site", () => {
     const script = fs.readFileSync(AUTH_MERGE, "utf8");
     const invocations = script
