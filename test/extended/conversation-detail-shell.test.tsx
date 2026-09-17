@@ -476,6 +476,41 @@ describe('compact detail pane shell', () => {
     expect(screen.queryByText('CancelledError')).toBeNull();
   });
 
+  it('does not let an old A request clear a newer A request after A to B to A', async () => {
+    const first = mockConversationDetail(defaultControl, []);
+    const second = { ...first, id: 'intermediate-selection', title: 'Intermediate selection' };
+    const oldJump = deferred<ConversationPositionWindow>();
+    const currentJump = deferred<ConversationPositionWindow>();
+    const middle = makeTranscriptBlock({ id: 'middle-a', dag_uuid: 'middle-a', content: 'Middle A', position: 1 });
+    let jumpCount = 0;
+    vi.mocked(api.getConversationWindow).mockImplementation(async (id, request) => {
+      if (id === second.id) return positionPayload(second, [middle], { kind: 'block', hasAfter: true, afterCount: 20, revision: 2 });
+      if ('target' in request && request.target === 'latest') return (++jumpCount === 1 ? oldJump : currentJump).promise;
+      return positionPayload(first, [middle], { kind: 'block', hasAfter: true, afterCount: 20, revision: 2 });
+    });
+    const view = (id: string) => (
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={id}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewConversation={() => undefined}
+      />
+    );
+    window.history.replaceState(null, '', `#/console?conversation=${first.id}&block=${middle.id}`);
+    const mounted = render(view(first.id));
+    expect(await screen.findByText('Middle A')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
+    mounted.rerender(view(second.id));
+    mounted.rerender(view(first.id));
+    fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
+    expect(jumpCount).toBe(2);
+    expect(screen.getByRole('button', { name: /jump to latest/i }).getAttribute('aria-busy')).toBe('true');
+    await act(async () => oldJump.reject(new CancelledError()));
+    expect(screen.getByRole('button', { name: /jump to latest/i }).getAttribute('aria-busy')).toBe('true');
+    await act(async () => currentJump.reject(new CancelledError()));
+  });
+
   it('synchronously discards another conversation\'s preview and Preview tab', () => {
     const target = {
       kind: 'issue' as const,

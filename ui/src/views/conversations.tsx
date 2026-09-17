@@ -1,6 +1,6 @@
 import type { ComponentChildren, Ref } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { isCancelledError, useQuery, useQueryClient } from '@tanstack/preact-query';
+import { CancelledError, isCancelledError, useQuery, useQueryClient } from '@tanstack/preact-query';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
@@ -1046,8 +1046,11 @@ export function ConversationDetail({
   // an inline callback, or that publication becomes a render feedback loop.
   const onNavigateRef = useRef(onNavigate);
   onNavigateRef.current = onNavigate;
-  const activeConversationRef = useRef(conversationId);
-  activeConversationRef.current = conversationId;
+  const selectionRef = useRef({ conversationId, generation: 0 });
+  if (selectionRef.current.conversationId !== conversationId) {
+    selectionRef.current = { conversationId, generation: selectionRef.current.generation + 1 };
+  }
+  const selectionGeneration = selectionRef.current.generation;
   const navigateFromActivity = useCallback((id: string) => onNavigateRef.current(id), []);
   const [jumpingToLatest, setJumpingToLatest] = useState(false);
   const [edgeLoading, setEdgeLoading] = useState<'older' | 'newer' | null>(null);
@@ -1115,6 +1118,7 @@ export function ConversationDetail({
   const fetchConversationDetail = useCallback(
     async ({ signal }: { signal: AbortSignal }) => {
       const incoming = await getConversationWindow(conversationId, windowRequest(windowTarget, signal));
+      if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
       const aggregateKey = conversationKeys.aggregate(conversationId);
       const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
       const merged = reconcileConversationWindow(
@@ -1130,7 +1134,7 @@ export function ConversationDetail({
       queryClient.setQueryData(aggregateKey, merged);
       return incoming;
     },
-    [conversationId, queryClient, windowTarget],
+    [conversationId, queryClient, selectionGeneration, windowTarget],
   );
   const windowQuery = useQuery({
     queryKey: conversationRequestKey,
@@ -1150,6 +1154,7 @@ export function ConversationDetail({
       queryFn: ({ signal }) => getConversationWindow(conversationId, windowRequest(target, signal)),
       staleTime: 0,
     });
+    if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
     const aggregateKey = conversationKeys.aggregate(conversationId);
     const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
     if (current && current.source_version_id !== incoming.source_version_id) {
@@ -1157,7 +1162,7 @@ export function ConversationDetail({
     }
     queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
     return incoming;
-  }, [conversationId, queryClient]);
+  }, [conversationId, queryClient, selectionGeneration]);
 
   useEffect(() => () => {
     void queryClient.cancelQueries({ queryKey: conversationKeys.conversation(conversationId) });
@@ -1203,11 +1208,11 @@ export function ConversationDetail({
       await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
     } catch (cause) {
       const failure = conversationLoadFailure(cause, true, direction === 'older' ? 'edge-older' : 'edge-newer');
-      if (failure && activeConversationRef.current === conversationId) setNavigationError(failure);
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
     } finally {
-      if (activeConversationRef.current === conversationId) setEdgeLoading(null);
+      if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
-  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient]);
+  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
   const loadTranscriptAround = useCallback(async (position: number) => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
@@ -1219,11 +1224,11 @@ export function ConversationDetail({
       await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
     } catch (cause) {
       const failure = conversationLoadFailure(cause, true, 'edge-newer');
-      if (failure && activeConversationRef.current === conversationId) setNavigationError(failure);
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
     } finally {
-      if (activeConversationRef.current === conversationId) setEdgeLoading(null);
+      if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
-  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient]);
+  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
   const transcriptConsumer = useMemo<ConversationTranscriptConsumer | undefined>(() => {
     const aggregate = aggregateQuery.data;
@@ -1456,13 +1461,13 @@ export function ConversationDetail({
         conversationKeys.aggregate(conversationId),
       )?.revision ?? latest.revision;
       while (latest.revision < observedRevision) {
-        if (activeConversationRef.current !== conversationId) return;
+        if (selectionRef.current.generation !== selectionGeneration) return;
         latest = await fetchAndReconcileWindow(latestTarget);
         observedRevision = queryClient.getQueryData<ConversationTranscriptData>(
           conversationKeys.aggregate(conversationId),
         )?.revision ?? latest.revision;
       }
-      if (activeConversationRef.current !== conversationId) return;
+      if (selectionRef.current.generation !== selectionGeneration) return;
       setEffectiveAnchor(null);
       const params = new URLSearchParams({ conversation: conversationId });
       window.history.replaceState(null, '', `#/console?${params.toString()}`);
@@ -1475,11 +1480,11 @@ export function ConversationDetail({
       });
     } catch (err) {
       const failure = conversationLoadFailure(err, true, 'target');
-      if (failure && activeConversationRef.current === conversationId) setNavigationError(failure);
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
     } finally {
-      if (activeConversationRef.current === conversationId) setJumpingToLatest(false);
+      if (selectionRef.current.generation === selectionGeneration) setJumpingToLatest(false);
     }
-  }, [conversationId, fetchAndReconcileWindow, queryClient]);
+  }, [conversationId, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
   // Toast auto-dismiss
   useEffect(() => {
@@ -1646,18 +1651,18 @@ export function ConversationDetail({
     setNavigationError(null);
     try {
       const exported = await exportConversationBlocks(conversationId, { format: 'markdown' });
-      if (activeConversationRef.current !== conversationId) return;
+      if (selectionRef.current.generation !== selectionGeneration) return;
       if (intent === 'copy') await navigator.clipboard.writeText(exported.content);
       else openMarkdownDocument(exported.content);
       setExportIntent(null);
       setActionsOpen(false);
     } catch (cause) {
       const failure = conversationLoadFailure(cause, true, 'export');
-      if (failure && activeConversationRef.current === conversationId) setNavigationError(failure);
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
     } finally {
-      if (activeConversationRef.current === conversationId) setExportLoading(false);
+      if (selectionRef.current.generation === selectionGeneration) setExportLoading(false);
     }
-  }, [conversationId]);
+  }, [conversationId, selectionGeneration]);
 
   const openUsage = useCallback(() => setUsageModalOpen(true), []);
   const [sessionRunOptions, setSessionRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
