@@ -1,6 +1,7 @@
 import type { Db } from "../db.js";
 import {
   persistExactCodexTitle,
+  scheduleExactPathReparse,
   triggerExactPathIngest,
   type TargetedIngestResult,
 } from "../ingestion.js";
@@ -16,6 +17,7 @@ import {
 } from "./source-observer.js";
 import { readExactCodexTitleAuthority } from "./codex-title-authority.js";
 import { getConversationStructureCache } from "./structure-cache.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./source-types.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
@@ -479,6 +481,8 @@ export async function ensureExactConversationFresh(
     ingest?: ExactIngest;
     /** Return the current indexed version; the daemon ingestion stream owns reconciliation. */
     waitForFresh?: boolean;
+    /** Test seam for the production actor's nonblocking selected-source reparse. */
+    scheduleReparse?: (path: string) => boolean;
     /** Bounded observer instrumentation used by large-source regressions. */
     sourceReadInstrumentation?: SourceReadInstrumentation;
   } = {},
@@ -494,11 +498,22 @@ export async function ensureExactConversationFresh(
     return { conversationId: pinned.conversationId, sourceId: null, sourcePath: null, refreshed: false };
   }
   if (options.waitForFresh === false) {
-    // Interactive reads must stay bounded by the indexed snapshot. Starting
-    // exact ingestion here performs parser and database work on the daemon's
-    // request thread, which can visibly stall the whole app. The production
-    // ingestion stream already reconciles source changes and reject-mode
-    // previews deliberately keep their projected database immutable.
+    const epochs = db.prepare(`
+      SELECT parser_format, parser_version, normalization_version, redaction_epoch
+        FROM conversation_sources WHERE id = ?
+    `).get(pinned.sourceId) as {
+      parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number;
+    } | undefined;
+    if (epochs && pinned.sourcePath && (
+      epochs.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
+      || epochs.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
+      || epochs.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
+      || epochs.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
+    ) && (options.scheduleReparse ?? scheduleExactPathReparse)(pinned.sourcePath)) {
+      throw new ConversationFreshnessError("freshness_pending", "conversation is being reindexed for this Mandible version");
+    }
+    // Source changes continue through the existing ingestion stream. An exact
+    // old-parser demand queues only this source, never a provider-root scan.
     return {
       conversationId: pinned.conversationId,
       sourceId: pinned.sourceId,

@@ -1044,6 +1044,25 @@ export async function triggerExactPathIngest(transcriptPath: string): Promise<Ta
   return { ok: true, status: "ingested", transcript_path: normalized, session_ref: null };
 }
 
+const requestedReparseFlights = new Map<string, Promise<void>>();
+
+/** Queue one selected provider source without parsing on the HTTP request thread. */
+export function scheduleExactPathReparse(transcriptPath: string): boolean {
+  const normalized = normalizeTargetPath(transcriptPath);
+  const actor = ingestionActor;
+  if (!ingestionActive || !actor || !normalized || !getParserForFile(normalized)) return false;
+  if (requestedReparseFlights.has(normalized)) return true;
+  const flight = actor.ingest([normalized], false, true, true)
+    .catch((error) => {
+      logger("warn", "ingestion_requested_reparse_failed", { file: normalized, error: String(error) });
+    })
+    .finally(() => {
+      if (requestedReparseFlights.get(normalized) === flight) requestedReparseFlights.delete(normalized);
+    });
+  requestedReparseFlights.set(normalized, flight);
+  return true;
+}
+
 export function suppressAcpIngestForSession(source: string, sessionId: string): void {
   if (!source.trim() || !sessionId.trim()) {
     return;

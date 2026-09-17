@@ -1,6 +1,6 @@
 import type { ComponentChildren, Ref } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { useQuery, useQueryClient } from '@tanstack/preact-query';
+import { isCancelledError, useQuery, useQueryClient } from '@tanstack/preact-query';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
@@ -183,7 +183,9 @@ export function conversationLoadFailure(
   error: unknown,
   transcriptLoaded: boolean,
   operation: ConversationLoadFailure['operation'] = 'refresh',
-): ConversationLoadFailure {
+): ConversationLoadFailure | null {
+  if (isCancelledError(error) || (error !== null && typeof error === 'object'
+    && 'name' in error && error.name === 'AbortError')) return null;
   const apiError = error instanceof ApiError ? error : null;
   const code = apiError?.code ?? null;
   const resolvedOperation = code === 'source_unavailable' ? 'source-unavailable' : operation;
@@ -1044,6 +1046,8 @@ export function ConversationDetail({
   // an inline callback, or that publication becomes a render feedback loop.
   const onNavigateRef = useRef(onNavigate);
   onNavigateRef.current = onNavigate;
+  const activeConversationRef = useRef(conversationId);
+  activeConversationRef.current = conversationId;
   const navigateFromActivity = useCallback((id: string) => onNavigateRef.current(id), []);
   const [jumpingToLatest, setJumpingToLatest] = useState(false);
   const [edgeLoading, setEdgeLoading] = useState<'older' | 'newer' | null>(null);
@@ -1158,6 +1162,12 @@ export function ConversationDetail({
   useEffect(() => () => {
     void queryClient.cancelQueries({ queryKey: conversationKeys.conversation(conversationId) });
   }, [conversationId, queryClient]);
+  useEffect(() => {
+    setEdgeLoading(null);
+    setJumpingToLatest(false);
+    setExportLoading(false);
+    setExportIntent(null);
+  }, [conversationId]);
   // Flattening is a projection of query data, not a new entity on every
   // component render. Keeping its identity stable also keeps the registered
   // app-sidebar descriptor stable; otherwise that descriptor updates App,
@@ -1192,9 +1202,10 @@ export function ConversationDetail({
     try {
       await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
     } catch (cause) {
-      setNavigationError(conversationLoadFailure(cause, true, direction === 'older' ? 'edge-older' : 'edge-newer'));
+      const failure = conversationLoadFailure(cause, true, direction === 'older' ? 'edge-older' : 'edge-newer');
+      if (failure && activeConversationRef.current === conversationId) setNavigationError(failure);
     } finally {
-      setEdgeLoading(null);
+      if (activeConversationRef.current === conversationId) setEdgeLoading(null);
     }
   }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient]);
 
@@ -1207,9 +1218,10 @@ export function ConversationDetail({
     try {
       await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
     } catch (cause) {
-      setNavigationError(conversationLoadFailure(cause, true, 'edge-newer'));
+      const failure = conversationLoadFailure(cause, true, 'edge-newer');
+      if (failure && activeConversationRef.current === conversationId) setNavigationError(failure);
     } finally {
-      setEdgeLoading(null);
+      if (activeConversationRef.current === conversationId) setEdgeLoading(null);
     }
   }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient]);
 
@@ -1253,7 +1265,7 @@ export function ConversationDetail({
     handledAnchorKeyRef.current = null;
     setNavigationTarget(null);
     setNavigationError(null);
-  }, [incomingAnchorKey]);
+  }, [conversationId, incomingAnchorKey]);
 
   const headerRef = useRef<HTMLElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
@@ -1444,11 +1456,13 @@ export function ConversationDetail({
         conversationKeys.aggregate(conversationId),
       )?.revision ?? latest.revision;
       while (latest.revision < observedRevision) {
+        if (activeConversationRef.current !== conversationId) return;
         latest = await fetchAndReconcileWindow(latestTarget);
         observedRevision = queryClient.getQueryData<ConversationTranscriptData>(
           conversationKeys.aggregate(conversationId),
         )?.revision ?? latest.revision;
       }
+      if (activeConversationRef.current !== conversationId) return;
       setEffectiveAnchor(null);
       const params = new URLSearchParams({ conversation: conversationId });
       window.history.replaceState(null, '', `#/console?${params.toString()}`);
@@ -1460,9 +1474,10 @@ export function ConversationDetail({
         smooth: true,
       });
     } catch (err) {
-      setNavigationError(conversationLoadFailure(err, true, 'target'));
+      const failure = conversationLoadFailure(err, true, 'target');
+      if (failure && activeConversationRef.current === conversationId) setNavigationError(failure);
     } finally {
-      setJumpingToLatest(false);
+      if (activeConversationRef.current === conversationId) setJumpingToLatest(false);
     }
   }, [conversationId, fetchAndReconcileWindow, queryClient]);
 
@@ -1631,14 +1646,16 @@ export function ConversationDetail({
     setNavigationError(null);
     try {
       const exported = await exportConversationBlocks(conversationId, { format: 'markdown' });
+      if (activeConversationRef.current !== conversationId) return;
       if (intent === 'copy') await navigator.clipboard.writeText(exported.content);
       else openMarkdownDocument(exported.content);
       setExportIntent(null);
       setActionsOpen(false);
     } catch (cause) {
-      setNavigationError(conversationLoadFailure(cause, true, 'export'));
+      const failure = conversationLoadFailure(cause, true, 'export');
+      if (failure && activeConversationRef.current === conversationId) setNavigationError(failure);
     } finally {
-      setExportLoading(false);
+      if (activeConversationRef.current === conversationId) setExportLoading(false);
     }
   }, [conversationId]);
 
