@@ -479,7 +479,7 @@ export async function ensureExactConversationFresh(
   options: {
     timeoutMs?: number;
     ingest?: ExactIngest;
-    /** Return the current indexed version; the daemon ingestion stream owns reconciliation. */
+    /** Check the indexed extent without waiting; queue an exact-source refresh when stale. */
     waitForFresh?: boolean;
     /** Test seam for the production actor's nonblocking selected-source reparse. */
     scheduleReparse?: (path: string, sourceId: string, conversationId: string) => boolean;
@@ -510,18 +510,31 @@ export async function ensureExactConversationFresh(
       || epochs.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
       || epochs.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
     );
-    if (outdated && pinned.sourcePath) {
+    let sourceNeedsRefresh = Boolean(outdated);
+    if (!sourceNeedsRefresh && pinned.sourcePath) {
+      try {
+        const extent = await observePinnedExtent(db, pinned, options.sourceReadInstrumentation);
+        sourceNeedsRefresh = !matchesIndexedExtent(currentFacts(db, pinned, extent.path), extent);
+      } catch (error) {
+        if (!(error instanceof ConversationFreshnessError) || error.code !== "source_changed") throw error;
+        // The provider may append while the bounded extent is observed. The
+        // exact-path actor will establish the next stable indexed version.
+        sourceNeedsRefresh = true;
+      }
+    }
+    if (sourceNeedsRefresh && pinned.sourcePath) {
       try {
         if ((options.scheduleReparse ?? scheduleExactPathReparse)(pinned.sourcePath, pinned.sourceId, pinned.conversationId)) {
-          throw new ConversationFreshnessError("freshness_pending", "conversation is being reindexed for this Mandible version");
+          throw new ConversationFreshnessError("freshness_pending", "conversation source refresh is pending");
         }
+        throw new ConversationFreshnessError("freshness_error", "conversation source refresh worker is unavailable");
       } catch (error) {
         if (error instanceof ConversationFreshnessError) throw error;
         throw new ConversationFreshnessError("freshness_error", error instanceof Error ? error.message : String(error));
       }
     }
-    // Source changes continue through the existing ingestion stream. An exact
-    // old-parser demand queues only this source, never a provider-root scan.
+    // Each selected read checks the exact indexed extent and parser epoch;
+    // demand refreshes join the same exact-path actor as watcher events.
     return {
       conversationId: pinned.conversationId,
       sourceId: pinned.sourceId,
