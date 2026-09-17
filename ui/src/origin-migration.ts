@@ -4,8 +4,10 @@ import { PRODUCTION_ORIGIN } from '../../src/canonical-origin';
 const button = document.getElementById('move') as HTMLButtonElement;
 const result = document.getElementById('result')!;
 
-button.addEventListener('click', () => {
+function moveSavedWorkspace(): void {
   button.disabled = true;
+  button.hidden = true;
+  result.textContent = 'Moving your saved workspace…';
   try {
     if (window.location.origin !== 'https://app.mandible.localhost:19420') {
       throw new Error('This page is outside the registered old Mandible address.');
@@ -29,5 +31,9 @@ button.addEventListener('click', () => {
   } catch (error) {
     result.textContent = error instanceof Error ? error.message : String(error);
     button.disabled = false;
+    button.hidden = false;
   }
-});
+}
+
+button.addEventListener('click', moveSavedWorkspace);
+moveSavedWorkspace();
