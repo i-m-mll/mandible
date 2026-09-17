@@ -12,7 +12,7 @@ import {
 const WHOAMI_PATH = '/api/client-auth/whoami';
 const RENEW_PATH = '/api/client-auth/renew';
 const LOGOUT_PATH = '/api/client-auth/logout';
-const PENDING_LOGOUT_KEY = PENDING_LOGOUT_STORAGE_KEY;
+const PENDING_REVOCATION_KEY = PENDING_LOGOUT_STORAGE_KEY;
 const PREVIEW_TRANSFER_ATTEMPT_KEY = 'mandible.preview_transfer.attempted_at';
 
 export type ClientAuthSessionState =
@@ -50,9 +50,10 @@ export type ClientAccessState = {
 
 let accessState: ClientAccessState = { phase: 'initializing', failure: null };
 let accessAttempt: Promise<ClientAccessState> | null = null;
+let unauthorizedRecoveryRevision: number | null = null;
 const accessListeners = new Set<(value: ClientAccessState) => void>();
-const MAX_PAUSED_READS = 128;
-let pausedReads = 0;
+let readyGate: Promise<void> | null = null;
+const pausedReadRequests = new Map<string, Promise<Response>>();
 
 export function getClientAccessState(): ClientAccessState { return accessState; }
 
@@ -96,20 +97,19 @@ function publish(next: ClientAuthSessionState): ClientAuthSessionState {
   return next;
 }
 
-function pendingLogout(): boolean {
+function pendingLegacyRevocation(): boolean {
   try {
-    return window.localStorage.getItem(PENDING_LOGOUT_KEY) === '1';
+    return window.localStorage.getItem(PENDING_REVOCATION_KEY) === '1';
   } catch {
     return false;
   }
 }
 
-function setPendingLogout(value: boolean): void {
+function clearPendingRevocation(): void {
   try {
-    if (value) window.localStorage.setItem(PENDING_LOGOUT_KEY, '1');
-    else window.localStorage.removeItem(PENDING_LOGOUT_KEY);
+    window.localStorage.removeItem(PENDING_REVOCATION_KEY);
   } catch {
-    // A storage-disabled browser still stays signed out for this page lifetime.
+    // The old revocation marker remains until storage becomes available.
   }
 }
 
@@ -328,7 +328,7 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
         return publish(started ? 'signed-out' : 'unreachable');
       }
       retireLegacyBrowserBearer();
-      if (pendingLogout()) {
+      if (pendingLegacyRevocation()) {
         const inspected = await fetchImpl(WHOAMI_PATH, {
           credentials: 'same-origin',
           headers: { Accept: 'application/json' },
@@ -341,7 +341,7 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
           headers: pendingSession?.csrf_token ? { 'X-Mandible-CSRF': pendingSession.csrf_token } : {},
         });
         if (!logout.ok && logout.status !== 401) return publish('unreachable');
-        setPendingLogout(false);
+        clearPendingRevocation();
         session = null;
         sessionRevision += 1;
         return publish('signed-out');
@@ -389,7 +389,7 @@ export function initializeBrowserSession(fetchImpl: typeof fetch = fetch.bind(wi
 
 function accessFailure(reason: ClientAuthSessionState): string {
   switch (reason) {
-    case 'revoked': return 'This installation credential was revoked. Restore operator access through the local installation.';
+    case 'revoked': return 'This browser session was revoked. Check local access authority before connecting this profile again.';
     case 'wrong-audience': return 'This browser belongs to a different Mandible installation.';
     case 'migration-blocked': return migrationFailure ?? 'Saved browser state could not be restored.';
     case 'incompatible': return 'Mandible returned an incompatible session. Restart the local app after updating it.';
@@ -440,11 +440,10 @@ export function ensureClientAccess(fetchImpl: typeof fetch = fetch.bind(window))
   accessAttempt = (async () => {
     let result = await initializeBrowserSession(fetchImpl);
     if (result === 'enrolled') return publishAccess('ready');
-    if (pendingLogout()) {
+    if (pendingLegacyRevocation()) {
       return publishAccess('failed', 'A prior browser revocation is pending. Restore the local service before access can resume.');
     }
-    if (result !== 'revoked' && result !== 'wrong-audience'
-        && result !== 'incompatible' && result !== 'migration-blocked') {
+    if (result !== 'wrong-audience' && result !== 'incompatible' && result !== 'migration-blocked') {
       const { isDesktopShell, enrollDesktopClientAuth } = await import('./api');
       if (isDesktopShell()) {
         for (const source of ['bootstrap', 'keychain'] as const) {
@@ -452,7 +451,8 @@ export function ensureClientAccess(fetchImpl: typeof fetch = fetch.bind(window))
           if (!enrolled) continue;
           result = await initializeBrowserSession(fetchImpl);
           if (result === 'enrolled') return publishAccess('ready');
-          if (result !== 'expired' && result !== 'signed-out' && result !== 'unreachable') break;
+          if (result !== 'expired' && result !== 'signed-out'
+              && result !== 'unreachable' && result !== 'revoked') break;
         }
       } else if (await requestInstalledAppAccess(fetchImpl)) {
         result = await initializeBrowserSession(fetchImpl);
@@ -474,33 +474,30 @@ export function retryClientAccess(fetchImpl: typeof fetch = fetch.bind(window)):
 
 function waitForReady(signal?: AbortSignal | null): Promise<void> {
   if (accessState.phase === 'ready') return Promise.resolve();
-  if (pausedReads >= MAX_PAUSED_READS) {
-    return Promise.reject(new DOMException('Too many reads are waiting for local access.', 'AbortError'));
-  }
-  pausedReads += 1;
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const cleanup = () => {
-      if (settled) return false;
-      settled = true;
-      pausedReads -= 1;
+  readyGate ??= new Promise<void>((resolve) => {
+    const unsubscribe = subscribeClientAccessState((next) => {
+      if (next.phase !== 'ready') return;
       unsubscribe();
-      signal?.removeEventListener('abort', abort);
-      return true;
-    };
-    const finish = () => {
-      if (!cleanup()) return;
+      readyGate = null;
       resolve();
-    };
+    });
+  });
+  if (!signal) return readyGate;
+  if (signal.aborted) return Promise.reject(new DOMException('The request was cancelled.', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const unsubscribe = subscribeClientAccessState((next) => {
+      if (next.phase !== 'ready') return;
+      unsubscribe();
+      signal.removeEventListener('abort', abort);
+      resolve();
+    });
     const abort = () => {
-      if (!cleanup()) return;
+      unsubscribe();
+      signal.removeEventListener('abort', abort);
       reject(new DOMException('The request was cancelled.', 'AbortError'));
     };
-    const unsubscribe = subscribeClientAccessState((next) => {
-      if (next.phase === 'ready') finish();
-    });
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
   });
 }
 
@@ -514,10 +511,44 @@ function requestPath(input: RequestInfo | URL): string | null {
   }
 }
 
-export async function browserSessionFetch(
+function pausedReadKey(input: RequestInfo | URL, init: RequestInit): string | null {
+  if (accessState.phase === 'ready' || init.signal || input instanceof Request) return null;
+  const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') return null;
+  const raw = typeof input === 'string' ? input : input.href;
+  const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (url.origin !== window.location.origin || !url.pathname.startsWith('/api/')) return null;
+    return JSON.stringify([method, url.href,
+      [...headers.entries()].sort(([a], [b]) => a.localeCompare(b))]);
+  } catch {
+    return null;
+  }
+}
+
+export function browserSessionFetch(
   input: RequestInfo | URL,
   init: RequestInit = {},
   fetchImpl: typeof fetch = fetch.bind(window),
+): Promise<Response> {
+  const key = pausedReadKey(input, init);
+  if (key) {
+    let shared = pausedReadRequests.get(key);
+    if (!shared) {
+      shared = browserSessionFetchCore(input, init, fetchImpl);
+      pausedReadRequests.set(key, shared);
+      void shared.then(() => pausedReadRequests.delete(key), () => pausedReadRequests.delete(key));
+    }
+    return shared.then((response) => response.clone());
+  }
+  return browserSessionFetchCore(input, init, fetchImpl);
+}
+
+async function browserSessionFetchCore(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  fetchImpl: typeof fetch,
 ): Promise<Response> {
   const path = requestPath(input);
   if (!path?.startsWith('/api/')) return fetchImpl(input, init);
@@ -530,17 +561,12 @@ export async function browserSessionFetch(
   const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
   const unsafe = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
   const readOnly = !unsafe || path === '/api/events/subscribe';
+  const signal = init.signal ?? (input instanceof Request ? input.signal : undefined);
   const access = await ensureClientAccess(fetchImpl);
   if (access.phase !== 'ready') {
-    if (readOnly) await waitForReady(init.signal ?? (input instanceof Request ? input.signal : undefined));
+    if (readOnly) await waitForReady(signal);
     else return new Response(JSON.stringify({ error: 'local_access_unavailable' }), {
       status: 503,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-  if (pendingLogout()) {
-    return new Response(JSON.stringify({ error: 'revocation_pending' }), {
-      status: 401,
       headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -551,23 +577,39 @@ export async function browserSessionFetch(
   const response = await fetchImpl(input, { ...init, credentials: 'same-origin', headers });
   if (response.status !== 401) return response;
   if (!readOnly) {
-    if (requestSessionRevision === sessionRevision) void retryClientAccess(fetchImpl);
+    if (requestSessionRevision === sessionRevision
+        && unauthorizedRecoveryRevision !== requestSessionRevision) {
+      unauthorizedRecoveryRevision = requestSessionRevision;
+      void retryClientAccess(fetchImpl);
+    }
     return response;
   }
-  if (requestSessionRevision !== sessionRevision && accessState.phase === 'ready') {
+  if (requestSessionRevision !== sessionRevision) {
+    await waitForReady(signal);
+    if (session?.csrf_token) headers.set('X-Mandible-CSRF', session.csrf_token);
     return fetchImpl(request, { ...init, credentials: 'same-origin', headers });
   }
   renewal ??= (async () => {
-    const renewed = await fetchImpl(RENEW_PATH, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: session?.csrf_token ? { 'X-Mandible-CSRF': session.csrf_token } : {},
-    });
+    let renewed: Response;
+    try {
+      renewed = await fetchImpl(RENEW_PATH, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: session?.csrf_token ? { 'X-Mandible-CSRF': session.csrf_token } : {},
+      });
+    } catch {
+      session = null;
+      sessionRevision += 1;
+      publish('unreachable');
+      publishAccess('recovering');
+      return false;
+    }
     if (!renewed.ok) {
       const body = await readJson(renewed);
       session = null;
       sessionRevision += 1;
       publish(body.error === 'session_revoked' ? 'revoked' : 'expired');
+      publishAccess('recovering');
       return false;
     }
     const renewedBody = await readJson(renewed);
@@ -577,48 +619,16 @@ export async function browserSessionFetch(
     return Boolean(session);
   })().finally(() => { renewal = null; });
   if (!await renewal) {
-    const restored = await retryClientAccess(fetchImpl);
-    if (restored.phase !== 'ready') return response;
+    if (unauthorizedRecoveryRevision !== requestSessionRevision) {
+      unauthorizedRecoveryRevision = requestSessionRevision;
+      void retryClientAccess(fetchImpl);
+    }
+    await waitForReady(signal);
   }
   const activeSession = session;
   if (!activeSession) return response;
   headers.set('X-Mandible-CSRF', activeSession.csrf_token);
   return fetchImpl(request, { ...init, credentials: 'same-origin', headers });
-}
-
-// Removed with the legacy login surface at umbrella integration.
-export async function startBrowserPairing(): Promise<string> {
-  const response = await browserSessionFetch('/api/client-auth/pairing/start', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ return_path: `${window.location.pathname}${window.location.search}${window.location.hash}` }),
-  });
-  const body = await readJson(response);
-  if (!response.ok || typeof body.reference !== 'string') throw new Error('Unable to start browser pairing.');
-  return body.reference;
-}
-
-export async function completeBrowserPairing(reference: string): Promise<ClientAuthSessionState> {
-  const response = await browserSessionFetch('/api/client-auth/pairing/complete', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reference }),
-  });
-  if (!response.ok) throw new Error('Pairing failed.');
-  return initializeBrowserSession();
-}
-
-export async function logoutClientAuth(fetchImpl: typeof fetch = fetch.bind(window)): Promise<void> {
-  try {
-    const response = await fetchImpl(LOGOUT_PATH, {
-      method: 'POST', credentials: 'same-origin',
-      headers: session?.csrf_token ? { 'X-Mandible-CSRF': session.csrf_token } : {},
-    });
-    if (!response.ok && response.status !== 401) throw new Error('logout unavailable');
-    setPendingLogout(false);
-  } catch {
-    setPendingLogout(true);
-  } finally {
-    session = null;
-    publish('signed-out');
-  }
 }
 
 export function __resetBrowserSessionForTests(): void {
@@ -632,6 +642,8 @@ export function __resetBrowserSessionForTests(): void {
   listeners.clear();
   accessState = { phase: 'initializing', failure: null };
   accessAttempt = null;
+  unauthorizedRecoveryRevision = null;
   accessListeners.clear();
-  pausedReads = 0;
+  readyGate = null;
+  pausedReadRequests.clear();
 }
