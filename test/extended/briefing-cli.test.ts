@@ -71,6 +71,8 @@ describe("briefing CLI", () => {
     expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group accept");
     expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group reject");
     expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group destination bind");
+    expect(runOffline(["briefing", "group", "--help"]).stdout).toContain("mandible briefing group destination place");
+    expect(runOffline(["briefing", "--help"]).stdout).toContain("mandible briefing report update");
     expect(runOffline(["briefing", "route", "--help"]).stdout).toContain("mandible briefing route plan");
     const logical = runOffline(["briefing", "create", "artifact:logical", "--title", "Review"]);
     expect(logical.status).toBe(2);
@@ -98,6 +100,28 @@ describe("briefing CLI", () => {
       .toMatchObject({ description: expect.stringContaining("preserving Base") });
     expect(contract.commands.find((command) => command.name.startsWith("mandible briefing route apply ")))
       .toMatchObject({ description: expect.stringContaining("Exact replay is idempotent") });
+  });
+
+  it("sends direct report placement and Current update through their ordinary API routes", async () => {
+    const placed = await runRpc(["briefing", "group", "destination", "place", "digest", "artifact:report",
+      "--briefing", "briefing:report", "--operation-key", "place-1", "--expected-owner", "none",
+      "--expected-target-base", "bundle:base", "--json"], (request) => {
+      expect(request.path).toBe("/api/briefing-groups/digest/report-placement");
+      expect(request.body).toEqual({ operation_key: "place-1", logical_artifact_ref: "artifact:report",
+        briefing_ref: "briefing:report", expected_owner_group_ref: null,
+        expected_target_base_ref: "bundle:base", expected_source_base_ref: null });
+      return { status: 200, body: { changed: true, group_id: "digest", target_base_bundle_id: "bundle:next" } };
+    });
+    expect(placed.status).toBe(0);
+    const updated = await runRpc(["briefing", "report", "update", "briefing:report", "artifact-version:new",
+      "--operation-key", "round-1", "--expected-round", "old-round",
+      "--expected-version", "artifact-version:old", "--json"], (request) => {
+      expect(request.path).toBe("/api/briefings/briefing%3Areport/report-rounds");
+      expect(request.body).toEqual({ operation_key: "round-1", artifact_version_ref: "artifact-version:new",
+        expected_current_round_id: "old-round", expected_current_artifact_version_ref: "artifact-version:old" });
+      return { status: 200, body: { changed: true, briefing_id: "briefing:report", round_id: "new-round" } };
+    });
+    expect(updated.status).toBe(0);
   });
 
   it("plans, applies, and inspects an installed destination-route manifest through the supported API", async () => {

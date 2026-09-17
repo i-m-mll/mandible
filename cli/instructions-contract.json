@@ -276,7 +276,15 @@
     },
     {
       "name": "mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]",
-      "description": "Bind one previously unowned logical Artifact destination to one active group whose Base contains it exactly once. Existing ownership can move only through an accepted guarded review."
+      "description": "Legacy operator binding for an already placed document. For agent-operated published reports, use destination place with expected owner and Base state."
+    },
+    {
+      "name": "mandible briefing group destination place <group-ref> <logical-artifact-ref> --briefing <briefing-ref> --operation-key <key> --expected-owner <group-ref|none> --expected-target-base <bundle-ref|none> [--expected-source-base <bundle-ref|none>] [--route-file <manifest.json>] [--json]",
+      "description": "Directly place or move one published report and bind its destination, optionally installing one route in the same transaction. Requires a durable active agent or operator credential and write access to the logical Artifact's unambiguous canonical project. Exact retries are unchanged; owner and Base drift fail closed."
+    },
+    {
+      "name": "mandible briefing report update <briefing-ref> <artifact-version-ref> --operation-key <key> --expected-round <round-id> --expected-version <artifact-version-ref> [--json]",
+      "description": "Append one exact Artifact version as the Current round of a routed published report. Requires project write access; exact retries are unchanged and stale Current state fails closed. Reviewed-document proposals are unaffected."
     },
     {
       "name": "mandible briefing group rename <group-ref> --name <text> [--json]",
@@ -288,7 +296,7 @@
     },
     {
       "name": "mandible briefing route inspect [<route-key>] [--json]",
-      "description": "Inspect code-owned Briefing routes in stable key order, including the destination owner's currently derived group and every immutable template version. Requires the configured operator's durable API token."
+      "description": "Inspect authorized Briefing routes in stable key order, including the destination owner's currently derived group and every immutable template version. Requires a durable agent or operator token and project write access."
     },
     {
       "name": "mandible briefing route plan <manifest.json|-> [--json]",
@@ -296,7 +304,7 @@
     },
     {
       "name": "mandible briefing route apply <manifest.json|-> [--json]",
-      "description": "Atomically reconcile one validated destination-route manifest through the authenticated operator API. Exact replay is idempotent, and runtime publication remains POST /api/briefings/runs."
+      "description": "Atomically reconcile one validated destination-route manifest with project write access for every logical Artifact. Configuration updates require expected_revision from route plan. Exact replay is idempotent. Recurring publication remains POST /api/briefings/runs."
     },
     {
       "name": "mandible instructions install [--target <file>] [--worktree <path>] [--force]",

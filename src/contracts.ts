@@ -1293,6 +1293,8 @@ export type BriefingGroup = {
   current: BriefingBundle | null;
   updates: BriefingBundle[];
   destinations: BriefingGroupDestination[];
+  destination_history: Array<{ id: string; logical_artifact_id: string; prior_group_id: string | null;
+    resulting_group_id: string; actor_user_id: string; created_at: number }>;
   review_candidates: BriefingGroupReviewCandidate[];
   history: BriefingGroupDisposition[];
 };
@@ -1300,6 +1302,7 @@ export type BriefingGroupDestination = {
   logical_artifact_id: string;
   group_id: string;
   publication_mode: "reviewed-document" | "published-report" | null;
+  route_keys: string[];
   created_at: number;
   updated_at: number;
 };

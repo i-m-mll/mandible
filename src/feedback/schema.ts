@@ -447,6 +447,23 @@ export const BRIEFING_GROUP_REVIEW_SCHEMA_V167_SQL: readonly string[] = [
 ];
 
 /** Canonical schema for one Briefing model with immutable artifact-backed rounds. */
+export const BRIEFING_DESTINATION_MUTATION_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS briefing_destination_mutations (
+    id TEXT PRIMARY KEY,
+    operation_key TEXT NOT NULL,
+    operation_kind TEXT NOT NULL CHECK(operation_kind IN ('place','route','report_round')),
+    request_digest TEXT NOT NULL CHECK(length(request_digest) = 64),
+    logical_artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+    project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
+    before_json TEXT NOT NULL CHECK(json_valid(before_json)),
+    after_json TEXT NOT NULL CHECK(json_valid(after_json)),
+    created_at INTEGER NOT NULL,
+    UNIQUE(operation_kind, actor_user_id, operation_key)
+  )`,
+];
+
 export const BRIEFING_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS briefings (
     id TEXT PRIMARY KEY,
@@ -755,6 +772,7 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
   ...BRIEFING_BUNDLE_SCHEMA_SQL,
   ...BRIEFING_GROUP_SCHEMA_SQL,
   ...BRIEFING_COMPOSER_SCHEMA_SQL,
+  ...BRIEFING_DESTINATION_MUTATION_SCHEMA_SQL,
 ];
 
 export const CANONICAL_AGENT_DISPATCH_SQL = `CREATE TABLE agent_dispatch_events (
@@ -793,6 +811,7 @@ export const BRIEFING_SCHEMA_TABLES: readonly string[] = [
   "briefing_groups", "briefing_group_updates", "briefing_group_dispositions",
   "briefing_group_review_dispositions", "briefing_group_review_disposition_items",
   "briefing_group_review_destination_items", "briefing_destination_owners",
+  "briefing_destination_mutations",
   "briefing_collection_sharing_receipts",
   "briefing_destination_routes", "briefing_destination_templates", "briefing_composition_runs",
   "briefing_composition_inputs", "briefing_composition_contributions", "briefing_composition_targets",

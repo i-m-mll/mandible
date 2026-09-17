@@ -19,6 +19,8 @@ import { createBriefingBundle } from "../../src/feedback/briefing-bundles.js";
 import { bindBriefingDestinationOwner, createBriefingGroup } from "../../src/feedback/briefing-groups.js";
 import { registerBriefingDestinationRoute } from "../../src/feedback/briefing-composer.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
+import { addProject } from "../../src/ledger/project-registry.js";
+import { addGrant } from "../../src/permissions/store.js";
 import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
 
 class SlugGate implements ClientAuthGate {
@@ -97,6 +99,154 @@ afterEach(() => {
 });
 
 describe("plural Briefing routes", () => {
+  it("places and moves a project-authorized report, then advances Current directly without disturbing review", async () => {
+    setSetting(db, "user.operator_id", humanId);
+    const project = addProject(db, { project_key: "reports", display_name: "Reports" });
+    db.prepare("UPDATE ledger_projects SET restricted = 1 WHERE id = ?").run(project.id);
+    const reviewed = recordArtifactVersion(db, { source_kind: "managed", content: "# Reviewed\n",
+      series_key: "test:reviewed", logical_name: "Reviewed.md", role: "briefing-document",
+      media_type: "text/markdown" });
+    const report = recordArtifactVersion(db, { source_kind: "managed",
+      content: "# Maintenance\n\n## Findings\n\nFirst.\n", series_key: "test:direct-report",
+      logical_name: "Maintenance.md", role: "briefing-document", media_type: "text/markdown" });
+    const reviewBriefing = publishBriefingFromArtifactVersion(db, { title: "Reviewed",
+      artifact_version_ref: reviewed.version.id, profile: "mandible-briefing.v3", responder_user_ids: [humanId] });
+    const reportBriefing = publishBriefingFromArtifactVersion(db, { title: "Maintenance",
+      artifact_version_ref: report.version.id, profile: "mandible-briefing.v3", responder_user_ids: [humanId] });
+    if (reviewBriefing.outcome === "active_candidates" || reportBriefing.outcome === "active_candidates") {
+      throw new Error("fixture conflict");
+    }
+    const logical = db.prepare("SELECT artifact_id FROM artifact_version WHERE id = ?")
+      .get(report.version.id) as { artifact_id: string };
+    const viewer = { userId: humanId, operator: true };
+    const base = createBriefingBundle(db, { name: "Digest", briefingRefs: [reviewBriefing.briefing_id], viewer });
+    const proposal = createBriefingBundle(db, { name: "Review proposal",
+      briefingRefs: [reportBriefing.briefing_id], viewer });
+    const digest = createBriefingGroup(db, { key: "digest", name: "Digest", currentBundleRef: base.id,
+      bundleRefs: [proposal.id], viewer });
+    const otherBase = createBriefingBundle(db, { name: "Other", briefingRefs: [], viewer });
+    const other = createBriefingGroup(db, { key: "other", name: "Other", currentBundleRef: otherBase.id,
+      bundleRefs: [], viewer });
+    const route = { route_key: "digest.repository-maintenance", logical_artifact_ref: logical.artifact_id,
+      publication_mode: "published-report", heading: "Findings", composer_kind: "agentic",
+      template: { version: 1, contribution_template: "", slots: {} },
+      limits: { max_contributions: 10, max_document_bytes: 100_000, max_directives: 0 } };
+    const endpoint = `/api/briefing-groups/${digest.id}/report-placement`;
+    const placement = { operation_key: "place-1", logical_artifact_ref: logical.artifact_id,
+      briefing_ref: reportBriefing.briefing_id, expected_owner_group_ref: null,
+      expected_target_base_ref: base.id, expected_source_base_ref: null, route };
+    expect(await router.invoke({ method: "POST", url: endpoint, credential: "agent-schedule", body: placement }))
+      .toMatchObject({ status: 409, body: { code: "briefing_destination_project_unresolved" } });
+    db.prepare(`INSERT INTO project_artifact_associations
+      (id, project_id, target_type, target_id, association_kind, role, created_at, updated_at)
+      VALUES ('report-association', ?, 'artifact', ?, 'canonical', '', 1, 1)`)
+      .run(project.id, logical.artifact_id);
+    expect(await router.invoke({ method: "POST", url: endpoint, credential: "agent-schedule", body: placement }))
+      .toMatchObject({ status: 403, body: { code: "project_permission_required" } });
+    addGrant(db, { subject_type: "user", subject: "agent-schedule", resource_type: "project",
+      resource: "reports", permission: "write" });
+    expect(await router.invoke({ method: "POST", url: endpoint, credential: "agent-schedule",
+      body: { ...placement, operation_key: "failed-route", route: { ...route, composer_kind: "deterministic" } } }))
+      .toMatchObject({ status: 400 });
+    expect(db.prepare("SELECT group_id FROM briefing_destination_owners WHERE logical_artifact_id = ?")
+      .get(logical.artifact_id)).toBeUndefined();
+    expect(db.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?")
+      .get(digest.id)).toEqual({ current_bundle_id: base.id });
+    const placed = await router.invoke({ method: "POST", url: endpoint, credential: "agent-schedule", body: placement });
+    expect(placed).toMatchObject({ status: 200, body: { changed: true, route_changed: true, group_id: digest.id } });
+    expect(await router.invoke({ method: "POST", url: endpoint, credential: "agent-schedule", body: placement }))
+      .toMatchObject({ status: 200, body: { changed: false } });
+    expect(await router.invoke({ method: "POST", url: endpoint, credential: "agent-schedule",
+      body: { ...placement, route: { ...route, heading: "Other" } } }))
+      .toMatchObject({ status: 409, body: { code: "briefing_destination_replay_conflict" } });
+    const placedBase = (placed.body as { target_base_bundle_id: string }).target_base_bundle_id;
+    expect(db.prepare("SELECT bundle_id FROM briefing_group_updates WHERE group_id = ?")
+      .get(digest.id)).toEqual({ bundle_id: proposal.id });
+    expect(db.prepare("SELECT briefing_id FROM briefing_bundle_members WHERE bundle_id = ? ORDER BY layout_position")
+      .all(placedBase)).toEqual([{ briefing_id: reviewBriefing.briefing_id },
+        { briefing_id: reportBriefing.briefing_id }]);
+    const roundUrl = `/api/briefings/${reportBriefing.briefing_id}/report-rounds`;
+    let previousRound = reportBriefing.round_id;
+    let previousVersion = report.version.id;
+    for (let index = 1; index <= 2; index++) {
+      const next = recordArtifactVersion(db, { source_kind: "managed",
+        content: `# Maintenance\n\n## Findings\n\nUpdate ${index}.\n`, series_key: "test:direct-report",
+        logical_name: "Maintenance.md", role: "briefing-document", media_type: "text/markdown" });
+      const body = { operation_key: `update-${index}`, artifact_version_ref: next.version.id,
+        expected_current_round_id: previousRound, expected_current_artifact_version_ref: previousVersion };
+      const published = await router.invoke({ method: "POST", url: roundUrl,
+        credential: "agent-schedule", body });
+      expect(published).toMatchObject({ status: 200, body: { changed: true,
+        briefing_id: reportBriefing.briefing_id, previous_round_id: previousRound } });
+      expect(await router.invoke({ method: "POST", url: roundUrl, credential: "agent-schedule", body }))
+        .toMatchObject({ status: 200, body: { changed: false } });
+      previousRound = (published.body as { round_id: string }).round_id;
+      previousVersion = next.version.id;
+    }
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_rounds WHERE briefing_id = ?")
+      .get(reportBriefing.briefing_id)).toEqual({ n: 3 });
+    expect(db.prepare("SELECT latest_round_id FROM briefings WHERE id = ?").get(reviewBriefing.briefing_id))
+      .toEqual({ latest_round_id: reviewBriefing.round_id });
+    expect(await router.invoke({ method: "POST", url: roundUrl, credential: "agent-schedule",
+      body: { operation_key: "stale-round", artifact_version_ref: previousVersion,
+        expected_current_round_id: reportBriefing.round_id,
+        expected_current_artifact_version_ref: report.version.id } }))
+      .toMatchObject({ status: 409, body: { code: "briefing_destination_current_drift" } });
+    expect(await router.invoke({ method: "PUT", url: `/api/briefing-groups/${digest.id}/configuration`,
+      credential: "agent-schedule", body: { current_bundle_ref: placedBase, bundle_refs: [] } }))
+      .toMatchObject({ status: 200, body: { changed: true } });
+    const moved = await router.invoke({ method: "POST", url: `/api/briefing-groups/${other.id}/report-placement`,
+      credential: "agent-schedule", body: { operation_key: "move-1", logical_artifact_ref: logical.artifact_id,
+        briefing_ref: reportBriefing.briefing_id, expected_owner_group_ref: digest.id,
+        expected_target_base_ref: otherBase.id, expected_source_base_ref: placedBase } });
+    expect(moved).toMatchObject({ status: 200, body: { changed: true, group_id: other.id } });
+    expect(db.prepare("SELECT group_id, bound_by_user_id FROM briefing_destination_owners WHERE logical_artifact_id = ?")
+      .get(logical.artifact_id)).toEqual({ group_id: other.id,
+        bound_by_user_id: db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").pluck().get() });
+    expect(await router.invoke({ method: "POST", url: endpoint, credential: "agent-schedule",
+      body: { ...placement, operation_key: "stale" } }))
+      .toMatchObject({ status: 409, body: { code: "briefing_destination_owner_drift" } });
+    const routePlan = await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
+      credential: "agent-schedule", body: { schema: "mandible-briefing-destination-routes@3", routes: [route] } });
+    expect(routePlan).toMatchObject({ status: 200, body: {
+      routes: [{ group_id: other.id, action: "unchanged", current_revision: expect.any(String) }] } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes",
+      credential: "agent-schedule", body: { schema: "mandible-briefing-destination-routes@3",
+        routes: [{ ...route, heading: "Elsewhere" }] } }))
+      .toMatchObject({ status: 409, body: { code: "briefing_destination_route_conflict" } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes",
+      credential: "agent-schedule", body: { schema: "mandible-briefing-destination-routes@3",
+        routes: [{ ...route, template: { ...route.template, contribution_template: "different" } }] } }))
+      .toMatchObject({ status: 409, body: { code: "briefing_destination_template_conflict" } });
+    const updatedRoute = { ...route, expected_revision: (routePlan.body as {
+      routes: Array<{ current_revision: string }> }).routes[0].current_revision,
+      limits: { ...route.limits, max_contributions: 12 } };
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes",
+      credential: "agent-schedule", body: { schema: "mandible-briefing-destination-routes@3",
+        routes: [updatedRoute] } })).toMatchObject({ status: 200, body: {
+      changed: true, routes: [{ action: "update" }] } });
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes",
+      credential: "agent-schedule", body: { schema: "mandible-briefing-destination-routes@3",
+        routes: [{ ...updatedRoute, limits: { ...route.limits, max_contributions: 13 } }] } }))
+      .toMatchObject({ status: 409, body: { code: "briefing_destination_route_revision_drift" } });
+    db.prepare(`DELETE FROM permission_grants WHERE resource_id = ? AND permission = 'write'`).run(project.id);
+    expect(await router.invoke({ method: "POST", url: roundUrl, credential: "agent-schedule",
+      body: { operation_key: "denied", artifact_version_ref: previousVersion,
+        expected_current_round_id: previousRound, expected_current_artifact_version_ref: previousVersion } }))
+      .toMatchObject({ status: 403, body: { code: "project_permission_required" } });
+    addGrant(db, { subject_type: "user", subject: "agent-schedule", resource_type: "project",
+      resource: "reports", permission: "write" });
+    const conflictingProject = addProject(db, { project_key: "other-reports", display_name: "Other reports" });
+    db.prepare(`INSERT INTO project_artifact_associations
+      (id, project_id, target_type, target_id, association_kind, role, created_at, updated_at)
+      VALUES ('other-report-association', ?, 'artifact', ?, 'associated', '', 1, 1)`)
+      .run(conflictingProject.id, logical.artifact_id);
+    expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
+      credential: "agent-schedule", body: { schema: "mandible-briefing-destination-routes@3", routes: [route] } }))
+      .toMatchObject({ status: 409, body: { code: "briefing_destination_project_unresolved" } });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_destination_mutations WHERE actor_user_id = ?")
+      .get(db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").pluck().get())).toEqual({ n: 5 });
+  });
   it("guards deterministic destination-route plan, apply, replay, and inspect behind the operator token", async () => {
     setSetting(db, "user.operator_id", humanId);
     const source = path.join(root, "destination.md");
@@ -110,6 +260,11 @@ describe("plural Briefing routes", () => {
     if (published.outcome === "active_candidates") throw new Error("destination fixture conflicted");
     const logical = db.prepare("SELECT artifact_id FROM artifact_version WHERE id = ?").get(recorded.version.id) as
       { artifact_id: string };
+    const project = addProject(db, { project_key: "destination", display_name: "Destination" });
+    db.prepare(`INSERT INTO project_artifact_associations
+      (id, project_id, target_type, target_id, association_kind, role, created_at, updated_at)
+      VALUES ('destination-association', ?, 'artifact', ?, 'canonical', '', 1, 1)`)
+      .run(project.id, logical.artifact_id);
     const viewer = { userId: humanId, operator: true };
     const bundle = createBriefingBundle(db, { name: "Digest Base", briefingRefs: [published.briefing_id], viewer }, 110);
     const group = createBriefingGroup(db, { key: "digest", name: "Digest", currentBundleRef: bundle.id,
@@ -132,8 +287,8 @@ describe("plural Briefing routes", () => {
       credential: "session:human", body: manifest })).toMatchObject({ status: 403,
       body: { code: "briefing_destination_route_credential_required" } });
     expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
-      credential: "agent-schedule", body: manifest })).toMatchObject({ status: 403,
-      body: { code: "operator_required" } });
+      credential: "agent-schedule", body: manifest })).toMatchObject({ status: 200,
+      body: { changed: true } });
     const rejectMode = new Router({
       clientAuth: new SlugGate(() => db),
       instance: copiedPreviewInstance(),
@@ -583,6 +738,17 @@ describe("plural Briefing routes", () => {
       body: { ...request, responder_user_ids: ["spoofed"] } })).toMatchObject({
       status: 400, body: { error: expect.stringContaining("unsupported field") },
     });
+
+    expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request,
+      credential: "agent-schedule" })).toMatchObject({ status: 409,
+      body: { code: "briefing_destination_project_unresolved" } });
+    const logical = db.prepare("SELECT artifact_id FROM artifact_version WHERE id = ?")
+      .get(latestVersion.version.id) as { artifact_id: string };
+    const project = addProject(db, { project_key: "agent-briefing", display_name: "Agent Briefing" });
+    db.prepare(`INSERT INTO project_artifact_associations
+      (id, project_id, target_type, target_id, association_kind, role, created_at, updated_at)
+      VALUES ('agent-briefing-association', ?, 'artifact', ?, 'canonical', '', 1, 1)`)
+      .run(project.id, logical.artifact_id);
 
     const created = await router.invoke({ method: "POST", url: "/api/briefings", body: request,
       credential: "agent-schedule" });

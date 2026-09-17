@@ -37,7 +37,13 @@ function groupAssociationExists(db: Db, bundleId: string): boolean {
     LEFT JOIN briefing_group_dispositions d ON d.group_id = g.id
     WHERE g.current_bundle_id = ? OR u.bundle_id = ? OR d.prior_base_bundle_id = ?
       OR d.proposal_bundle_id = ? OR d.resulting_base_bundle_id = ? LIMIT 1`)
-    .get(bundleId, bundleId, bundleId, bundleId, bundleId));
+    .get(bundleId, bundleId, bundleId, bundleId, bundleId)) || Boolean(db.prepare(`SELECT 1
+      FROM briefing_destination_mutations WHERE operation_kind = 'place' AND (
+        json_extract(before_json, '$.target_base_bundle_id') = ? OR
+        json_extract(before_json, '$.source_base_bundle_id') = ? OR
+        json_extract(after_json, '$.target_base_bundle_id') = ? OR
+        json_extract(after_json, '$.source_base_bundle_id') = ?
+      ) LIMIT 1`).get(bundleId, bundleId, bundleId, bundleId));
 }
 
 function activeOwnersForBriefing(db: Db, briefingId: string): Array<{ kind: "group" | "bundle"; id: string; name: string }> {
