@@ -361,6 +361,10 @@ export function registerClientAuthRoutes(
 
   router.post("/api/client-auth/pairing/start", (req, res) => {
     try {
+      if (req.client_identity) {
+        sendJson(res, 403, { error: "browser_access_requires_unbound_profile" });
+        return;
+      }
       const body = bodyRecord(req);
       const audience = req.target_instance_id ?? authenticator.instanceId();
       const pairing = authenticator.beginPairing(audience, optionalString(body, "return_path") ?? "/");
@@ -432,7 +436,8 @@ export function registerClientAuthRoutes(
       res.header?.("Set-Cookie", serialize(PAIRING_COOKIE_NAME, recovery.secret, cookieOptions(600)));
       res.header?.("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'");
       const reference = htmlEscape(recovery.reference);
-      res.html?.(`<!doctype html><meta charset="utf-8"><title>Reconnect Mandible</title><main style="font:16px system-ui;max-width:36rem;margin:4rem auto;line-height:1.5"><h1>Reconnect this browser</h1><p>Your saved workspace has been held for this browser. Open the Mandible desktop app and approve the pending browser connection there.</p><p>Connection code: <strong>${reference}</strong></p><p><button id="finish">I approved it in Mandible</button></p><p id="result" role="status"></p></main><script>document.getElementById('finish').onclick=async()=>{const result=document.getElementById('result');result.textContent='Checking approval…';try{const response=await fetch('/api/client-auth/pairing/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reference:'${reference}'})});if(!response.ok){result.textContent=response.status===409?'Not approved yet. Approve it in the Mandible desktop app, then try again.':'Could not finish connecting this browser.';return}const body=await response.json();const proof=await fetch('/api/client-auth/recovery/verify',{method:'POST',headers:{'X-Mandible-CSRF':body.session.csrf_token}});if(!proof.ok){result.textContent='The new session was issued, but verification needs a retry. Keep this tab open.';return}result.textContent='Browser connected.${originMigration ? " Opening the dashboard to restore your saved workspace." : " Keep this tab open until Mandible switches to secure previews."}';${originMigration ? "location.replace('/')" : ""}}catch{result.textContent='Connection unavailable. Try again without closing this tab.'}}</script>`);
+      const openCanonicalDashboard = req.legacy_browser_origin === "https://app.mandible.localhost:19420";
+      res.html?.(`<!doctype html><meta charset="utf-8"><title>Opening Mandible</title><main style="font:16px system-ui;max-width:36rem;margin:4rem auto;line-height:1.5"><h1>Opening Mandible</h1><p id="result" role="status">Connecting this browser to the installed app…</p></main><script>(async()=>{const result=document.getElementById('result');const opener=document.createElement('a');opener.href='mandible://access/approve?reference=${reference}';opener.hidden=true;document.body.append(opener);opener.click();opener.remove();const deadline=Date.now()+30000;while(Date.now()<deadline){const response=await fetch('/api/client-auth/pairing/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reference:'${reference}'})});if(response.status===409){await new Promise(resolve=>setTimeout(resolve,500));continue}if(!response.ok)throw Error('The installed app could not establish browser access.');const body=await response.json();const proof=await fetch('/api/client-auth/recovery/verify',{method:'POST',headers:{'X-Mandible-CSRF':body.session.csrf_token}});if(!proof.ok)throw Error('The saved browser state could not be verified.');result.textContent='Browser connected.';${openCanonicalDashboard ? "location.replace('/')" : ""};return}throw Error('The installed app did not answer the browser handoff. Check that Mandible is installed and running.')})().catch(error=>{document.getElementById('result').textContent=error.message})</script>`);
     } catch (error) {
       handleError(res, error);
     }

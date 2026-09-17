@@ -170,6 +170,39 @@ describe("strict browser boundary", () => {
     }
   });
 
+  it("requires the installed-app approval and the browser-held one-time secret", async () => {
+    const headers = { Host: "mandible.localhost", Origin: origin, "Sec-Fetch-Site": "same-origin" };
+    const operator = setupOperator(db);
+    const operatorToken = auth.mintApiToken(operator.id).token;
+    const agent = createUser(db, { slug: "handoff-agent", kind: "agent", display_name: "Agent" });
+    const agentToken = auth.mintApiToken(agent.id).token;
+    expect((await request("POST", "/api/client-auth/pairing/start", {}, {
+      ...headers, Authorization: `Bearer ${agentToken}`,
+    })).status).toBe(400);
+    expect((await request("POST", "/api/client-auth/pairing/start", {}, {
+      Host: "app.mandible.localhost:19420", Authorization: `Bearer ${agentToken}`,
+    })).status).toBe(403);
+    const started = await requestAt(port, "POST", "/api/client-auth/pairing/start", { return_path: "/#/issues" }, headers);
+    expect(started.status).toBe(201);
+    const cookie = String(started.headers["set-cookie"]?.[0] ?? "").split(";")[0];
+    expect(cookie).toMatch(/^__Host-mandible-pairing=/);
+    const reference = started.body.reference as string;
+    expect((await request("POST", "/api/client-auth/pairing/complete", { reference }, { ...headers, Cookie: cookie })).status).toBe(409);
+    expect((await request("POST", "/api/client-auth/pairing/approve", { reference }, headers)).status).toBe(401);
+    expect((await request("POST", "/api/client-auth/pairing/approve", { reference }, {
+      Host: "app.mandible.localhost:19420", Authorization: `Bearer ${operatorToken}`,
+    })).status).toBe(200);
+    expect((await request("POST", "/api/client-auth/pairing/complete", { reference }, headers)).status).toBe(401);
+    const completed = await requestAt(port, "POST", "/api/client-auth/pairing/complete", { reference }, {
+      ...headers, Cookie: cookie,
+    });
+    expect(completed.status).toBe(200);
+    expect(String(completed.headers["set-cookie"]?.[0])).toContain("__Host-mandible-session=");
+    expect((await request("POST", "/api/client-auth/pairing/complete", { reference }, {
+      ...headers, Cookie: cookie,
+    })).status).toBe(409);
+  });
+
   it("accepts saved-state recovery only through the bound old-origin ingress", async () => {
     const prior = process.env.MANDIBLE_LEGACY_CONVERSION;
     process.env.MANDIBLE_LEGACY_CONVERSION = "allow";
@@ -191,7 +224,9 @@ describe("strict browser boundary", () => {
       })).status).toBe(403);
       const accepted = await requestRaw("POST", "/api/client-auth/recovery/start", body, headers);
       expect(accepted.status).toBe(200);
-      expect(accepted.body).toContain("Reconnect this browser");
+      expect(accepted.body).toContain("Opening Mandible");
+      expect(accepted.body).toContain("mandible://access/approve?reference=");
+      expect(accepted.body).not.toContain("I approved it in Mandible");
       expect(auth.pendingBrowserRecoveries()).toMatchObject([{ source_audience: "preview-test", browser_state_entries: 1 }]);
       const reference = auth.pendingBrowserRecoveries()[0]!.reference;
       expect((await request("POST", "/api/client-auth/recovery/approve", { reference }, {
