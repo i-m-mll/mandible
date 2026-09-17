@@ -10,6 +10,8 @@ They are therefore excluded from the default suite. `vitest.config.ts` includes
 `test/*.test.{ts,tsx}` — a single star — so anything in a subdirectory is out of
 `npm test` by construction.
 
+The browser gate runs files sequentially and allows 30 seconds per test by default. Each file starts native Chromium processes; running files concurrently adds startup contention without improving layout evidence. Tests with longer journeys declare their own bounded deadline.
+
 Run them on a provisioned machine with:
 
 ```bash
