@@ -544,6 +544,33 @@ describe("exact conversation freshness", () => {
     }
   });
 
+  it("retries the whole selected window when exact indexing finishes after a stale page read", async () => {
+    const seeded = await seed("read-catchup-session");
+    const originalReadPage = ConversationSourceReader.prototype.readPage;
+    let first = true;
+    const readPage = vi.spyOn(ConversationSourceReader.prototype, "readPage").mockImplementation(async function (...args) {
+      if (!first) return originalReadPage.apply(this, args);
+      first = false;
+      await appendAt(seeded.file, assistant("caught-up tail", 3), 2);
+      const stale = await originalReadPage.apply(this, args);
+      expect(stale.status).toBe("stale");
+      await triggerExactPathIngest(seeded.file);
+      return stale;
+    });
+    try {
+      const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
+      registerConversationRoutes(router);
+      const pending = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
+      expect(pending.status).toBe(503);
+      expect(pending.body).toMatchObject({ error: "freshness_pending" });
+      const current = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
+      expect(current.status).toBe(200);
+      expect(JSON.stringify(current.body)).toContain("caught-up tail");
+    } finally {
+      readPage.mockRestore();
+    }
+  });
+
   it("announces same-byte reparse only after its current source index is readable", async () => {
     const seeded = await seed("reparse-completion-event");
     db.prepare("UPDATE conversation_sources SET parser_version = 'old' WHERE conversation_id = ?")
