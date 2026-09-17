@@ -39,6 +39,13 @@ function jsonResponse(body: unknown): Promise<Response> {
   }));
 }
 
+function operatorSession(): Promise<Response> {
+  return jsonResponse({ authenticated: true, session: {
+    family_id: "boot-family", audience: "production", csrf_token: "boot-csrf",
+    effect_ceiling: ["ledger:read", "ledger:write"],
+  } });
+}
+
 describe("visible-first dashboard boot", () => {
   beforeEach(() => {
     __resetBrowserSessionForTests();
@@ -71,6 +78,7 @@ describe("visible-first dashboard boot", () => {
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       requests.push(url);
+      if (url === "/api/client-auth/whoami") return operatorSession();
       if (url === "/api/issues") return jsonResponse({ repos: [] });
       if (url === "/api/settings") return jsonResponse({});
       if (url === "/api/dashboard/badges") return jsonResponse({ auth: 3, inbox: 2, work: 1 });
@@ -111,6 +119,7 @@ describe("visible-first dashboard boot", () => {
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       requests.push(url);
+      if (url === "/api/client-auth/whoami") return operatorSession();
       if (url === "/api/issues") return jsonResponse({ repos: [] });
       if (url === "/api/dashboard/badges") return jsonResponse({ auth: 0, inbox: 0, work: 0 });
       if (url === "/api/health") {
