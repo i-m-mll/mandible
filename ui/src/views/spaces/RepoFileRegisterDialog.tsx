@@ -19,6 +19,7 @@
 // canonical mutation is the explicit user-triggered register POST.
 
 import { useCallback, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
   registerRepoFileDocument,
@@ -118,6 +119,10 @@ export function RepoFileRegisterDialog({
         ) : null}
       </header>
 
+      {submitError && (
+        <DetailPaneNotice severity="error" density="compact" title="Registration failed" testId="register-error">{submitError}</DetailPaneNotice>
+      )}
+
       <div className="repo-file-register-dialog__body">
         <p className="repo-file-register-dialog__hint">
           Adopt an existing tracked repo file as a document with{' '}
@@ -151,16 +156,6 @@ export function RepoFileRegisterDialog({
           </p>
         ) : null}
       </div>
-
-      {submitError ? (
-        <p
-          className="repo-file-register-dialog__error"
-          role="alert"
-          data-testid="register-error"
-        >
-          {submitError}
-        </p>
-      ) : null}
 
       <footer className="repo-file-register-dialog__actions">
         {onClose ? (

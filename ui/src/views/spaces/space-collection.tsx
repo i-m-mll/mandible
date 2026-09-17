@@ -21,6 +21,7 @@
 // never reset selection/filter/collapse (Dataful-UX contract).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
   deleteSpaceItem,
@@ -388,13 +389,16 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
         </div>
       </div>
 
+      {load.status === 'error' && (
+        <DetailPaneNotice severity="error" density="compact" title="Could not load collection">
+          {load.message}
+        </DetailPaneNotice>
+      )}
       <div className="space-collection__body" data-testid="space-collection-body">
         {load.status === 'loading' ? (
           <div className="space-collection__loading">Loading collection…</div>
         ) : load.status === 'error' ? (
-          <div className="space-collection__error" role="alert">
-            Failed to load collection: {load.message}
-          </div>
+          <div className="space-collection__empty">Collection unavailable.</div>
         ) : projection ? (
           <CollectionBody
             projection={projection}

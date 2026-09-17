@@ -124,6 +124,29 @@ describe('Chat Query authority', () => {
     expect(client.getQueryData(conversationKeys.window('new', normalizeWindowTarget({ target: 'initial' })))).toBeUndefined();
   });
 
+  it('refetches an active failed window after a non-append source reparse event', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = conversationKeys.window('conv-1', normalizeWindowTarget({ target: 'initial' }));
+    const queryFn = vi.fn()
+      .mockRejectedValueOnce(new Error('older parser epoch'))
+      .mockResolvedValue(window(
+        { kind: 'initial', requested_value: null, position: 0, block_id: 'b0', turn_id: null },
+        [block('b0', 0)],
+        1,
+      ));
+    const observer = new QueryObserver(client, { queryKey: key, queryFn });
+    const unsubscribe = observer.subscribe(() => undefined);
+    try {
+      await vi.waitFor(() => expect(observer.getCurrentResult().isError).toBe(true));
+      applyConversationSse(client, 'conversation:updated', { id: 'conv-1', block_count: 1 });
+      await vi.waitFor(() => expect(observer.getCurrentResult().isSuccess).toBe(true));
+      expect(queryFn).toHaveBeenCalledTimes(2);
+      expect(client.getQueryData<ConversationPositionWindow>(key)?.body_source).toBe('source');
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('merges overlapping initial and exact windows by canonical block identity', () => {
     const initial = window(
       { kind: 'initial', requested_value: null, position: 0, block_id: 'b0', turn_id: null },

@@ -627,9 +627,10 @@ fn is_credential_material(value: &[u8]) -> bool {
 }
 
 fn verify_same_user_daemon() -> Result<(), String> {
-    let pid = read_pid_file(pid_file_path())
-        .ok_or_else(|| "refusing desktop enrollment without a daemon pid file".to_string())?;
-    if !process_alive(pid) || !check_health(daemon_port()) {
+    let (pid_file, port) = enrollment_daemon_registration()?;
+    let pid = read_pid_file(pid_file)
+        .ok_or_else(|| "the registered Mandible service is not running".to_string())?;
+    if !process_alive(pid) || !check_health(port) {
         return Err(
             "refusing desktop enrollment because the recorded daemon is not healthy".to_string(),
         );
@@ -652,6 +653,12 @@ fn verify_same_user_daemon() -> Result<(), String> {
             );
         }
 
+        if !registered_pid_owns_listener(pid, port)? {
+            return Err(
+                "the registered Mandible service does not own its local connection".to_string(),
+            );
+        }
+
         // Do not compare the daemon command with a path derived from
         // CARGO_MANIFEST_DIR. Release bundles may be built in disposable
         // worktrees, and coupling enrollment to that build checkout makes the
@@ -661,6 +668,83 @@ fn verify_same_user_daemon() -> Result<(), String> {
         // comparison above still refuses a listener owned by another user.
     }
     Ok(())
+}
+
+fn registered_pid_owns_listener(pid: u32, port: u16) -> Result<bool, String> {
+    let output = Command::new("lsof")
+        .args([
+            "-nP",
+            "-F",
+            "n",
+            "-a",
+            "-p",
+            &pid.to_string(),
+            &format!("-iTCP:{port}"),
+            "-sTCP:LISTEN",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("cannot verify the Mandible service connection: {error}"))?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line == format!("n127.0.0.1:{port}")))
+}
+
+fn enrollment_daemon_registration() -> Result<(PathBuf, u16), String> {
+    let path = mandible_config_dir()
+        .join("local-sessions")
+        .join("cutover.json");
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((pid_file_path(), daemon_port()))
+        }
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect the Mandible service registration: {error}"
+            ))
+        }
+    };
+    enrollment_daemon_registration_from_journal(&raw)
+}
+
+fn enrollment_daemon_registration_from_journal(raw: &[u8]) -> Result<(PathBuf, u16), String> {
+    let journal: serde_json::Value = serde_json::from_slice(&raw)
+        .map_err(|_| "the Mandible service registration is invalid".to_string())?;
+    if journal["state"] != "complete" {
+        return Ok((pid_file_path(), daemon_port()));
+    }
+    if journal["schema"] != "mandible-local-session-cutover@1" {
+        return Err("the Mandible service registration has an unknown format".to_string());
+    }
+    let registered: Vec<_> = journal["manifest"]["instances"]
+        .as_array()
+        .ok_or_else(|| "the Mandible service registration has no instances".to_string())?
+        .iter()
+        .filter(|instance| {
+            instance["role"] == "main" && instance["candidate"]["instance_id"] == "production"
+        })
+        .collect();
+    if registered.len() != 1 {
+        return Err(
+            "the Mandible service registration has no unique production service".to_string(),
+        );
+    }
+    let env = &registered[0]["candidate"]["process"]["env"];
+    let pid_file = env["MANDIBLE_PID_FILE"]
+        .as_str()
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| "the Mandible service registration has no valid PID location".to_string())?;
+    let port = env["MANDIBLE_PORT"]
+        .as_str()
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .ok_or_else(|| "the Mandible service registration has no valid private port".to_string())?;
+    Ok((pid_file, port))
 }
 
 fn read_client_auth_bootstrap(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -1159,9 +1243,9 @@ pub fn run() {
 mod tests {
     use super::{
         admits_native_command_origin, bind_session_cookie_to_production,
-        dashboard_origin_from_cutover, extract_credential, is_secure_connections_setup_link,
-        read_client_auth_bootstrap, resolve_user_path_from, LEGACY_PRODUCTION_ORIGIN,
-        PRODUCTION_ORIGIN,
+        dashboard_origin_from_cutover, enrollment_daemon_registration_from_journal,
+        extract_credential, is_secure_connections_setup_link, read_client_auth_bootstrap,
+        resolve_user_path_from, LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1250,6 +1334,52 @@ mod tests {
             dashboard_origin_from_cutover(Some(b"not json")),
             PRODUCTION_ORIGIN
         );
+    }
+
+    #[test]
+    fn enrollment_uses_the_unique_registered_production_daemon() {
+        let mut journal = serde_json::json!({
+            "schema": "mandible-local-session-cutover@1",
+            "state": "complete",
+            "manifest": {"instances": [{
+                "role": "main",
+                "candidate": {"instance_id": "production", "process": {"env": {
+                    "MANDIBLE_PID_FILE": "/tmp/registered-production.pid",
+                    "MANDIBLE_PORT": "29420"
+                }}}
+            }]}
+        });
+        let resolve = |value: &serde_json::Value| {
+            enrollment_daemon_registration_from_journal(&serde_json::to_vec(value).unwrap())
+        };
+        assert_eq!(
+            resolve(&journal).unwrap(),
+            (
+                std::path::PathBuf::from("/tmp/registered-production.pid"),
+                29420
+            )
+        );
+        journal["manifest"]["instances"][0]["candidate"]["process"]["env"]["MANDIBLE_PID_FILE"] =
+            "relative.pid".into();
+        assert!(resolve(&journal).is_err());
+        journal["manifest"]["instances"][0]["candidate"]["process"]["env"]["MANDIBLE_PID_FILE"] =
+            "/tmp/registered-production.pid".into();
+        let duplicate = journal["manifest"]["instances"][0].clone();
+        journal["manifest"]["instances"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        assert!(resolve(&journal).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn daemon_listener_verification_binds_the_pid_to_the_loopback_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(super::registered_pid_owns_listener(std::process::id(), port).unwrap());
+        drop(listener);
+        assert!(!super::registered_pid_owns_listener(std::process::id(), port).unwrap());
     }
 
     #[test]

@@ -7,11 +7,12 @@ import path from "node:path";
 import Database from "better-sqlite3";
 
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
-import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
+import { triggerExactPathIngest, triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
 import { decompressContent } from "../src/compression.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
 import { ensureExactConversationFresh } from "../src/conversations/freshness.js";
 
 let tempDir = "";
@@ -391,6 +392,69 @@ describe("incremental tail ingestion", () => {
 
     expect(events).not.toContain("ingestion_complete");
     expect(events).not.toContain("conversation_source_snapshot_failed");
+  });
+
+  it("reparses only an exact requested old-epoch source without changing its sealed bytes", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("reconcile-parser-upgrade"), 1);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const before = db.prepare(`
+      SELECT source.id, source.conversation_id, source.current_version_id, version.content_sha256
+        FROM conversation_sources source
+        JOIN conversation_source_aliases alias ON alias.source_id = source.id
+        JOIN conversation_source_versions version ON version.id = source.current_version_id
+       WHERE alias.path = ?
+    `).get(sessionPath) as {
+      id: string; conversation_id: string; current_version_id: string; content_sha256: string;
+    };
+    const previousParserVersion = "1";
+    const previousNormalizationVersion = "1";
+    db.prepare("UPDATE conversation_sources SET parser_version = ?, normalization_version = ? WHERE id = ?")
+      .run(previousParserVersion, previousNormalizationVersion, before.id);
+    db.prepare("UPDATE conversation_source_versions SET parser_version = ?, normalization_version = ? WHERE id = ?")
+      .run(previousParserVersion, previousNormalizationVersion, before.current_version_id);
+
+    await expect(ensureExactConversationFresh(db, before.conversation_id, {
+      waitForFresh: false,
+      scheduleReparse: () => { throw new Error("parser failed; retry later"); },
+    })).rejects.toMatchObject({ code: "freshness_error", message: "parser failed; retry later" });
+
+    let requestedPath: string | null = null;
+    let reparse: ReturnType<typeof triggerExactPathIngest> | null = null;
+    await expect(ensureExactConversationFresh(db, before.conversation_id, {
+      waitForFresh: false,
+      scheduleReparse: (filePath) => {
+        requestedPath = filePath;
+        reparse = triggerExactPathIngest(filePath);
+        return true;
+      },
+    })).rejects.toMatchObject({ code: "freshness_pending" });
+    expect(requestedPath).toBe(sessionPath);
+    await reparse;
+
+    const after = db.prepare(`
+      SELECT current_version_id, parser_version, normalization_version FROM conversation_sources WHERE id = ?
+    `).get(before.id) as { current_version_id: string; parser_version: string; normalization_version: string };
+    expect(after.parser_version).toBe(CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion);
+    expect(after.normalization_version).toBe(CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion);
+    expect(after.current_version_id).toBe(before.current_version_id);
+    expect(db.prepare("SELECT content_sha256, parser_version, normalization_version FROM conversation_source_versions WHERE id = ?")
+      .get(before.current_version_id)).toEqual({
+      content_sha256: before.content_sha256,
+      parser_version: CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion,
+      normalization_version: CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion,
+    });
+    expect((await new ConversationSourceReader(db).readPage(before.conversation_id)).status).toBe("source");
+  });
+
+  it("reports an exact parser failure instead of treating it as a successful reparse", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("exact-parser-failure"), 1);
+    await triggerExactPathIngest(sessionPath);
+    const parser = vi.spyOn(CodexParser.prototype, "parse").mockRejectedValueOnce(new Error("parser failed"));
+    await expect(triggerExactPathIngest(sessionPath)).rejects.toThrow("parser failed");
+    parser.mockRestore();
+    await expect(triggerExactPathIngest(sessionPath)).resolves.toMatchObject({ status: "ingested" });
   });
 
   it("does not warn when a touched already-source-backed conversation has no legacy payload to promote", async () => {

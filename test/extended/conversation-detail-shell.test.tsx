@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useRef, useState } from 'preact/hooks';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { CancelledError } from '@tanstack/preact-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../ui/src/api.js';
@@ -272,8 +273,9 @@ function positionPayload(
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 function MountedRightSidebarShell({ children }: { children: ComponentChildren }): JSX.Element {
@@ -428,6 +430,85 @@ describe('compact detail pane shell', () => {
     const unavailable = conversationLoadFailure(new api.ApiError('temporary', 503, 'provider_metadata_unavailable'), true);
     expect(unavailable).toMatchObject({ code: 'provider_metadata_unavailable', retryable: true });
     expect(unavailable.message).toContain('transcript is unchanged');
+  });
+
+  it('does not turn an obsolete transcript request into a visible Chat error', () => {
+    expect(conversationLoadFailure(new CancelledError(), true, 'edge-older')).toBeNull();
+    expect(conversationLoadFailure(new DOMException('aborted', 'AbortError'), true, 'refresh')).toBeNull();
+    expect(conversationLoadFailure(new Error('read failed'), true, 'refresh')).toMatchObject({
+      message: 'read failed',
+      operation: 'refresh',
+    });
+  });
+
+  it('keeps a new selection\'s real error when an old Jump request is cancelled late', async () => {
+    const first = mockConversationDetail(defaultControl, []);
+    const second = { ...first, id: 'selected-after-cancel', title: 'Selected after cancellation' };
+    const pendingOldJump = deferred<ConversationPositionWindow>();
+    const middle = makeTranscriptBlock({ id: 'old-middle', dag_uuid: 'old-middle', content: 'Old middle', position: 1 });
+    vi.mocked(api.getConversationWindow).mockImplementation(async (id, request) => {
+      if (id === second.id) throw new Error('Current selection failed to load');
+      if ('target' in request && request.target === 'latest') return pendingOldJump.promise;
+      return positionPayload(first, [middle], { kind: 'block', hasAfter: true, afterCount: 20, revision: 2 });
+    });
+    const view = (id: string) => (
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={id}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewConversation={() => undefined}
+      />
+    );
+    window.history.replaceState(null, '', `#/console?conversation=${first.id}&block=${middle.id}`);
+    const mounted = render(view(first.id));
+    expect(await screen.findByText('Old middle')).toBeTruthy();
+    applyConversationSse(queryClient, 'conversation:updated', {
+      id: first.id,
+      block_count: 3,
+      append: { from_position: 2, blocks: [makeTranscriptBlock({ id: 'old-tail', dag_uuid: 'old-tail', position: 2 })] },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
+    mounted.rerender(view(second.id));
+    expect(await screen.findByText('Current selection failed to load')).toBeTruthy();
+    await act(async () => pendingOldJump.reject(new CancelledError()));
+    expect(screen.getByText('Current selection failed to load')).toBeTruthy();
+    expect(screen.queryByText('CancelledError')).toBeNull();
+  });
+
+  it('does not let an old A request clear a newer A request after A to B to A', async () => {
+    const first = mockConversationDetail(defaultControl, []);
+    const second = { ...first, id: 'intermediate-selection', title: 'Intermediate selection' };
+    const oldJump = deferred<ConversationPositionWindow>();
+    const currentJump = deferred<ConversationPositionWindow>();
+    const middle = makeTranscriptBlock({ id: 'middle-a', dag_uuid: 'middle-a', content: 'Middle A', position: 1 });
+    let jumpCount = 0;
+    vi.mocked(api.getConversationWindow).mockImplementation(async (id, request) => {
+      if (id === second.id) return positionPayload(second, [middle], { kind: 'block', hasAfter: true, afterCount: 20, revision: 2 });
+      if ('target' in request && request.target === 'latest') return (++jumpCount === 1 ? oldJump : currentJump).promise;
+      return positionPayload(first, [middle], { kind: 'block', hasAfter: true, afterCount: 20, revision: 2 });
+    });
+    const view = (id: string) => (
+      <ConversationsView
+        consoleSessions={[]}
+        initialConversationId={id}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewConversation={() => undefined}
+      />
+    );
+    window.history.replaceState(null, '', `#/console?conversation=${first.id}&block=${middle.id}`);
+    const mounted = render(view(first.id));
+    expect(await screen.findByText('Middle A')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
+    mounted.rerender(view(second.id));
+    mounted.rerender(view(first.id));
+    fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
+    expect(jumpCount).toBe(2);
+    expect(screen.getByRole('button', { name: /jump to latest/i }).getAttribute('aria-busy')).toBe('true');
+    await act(async () => oldJump.reject(new CancelledError()));
+    expect(screen.getByRole('button', { name: /jump to latest/i }).getAttribute('aria-busy')).toBe('true');
+    await act(async () => currentJump.reject(new CancelledError()));
   });
 
   it('synchronously discards another conversation\'s preview and Preview tab', () => {

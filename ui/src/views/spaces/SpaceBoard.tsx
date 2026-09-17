@@ -20,6 +20,7 @@
 // never injected as HTML (renderer-security standing AC).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
   createSpaceOccurrence,
@@ -870,17 +871,16 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
         </div>
       </div>
 
+      {load.status === 'error' && (
+        <DetailPaneNotice severity="error" density="compact" title="Could not load board">{load.message}</DetailPaneNotice>
+      )}
       <div className="space-board__body" data-testid="space-board-body">
         {load.status === 'loading' || load.status === 'idle' ? (
           <div className="space-board__loading" role="status">
             Loading cards…
           </div>
         ) : null}
-        {load.status === 'error' ? (
-          <div className="space-board__error" role="alert">
-            Failed to load board: {load.message}
-          </div>
-        ) : null}
+        {load.status === 'error' ? <div className="space-board__empty">Board unavailable.</div> : null}
         {projection ? (
           <div className="space-board__columns" role="list" aria-label="Board columns">
             {projection.columns.map((column, index) => (

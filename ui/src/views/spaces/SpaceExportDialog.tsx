@@ -22,6 +22,7 @@
 // The user's last-confirmed path/message is persisted per-Space (./exportDialogState).
 
 import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
   getSpaceExports,
@@ -219,14 +220,18 @@ export function SpaceExportDialog({
         ) : null}
       </header>
 
+      {(loadError || submitError) && (
+        <DetailPaneNotice severity="error" density="compact" title="Export failed" testId={loadError ? 'export-load-error' : 'export-error'}>
+          {loadError ?? submitError}
+        </DetailPaneNotice>
+      )}
+
       {loading ? (
         <p className="space-export-dialog__hint" data-testid="export-loading">
           Resolving export location…
         </p>
       ) : loadError ? (
-        <p className="space-export-dialog__error" role="alert" data-testid="export-load-error">
-          {loadError}
-        </p>
+        <p className="space-export-dialog__hint">Export location unavailable.</p>
       ) : (
         <div className="space-export-dialog__body">
           <p className="space-export-dialog__hint" data-testid="export-default-path">
@@ -306,12 +311,6 @@ export function SpaceExportDialog({
           ) : null}
         </div>
       )}
-
-      {submitError ? (
-        <p className="space-export-dialog__error" role="alert" data-testid="export-error">
-          {submitError}
-        </p>
-      ) : null}
 
       <footer className="space-export-dialog__actions">
         {onClose ? (

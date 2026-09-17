@@ -1,6 +1,6 @@
 import type { ComponentChildren, Ref } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { useQuery, useQueryClient } from '@tanstack/preact-query';
+import { CancelledError, isCancelledError, useQuery, useQueryClient } from '@tanstack/preact-query';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
@@ -183,7 +183,9 @@ export function conversationLoadFailure(
   error: unknown,
   transcriptLoaded: boolean,
   operation: ConversationLoadFailure['operation'] = 'refresh',
-): ConversationLoadFailure {
+): ConversationLoadFailure | null {
+  if (isCancelledError(error) || (error !== null && typeof error === 'object'
+    && 'name' in error && error.name === 'AbortError')) return null;
   const apiError = error instanceof ApiError ? error : null;
   const code = apiError?.code ?? null;
   const resolvedOperation = code === 'source_unavailable' ? 'source-unavailable' : operation;
@@ -294,7 +296,7 @@ export function ChatDetailFrame({
 }
 
 function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }): JSX.Element | null {
-  if (!toast) return null;
+  if (!toast || toast.type === 'error') return null;
   return (
     <div className={`conv-toast conv-toast--${toast.type}`} onClick={onDismiss}>
       {toast.message}
@@ -1044,6 +1046,11 @@ export function ConversationDetail({
   // an inline callback, or that publication becomes a render feedback loop.
   const onNavigateRef = useRef(onNavigate);
   onNavigateRef.current = onNavigate;
+  const selectionRef = useRef({ conversationId, generation: 0 });
+  if (selectionRef.current.conversationId !== conversationId) {
+    selectionRef.current = { conversationId, generation: selectionRef.current.generation + 1 };
+  }
+  const selectionGeneration = selectionRef.current.generation;
   const navigateFromActivity = useCallback((id: string) => onNavigateRef.current(id), []);
   const [jumpingToLatest, setJumpingToLatest] = useState(false);
   const [edgeLoading, setEdgeLoading] = useState<'older' | 'newer' | null>(null);
@@ -1111,6 +1118,7 @@ export function ConversationDetail({
   const fetchConversationDetail = useCallback(
     async ({ signal }: { signal: AbortSignal }) => {
       const incoming = await getConversationWindow(conversationId, windowRequest(windowTarget, signal));
+      if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
       const aggregateKey = conversationKeys.aggregate(conversationId);
       const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
       const merged = reconcileConversationWindow(
@@ -1126,7 +1134,7 @@ export function ConversationDetail({
       queryClient.setQueryData(aggregateKey, merged);
       return incoming;
     },
-    [conversationId, queryClient, windowTarget],
+    [conversationId, queryClient, selectionGeneration, windowTarget],
   );
   const windowQuery = useQuery({
     queryKey: conversationRequestKey,
@@ -1146,6 +1154,7 @@ export function ConversationDetail({
       queryFn: ({ signal }) => getConversationWindow(conversationId, windowRequest(target, signal)),
       staleTime: 0,
     });
+    if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
     const aggregateKey = conversationKeys.aggregate(conversationId);
     const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
     if (current && current.source_version_id !== incoming.source_version_id) {
@@ -1153,11 +1162,17 @@ export function ConversationDetail({
     }
     queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
     return incoming;
-  }, [conversationId, queryClient]);
+  }, [conversationId, queryClient, selectionGeneration]);
 
   useEffect(() => () => {
     void queryClient.cancelQueries({ queryKey: conversationKeys.conversation(conversationId) });
   }, [conversationId, queryClient]);
+  useEffect(() => {
+    setEdgeLoading(null);
+    setJumpingToLatest(false);
+    setExportLoading(false);
+    setExportIntent(null);
+  }, [conversationId]);
   // Flattening is a projection of query data, not a new entity on every
   // component render. Keeping its identity stable also keeps the registered
   // app-sidebar descriptor stable; otherwise that descriptor updates App,
@@ -1192,11 +1207,12 @@ export function ConversationDetail({
     try {
       await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
     } catch (cause) {
-      setNavigationError(conversationLoadFailure(cause, true, direction === 'older' ? 'edge-older' : 'edge-newer'));
+      const failure = conversationLoadFailure(cause, true, direction === 'older' ? 'edge-older' : 'edge-newer');
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
     } finally {
-      setEdgeLoading(null);
+      if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
-  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient]);
+  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
   const loadTranscriptAround = useCallback(async (position: number) => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
@@ -1207,11 +1223,12 @@ export function ConversationDetail({
     try {
       await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
     } catch (cause) {
-      setNavigationError(conversationLoadFailure(cause, true, 'edge-newer'));
+      const failure = conversationLoadFailure(cause, true, 'edge-newer');
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
     } finally {
-      setEdgeLoading(null);
+      if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
-  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient]);
+  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
   const transcriptConsumer = useMemo<ConversationTranscriptConsumer | undefined>(() => {
     const aggregate = aggregateQuery.data;
@@ -1253,7 +1270,7 @@ export function ConversationDetail({
     handledAnchorKeyRef.current = null;
     setNavigationTarget(null);
     setNavigationError(null);
-  }, [incomingAnchorKey]);
+  }, [conversationId, incomingAnchorKey]);
 
   const headerRef = useRef<HTMLElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
@@ -1444,11 +1461,13 @@ export function ConversationDetail({
         conversationKeys.aggregate(conversationId),
       )?.revision ?? latest.revision;
       while (latest.revision < observedRevision) {
+        if (selectionRef.current.generation !== selectionGeneration) return;
         latest = await fetchAndReconcileWindow(latestTarget);
         observedRevision = queryClient.getQueryData<ConversationTranscriptData>(
           conversationKeys.aggregate(conversationId),
         )?.revision ?? latest.revision;
       }
+      if (selectionRef.current.generation !== selectionGeneration) return;
       setEffectiveAnchor(null);
       const params = new URLSearchParams({ conversation: conversationId });
       window.history.replaceState(null, '', `#/console?${params.toString()}`);
@@ -1460,15 +1479,16 @@ export function ConversationDetail({
         smooth: true,
       });
     } catch (err) {
-      setNavigationError(conversationLoadFailure(err, true, 'target'));
+      const failure = conversationLoadFailure(err, true, 'target');
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
     } finally {
-      setJumpingToLatest(false);
+      if (selectionRef.current.generation === selectionGeneration) setJumpingToLatest(false);
     }
-  }, [conversationId, fetchAndReconcileWindow, queryClient]);
+  }, [conversationId, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
   // Toast auto-dismiss
   useEffect(() => {
-    if (!toast) return;
+    if (!toast || toast.type === 'error') return;
     const timer = window.setTimeout(() => setToast(null), 4000);
     return () => window.clearTimeout(timer);
   }, [toast]);
@@ -1631,16 +1651,18 @@ export function ConversationDetail({
     setNavigationError(null);
     try {
       const exported = await exportConversationBlocks(conversationId, { format: 'markdown' });
+      if (selectionRef.current.generation !== selectionGeneration) return;
       if (intent === 'copy') await navigator.clipboard.writeText(exported.content);
       else openMarkdownDocument(exported.content);
       setExportIntent(null);
       setActionsOpen(false);
     } catch (cause) {
-      setNavigationError(conversationLoadFailure(cause, true, 'export'));
+      const failure = conversationLoadFailure(cause, true, 'export');
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
     } finally {
-      setExportLoading(false);
+      if (selectionRef.current.generation === selectionGeneration) setExportLoading(false);
     }
-  }, [conversationId]);
+  }, [conversationId, selectionGeneration]);
 
   const openUsage = useCallback(() => setUsageModalOpen(true), []);
   const [sessionRunOptions, setSessionRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
@@ -2196,9 +2218,9 @@ export function ConversationDetail({
             {renderRunOptionFields()}
           </div>
         )}
-        {(continueError || (continueDisabledReason && creationReceipt?.state !== 'starting')) && (
-          <div className={`conv-compose__status${continueError ? ' conv-compose__status--error' : ''}`}>
-            {continueError ?? continueDisabledReason}
+        {continueDisabledReason && creationReceipt?.state !== 'starting' && (
+          <div className="conv-compose__status">
+            {continueDisabledReason}
           </div>
         )}
       </div>
@@ -2222,6 +2244,17 @@ export function ConversationDetail({
       onRetry={creationReceipt.error.retryable ? onRetryCreation : undefined}
     />
   ) : undefined;
+
+  const actionErrorNotice = toast?.type === 'error' || continueError ? (
+    <DetailPaneNotice
+      severity="error"
+      density="compact"
+      title="Chat action failed"
+      actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { setToast(null); setContinueError(null); }}>Dismiss</button>}
+    >
+      {toast?.type === 'error' ? toast.message : continueError}
+    </DetailPaneNotice>
+  ) : null;
 
   const detailOverlays = (
     <>
@@ -2268,7 +2301,13 @@ export function ConversationDetail({
       overlayControl={composerOverlay}
       overlays={detailOverlays}
       ariaBusy={loading}
-      notice={controlFailureNotice ?? creationNotice ?? externalNotice ?? loadErrorNotice}
+      notice={controlFailureNotice || creationNotice || actionErrorNotice || externalNotice || loadErrorNotice ? <>
+        {controlFailureNotice}
+        {creationNotice}
+        {actionErrorNotice}
+        {externalNotice}
+        {loadErrorNotice}
+      </> : null}
     >
       <div className="conv-transcript">
         <ChatEntityLinkBoundary
@@ -3618,6 +3657,7 @@ export function ConversationsView({
         ariaLabel="Conversations"
         hidden={sidebarHidden}
         header={
+          <>
           <SidebarSearchFilterHeader
             value={search}
             onValueChange={setSearch}
@@ -3729,6 +3769,28 @@ export function ConversationsView({
               ),
             } : undefined}
           />
+          {sidebarOrder.notice ? (
+            <DetailPaneNotice
+              severity="warning"
+              density="compact"
+              title="Sidebar order unavailable"
+              testId="chat-sidebar-order-notice"
+              actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { void sidebarOrder.reload(); }}>Retry</button>}
+            >
+              {sidebarOrder.notice}
+            </DetailPaneNotice>
+          ) : null}
+          {sidebarToast?.type === 'error' ? (
+            <DetailPaneNotice
+              severity="error"
+              density="compact"
+              title="Chat sidebar action failed"
+              actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => setSidebarToast(null)}>Dismiss</button>}
+            >
+              {sidebarToast.message}
+            </DetailPaneNotice>
+          ) : null}
+          </>
         }
         bodyClassName="chat-history-list"
       >
@@ -3740,18 +3802,6 @@ export function ConversationsView({
                 onPress={() => openNewSession()}
               />
             </div>
-            {sidebarOrder.notice ? (
-              <DetailPaneNotice
-                severity="warning"
-                density="compact"
-                title="Sidebar order unavailable"
-                testId="chat-sidebar-order-notice"
-                actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { void sidebarOrder.reload(); }}>Retry</button>}
-              >
-                {sidebarOrder.notice}
-              </DetailPaneNotice>
-            ) : null}
-
             {chatSections.pinned ? (() => {
               const group = chatSections.pinned;
               const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;

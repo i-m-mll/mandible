@@ -23,6 +23,7 @@ import { DetailHeaderIdentity } from '../../components/shared/DetailHeaderIdenti
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
 import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { artifactDetailHref, displayResourceRef } from '../../resource-refs';
 import { shortRouteId } from '../../routing';
@@ -140,6 +141,7 @@ export function BriefingDocumentRenderer({
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [contentGate, setContentGate] = useState<string | null>(null);
+  const [documentFailure, setDocumentFailure] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
@@ -220,6 +222,7 @@ export function BriefingDocumentRenderer({
     setUserKind(null);
     setBusy(false);
     setContentGate(null);
+    setDocumentFailure(null);
     setDraftScope(null);
     setValidationErrors({});
     setStatus(null);
@@ -584,14 +587,13 @@ export function BriefingDocumentRenderer({
   const body = load.loading && !round
     ? <div className="briefing-empty" role="status">Loading Briefing…</div>
     : load.error && !round
-      ? <div className="briefing-error" role="alert">{load.error}</div>
+      ? <div className="briefing-empty">Briefing content is temporarily unavailable.</div>
       : !round
         ? <div className="briefing-empty" role="status">Briefing unavailable.</div>
         : !round.valid
-          ? <div className="briefing-error" role="alert">The selected Briefing projection is invalid or unsupported.</div>
+          ? <div className="briefing-empty">The selected Briefing cannot be displayed.</div>
           : (
             <div className="briefing-document" data-testid="briefing-document-renderer">
-              {exportError ? <div className="briefing-error" role="alert">{exportError}</div> : null}
               {Object.keys(validationErrors).length > 0 ? (
                 <div className="briefing-document__validation" role="alert">
                   Complete {Object.keys(validationErrors).length} required answer{Object.keys(validationErrors).length === 1 ? '' : 's'}.
@@ -602,7 +604,8 @@ export function BriefingDocumentRenderer({
                   draft={draft}
                   validationErrors={validationErrors}
                   onDirectiveValue={setValue}
-                  onContentGateChange={setContentGate} />
+                  onContentGateChange={setContentGate}
+                  onDocumentFailureChange={setDocumentFailure} />
               ) : null}
               <div className="sr-only" role="status" aria-live="polite">{status}</div>
             </div>
@@ -616,6 +619,16 @@ export function BriefingDocumentRenderer({
       footerClassName="briefing-detail__footer"
       headerRef={headerRef}
       ariaBusy={load.loading}
+      notice={load.error || exportError || (round && !round.valid) || documentFailure ? (
+        <DetailPaneNotice severity="error" density="compact" title="Briefing needs attention">
+          {[
+            load.error,
+            exportError,
+            round && !round.valid ? 'The selected Briefing projection is invalid or unsupported.' : null,
+            documentFailure,
+          ].filter(Boolean).join(' · ')}
+        </DetailPaneNotice>
+      ) : null}
       header={(
         <DetailPaneHeader
           variant="versioned"

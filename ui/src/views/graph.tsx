@@ -24,6 +24,7 @@ import {
   type LedgerIssueDetailProjection,
 } from '../api';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { appColors } from '../theme';
 import { browserSessionFetch } from '../client-auth-token';
@@ -776,7 +777,7 @@ export function GraphDetailPane({
         {ledgerLoading && !ledgerDetail ? (
           <LoadingSkeleton variant="detail" label="Loading issue detail" />
         ) : ledgerError && !ledgerDetail ? (
-          <div className="graph-detail-pane__empty">{ledgerError}</div>
+          <DetailPaneNotice severity="error" title="Issue detail unavailable">{ledgerError}</DetailPaneNotice>
         ) : ledgerDetail ? (
           <>
             <LedgerIssueDetail
@@ -1293,8 +1294,8 @@ export function GraphView({
 
       <div className="graph-workspace">
         <div className="graph-canvas-wrap">
+          {error ? <DetailPaneNotice severity="error" title="Graph could not be refreshed" className="graph-canvas-notice">{error}</DetailPaneNotice> : null}
           {loading && flowNodes.length === 0 && <LoadingSkeleton variant="canvas" label="Loading graph" />}
-          {error && flowNodes.length === 0 && <div className="graph-error">{error}</div>}
           {!loading && !error && flowNodes.length === 0 && (
             <div className="graph-empty">
               <h3>No graph data</h3>

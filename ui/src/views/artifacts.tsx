@@ -67,6 +67,7 @@ import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { artifactLinkBadgeLabel } from '../lib/format';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -829,7 +830,7 @@ export function ArtifactsView({
               })}
       </ViewSidebar>
       <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
-        {error && !coherentSelectedArtifact && <div className="artifacts-error">{error}</div>}
+        {error && !coherentSelectedArtifact && <DetailPaneNotice severity="error" title="Artifacts could not be loaded">{error}</DetailPaneNotice>}
         {(detailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
           <LoadingSkeleton variant="detail" label="Loading artifact..." />
         )}
@@ -1389,6 +1390,16 @@ export function ArtifactDetail({
     </>
   );
 
+  const detailFailures = [
+    detailError && `Artifact detail: ${detailError}`,
+    openError && `Open artifact: ${openError}`,
+    briefingError && `Create briefing: ${briefingError}`,
+    editMode && draftError && `Edit artifact: ${draftError}`,
+    !editMode && contentError && `Artifact content: ${contentError}`,
+    diffOpen && diffError && `Version diff: ${diffError}`,
+    knowledgeError && `Knowledge references: ${knowledgeError}`,
+  ].filter((message): message is string => Boolean(message));
+
   return (
     <DetailPaneShell
       presentation={presentation}
@@ -1397,6 +1408,11 @@ export function ArtifactDetail({
       bodyClassName={`artifact-detail__pane${metadataOpen ? ' artifact-detail__pane--metadata-open' : ''}`}
       headerRef={headerRef}
       ariaBusy={contentLoading}
+      notice={detailFailures.length > 0 ? (
+        <DetailPaneNotice severity="error" density="compact" title="Artifact needs attention">
+          {detailFailures.map((message) => <div key={message}>{message}</div>)}
+        </DetailPaneNotice>
+      ) : null}
       header={(
         <DetailPaneHeader
           presentation={presentation}
@@ -1581,9 +1597,6 @@ export function ArtifactDetail({
       )}
       overlays={overlays}
     >
-        {detailError && <div className="artifacts-error">{detailError}</div>}
-        {openError && <div className="artifacts-error" role="alert">Could not open artifact: {openError}</div>}
-        {briefingError && <div className="artifacts-error" role="alert">Could not create briefing: {briefingError}</div>}
         {resolution?.warnings?.includes('series_latest_not_pinned') && (
           <div className="artifact-detail__warning">series_latest_not_pinned</div>
         )}
@@ -1595,7 +1608,6 @@ export function ArtifactDetail({
               note={draftNote}
               saving={draftSaving}
               loading={draftLoading}
-              error={draftError}
               status={draftStatus}
               onChange={setDraftValue}
               onLabelChange={setDraftLabel}
@@ -1635,7 +1647,7 @@ export function ArtifactDetail({
                 <button type="button" className="artifact-detail__inline-button" onClick={() => setDiffOpen(false)}>Hide</button>
               </div>
               {diffLoading && <div className="artifacts-empty" role="status">Loading diff...</div>}
-              {!diffLoading && diffError && <div className="artifacts-error">{diffError}</div>}
+              {!diffLoading && diffError && <div className="artifacts-empty">Diff unavailable.</div>}
               {!diffLoading && !diffError && versionDiff?.unified && (
                 <DiffView diffText={versionDiff.unified} ariaLabel="Artifact version diff" />
               )}
@@ -1672,7 +1684,7 @@ export function ArtifactDetail({
             <section className="artifact-detail__section">
               <h3>Knowledge Backrefs</h3>
               {knowledgeLoading && <div className="artifacts-empty">Loading knowledge references...</div>}
-              {!knowledgeLoading && knowledgeError && <div className="artifacts-error">{knowledgeError}</div>}
+              {!knowledgeLoading && knowledgeError && <div className="artifacts-empty">Knowledge references unavailable.</div>}
               {!knowledgeLoading && !knowledgeError && knowledgeBackrefs.length > 0 && (
                 <div className="artifact-detail__list">
                   {knowledgeBackrefs.map((backref) => (
@@ -1791,7 +1803,6 @@ function ArtifactEditorSection({
   note,
   saving,
   loading,
-  error,
   status,
   onChange,
   onLabelChange,
@@ -1809,7 +1820,6 @@ function ArtifactEditorSection({
   note: string;
   saving: boolean;
   loading: boolean;
-  error: string | null;
   status: string | null;
   onChange: (value: string) => void;
   onLabelChange: (value: string) => void;
@@ -1840,7 +1850,6 @@ function ArtifactEditorSection({
           <button type="button" onClick={onDiscard}>Discard draft</button>
         </div>
       )}
-      {error && <div className="artifacts-error">{error}</div>}
       <div className="artifact-editor__fields">
         <label>
           <span>Version label</span>
@@ -1915,7 +1924,7 @@ function PreviewSection({
   return (
     <>
         {!showPreview && contentLoading && <div className="artifacts-empty" role="status">Loading preview...</div>}
-        {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
+        {!contentLoading && contentError && <div className="artifacts-empty">Content unavailable.</div>}
         {showPreview && content?.warnings?.map((warning) => (
         <div key={warning} className="artifact-detail__warning">{warning}</div>
         ))}

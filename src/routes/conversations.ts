@@ -350,13 +350,11 @@ function conversationRequiresSourceReader(
   `).get(conversationId));
 }
 
-function sendFreshnessError(res: ResponseLike, error: unknown): boolean {
+export function sendFreshnessError(res: ResponseLike, error: unknown): boolean {
   if (!(error instanceof ConversationFreshnessError)) return false;
   if (error.code === "freshness_pending") {
     res.header?.("Retry-After", "1");
-    res.status(error.status);
-    if (res.empty) res.empty();
-    else res.json(null);
+    sendJson(res, error.status, { error: error.code, code: error.code, message: error.message });
     return true;
   }
   sendJson(res, error.status, {

@@ -23,6 +23,7 @@
 // modify `graph.tsx`.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import {
   Background,
   Controls,
@@ -619,6 +620,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const [initialModelStatus, setInitialModelStatus] = useState<InitialModelStatus>(() =>
     !initialModel && spaceId && loadModel ? 'pending' : 'loaded',
   );
+  const [initialModelError, setInitialModelError] = useState<string | null>(null);
   const [autosave, setAutosave] = useState<AutosaveStatus>('idle');
   const [edgeStatus, setEdgeStatus] = useState<AutosaveStatus>('idle');
   const [edgeStatusMessage, setEdgeStatusMessage] = useState('');
@@ -745,10 +747,12 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   useEffect(() => {
     if (initialModel || !spaceId || !loadModel) {
       setInitialModelStatus('loaded');
+      setInitialModelError(null);
       return;
     }
     let cancelled = false;
     setInitialModelStatus('pending');
+    setInitialModelError(null);
     void loadModel(spaceId)
       .then((model) => {
         if (cancelled) return;
@@ -757,9 +761,10 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         setEdges(model.edges ?? []);
         setInitialModelStatus('loaded');
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (cancelled) return;
         setInitialModelStatus('error');
+        setInitialModelError(error instanceof Error ? error.message : String(error));
       });
     return () => {
       cancelled = true;
@@ -1246,6 +1251,17 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         </div>
         <span className="space-canvas__toolbar-spacer" />
       </div>
+      {initialModelError && (
+        <DetailPaneNotice severity="error" density="compact" title="Could not load canvas items">{initialModelError}</DetailPaneNotice>
+      )}
+      {autosave === 'error' && (
+        <DetailPaneNotice severity="error" density="compact" title="Canvas positions were not saved">
+          Your last change remains on screen; retry by moving the item again.
+        </DetailPaneNotice>
+      )}
+      {edgeStatus === 'error' && (
+        <DetailPaneNotice severity="error" density="compact" title="Edge update failed">{edgeStatusMessage}</DetailPaneNotice>
+      )}
       <div className="space-canvas__body" ref={bodyRef}>
         <div className="space-canvas__flow" data-testid="space-canvas-flow">
           {initialModelStatus === 'pending' && placed.length === 0 ? (
@@ -1661,20 +1677,25 @@ const DEFAULT_PROMOTE_LINK_TYPE: LedgerLinkType = 'references';
 
 function CanvasNodeInspector({ node }: { node: CanvasNode }): JSX.Element {
   const item = node.item;
+  const [referenceError, setReferenceError] = useState<string | null>(null);
+  useEffect(() => setReferenceError(null), [item?.ref_id, item?.ref_uri, item?.ref_type]);
   return (
     <div className="space-canvas__inspector-section" data-testid="space-canvas-node-inspector">
       <header className="space-canvas__inspector-header">
         <span>{item?.ref_type ?? 'occurrence'}</span>
       </header>
+      {referenceError && <DetailPaneNotice severity="error" density="compact" title="Reference unavailable">{referenceError}</DetailPaneNotice>}
+      <div className="space-canvas__inspector-content">
       {!item ? (
         <OccurrenceSummary node={node} />
       ) : item.ref_type === 'issue' ? (
-        <IssueReferenceDetail issueRef={item.ref_id} />
+        <IssueReferenceDetail issueRef={item.ref_id} onErrorChange={setReferenceError} />
       ) : item.ref_type === 'artifact' ? (
-        <ArtifactReferenceDetail artifactRef={item.ref_uri ?? item.ref_id} />
+        <ArtifactReferenceDetail artifactRef={item.ref_uri ?? item.ref_id} onErrorChange={setReferenceError} />
       ) : (
         <OccurrenceSummary node={node} />
       )}
+      </div>
     </div>
   );
 }

@@ -28,6 +28,7 @@
 // renderer test asserts that a document directive cannot execute script.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
   parseResourceRef,
@@ -669,16 +670,18 @@ export function DocumentRenderer({
         <div className="spaces-doc-renderer__status">Loading document…</div>
       )}
       {load.status === 'error' && (
-        <div className="spaces-doc-renderer__error">Failed to load document: {load.message}</div>
+        <DetailPaneNotice severity="error" density="compact" title="Could not load document">{load.message}</DetailPaneNotice>
       )}
-      {rendered && (
-        <DocumentBody
-          document={rendered}
-          sources={sources}
-          collapsed={viewState.collapsed}
-          onToggleCollapse={onToggleCollapse}
-        />
-      )}
+      <div className="spaces-doc-renderer__body">
+        {rendered && (
+          <DocumentBody
+            document={rendered}
+            sources={sources}
+            collapsed={viewState.collapsed}
+            onToggleCollapse={onToggleCollapse}
+          />
+        )}
+      </div>
     </div>
   );
 }

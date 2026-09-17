@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { migrate, openDb, setDb, type Db } from "../../src/db.js";
 import {
   ConversationFreshnessError,
@@ -17,7 +17,7 @@ import {
   triggerTargetedIngest,
   configureIngestionWorker,
 } from "../../src/ingestion.js";
-import { registerConversationRoutes } from "../../src/routes/conversations.js";
+import { registerConversationRoutes, sendFreshnessError } from "../../src/routes/conversations.js";
 import { Router } from "../../src/server.js";
 import { ConversationSourceReader } from "../../src/conversations/source-reader.js";
 import { getConversationStructureCache } from "../../src/conversations/structure-cache.js";
@@ -152,6 +152,21 @@ afterEach(() => {
 });
 
 describe("exact conversation freshness", () => {
+  it("returns a structured retryable pending response", () => {
+    const status = vi.fn();
+    const header = vi.fn();
+    const json = vi.fn();
+    expect(sendFreshnessError({ status, header, json }, new ConversationFreshnessError(
+      "freshness_pending", "conversation is being reindexed",
+    ))).toBe(true);
+    expect(status).toHaveBeenCalledWith(503);
+    expect(header).toHaveBeenCalledWith("Retry-After", "1");
+    expect(json).toHaveBeenCalledWith({
+      error: "freshness_pending",
+      code: "freshness_pending",
+      message: "conversation is being reindexed",
+    });
+  });
   it("resolves exact ids and sessions, rejects partial ids, and no-ops when current", async () => {
     const seeded = await seed();
     let ingests = 0;

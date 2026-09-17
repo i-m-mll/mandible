@@ -397,11 +397,15 @@
 .feedback-collection-shell__content {
   overflow: clip;
   padding: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .feedback-collection-shell__content-inner {
   display: flex;
-  height: 100%;
+  flex: 1;
+  height: auto;
+  min-height: 0;
   max-width: none;
 }
 

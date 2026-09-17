@@ -32,6 +32,7 @@ export type BriefingDocumentPanelProps = {
   validationErrors?: Record<string, string>;
   onDirectiveValue?(itemId: string, value: BriefingResponseValue | null): void;
   onContentGateChange?(reason: string): void;
+  onDocumentFailureChange?(message: string | null): void;
 };
 
 type AnnotationEditor = {
@@ -251,7 +252,7 @@ async function sha256(value: string): Promise<string> {
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, round, canMutate, draftIdentity = null, onRefresh, draft = {}, validationErrors = {}, onDirectiveValue, onContentGateChange }: BriefingDocumentPanelProps): JSX.Element | null {
+export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, round, canMutate, draftIdentity = null, onRefresh, draft = {}, validationErrors = {}, onDirectiveValue, onContentGateChange, onDocumentFailureChange }: BriefingDocumentPanelProps): JSX.Element | null {
   const document = round.document;
   const documentKey = document
     ? `${document.artifact_version_id}\u0000${document.content_hash}\u0000${document.source}\u0000${document.comparison_base?.artifact_version_id ?? ''}\u0000${document.comparison_base?.content_hash ?? ''}\u0000${document.comparison_base?.source ?? ''}`
@@ -348,6 +349,17 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       ? 'The pinned document has no valid response directives.'
       : null;
   }, [directiveItems, document?.profile, source]);
+  const documentFailure = [
+    currentContentError,
+    round.directive_binding?.status !== 'valid'
+      ? round.directive_binding?.reason ?? 'The pinned directive binding is unavailable.'
+      : null,
+    documentIntegrityError,
+  ].filter((message): message is string => Boolean(message)).join(' · ') || null;
+  useEffect(() => {
+    onDocumentFailureChange?.(documentFailure);
+  }, [documentFailure, onDocumentFailureChange]);
+  useEffect(() => () => onDocumentFailureChange?.(null), [onDocumentFailureChange]);
   const selectedVariantKeys = useMemo(() => Object.fromEntries(directiveItems.map((item) => {
     const current = Object.prototype.hasOwnProperty.call(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
     return [item.id, current && 'option_key' in current ? current.option_key : null];
@@ -727,9 +739,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
 
   return (
     <section ref={contentRef} className="briefing-document__content" aria-label="Briefing document">
-      {currentContentError ? <p className="briefing-error" role="alert">{currentContentError}</p> : null}
-      {round.directive_binding?.status !== 'valid' ? <p className="briefing-error" role="alert">{round.directive_binding?.reason || 'The pinned directive binding is unavailable.'}</p> : null}
-      {documentIntegrityError ? <p className="briefing-error" role="alert">{documentIntegrityError}</p> : null}
+      {documentFailure ? <p className="briefing-empty">Pinned document unavailable.</p> : null}
       {source === null && !currentContentError ? <p className="briefing-empty" role="status">Verifying document…</p> : null}
       {renderProfileDocument()}
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { formatRelativeTime } from '../lib/format';
 import {
   bootstrapRuntime,
@@ -80,6 +81,13 @@ type FeedbackState = {
   type: 'success' | 'error';
   message: string;
 } | null;
+
+function SettingsFeedback({ feedback }: { feedback: FeedbackState }): JSX.Element | null {
+  if (!feedback) return null;
+  return feedback.type === 'error' ? (
+    <DetailPaneNotice severity="error" density="compact">{feedback.message}</DetailPaneNotice>
+  ) : <span className="settings-view__feedback settings-view__feedback--success">{feedback.message}</span>;
+}
 
 const SOUNDS = ['Blow', 'Glass', 'Ping', 'Pop', 'Purr', 'Sosumi', 'Submarine', 'Tink'];
 const THEMES = [
@@ -293,6 +301,7 @@ function NumberInput(props: {
   suffix?: string;
   defaultValue?: number;
   normalize?: (value: string) => number;
+  onErrorChange?: (message: string | null) => void;
 }) {
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -311,7 +320,7 @@ function NumberInput(props: {
   const showFeedback = useCallback((state: FeedbackState) => {
     if (feedbackTimer.current != null) window.clearTimeout(feedbackTimer.current);
     setFeedback(state);
-    if (state) {
+    if (state?.type === 'success') {
       feedbackTimer.current = window.setTimeout(() => {
         setFeedback(null);
         feedbackTimer.current = null;
@@ -325,9 +334,12 @@ function NumberInput(props: {
       const savedValue = props.normalize ? String(props.normalize(value)) : value;
       setValue(savedValue);
       await props.onSave(props.settingKey, savedValue);
+      props.onErrorChange?.(null);
       showFeedback({ type: 'success', message: 'Saved' });
     } catch (err) {
-      showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed' });
+      const message = err instanceof Error ? err.message : 'Failed';
+      props.onErrorChange?.(message);
+      showFeedback({ type: 'error', message });
     } finally {
       setSaving(false);
     }
@@ -359,11 +371,7 @@ function NumberInput(props: {
         <button type="button" className="btn btn--active btn--sm" onClick={handleSave} disabled={saving}>
           {saving ? '...' : 'Save'}
         </button>
-        {feedback && (
-          <span className={feedback.type === 'success' ? 'settings-view__feedback settings-view__feedback--success' : 'settings-view__feedback settings-view__feedback--error'}>
-            {feedback.message}
-          </span>
-        )}
+        {feedback?.type === 'success' && <SettingsFeedback feedback={feedback} />}
       </div>
     </div>
   );
@@ -439,7 +447,7 @@ function InstructionsDeliverySection(props: {
 
   const showFeedback = useCallback((state: FeedbackState) => {
     setFeedback(state);
-    if (state) {
+    if (state?.type === 'success') {
       window.setTimeout(() => setFeedback(null), 3000);
     }
   }, []);
@@ -712,11 +720,7 @@ function InstructionsDeliverySection(props: {
           </div>
         </div>
 
-        {feedback && (
-          <span className={feedback.type === 'success' ? 'settings-view__feedback settings-view__feedback--success' : 'settings-view__feedback settings-view__feedback--error'}>
-            {feedback.message}
-          </span>
-        )}
+        <SettingsFeedback feedback={feedback} />
       </div>
 
       {confirmAction && (
@@ -855,11 +859,7 @@ export function DelegatedSigningSection(): JSX.Element {
           />
         </div>
       )}
-      {feedback && (
-        <div className={feedback.type === 'success' ? 'settings-view__feedback settings-view__feedback--success' : 'settings-view__feedback settings-view__feedback--error'}>
-          {feedback.message}
-        </div>
-      )}
+      <SettingsFeedback feedback={feedback} />
     </div>
   );
 }
@@ -1034,6 +1034,12 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
         section={props.section}
         description="Desktop shell lifecycle controls for the local Mandible daemon."
       />
+      {(error || caError) && (
+        <DetailPaneNotice severity="error" density="compact" title="Local connections need attention">
+          {error && <div>{error}</div>}
+          {caError && <div>{caError}</div>}
+        </DetailPaneNotice>
+      )}
 
       <div className="settings-view__section-body">
         <div className="settings-view__select-row">
@@ -1112,9 +1118,6 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
               <span>Log file: {status.log_file}</span>
             </div>
           )}
-          {error && (
-            <div className="settings-view__daemon-error">{error}</div>
-          )}
           <div className="settings-view__daemon-footer">
             {status?.launch_mode === 'manual'
               ? 'Manual mode leaves the daemon stopped until you start it explicitly from the desktop shell.'
@@ -1147,7 +1150,6 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
           </div>
           <details className="settings-view__daemon-detail"><summary>Details</summary>Mandible pins one Caddy HTTPS root and its signing key to this installation. macOS stores an SSL trust rule for this account, not a computer-wide administrator rule. That SSL rule is not limited to Mandible hostnames; keep the root signing key private. Browser sign-in is separate. To remove this trust later, use this account's Keychain Access certificate settings. {caStatus?.root_digest && <>Root SHA-256: <code>{caStatus.root_digest}</code>.</>}</details>
           {caStatus?.verified_at && <div className="settings-view__daemon-detail">Last verified: {caStatus.verified_at}</div>}
-          {caError && <div className="settings-view__daemon-error">{caError}</div>}
         </div>
       </div>
     </SettingsSectionShell>
@@ -1244,6 +1246,7 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
         section={props.section}
         description="Automatic metadata dump to a configured Mandible backup file."
       />
+      {runError && <DetailPaneNotice severity="error" density="compact" title="Backup run failed">{runError}</DetailPaneNotice>}
 
       <div className="settings-view__section-body">
         {/* Toggle row */}
@@ -1346,11 +1349,6 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
             >
               {running ? '...' : 'Run Now'}
             </button>
-            {runError && (
-              <span className="settings-view__feedback settings-view__feedback--error">
-                {runError}
-              </span>
-            )}
           </div>
         </div>
       </div>
@@ -1465,6 +1463,7 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
         section={props.section}
         description="Zone 2 mutable runtime for self-modification and patching."
       />
+      {error && <DetailPaneNotice severity="error" density="compact" title="Runtime action failed">{error}</DetailPaneNotice>}
 
       <div className="settings-view__section-body">
         {/* Install mode */}
@@ -1586,16 +1585,6 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
             </div>
           </div>
         )}
-        {error && (
-          <div className="settings-view__number-row">
-            <div className="settings-view__number-info" />
-            <div className="settings-view__number-controls">
-              <span className="settings-view__feedback settings-view__feedback--error">
-                {error}
-              </span>
-            </div>
-          </div>
-        )}
       </div>
     </SettingsSectionShell>
   );
@@ -1645,6 +1634,7 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition }
         section={props.section}
         description="Projects remain unrestricted until this toggle is enabled. Grants are managed with the user CLI."
       />
+      {error && <DetailPaneNotice severity="error" density="compact" title="Project permissions unavailable">{error}</DetailPaneNotice>}
       <div className="settings-view__section-body">
         <div className="settings-view__select-row">
           <div className="settings-view__select-info">
@@ -1683,7 +1673,6 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition }
             </div>
           </>
         )}
-        {error && <span className="settings-view__feedback settings-view__feedback--error">{error}</span>}
       </div>
     </SettingsSectionShell>
   );
@@ -1703,6 +1692,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');
   const [saving, setSaving] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
+  const [numberErrors, setNumberErrors] = useState<Record<string, string>>({});
   const feedbackTimer = useRef<number | null>(null);
   const initialized = useRef(false);
   const quietInitialized = useRef(false);
@@ -1732,7 +1722,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const showFeedback = useCallback((state: FeedbackState) => {
     if (feedbackTimer.current != null) window.clearTimeout(feedbackTimer.current);
     setFeedback(state);
-    if (state) {
+    if (state?.type === 'success') {
       feedbackTimer.current = window.setTimeout(() => {
         setFeedback(null);
         feedbackTimer.current = null;
@@ -1943,6 +1933,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           section={SETTINGS_SECTIONS.conversations}
           description="Disclosure defaults for the Chat sidebar."
         />
+        {numberErrors['conversations.sidebar_group_limit'] && (
+          <DetailPaneNotice severity="error" density="compact" title="Conversation setting not saved">
+            {numberErrors['conversations.sidebar_group_limit']}
+          </DetailPaneNotice>
+        )}
         <div className="settings-view__section-body">
           <NumberInput
             label="Chats per group"
@@ -1954,6 +1949,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             max={SIDEBAR_GROUP_LIMIT_MAX}
             defaultValue={SIDEBAR_GROUP_LIMIT_DEFAULT}
             normalize={normalizeSidebarGroupLimit}
+            onErrorChange={(message) => setNumberErrors((current) => ({ ...current, 'conversations.sidebar_group_limit': message ?? '' }))}
           />
           <SelectInput
             label="Chat entity links"
@@ -2337,17 +2333,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             >
               {saving === 'protected_branches' ? 'Saving...' : 'Save'}
             </button>
-            {feedback && (
-              <span
-                className={
-                  feedback.type === 'success'
-                    ? 'settings-view__feedback settings-view__feedback--success'
-                    : 'settings-view__feedback settings-view__feedback--error'
-                }
-              >
-                {feedback.message}
-              </span>
-            )}
+            <SettingsFeedback feedback={feedback} />
           </div>
         </div>
       </SettingsSectionShell>
@@ -2358,6 +2344,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           section={SETTINGS_SECTIONS.maintenance}
           description="Log retention and housekeeping."
         />
+        {numberErrors.log_retention_days && (
+          <DetailPaneNotice severity="error" density="compact" title="Maintenance setting not saved">
+            {numberErrors.log_retention_days}
+          </DetailPaneNotice>
+        )}
 
         <div className="settings-view__section-body">
           <NumberInput
@@ -2369,6 +2360,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             min={1}
             max={365}
             suffix="days"
+            onErrorChange={(message) => setNumberErrors((current) => ({ ...current, log_retention_days: message ?? '' }))}
           />
         </div>
       </SettingsSectionShell>

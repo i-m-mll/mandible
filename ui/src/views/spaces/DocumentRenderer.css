@@ -6,8 +6,15 @@
   flex-direction: column;
   gap: 0.75rem;
   padding: 1rem 1.25rem;
-  overflow: auto;
+  overflow: hidden;
+  height: 100%;
   min-height: 0;
+}
+
+.spaces-doc-renderer__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .spaces-doc-renderer--empty,

@@ -9,6 +9,7 @@
 // display/navigation-only: it is never attached to a mutation request.
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import {
   getProviderScopedOverview,
   getSessionOverview,
@@ -254,8 +255,10 @@ function ProviderIssueRow({ issue }: { issue: ProviderScopedLinkedIssue }): JSX.
 
 function SessionPicker({
   onSelect,
+  onErrorChange,
 }: {
   onSelect: (sessionId: string) => void;
+  onErrorChange: (error: string | null) => void;
 }): JSX.Element {
   const [sessions, setSessions] = useState<SessionRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -264,17 +267,25 @@ function SessionPicker({
     let cancelled = false;
     getSessions<SessionRecord>()
       .then((rows) => {
-        if (!cancelled) setSessions(rows);
+        if (!cancelled) {
+          setSessions(rows);
+          onErrorChange(null);
+        }
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load sessions');
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : 'Failed to load sessions';
+          setError(message);
+          onErrorChange(message);
+        }
       });
     return () => {
       cancelled = true;
+      onErrorChange(null);
     };
-  }, []);
+  }, [onErrorChange]);
 
-  if (error) return <p className="session-overview__error">{error}</p>;
+  if (error) return <p className="text-muted">Sessions unavailable.</p>;
   if (sessions === null) return <p className="text-muted">Loading sessions…</p>;
   if (sessions.length === 0) return <p className="text-muted">No sessions registered.</p>;
 
@@ -311,6 +322,7 @@ export function SessionOverviewView({
   const [binding, setBinding] = useState<BindingState>({ kind: 'none' });
   const [overview, setOverview] = useState<SessionOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [pickerError, setPickerError] = useState<string | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [providerOverview, setProviderOverview] = useState<ProviderScopedOverview | null>(null);
@@ -517,6 +529,11 @@ export function SessionOverviewView({
   return (
     <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
       {sharedHeader}
+      {(binding.kind === 'error' || providerOverviewError || overviewError || pickerError) ? (
+        <DetailPaneNotice severity="error" density="compact" title="Session overview unavailable">
+          {binding.kind === 'error' ? binding.message : providerOverviewError ?? overviewError ?? pickerError}
+        </DetailPaneNotice>
+      ) : null}
       <DetailPaneModal
         open={!embedded && metadataOpen}
         onClose={() => setMetadataOpen(false)}
@@ -558,9 +575,6 @@ export function SessionOverviewView({
               )}
             </span>
           )}
-          {binding.kind === 'error' && (
-            <span>Agent session resolution failed: {binding.message}</span>
-          )}
         </div>
       ) : null}
 
@@ -598,9 +612,6 @@ export function SessionOverviewView({
 
       {!selectedSessionId && binding.kind === 'provider-scoped' ? (
         <div className="session-overview__body">
-          {providerOverviewError ? (
-            <p className="session-overview__error">{providerOverviewError}</p>
-          ) : null}
           {!providerOverview && !providerOverviewError ? (
             <p className="text-muted">Loading provider-scoped overview…</p>
           ) : null}
@@ -656,10 +667,9 @@ export function SessionOverviewView({
         </div>
       ) : !selectedSessionId && (binding.kind === 'many' || binding.kind === 'resolving') ? null
       : !selectedSessionId ? (
-        <SessionPicker onSelect={handleSelect} />
+        <SessionPicker onSelect={handleSelect} onErrorChange={setPickerError} />
       ) : (
         <div className="session-overview__body">
-          {overviewError ? <p className="session-overview__error">{overviewError}</p> : null}
           {overviewLoading && !overview ? <p className="text-muted">Loading overview…</p> : null}
           {session ? (
             <>

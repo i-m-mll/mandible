@@ -3405,9 +3405,9 @@ describe('WorkOverviewView', () => {
       target: { value: '/missing/project' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Add project' }));
-    expect((await screen.findByRole('alert')).textContent).toBe(
-      'Could not add project: Path is not a Git project.',
-    );
+    const notice = await screen.findByRole('alert');
+    expect(notice.textContent).toContain('Could not add project');
+    expect(notice.textContent).toContain('Path is not a Git project.');
   });
 
   it('loads commit browser and renders URL compare state through DiffView', async () => {
@@ -5537,12 +5537,14 @@ describe('ArtifactsView', () => {
 
     render(h(ArtifactsView, {}));
 
-    await waitFor(() => expect(screen.getAllByText('artifact not found')).toHaveLength(1));
-    const error = screen.getByText('artifact not found');
+    await waitFor(() => expect(screen.getAllByText('Artifact detail: artifact not found')).toHaveLength(1));
+    const error = screen.getByText('Artifact detail: artifact not found');
     const header = document.querySelector('.artifact-detail__header');
     const body = document.querySelector('.artifact-detail__pane');
+    const anchoredNotice = document.querySelector('.artifact-detail .detail-pane-shell__notice');
     expect(header).toBeTruthy();
-    expect(body?.contains(error)).toBe(true);
+    expect(anchoredNotice?.contains(error)).toBe(true);
+    expect(body?.contains(error)).toBe(false);
     expect(header?.compareDocumentPosition(error) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
@@ -6044,7 +6046,7 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialArtifactId: `artifact-blob:${artifact.content_hash}` }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('history-error.md'));
-    expect(screen.getByText('history service failed')).toBeTruthy();
+    expect(screen.getByText('Artifact detail: history service failed')).toBeTruthy();
   });
 
   it('keeps the sidebar list mounted when artifact selection changes', async () => {
