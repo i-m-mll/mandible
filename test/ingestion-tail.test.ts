@@ -414,6 +414,11 @@ describe("incremental tail ingestion", () => {
     db.prepare("UPDATE conversation_source_versions SET parser_version = ?, normalization_version = ? WHERE id = ?")
       .run(previousParserVersion, previousNormalizationVersion, before.current_version_id);
 
+    await expect(ensureExactConversationFresh(db, before.conversation_id, {
+      waitForFresh: false,
+      scheduleReparse: () => { throw new Error("parser failed; retry later"); },
+    })).rejects.toMatchObject({ code: "freshness_error", message: "parser failed; retry later" });
+
     let requestedPath: string | null = null;
     let reparse: ReturnType<typeof triggerExactPathIngest> | null = null;
     await expect(ensureExactConversationFresh(db, before.conversation_id, {
@@ -440,6 +445,16 @@ describe("incremental tail ingestion", () => {
       normalization_version: CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion,
     });
     expect((await new ConversationSourceReader(db).readPage(before.conversation_id)).status).toBe("source");
+  });
+
+  it("reports an exact parser failure instead of treating it as a successful reparse", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows("exact-parser-failure"), 1);
+    await triggerExactPathIngest(sessionPath);
+    const parser = vi.spyOn(CodexParser.prototype, "parse").mockRejectedValueOnce(new Error("parser failed"));
+    await expect(triggerExactPathIngest(sessionPath)).rejects.toThrow("parser failed");
+    parser.mockRestore();
+    await expect(triggerExactPathIngest(sessionPath)).resolves.toMatchObject({ status: "ingested" });
   });
 
   it("does not warn when a touched already-source-backed conversation has no legacy payload to promote", async () => {

@@ -773,6 +773,10 @@ export class BoundedDirtyPathSet {
     return batch;
   }
 
+  delete(filePath: string): boolean {
+    return this.paths.delete(filePath);
+  }
+
   clear(): void {
     this.paths.clear();
   }
@@ -875,6 +879,7 @@ function requestWatchFallbackReconcile(base: string, reason: string): void {
 
 export function startIngestion(log: Logger, options: StartIngestionOptions = {}): void {
   logger = log;
+  requestedReparseFailures.clear();
   eventPublisher = broadcast;
   backgroundBackoffMs = options.getBackgroundBackoffMs ?? (() => 0);
   ingestionActive = true;
@@ -945,6 +950,9 @@ export async function stopIngestionGracefully(): Promise<void> {
   await Promise.allSettled([closingWatch]);
   await actor?.close();
   await Promise.allSettled([pendingDrain, pendingReconcile].filter((pending): pending is Promise<void> => Boolean(pending)));
+  requestedReparseFlights.clear();
+  activeActorPathFlights.clear();
+  requestedReparseFailures.clear();
 }
 
 /** Manually trigger re-ingestion of all known sources. */
@@ -1017,9 +1025,11 @@ export async function triggerTargetedIngest(input: TargetedIngestInput): Promise
     clearTimeout(pendingTimer);
     debounceTimers.delete(transcriptPath);
   }
+  queuedIngestPaths.delete(transcriptPath);
 
   if (ingestionActor) {
-    await ingestionActor.ingest([transcriptPath]);
+    await (activeActorPathFlights.get(transcriptPath)
+      ?? trackActorPathFlight([transcriptPath], ingestionActor.ingest([transcriptPath])));
   } else {
     await ingestFile(transcriptPath);
   }
@@ -1038,23 +1048,105 @@ export async function triggerExactPathIngest(transcriptPath: string): Promise<Ta
     clearTimeout(pendingTimer);
     debounceTimers.delete(normalized);
   }
-  if (ingestionActor) await ingestionActor.ingest([normalized], false, true, true);
-  else await ingestFile(normalized, { bypassSameMtimeUnchanged: true });
+  queuedIngestPaths.delete(normalized);
+  if (ingestionActor) await (activeActorPathFlights.get(normalized)
+    ?? trackActorPathFlight([normalized], ingestionActor.ingest([normalized], false, true, true)));
+  else await ingestFile(normalized, { bypassSameMtimeUnchanged: true, strictParseErrors: true });
   clearHookNotificationAttention({ sessionRef: null, transcriptPath: normalized });
   return { ok: true, status: "ingested", transcript_path: normalized, session_ref: null };
 }
 
 const requestedReparseFlights = new Map<string, Promise<void>>();
+const activeActorPathFlights = new Map<string, Promise<void>>();
+const requestedReparseFailures = new Map<string, { at: number; error: string }>();
+const REQUESTED_REPARSE_RETRY_MS = 30_000;
+
+function trackActorPathFlight(paths: readonly string[], flight: Promise<void>): Promise<void> {
+  for (const filePath of paths) activeActorPathFlights.set(filePath, flight);
+  void flight.then(
+    () => { for (const filePath of paths) if (activeActorPathFlights.get(filePath) === flight) activeActorPathFlights.delete(filePath); },
+    () => { for (const filePath of paths) if (activeActorPathFlights.get(filePath) === flight) activeActorPathFlights.delete(filePath); },
+  );
+  return flight;
+}
+
+async function pathNeedsFollowupAfterActor(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.promises.stat(filePath);
+    const indexed = getDb().prepare(`
+      SELECT state.byte_offset, state.tail_hash, c.source_mtime
+        FROM conversation_ingest_state state
+        JOIN conversations c ON c.source_path = state.file_path
+       WHERE state.file_path = ?
+       LIMIT 1
+    `).get(filePath) as {
+      byte_offset: number; tail_hash: string; source_mtime: number;
+    } | undefined;
+    return !indexed || indexed.byte_offset !== stat.size
+      || Math.abs(indexed.source_mtime - stat.mtimeMs) >= 1
+      || indexed.tail_hash !== await hashFileTailAt(filePath, indexed.byte_offset);
+  } catch {
+    return true;
+  }
+}
+
+function selectedSourceEpochIsCurrent(sourceId: string): boolean {
+  const source = getDb().prepare(`
+    SELECT parser_format, parser_version, normalization_version, redaction_epoch
+      FROM conversation_sources WHERE id = ?
+  `).get(sourceId) as {
+    parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number;
+  } | undefined;
+  return Boolean(source
+    && source.parser_format === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
+    && source.parser_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
+    && source.normalization_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
+    && source.redaction_epoch === CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch);
+}
+
+function notifySelectedReparseFailure(conversationId: string): void {
+  const row = getDb().prepare(`SELECT block_count FROM conversations WHERE id = ?`)
+    .get(conversationId) as { block_count: number } | undefined;
+  eventPublisher("conversation:updated", { id: conversationId, block_count: row?.block_count ?? 0 });
+}
 
 /** Queue one selected provider source without parsing on the HTTP request thread. */
-export function scheduleExactPathReparse(transcriptPath: string): boolean {
+export function scheduleExactPathReparse(transcriptPath: string, sourceId: string, conversationId: string): boolean {
   const normalized = normalizeTargetPath(transcriptPath);
   const actor = ingestionActor;
   if (!ingestionActive || !actor || !normalized || !getParserForFile(normalized)) return false;
   if (requestedReparseFlights.has(normalized)) return true;
-  const flight = actor.ingest([normalized], false, true, true)
+  const recentFailure = requestedReparseFailures.get(normalized);
+  if (recentFailure && Date.now() - recentFailure.at < REQUESTED_REPARSE_RETRY_MS) {
+    throw new Error(`Selected-source reparse failed; retry after 30 seconds: ${recentFailure.error}`);
+  }
+  requestedReparseFailures.delete(normalized);
+  const pendingTimer = debounceTimers.get(normalized);
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    debounceTimers.delete(normalized);
+  }
+  queuedIngestPaths.delete(normalized);
+  const actorFlight = activeActorPathFlights.get(normalized)
+    ?? trackActorPathFlight([normalized], actor.ingest([normalized], false, true, true));
+  const flight = actorFlight
+    .then(() => {
+      if (!selectedSourceEpochIsCurrent(sourceId)) {
+        throw new Error("Selected source did not reach the current parser version");
+      }
+    })
     .catch((error) => {
+      if (!ingestionActive) return;
+      requestedReparseFlights.delete(normalized);
+      requestedReparseFailures.set(normalized, { at: Date.now(), error: String(error) });
       logger("warn", "ingestion_requested_reparse_failed", { file: normalized, error: String(error) });
+      try { notifySelectedReparseFailure(conversationId); }
+      catch (notificationError) {
+        logger("warn", "ingestion_requested_reparse_notification_failed", {
+          conversation_id: conversationId,
+          error: String(notificationError),
+        });
+      }
     })
     .finally(() => {
       if (requestedReparseFlights.get(normalized) === flight) requestedReparseFlights.delete(normalized);
@@ -1187,7 +1279,24 @@ async function drainIngestQueue(runToken: number): Promise<void> {
       const paths = queuedIngestPaths.take(DIRTY_INGEST_BATCH_SIZE);
       try {
         if (ingestionActor) {
-          await ingestionActor.ingest(paths);
+          const alreadyRunning = paths.filter((filePath) => activeActorPathFlights.has(filePath));
+          const ready = paths.filter((filePath) => !activeActorPathFlights.has(filePath));
+          // A watcher event arriving during exact work must be checked after
+          // that work, so a genuinely newer append is not lost.
+          for (const filePath of alreadyRunning) {
+            const active = activeActorPathFlights.get(filePath);
+            if (active) void active.then(
+              async () => {
+                if (isCurrentIngestionRun(runToken) && await pathNeedsFollowupAfterActor(filePath)) {
+                  enqueueIngest(filePath, runToken);
+                }
+              },
+              () => enqueueIngest(filePath, runToken),
+            );
+          }
+          if (ready.length > 0) {
+            await trackActorPathFlight(ready, ingestionActor.ingest(ready));
+          }
         } else {
           await ingestBatchForWorker(paths);
         }
@@ -1218,6 +1327,13 @@ async function drainIngestQueue(runToken: number): Promise<void> {
   } finally {
     if (runToken === ingestionRunToken) {
       ingestDrainRunning = false;
+      if (queuedIngestPaths.size > 0 && isCurrentIngestionRun(runToken)) {
+        const drain = drainIngestQueue(runToken).finally(() => {
+          if (ingestDrainPromise === drain) ingestDrainPromise = null;
+        });
+        ingestDrainPromise = drain;
+        void drain;
+      }
     }
   }
 }
@@ -1226,10 +1342,17 @@ export async function ingestBatchForWorker(
   paths: readonly string[],
   forceFull = false,
   bypassSameMtimeUnchanged = false,
+  strictParseErrors = false,
 ): Promise<void> {
+  const failures: unknown[] = [];
   for (const filePath of paths) {
-    await ingestFile(filePath, { forceFull, bypassSameMtimeUnchanged });
+    try {
+      await ingestFile(filePath, { forceFull, bypassSameMtimeUnchanged, strictParseErrors });
+    } catch (error) {
+      failures.push(error);
+    }
   }
+  if (failures.length > 0) throw new AggregateError(failures, `Failed to ingest ${failures.length} source(s)`);
 }
 
 export interface ProjectedConversationTitleConvergenceRow {
@@ -2240,12 +2363,13 @@ type IngestFileOptions = {
   forceFull?: boolean;
   fallbackReason?: string;
   bypassSameMtimeUnchanged?: boolean;
+  strictParseErrors?: boolean;
 };
 
 async function ingestFile(filePath: string, options: IngestFileOptions = {}): Promise<void> {
   let passOptions = options;
   while (await ingestFilePass(filePath, passOptions)) {
-    passOptions = { bypassSameMtimeUnchanged: true };
+    passOptions = { bypassSameMtimeUnchanged: true, strictParseErrors: options.strictParseErrors };
   }
 }
 
@@ -2609,6 +2733,7 @@ async function ingestFilePass(
       source: parser.source,
       error: String(error),
     });
+    if (options.strictParseErrors) throw error;
     return;
   }
 
@@ -3174,7 +3299,11 @@ async function ingestFilePass(
           file: filePath,
           reason: "append_unique_conflict",
         });
-        await ingestFile(filePath, { forceFull: true, fallbackReason: "append_unique_conflict" });
+        await ingestFile(filePath, {
+          forceFull: true,
+          fallbackReason: "append_unique_conflict",
+          strictParseErrors: options.strictParseErrors,
+        });
         return;
       }
       try {

@@ -53,6 +53,7 @@ async function handle(
           request.paths,
           request.forceFull === true,
           request.bypassSameMtimeUnchanged === true,
+          true,
         );
         return undefined;
       }

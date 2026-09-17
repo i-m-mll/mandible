@@ -24,4 +24,12 @@ describe("event-driven ingestion scheduling", () => {
     expect(dirty.take(DIRTY_INGEST_BATCH_SIZE)).toEqual(["four", "five"]);
     expect(dirty.size).toBe(0);
   });
+
+  it("removes a queued watcher path when an exact read takes ownership", () => {
+    const dirty = new BoundedDirtyPathSet(4);
+    dirty.add("selected");
+    dirty.add("other");
+    expect(dirty.delete("selected")).toBe(true);
+    expect(dirty.take(DIRTY_INGEST_BATCH_SIZE)).toEqual(["other"]);
+  });
 });

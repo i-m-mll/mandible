@@ -482,7 +482,7 @@ export async function ensureExactConversationFresh(
     /** Return the current indexed version; the daemon ingestion stream owns reconciliation. */
     waitForFresh?: boolean;
     /** Test seam for the production actor's nonblocking selected-source reparse. */
-    scheduleReparse?: (path: string) => boolean;
+    scheduleReparse?: (path: string, sourceId: string, conversationId: string) => boolean;
     /** Bounded observer instrumentation used by large-source regressions. */
     sourceReadInstrumentation?: SourceReadInstrumentation;
   } = {},
@@ -504,13 +504,21 @@ export async function ensureExactConversationFresh(
     `).get(pinned.sourceId) as {
       parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number;
     } | undefined;
-    if (epochs && pinned.sourcePath && (
+    const outdated = epochs && pinned.sourcePath && (
       epochs.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
       || epochs.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
       || epochs.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
       || epochs.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
-    ) && (options.scheduleReparse ?? scheduleExactPathReparse)(pinned.sourcePath)) {
-      throw new ConversationFreshnessError("freshness_pending", "conversation is being reindexed for this Mandible version");
+    );
+    if (outdated && pinned.sourcePath) {
+      try {
+        if ((options.scheduleReparse ?? scheduleExactPathReparse)(pinned.sourcePath, pinned.sourceId, pinned.conversationId)) {
+          throw new ConversationFreshnessError("freshness_pending", "conversation is being reindexed for this Mandible version");
+        }
+      } catch (error) {
+        if (error instanceof ConversationFreshnessError) throw error;
+        throw new ConversationFreshnessError("freshness_error", error instanceof Error ? error.message : String(error));
+      }
     }
     // Source changes continue through the existing ingestion stream. An exact
     // old-parser demand queues only this source, never a provider-root scan.
