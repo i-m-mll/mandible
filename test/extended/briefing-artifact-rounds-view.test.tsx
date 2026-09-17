@@ -16,6 +16,7 @@ import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../../src/security
 import { createUser } from '../../src/users/store';
 import { recordArtifactVersion } from '../../src/provider-artifacts';
 import { AppShellProvider } from '../../ui/src/app-shell';
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
 import {
   getBriefingBundles,
   getBriefings,
@@ -204,8 +205,23 @@ function installStorage(): void {
   Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
 }
 
+function operatorSessionResponse(): Response {
+  return new Response(JSON.stringify({ authenticated: true, session: {
+    family_id: 'briefing-test-family', audience: 'production', csrf_token: 'briefing-test-csrf',
+    effect_ceiling: ['ledger:read', 'ledger:write'],
+  } }), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
 let noticeHost: HTMLElement;
-beforeEach(() => { installStorage(); invalidateApiGetCache(); noticeHost = document.createElement('div'); noticeHost.id = 'app-operational-notices'; document.body.append(noticeHost); });
+beforeEach(async () => {
+  installStorage();
+  invalidateApiGetCache();
+  __resetBrowserSessionForTests();
+  await ensureClientAccess(async () => operatorSessionResponse());
+  noticeHost = document.createElement('div');
+  noticeHost.id = 'app-operational-notices';
+  document.body.append(noticeHost);
+});
 afterEach(() => { cleanup(); noticeHost.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('artifact-backed Briefing rounds', () => {
@@ -215,6 +231,7 @@ describe('artifact-backed Briefing rounds', () => {
     let warming = true;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === '/api/client-auth/whoami') return operatorSessionResponse();
       if (warming) {
         if (url === '/api/briefings') return new Response(JSON.stringify({ briefings: [row] }), {
           status: 200, headers: { 'content-type': 'application/json' },
@@ -686,17 +703,14 @@ describe('artifact-backed Briefing rounds', () => {
     ]));
   });
 
-  it('reports authentication failure instead of a false empty Briefing list', async () => {
+  it('reports an independent read failure in the main area instead of a false empty Briefing list', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) === '/api/client-auth/whoami') {
-        return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
+        return operatorSessionResponse();
       }
       if (String(input) === '/api/briefings') {
-        return new Response(JSON.stringify({ error: 'authentication_required' }), {
-          status: 401,
+        return new Response(JSON.stringify({ error: 'briefing_reader_unavailable' }), {
+          status: 503,
           headers: { 'content-type': 'application/json' },
         });
       }
@@ -709,9 +723,28 @@ describe('artifact-backed Briefing rounds', () => {
     render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
 
     const sidebar = await screen.findByRole('complementary', { name: 'Briefings' });
-    expect((await screen.findByRole('alert')).textContent)
-      .toContain('Authentication is required to load Briefings.');
+    expect((await screen.findByRole('alert')).textContent).toContain('briefing_reader_unavailable');
     expect(within(sidebar).queryByRole('alert')).toBeNull();
+    expect(within(sidebar).queryByText('No Briefings have been reported yet.')).toBeNull();
+  });
+
+  it('keeps a local access interruption out of Briefing notices and empty states', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return operatorSessionResponse();
+      if (url === '/api/briefings') return new Response(JSON.stringify({ error: 'local_access_unavailable' }), {
+        status: 503, headers: { 'content-type': 'application/json' },
+      });
+      return new Response(JSON.stringify({ incidents: [], counts: {} }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    }));
+
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+
+    const sidebar = await screen.findByRole('complementary', { name: 'Briefings' });
+    expect(await within(sidebar).findByText('Briefings have not loaded.')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(within(sidebar).queryByText('No Briefings have been reported yet.')).toBeNull();
   });
 
