@@ -11,6 +11,7 @@ export type CollectionShellProps = {
   bundles?: readonly BriefingBundle[];
   groups?: readonly BriefingGroup[];
   loadError?: string | null;
+  notice?: ComponentChildren;
   sidebarHidden?: boolean;
   viewState: BriefingCollectionViewState;
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
@@ -24,6 +25,7 @@ export function CollectionShell({
   bundles = [],
   groups = [],
   loadError = null,
+  notice,
   sidebarHidden = false,
   viewState,
   setViewState,
@@ -57,6 +59,7 @@ export function CollectionShell({
         onSelectGroup={onSelectGroup}
       />
       <section className="feedback-collection-shell__content" aria-label="Selected Briefing">
+        {notice}
         <div className="feedback-collection-shell__content-inner">
           {children}
         </div>

@@ -294,7 +294,7 @@ export function ChatDetailFrame({
 }
 
 function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }): JSX.Element | null {
-  if (!toast) return null;
+  if (!toast || toast.type === 'error') return null;
   return (
     <div className={`conv-toast conv-toast--${toast.type}`} onClick={onDismiss}>
       {toast.message}
@@ -1468,7 +1468,7 @@ export function ConversationDetail({
 
   // Toast auto-dismiss
   useEffect(() => {
-    if (!toast) return;
+    if (!toast || toast.type === 'error') return;
     const timer = window.setTimeout(() => setToast(null), 4000);
     return () => window.clearTimeout(timer);
   }, [toast]);
@@ -2196,9 +2196,9 @@ export function ConversationDetail({
             {renderRunOptionFields()}
           </div>
         )}
-        {(continueError || (continueDisabledReason && creationReceipt?.state !== 'starting')) && (
-          <div className={`conv-compose__status${continueError ? ' conv-compose__status--error' : ''}`}>
-            {continueError ?? continueDisabledReason}
+        {continueDisabledReason && creationReceipt?.state !== 'starting' && (
+          <div className="conv-compose__status">
+            {continueDisabledReason}
           </div>
         )}
       </div>
@@ -2222,6 +2222,17 @@ export function ConversationDetail({
       onRetry={creationReceipt.error.retryable ? onRetryCreation : undefined}
     />
   ) : undefined;
+
+  const actionErrorNotice = toast?.type === 'error' || continueError ? (
+    <DetailPaneNotice
+      severity="error"
+      density="compact"
+      title="Chat action failed"
+      actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { setToast(null); setContinueError(null); }}>Dismiss</button>}
+    >
+      {toast?.type === 'error' ? toast.message : continueError}
+    </DetailPaneNotice>
+  ) : null;
 
   const detailOverlays = (
     <>
@@ -2268,7 +2279,7 @@ export function ConversationDetail({
       overlayControl={composerOverlay}
       overlays={detailOverlays}
       ariaBusy={loading}
-      notice={controlFailureNotice ?? creationNotice ?? externalNotice ?? loadErrorNotice}
+      notice={controlFailureNotice ?? creationNotice ?? actionErrorNotice ?? externalNotice ?? loadErrorNotice}
     >
       <div className="conv-transcript">
         <ChatEntityLinkBoundary
@@ -3618,6 +3629,7 @@ export function ConversationsView({
         ariaLabel="Conversations"
         hidden={sidebarHidden}
         header={
+          <>
           <SidebarSearchFilterHeader
             value={search}
             onValueChange={setSearch}
@@ -3729,6 +3741,28 @@ export function ConversationsView({
               ),
             } : undefined}
           />
+          {sidebarOrder.notice ? (
+            <DetailPaneNotice
+              severity="warning"
+              density="compact"
+              title="Sidebar order unavailable"
+              testId="chat-sidebar-order-notice"
+              actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { void sidebarOrder.reload(); }}>Retry</button>}
+            >
+              {sidebarOrder.notice}
+            </DetailPaneNotice>
+          ) : null}
+          {sidebarToast?.type === 'error' ? (
+            <DetailPaneNotice
+              severity="error"
+              density="compact"
+              title="Chat sidebar action failed"
+              actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => setSidebarToast(null)}>Dismiss</button>}
+            >
+              {sidebarToast.message}
+            </DetailPaneNotice>
+          ) : null}
+          </>
         }
         bodyClassName="chat-history-list"
       >
@@ -3740,18 +3774,6 @@ export function ConversationsView({
                 onPress={() => openNewSession()}
               />
             </div>
-            {sidebarOrder.notice ? (
-              <DetailPaneNotice
-                severity="warning"
-                density="compact"
-                title="Sidebar order unavailable"
-                testId="chat-sidebar-order-notice"
-                actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { void sidebarOrder.reload(); }}>Retry</button>}
-              >
-                {sidebarOrder.notice}
-              </DetailPaneNotice>
-            ) : null}
-
             {chatSections.pinned ? (() => {
               const group = chatSections.pinned;
               const target = visibleTargets.get(group.key) ?? sidebarGroupLimit;

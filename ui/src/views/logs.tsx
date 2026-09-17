@@ -5,6 +5,7 @@ import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
 import { shortRouteId } from '../routing';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -544,6 +545,16 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
         </div>
       </div>
 
+      {(error || sseError) ? (
+        <DetailPaneNotice severity="error" density="compact" title="Logs need attention">
+          {error ? `Failed to load logs: ${error}. ` : ''}
+          {sseError ? `Live log tail disconnected: ${sseError}. ` : ''}
+          {lastLoadedAt
+            ? `Showing entries from the last successful response at ${formatStatusTime(lastLoadedAt)}.`
+            : 'No successful log response has loaded in this view yet.'}
+        </DetailPaneNotice>
+      ) : null}
+
       <div className="logs-filter-panel" aria-label="Log filters">
         <div className="logs-level-filters" aria-label="Level filters">
           {LEVEL_LABELS.map((level) => (
@@ -625,17 +636,6 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
         <span>{facets?.latest_ts ? `latest ${formatIsoStatus(facets.latest_ts)}` : 'latest unknown'}</span>
         <span>{facets?.latest_heartbeat_ts ? `reconciler tick ${formatIsoStatus(facets.latest_heartbeat_ts)}` : 'no reconciler tick in filter'}</span>
       </div>
-
-      {error && (
-        <div className="logs-error">
-          <div>Failed to load logs: {error}</div>
-          <div className="logs-error__detail">
-            {lastLoadedAt
-              ? `Showing entries from the last successful response at ${formatStatusTime(lastLoadedAt)}.`
-              : 'No successful log response has loaded in this view yet.'}
-          </div>
-        </div>
-      )}
 
       {logFileExists === false && (
         <div className="empty-state">

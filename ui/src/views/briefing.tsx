@@ -14,6 +14,7 @@ import { briefingGroupRoute, briefingRoute } from '../routing';
 import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
 import { BriefingGroupDetail } from './feedback/BriefingGroupDetail';
 import { CollectionShell } from './feedback/CollectionShell';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { resolveFeedbackCollection, type FeedbackCollection } from './feedback/collection-model';
 import { useBriefingCollectionViewState } from './feedback/collection-view-state';
 import {
@@ -251,9 +252,10 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   };
 
   return (
-    <CollectionShell collections={briefings} bundles={bundles} groups={groups} loadError={error} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup}>
+    <CollectionShell collections={briefings} bundles={bundles} groups={groups} loadError={error} sidebarHidden={sidebarHidden} viewState={viewState} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup} notice={error ? (
+      <DetailPaneNotice severity="error" density="compact" title="Briefings could not be refreshed">{error}</DetailPaneNotice>
+    ) : null}>
       <OperationalIncidentsRegion instance={instance} active={appShell.active} />
-      {error ? <p className="briefing-error" role="alert">{error}</p> : null}
       {selectedGroup ? (
         <BriefingGroupDetail
           key={selectedGroup.id}

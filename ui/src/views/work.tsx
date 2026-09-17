@@ -23,6 +23,7 @@ import { ContextualAction } from '../components/shared/ContextualAction';
 import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { formatRelativeTime } from '../lib/format';
 import { browserSessionFetch } from '../client-auth-token';
@@ -569,6 +570,9 @@ function BranchAuditPanel({
   onTrash: (entry: WorkAuditEntry) => void;
 }): JSX.Element {
   const entries = Array.isArray(audit?.entries) ? audit.entries : [];
+  const activeNotice = loadState.error
+    ? { kind: 'error' as const, text: `Branch audit could not be refreshed: ${loadState.error}` }
+    : notice;
   return (
     <CollapsiblePanel
       className="work-audit"
@@ -593,14 +597,10 @@ function BranchAuditPanel({
           {loadState.loading ? 'Auditing\u2026' : 'Run audit'}
         </button>
       )}
-      persistentContent={notice ? (
-        <div
-          className={`work-audit__notice work-audit__notice--${notice.kind}`}
-          role={notice.kind === 'error' ? 'alert' : 'status'}
-          aria-live={notice.kind === 'error' ? 'assertive' : 'polite'}
-        >
-          {notice.text}
-        </div>
+      persistentContent={activeNotice ? (
+        <DetailPaneNotice severity={activeNotice.kind === 'error' ? 'error' : 'info'} density="compact">
+          {activeNotice.text}
+        </DetailPaneNotice>
       ) : null}
     >
           <p className="work-audit__intro">
@@ -618,9 +618,7 @@ function BranchAuditPanel({
               Worktree inventory is unknown. Preserve all entries until a refresh succeeds.
             </p>
           ) : null}
-          {loadState.error ? (
-            <div className="work-audit__load-error" role="alert">{loadState.error}</div>
-          ) : loadState.loading && !audit ? (
+          {loadState.loading && !audit ? (
             <div className="empty-state">Auditing {repoTitle}\u2026</div>
           ) : entries.length === 0 ? (
             <div className="empty-state">No local branch or worktree audit entries.</div>
@@ -1320,7 +1318,7 @@ export function WorkOverviewView({
                     </button>
                   </div>
                   {addError ? (
-                    <span className="repo-add-form__error" role="alert">Could not add project: {addError}</span>
+                    <DetailPaneNotice severity="error" density="compact" title="Could not add project">{addError}</DetailPaneNotice>
                   ) : null}
                 </div>
               ) : null}

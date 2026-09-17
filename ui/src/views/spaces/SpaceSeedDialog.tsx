@@ -18,6 +18,7 @@
 // the only canonical mutation is the explicit user-triggered seed POST.
 
 import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
   getGraph,
@@ -248,6 +249,12 @@ export function SpaceSeedDialog({
         ) : null}
       </header>
 
+      {((source === 'graph' && graphError) || submitError) && (
+        <DetailPaneNotice severity="error" density="compact" title="Could not seed Space" testId={submitError ? 'seed-error' : undefined}>
+          {submitError ?? graphError}
+        </DetailPaneNotice>
+      )}
+
       <div className="space-seed-dialog__sources" role="tablist" aria-label="Seed source">
         {SPACE_SEED_SOURCES.map((value) => (
           <button
@@ -336,7 +343,7 @@ export function SpaceSeedDialog({
             {graphLoading ? (
               <p className="space-seed-dialog__hint">Loading graph issues…</p>
             ) : graphError ? (
-              <p className="space-seed-dialog__error" role="alert">{graphError}</p>
+              <p className="space-seed-dialog__hint">Graph issues unavailable.</p>
             ) : graphNodes.length === 0 ? (
               <p className="space-seed-dialog__hint">No issue nodes in the graph.</p>
             ) : (
@@ -384,10 +391,6 @@ export function SpaceSeedDialog({
           <span>Place on the shelf</span>
         </label>
       </fieldset>
-
-      {submitError ? (
-        <p className="space-seed-dialog__error" role="alert" data-testid="seed-error">{submitError}</p>
-      ) : null}
 
       <footer className="space-seed-dialog__actions">
         {onClose ? (

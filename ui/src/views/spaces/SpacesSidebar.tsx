@@ -39,6 +39,7 @@ import type { SeedSpaceResult } from '../../api';
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { SidebarItemRow, SidebarLeadingActionRow } from '../../components/shared/SidebarItemRow';
 import { SidebarGroupNode, SidebarNewChatIcon } from '../../components/shared/SidebarGroupNode';
 import { ProjectsIcon } from '../../components/icons/TabIcons';
@@ -569,6 +570,7 @@ export function SpacesSidebar({
     return (
       <div className="spaces-tree__chooser" role="dialog" aria-label={label} data-testid="space-create-chooser">
         <div className="spaces-tree__chooser-title">{label}</div>
+        {createError && <DetailPaneNotice severity="error" density="compact" testId="space-create-error">{createError}</DetailPaneNotice>}
         <label className="spaces-tree__chooser-field">
           <span>Title</span>
           <input
@@ -644,11 +646,6 @@ export function SpacesSidebar({
             </select>
           </label>
         ) : null}
-        {createError ? (
-          <p className="spaces-tree__chooser-error" role="alert" data-testid="space-create-error">
-            {createError}
-          </p>
-        ) : null}
         <div className="spaces-tree__chooser-actions">
           <button
             type="button"
@@ -685,6 +682,7 @@ export function SpacesSidebar({
   // FIXED header row (the container renders it as `.view-sidebar__header`,
   // outside the single scroll owner `.view-sidebar__body`).
   const header = (
+    <>
     <SidebarSearchFilterHeader
       value={filter}
       onValueChange={setFilter}
@@ -733,6 +731,8 @@ export function SpacesSidebar({
       testId="spaces-sidebar"
       inputTestId="spaces-filter-input"
     />
+    {loadError && <DetailPaneNotice severity="error" density="compact" title="Spaces could not be loaded" testId="spaces-tree-error">{loadError}</DetailPaneNotice>}
+    </>
   );
 
   return (
@@ -759,11 +759,6 @@ export function SpacesSidebar({
 
         {loading && groups.length === 0 ? (
           <p className="spaces-tree__status">Loading spaces…</p>
-        ) : null}
-        {loadError ? (
-          <p className="spaces-tree__status spaces-tree__status--error" role="alert" data-testid="spaces-tree-error">
-            {loadError}
-          </p>
         ) : null}
 
         {/* TOP-LEVEL GROUP (null-project spaces) above the project headers. */}

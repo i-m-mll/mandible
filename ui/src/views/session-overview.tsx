@@ -9,6 +9,7 @@
 // display/navigation-only: it is never attached to a mutation request.
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import {
   getProviderScopedOverview,
   getSessionOverview,
@@ -274,7 +275,7 @@ function SessionPicker({
     };
   }, []);
 
-  if (error) return <p className="session-overview__error">{error}</p>;
+  if (error) return <DetailPaneNotice severity="error" title="Sessions could not be loaded">{error}</DetailPaneNotice>;
   if (sessions === null) return <p className="text-muted">Loading sessions…</p>;
   if (sessions.length === 0) return <p className="text-muted">No sessions registered.</p>;
 
@@ -517,6 +518,11 @@ export function SessionOverviewView({
   return (
     <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
       {sharedHeader}
+      {(binding.kind === 'error' || providerOverviewError || overviewError) ? (
+        <DetailPaneNotice severity="error" density="compact" title="Session overview unavailable">
+          {binding.kind === 'error' ? binding.message : providerOverviewError ?? overviewError}
+        </DetailPaneNotice>
+      ) : null}
       <DetailPaneModal
         open={!embedded && metadataOpen}
         onClose={() => setMetadataOpen(false)}
@@ -558,9 +564,6 @@ export function SessionOverviewView({
               )}
             </span>
           )}
-          {binding.kind === 'error' && (
-            <span>Agent session resolution failed: {binding.message}</span>
-          )}
         </div>
       ) : null}
 
@@ -598,9 +601,6 @@ export function SessionOverviewView({
 
       {!selectedSessionId && binding.kind === 'provider-scoped' ? (
         <div className="session-overview__body">
-          {providerOverviewError ? (
-            <p className="session-overview__error">{providerOverviewError}</p>
-          ) : null}
           {!providerOverview && !providerOverviewError ? (
             <p className="text-muted">Loading provider-scoped overview…</p>
           ) : null}
@@ -659,7 +659,6 @@ export function SessionOverviewView({
         <SessionPicker onSelect={handleSelect} />
       ) : (
         <div className="session-overview__body">
-          {overviewError ? <p className="session-overview__error">{overviewError}</p> : null}
           {overviewLoading && !overview ? <p className="text-muted">Loading overview…</p> : null}
           {session ? (
             <>

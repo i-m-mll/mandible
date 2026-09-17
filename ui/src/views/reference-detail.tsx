@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 import {
   getArtifact,
@@ -24,6 +24,7 @@ import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { detailRequestKey } from '../detail-cache';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
 import type { DetailPanePresentation } from '../components/shared/DetailPaneShell';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
 export type ReferenceDetailTarget =
   | { kind: 'issue'; ref: string; repoId?: string }
@@ -83,7 +84,7 @@ export function IssueReferenceDetail({
     load: loadDetail,
   });
 
-  if (error) return <div className="space-reference-detail__error">Failed to load issue: {error}</div>;
+  if (error) return <DetailPaneNotice severity="error" title="Failed to load issue">{error}</DetailPaneNotice>;
   if (!detail) {
     return loading
       ? <LoadingSkeleton variant="detail" label="Loading issue detail" />
@@ -131,33 +132,42 @@ export function ArtifactReferenceDetail({
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const payloadGenerationRef = useRef(0);
 
-  const loadArtifactPayload = useCallback(async (nextArtifact: ArtifactRecord) => {
+  const loadArtifactPayload = useCallback(async (nextArtifact: ArtifactRecord, generation: number) => {
+    if (generation !== payloadGenerationRef.current) return;
     setArtifact(nextArtifact);
     setContentLoading(true);
     setKnowledgeLoading(true);
     setContentError(null);
     setKnowledgeError(null);
     try {
-      setContent(await getArtifactContent(nextArtifact.id));
+      const nextContent = await getArtifactContent(nextArtifact.id);
+      if (generation === payloadGenerationRef.current) setContent(nextContent);
     } catch (err) {
-      setContent(null);
-      setContentError(err instanceof Error ? err.message : String(err));
+      if (generation === payloadGenerationRef.current) {
+        setContent(null);
+        setContentError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setContentLoading(false);
+      if (generation === payloadGenerationRef.current) setContentLoading(false);
     }
     try {
-      setKnowledgeBackrefs(await getArtifactKnowledgeBackrefs(nextArtifact.id));
+      const nextBackrefs = await getArtifactKnowledgeBackrefs(nextArtifact.id);
+      if (generation === payloadGenerationRef.current) setKnowledgeBackrefs(nextBackrefs);
     } catch (err) {
-      setKnowledgeBackrefs([]);
-      setKnowledgeError(err instanceof Error ? err.message : String(err));
+      if (generation === payloadGenerationRef.current) {
+        setKnowledgeBackrefs([]);
+        setKnowledgeError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setKnowledgeLoading(false);
+      if (generation === payloadGenerationRef.current) setKnowledgeLoading(false);
     }
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+    const generation = ++payloadGenerationRef.current;
     setLoading(true);
     setError(null);
     setResolution(null);
@@ -188,7 +198,7 @@ export function ArtifactReferenceDetail({
         } catch {
           if (!cancelled) setVersionHistory(null);
         }
-        if (!cancelled) await loadArtifactPayload(nextArtifact);
+        if (!cancelled) await loadArtifactPayload(nextArtifact, generation);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -198,6 +208,7 @@ export function ArtifactReferenceDetail({
       });
     return () => {
       cancelled = true;
+      if (payloadGenerationRef.current === generation) payloadGenerationRef.current += 1;
     };
   }, [artifactRef, loadArtifactPayload]);
 
@@ -208,19 +219,23 @@ export function ArtifactReferenceDetail({
 
   const handleVersionChange = useCallback(
     (versionNo: number | null) => {
+      const generation = ++payloadGenerationRef.current;
       setSelectedVersionNo(versionNo);
+      setError(null);
       const nextVersion = versionNo === null
         ? versions[0] ?? null
         : versions.find((version) => version.version_no === versionNo) ?? null;
       if (!nextVersion) return;
       void getArtifact(nextVersion.artifact_id)
-        .then(loadArtifactPayload)
-        .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+        .then((nextArtifact) => loadArtifactPayload(nextArtifact, generation))
+        .catch((err) => {
+          if (generation === payloadGenerationRef.current) setError(err instanceof Error ? err.message : String(err));
+        });
     },
     [versions, loadArtifactPayload],
   );
 
-  if (error) return <div className="space-reference-detail__error">Failed to load artifact: {error}</div>;
+  if (error) return <DetailPaneNotice severity="error" title="Failed to load artifact">{error}</DetailPaneNotice>;
   if (!artifact) {
     return loading
       ? <LoadingSkeleton variant="detail" label="Loading artifact detail" />

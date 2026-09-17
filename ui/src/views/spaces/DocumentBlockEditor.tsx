@@ -27,6 +27,7 @@
 // the conflict and stop.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { EditorSelection } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 
@@ -972,6 +973,14 @@ export function DocumentBlockEditor({
                 : `Autosave failed: ${saveState.message}`}
           </div>
         )}
+        {load.status === 'error' && (
+          <DetailPaneNotice severity="error" density="compact" title="Could not load document" testId="spaces-block-editor-error">
+            {load.message}
+          </DetailPaneNotice>
+        )}
+        {actionError && (
+          <DetailPaneNotice severity="error" density="compact" testId="spaces-block-editor-action-error">{actionError}</DetailPaneNotice>
+        )}
         <div className="spaces-block-editor__scroller" onMouseDown={handleDocumentMouseDown}>
           {load.status === 'loading' && (
             <div className="spaces-block-editor__status">
@@ -982,24 +991,12 @@ export function DocumentBlockEditor({
               </div>
             </div>
           )}
-          {load.status === 'error' && (
-            <div className="spaces-block-editor__error" data-testid="spaces-block-editor-error">
-              Failed to load document: {load.message}
-            </div>
-          )}
-
           {!editable && custody.stale && (
             <CustodyStaleBanner
               custody={custody}
               onReimport={onReimport}
               onFork={onFork}
             />
-          )}
-
-          {actionError && (
-            <div className="spaces-block-editor__error" data-testid="spaces-block-editor-action-error">
-              {actionError}
-            </div>
           )}
 
           {/* The live document, rendered through the C14b renderer (read path). */}
