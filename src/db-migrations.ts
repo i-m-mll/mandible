@@ -659,7 +659,9 @@ export const MIGRATIONS: readonly Migration[] = [
       "ALTER TABLE briefing_composition_targets RENAME TO briefing_composition_targets_v170",
       "ALTER TABLE briefing_destination_routes RENAME TO briefing_destination_routes_v170",
       "ALTER TABLE briefing_groups RENAME TO briefing_groups_v170",
-      ...BRIEFING_GROUP_SCHEMA_SQL,
+      ...BRIEFING_GROUP_SCHEMA_SQL.map((sql) => sql.replace(
+        "composition_run_id TEXT REFERENCES", "composition_run_id TEXT NOT NULL REFERENCES",
+      )),
       ...BRIEFING_COMPOSER_SCHEMA_V171_SQL,
       `WITH RECURSIVE normalized (
           id, name, current_bundle_id, created_at, updated_at, archived_at, position, candidate
@@ -1052,6 +1054,25 @@ export const MIGRATIONS: readonly Migration[] = [
       "ALTER TABLE briefing_composition_inputs ADD COLUMN expected_current_round_id TEXT REFERENCES briefing_rounds(id) ON DELETE RESTRICT",
     ],
   },
+  {
+    version: 181,
+    name: "manual_briefing_group_review",
+    statements: [
+      "DROP INDEX idx_briefing_group_review_dispositions_group",
+      ...BRIEFING_GROUP_SCHEMA_SQL.filter((sql) => sql.startsWith("CREATE TRIGGER IF NOT EXISTS briefing_group_review_"))
+        .map((sql) => `DROP TRIGGER ${sql.split(/\s+/)[5]}`),
+      "ALTER TABLE briefing_group_review_disposition_items RENAME TO briefing_group_review_disposition_items_v180",
+      "ALTER TABLE briefing_group_review_destination_items RENAME TO briefing_group_review_destination_items_v180",
+      "ALTER TABLE briefing_group_review_dispositions RENAME TO briefing_group_review_dispositions_v180",
+      ...BRIEFING_GROUP_SCHEMA_SQL.filter((sql) => /(?:CREATE TABLE IF NOT EXISTS|CREATE TRIGGER IF NOT EXISTS) briefing_group_review_|CREATE INDEX IF NOT EXISTS idx_briefing_group_review_/.test(sql)),
+      "INSERT INTO briefing_group_review_dispositions SELECT * FROM briefing_group_review_dispositions_v180",
+      "INSERT INTO briefing_group_review_disposition_items SELECT * FROM briefing_group_review_disposition_items_v180",
+      "INSERT INTO briefing_group_review_destination_items SELECT * FROM briefing_group_review_destination_items_v180",
+      "DROP TABLE briefing_group_review_disposition_items_v180",
+      "DROP TABLE briefing_group_review_destination_items_v180",
+      "DROP TABLE briefing_group_review_dispositions_v180",
+    ],
+  },
 ];
 
 /**
@@ -1173,9 +1194,9 @@ function reconcileCollidedChatPreviewSchema(db: Db, found: number): number {
     for (const statement of authMigration.statements) db.exec(statement);
     db.prepare(
       "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    ).run(SCHEMA_VERSION_KEY, String(CURRENT_SCHEMA_VERSION));
+    ).run(SCHEMA_VERSION_KEY, "178");
   })();
-  return CURRENT_SCHEMA_VERSION;
+  return 178;
 }
 
 function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {

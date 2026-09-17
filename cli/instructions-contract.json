@@ -268,11 +268,11 @@
     },
     {
       "name": "mandible briefing group accept <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]",
-      "description": "Accept one exact recurring, Mandible-custodied proposal through the configured human operator. The digest binds Base, full layouts, frozen bytes and reviews, and destination changes; exact replay is a no-op and drift fails closed."
+      "description": "Accept one exact Mandible-custodied manual or recurring proposal through the configured human operator. The digest binds Base, full layouts, frozen bytes and reviews, and destination changes; exact replay is a no-op and drift fails closed."
     },
     {
       "name": "mandible briefing group reject <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]",
-      "description": "Reject one exact recurring, Mandible-custodied proposal through the configured human operator while preserving Base, proposal custody, review submissions, and immutable disposition history."
+      "description": "Reject one exact Mandible-custodied manual or recurring proposal through the configured human operator while preserving Base, proposal custody, review submissions, and immutable disposition history."
     },
     {
       "name": "mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]",

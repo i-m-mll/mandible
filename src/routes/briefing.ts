@@ -174,7 +174,7 @@ function humanReviewOperator(db: Db, req: RequestLike) {
   const caller = getUserById(db, identity.user_id);
   if (!caller || caller.status !== "active" || caller.kind !== "human" || !isOperator(db, identity)) {
     throw new ClientAuthzError(403, "briefing_group_review_operator_required",
-      "Only the configured active human operator may accept or reject a recurring Briefing proposal.");
+      "Only the configured active human operator may accept or reject a Briefing proposal.");
   }
   return {
     actor: { userId: caller.id, evidenceMethod: "api_token" as const, credentialId: identity.credential_id },

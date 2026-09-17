@@ -402,7 +402,8 @@ describe("briefing CLI", () => {
     for (const [action, decision] of [["accept", "accepted"], ["reject", "rejected"]] as const) {
       const reviewed = await runRpc(["briefing", "group", action, "group-12345678",
         "--expected-base", "bundle-current", "--proposal", "bundle-one",
-        "--binding-digest", bindingDigest, "--json"], (request) => {
+        "--binding-digest", bindingDigest, "--destination-changes",
+        JSON.stringify([{ logical_artifact_ref: "artifact:report", expected_group_ref: null }]), "--json"], (request) => {
         expect(request).toMatchObject({ method: "POST",
           path: "/api/briefing-groups/group-12345678/review-dispositions",
           body: {
@@ -410,6 +411,7 @@ describe("briefing CLI", () => {
             expected_base_bundle_ref: "bundle-current",
             proposal_bundle_ref: "bundle-one",
             binding_digest: bindingDigest,
+            destination_changes: [{ logical_artifact_ref: "artifact:report", expected_group_ref: null }],
           } });
         return { status: 200, body: { group: { ...group, current: bundle, updates: [], history: [] },
           disposition: { kind: decision }, changed: true } };

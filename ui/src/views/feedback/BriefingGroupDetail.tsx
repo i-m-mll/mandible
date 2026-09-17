@@ -39,6 +39,7 @@ export function BriefingGroupDetail({
         expectedBaseBundleId: group.current.id,
         proposalBundleId: selectedProposal.id,
         bindingDigest: reviewCandidate.bindingDigest,
+        destinationChanges: reviewCandidate.destinationChanges,
       });
       setStatus(result.changed
         ? `Proposal ${decision === 'accepted' ? 'accepted as Base' : 'rejected'}.`
