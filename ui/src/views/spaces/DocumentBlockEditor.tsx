@@ -1194,6 +1194,8 @@ function ReferenceInspector({
   onClose: () => void;
 }): JSX.Element {
   const style = height !== null ? ({ flexBasis: `${height}px` } as JSX.CSSProperties) : undefined;
+  const [referenceError, setReferenceError] = useState<string | null>(null);
+  useEffect(() => setReferenceError(null), [target.kind, target.ref]);
   return (
     <aside
       className="spaces-block-editor__inspector"
@@ -1217,8 +1219,9 @@ function ReferenceInspector({
           ×
         </button>
       </header>
+      {referenceError && <DetailPaneNotice severity="error" density="compact" title="Reference unavailable">{referenceError}</DetailPaneNotice>}
       <div className="spaces-block-editor__inspector-body">
-        <ReferenceDetailContent target={target} />
+        <ReferenceDetailContent target={target} onErrorChange={setReferenceError} />
       </div>
     </aside>
   );

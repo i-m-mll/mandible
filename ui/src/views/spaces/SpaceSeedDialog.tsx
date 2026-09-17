@@ -250,8 +250,9 @@ export function SpaceSeedDialog({
       </header>
 
       {((source === 'graph' && graphError) || submitError) && (
-        <DetailPaneNotice severity="error" density="compact" title="Could not seed Space" testId={submitError ? 'seed-error' : undefined}>
-          {submitError ?? graphError}
+        <DetailPaneNotice severity="error" density="compact" title={submitError ? 'Could not seed Space' : 'Graph issues unavailable'} testId={submitError ? 'seed-error' : undefined}>
+          {source === 'graph' && graphError && <div>{graphError}</div>}
+          {submitError && <div>{submitError}</div>}
         </DetailPaneNotice>
       )}
 

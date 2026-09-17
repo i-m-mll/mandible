@@ -19,7 +19,6 @@ const inventory = {
     'ui/src/views/auth.tsx',
     'ui/src/views/briefing.tsx',
     'ui/src/views/conversations.tsx',
-    'ui/src/views/feedback/BriefingDocumentPanel.tsx',
     'ui/src/views/feedback/BriefingDocumentRenderer.tsx',
     'ui/src/views/feedback/CollectionsSidebar.tsx',
     'ui/src/views/graph.tsx',
@@ -45,6 +44,7 @@ const inventory = {
   ],
   contentLocal: [
     'ui/src/components/console/PtyBanner.tsx',
+    'ui/src/views/feedback/BriefingDocumentPanel.tsx',
   ],
 } as const;
 
