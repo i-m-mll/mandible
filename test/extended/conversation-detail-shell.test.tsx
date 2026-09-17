@@ -441,6 +441,21 @@ describe('compact detail pane shell', () => {
     });
   });
 
+  it('keeps a pinned Chat blank until a pending source reparse yields a real window', async () => {
+    const pinned = mockConversationDetail(defaultControl, []);
+    const readable = makeTranscriptBlock({ id: 'after-reparse', content: 'Recovered pinned message' });
+    let attempts = 0;
+    vi.mocked(api.getConversationWindow).mockImplementation(async () => {
+      if (++attempts === 1) throw new api.ApiError('conversation is being reindexed', 503, 'freshness_pending');
+      return positionPayload(pinned, [readable]);
+    });
+    renderConversationDetail({ ...pinned, starred: true, block_count: 1 });
+    expect(screen.queryByText('No messages yet')).toBeNull();
+    expect(screen.queryByText('conversation is being reindexed')).toBeNull();
+    expect(await screen.findByText('Recovered pinned message', {}, { timeout: 3_000 })).toBeTruthy();
+    expect(attempts).toBe(2);
+  });
+
   it('keeps a new selection\'s real error when an old Jump request is cancelled late', async () => {
     const first = mockConversationDetail(defaultControl, []);
     const second = { ...first, id: 'selected-after-cancel', title: 'Selected after cancellation' };
@@ -667,7 +682,7 @@ describe('compact detail pane shell', () => {
       events: [],
     });
 
-    render(
+    const view = render(
       <ConversationsView
         consoleSessions={[]}
         initialConversationId={conversation.id}
@@ -677,9 +692,9 @@ describe('compact detail pane shell', () => {
       />,
     );
 
-    const loading = await screen.findByLabelText('Loading conversation');
-    const shell = loading.closest('.detail-pane-shell');
+    const shell = view.container.querySelector('.chat-detail-frame--loading');
     expect(shell?.classList.contains('chat-detail-frame--loading')).toBe(true);
+    expect(screen.queryByText('No messages yet')).toBeNull();
     expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
       .toBeTruthy();
   });

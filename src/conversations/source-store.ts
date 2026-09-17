@@ -895,6 +895,45 @@ export class ConversationSourceStore {
       );
       const pendingParents: Array<{ blockId: string; parentPosition: number | null }> = [];
       const providerKeyOccurrences = new Map<string, number>();
+      const findAlias = this.db.prepare(
+        "SELECT block_id FROM conversation_block_aliases WHERE alias = ?",
+      );
+      const findProviderKey = this.db.prepare(`
+        SELECT id FROM conversation_structural_blocks
+         WHERE conversation_id = ? AND provider_key = ?
+         ORDER BY created_at LIMIT 1
+      `);
+      const upsertStructuralBlock = this.db.prepare(`
+        INSERT INTO conversation_structural_blocks (
+          id, conversation_id, source_version_id, status, provider_key, position,
+          type, role, timestamp, parent_block_id, dag_uuid, dag_parent_uuid,
+          record_offset, record_length, record_hash, record_ordinal,
+          sub_block_ordinal, normalization_checkpoint_id, parser_format,
+          parser_version, normalization_version, redaction_epoch, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, 'current', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          source_version_id = excluded.source_version_id, status = 'current',
+          provider_key = excluded.provider_key, position = excluded.position,
+          type = excluded.type, role = excluded.role, timestamp = excluded.timestamp,
+          dag_uuid = excluded.dag_uuid, dag_parent_uuid = excluded.dag_parent_uuid,
+          record_offset = excluded.record_offset, record_length = excluded.record_length,
+          record_hash = excluded.record_hash, record_ordinal = excluded.record_ordinal,
+          sub_block_ordinal = excluded.sub_block_ordinal,
+          normalization_checkpoint_id = excluded.normalization_checkpoint_id,
+          parser_format = excluded.parser_format, parser_version = excluded.parser_version,
+          normalization_version = excluded.normalization_version,
+          redaction_epoch = excluded.redaction_epoch, updated_at = excluded.updated_at
+      `);
+      const upsertAlias = this.db.prepare(`
+        INSERT INTO conversation_block_aliases (alias, block_id, alias_kind, created_at)
+        VALUES (?, ?, 'legacy', ?)
+        ON CONFLICT(alias) DO UPDATE SET block_id = excluded.block_id
+      `);
+      const setParent = this.db.prepare(
+        "UPDATE conversation_structural_blocks SET parent_block_id = ? WHERE id = ?",
+      );
       for (const block of blocks) {
         const metadata = parseJsonObject(block.metadata_json);
         // Gemini's legacy JSON and JSONL parser normalizes the whole session at
@@ -917,14 +956,8 @@ export class ConversationSourceStore {
         const providerKey = providerKeyOccurrence === 0
           ? providerKeyBase
           : `${providerKeyBase}:occurrence:${providerKeyOccurrence}`;
-        const aliasRow = this.db.prepare(
-          "SELECT block_id FROM conversation_block_aliases WHERE alias = ?",
-        ).get(block.id) as { block_id: string } | undefined;
-        const keyRow = this.db.prepare(`
-          SELECT id FROM conversation_structural_blocks
-           WHERE conversation_id = ? AND provider_key = ?
-           ORDER BY created_at LIMIT 1
-        `).get(input.conversationId, providerKey) as { id: string } | undefined;
+        const aliasRow = findAlias.get(block.id) as { block_id: string } | undefined;
+        const keyRow = findProviderKey.get(input.conversationId, providerKey) as { id: string } | undefined;
         // The provider key is the stable parser identity. A legacy block alias
         // can point at an older placeholder structural row while a partial
         // prior index already owns this key; reusing the alias row would try
@@ -938,29 +971,7 @@ export class ConversationSourceStore {
           : null;
         pendingParents.push({ blockId, parentPosition });
 
-        this.db.prepare(`
-          INSERT INTO conversation_structural_blocks (
-            id, conversation_id, source_version_id, status, provider_key, position,
-            type, role, timestamp, parent_block_id, dag_uuid, dag_parent_uuid,
-            record_offset, record_length, record_hash, record_ordinal,
-            sub_block_ordinal, normalization_checkpoint_id, parser_format,
-            parser_version, normalization_version, redaction_epoch, created_at, updated_at
-          ) VALUES (
-            ?, ?, ?, 'current', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-          )
-          ON CONFLICT(id) DO UPDATE SET
-            source_version_id = excluded.source_version_id, status = 'current',
-            provider_key = excluded.provider_key, position = excluded.position,
-            type = excluded.type, role = excluded.role, timestamp = excluded.timestamp,
-            dag_uuid = excluded.dag_uuid, dag_parent_uuid = excluded.dag_parent_uuid,
-            record_offset = excluded.record_offset, record_length = excluded.record_length,
-            record_hash = excluded.record_hash, record_ordinal = excluded.record_ordinal,
-            sub_block_ordinal = excluded.sub_block_ordinal,
-            normalization_checkpoint_id = excluded.normalization_checkpoint_id,
-            parser_format = excluded.parser_format, parser_version = excluded.parser_version,
-            normalization_version = excluded.normalization_version,
-            redaction_epoch = excluded.redaction_epoch, updated_at = excluded.updated_at
-        `).run(
+        upsertStructuralBlock.run(
           blockId, input.conversationId, versionId, providerKey, block.position,
           block.type, block.role, block.timestamp, block.dag_uuid, block.dag_parent_uuid,
           range.offset, range.length, range.hash, range.ordinal, subBlockOrdinal,
@@ -968,16 +979,10 @@ export class ConversationSourceStore {
           input.parserFormat, input.parserVersion,
           input.normalizationVersion, input.redactionEpoch, now, now,
         );
-        this.db.prepare(`
-          INSERT INTO conversation_block_aliases (alias, block_id, alias_kind, created_at)
-          VALUES (?, ?, 'legacy', ?)
-          ON CONFLICT(alias) DO UPDATE SET block_id = excluded.block_id
-        `).run(block.id, blockId, now);
+        upsertAlias.run(block.id, blockId, now);
       }
       for (const pending of pendingParents) {
-        this.db.prepare(
-          "UPDATE conversation_structural_blocks SET parent_block_id = ? WHERE id = ?",
-        ).run(
+        setParent.run(
           pending.parentPosition === null ? null : positionToId.get(pending.parentPosition) ?? null,
           pending.blockId,
         );

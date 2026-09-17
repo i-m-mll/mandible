@@ -43,6 +43,7 @@ import {
 } from './renderModel';
 
 export type ChatSurfaceProps = StreamRendererProps & {
+  showEmpty?: boolean;
   activePermissionRequest?: ConsolePermissionRequest | null;
   permissionBackendType?: ConsoleBackendType;
   onPermissionRespond?: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
@@ -190,6 +191,7 @@ export function ChatSurface({
   streaming,
   elapsedSeconds,
   emptyLabel,
+  showEmpty = true,
   onSelectMessageInfo,
   selectedMessageId,
   sessionInfo,
@@ -861,6 +863,7 @@ export function ChatSurface({
   }
 
   if (!hasContent && !hasPermissionCard && !transcript) {
+    if (!showEmpty) return <div className="stream-renderer" />;
     return (
       <div className="stream-renderer">
         <div className="stream-renderer__empty">

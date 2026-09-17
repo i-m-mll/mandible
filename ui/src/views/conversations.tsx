@@ -99,7 +99,6 @@ import {
 } from '../chat';
 import { formatAbsoluteTime, truncate } from '../lib/format';
 import { acquireSharedSse } from '../sse-shared';
-import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { PreviewIcon } from '../components/icons/TabIcons';
 import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import {
@@ -1139,6 +1138,12 @@ export function ConversationDetail({
   const windowQuery = useQuery({
     queryKey: conversationRequestKey,
     queryFn: fetchConversationDetail,
+    // A selected source can still be reparsing after the first HTTP response.
+    // Keep the observer alive through that bounded transition; errors from an
+    // actual parse or source failure remain actionable immediately.
+    retry: (failures, cause) => cause instanceof ApiError
+      && cause.code === 'freshness_pending' && failures < 120,
+    retryDelay: 1_000,
   }, queryClient);
   const aggregateQuery = useQuery<ConversationTranscriptData>({
     queryKey: conversationKeys.aggregate(conversationId),
@@ -1961,9 +1966,7 @@ export function ConversationDetail({
         state="loading"
         header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
         ariaBusy
-      >
-        <LoadingSkeleton variant="detail" label="Loading conversation" />
-      </ChatDetailFrame>
+      >{null}</ChatDetailFrame>
     );
   }
 
@@ -1974,9 +1977,7 @@ export function ConversationDetail({
         header={<DetailPaneHeader variant="compact" title={initialConversation?.title ?? 'Conversation'} />}
         notice={loadErrorNotice}
         ariaBusy={loading}
-      >
-        <div className="empty-state">Conversation content unavailable.</div>
-      </ChatDetailFrame>
+      >{null}</ChatDetailFrame>
     );
   }
 
@@ -2317,6 +2318,8 @@ export function ConversationDetail({
           <ChatSurface
             events={chatEvents}
             streaming={providerStreaming}
+            showEmpty={Boolean(windowQuery.isSuccess && !loading && !error
+              && aggregateQuery.data?.total === 0)}
             emptyLabel={error
                 ? 'Conversation content unavailable.'
                 : 'No messages yet'}
