@@ -35,6 +35,8 @@ Usage:
   mandible briefing group accept <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]
   mandible briefing group reject <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]
   mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]
+  mandible briefing group destination place <group-ref> <logical-artifact-ref> --briefing <briefing-ref> --operation-key <key> --expected-owner <group-ref|none> --expected-target-base <bundle-ref|none> [--expected-source-base <bundle-ref|none>] [--route-file <manifest.json>] [--json]
+  mandible briefing report update <briefing-ref> <artifact-version-ref> --operation-key <key> --expected-round <round-id> --expected-version <artifact-version-ref> [--json]
   mandible briefing group rename <group-ref> --name <text> [--json]
   mandible briefing group show <group-ref> [--json]
   mandible briefing route inspect [<route-key>] [--json]
@@ -58,7 +60,7 @@ round to the already-placed Briefing and advances Current without changing group
 Plan resolves each logical Artifact through its active destination owner without writing.
 Apply atomically creates or upgrades the declared routes. Exact replay is
 unchanged; ownership, identity, template downgrade, and same-version template
-drift fail closed.
+drift fail closed. Updates require expected_revision from route plan.
 EOF
 }
 
@@ -481,7 +483,8 @@ cmd_group_review() {
 cmd_group_destination() {
   local action="${1:-}" group_ref="" artifact_ref="" json=0 response payload
   shift || true
-  [[ "$action" == "bind" ]] || die "Usage: mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]" 2
+  if [[ "$action" == "place" ]]; then cmd_group_destination_place "$@"; return; fi
+  [[ "$action" == "bind" ]] || die "Usage: mandible briefing group destination bind|place ..." 2
   while (( $# > 0 )); do
     case "$1" in
       --json) json=1; shift ;;
@@ -496,6 +499,70 @@ cmd_group_destination() {
   response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/destinations" "$payload")" \
     || die "Failed to bind Briefing destination owner." 1
   emit_group "$response" "$json"
+}
+
+cmd_group_destination_place() {
+  local group_ref="" artifact_ref="" briefing_ref="" operation_key="" expected_owner="" target_base="" source_base="none" route_file="" json=0 payload response route
+  while (( $# > 0 )); do
+    case "$1" in
+      --briefing) briefing_ref="$2"; shift 2 ;;
+      --operation-key) operation_key="$2"; shift 2 ;;
+      --expected-owner) expected_owner="$2"; shift 2 ;;
+      --expected-target-base) target_base="$2"; shift 2 ;;
+      --expected-source-base) source_base="$2"; shift 2 ;;
+      --route-file) route_file="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) if [[ -z "$group_ref" ]]; then group_ref="$1"; elif [[ -z "$artifact_ref" ]]; then artifact_ref="$1";
+         else die "Unexpected argument: $1" 2; fi; shift ;;
+    esac
+  done
+  [[ -n "$group_ref" && -n "$artifact_ref" && -n "$briefing_ref" && -n "$operation_key" && -n "$expected_owner" && -n "$target_base" ]] \
+    || die "place requires group, Artifact, --briefing, --operation-key, --expected-owner, and --expected-target-base" 2
+  route='null'
+  if [[ -n "$route_file" ]]; then
+    route="$(read_route_manifest "$route_file" | jq -c '.routes | if length == 1 then .[0] else error("route file must contain one route") end')" \
+      || die "Invalid single-route manifest" 2
+  fi
+  payload="$(jq -n --arg key "$operation_key" --arg artifact "$artifact_ref" --arg briefing "$briefing_ref" \
+    --arg owner "$expected_owner" --arg target "$target_base" --arg source "$source_base" --argjson route "$route" \
+    '{operation_key:$key,logical_artifact_ref:$artifact,briefing_ref:$briefing,
+      expected_owner_group_ref:(if $owner=="none" then null else $owner end),
+      expected_target_base_ref:(if $target=="none" then null else $target end),
+      expected_source_base_ref:(if $source=="none" then null else $source end)}
+      + (if $route==null then {} else {route:$route} end)')"
+  response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/report-placement" "$payload")" \
+    || die "Failed to place Briefing report." 1
+  if (( json )); then printf '%s\n' "$response" | jq .; else
+    printf '%s\n' "$response" | api_jq_human \
+      '"report group=\(.group_id | mandible_short_id)  Base=\(.target_base_bundle_id | mandible_short_id)  changed=\(.changed)"'
+  fi
+}
+
+cmd_report_update() {
+  local briefing_ref="" version_ref="" operation_key="" expected_round="" expected_version="" json=0 payload response
+  while (( $# > 0 )); do
+    case "$1" in
+      --operation-key) operation_key="$2"; shift 2 ;;
+      --expected-round) expected_round="$2"; shift 2 ;;
+      --expected-version) expected_version="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) if [[ -z "$briefing_ref" ]]; then briefing_ref="$1"; elif [[ -z "$version_ref" ]]; then version_ref="$1";
+         else die "Unexpected argument: $1" 2; fi; shift ;;
+    esac
+  done
+  [[ -n "$briefing_ref" && "$version_ref" == artifact-version:* && -n "$operation_key" && -n "$expected_round" && "$expected_version" == artifact-version:* ]] \
+    || die "report update requires a Briefing, exact version, operation key, expected round, and exact expected version" 2
+  payload="$(jq -n --arg key "$operation_key" --arg version "$version_ref" --arg round "$expected_round" \
+    --arg expected "$expected_version" '{operation_key:$key,artifact_version_ref:$version,
+      expected_current_round_id:$round,expected_current_artifact_version_ref:$expected}')"
+  response="$(api_send POST "/api/briefings/$(urlencode "$briefing_ref")/report-rounds" "$payload")" \
+    || die "Failed to update published report Current." 1
+  if (( json )); then printf '%s\n' "$response" | jq .; else
+    printf '%s\n' "$response" | api_jq_human \
+      '"report briefing=\(.briefing_id | mandible_short_id)  round=\(.round_id | mandible_short_id)  changed=\(.changed)"'
+  fi
 }
 
 cmd_group_show() {
@@ -555,7 +622,7 @@ emit_route_plan() {
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | api_jq_human \
-      '(.routes[] | "\(.route_key)  \(.action)  group=\(.group_id | mandible_short_id)  artifact=\(.logical_artifact_id | mandible_short_id)  template=v\(.active_template_version) (\(.template_action))"),
+      '(.routes[] | "\(.route_key)  \(.action)  group=\(.group_id | mandible_short_id)  artifact=\(.logical_artifact_id | mandible_short_id)  template=v\(.active_template_version) (\(.template_action))  current_revision=\(.current_revision // "none")"),
        "changed: \(.changed)"'
   fi
 }
@@ -720,5 +787,6 @@ case "$subcommand" in
   bundle) cmd_bundle "$@" ;;
   group) cmd_group "$@" ;;
   route) cmd_route "$@" ;;
+  report) [[ "${1:-}" == "update" ]] || die "Usage: mandible briefing report update ..." 2; shift; cmd_report_update "$@" ;;
   *) die "Unknown briefing subcommand: $subcommand" 2 ;;
 esac

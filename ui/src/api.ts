@@ -4518,7 +4518,10 @@ export type BriefingGroup = {
   archivedAt?: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
-  destinations: Array<{ logicalArtifactId: string; publicationMode: 'reviewed-document' | 'published-report' | null }>;
+  destinations: Array<{ logicalArtifactId: string; publicationMode: 'reviewed-document' | 'published-report' | null;
+    routeKeys: string[] }>;
+  destinationHistory: Array<{ id: string; logicalArtifactId: string; priorGroupId: string | null;
+    resultingGroupId: string; actorUserId: string; createdAt: number }>;
   reviewCandidates?: BriefingGroupReviewCandidate[];
   history?: BriefingGroupDisposition[];
 };
@@ -4730,9 +4733,22 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
         const publicationMode: BriefingGroup['destinations'][number]['publicationMode'] =
           row.publication_mode === 'reviewed-document' || row.publication_mode === 'published-report'
             ? row.publication_mode : null;
-        return logicalArtifactId ? { logicalArtifactId, publicationMode } : null;
+        return logicalArtifactId ? { logicalArtifactId, publicationMode,
+          routeKeys: Array.isArray(row.route_keys) ? row.route_keys.filter((key): key is string => typeof key === 'string') : [] } : null;
       })
       .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    const destinationHistory = (Array.isArray(group.destination_history) ? group.destination_history : [])
+      .map((entry) => {
+        const row = briefingRecord(entry);
+        const id = briefingString(row.id);
+        const logicalArtifactId = briefingString(row.logical_artifact_id);
+        const resultingGroupId = briefingString(row.resulting_group_id);
+        const actorUserId = briefingString(row.actor_user_id);
+        return id && logicalArtifactId && resultingGroupId && actorUserId ? {
+          id, logicalArtifactId, priorGroupId: briefingOptionalString(row.prior_group_id),
+          resultingGroupId, actorUserId, createdAt: briefingOptionalNumber(row.created_at) ?? 0,
+        } : null;
+      }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
     return id && key && name ? {
       id,
       key,
@@ -4743,6 +4759,7 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
       current,
       updates,
       destinations,
+      destinationHistory,
       reviewCandidates,
       history,
     } : null;

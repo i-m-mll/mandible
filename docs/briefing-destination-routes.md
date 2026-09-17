@@ -1,7 +1,7 @@
 # Briefing destination route manifests
 
 Mandible owns recurring Briefing destination identity. An installed scheduler
-declares stable destination routes through the authenticated operator API. A
+declares stable destination routes through authenticated project writes. A
 route names a logical Artifact and section, never a layout. Mandible derives
 the active group from the Artifact's single destination-owner record.
 
@@ -51,15 +51,20 @@ mean that a human endorsed the report. Quiet runs record health without a round.
 
 1. Start the upgraded Mandible daemon so the existing destination-route schema
    is present.
-2. Provision the configured operator's durable API token.
-3. Register the destination Artifact, publish its exact initial version as a
-   Briefing, create the Base bundle, and create the Briefing group with an
-   immutable key and that bundle as Base.
-4. Bind the previously unowned Artifact to that group, then put only the
-   Artifact ref and route declaration in the installed manifest:
+2. Associate the exact logical Artifact with its canonical project using
+   `mandible artifact associate <artifact-ref> --project <project> --canonical`.
+   An ambiguous or unassociated Artifact cannot be routed or placed. The
+   authenticated agent needs write access to that project.
+3. Publish the exact initial version as a Briefing. Create the target group
+   and Base if needed; existing mixed groups can be used directly.
+4. Place the report and bind its owner, optionally installing its single route
+   in the same transaction. Supply the observed owner and Base references:
 
    ```bash
-   mandible briefing group destination bind <group-key> <artifact-ref> --json
+   mandible briefing group destination place <group-key> <artifact-ref> \
+     --briefing <briefing-ref> --operation-key <stable-key> \
+     --expected-owner none --expected-target-base <bundle-ref> \
+     --route-file routes.json --json
    ```
 
 5. Check the manifest without mutation:
@@ -79,7 +84,15 @@ mean that a human endorsed the report. Quiet runs record health without a round.
    publication remains `POST /api/briefings/runs`; there is no alternate or
    fallback publication path.
 
-Plan and apply require the configured operator's durable token. Plan performs
+An interactive agent can publish an exact new Artifact version to the same
+report Briefing through `mandible briefing report update`. It supplies an
+operation key and the observed Current round and version. Mandible appends an
+immutable round, advances Current, and retains prior rounds; an exact retry
+returns the prior receipt. This path does not submit a reviewed-document
+proposal or require an interactive agent to impersonate a scheduler task.
+
+Plan and apply require a durable agent or operator token with write access to
+every route Artifact's canonical project. Plan performs
 the same ref, Base-document, ownership, composer, and template checks as apply
 but makes no database changes. Output is ordered by `route_key`, so an installed
 manifest has deterministic review output.
@@ -97,11 +110,17 @@ identity, is `update`. Install an upgrade in this order:
    template version.
 
 A route key can never move to another logical Artifact, heading, or composer
-kind. The Artifact's destination group may move only inside the same guarded
-configured-human review transaction that accepts the new Base and full layout;
-the binding digest includes the expected owner and the receipt preserves the
-move. A template version can never be changed in place, and the active version
+kind. A published report's destination can move through `destination place`:
+pass the exact current owner, source Base, and target Base. The operation
+creates successor layouts, preserves unrelated members, and records the actual
+agent and prior owner. Retire any obsolete pending report proposal separately
+through group configuration after direct placement; do not record a human
+acceptance that did not occur. A template version can never be changed in place, and the active version
 cannot move backwards. Any conflict fails the transaction without partial work.
+For a configuration update, copy the route's `current_revision` from `route plan`
+into that route declaration as `expected_revision` before `route apply`.
+Creation and exact replay need no revision. A stale revision fails with the
+current revision and leaves the route unchanged.
 
 ## Manually staged proposals
 
@@ -113,8 +132,8 @@ Repository-backed or mixed-lineage documents still require protected-merge
 promotion; this workflow does not authorize repository changes.
 
 The configured operator first submits a frozen review of each added or changed
-Briefing round. For a report without directives, add a review annotation and
-submit it. Then preview the exact proposal and any explicit destination
+reviewed-document Briefing round. Published reports use direct placement and
+Current-round writes above. Then preview the exact proposal and any explicit destination
 ownership changes using the operator's durable API credential:
 
 ```bash
@@ -139,4 +158,5 @@ Changes to Base, proposal, submissions, or expected ownership require a new
 review. Exact retries return the original receipt without reapplying the change;
 a retry with different destination changes fails. The immutable receipt records
 manual provenance as a null composition run and retains all custody anchors.
-Route installation remains a separate operator action after acceptance.
+For reviewed documents, route installation remains a separate project-authorized
+action after acceptance.

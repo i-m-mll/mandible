@@ -72,18 +72,28 @@ export function BriefingGroupDetail({
           <p className="briefing-empty" role="status">Archived collection. Its bundles, Briefings, and review history remain intact.</p>
         ) : null}
         {group.destinations.length > 0 ? (
-          <p className="briefing-empty">
+          <div className="briefing-empty">
+            <p>
             Owns {group.destinations.length} recurring destination{group.destinations.length === 1 ? '' : 's'}
             {publishedReportCount > 0 ? `: ${publishedReportCount} published report${publishedReportCount === 1 ? '' : 's'}` : ''}
             {publishedReportCount > 0 && reviewedDocumentCount > 0 ? ' and ' : ''}
             {reviewedDocumentCount > 0 ? `${reviewedDocumentCount} reviewed document${reviewedDocumentCount === 1 ? '' : 's'}` : ''}.
             Published reports advance Current without Accept or Reject and do not imply human endorsement.
-          </p>
+            </p>
+            <ul>
+              {group.destinations.map((destination) => (
+                <li key={destination.logicalArtifactId}>
+                  {shortIdentityRef(destination.logicalArtifactId)}: {destination.publicationMode ?? 'unrouted'}
+                  {destination.routeKeys.length ? ` · ${destination.routeKeys.join(', ')}` : ''}
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
         <section className="briefing-group-detail__current" aria-labelledby="briefing-group-current-title">
           <div className="briefing-group-detail__intro">
             <h3 id="briefing-group-current-title">Base</h3>
-            <p>The accepted layout and comparison base for this group.</p>
+            <p>The current layout and comparison base for reviewed documents. Published reports can be placed directly.</p>
           </div>
           {group.current ? (
             <button
@@ -164,6 +174,23 @@ export function BriefingGroupDetail({
                     <strong>{entry.proposal.name}</strong>
                     <span>{new Date(entry.createdAt).toLocaleString()}</span>
                     {entry.priorBase ? <span>Previous Base: {entry.priorBase.name === 'Original' ? 'Base' : entry.priorBase.name}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </section>
+        ) : null}
+        {group.destinationHistory.length > 0 ? (
+          <section className="briefing-group-detail__history" aria-label="Destination history">
+            <details>
+              <summary>Report placement history ({group.destinationHistory.length})</summary>
+              <ul className="briefing-group-detail__history-list">
+                {group.destinationHistory.map((entry) => (
+                  <li key={entry.id}>
+                    <span>{entry.priorGroupId === null ? 'Placed' : entry.resultingGroupId === group.id ? 'Moved in' : 'Moved out'}</span>
+                    <strong>{shortIdentityRef(entry.logicalArtifactId)}</strong>
+                    <span>{new Date(entry.createdAt).toLocaleString()}</span>
+                    <span>By {shortIdentityRef(entry.actorUserId)}</span>
                   </li>
                 ))}
               </ul>

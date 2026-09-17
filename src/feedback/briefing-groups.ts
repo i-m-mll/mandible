@@ -394,13 +394,26 @@ export function readBriefingGroup(db: Db, groupRef: string, viewer: BriefingBund
     ...projection,
     current: currentBundleId === null ? null : readBriefingBundle(db, currentBundleId, viewer),
     updates: updateIds(db, id).map((bundleId) => readBriefingBundle(db, bundleId, viewer)),
-    destinations: db.prepare(`SELECT owner.logical_artifact_id, owner.group_id,
-        MIN(policy.publication_mode) AS publication_mode, owner.created_at, owner.updated_at
+    destinations: (db.prepare(`SELECT owner.logical_artifact_id, owner.group_id,
+        MIN(policy.publication_mode) AS publication_mode, owner.created_at, owner.updated_at,
+        (SELECT json_group_array(route_key) FROM (SELECT route_key FROM briefing_destination_routes
+          WHERE logical_artifact_id = owner.logical_artifact_id ORDER BY route_key)) AS route_keys_json
       FROM briefing_destination_owners owner
       LEFT JOIN briefing_destination_routes route ON route.logical_artifact_id = owner.logical_artifact_id
       LEFT JOIN briefing_destination_policies policy ON policy.route_key = route.route_key
       WHERE owner.group_id = ? GROUP BY owner.logical_artifact_id, owner.group_id
-      ORDER BY owner.logical_artifact_id`).all(id) as BriefingGroup["destinations"],
+      ORDER BY owner.logical_artifact_id`).all(id) as Array<Omit<BriefingGroup["destinations"][number], "route_keys"> &
+        { route_keys_json: string }>).map(({ route_keys_json, ...destination }) => ({
+          ...destination, route_keys: JSON.parse(route_keys_json) as string[],
+        })),
+    destination_history: db.prepare(`SELECT id, logical_artifact_id,
+        json_extract(before_json, '$.owner_group_id') AS prior_group_id,
+        json_extract(after_json, '$.group_id') AS resulting_group_id,
+        actor_user_id, created_at FROM briefing_destination_mutations
+      WHERE operation_kind = 'place' AND (
+        json_extract(before_json, '$.owner_group_id') = ? OR
+        json_extract(after_json, '$.group_id') = ?)
+      ORDER BY created_at DESC, id DESC`).all(id, id) as BriefingGroup["destination_history"],
     review_candidates: viewer.humanReviewOperator === true
       ? updateIds(db, id).map((proposalBundleId) => humanReviewCandidate(db, {
       groupId: id, expectedBaseBundleId: currentBundleId, proposalBundleId, operatorUserId: viewer.userId,
