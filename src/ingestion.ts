@@ -939,6 +939,9 @@ export async function stopIngestionGracefully(): Promise<void> {
     clearTimeout(timer);
   }
   debounceTimers.clear();
+  for (const timer of watcherRetryTimers.values()) clearTimeout(timer);
+  watcherRetryTimers.clear();
+  watcherRetryAttempted.clear();
   queuedIngestPaths.clear();
   ingestDrainRunning = false;
   reconciling = false;
@@ -1058,6 +1061,8 @@ export async function triggerExactPathIngest(transcriptPath: string): Promise<Ta
 
 const requestedReparseFlights = new Map<string, Promise<void>>();
 const activeActorPathFlights = new Map<string, Promise<void>>();
+const watcherRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const watcherRetryAttempted = new Set<string>();
 const requestedReparseFailures = new Map<string, { at: number; error: string }>();
 const REQUESTED_REPARSE_RETRY_MS = 30_000;
 
@@ -1230,6 +1235,11 @@ function debouncedIngest(filePath: string): void {
   if (!isCurrentIngestionRun(runToken)) {
     return;
   }
+  // A new filesystem event is a new opportunity after the one-shot retry.
+  watcherRetryAttempted.delete(filePath);
+  const pendingRetry = watcherRetryTimers.get(filePath);
+  if (pendingRetry) clearTimeout(pendingRetry);
+  watcherRetryTimers.delete(filePath);
   const existing = debounceTimers.get(filePath);
   if (existing) clearTimeout(existing);
 
@@ -1269,6 +1279,16 @@ function enqueueIngest(filePath: string, runToken = ingestionRunToken): void {
   }
 }
 
+function scheduleWatcherRetry(filePath: string, runToken: number): void {
+  if (watcherRetryAttempted.has(filePath) || !isCurrentIngestionRun(runToken)) return;
+  watcherRetryAttempted.add(filePath);
+  const timer = setTimeout(() => {
+    watcherRetryTimers.delete(filePath);
+    enqueueIngest(filePath, runToken);
+  }, REQUESTED_REPARSE_RETRY_MS);
+  watcherRetryTimers.set(filePath, timer);
+}
+
 async function drainIngestQueue(runToken: number): Promise<void> {
   if (!isCurrentIngestionRun(runToken)) {
     return;
@@ -1278,7 +1298,8 @@ async function drainIngestQueue(runToken: number): Promise<void> {
     while (isCurrentIngestionRun(runToken) && queuedIngestPaths.size > 0) {
       const paths = queuedIngestPaths.take(DIRTY_INGEST_BATCH_SIZE);
       try {
-        if (ingestionActor) {
+        const actor = ingestionActor;
+        if (actor) {
           const alreadyRunning = paths.filter((filePath) => activeActorPathFlights.has(filePath));
           const ready = paths.filter((filePath) => !activeActorPathFlights.has(filePath));
           // A watcher event arriving during exact work must be checked after
@@ -1291,12 +1312,24 @@ async function drainIngestQueue(runToken: number): Promise<void> {
                   enqueueIngest(filePath, runToken);
                 }
               },
-              () => enqueueIngest(filePath, runToken),
+              () => scheduleWatcherRetry(filePath, runToken),
             );
           }
-          if (ready.length > 0) {
-            await trackActorPathFlight(ready, ingestionActor.ingest(ready));
-          }
+          // Each path needs its own outcome. A failed sibling must not reject
+          // the selected source's exact freshness barrier.
+          const settled = await Promise.allSettled(ready.map((filePath) =>
+            trackActorPathFlight([filePath], actor.ingest([filePath]))));
+          settled.forEach((result, index) => {
+            const filePath = ready[index];
+            if (result.status === "fulfilled") {
+              watcherRetryAttempted.delete(filePath);
+              return;
+            }
+            logger("warn", "ingestion_debounced_error", { files: [filePath], error: String(result.reason) });
+            // A consumed watcher event gets one bounded retry. Repeated parse
+            // failures then wait for a new event or the safety reconciliation.
+            scheduleWatcherRetry(filePath, runToken);
+          });
         } else {
           await ingestBatchForWorker(paths);
         }
