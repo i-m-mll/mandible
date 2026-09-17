@@ -98,7 +98,7 @@ function verifyFinalOrigin(journal) {
     "--cacert", rootCert, "--resolve", "app.mandible.localhost:19420:127.0.0.1",
     OLD_ORIGIN,
   ], { encoding: "utf8" });
-  if (old.status === 0 && old.stdout.includes("Move this browser to Mandible")) {
+  if (old.status === 0 && old.stdout.includes('id="mandible-origin-migration"')) {
     throw new Error("The temporary old-origin page is still live.");
   }
 }
@@ -174,7 +174,7 @@ function convergeHook(db, existing) {
     const rootCert = localCaPaths(home).rootCert;
     const oldPage = runChecked("/usr/bin/curl", ["--silent", "--show-error", "--fail", "--max-time", "5",
       "--cacert", rootCert, "--resolve", "app.mandible.localhost:19420:127.0.0.1", OLD_ORIGIN], root);
-    if (!oldPage.includes("Move this browser to Mandible")) throw new Error("Old-host saved-state page is not live.");
+    if (!oldPage.includes('id="mandible-origin-migration"')) throw new Error("Old-host saved-state page is not live.");
     const frontDoor = runChecked("/usr/bin/curl", ["--silent", "--show-error", "--max-time", "5",
       "--cacert", rootCert, "--resolve", "mandible.localhost:443:127.0.0.1",
       "--output", "/dev/null", "--write-out", "%{http_code}", `${PRODUCTION_ORIGIN}/api/health`], root);

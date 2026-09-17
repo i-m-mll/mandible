@@ -21,7 +21,7 @@ const files = new Map([
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action ${origin.origin}; base-uri 'none'">
 <title>Opening Mandible</title>
-<main style="font:16px system-ui;max-width:38rem;margin:4rem auto;line-height:1.5">
+<main id="mandible-origin-migration" style="font:16px system-ui;max-width:38rem;margin:4rem auto;line-height:1.5">
   <h1>Opening Mandible at its new address</h1>
   <p>Your saved workspace is moving with you.</p>
   <button id="move" type="button" hidden>Retry</button>
