@@ -588,6 +588,56 @@ function eventData<T>(payload: unknown): T | null {
   return (data && typeof data === 'object' ? data : record) as T;
 }
 
+const CONVERSATION_WINDOW_PENDING_LIMIT_MS = 120_000;
+const CONVERSATION_WINDOW_MISSED_EVENT_CHECK_MS = 1_000;
+
+function waitForConversationSourceUpdate(id: string, signal: AbortSignal | undefined, remainingMs: number): Promise<void> {
+  const client = acquireSharedSse();
+  return new Promise<void>((resolve, reject) => {
+    let off = () => {};
+    let timer: number | null = null;
+    const abort = () => finish(new DOMException('Conversation read cancelled', 'AbortError'));
+    const finish = (error?: Error) => {
+      if (timer !== null) window.clearTimeout(timer);
+      off();
+      signal?.removeEventListener('abort', abort);
+      client.close();
+      if (error) reject(error); else resolve();
+    };
+    if (signal?.aborted) {
+      finish(new DOMException('Conversation read cancelled', 'AbortError'));
+      return;
+    }
+    off = client.on('conversation:updated', (payload) => {
+      if (eventData<{ id?: string }>(payload)?.id === id) finish();
+    });
+    signal?.addEventListener('abort', abort, { once: true });
+    // A completion event can cross the initial 503 response before this
+    // subscription is attached. The bounded timer checks that missed edge.
+    timer = window.setTimeout(() => finish(), Math.min(CONVERSATION_WINDOW_MISSED_EVENT_CHECK_MS, remainingMs));
+    client.connect();
+  });
+}
+
+async function readConversationWindowWhenReady(
+  id: string,
+  request: ReturnType<typeof windowRequest>,
+): Promise<ConversationPositionWindow> {
+  const deadline = Date.now() + CONVERSATION_WINDOW_PENDING_LIMIT_MS;
+  for (;;) {
+    try {
+      return await getConversationWindow(id, request);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== 'freshness_pending') throw error;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new ApiError('Chat content is temporarily unavailable. Retry to check again.', 503, 'freshness_pending');
+      }
+      await waitForConversationSourceUpdate(id, request.signal, remaining);
+    }
+  }
+}
+
 function reconcileControlSnapshot(
   current: ConversationControlSnapshot | null,
   incoming: ConversationControlSnapshot,
@@ -1116,7 +1166,7 @@ export function ConversationDetail({
   );
   const fetchConversationDetail = useCallback(
     async ({ signal }: { signal: AbortSignal }) => {
-      const incoming = await getConversationWindow(conversationId, windowRequest(windowTarget, signal));
+      const incoming = await readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal));
       if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
       const aggregateKey = conversationKeys.aggregate(conversationId);
       const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
@@ -1138,12 +1188,6 @@ export function ConversationDetail({
   const windowQuery = useQuery({
     queryKey: conversationRequestKey,
     queryFn: fetchConversationDetail,
-    // A selected source can still be reparsing after the first HTTP response.
-    // Keep the observer alive through that bounded transition; errors from an
-    // actual parse or source failure remain actionable immediately.
-    retry: (failures, cause) => cause instanceof ApiError
-      && cause.code === 'freshness_pending' && failures < 120,
-    retryDelay: 1_000,
   }, queryClient);
   const aggregateQuery = useQuery<ConversationTranscriptData>({
     queryKey: conversationKeys.aggregate(conversationId),
@@ -1156,7 +1200,7 @@ export function ConversationDetail({
     const key = conversationKeys.window(conversationId, target);
     const incoming = await queryClient.fetchQuery({
       queryKey: key,
-      queryFn: ({ signal }) => getConversationWindow(conversationId, windowRequest(target, signal)),
+      queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(target, signal)),
       staleTime: 0,
     });
     if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();

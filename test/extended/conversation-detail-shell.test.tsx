@@ -237,6 +237,7 @@ function positionPayload(
   blocks: ConversationBlock[],
   options: {
     kind?: 'initial' | 'latest' | 'block';
+    hasBefore?: boolean;
     hasAfter?: boolean;
     afterCount?: number;
     revision?: number;
@@ -263,7 +264,7 @@ function positionPayload(
     window: {
       start_position: blocks[0]?.position ?? null,
       end_position: target?.position ?? null,
-      has_before: false,
+      has_before: options.hasBefore ?? false,
       has_after: options.hasAfter ?? false,
       after_count: options.hasAfter ? (options.afterCount ?? Math.max(1, revision - blocks.length)) : 0,
       limit: 160,
@@ -454,6 +455,78 @@ describe('compact detail pane shell', () => {
     expect(screen.queryByText('conversation is being reindexed')).toBeNull();
     expect(await screen.findByText('Recovered pinned message', {}, { timeout: 3_000 })).toBeTruthy();
     expect(attempts).toBe(2);
+  });
+
+  it('loads the selected Chat after navigating away from a pending reparse and back', async () => {
+    const first = mockConversationDetail(defaultControl, []);
+    const second = { ...first, id: 'different-chat', title: 'Different chat' };
+    const firstBlock = makeTranscriptBlock({ id: 'first-after-return', content: 'First chat returned' });
+    const secondBlock = makeTranscriptBlock({ id: 'second-chat', content: 'Second chat opened' });
+    let firstAttempts = 0;
+    vi.mocked(api.getConversationWindow).mockImplementation(async (id) => {
+      if (id === second.id) return positionPayload(second, [secondBlock]);
+      if (++firstAttempts === 1) throw new api.ApiError('source pending', 503, 'freshness_pending');
+      return positionPayload(first, [firstBlock]);
+    });
+    const view = (id: string) => (
+      <ConversationsView
+        conversations={[first, second]}
+        consoleSessions={[]}
+        initialConversationId={id}
+        initialSessionId={null}
+        onSelectSession={() => undefined}
+        onNewConversation={() => undefined}
+      />
+    );
+    const mounted = render(view(first.id));
+    await waitFor(() => expect(firstAttempts).toBe(1));
+    expect(screen.queryByText('No messages yet')).toBeNull();
+    mounted.rerender(view(second.id));
+    expect(await screen.findByText('Second chat opened')).toBeTruthy();
+    mounted.rerender(view(first.id));
+    expect(await screen.findByText('First chat returned', {}, { timeout: 3_000 })).toBeTruthy();
+    expect(screen.queryByText('No messages yet')).toBeNull();
+    expect(firstAttempts).toBeGreaterThanOrEqual(2);
+  });
+
+  it('keeps the visible transcript while its pending refresh completes', async () => {
+    const pinned = mockConversationDetail(defaultControl, [transcriptBlock]);
+    const added = makeTranscriptBlock({ id: 'refresh-added', position: 1, content: 'Message after refresh' });
+    let attempts = 0;
+    vi.mocked(api.getConversationWindow).mockImplementation(async () => {
+      if (++attempts === 1) return positionPayload(pinned, [transcriptBlock]);
+      if (attempts === 2) throw new api.ApiError('source pending', 503, 'freshness_pending');
+      return positionPayload(pinned, [transcriptBlock, added], { revision: 2 });
+    });
+    renderConversationDetail({ ...pinned, starred: true });
+    expect(await screen.findByText(transcriptBlock.content)).toBeTruthy();
+    applyConversationSse(queryClient, 'conversation:updated', { id: pinned.id, block_count: 1 });
+    await waitFor(() => expect(attempts).toBe(2));
+    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
+    expect(screen.queryByText('source pending')).toBeNull();
+    expect(screen.queryByText('No messages yet')).toBeNull();
+    expect(await screen.findByText('Message after refresh', {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it('keeps the current window visible while an older edge waits for source indexing', async () => {
+    const pinned = mockConversationDetail(defaultControl, []);
+    const recent = makeTranscriptBlock({ id: 'recent-edge', position: 1, content: 'Recent visible message' });
+    const older = makeTranscriptBlock({ id: 'older-edge', position: 0, content: 'Older recovered message' });
+    let edgeAttempts = 0;
+    vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
+      if ('position' in request && request.position === 0) {
+        if (++edgeAttempts === 1) throw new api.ApiError('source pending', 503, 'freshness_pending');
+        return positionPayload(pinned, [older], { kind: 'block', revision: 2, hasAfter: true });
+      }
+      return positionPayload(pinned, [recent], { revision: 2, hasBefore: true });
+    });
+    renderConversationDetail(pinned);
+    expect(await screen.findByText('Recent visible message')).toBeTruthy();
+    await waitFor(() => expect(edgeAttempts).toBe(1));
+    expect(screen.getByText('Recent visible message')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Load earlier history' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText('source pending')).toBeNull();
+    expect(await screen.findByText('Older recovered message', {}, { timeout: 3_000 })).toBeTruthy();
   });
 
   it('keeps a new selection\'s real error when an old Jump request is cancelled late', async () => {
