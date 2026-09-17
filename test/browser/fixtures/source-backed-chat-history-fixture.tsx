@@ -24,6 +24,17 @@ let navigation: (anchor: ConversationAnchor | null) => void = () => undefined;
 const nativeFetch = window.fetch.bind(window);
 window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input);
+  // This source-reader fixture has no browser-session server. Supply only its
+  // access boundary; all conversation bytes still traverse the real HTTP route.
+  if (url === '/api/client-auth/whoami') {
+    return new Response(JSON.stringify({
+      authenticated: true,
+      session: {
+        family_id: 'source-history-family', audience: 'production',
+        csrf_token: 'source-history-csrf', effect_ceiling: ['ledger:read'],
+      },
+    }), { headers: { 'Content-Type': 'application/json' } });
+  }
   if (url.includes('/api/conversations')) requests.push(url);
   const response = await nativeFetch(input, init);
   if (url.includes(`/api/conversations/${conversationId}`) && response.ok) {
