@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, type Db } from "../src/db.js";
+import { MIGRATIONS } from "../src/db-migrations.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import {
   applyBriefingAnnotations,
@@ -390,14 +391,14 @@ describe("artifact-backed Briefing rounds", () => {
       .toEqual({ current_bundle_id: base.id });
   });
 
-  it("accepts one exact Mandible-custodied recurring proposal and makes exact replay a no-op", () => {
+  it.each(["manual", "recurring"])("accepts one exact Mandible-custodied %s proposal and makes exact replay a no-op", (kind) => {
     const { base, proposal, group, viewer } = seedPromotionFixture();
     expect(() => configureBriefingGroup(db, group.id, {
       currentBundleRef: proposal.id, bundleRefs: [],
     }, viewer, 1_205)).toThrowError(expect.objectContaining({
       code: "briefing_group_base_transition_requires_promotion",
     }));
-    const compositionRunId = insertCompositionProvenance(group.id, base.id, proposal.id);
+    const compositionRunId = kind === "recurring" ? insertCompositionProvenance(group.id, base.id, proposal.id) : null;
     const submissionId = insertOperatorSubmission(proposal.id);
     const candidate = readBriefingGroup(db, group.id, viewer).review_candidates[0];
     expect(candidate).toMatchObject({
@@ -444,9 +445,9 @@ describe("artifact-backed Briefing rounds", () => {
       .run(receipt.id)).toThrow(/immutable/);
   });
 
-  it("binds destination moves to the same structural review digest and applies them only on accept", () => {
+  it.each(["manual", "recurring"])("binds destination moves to the same structural review digest and applies them only on accept (%s)", (kind) => {
     const { base, proposal, group, viewer } = seedPromotionFixture();
-    insertCompositionProvenance(group.id, base.id, proposal.id);
+    if (kind === "recurring") insertCompositionProvenance(group.id, base.id, proposal.id);
     insertOperatorSubmission(proposal.id, "destination");
     const artifact = db.prepare(`SELECT b.logical_artifact_id
       FROM briefing_bundle_members bm JOIN briefings b ON b.id = bm.briefing_id
@@ -477,10 +478,27 @@ describe("artifact-backed Briefing rounds", () => {
       expected_group_id: source.id,
       resulting_group_id: group.id,
     }] });
-    const accepted = dispositionBriefingGroupProposalByHumanReview(db, {
+    const input = {
       groupRef: group.id, expectedBaseBundleRef: base.id, proposalBundleRef: proposal.id,
-      decision: "accepted", bindingDigest: candidate.binding_digest!, destinationChanges,
-    }, { userId: humanId, evidenceMethod: "api_token", credentialId: null }, viewer, 1_300);
+      decision: "accepted" as const, bindingDigest: candidate.binding_digest!, destinationChanges,
+    };
+    const actor = { userId: humanId, evidenceMethod: "api_token" as const, credentialId: null };
+    expect(() => dispositionBriefingGroupProposalByHumanReview(db, {
+      ...input, destinationChanges: [],
+    }, actor, viewer)).toThrowError(expect.objectContaining({ code: "briefing_review_binding_drift" }));
+    const accepted = dispositionBriefingGroupProposalByHumanReview(db, input, actor, viewer, 1_300);
+    expect(dispositionBriefingGroupProposalByHumanReview(db, input, actor, viewer).changed).toBe(false);
+    expect(() => dispositionBriefingGroupProposalByHumanReview(db, {
+      ...input, destinationChanges: [],
+    }, actor, viewer)).toThrowError(expect.objectContaining({ code: "briefing_review_replay_drift" }));
+    const before = readBriefingGroup(db, group.id, viewer).history;
+    // Rebuild the receipt tables with populated item and destination anchors.
+    db.pragma("foreign_keys = ON");
+    db.transaction(() => {
+      for (const sql of MIGRATIONS.find((migration) => migration.version === 181)!.statements) db.exec(sql);
+    })();
+    expect(readBriefingGroup(db, group.id, viewer).history).toEqual(before);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(accepted.disposition).toMatchObject({
       base_layout_digest: candidate.base_layout_digest,
       proposal_layout_digest: candidate.proposal_layout_digest,
@@ -493,9 +511,9 @@ describe("artifact-backed Briefing rounds", () => {
       .toEqual({ count: 1 });
   });
 
-  it("rejects without changing Base and fails closed on review, custody, and Base drift", () => {
+  it.each(["manual", "recurring"])("rejects without changing Base and fails closed on review, custody, and Base drift (%s)", (kind) => {
     const fixture = seedPromotionFixture();
-    insertCompositionProvenance(fixture.group.id, fixture.base.id, fixture.proposal.id);
+    if (kind === "recurring") insertCompositionProvenance(fixture.group.id, fixture.base.id, fixture.proposal.id);
     insertOperatorSubmission(fixture.proposal.id, "first");
     const initial = readBriefingGroup(db, fixture.group.id, fixture.viewer).review_candidates[0];
     insertOperatorSubmission(fixture.proposal.id, "second");
@@ -518,9 +536,9 @@ describe("artifact-backed Briefing rounds", () => {
 
   });
 
-  it("fails closed when Base changes after an operator freezes the review", () => {
+  it.each(["manual", "recurring"])("fails closed when Base changes after an operator freezes the review (%s)", (kind) => {
     const fixture = seedPromotionFixture();
-    insertCompositionProvenance(fixture.group.id, fixture.base.id, fixture.proposal.id);
+    if (kind === "recurring") insertCompositionProvenance(fixture.group.id, fixture.base.id, fixture.proposal.id);
     insertOperatorSubmission(fixture.proposal.id, "drift");
     const candidate = readBriefingGroup(db, fixture.group.id, fixture.viewer).review_candidates[0];
     db.prepare("UPDATE briefing_groups SET current_bundle_id = NULL WHERE id = ?").run(fixture.group.id);
@@ -531,9 +549,20 @@ describe("artifact-backed Briefing rounds", () => {
       .toThrowError(expect.objectContaining({ code: "briefing_review_base_drift" }));
   });
 
-  it("keeps repository or mixed-lineage proposals on protected merge authorization", () => {
+  it("does not reinterpret a composer proposal with Base drift as a manual proposal", () => {
     const { base, proposal, group, viewer } = seedPromotionFixture();
     insertCompositionProvenance(group.id, base.id, proposal.id);
+    insertOperatorSubmission(proposal.id);
+    const replacement = createBriefingBundle(db, { name: "Replacement Base", briefingRefs: [], viewer });
+    db.prepare("UPDATE briefing_groups SET current_bundle_id = ? WHERE id = ?").run(replacement.id, group.id);
+    expect(readBriefingGroup(db, group.id, viewer).review_candidates[0]).toMatchObject({
+      ready: false, blocker_code: "briefing_review_provenance_drift",
+    });
+  });
+
+  it.each(["manual", "recurring"])("keeps repository or mixed-lineage proposals on protected merge authorization (%s)", (kind) => {
+    const { base, proposal, group, viewer } = seedPromotionFixture();
+    if (kind === "recurring") insertCompositionProvenance(group.id, base.id, proposal.id);
     insertOperatorSubmission(proposal.id);
     const version = db.prepare(`SELECT r.artifact_version_id, av.artifact_id
       FROM briefing_bundle_members bm JOIN briefings b ON b.id = bm.briefing_id

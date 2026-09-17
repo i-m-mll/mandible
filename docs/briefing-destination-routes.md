@@ -102,3 +102,41 @@ configured-human review transaction that accepts the new Base and full layout;
 the binding digest includes the expected owner and the receipt preserves the
 move. A template version can never be changed in place, and the active version
 cannot move backwards. Any conflict fails the transaction without partial work.
+
+## Manually staged proposals
+
+A proposal staged with `briefing bundle create` and `briefing group add` can use
+configured-human review when every proposed document has verified
+Mandible-ingested custody. It does not need a recurring composer run. Composer
+provenance, when present, must match the exact group, Base, and proposal.
+Repository-backed or mixed-lineage documents still require protected-merge
+promotion; this workflow does not authorize repository changes.
+
+The configured operator first submits a frozen review of each added or changed
+Briefing round. For a report without directives, add a review annotation and
+submit it. Then preview the exact proposal and any explicit destination
+ownership changes using the operator's durable API credential:
+
+```bash
+changes='[{"logical_artifact_ref":"artifact:<report>","expected_group_ref":null}]'
+mandible briefing group review <group> --expected-base <base> --proposal <proposal> \
+  --destination-changes "$changes" --json
+```
+
+Use `null` for an unowned destination, or the exact current owner group reference
+for a move. Review the returned layouts, document versions, submissions,
+destination changes, and `binding_digest`. The operator then passes that digest
+and the same changes to either disposition command:
+
+```bash
+mandible briefing group accept <group> --expected-base <base> --proposal <proposal> \
+  --binding-digest <reviewed-digest> --destination-changes "$changes" --json
+# Use `reject` with the same arguments to retain Base and destination ownership.
+```
+
+Acceptance changes Base and ownership atomically. Rejection preserves both.
+Changes to Base, proposal, submissions, or expected ownership require a new
+review. Exact retries return the original receipt without reapplying the change;
+a retry with different destination changes fails. The immutable receipt records
+manual provenance as a null composition run and retains all custody anchors.
+Route installation remains a separate operator action after acceptance.

@@ -112,6 +112,10 @@ describe.sequential("supported schema version range", () => {
         .toBeUndefined();
       migrate(db);
       expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
+      expect(db.prepare(`SELECT "notnull" FROM pragma_table_info('briefing_group_review_dispositions')
+        WHERE name = 'composition_run_id'`).get()).toEqual({ notnull: 0 });
+      expect(db.prepare("SELECT 1 FROM pragma_table_info('briefing_composition_inputs') WHERE name = 'expected_current_round_id'").get())
+        .toBeDefined();
       expect(db.prepare("SELECT 1 FROM pragma_table_info('auth_requests') WHERE name = 'change_report_json'").get())
         .toBeDefined();
       expect(db.prepare("SELECT 1 FROM conversation_archive_states").all()).toEqual([]);
