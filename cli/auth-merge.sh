@@ -484,15 +484,14 @@ report_daemon_sk_signing_failure() {
   is_daemon_sk_signing_failure "$signing_stderr" "$sk_key_in_use" || return 1
 
   err ""
-  err "  ${RED}FATAL: The FIDO security key could not be reached from the daemon's process context.${RESET}"
-  err "  ${DIM_WHITE}On macOS, the daemon's context may lack HID / Input Monitoring permission.${RESET}"
-  err "  ${DIM_WHITE}The repo is left mid-merge with the correct staged content.${RESET}"
+  err "  ${RED}Protected merge signing failed; the cause is not established.${RESET}"
+  err "  ${DIM_WHITE}The request and Git state require inspection before another attempt.${RESET}"
   err ""
-  err "  Complete the merge in a user terminal:"
-  err "    git -c commit.gpgsign=true merge --continue"
-  err "  Touch the key when it blinks."
-  err ""
-  err "  Alternatively, grant Input Monitoring permission to the daemon's process context."
+  err "  Preserve the current state. Do not continue or abort the merge with raw Git commands:"
+  err "  they bypass Mandible's auth-result and convergence checks, and ambient Git"
+  err "  configuration may select a different signing key. Ask the configured operator"
+  err "  to inspect the failed request and Git state before arranging audited recovery"
+  err "  and, if needed, a fresh reviewed Mandible request."
   return 0
 }
 
@@ -1524,7 +1523,7 @@ main() {
     case "$resume_response" in
       y|yes) ;;
       *)
-        err "Merge resume cancelled. Run 'git merge --continue' or 'git merge --abort' manually."
+        err "Merge resume cancelled. Preserve the Git state and ask the configured operator to arrange audited recovery; do not continue or abort with raw Git commands."
         exit 1
         ;;
     esac
@@ -1546,7 +1545,7 @@ main() {
     else
       err "${RED}git merge --continue failed.${RESET}"
       if has_conflicts; then
-        err "Conflicts remain — resolve them manually and run 'git merge --continue'."
+        err "Conflicts remain — preserve the Git state and ask the configured operator to arrange audited recovery; do not continue with raw Git commands."
       fi
       report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
       exit 1

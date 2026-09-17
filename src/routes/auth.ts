@@ -433,6 +433,41 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "allow" });
 
+  app.post("/api/auth/request/:id/candidate-snapshot-repair/inspect", (req, res) => {
+    const body = readBody<Record<string, unknown>>(req);
+    try {
+      const request = authQueue.getRequest(req.params.id);
+      if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
+      const control = authMutationControl(req, res, request, body, true);
+      if (!control?.actor) return;
+      res.json(authQueue.inspectPendingCandidateSnapshotRepair(request.id, control.actor));
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  }, { fileRpc: "allow" });
+
+  app.post("/api/auth/request/:id/candidate-snapshot-repair/apply", (req, res) => {
+    const body = readBody<Record<string, unknown>>(req);
+    try {
+      const request = authQueue.getRequest(req.params.id);
+      if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
+      const control = authMutationControl(req, res, request, body, true);
+      if (!control?.actor) return;
+      const expectedDigest = body.expected_current_snapshot_sha256;
+      if (typeof expectedDigest !== "string" || !/^[0-9a-f]{64}$/.test(expectedDigest)) {
+        res.status(400).json({ error: "expected_current_snapshot_sha256 is required." });
+        return;
+      }
+      const repaired = authQueue.repairPendingCandidateSnapshot(
+        request.id, control.actor, numberField(body.expected_revision) ?? NaN,
+        numberField(body.expected_custody_generation) ?? NaN, expectedDigest,
+      );
+      res.json({ request_id: repaired.id, lifecycle: authQueue.listLifecycleEvents(repaired.id).at(-1) });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  }, { fileRpc: "allow" });
+
   // Issue 27241e6 — convergence retry. This reruns the snapshotted hook
   // command for a merged request; it never reruns the merge, which is why it
   // does not need (and must not imply) a fresh merge authorization.

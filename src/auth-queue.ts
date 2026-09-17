@@ -168,6 +168,7 @@ type WorkUnitCustody = {
   repo_id: string;
   branch: string;
   kind: "solo" | "partition" | "integration";
+  state: string;
   owner_user_id: string;
   owner_credential_id: string;
   custody_generation: number;
@@ -2076,13 +2077,18 @@ export class AuthQueue {
     expectedRevision?: number,
     expectedGeneration?: number,
   ): WorkUnitCustody | null {
+    const custody = this.requestCustodyForActor(request, actor);
+    this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
+    return custody;
+  }
+
+  private requestCustodyForActor(request: AuthRequest, actor: AuthLifecycleActor): WorkUnitCustody | null {
     if (!request.custody_work_unit_id && actor.authority_path === "operator_recovery") {
       const operator = getOperator(this.db);
       if (!operator || actor.user_id !== operator.id) {
         throw new AuthQueueError("operator_recovery_required", "Only the configured operator may use recovery authority.");
       }
       this.assertActiveCredential(actor);
-      this.assertLifecycleCas(request, null, expectedRevision, expectedGeneration);
       return null;
     }
     if (!request.custody_work_unit_id) {
@@ -2097,14 +2103,12 @@ export class AuthQueue {
         throw new AuthQueueError("operator_recovery_required", "Only the configured operator may use recovery authority.");
       }
       this.assertActiveCredential(actor);
-      this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
       return custody;
     }
     this.assertActiveCredential(actor);
     if (custody.owner_user_id !== actor.user_id || custody.owner_credential_id !== actor.credential_id) {
       throw new AuthQueueError("custody_required", "The current delivery-work-unit credential is required.");
     }
-    this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
     return custody;
   }
 
@@ -2139,6 +2143,124 @@ export class AuthQueue {
         (custody !== null && custody.auth_request_id !== request.id)) {
       throw new AuthQueueError("lifecycle_conflict", "Request lifecycle or work-unit custody changed; refresh and retry.");
     }
+  }
+
+  private currentLifecycleSnapshot(requestId: string): string {
+    const snapshot = authRequestSnapshot(this.db, requestId);
+    const latest = this.db.prepare(
+      `SELECT snapshot_sha256 FROM auth_request_lifecycle_events
+       WHERE auth_request_id = ? ORDER BY revision DESC LIMIT 1`,
+    ).get(requestId) as { snapshot_sha256: string } | undefined;
+    if (!latest || latest.snapshot_sha256 !== authSnapshotDigest(snapshot)) {
+      throw new AuthQueueError("lifecycle_conflict", "Request lifecycle snapshot changed; refresh and retry.");
+    }
+    return snapshot;
+  }
+
+  inspectPendingCandidateSnapshotRepair(requestId: string, actor: AuthLifecycleActor): {
+    request_id: string;
+    lifecycle_revision: number;
+    custody_generation: number;
+    current_snapshot_sha256: string;
+    prior_base_sha: string;
+    current_base_sha: string;
+  } {
+    const request = this.requireRequest(requestId);
+    this.requestCustodyForActor(request, actor);
+    if (request.status !== "pending" || !isAuthMergeCommand(request) || request.execution_mode === "remote") {
+      throw new AuthQueueError("invalid_status", "Only a pending local merge candidate can be repaired.", request.status);
+    }
+    const custody = request.custody_work_unit_id
+      ? this.db.prepare("SELECT * FROM work_units WHERE id = ?").get(request.custody_work_unit_id) as WorkUnitCustody | undefined
+      : undefined;
+    if (!custody || custody.auth_request_id !== request.id || custody.state !== "committed") {
+      throw new AuthQueueError("custody_conflict", "The exact committed delivery work unit must still own this request.");
+    }
+    const latest = this.db.prepare(
+      `SELECT revision, next_status, snapshot_json, snapshot_sha256 FROM auth_request_lifecycle_events
+       WHERE auth_request_id = ? ORDER BY revision DESC LIMIT 1`,
+    ).get(request.id) as {
+      revision: number; next_status: string; snapshot_json: string; snapshot_sha256: string;
+    } | undefined;
+    if (!latest || latest.next_status !== "pending" ||
+        authSnapshotDigest(latest.snapshot_json) !== latest.snapshot_sha256) {
+      throw new AuthQueueError("lifecycle_conflict", "The prior pending lifecycle snapshot is unavailable or invalid.");
+    }
+    const currentSnapshot = authRequestSnapshot(this.db, request.id);
+    const currentDigest = authSnapshotDigest(currentSnapshot);
+    if (currentDigest === latest.snapshot_sha256) {
+      throw new AuthQueueError("lifecycle_conflict", "The lifecycle snapshot is already current.");
+    }
+    const prior = JSON.parse(latest.snapshot_json) as {
+      request: Record<string, unknown>; actions: unknown;
+    };
+    const current = JSON.parse(currentSnapshot) as {
+      request: Record<string, unknown>; actions: unknown;
+    };
+    const derivedFields = [
+      "merge_preflight_base_sha", "merge_preflight_queue_fingerprint",
+      "merge_candidate_tree_sha", "merge_candidate_pin_sha",
+      "merge_atomic_enabled", "updated_at",
+    ];
+    for (const field of derivedFields) {
+      delete prior.request[field];
+      delete current.request[field];
+    }
+    if (JSON.stringify(prior) !== JSON.stringify(current)) {
+      throw new AuthQueueError("lifecycle_conflict", "Reviewed request content, actions, or non-candidate fields changed.");
+    }
+    const priorRow = (JSON.parse(latest.snapshot_json) as { request: Record<string, unknown> }).request;
+    const priorBase = priorRow.merge_preflight_base_sha;
+    if (typeof priorBase !== "string" || !request.merge_preflight_base_sha ||
+        priorBase === request.merge_preflight_base_sha ||
+        priorRow.merge_candidate_pin_sha === request.merge_candidate_pin_sha ||
+        request.merge_atomic_enabled !== false ||
+        Number(request.updated_at) < Number(priorRow.updated_at) ||
+        !request.cwd || !request.merge_head_sha ||
+        !this.mergeCandidatePinIsValid(request) ||
+        !this.baseTransitionAccountedFor(request, priorBase, request.merge_preflight_base_sha).accounted) {
+      throw new AuthQueueError("lifecycle_conflict", "The candidate refresh cannot be proven from the reviewed merge range.");
+    }
+    // This proves the frozen candidate at its recorded historical base/head.
+    // The branch, protected base, and queue may legitimately have advanced
+    // again; ordinary supersession and approval revalidate those live inputs.
+    const candidate = this.mergeTree(request.cwd, request.merge_preflight_base_sha, request.merge_head_sha);
+    if (candidate.status !== "clean" || candidate.tree !== request.merge_candidate_tree_sha) {
+      throw new AuthQueueError("lifecycle_conflict", "The recorded candidate bytes do not rederive exactly.");
+    }
+    return {
+      request_id: request.id, lifecycle_revision: latest.revision,
+      custody_generation: custody.custody_generation,
+      current_snapshot_sha256: currentDigest,
+      prior_base_sha: priorBase, current_base_sha: request.merge_preflight_base_sha,
+    };
+  }
+
+  repairPendingCandidateSnapshot(
+    requestId: string,
+    actor: AuthLifecycleActor,
+    expectedRevision: number,
+    expectedGeneration: number,
+    expectedCurrentSnapshotSha256: string,
+  ): AuthRequest {
+    const repaired = this.db.transaction(() => {
+      const proof = this.inspectPendingCandidateSnapshotRepair(requestId, actor);
+      if (proof.lifecycle_revision !== expectedRevision ||
+          proof.custody_generation !== expectedGeneration ||
+          proof.current_snapshot_sha256 !== expectedCurrentSnapshotSha256) {
+        throw new AuthQueueError("lifecycle_conflict", "Repair preconditions changed; inspect again.");
+      }
+      const priorSnapshot = authRequestSnapshot(this.db, requestId);
+      appendAuthLifecycleEvent(this.db, {
+        requestId, eventType: "revised", priorStatus: "pending", nextStatus: "pending",
+        actor, priorSnapshot, reason: "Guarded recovery of an independently rederived candidate-only snapshot drift.",
+        occurredAt: this.now(),
+      });
+      return this.requireRequest(requestId);
+    })();
+    this.broadcast({ event: "auth:lifecycle", data: { request_id: repaired.id, lifecycle: "revised" } });
+    this.broadcast({ event: "auth:updated", data: { request: repaired } });
+    return repaired;
   }
 
   private validateSupersession(
@@ -3171,20 +3293,6 @@ export class AuthQueue {
 
     const now = this.now();
     const executionContextUpdate = this.resolveExecutionContextBeforeApproval(request);
-    if (executionContextUpdate) {
-      this.writeResolvedRequest(
-        request,
-        "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?",
-        [
-          executionContextUpdate.cwd,
-          executionContextUpdate.target_repo_root,
-          executionContextUpdate.repo,
-          executionContextUpdate.merge_head_sha,
-          now,
-        ]
-      );
-      request = this.requireRequest(request.id);
-    }
     // Manual approval is always the direct interactive signing path. Automated
     // callers pass their delegated approval context explicitly.
     const effectiveApproval = approval;
@@ -3235,6 +3343,9 @@ export class AuthQueue {
           this.describeRecomputeRefusal(refusalSink.refusal),
         );
       }
+    }
+    if (executionContextUpdate) {
+      request = this.recordApprovalContextUpdate(request, executionContextUpdate, now);
     }
     request = this.ensureOriginalMergeRangeForApproval(request);
     // Issue 060c9c8 — no hierarchical gate here: enforceCanonicalMergeCommand
@@ -3320,17 +3431,6 @@ export class AuthQueue {
     this.enforceCanonicalMergeCommand(request);
     const now = this.now();
     const executionContextUpdate = this.resolveExecutionContextBeforeApproval(request);
-    if (executionContextUpdate) {
-      this.writeResolvedRequest(
-        request,
-        "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?",
-        [
-          executionContextUpdate.cwd, executionContextUpdate.target_repo_root,
-          executionContextUpdate.repo, executionContextUpdate.merge_head_sha, now,
-        ]
-      );
-      request = this.requireRequest(request.id);
-    }
     let candidateExact = this.mergeCandidateExact(request);
     if (request.merge_candidate_pin_sha && !candidateExact) {
       const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
@@ -3342,6 +3442,9 @@ export class AuthQueue {
       if (request.merge_candidate_pin_sha && !candidateExact) {
         throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(refusalSink.refusal));
       }
+    }
+    if (executionContextUpdate) {
+      request = this.recordApprovalContextUpdate(request, executionContextUpdate, now);
     }
     request = this.ensureOriginalMergeRangeForApproval(request);
     const requestId = request.id;
@@ -3502,6 +3605,29 @@ export class AuthQueue {
         `Auth merge request cannot be approved: ${message}`
       );
     }
+  }
+
+  private recordApprovalContextUpdate(
+    request: AuthRequest,
+    context: { cwd: string; target_repo_root: string; repo: string | null; merge_head_sha: string },
+    at: number,
+  ): AuthRequest {
+    if (request.cwd === context.cwd && request.target_repo_root === context.target_repo_root &&
+        request.repo === context.repo && request.merge_head_sha === context.merge_head_sha) {
+      return request;
+    }
+    this.db.transaction(() => {
+      const priorSnapshot = this.currentLifecycleSnapshot(request.id);
+      this.writeResolvedRequest(request,
+        "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?",
+        [context.cwd, context.target_repo_root, context.repo, context.merge_head_sha, at]);
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id, eventType: "revised", priorStatus: "pending", nextStatus: "pending",
+        actor: systemAction(), priorSnapshot,
+        reason: "Execution context derived before approval.", occurredAt: at,
+      });
+    })();
+    return this.requireRequest(request.id);
   }
 
   private approveTimePreflightEnv(request: AuthRequest): NodeJS.ProcessEnv {
@@ -4228,6 +4354,12 @@ export class AuthQueue {
     if (!request.cwd || !request.merge_head_sha || !request.merge_candidate_pin_sha) {
       return fail("missing_repin_inputs");
     }
+    let priorSnapshot: string;
+    try {
+      priorSnapshot = this.currentLifecycleSnapshot(request.id);
+    } catch {
+      return fail("lifecycle_snapshot_drift");
+    }
     const candidate = this.mergeTree(request.cwd, targetHeadSha, request.merge_head_sha);
     if (candidate.status !== "clean" || !candidate.tree) {
       return fail(`merge_tree_${candidate.status}`);
@@ -4255,12 +4387,41 @@ export class AuthQueue {
     } catch (error) {
       return fail(errorMessage(error) ?? "candidate_ref_swap_failed");
     }
-    this.db.prepare(
-      `UPDATE auth_requests SET merge_preflight_base_sha = ?,
-        merge_preflight_queue_fingerprint = ?, merge_candidate_tree_sha = ?,
-        merge_candidate_pin_sha = ?, merge_atomic_enabled = 0,
-        updated_at = ? WHERE id = ?`,
-    ).run(targetHeadSha, queueFingerprint, candidate.tree, pinSha, this.now(), request.id);
+    try {
+      this.db.transaction(() => {
+        if (this.currentLifecycleSnapshot(request.id) !== priorSnapshot) {
+          throw new AuthQueueError("lifecycle_conflict", "Request changed during candidate refresh.");
+        }
+        const at = this.now();
+        const changed = this.db.prepare(
+          `UPDATE auth_requests SET merge_preflight_base_sha = ?,
+            merge_preflight_queue_fingerprint = ?, merge_candidate_tree_sha = ?,
+            merge_candidate_pin_sha = ?, merge_atomic_enabled = 0,
+            updated_at = ? WHERE id = ? AND status = 'pending' AND merge_candidate_pin_sha = ?`,
+        ).run(targetHeadSha, queueFingerprint, candidate.tree, pinSha, at, request.id, request.merge_candidate_pin_sha);
+        if (changed.changes !== 1) {
+          throw new AuthQueueError("lifecycle_conflict", "Request changed during candidate refresh.");
+        }
+        appendAuthLifecycleEvent(this.db, {
+          requestId: request.id, eventType: "revised", priorStatus: "pending",
+          nextStatus: "pending", actor: systemAction(), priorSnapshot,
+          reason: "Derived merge candidate refreshed after a verified protected-base advance.",
+          occurredAt: at,
+        });
+      })();
+    } catch (error) {
+      try {
+        execFileSync("git", ["update-ref", this.mergeCandidateRef(request.id), request.merge_candidate_pin_sha, pinSha], {
+          cwd: request.cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, stdio: "ignore",
+        });
+      } catch {
+        authLog("error", "auth_merge_candidate_ref_rollback_failed", {
+          subsystem: "auth", auth_request_id: request.id, pin_sha: pinSha,
+        });
+      }
+      return fail(errorMessage(error) ?? "candidate_snapshot_write_failed");
+    }
+    this.broadcast({ event: "auth:lifecycle", data: { request_id: request.id, lifecycle: "revised" } });
     return this.readRequestByExactId(request.id);
   }
 
