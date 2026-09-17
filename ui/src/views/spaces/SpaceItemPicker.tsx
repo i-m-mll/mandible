@@ -2,6 +2,7 @@
 // to a Space renderer.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
   addSpaceItem,
@@ -470,6 +471,10 @@ export function SpaceItemPicker({
         ) : null}
       </header>
 
+      {load.status === 'error' && (
+        <DetailPaneNotice severity="error" density="compact" title="Could not load items">{load.message}</DetailPaneNotice>
+      )}
+
       <input
         className="space-item-picker__search"
         type="search"
@@ -485,9 +490,7 @@ export function SpaceItemPicker({
         {load.status === 'loading' && existingItems.length === 0 ? (
           <div className="space-item-picker__status">Loading items...</div>
         ) : load.status === 'error' && rows.length === 0 ? (
-          <div className="space-item-picker__status space-item-picker__status--error" role="alert">
-            {load.message}
-          </div>
+          <div className="space-item-picker__status">Items unavailable.</div>
         ) : filtered.length === 0 ? (
           <div className="space-item-picker__status" data-testid="space-item-picker-empty">
             {query.trim() ? 'No items match your search.' : emptyLabel}

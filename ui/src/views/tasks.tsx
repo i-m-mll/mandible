@@ -426,7 +426,7 @@ function CommandSection({
           Requesting disable is not expected to be a no-op.
         </p>
       ) : null}
-      {error ? <p className="tasks-command__error" role="alert">{error}</p> : null}
+      {error ? <DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice> : null}
       {displayed?.state === 'requested' ? (
         <div className="tasks-command__actions">
           <button
@@ -799,7 +799,7 @@ function TaskCommandModal({
             <div className="tasks-command-modal__line">Refused because {policyGateText}.</div>
           ) : null}
         </div>
-        {error ? <p className="tasks-command__error" role="alert">{error}</p> : null}
+        {error ? <DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice> : null}
         <div className="tasks-command__actions">
           {command?.state === 'requested' ? (
             <button type="button" className="btn" disabled={busy} onClick={() => onCancel(command.id)}>
@@ -1364,7 +1364,10 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
         ) : (
           <DetailPaneHeader variant="compact" title="Tasks" />
         )}
-        notice={detailNotice}
+        notice={<>
+          {error && <DetailPaneNotice severity="error" density="compact" title="Could not load task inventory">{error}</DetailPaneNotice>}
+          {detailNotice}
+        </>}
         overlays={activeIntent ? (
           <TaskCommandModal
             intent={activeIntent}
@@ -1379,7 +1382,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       >
         {error ? (
           <div className="tasks-detail__empty">
-            <span className="text-muted">Could not load the inventory: {error}</span>
+            <span className="text-muted">Task inventory unavailable.</span>
           </div>
         ) : loading && !inventory ? (
           <div className="tasks-detail__empty">

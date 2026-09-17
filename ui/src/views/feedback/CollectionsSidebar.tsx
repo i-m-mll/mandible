@@ -292,6 +292,7 @@ export function CollectionsSidebar({
       ariaLabel="Briefings"
       className="feedback-collections-sidebar"
       header={(
+        <>
         <SidebarSearchFilterHeader
           value={viewState.collectionSourceFilter}
           onValueChange={(value) => setViewState((current) => ({
@@ -361,11 +362,6 @@ export function CollectionsSidebar({
             ),
           } : undefined}
         />
-      )}
-      bodyClassName="feedback-collections-sidebar__body"
-    >
-      <div data-testid="feedback-collections-sidebar" {...topLevelReorder.list}>
-        {topLevelReorder.assistive}
         {sidebarOrder.notice ? (
           <DetailPaneNotice
             severity="warning"
@@ -378,10 +374,19 @@ export function CollectionsSidebar({
           </DetailPaneNotice>
         ) : null}
         {loadError ? (
+          <DetailPaneNotice severity="error" density="compact" title="Briefings could not be loaded">
+            {loadError}
+          </DetailPaneNotice>
+        ) : null}
+        </>
+      )}
+      bodyClassName="feedback-collections-sidebar__body"
+    >
+      <div data-testid="feedback-collections-sidebar" {...topLevelReorder.list}>
+        {topLevelReorder.assistive}
+        {loadError ? (
           <div className="feedback-collections-sidebar__list">
-            <p className="feedback-collections-sidebar__empty" role="alert">
-              {loadError}
-            </p>
+            <p className="feedback-collections-sidebar__empty">Briefings remain unavailable.</p>
           </div>
         ) : visibleGroups.length === 0 && visibleBundles.length === 0 && unbundled.length === 0 ? (
           <div className="feedback-collections-sidebar__list">

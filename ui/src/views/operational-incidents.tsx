@@ -31,6 +31,7 @@
 // instead of resetting it. A failed poll keeps the previous reconciled list
 // rather than flickering the region empty.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
 import {
   acknowledgeOperationalIncident,
@@ -114,7 +115,6 @@ type IncidentCardProps = {
   tone: CardTone;
   mutationsAllowed: boolean;
   busy: boolean;
-  error: string | null;
   onAcknowledge(incident: OperationalIncident): void;
   onPrepareFix(incident: OperationalIncident): void;
   onClose(incident: OperationalIncident): void;
@@ -131,7 +131,6 @@ function IncidentCard({
   tone,
   mutationsAllowed,
   busy,
-  error,
   onAcknowledge,
   onPrepareFix,
   onClose,
@@ -202,10 +201,6 @@ function IncidentCard({
       >
         {incident.provenance_label}
       </p>
-
-      {error ? (
-        <p className="operational-incident-card__error" role="alert">{error}</p>
-      ) : null}
 
       <div className="operational-incident-card__actions">
         {incident.attention === 'unacknowledged' ? (
@@ -331,7 +326,7 @@ function PrepareFixDialog({
         ) : null}
 
         {state.error ? (
-          <p role="alert" data-testid="operational-incident-prepare-error">{state.error}</p>
+          <DetailPaneNotice severity="error" density="compact" testId="operational-incident-prepare-error">{state.error}</DetailPaneNotice>
         ) : null}
 
         <div className="operational-incident-dialog__actions">
@@ -382,6 +377,7 @@ export function OperationalIncidentsRegion({
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [cardErrors, setCardErrors] = useState<Record<string, string>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [prepareFix, setPrepareFix] = useState<PrepareFixState | null>(null);
   const loadSequence = useRef(0);
 
@@ -391,11 +387,17 @@ export function OperationalIncidentsRegion({
     const sequence = ++loadSequence.current;
     try {
       const next = await getOperationalIncidents(INCIDENT_QUERY, signal);
-      if (!signal.aborted && sequence === loadSequence.current) setList(next);
-    } catch {
+      if (!signal.aborted && sequence === loadSequence.current) {
+        setList(next);
+        setLoadError(null);
+      }
+    } catch (error) {
       // Keep the last reconciled list. A transient poll failure must not empty
       // the region, collapse an expanded section, or drop an acknowledgement
       // the server already holds.
+      if (!signal.aborted && sequence === loadSequence.current) {
+        setLoadError(error instanceof Error ? error.message : String(error));
+      }
     }
   }, []);
 
@@ -557,7 +559,7 @@ export function OperationalIncidentsRegion({
     || groups.activeUnacknowledged.length > 0
     || groups.acknowledgedActive.length > 0
     || groups.resolved.length > 0;
-  if (!hasAnything) return null;
+  if (!hasAnything && !loadError) return null;
 
   const renderCard = (incident: OperationalIncident, tone: CardTone): JSX.Element => (
     <IncidentCard
@@ -566,7 +568,6 @@ export function OperationalIncidentsRegion({
       tone={tone}
       mutationsAllowed={mutationsAllowed}
       busy={busyId === incident.id}
-      error={cardErrors[incident.id] ?? null}
       onAcknowledge={(target) => void acknowledge(target)}
       onPrepareFix={(target) => void runPreview(target)}
       onClose={(target) => void closeIncident(target)}
@@ -589,6 +590,18 @@ export function OperationalIncidentsRegion({
           {' · '}
           {counts.active_acknowledged} acknowledged and still active
         </p>
+        {loadError && (
+          <DetailPaneNotice severity="error" density="compact" title="Incidents could not be refreshed">
+            {loadError}
+          </DetailPaneNotice>
+        )}
+        {Object.keys(cardErrors).length > 0 && (
+          <DetailPaneNotice severity="error" density="compact" title="Incident action failed">
+            {Object.entries(cardErrors).map(([id, message]) => (
+              <div key={id}>{list?.incidents.find((incident) => incident.id === id)?.task ?? 'Incident'}: {message}</div>
+            ))}
+          </DetailPaneNotice>
+        )}
       </header>
 
       {groups.activeUnacknowledged.length > 0 ? (

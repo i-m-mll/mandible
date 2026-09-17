@@ -1541,12 +1541,14 @@ export function AuthHooksPanel({
       </div>
 
       {error && (
-        <div className="auth-hooks-panel__error">{error}</div>
+        <DetailPaneNotice severity="error" density="compact" title="Auth Hooks action failed" actions={
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => { void loadHooks(); }}>Retry loading</button>
+        }>{error}</DetailPaneNotice>
       )}
       {!mutationsAllowed && (
-        <div className="auth-hooks-panel__error">
+        <DetailPaneNotice severity="info" density="compact" title="Preview is read-only">
           Auth hook mutations are disabled on this Mandible preview instance.
-        </div>
+        </DetailPaneNotice>
       )}
 
       {showForm && (

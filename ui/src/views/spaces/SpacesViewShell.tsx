@@ -354,6 +354,11 @@ export function SpacesViewShell({
             </span>
           )}
         </header>
+        {spaceLoadError && (
+          <DetailPaneNotice severity="error" density="compact" title="Could not load space">
+            {spaceLoadError}
+          </DetailPaneNotice>
+        )}
         <div className="spaces-shell__body" data-testid="spaces-shell-body">
           {!spaceId ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
@@ -367,7 +372,7 @@ export function SpacesViewShell({
               !selectedSnapshot &&
               !selectedFactPacket ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
-              <p className="spaces-shell__empty-text">{spaceLoadError}</p>
+              <p className="spaces-shell__empty-text">Space unavailable.</p>
             </div>
           ) : waitingForFactPacket ? (
             <div data-testid="spaces-shell-loading">

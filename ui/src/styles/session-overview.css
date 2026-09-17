@@ -16,6 +16,13 @@
   background: var(--bg-primary);
 }
 
+.session-overview:not(.session-overview--embedded) > .detail-pane-notice {
+  position: sticky;
+  top: 48px;
+  z-index: 7;
+  flex: none;
+}
+
 .session-overview:not(.session-overview--embedded) > .session-overview__body,
 .session-overview:not(.session-overview--embedded) > .session-overview__picker,
 .session-overview:not(.session-overview--embedded) > .session-overview__binding {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { formatRelativeTime } from '../lib/format';
 import {
   bootstrapRuntime,
@@ -80,6 +81,13 @@ type FeedbackState = {
   type: 'success' | 'error';
   message: string;
 } | null;
+
+function SettingsFeedback({ feedback }: { feedback: FeedbackState }): JSX.Element | null {
+  if (!feedback) return null;
+  return feedback.type === 'error' ? (
+    <DetailPaneNotice severity="error" density="compact">{feedback.message}</DetailPaneNotice>
+  ) : <span className="settings-view__feedback settings-view__feedback--success">{feedback.message}</span>;
+}
 
 const SOUNDS = ['Blow', 'Glass', 'Ping', 'Pop', 'Purr', 'Sosumi', 'Submarine', 'Tink'];
 const THEMES = [
@@ -359,11 +367,7 @@ function NumberInput(props: {
         <button type="button" className="btn btn--active btn--sm" onClick={handleSave} disabled={saving}>
           {saving ? '...' : 'Save'}
         </button>
-        {feedback && (
-          <span className={feedback.type === 'success' ? 'settings-view__feedback settings-view__feedback--success' : 'settings-view__feedback settings-view__feedback--error'}>
-            {feedback.message}
-          </span>
-        )}
+        <SettingsFeedback feedback={feedback} />
       </div>
     </div>
   );
@@ -712,11 +716,7 @@ function InstructionsDeliverySection(props: {
           </div>
         </div>
 
-        {feedback && (
-          <span className={feedback.type === 'success' ? 'settings-view__feedback settings-view__feedback--success' : 'settings-view__feedback settings-view__feedback--error'}>
-            {feedback.message}
-          </span>
-        )}
+        <SettingsFeedback feedback={feedback} />
       </div>
 
       {confirmAction && (
@@ -855,11 +855,7 @@ export function DelegatedSigningSection(): JSX.Element {
           />
         </div>
       )}
-      {feedback && (
-        <div className={feedback.type === 'success' ? 'settings-view__feedback settings-view__feedback--success' : 'settings-view__feedback settings-view__feedback--error'}>
-          {feedback.message}
-        </div>
-      )}
+      <SettingsFeedback feedback={feedback} />
     </div>
   );
 }
@@ -1112,9 +1108,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
               <span>Log file: {status.log_file}</span>
             </div>
           )}
-          {error && (
-            <div className="settings-view__daemon-error">{error}</div>
-          )}
+          {error && <DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice>}
           <div className="settings-view__daemon-footer">
             {status?.launch_mode === 'manual'
               ? 'Manual mode leaves the daemon stopped until you start it explicitly from the desktop shell.'
@@ -1147,7 +1141,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
           </div>
           <details className="settings-view__daemon-detail"><summary>Details</summary>Mandible pins one Caddy HTTPS root and its signing key to this installation. macOS stores an SSL trust rule for this account, not a computer-wide administrator rule. That SSL rule is not limited to Mandible hostnames; keep the root signing key private. Browser sign-in is separate. To remove this trust later, use this account's Keychain Access certificate settings. {caStatus?.root_digest && <>Root SHA-256: <code>{caStatus.root_digest}</code>.</>}</details>
           {caStatus?.verified_at && <div className="settings-view__daemon-detail">Last verified: {caStatus.verified_at}</div>}
-          {caError && <div className="settings-view__daemon-error">{caError}</div>}
+          {caError && <DetailPaneNotice severity="error" density="compact">{caError}</DetailPaneNotice>}
         </div>
       </div>
     </SettingsSectionShell>
@@ -1346,11 +1340,7 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
             >
               {running ? '...' : 'Run Now'}
             </button>
-            {runError && (
-              <span className="settings-view__feedback settings-view__feedback--error">
-                {runError}
-              </span>
-            )}
+            {runError && <DetailPaneNotice severity="error" density="compact">{runError}</DetailPaneNotice>}
           </div>
         </div>
       </div>
@@ -1586,16 +1576,7 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
             </div>
           </div>
         )}
-        {error && (
-          <div className="settings-view__number-row">
-            <div className="settings-view__number-info" />
-            <div className="settings-view__number-controls">
-              <span className="settings-view__feedback settings-view__feedback--error">
-                {error}
-              </span>
-            </div>
-          </div>
-        )}
+        {error && <DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice>}
       </div>
     </SettingsSectionShell>
   );
@@ -1683,7 +1664,7 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition }
             </div>
           </>
         )}
-        {error && <span className="settings-view__feedback settings-view__feedback--error">{error}</span>}
+        {error && <DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice>}
       </div>
     </SettingsSectionShell>
   );
@@ -2337,17 +2318,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             >
               {saving === 'protected_branches' ? 'Saving...' : 'Save'}
             </button>
-            {feedback && (
-              <span
-                className={
-                  feedback.type === 'success'
-                    ? 'settings-view__feedback settings-view__feedback--success'
-                    : 'settings-view__feedback settings-view__feedback--error'
-                }
-              >
-                {feedback.message}
-              </span>
-            )}
+            <SettingsFeedback feedback={feedback} />
           </div>
         </div>
       </SettingsSectionShell>

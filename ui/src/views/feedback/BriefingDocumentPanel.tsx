@@ -13,6 +13,7 @@ import { renderMarkdown } from '../../lib/markdown';
 import { renderMarkdownFrontmatter } from '../../lib/markdownFrontmatter';
 import { ContextualAction } from '../../components/shared/ContextualAction';
 import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import {
   buildBriefingMarkdownModel,
   changedBriefingEntityIndexes,
@@ -727,9 +728,11 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
 
   return (
     <section ref={contentRef} className="briefing-document__content" aria-label="Briefing document">
-      {currentContentError ? <p className="briefing-error" role="alert">{currentContentError}</p> : null}
-      {round.directive_binding?.status !== 'valid' ? <p className="briefing-error" role="alert">{round.directive_binding?.reason || 'The pinned directive binding is unavailable.'}</p> : null}
-      {documentIntegrityError ? <p className="briefing-error" role="alert">{documentIntegrityError}</p> : null}
+      {currentContentError || round.directive_binding?.status !== 'valid' || documentIntegrityError ? (
+        <DetailPaneNotice severity="error" density="compact" title="Briefing document unavailable">
+          {currentContentError ?? round.directive_binding?.reason ?? documentIntegrityError ?? 'The pinned directive binding is unavailable.'}
+        </DetailPaneNotice>
+      ) : null}
       {source === null && !currentContentError ? <p className="briefing-empty" role="status">Verifying document…</p> : null}
       {renderProfileDocument()}
 
