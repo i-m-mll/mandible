@@ -2995,7 +2995,10 @@ export class AuthQueue {
       });
     })();
     if (invalidatesMergeCandidate) {
-      this.dropMergeCandidate(request);
+      // The guarded UPDATE above already cleared the candidate columns and
+      // its lifecycle receipt snapshots that exact row. Only remove the Git
+      // pin here; a second row write would invalidate the new snapshot.
+      this.dropMergeCandidate(request, { clearRequestFields: false });
     }
     this.syncLedgerLinksForRequest(updated, false);
     this.broadcast({
@@ -3884,7 +3887,7 @@ export class AuthQueue {
     return pinSha;
   }
 
-  private dropMergeCandidate(request: AuthRequest): void {
+  private dropMergeCandidate(request: AuthRequest, options: { clearRequestFields?: boolean } = {}): void {
     if (!request.merge_candidate_pin_sha) return;
     try {
       if (request.cwd) {
@@ -3899,10 +3902,12 @@ export class AuthQueue {
           },
         );
       }
-      this.db.prepare(
-        `UPDATE auth_requests SET merge_candidate_tree_sha = NULL,
-          merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0, updated_at = ? WHERE id = ?`,
-      ).run(this.now(), request.id);
+      if (options.clearRequestFields !== false) {
+        this.db.prepare(
+          `UPDATE auth_requests SET merge_candidate_tree_sha = NULL,
+            merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0, updated_at = ? WHERE id = ?`,
+        ).run(this.now(), request.id);
+      }
     } catch (error) {
       authLog("warn", "auth_merge_candidate_cleanup_failed", {
         subsystem: "auth",
