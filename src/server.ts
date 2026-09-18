@@ -66,7 +66,6 @@ export interface RequestLike {
   // itself performs authentication only, not authorization.
   client_identity?: ResolvedClientIdentity | null;
   /** Classified auth failure; raw bearer material is never exposed to routes. */
-  client_auth_failure?: "expired" | "revoked" | "wrong_audience" | "unknown";
   /** Aborts when the underlying HTTP client disconnects before a response completes. */
   signal?: AbortSignal;
   target_instance_id?: string | null;
@@ -79,24 +78,19 @@ export type ClientAuthMode = "compat" | "strict";
 export interface ResolvedClientIdentity {
   user_id: string;
   slug: string;
-  method: "api_token" | "ephemeral" | "browser_session" | "installation_context" | "legacy_browser_session" | "local_os_user";
+  method: "api_token" | "ephemeral" | "installation_context" | "local_os_user";
   credential_id: string | null;
-  source: "http_bearer" | "browser_cookie" | "installation_context" | "legacy_browser_conversion" | "file_rpc_capability" | "bootstrap" | "in_process" | "local_os_user";
+  source: "http_bearer" | "installation_context" | "file_rpc_capability" | "in_process" | "local_os_user";
   /**
    * Issue 499c148 — which daemon-minted ephemeral credential answered
-   * (`dashboard_handshake`, `operator_bootstrap`, `agent_session:<id>`). Set
+   * (`agent_session:<id>` or `wrap_session:<id>`). Set
    * only for `method: "ephemeral"`; reporting-only, never an authorization
    * input, and deliberately absent for api_token identities.
    */
   ephemeral_purpose?: string | null;
   effect_ceiling: readonly import("./security/effect-policy.js").Effect[];
-  session_family?: string | null;
-  root_session_family?: string | null;
   audience?: string | null;
   csrf_token?: string | null;
-  auth_context_expires_at?: number | null;
-  legacy_fingerprint?: string | null;
-  legacy_authenticated_at?: number;
 }
 
 export interface ClientAuthRequestContext {
@@ -129,7 +123,6 @@ export interface ClientAuthGate {
   telemetrySnapshot?(): unknown;
   authorityId?(): string;
   credentialDirectory?(): string;
-  classifyFailure?(credential: string | null | undefined): "expired" | "revoked" | "unknown";
   authenticateInternalContext?(credential: string | null | undefined): Promise<ResolvedClientIdentity | null>;
   validateBrowserCsrf?(identity: ResolvedClientIdentity, csrf: string | null | undefined): boolean;
 }
@@ -510,7 +503,6 @@ export class Router implements RouteRegistrar {
       // writes; compat mode counts unattributed writes. When no gate is wired
       // (tests/legacy), this block is skipped.
       let clientIdentity: ResolvedClientIdentity | null = null;
-      let clientAuthFailure: "expired" | "revoked" | "wrong_audience" | "unknown" = "unknown";
       const gate = this.options.clientAuth;
       if (gate) {
         clientIdentity = httpAuth?.internalContext && gate.authenticateInternalContext
@@ -522,9 +514,6 @@ export class Router implements RouteRegistrar {
                 clientAuthSourceForTransport(transport),
                 { method: normalizedMethod, pathname },
               ) : null;
-        if (!clientIdentity) {
-          clientAuthFailure = gate.classifyFailure?.(credential) ?? "unknown";
-        }
         if (
           transport === "http"
           && gate.mode() === "strict"
@@ -533,7 +522,7 @@ export class Router implements RouteRegistrar {
         ) {
           response.status(401).json({
             error: "authentication_required",
-            reason: clientAuthFailure,
+            reason: httpAuth?.browserRequest ? "local_access_required" : "unknown",
           });
           return true;
         }
@@ -598,7 +587,6 @@ export class Router implements RouteRegistrar {
         body,
         ambient_identity: requestAmbientIdentity,
         client_identity: clientIdentity,
-        client_auth_failure: clientAuthFailure,
         signal,
         target_instance_id: httpAuth?.targetInstanceId ?? null,
       };
@@ -711,7 +699,7 @@ export interface ServerOptions {
   instance?: InstanceInfo;
   fileRpcDir?: string;
   // Issue 708dc4c — client-auth gate for boundary telemetry and the dashboard
-  // bootstrap handshake. Optional; omitting it preserves legacy behavior.
+  // local access boundary. Optional for isolated test servers.
   clientAuth?: ClientAuthGate;
 }
 
@@ -754,7 +742,6 @@ export function createServer(options: ServerOptions): http.Server {
               ...(options.clientAuth.credentialDirectory
                 ? { credential_directory: options.clientAuth.credentialDirectory() }
                 : {}),
-              legacy_conversion: process.env.MANDIBLE_LEGACY_CONVERSION === "allow",
               ...(options.clientAuth.authorityId
                 ? { authority_id: options.clientAuth.authorityId() }
                 : {}),
@@ -831,7 +818,7 @@ export function createServer(options: ServerOptions): http.Server {
       if (!identity) {
         writeJsonResponse(res, 401, {
           error: "authentication_required",
-          reason: "browser_session_required",
+          reason: "local_access_required",
         });
         return;
       }
@@ -1184,9 +1171,8 @@ function isNotModified(header: string | string[] | undefined, mtime: Date): bool
 }
 
 function injectBootstrapData(html: string, instance: InstanceInfo): string {
-  // The served HTML carries no client-auth credential. The browser pairs into
-  // an HttpOnly host cookie, while this bootstrap contains public instance
-  // registration metadata only.
+  // The served HTML carries no client-auth credential. This bootstrap
+  // contains public instance registration metadata only.
   const json = JSON.stringify({ instance }).replace(/[<>&]/g, (char) => {
     switch (char) {
       case "<":

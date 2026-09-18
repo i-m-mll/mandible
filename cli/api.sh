@@ -647,6 +647,12 @@ api_resolve_client_credential_impl() {
     API_CLIENT_CREDENTIAL_SOURCE="inherited"
     return 0
   fi
+  # Ordinary human access at the registered origin is intrinsic to this OS
+  # account. Never read an old Keychain item or trigger its permission prompt.
+  if api_local_human_http; then
+    API_CLIENT_CREDENTIAL_SOURCE="local_os_user"
+    return 0
+  fi
   token="$(api_keychain_operator_token)"
   if [[ -n "$token" ]]; then
     API_CLIENT_CREDENTIAL_TOKEN="$token"
@@ -658,8 +664,8 @@ api_resolve_client_credential_impl() {
 # Resolve the client-auth bearer/capability token, in priority order:
 #   1. In agent contexts, a verified inherited token or that provider's
 #      Keychain token, with no operator fallback.
-#   2. In human shells, MANDIBLE_TOKEN or the durable operator Keychain token;
-#      otherwise the registered local origin resolves the OS-owned human.
+#   2. In human shells, an explicit MANDIBLE_TOKEN or intrinsic access at the
+#      registered local origin; custom origins may use the operator Keychain.
 # Agent contexts never receive operator credentials.
 api_client_token() {
   local traced=0 rc=0

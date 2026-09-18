@@ -115,7 +115,7 @@ export function registerClientAuthRoutes(router: RouteRegistrar, authenticator: 
         sendJson(res, 200, {
           authenticated: false,
           audience: authenticator.authorityId(),
-          failure_reason: req.client_auth_failure ?? "unknown",
+          failure_reason: "unknown",
           user: null,
           evidence_method: null,
           source: null,
@@ -136,7 +136,7 @@ export function registerClientAuthRoutes(router: RouteRegistrar, authenticator: 
       sendJson(res, 200, {
         authenticated: true,
         audience: identity.audience ?? authenticator.instanceId(),
-        session: authenticator.browserSessionMetadata(identity),
+        session: authenticator.localAccessMetadata(identity),
         user: user
           ? {
               id: user.id,

@@ -78,6 +78,21 @@ afterEach(async () => {
 });
 
 describe('OS-owned local browser access', () => {
+  it('retains the same human and CSRF after time advances and the authenticator is recreated', () => {
+    const original = auth.localBrowserIdentity()!;
+    const restarted = new ClientAuthenticator(db, {
+      instance: instance(), secretsDir: path.join(root, 'client-auth'),
+      sessionAuthorityDir: path.join(root, 'local-sessions'),
+      now: () => Date.now() + 400 * 24 * 60 * 60 * 1_000,
+    });
+    const later = restarted.localBrowserIdentity()!;
+    expect(later).toMatchObject({
+      user_id: original.user_id, method: 'local_os_user', source: 'local_os_user',
+      csrf_token: original.csrf_token,
+    });
+    expect(restarted.validateBrowserCsrf(later, original.csrf_token)).toBe(true);
+  });
+
   it('resolves a fresh browser on every request without a cookie or expiry', async () => {
     const first = await request('GET', '/api/client-auth/whoami', browserHeaders);
     expect(first).toMatchObject({ status: 200, body: { authenticated: true,

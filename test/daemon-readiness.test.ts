@@ -165,25 +165,17 @@ describe("/api/health readiness", () => {
     expect((await getHealth()).startup_epoch).toBe("daemon-start-2");
   });
 
-  it("exposes the exact credential directory and legacy-conversion mode used by cutover", async () => {
-    const prior = process.env.MANDIBLE_LEGACY_CONVERSION;
-    process.env.MANDIBLE_LEGACY_CONVERSION = "allow";
-    try {
-      await startServer({
-        clientAuth: {
-          mode: () => "strict",
-          credentialDirectory: () => "/tmp/mandible-test-client-auth",
-        } as ClientAuthGate,
-      });
-      expect((await getHealth()).client_auth).toMatchObject({
-        mode: "strict",
-        credential_directory: "/tmp/mandible-test-client-auth",
-        legacy_conversion: true,
-      });
-    } finally {
-      if (prior === undefined) delete process.env.MANDIBLE_LEGACY_CONVERSION;
-      else process.env.MANDIBLE_LEGACY_CONVERSION = prior;
-    }
+  it("reports the exact credential directory and strict agent auth mode", async () => {
+    await startServer({
+      clientAuth: {
+        mode: () => "strict",
+        credentialDirectory: () => "/tmp/mandible-test-client-auth",
+      } as ClientAuthGate,
+    });
+    expect((await getHealth()).client_auth).toMatchObject({
+      mode: "strict",
+      credential_directory: "/tmp/mandible-test-client-auth",
+    });
   });
 });
 

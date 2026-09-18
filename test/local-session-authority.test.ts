@@ -39,10 +39,9 @@ describe('installation preview context', () => {
   it('signs a bounded preview context and rejects changed generation or audience', async () => {
     const { auth, dir } = authority();
     const context = {
-      family_id: 'os-user:install-test', root_family_id: 'os-user:install-test',
       user_id: 'human', slug: 'operator', audience: 'production',
-      effect_ceiling: production.effect_ceiling, csrf_token: 'csrf', expires_at: Date.now(),
-      evidence: { method: 'local_os_user', credential_id: null, authenticated_at: Date.now() },
+      effect_ceiling: production.effect_ceiling, csrf_token: 'csrf',
+      evidence: { authenticated_at: Date.now() },
     };
     const compact = await auth.signPreviewContext(context, 'preview-test');
     const key = auth.verificationKeyPem();
