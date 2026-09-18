@@ -11,10 +11,8 @@ interface TestServer {
 }
 
 let testServer: TestServer | null = null;
-let previousLegacyConversion: string | undefined;
 
 beforeEach(async () => {
-  previousLegacyConversion = process.env.MANDIBLE_LEGACY_CONVERSION;
   const router = new Router();
   router.post("/api/issues/test-write", (req, res) => {
     res.json({ ok: true, body: req.body });
@@ -22,9 +20,7 @@ beforeEach(async () => {
   router.get("/api/read", (_req, res) => {
     res.json({ ok: true });
   }, { fileRpc: "deny" });
-  router.post("/api/client-auth/legacy-conversion/complete", (_req, res) => {
-    res.json({ ok: true });
-  }, { fileRpc: "deny" });
+
 
   const server = createServer({
     db: {} as Db,
@@ -45,8 +41,6 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  if (previousLegacyConversion === undefined) delete process.env.MANDIBLE_LEGACY_CONVERSION;
-  else process.env.MANDIBLE_LEGACY_CONVERSION = previousLegacyConversion;
   if (testServer) {
     await close(testServer.server);
     testServer = null;
@@ -61,26 +55,14 @@ describe("daemon write boundary", () => {
     expect(response.body).toEqual({ ok: true, body: { hello: "cli" } });
   });
 
-  it("admits only the gateway-bound cross-site migration completion", async () => {
-    process.env.MANDIBLE_LEGACY_CONVERSION = "allow";
-    const hostile = {
+  it("rejects cross-site writes even when legacy gateway headers are supplied", async () => {
+    const response = await requestJson("POST", "/api/issues/test-write", {}, {
       Host: "app.mandible.localhost:19420",
       Origin: "https://app.mandible.localhost:19420",
       "Sec-Fetch-Site": "cross-site",
-      "X-Mandible-Target-Instance": "production",
-    };
-    expect((await requestJson("POST", "/api/client-auth/legacy-conversion/complete", {}, hostile)).body)
-      .toMatchObject({ reason: "invalid_legacy_conversion_ingress" });
-    expect((await requestJson("POST", "/api/client-auth/legacy-conversion/complete", {}, {
-      ...hostile,
       "X-Mandible-Legacy-Migration": "complete-v1",
-      "X-Mandible-Legacy-Origin": "http://127.0.0.1:19420",
-    })).body).toEqual({ ok: true });
-    expect((await requestJson("POST", "/api/client-auth/legacy-conversion/complete", {}, {
-      ...hostile,
-      "X-Mandible-Legacy-Migration": "complete-v1",
-      "X-Mandible-Legacy-Origin": "null",
-    })).body).toMatchObject({ reason: "invalid_legacy_conversion_ingress" });
+    });
+    expect(response).toMatchObject({ status: 403, body: { reason: "cross_site_fetch" } });
   });
 
   it("allows browser same-origin writes from the daemon origin", async () => {

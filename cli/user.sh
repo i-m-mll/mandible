@@ -9,7 +9,6 @@
 #   GET  /api/users/operator                 current operator
 #   GET  /api/client-auth/whoami             effective client identity (this request)
 #   POST /api/users/setup                    idempotent operator setup
-#   POST /api/client-auth/pairing/approve   approve one browser pairing reference
 #   GET  /api/users/<ref>/credentials        list credentials
 #   POST /api/users/<ref>/credentials        add credential
 #   POST /api/users/credentials/<id>/revoke  revoke credential
@@ -79,7 +78,7 @@ instead of printing it: `mandible-operator` for the human operator, or
 `mandible-agent-<app>` for an agent user (<app> is its shortest active app_name
 binding), with the user slug as the account. --service overrides that name.
 Storing again rotates the item in place.
-Use dashboard-link to enroll a browser without placing a bearer token in an HTTP URL.
+Open the registered local address in a browser for OS-owned access.
 Use whoami to check which user the daemon actually resolves for this shell's
 credential before a session starts writing to the ledger.
 EOF
@@ -122,7 +121,7 @@ api_read() {
   rm -f "$body_file"
   case "$http_status" in
     401|403)
-      err "${RED}Authentication failed querying ${what} (HTTP ${http_status})${detail:+: ${detail}}${RESET} — set MANDIBLE_TOKEN or run 'mandible user dashboard-link' to authenticate." ;;
+      err "${RED}Access failed querying ${what} (HTTP ${http_status})${detail:+: ${detail}}${RESET} — check the registered local service and operator setup." ;;
     404)
       err "${RED}${what} not found (HTTP 404)${detail:+: ${detail}}${RESET}" ;;
     000)
@@ -340,22 +339,6 @@ cmd_setup() {
   operator_ref="$(printf '%s\n' "$response" | jq -r '.user.slug // .user.id // "operator"')"
   setup_signing_credential "$operator_ref"
   emit "$response" "$json" '.user | "id: \(mandible_display_id)\nslug: \(.slug)\nname: \(.display_name)\nemail: \(.email // "-")"'
-}
-
-cmd_pair() {
-  local reference="" json=0 response payload
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$reference" ]] || die "Unexpected argument: $1" 2; reference="$1"; shift ;;
-    esac
-  done
-  [[ -n "$reference" ]] || die "Usage: mandible user pair <reference> [--json]" 2
-  require_tools
-  payload="$(jq -n --arg reference "$reference" '{reference:$reference}')"
-  response="$(api_send POST "/api/client-auth/pairing/approve" "$payload")" || die "Pairing approval failed." 1
-  emit "$response" "$json" '"approved pairing \(.reference)"'
 }
 
 # Issue 499c148 — print the identity the daemon resolves for THIS shell's
@@ -968,7 +951,6 @@ fi
 cmd="$1"; shift
 case "$cmd" in
   setup)      cmd_setup "$@" ;;
-  pair)       cmd_pair "$@" ;;
   whoami)     cmd_whoami "$@" ;;
   list)       cmd_list "$@" ;;
   show)       cmd_show "$@" ;;

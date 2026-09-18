@@ -45,9 +45,8 @@ describe("GET /api/client-auth/whoami", () => {
     });
   });
 
-  it("rejects unknown and bootstrap credentials", async () => {
+  it("rejects unknown credentials", async () => {
     setupOperator(db, { display_name: "Operator", email: "op@example.com" });
     expect((await whoami("unknown")).body).toMatchObject({ authenticated: false });
-    expect((await whoami(auth.bootstrapToken())).body).toMatchObject({ authenticated: false });
   });
 });

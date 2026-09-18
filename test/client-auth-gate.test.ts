@@ -43,10 +43,6 @@ describe("strict client-auth boundary", () => {
     expect(response).toMatchObject({ status: 200, body: { identity: { user_id: user.id, source: "http_bearer" } } });
   });
 
-  it("does not expose the operator bootstrap proof outside enrollment", async () => {
-    expect(auth.authenticate(auth.bootstrapToken())).toBeNull();
-  });
-
   it("rejects anonymous file RPC and accepts an explicit capability", async () => {
     expect((await fileRpc()).status).toBe(401);
     const user = createUser(db, { slug: "agent-y", kind: "agent", display_name: "Agent Y" });

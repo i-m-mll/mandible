@@ -175,24 +175,30 @@ api_base() {
   printf '%s' "$MANDIBLE_BASE"
 }
 
-api_is_file_rpc() {
-  [[ "${MANDIBLE_BASE}" == file://* ]]
+# The unmarked human shell uses the registered local origin as the same OS
+# account's browser does. Managed agent shells must present their own token.
+api_local_human_http() {
+  [[ "$(api_base)" == "$MANDIBLE_CANONICAL_ORIGIN" ]] \
+    && ! api_managed_client_markers_present \
+    && [[ -z "$(api_agent_provider)" ]]
 }
 
-# Issue 708dc4c — resolve the client-auth config dir, mirroring the daemon's
-# getMandibleConfigDir (src/platform-paths.ts). Used only to locate the operator
-# bootstrap-token file; the MANDIBLE_CONFIG_DIR override is honored first.
-#
-# Issue 24f0316 — config folded into the durable root, so this is now the same
-# path on every platform. That also retires the Mandible/mandible casing split
-# between this function and its TypeScript counterpart, which only ever went
-# unnoticed because macOS filesystems are case-insensitive by default.
-api_client_auth_config_dir() {
-  if [[ -n "${MANDIBLE_CONFIG_DIR:-}" ]]; then
-    api_resolve_user_path "$MANDIBLE_CONFIG_DIR"
-    return
+api_local_operator_csrf() {
+  local output="" result="" status=""
+  output="$(api_temp_file)" || return 1
+  status=$(curl -s --max-time 5 -o "$output" -w '%{http_code}' \
+    -H "Origin: $MANDIBLE_CANONICAL_ORIGIN" -H 'Sec-Fetch-Site: same-origin' \
+    "$(api_base)/api/client-auth/whoami" 2>/dev/null) || { rm -f "$output"; return 1; }
+  if [[ "$status" == "200" ]]; then
+    result=$(jq -er '.session.csrf_token | select(type == "string" and length > 0)' "$output" 2>/dev/null) || result=""
   fi
-  printf '%s/config' "$(api_mandible_home)"
+  rm -f "$output"
+  [[ -n "$result" ]] || return 1
+  printf '%s' "$result"
+}
+
+api_is_file_rpc() {
+  [[ "${MANDIBLE_BASE}" == file://* ]]
 }
 
 # Managed-session marker guard for the durable operator keychain credential: any
@@ -647,25 +653,14 @@ api_resolve_client_credential_impl() {
     API_CLIENT_CREDENTIAL_SOURCE="keychain"
     return 0
   fi
-  [[ "$method" == "GET" ]] && return 0
-  local token_file line
-  token_file="$(api_client_auth_config_dir)/client-auth/bootstrap-token"
-  if [[ -r "$token_file" ]]; then
-    IFS= read -r line < "$token_file" || true
-    API_CLIENT_CREDENTIAL_TOKEN="$line"
-    [[ -z "$line" ]] || API_CLIENT_CREDENTIAL_SOURCE="bootstrap"
-  fi
 }
 
 # Resolve the client-auth bearer/capability token, in priority order:
 #   1. In agent contexts, a verified inherited token or that provider's
-#      Keychain token, with no operator/bootstrap fallback.
-#   2. In human shells, MANDIBLE_TOKEN, the durable operator Keychain token,
-#      then the same-user operator bootstrap enrollment proof.
-#
-# Optional $1 is the request method. In an unmarked human shell the bootstrap
-# proof stays off GET requests so background reads cannot consume one-shot
-# enrollment. Agent contexts never receive operator or bootstrap credentials.
+#      Keychain token, with no operator fallback.
+#   2. In human shells, MANDIBLE_TOKEN or the durable operator Keychain token;
+#      otherwise the registered local origin resolves the OS-owned human.
+# Agent contexts never receive operator credentials.
 api_client_token() {
   local traced=0 rc=0
   case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
@@ -796,7 +791,7 @@ api_report_terminal_response() {
 api_http_exchange() {
   local method="$1" request_path="$2" data="$3" output_file="$4"
   local retry_limit="${MANDIBLE_HTTP_RETRIES:-2}" attempt=0 http_status curl_exit
-  local body_tmp="" stderr_tmp retryable empty_response token token_cfg=""
+  local body_tmp="" stderr_tmp retryable empty_response token token_cfg="" local_human=0 csrf=""
   local ambient_headers=() curl_args=()
 
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
@@ -811,8 +806,7 @@ api_http_exchange() {
 
   # Issue 708dc4c (finding 6) — present the client-auth bearer token via a 0600
   # curl config file, never on argv (which is visible in `ps`). Resolve it from
-  # MANDIBLE_TOKEN or the same-user operator bootstrap-token file. Pass the
-  # method so GET reads never pick up the one-shot bootstrap proof (issue a9ede3c).
+  # MANDIBLE_TOKEN or the operator Keychain token.
   #
   # xtrace is suspended across the capture and the config write (issue e2cb93f):
   # both the assignment and the printf would otherwise echo the bearer token.
@@ -822,6 +816,17 @@ api_http_exchange() {
   if [[ -n "$token" ]]; then
     token_cfg=$(api_temp_file)
     printf 'header = "Authorization: Bearer %s"\n' "$token" > "$token_cfg"
+  elif api_local_human_http; then
+    local_human=1
+    if [[ "$method" != "GET" && "$request_path" != "/api/users/setup" ]]; then
+      csrf="$(api_local_operator_csrf)" || {
+        printf 'Mandible local operator is unavailable; no mutation was sent.\n' >&2
+        [[ -z "$body_tmp" ]] || rm -f "$body_tmp"
+        rm -f "$stderr_tmp"
+        printf '000'
+        return 0
+      }
+    fi
   fi
   (( token_traced == 0 )) || set -x
 
@@ -830,6 +835,10 @@ api_http_exchange() {
     : > "$stderr_tmp"
     curl_args=(-s --max-time "${MANDIBLE_HTTP_TIMEOUT:-15}" -o "$output_file" -w "%{http_code}")
     [[ -n "$token_cfg" ]] && curl_args+=(--config "$token_cfg")
+    if (( local_human )); then
+      curl_args+=(-H "Origin: $MANDIBLE_CANONICAL_ORIGIN" -H 'Sec-Fetch-Site: same-origin')
+      [[ -z "$csrf" ]] || curl_args+=(-H "X-Mandible-CSRF: $csrf")
+    fi
     if [[ "$method" != "GET" ]]; then
       curl_args+=(-X "$method" -H 'Content-Type: application/json')
       (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
@@ -853,7 +862,7 @@ api_http_exchange() {
     if [[ "$retryable" != "true" ]]; then
       break
     fi
-    if (( attempt >= retry_limit )); then
+    if (( attempt >= retry_limit )) || { (( local_human )) && [[ "$method" != "GET" ]]; }; then
       api_report_final_http_failure "$request_path" "$http_status" "$curl_exit"
       break
     fi
@@ -988,7 +997,7 @@ api_operational_mutation_category() {
   # and the TypeScript set in sync; test/cli-instance-preflight.test.ts fails on
   # drift.
   case "${method} ${pathname}" in
-    "POST /api/auth/check"|"POST /api/briefing-destination-routes/plan"|"POST /api/client-auth/pairing/start"|"POST /api/client-auth/pairing/complete"|"POST /api/client-auth/recovery/finalize"|"POST /api/client-auth/renew"|"POST /api/client-auth/logout"|"POST /api/timeline/project"|"PUT /api/host-preferences/app-theme"|"PUT /api/host-preferences/chat-shown-projects") return 1 ;;
+    "POST /api/auth/check"|"POST /api/briefing-destination-routes/plan"|"POST /api/timeline/project"|"PUT /api/host-preferences/app-theme"|"PUT /api/host-preferences/chat-shown-projects") return 1 ;;
   esac
 
   if generated_category="$(api_generated_operational_mutation_category "$method" "$pathname")"; then
