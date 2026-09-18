@@ -68,7 +68,6 @@
     // The old origin is needed only while saved browser state is being moved;
     // native enrollment runs from the final HTTPS origin after navigation.
     if (status.dashboard_origin !== "http://127.0.0.1:19420"
-        && status.dashboard_origin !== "https://app.mandible.localhost:19420"
         && status.dashboard_origin !== window.MANDIBLE_PRODUCTION_ORIGIN) {
       statusCopy.textContent = "Mandible could not verify the local dashboard address.";
       return;
