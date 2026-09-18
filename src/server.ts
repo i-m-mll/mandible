@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { parse as parseCookie } from "cookie";
 import http from "node:http";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -14,7 +13,6 @@ import {
   UNSAFE_MUTATION_METHODS as UNSAFE_METHODS,
 } from "./instance-policy.js";
 import { authorizeEffects, operationForRequest } from "./security/effect-policy.js";
-import { COOKIE_NAME, PAIRING_COOKIE_NAME, TRANSFER_COOKIE_NAME } from "./client-auth/session-authority.js";
 import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
 import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";
@@ -71,10 +69,6 @@ export interface RequestLike {
   client_auth_failure?: "expired" | "revoked" | "wrong_audience" | "unknown";
   /** Aborts when the underlying HTTP client disconnects before a response completes. */
   signal?: AbortSignal;
-  browser_pairing_secret?: string | null;
-  browser_transfer_secret?: string | null;
-  legacy_browser_credential?: string | null;
-  legacy_browser_origin?: string | null;
   target_instance_id?: string | null;
 }
 
@@ -85,9 +79,9 @@ export type ClientAuthMode = "compat" | "strict";
 export interface ResolvedClientIdentity {
   user_id: string;
   slug: string;
-  method: "api_token" | "ephemeral" | "browser_session" | "installation_context" | "legacy_browser_session";
+  method: "api_token" | "ephemeral" | "browser_session" | "installation_context" | "legacy_browser_session" | "local_os_user";
   credential_id: string | null;
-  source: "http_bearer" | "browser_cookie" | "installation_context" | "legacy_browser_conversion" | "file_rpc_capability" | "bootstrap" | "in_process";
+  source: "http_bearer" | "browser_cookie" | "installation_context" | "legacy_browser_conversion" | "file_rpc_capability" | "bootstrap" | "in_process" | "local_os_user";
   /**
    * Issue 499c148 — which daemon-minted ephemeral credential answered
    * (`dashboard_handshake`, `operator_bootstrap`, `agent_session:<id>`). Set
@@ -124,6 +118,7 @@ export interface UnattributedWriteRecord {
  * resolution, no enforcement, no telemetry.
  */
 export interface ClientAuthGate {
+  localBrowserIdentity?(): ResolvedClientIdentity | null;
   authenticate(
     credential: string | null | undefined,
     source: ResolvedClientIdentity["source"],
@@ -135,31 +130,13 @@ export interface ClientAuthGate {
   authorityId?(): string;
   credentialDirectory?(): string;
   classifyFailure?(credential: string | null | undefined): "expired" | "revoked" | "unknown";
-  authenticateBrowserSession?(credential: string | null | undefined): ResolvedClientIdentity | null;
-  authenticateBrowserSessionForAudience?(
-    credential: string | null | undefined,
-    audience: string,
-  ): ResolvedClientIdentity | null;
-  classifyBrowserSession?(
-    credential: string | null | undefined,
-    audience?: string,
-  ): { state: "active" | "missing" | "wrong_audience" | "expired" | "revoked"; identity: ResolvedClientIdentity | null };
   authenticateInternalContext?(credential: string | null | undefined): Promise<ResolvedClientIdentity | null>;
   validateBrowserCsrf?(identity: ResolvedClientIdentity, csrf: string | null | undefined): boolean;
-  authenticateLegacyBrowserSession?(credential: string | null | undefined): ResolvedClientIdentity | null;
 }
 
 const STRICT_ANONYMOUS_HTTP_ROUTES = new Set([
   "/api/health",
   "/api/instance",
-  "/api/client-auth/pairing/start",
-  "/api/client-auth/pairing/complete",
-  "/api/client-auth/preview-transfer/prepare",
-  "/api/client-auth/preview-bootstrap",
-  "/api/client-auth/preview-transfer/complete",
-  "/api/client-auth/legacy-conversion/prepare",
-  "/api/client-auth/legacy-conversion/complete",
-  "/api/client-auth/recovery/start",
   "/api/client-auth/whoami",
   "/api/users/setup",
 ]);
@@ -470,11 +447,8 @@ export class Router implements RouteRegistrar {
       }
     }
     try {
-      const cookies = parseCookie(headerValue(req.headers.cookie) ?? "");
       const browserRequest = isBrowserRequest(req.headers);
-      const legacyBrowserConversion = isLegacyBrowserConversionRequest(req);
-      const legacyBrowserRecovery = isBoundLegacyRecoveryStart(req, this.instance);
-      if (browserRequest && headerValue(req.headers.authorization) && !legacyBrowserConversion) {
+      if (browserRequest && headerValue(req.headers.authorization)) {
         new HttpResponse(res).status(400).json({
           error: "browser_bearer_forbidden",
           message: "Browser requests authenticate only with the host-only session cookie.",
@@ -487,21 +461,14 @@ export class Router implements RouteRegistrar {
         body,
         new HttpResponse(res),
         ambientIdentityFromHeaders(req.headers),
-        legacyBrowserConversion
-          ? bearerFromHeaders(req.headers)
-          : browserRequest ? cookies[COOKIE_NAME] ?? null : bearerFromHeaders(req.headers),
+        browserRequest ? null : bearerFromHeaders(req.headers),
         "http",
         abortController.signal,
         {
           browserRequest,
           csrf: headerValue(req.headers["x-mandible-csrf"]),
           internalContext: headerValue(req.headers["x-mandible-session-context"]),
-          pairingSecret: cookies[PAIRING_COOKIE_NAME] ?? null,
-          transferSecret: cookies[TRANSFER_COOKIE_NAME] ?? null,
           targetInstanceId: headerValue(req.headers["x-mandible-target-instance"]),
-          legacyBrowserConversion,
-          legacyBrowserOrigin: legacyBrowserConversion ? headerValue(req.headers.origin)
-            : legacyBrowserRecovery ? headerValue(req.headers["x-mandible-legacy-origin"]) : undefined,
         },
       );
     } finally {
@@ -523,11 +490,7 @@ export class Router implements RouteRegistrar {
       browserRequest: boolean;
       csrf?: string;
       internalContext?: string;
-      pairingSecret?: string | null;
-      transferSecret?: string | null;
       targetInstanceId?: string;
-      legacyBrowserConversion?: boolean;
-      legacyBrowserOrigin?: string;
     },
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
@@ -550,28 +513,17 @@ export class Router implements RouteRegistrar {
       let clientAuthFailure: "expired" | "revoked" | "wrong_audience" | "unknown" = "unknown";
       const gate = this.options.clientAuth;
       if (gate) {
-        clientIdentity = httpAuth?.legacyBrowserConversion && gate.authenticateLegacyBrowserSession
-          ? gate.authenticateLegacyBrowserSession(credential)
-          : httpAuth?.internalContext && gate.authenticateInternalContext
+        clientIdentity = httpAuth?.internalContext && gate.authenticateInternalContext
           ? await gate.authenticateInternalContext(httpAuth.internalContext)
-          : httpAuth?.browserRequest && httpAuth.targetInstanceId
-            && gate.authenticateBrowserSessionForAudience
-            ? gate.authenticateBrowserSessionForAudience(credential, httpAuth.targetInstanceId)
-          : httpAuth?.browserRequest && gate.authenticateBrowserSession
-            ? gate.authenticateBrowserSession(credential)
-            : gate.authenticate(
+          : httpAuth?.browserRequest && gate.localBrowserIdentity
+            ? gate.localBrowserIdentity()
+          : !httpAuth?.browserRequest ? gate.authenticate(
                 credential,
                 clientAuthSourceForTransport(transport),
                 { method: normalizedMethod, pathname },
-              );
+              ) : null;
         if (!clientIdentity) {
-          const browserFailure = httpAuth?.browserRequest && gate.classifyBrowserSession
-            ? gate.classifyBrowserSession(credential, httpAuth.targetInstanceId).state
-            : null;
-          clientAuthFailure = browserFailure === "wrong_audience" ? "wrong_audience"
-            : browserFailure === "expired" ? "expired"
-              : browserFailure === "revoked" ? "revoked"
-                : gate.classifyFailure?.(credential) ?? "unknown";
+          clientAuthFailure = gate.classifyFailure?.(credential) ?? "unknown";
         }
         if (
           transport === "http"
@@ -588,7 +540,7 @@ export class Router implements RouteRegistrar {
         if (
           httpAuth?.browserRequest
           && UNSAFE_METHODS.has(normalizedMethod)
-          && (clientIdentity?.source === "browser_cookie" || clientIdentity?.source === "installation_context")
+          && (clientIdentity?.source === "local_os_user" || clientIdentity?.source === "installation_context")
           && !gate.validateBrowserCsrf?.(clientIdentity, httpAuth.csrf)
         ) {
           response.status(403).json({ error: "csrf_required" });
@@ -648,10 +600,6 @@ export class Router implements RouteRegistrar {
         client_identity: clientIdentity,
         client_auth_failure: clientAuthFailure,
         signal,
-        browser_pairing_secret: httpAuth?.pairingSecret ?? null,
-        browser_transfer_secret: httpAuth?.transferSecret ?? null,
-        legacy_browser_credential: httpAuth?.legacyBrowserConversion ? credential ?? null : null,
-        legacy_browser_origin: httpAuth?.legacyBrowserOrigin ?? null,
         target_instance_id: httpAuth?.targetInstanceId ?? null,
       };
 
@@ -735,26 +683,6 @@ function isBrowserRequest(headers: http.IncomingHttpHeaders): boolean {
   return headerValue(headers.origin) !== undefined
     || headerValue(headers["sec-fetch-site"]) !== undefined
     || headerValue(headers.cookie) !== undefined;
-}
-
-const LEGACY_BROWSER_ORIGINS = new Set([
-  "http://127.0.0.1:19420",
-  "http://localhost:19420",
-  "http://127.0.0.1:19421",
-  "http://localhost:19421",
-]);
-
-function isLegacyBrowserConversionRequest(req: http.IncomingMessage): boolean {
-  if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
-  if ((req.method ?? "GET").toUpperCase() !== "POST") return false;
-  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
-  if (pathname !== "/api/client-auth/legacy-conversion/prepare") return false;
-  const origin = headerValue(req.headers.origin);
-  const host = headerValue(req.headers.host);
-  if (!origin || !host) return false;
-  return LEGACY_BROWSER_ORIGINS.has(origin)
-    && new URL(origin).host.toLowerCase() === host.toLowerCase()
-    && headerValue(req.headers["sec-fetch-site"])?.toLowerCase() !== "cross-site";
 }
 
 // --- Server creation ---
@@ -883,16 +811,15 @@ export function createServer(options: ServerOptions): http.Server {
     }
 
     if (pathname === "/api/events/subscribe" && method === "POST") {
-      const cookies = parseCookie(headerValue(req.headers.cookie) ?? "");
       const browserRequest = isBrowserRequest(req.headers);
       if (browserRequest && headerValue(req.headers.authorization)) {
         writeJsonResponse(res, 400, { error: "browser_bearer_forbidden" });
         return;
       }
-      const identity = options.clientAuth?.authenticateBrowserSession?.(cookies[COOKIE_NAME])
-        ?? (await options.clientAuth?.authenticateInternalContext?.(
+      const identity = (await options.clientAuth?.authenticateInternalContext?.(
           headerValue(req.headers["x-mandible-session-context"]),
         ))
+        ?? (browserRequest ? options.clientAuth?.localBrowserIdentity?.() : null)
         ?? (!browserRequest
           ? options.clientAuth?.authenticate(
               bearerFromHeaders(req.headers),
@@ -913,7 +840,7 @@ export function createServer(options: ServerOptions): http.Server {
         writeJsonResponse(res, 403, { error: eventDecision.code, missing_effects: eventDecision.missing });
         return;
       }
-      if ((identity.source === "browser_cookie" || identity.source === "installation_context")
+      if ((identity.source === "local_os_user" || identity.source === "installation_context")
           && !options.clientAuth?.validateBrowserCsrf?.(
             identity,
             headerValue(req.headers["x-mandible-csrf"]),
@@ -1308,66 +1235,10 @@ function validateDaemonWriteBoundary(
   if (!isBrowserRequest(req.headers)) {
     return { ok: true };
   }
-  if (pathname === "/api/client-auth/legacy-conversion/prepare"
-      && isLegacyBrowserConversionRequest(req)) {
-    return { ok: true };
-  }
-  if (pathname === "/api/client-auth/legacy-conversion/complete") {
-    return isBoundLegacyConversionCompletion(req, pathname, instance)
-      ? { ok: true }
-      : { ok: false, reason: "invalid_legacy_conversion_ingress" };
-  }
-  if (pathname === "/api/client-auth/recovery/start") {
-    return isBoundLegacyRecoveryStart(req, instance)
-      ? { ok: true }
-      : { ok: false, reason: "invalid_browser_recovery_ingress" };
-  }
   return validateDaemonBrowserBoundary(
     req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod),
-    normalizedMethod === "GET" && (pathname === "/"
-      || (process.env.MANDIBLE_LEGACY_CONVERSION === "allow"
-        && pathname === "/api/client-auth/legacy-conversion/prepared")),
+    normalizedMethod === "GET" && pathname === "/",
   );
-}
-
-function isBoundLegacyRecoveryStart(req: http.IncomingMessage, instance: InstanceInfo): boolean {
-  if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
-  const legacyOrigin = firstHeader(req, "x-mandible-legacy-origin");
-  const target = firstHeader(req, "x-mandible-target-instance");
-  if (!legacyOrigin || !target || !LEGACY_BROWSER_ORIGINS.has(legacyOrigin)) return false;
-  const registered = new URL(instance.public_origin);
-  const host = parseHostHeader(firstHeader(req, "host"));
-  return (req.method ?? "GET").toUpperCase() === "POST"
-    && new URL(req.url ?? "/", "http://localhost").pathname === "/api/client-auth/recovery/start"
-    && Boolean(host && `${host.hostname}:${host.port}` === registered.host.toLowerCase())
-    && firstHeader(req, "origin") === registered.origin
-    && firstHeader(req, "x-mandible-legacy-recovery") === "state-v1"
-    && new URL(legacyOrigin).port === (target === instance.instance_id ? "19420" : "19421")
-    && firstHeader(req, "sec-fetch-site") === "cross-site";
-}
-
-function isBoundLegacyConversionCompletion(
-  req: http.IncomingMessage,
-  pathname: string,
-  instance: InstanceInfo,
-): boolean {
-  if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") return false;
-  const legacyOrigin = firstHeader(req, "x-mandible-legacy-origin");
-  const target = firstHeader(req, "x-mandible-target-instance");
-  if (!legacyOrigin || !target || !LEGACY_BROWSER_ORIGINS.has(legacyOrigin)) return false;
-  const registered = new URL(instance.public_origin);
-  const host = parseHostHeader(firstHeader(req, "host"));
-  const origin = firstHeader(req, "origin");
-  const legacyPort = new URL(legacyOrigin).port;
-  return (req.method ?? "GET").toUpperCase() === "POST"
-    && pathname === "/api/client-auth/legacy-conversion/complete"
-    && Boolean(host && `${host.hostname}:${host.port}` === registered.host.toLowerCase())
-    && origin === registered.origin
-    && firstHeader(req, "x-mandible-legacy-migration") === "complete-v1"
-    && legacyPort === (target === instance.instance_id ? "19420" : "19421")
-    // The gateway accepts only a cross-site form POST from one inventoried old
-    // origin, then rewrites Host/Origin before the daemon sees the request.
-    && firstHeader(req, "sec-fetch-site") === "cross-site";
 }
 
 function validateDaemonBrowserBoundary(

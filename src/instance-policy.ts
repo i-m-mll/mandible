@@ -24,11 +24,6 @@ export const UNSAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
 // available on instances that reject operational mutations.
 export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/auth/check",
-  "POST /api/client-auth/pairing/start",
-  "POST /api/client-auth/pairing/complete",
-  "POST /api/client-auth/recovery/finalize",
-  "POST /api/client-auth/renew",
-  "POST /api/client-auth/logout",
   // Chat project visibility is host/user view intent stored outside both the
   // ledger and copied preview DB. Main and reject-mode previews deliberately
   // share this one revisioned authority.

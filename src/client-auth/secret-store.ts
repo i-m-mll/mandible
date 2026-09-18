@@ -1,13 +1,11 @@
 // Filesystem-anchored client-auth secrets.
 //
-// The trust model for these secrets is the same as file-RPC: same-user
-// filesystem access. Two secrets live under <config-dir>/client-auth/ (0700):
+// The trust model for these secrets is same-user filesystem access.
+// The client-auth directory holds:
 //   - `pepper`: the HMAC pepper for token fingerprints. Kept out of the DB so a
 //     database read (GET /api/settings) or write (PUT /api/settings) cannot
 //     exfiltrate or overwrite it (finding 4). Read once at startup and cached.
-//   - `bootstrap-token`: the operator's daemon-lifetime ephemeral token, written
-//     0600 so a same-user CLI can authenticate without the token ever appearing
-//     on the wire or in the served HTML (finding 1).
+//   - `authority-id`: an installation identity for local CSRF binding.
 //
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -17,9 +15,6 @@ import { ensureMandibleClientAuthDir } from "../platform-paths.js";
 
 const PEPPER_FILE = "pepper";
 const AUTHORITY_ID_FILE = "authority-id";
-const BOOTSTRAP_TOKEN_FILE = "bootstrap-token";
-const LEGACY_DASHBOARD_SESSION_FILE = "dashboard-session.json";
-const MAX_LEGACY_DASHBOARD_SESSIONS = 8;
 /** Legacy location: the pepper used to live in the settings KV table. */
 const LEGACY_PEPPER_SETTING_KEY = "client_auth.token_pepper";
 
@@ -136,97 +131,4 @@ function migrateLegacyPepperRow(db: Db): void {
   if (readLegacyPepperRow(db)) {
     deleteLegacyPepperRow(db);
   }
-}
-
-/**
- * Write (or clear) the operator's daemon-lifetime bootstrap token file. Passing
- * null removes the file (no operator configured). The file is 0600 so only the
- * same user can read it.
- */
-export function writeBootstrapTokenFile(token: string | null, dir: string = defaultClientAuthDir()): void {
-  const tokenPath = path.join(dir, BOOTSTRAP_TOKEN_FILE);
-  if (token) {
-    writeSecretFile(tokenPath, token);
-    return;
-  }
-  try {
-    fs.rmSync(tokenPath, { force: true });
-  } catch {
-    // best effort
-  }
-}
-
-export function bootstrapTokenFilePath(dir: string = defaultClientAuthDir()): string {
-  return path.join(dir, BOOTSTRAP_TOKEN_FILE);
-}
-
-export type LegacyDashboardSession = {
-  token_fingerprint: string;
-  user_id: string;
-  slug: string;
-  created_at: number;
-  expires_at: number;
-  renew_until: number;
-};
-
-function parseLegacyDashboardSession(value: unknown): LegacyDashboardSession {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Invalid legacy dashboard session file.");
-  }
-  const row = value as Record<string, unknown>;
-  const renewUntil = row.renew_until ?? row.expires_at;
-  if (typeof row.token_fingerprint !== "string" || !/^sha256:[0-9a-f]{64}$/.test(row.token_fingerprint)
-      || typeof row.user_id !== "string" || !row.user_id
-      || typeof row.slug !== "string" || !row.slug
-      || typeof row.created_at !== "number" || !Number.isSafeInteger(row.created_at)
-      || typeof row.expires_at !== "number" || !Number.isSafeInteger(row.expires_at)
-      || typeof renewUntil !== "number" || !Number.isSafeInteger(renewUntil)
-      || row.created_at < 0 || row.expires_at < row.created_at || renewUntil < row.expires_at) {
-    throw new Error("Invalid legacy dashboard session file.");
-  }
-  return {
-    token_fingerprint: row.token_fingerprint,
-    user_id: row.user_id,
-    slug: row.slug,
-    created_at: row.created_at,
-    expires_at: row.expires_at,
-    renew_until: renewUntil,
-  };
-}
-
-export function readLegacyDashboardSessions(
-  dir: string = defaultClientAuthDir(),
-): LegacyDashboardSession[] {
-  const raw = readProtectedSecretFile(path.join(dir, LEGACY_DASHBOARD_SESSION_FILE));
-  if (!raw) return [];
-  let value: unknown;
-  try { value = JSON.parse(raw); } catch { throw new Error("Invalid legacy dashboard session file."); }
-  const rows = value && typeof value === "object" && !Array.isArray(value)
-    && (value as Record<string, unknown>).version === 2
-    ? (value as { sessions?: unknown }).sessions
-    : [value];
-  if (!Array.isArray(rows) || rows.length > MAX_LEGACY_DASHBOARD_SESSIONS) {
-    throw new Error("Invalid legacy dashboard session file.");
-  }
-  const sessions = rows.map(parseLegacyDashboardSession);
-  if (new Set(sessions.map((row) => row.token_fingerprint)).size !== sessions.length) {
-    throw new Error("Invalid legacy dashboard session file.");
-  }
-  return sessions;
-}
-
-export function retireLegacyDashboardSessions(
-  fingerprints: readonly string[],
-  dir: string = defaultClientAuthDir(),
-): void {
-  if (fingerprints.length === 0) return;
-  const retired = new Set(fingerprints);
-  const remaining = readLegacyDashboardSessions(dir)
-    .filter((row) => !retired.has(row.token_fingerprint));
-  const filePath = path.join(dir, LEGACY_DASHBOARD_SESSION_FILE);
-  if (remaining.length === 0) {
-    fs.rmSync(filePath, { force: true });
-    return;
-  }
-  writeSecretFile(filePath, JSON.stringify({ version: 2, sessions: remaining }));
 }

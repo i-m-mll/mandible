@@ -5,10 +5,6 @@
 // others' credentials, or alter authentication state. These routes are always
 // guarded because they administer authentication itself.
 //
-// Bootstrappability: the filesystem bootstrap token is accepted only by the
-// one-shot native-enrollment route. Browser enrollment uses pairing and never
-// accepts a bearer token or URL credential.
-//
 // This is deliberately narrow — authentication-material administration only, not
 // general project authorization, which is the permissions umbrella child.
 
@@ -83,7 +79,7 @@ export function attributionForRequest(db: Db, req: unknown): AttributionContext 
   if (identity) {
     return {
       user_id: identity.user_id,
-      evidence_method: "api_token",
+      evidence_method: identity.source === "local_os_user" ? "local_default" : "api_token",
     };
   }
   const ambient: AmbientProviderIdentity | null = record?.ambient_identity ?? null;

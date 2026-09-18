@@ -1,10 +1,4 @@
-// Client authentication (umbrella 8e2e8b2 / issue 708dc4c).
-//
-// Local client authentication for native clients, agents, and file-RPC:
-// per-user bearer tokens hashed at rest, an always-strict HTTP + file-RPC
-// boundary, an unattributed-write telemetry ratchet, and a filesystem-anchored
-// operator bootstrap token restricted to one-shot native enrollment. Browser
-// sessions are owned separately by session-authority.ts and use cookies + CSRF.
+// Local OS-owned browser access and explicit bearer/capability tokens for agents.
 
 export { ClientAuthenticator, type ClientAuthenticatorOptions } from "./authenticator.js";
 export {
@@ -32,10 +26,8 @@ export {
   type VerifiedToken,
 } from "./tokens.js";
 export {
-  bootstrapTokenFilePath,
   defaultClientAuthDir,
   loadOrCreatePepper,
-  writeBootstrapTokenFile,
 } from "./secret-store.js";
 export {
   ClientAuthTelemetry,

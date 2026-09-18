@@ -1,9 +1,5 @@
 import type { MandibleEvent } from '../../src/contracts';
-import {
-  browserSessionFetch,
-  getClientAuthSessionState,
-  isTerminalClientAuthState,
-} from './client-auth-token';
+import { browserSessionFetch } from './client-auth-token';
 
 export type SSEPayload = MandibleEvent;
 
@@ -209,8 +205,7 @@ export class SSEClient {
         }
       }
     } catch {
-      if (!controller.signal.aborted && !this.closed
-          && !isTerminalClientAuthState(getClientAuthSessionState())) {
+      if (!controller.signal.aborted && !this.closed) {
         shouldReconnect = true;
       }
     } finally {
