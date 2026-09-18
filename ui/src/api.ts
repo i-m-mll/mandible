@@ -62,15 +62,7 @@ import type {
   ConversationSpawnReceipt as ContractConversationSpawnReceipt,
   ProviderAdapterEvent as ContractProviderAdapterEvent,
   ProviderLiveProjection as ContractProviderLiveProjection,
-  OperationalIncidentAcknowledgementResponse as ContractOperationalIncidentAcknowledgement,
-  OperationalIncidentAttention as ContractOperationalIncidentAttention,
-  OperationalIncidentCondition as ContractOperationalIncidentCondition,
-  OperationalIncidentCounts as ContractOperationalIncidentCounts,
-  OperationalIncidentListResponse as ContractOperationalIncidentListResponse,
-  OperationalIncidentObservation as ContractOperationalIncidentObservation,
-  OperationalIncidentProjection as ContractOperationalIncidentProjection,
   OperationalIncidentRemediation as ContractOperationalIncidentRemediation,
-  OperationalIncidentResolutionKind as ContractOperationalIncidentResolutionKind,
   CreateSpaceEdgeRequest,
   UpdateSpaceEdgeRequest,
   AddSpaceItemResponse,
@@ -542,36 +534,8 @@ export function invalidateBriefingApiCacheForEvent(type: string): boolean {
   return families.length > 0;
 }
 
-// Operational incidents (issue 5308097, spec §8). An incident lifecycle event
-// can move exactly two reads: the incident list and the badge aggregate. It
-// touches NO other family — not briefing, not asks, not tasks — so it is
-// matched before the broad dashboard fallback below and returns early.
-const OPERATIONAL_INCIDENT_SSE_EVENTS = new Set([
-  'operational-incident:ingested',
-  'operational-incident:acknowledged',
-  'operational-incident:remediation-changed',
-  'operational-incident:closed',
-]);
-
-/** Exact cache families affected by an operational-incident lifecycle event. */
-export function operationalIncidentApiCacheFamiliesForEvent(
-  type: string,
-): readonly string[] {
-  return OPERATIONAL_INCIDENT_SSE_EVENTS.has(type)
-    ? ['/api/operational-incidents', '/api/dashboard/badges']
-    : [];
-}
-
-/** Narrow incident invalidation; returns whether the event was handled. */
-export function invalidateOperationalIncidentApiCacheForEvent(type: string): boolean {
-  const families = operationalIncidentApiCacheFamiliesForEvent(type);
-  for (const family of families) invalidateApiGetCache(family);
-  return families.length > 0;
-}
-
 export function invalidateDashboardApiCacheForEvent(type: string): void {
   if (invalidateBriefingApiCacheForEvent(type)) return;
-  if (invalidateOperationalIncidentApiCacheForEvent(type)) return;
   // Streamed auth output does not change any dashboard count, so the badge
   // cache is left intact for that event; every other family below can move a
   // count and refreshes the badges key.
@@ -5267,6 +5231,21 @@ function normalizeAgentDispatchSubjectKind(value: unknown): AgentDispatchSubject
   return 'issue';
 }
 
+function normalizeOperationalIncidentRemediation(value: unknown): ContractOperationalIncidentRemediation {
+  switch (value) {
+    case 'triaging':
+    case 'fix_prepared':
+    case 'awaiting_auth':
+    case 'auth_expired':
+    case 'awaiting_deploy':
+    case 'awaiting_verification':
+    case 'complete':
+      return value;
+    default:
+      return 'none';
+  }
+}
+
 function normalizeAgentDispatchEvent(value: unknown): AgentDispatchEvent {
   const row = briefingRecord(value);
   const status = briefingOptionalString(row.status);
@@ -5887,345 +5866,4 @@ export async function cancelTaskDisable(commandId: string): Promise<TaskCommandM
   const command = normalizeTaskCommand(row.command);
   if (!command) throw new Error('Server returned an invalid task command receipt.');
   return { command, stored: row.stored === true };
-}
-
-// ===========================================================================
-// Operational incidents — client section (issue 5308097).
-//
-// APPEND-ONLY SECTION. Server routes live in src/routes/operational-incidents.ts:
-//
-//   GET  /api/operational-incidents                     (read surface)
-//   POST /api/operational-incidents/:id/acknowledge     (active human)
-//   POST /api/operational-incidents/:id/close           (operator only)
-//
-// THREE INDEPENDENT AXES (spec §2/§5). Observation is what the executor
-// reported, Attention is what the operator said, Remediation is how far a fix
-// has travelled. They are read and rendered separately and NEVER collapsed into
-// one status: an incident can be recovered without ever having been
-// acknowledged, and acknowledged while still very much active.
-//
-// ATTENTION IS DURABLE SERVER STATE. There is no optimistic acknowledged flag
-// held only in the client here — every read of `attention` comes from the
-// server projection, so a poll, an SSE reconciliation, a refetch after cache
-// invalidation, a new telemetry event, or a daemon restart all converge on the
-// stored acknowledgement rather than resetting it.
-//
-// TELEMETRY IS UNVERIFIED. `provenance_label` is not decoration: Mandible
-// authenticated the executor that sent these facts and verified nothing else
-// about them. Every surface that shows an incident shows that label.
-// ===========================================================================
-
-export type OperationalIncidentCondition = ContractOperationalIncidentCondition;
-export type OperationalIncidentObservation = ContractOperationalIncidentObservation;
-export type OperationalIncidentAttention = ContractOperationalIncidentAttention;
-export type OperationalIncidentRemediation = ContractOperationalIncidentRemediation;
-export type OperationalIncidentResolutionKind = ContractOperationalIncidentResolutionKind;
-export type OperationalIncidentCounts = ContractOperationalIncidentCounts;
-
-/** The exact provenance sentence the server sends and every card must show. */
-export const OPERATIONAL_INCIDENT_PROVENANCE_LABEL =
-  'Executor-reported; not verified by Mandible';
-
-const OPERATIONAL_INCIDENT_CONDITIONS: readonly OperationalIncidentCondition[] = [
-  'failed_permanent',
-  'timeout',
-  'circuit_open',
-  'publish_stale',
-  'publish_quarantined',
-  'containment_blocked',
-];
-
-const OPERATIONAL_INCIDENT_REMEDIATIONS: readonly OperationalIncidentRemediation[] = [
-  'none',
-  'triaging',
-  'fix_prepared',
-  'awaiting_auth',
-  'auth_expired',
-  'awaiting_deploy',
-  'awaiting_verification',
-  'complete',
-];
-
-/** Human wording for the closed condition vocabulary (spec §3). */
-const OPERATIONAL_INCIDENT_CONDITION_LABELS: Record<OperationalIncidentCondition, string> = {
-  failed_permanent: 'Permanent failure',
-  timeout: 'Timed out',
-  circuit_open: 'Circuit open',
-  publish_stale: 'Publication stale',
-  publish_quarantined: 'Publication quarantined',
-  containment_blocked: 'Containment blocked',
-};
-
-const OPERATIONAL_INCIDENT_REMEDIATION_LABELS: Record<OperationalIncidentRemediation, string> = {
-  none: 'No fix started',
-  triaging: 'Agent triaging',
-  fix_prepared: 'Fix prepared',
-  awaiting_auth: 'Awaiting authorization',
-  auth_expired: 'Authorization expired',
-  awaiting_deploy: 'Awaiting deployment',
-  awaiting_verification: 'Awaiting verification',
-  complete: 'Remediation complete',
-};
-
-/**
- * Remediation states in which Prepare-fix is a legal transition (spec §5).
- * Every other state means a fix attempt is already in flight, and the server
- * answers a second attempt with 409 — the button is not offered.
- */
-const OPERATIONAL_INCIDENT_PREPARE_FIX_STATES: readonly OperationalIncidentRemediation[] = [
-  'none',
-  'auth_expired',
-];
-
-/** Normalized incident row. Shapes mirror the server projection exactly. */
-export type OperationalIncident = {
-  id: string;
-  executor: string;
-  task: string;
-  condition: OperationalIncidentCondition;
-  first_seen: number | null;
-  observation: OperationalIncidentObservation;
-  attention: OperationalIncidentAttention;
-  remediation: OperationalIncidentRemediation;
-  resolved: boolean;
-  resolution_kind: OperationalIncidentResolutionKind | null;
-  /** Always the unverified-telemetry sentence; never omitted, never softened. */
-  provenance_label: string;
-  latest_telemetry: unknown;
-  latest_telemetry_sha256: string | null;
-  latest_observed_at: number | null;
-  recovered_at: number | null;
-  recovery_run_id: string | null;
-  acknowledged_at: number | null;
-  acknowledged_by_user_id: string | null;
-  resolved_at: number | null;
-  operator_closed_at: number | null;
-  operator_closed_by_user_id: string | null;
-  updated_at: number | null;
-};
-
-export type OperationalIncidentList = {
-  incidents: OperationalIncident[];
-  counts: OperationalIncidentCounts;
-  next_cursor: string | null;
-};
-
-export type OperationalIncidentAcknowledgement = {
-  incident_id: string;
-  attention: 'acknowledged';
-  event_id: string;
-  acknowledged_at: number | null;
-  acknowledged_by_user_id: string | null;
-};
-
-function normalizeOperationalIncidentCondition(value: unknown): OperationalIncidentCondition {
-  return OPERATIONAL_INCIDENT_CONDITIONS.includes(value as OperationalIncidentCondition)
-    ? (value as OperationalIncidentCondition)
-    : 'failed_permanent';
-}
-
-function normalizeOperationalIncidentRemediation(value: unknown): OperationalIncidentRemediation {
-  return OPERATIONAL_INCIDENT_REMEDIATIONS.includes(value as OperationalIncidentRemediation)
-    ? (value as OperationalIncidentRemediation)
-    : 'none';
-}
-
-function normalizeOperationalIncident(value: unknown): OperationalIncident | null {
-  const row = briefingContractRecord<ContractOperationalIncidentProjection>(value);
-  const id = briefingOptionalString(row.id);
-  if (!id) return null;
-  const provenance = briefingRecord(row.provenance);
-  const resolutionKind = briefingOptionalString(row.resolution_kind);
-  const resolvedAt = briefingOptionalNumber(row.resolved_at);
-  return {
-    id,
-    executor: briefingString(row.executor, 'unknown'),
-    task: briefingString(row.task, 'unknown'),
-    condition: normalizeOperationalIncidentCondition(row.condition),
-    first_seen: briefingOptionalNumber(row.first_seen),
-    // An unrecognized observation is reported as still active rather than as
-    // recovered: the failure mode of guessing wrong must not be silence.
-    observation: row.observation === 'recovered' ? 'recovered' : 'active',
-    // Likewise, only an explicit 'acknowledged' counts as acknowledged.
-    attention: row.attention === 'acknowledged' ? 'acknowledged' : 'unacknowledged',
-    remediation: normalizeOperationalIncidentRemediation(row.remediation),
-    resolved: row.resolved === true || resolvedAt !== null,
-    resolution_kind: resolutionKind === 'successful_run' || resolutionKind === 'operator_closure'
-      ? resolutionKind
-      : null,
-    provenance_label: briefingString(
-      provenance.label,
-      OPERATIONAL_INCIDENT_PROVENANCE_LABEL,
-    ) || OPERATIONAL_INCIDENT_PROVENANCE_LABEL,
-    latest_telemetry: row.latest_telemetry ?? null,
-    latest_telemetry_sha256: briefingOptionalString(row.latest_telemetry_sha256),
-    latest_observed_at: briefingOptionalNumber(row.latest_observed_at),
-    recovered_at: briefingOptionalNumber(row.recovered_at),
-    recovery_run_id: briefingOptionalString(row.recovery_run_id),
-    acknowledged_at: briefingOptionalNumber(row.acknowledged_at),
-    acknowledged_by_user_id: briefingOptionalString(row.acknowledged_by_user_id),
-    resolved_at: resolvedAt,
-    operator_closed_at: briefingOptionalNumber(row.operator_closed_at),
-    operator_closed_by_user_id: briefingOptionalString(row.operator_closed_by_user_id),
-    updated_at: briefingOptionalNumber(row.updated_at),
-  };
-}
-
-export function normalizeOperationalIncidentList(value: unknown): OperationalIncidentList {
-  const payload = briefingContractRecord<ContractOperationalIncidentListResponse>(value);
-  const rows = Array.isArray(payload.incidents) ? payload.incidents : [];
-  const counts = briefingContractRecord<ContractOperationalIncidentCounts>(payload.counts);
-  return {
-    incidents: rows
-      .map(normalizeOperationalIncident)
-      .filter((incident): incident is OperationalIncident => incident !== null),
-    counts: {
-      active_unacknowledged: briefingOptionalNumber(counts.active_unacknowledged) ?? 0,
-      active_acknowledged: briefingOptionalNumber(counts.active_acknowledged) ?? 0,
-      resolved: briefingOptionalNumber(counts.resolved) ?? 0,
-    },
-    next_cursor: briefingOptionalString(payload.next_cursor),
-  };
-}
-
-/** Typed condition wording for a card headline. */
-export function operationalIncidentConditionLabel(
-  condition: OperationalIncidentCondition,
-): string {
-  return OPERATIONAL_INCIDENT_CONDITION_LABELS[condition] ?? condition;
-}
-
-export function operationalIncidentRemediationLabel(
-  remediation: OperationalIncidentRemediation,
-): string {
-  return OPERATIONAL_INCIDENT_REMEDIATION_LABELS[remediation] ?? remediation;
-}
-
-/**
- * Observation wording (spec §2 rule 11). Operator closure NEVER reads as
- * "Recovered": Mandible has no evidence the condition actually cleared, and
- * saying otherwise would fabricate executor telemetry.
- */
-export function operationalIncidentObservationLabel(incident: OperationalIncident): string {
-  if (incident.resolution_kind === 'operator_closure') {
-    return 'Closed by operator; executor recovery unverified';
-  }
-  return incident.observation === 'recovered' ? 'Recovered' : 'Active';
-}
-
-export function operationalIncidentAttentionLabel(incident: OperationalIncident): string {
-  return incident.attention === 'acknowledged' ? 'Acknowledged' : 'Unacknowledged';
-}
-
-/** Whether Prepare-fix is a legal transition for this incident right now. */
-export function canPrepareOperationalIncidentFix(incident: OperationalIncident): boolean {
-  return !incident.resolved
-    && incident.observation === 'active'
-    && OPERATIONAL_INCIDENT_PREPARE_FIX_STATES.includes(incident.remediation);
-}
-
-export type OperationalIncidentQuery = {
-  status?: 'active' | 'resolved' | 'all';
-  attention?: OperationalIncidentAttention | 'all';
-  executor?: string;
-  task?: string;
-  limit?: number;
-  cursor?: string;
-};
-
-const OPERATIONAL_INCIDENTS_PATH = '/api/operational-incidents';
-
-function operationalIncidentsPath(query: OperationalIncidentQuery = {}): string {
-  return `${OPERATIONAL_INCIDENTS_PATH}${buildQuery({
-    status: query.status,
-    attention: query.attention,
-    executor: query.executor,
-    task: query.task,
-    limit: query.limit,
-    cursor: query.cursor,
-  })}`;
-}
-
-/**
- * Warm cache read for first paint. Returns null once the entry is stale or has
- * been invalidated by an incident SSE event, so the caller falls back to the
- * network rather than painting a superseded acknowledgement.
- */
-export function getCachedOperationalIncidents(
-  query: OperationalIncidentQuery = {},
-  now: number = Date.now(),
-): OperationalIncidentList | null {
-  const cached = getJsonCache.get(cacheKeyForGet(operationalIncidentsPath(query)));
-  if (!cached || now >= cached.staleUntil) return null;
-  return normalizeOperationalIncidentList(cached.value);
-}
-
-/**
- * Read the incident list. This ALWAYS goes to the network — the cache above is
- * a first-paint convenience, never an authority. Durable server state wins on
- * every reconciliation.
- */
-export async function getOperationalIncidents(
-  query: OperationalIncidentQuery = {},
-  signal?: AbortSignal,
-): Promise<OperationalIncidentList> {
-  const path = operationalIncidentsPath(query);
-  const response = await apiGet(path, signal ? { signal } : {});
-  const payload = await parseMaybeJson(response);
-  const now = Date.now();
-  getJsonCache.set(cacheKeyForGet(path), {
-    value: payload,
-    freshUntil: now + DEFAULT_GET_CACHE_TTL_MS,
-    staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS,
-  });
-  return normalizeOperationalIncidentList(payload);
-}
-
-/**
- * Record that the operator has seen this incident. Idempotent server-side: a
- * repeat call returns the ORIGINAL acknowledgement, so a double click cannot
- * rewrite who acknowledged it or when. There is no unacknowledge operation in
- * V1 — the spec has no route for one.
- */
-export async function acknowledgeOperationalIncident(
-  incidentId: string,
-): Promise<OperationalIncidentAcknowledgement> {
-  const response = await apiPost(
-    `${OPERATIONAL_INCIDENTS_PATH}/${encodeURIComponent(incidentId)}/acknowledge`,
-    { expected_attention: 'unacknowledged' },
-  );
-  const row = briefingContractRecord<ContractOperationalIncidentAcknowledgement>(
-    await parseMaybeJson(response),
-  );
-  invalidateApiGetCache(OPERATIONAL_INCIDENTS_PATH);
-  invalidateApiGetCache('/api/dashboard/badges');
-  return {
-    incident_id: briefingString(row.incident_id, incidentId),
-    attention: 'acknowledged',
-    event_id: briefingString(row.event_id),
-    acknowledged_at: briefingOptionalNumber(row.acknowledged_at),
-    acknowledged_by_user_id: briefingOptionalString(row.acknowledged_by_user_id),
-  };
-}
-
-/**
- * Operator closure. `expectedUpdatedAt` is the projection revision the operator
- * was looking at; a concurrent telemetry event moves it and the server refuses,
- * rather than closing an incident on evidence the operator never saw.
- */
-export async function closeOperationalIncident(
-  incidentId: string,
-  reason: string,
-  expectedUpdatedAt: number,
-): Promise<OperationalIncident> {
-  const response = await apiPost(
-    `${OPERATIONAL_INCIDENTS_PATH}/${encodeURIComponent(incidentId)}/close`,
-    { reason, expected_updated_at: expectedUpdatedAt },
-  );
-  const payload = briefingRecord(await parseMaybeJson(response));
-  const incident = normalizeOperationalIncident(payload.incident);
-  if (!incident) throw new Error('Operational incident closure response was invalid.');
-  invalidateApiGetCache(OPERATIONAL_INCIDENTS_PATH);
-  invalidateApiGetCache('/api/dashboard/badges');
-  return incident;
 }

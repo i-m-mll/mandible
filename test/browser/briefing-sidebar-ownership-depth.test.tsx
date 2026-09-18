@@ -106,7 +106,6 @@ function renderSidebarMarkup(): string {
       collapsedGroupSubgroupKeys: [],
       selectedGroupUpdateIds: {},
       selectedGroupId: null,
-      selectedSurface: 'briefing',
       selectedCollectionId: null,
       selectedRoundIds: {},
     }}

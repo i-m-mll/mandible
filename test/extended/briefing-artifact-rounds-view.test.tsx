@@ -27,7 +27,7 @@ import {
 } from '../../ui/src/api';
 import { BriefingView } from '../../ui/src/views/briefing';
 import { briefingRoundOptions, BriefingDocumentRenderer } from '../../ui/src/views/feedback/BriefingDocumentRenderer';
-import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE } from '../../ui/src/views/feedback/collection-view-state';
+import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE, normalizeBriefingCollectionViewState } from '../../ui/src/views/feedback/collection-view-state';
 import { parseBriefingDirectives } from '../../src/feedback/briefing-directives';
 import { RICH_BRIEFING_DEMO, seedRichBriefingDemo } from '../../src/feedback/rich-briefing-demo';
 
@@ -225,6 +225,32 @@ beforeEach(async () => {
 afterEach(() => { cleanup(); noticeHost.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('artifact-backed Briefing rounds', () => {
+  it.each([
+    ['retained', 'briefing:briefing-1'],
+    ['default', null],
+  ])('restores a saved incident selection to a %s Briefing', async (_case, selectedCollectionId) => {
+    const saved = { ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE, selectedSurface: 'incidents', selectedCollectionId };
+    expect(normalizeBriefingCollectionViewState(saved)).toMatchObject({ selectedCollectionId });
+    expect('selectedSurface' in normalizeBriefingCollectionViewState(saved)).toBe(false);
+    window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify(saved));
+    window.history.replaceState(null, '', '/#/briefing');
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/briefings') return new Response(JSON.stringify({ briefings: [{
+        id: 'briefing-1', title: 'Recurring review', latest_round_id: ROUND_TWO,
+        created_at: 1, updated_at: 2,
+      }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/briefing-bundles') return new Response(JSON.stringify({ bundles: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/briefing-groups') return new Response(JSON.stringify({ groups: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    await waitFor(() => expect(window.location.hash).toBe('#/briefing?briefing=briefing-1'));
+    expect(screen.queryByRole('button', { name: 'Operational incidents' })).toBeNull();
+    expect(screen.queryByTestId('operational-incidents-region')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Select briefing Recurring review' })).toBeTruthy();
+  });
+
   it('does not hydrate root rows from a partial Briefing containment cache', async () => {
     const row = { id: 'claude-policy', title: 'Claude policy', latest_round_id: 'round-1', round_count: 1,
       created_at: 1, updated_at: 1 };
