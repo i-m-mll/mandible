@@ -25,6 +25,18 @@ function fakeTrustedCa(home: string) {
 }
 
 describe("local HTTPS front door", () => {
+  it("installs the gateway before certificate trust is configured", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-install-")); roots.add(home);
+    const binary = pinnedCaddyBinary(home);
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, "already installed");
+    const result = spawnSync(process.execPath, [path.resolve("scripts/local-front-door.mjs"), "install"], {
+      env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.existsSync(path.join(home, "config", "local-sessions", "Caddyfile"))).toBe(false);
+  });
+
   it("forwards every preview request through scoped local authorization without cookies", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-")); roots.add(home);
     const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });

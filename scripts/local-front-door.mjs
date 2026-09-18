@@ -128,7 +128,6 @@ if (command === "initialize") {
   initializeInstallationAuthority();
 } else if (command === "install") {
   install();
-  configure();
 } else if (command === "configure") {
   configure();
 } else if (command === "reload") {
