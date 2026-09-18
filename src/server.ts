@@ -107,9 +107,8 @@ export interface UnattributedWriteRecord {
 
 /**
  * The client-authentication gate the router consults at the request boundary.
- * Implemented by ClientAuthenticator (src/client-auth). When absent (unit tests,
- * back-compat servers) the boundary behaves exactly as before: no token
- * resolution, no enforcement, no telemetry.
+ * Implemented by ClientAuthenticator (src/client-auth) in production. Isolated
+ * route tests may omit the boundary.
  */
 export interface ClientAuthGate {
   localBrowserIdentity?(): ResolvedClientIdentity | null;
@@ -444,7 +443,7 @@ export class Router implements RouteRegistrar {
       if (browserRequest && headerValue(req.headers.authorization)) {
         new HttpResponse(res).status(400).json({
           error: "browser_bearer_forbidden",
-          message: "Browser requests authenticate only with the host-only session cookie.",
+          message: "Browser requests use local OS-user access; bearer credentials are reserved for other clients.",
         });
         return true;
       }
@@ -879,11 +878,8 @@ export function attachWebSocketUpgrade(
   instance: InstanceInfo = resolveInstanceInfo(),
 ): void {
   server.on("upgrade", (req, socket, head) => {
-    // Issue 708dc4c: all WebSocket upgrades retain the browser boundary. The
-    // index-level terminal dispatcher additionally requires an operator bearer
-    // (transported in Sec-WebSocket-Protocol, never the URL) before attaching
-    // to the privileged operator backend. Per-user authorization for ordinary
-    // terminal sessions remains deferred to the permissions child.
+    // The terminal dispatcher also checks the exact registered origin and
+    // authorizes the resolved local or preview identity for the target session.
     const boundary = validateDaemonBrowserBoundary(req, instance, true, false);
     if (!boundary.ok) {
       socket.write(
