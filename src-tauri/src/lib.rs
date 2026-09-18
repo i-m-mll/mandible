@@ -600,11 +600,11 @@ fn install_browser_session(app: &AppHandle, credential: &[u8]) -> Enrollment {
             "failed to install the browser session cookie: {error}"
         ));
     }
-    match window.cookies_for_url(production_url) {
+    match window.cookies_for_url(production_url.clone()) {
         Ok(cookies)
             if cookies.iter().any(|stored| {
                 stored.name() == "__Host-mandible-session"
-                    && stored.domain() == Some("mandible.localhost")
+                    && stored.domain() == production_url.host_str()
             }) => {}
         Ok(_) => {
             return Enrollment::Unreachable(
