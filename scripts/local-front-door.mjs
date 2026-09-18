@@ -54,6 +54,14 @@ function initializeInstallationAuthority() {
 function caddyfile(instances) {
   const production = instances.find((entry) => entry.role === "main");
   if (!production) fail("The production instance is not registered.");
+  const effectivePort = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
+  const publicPorts = new Set(instances.map((entry) => effectivePort(new URL(entry.public_origin))));
+  for (const entry of instances) {
+    const backendPort = effectivePort(new URL(entry.backend_origin));
+    if (publicPorts.has(backendPort)) {
+      fail(`Refusing gateway self-route: ${entry.instance_id} backend port ${backendPort} is a public listener port.`);
+    }
+  }
   const productionBackend = new URL(production.backend_origin);
   const productionPublic = new URL(production.public_origin);
   const globalOptions = `{\n  admin 127.0.0.1:2019\n  storage file_system ${JSON.stringify(caPaths.storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}`;
