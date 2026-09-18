@@ -9,4 +9,8 @@ import { mandibleVitestConfig } from './vitest.config';
  * wrong for the default suite, which must be green after nothing but
  * `npm ci`. See test/browser/README.md.
  */
-export default mandibleVitestConfig(['test/browser/*.test.{ts,tsx}']);
+const config = mandibleVitestConfig(['test/browser/*.test.{ts,tsx}']);
+// Each file launches native Chromium processes. Concurrent files contend for
+// startup resources and turn geometry checks into machine-load timeout tests.
+config.test = { ...config.test, fileParallelism: false, testTimeout: 30_000 };
+export default config;

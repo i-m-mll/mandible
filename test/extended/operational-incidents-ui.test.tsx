@@ -312,8 +312,8 @@ afterEach(() => {
 // Placement
 // ---------------------------------------------------------------------------
 
-describe('briefing_renders_active_incidents_before_recurring_findings', () => {
-  it('places the incident region ahead of the recurring collection renderer', async () => {
+describe('briefing incident navigation', () => {
+  it('shows incident records as the selected main content, without an extra column', async () => {
     stubRegionFetch({ list: incidentList([makeIncident()]) });
 
     const { container } = render(
@@ -322,19 +322,15 @@ describe('briefing_renders_active_incidents_before_recurring_findings', () => {
       </AppShellProvider>,
     );
 
+    expect(container.querySelector('[data-testid="operational-incidents-region"]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Operational incidents' }));
     const region = await screen.findByTestId('operational-incidents-region');
     const inner = container.querySelector('.feedback-collection-shell__content-inner');
     expect(inner).toBeTruthy();
 
-    // First child of the briefing content column, ahead of every recurring
-    // collection renderer that follows it.
     expect(inner!.firstElementChild).toBe(region);
-    const recurring = container.querySelector('[data-testid="briefing-health"]');
-    if (recurring) {
-      expect(
-        Boolean(region.compareDocumentPosition(recurring) & Node.DOCUMENT_POSITION_FOLLOWING),
-      ).toBe(true);
-    }
+    expect(inner!.children).toHaveLength(1);
+    expect(container.querySelector('[data-testid="briefing-health"]')).toBeNull();
   });
 });
 

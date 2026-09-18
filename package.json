@@ -6,7 +6,9 @@
   "main": "dist/index.js",
   "bin": "dist/index.js",
   "scripts": {
+    "prebuild": "node scripts/generate-canonical-origin.mjs --check",
     "build": "node scripts/run-tsc.js && node scripts/run-tsc.js -p channel-server/tsconfig.json && node scripts/run-tsc.js -p ui/tsconfig.json && node ui/esbuild.config.js",
+    "pretypecheck": "node scripts/generate-canonical-origin.mjs --check",
     "typecheck": "node scripts/run-tsc.js --noEmit && node scripts/run-tsc.js -p channel-server/tsconfig.json --noEmit && node scripts/run-tsc.js -p ui/tsconfig.json",
     "build:server": "node scripts/run-tsc.js && node scripts/run-tsc.js -p channel-server/tsconfig.json",
     "build:channel-server": "node scripts/run-tsc.js -p channel-server/tsconfig.json",

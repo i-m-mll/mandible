@@ -16,6 +16,7 @@ import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../../src/security
 import { createUser } from '../../src/users/store';
 import { recordArtifactVersion } from '../../src/provider-artifacts';
 import { AppShellProvider } from '../../ui/src/app-shell';
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
 import {
   getBriefingBundles,
   getBriefings,
@@ -204,8 +205,24 @@ function installStorage(): void {
   Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
 }
 
-beforeEach(() => { installStorage(); invalidateApiGetCache(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+function operatorSessionResponse(): Response {
+  return new Response(JSON.stringify({ authenticated: true, session: {
+    family_id: 'briefing-test-family', audience: 'production', csrf_token: 'briefing-test-csrf',
+    effect_ceiling: ['ledger:read', 'ledger:write'],
+  } }), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
+let noticeHost: HTMLElement;
+beforeEach(async () => {
+  installStorage();
+  invalidateApiGetCache();
+  __resetBrowserSessionForTests();
+  await ensureClientAccess(async () => operatorSessionResponse());
+  noticeHost = document.createElement('div');
+  noticeHost.id = 'app-operational-notices';
+  document.body.append(noticeHost);
+});
+afterEach(() => { cleanup(); noticeHost.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('artifact-backed Briefing rounds', () => {
   it('does not hydrate root rows from a partial Briefing containment cache', async () => {
@@ -214,6 +231,7 @@ describe('artifact-backed Briefing rounds', () => {
     let warming = true;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url === '/api/client-auth/whoami') return operatorSessionResponse();
       if (warming) {
         if (url === '/api/briefings') return new Response(JSON.stringify({ briefings: [row] }), {
           status: 200, headers: { 'content-type': 'application/json' },
@@ -236,10 +254,10 @@ describe('artifact-backed Briefing rounds', () => {
 
     await Promise.all([getBriefings(), getBriefingBundles()]);
     warming = false;
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined,
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined,
       setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
 
-    expect(screen.getByText('No Briefings have been reported yet.')).toBeTruthy();
+    expect(screen.queryByText('No Briefings have been reported yet.')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Select briefing Claude policy' })).toBeNull();
     expect(screen.queryByRole('button', { name: /Agent policy proposal/ })).toBeNull();
   });
@@ -330,7 +348,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${url}`);
     }));
 
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
       <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={PRODUCTION_ALLOW_INSTANCE} />
     </AppShellProvider>);
     await screen.findByText('First');
@@ -369,7 +387,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${url}`);
     }));
 
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
       <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={PRODUCTION_ALLOW_INSTANCE} />
     </AppShellProvider>);
     await screen.findByText('Later');
@@ -406,7 +424,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${url}`);
     }));
 
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
       <BriefingDocumentRenderer briefingId="briefing-1" instance={PRODUCTION_ALLOW_INSTANCE} />
     </AppShellProvider>);
 
@@ -465,7 +483,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${url}`);
     }));
 
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
       <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={PRODUCTION_ALLOW_INSTANCE} />
     </AppShellProvider>);
     await screen.findByText('First');
@@ -483,7 +501,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${url}`);
     }));
 
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
       <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={PRODUCTION_ALLOW_INSTANCE} />
     </AppShellProvider>);
     await screen.findByText('Later');
@@ -551,7 +569,7 @@ describe('artifact-backed Briefing rounds', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={null} /></AppShellProvider>);
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={null} /></AppShellProvider>);
 
     expect((await screen.findByRole('alert')).textContent).toContain('invalid or unsupported');
     expect(screen.queryByLabelText('Briefing document')).toBeNull();
@@ -624,7 +642,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${method} ${url}`);
     }));
 
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     fireEvent.click(await screen.findByRole('button', { name: 'Select briefing arxiv-scan' }));
     expect(window.location.hash).toBe('#/briefing?briefing=briefing%3A65db040');
 
@@ -685,17 +703,14 @@ describe('artifact-backed Briefing rounds', () => {
     ]));
   });
 
-  it('reports authentication failure instead of a false empty Briefing list', async () => {
+  it('reports an independent read failure in the main area instead of a false empty Briefing list', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) === '/api/client-auth/whoami') {
-        return new Response(JSON.stringify({ authenticated: true, user: { id: 'human', kind: 'human' } }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
+        return operatorSessionResponse();
       }
       if (String(input) === '/api/briefings') {
-        return new Response(JSON.stringify({ error: 'authentication_required' }), {
-          status: 401,
+        return new Response(JSON.stringify({ error: 'briefing_reader_unavailable' }), {
+          status: 503,
           headers: { 'content-type': 'application/json' },
         });
       }
@@ -705,11 +720,31 @@ describe('artifact-backed Briefing rounds', () => {
       });
     }));
 
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
 
     const sidebar = await screen.findByRole('complementary', { name: 'Briefings' });
-    expect((await within(sidebar).findByRole('alert')).textContent)
-      .toContain('Authentication is required to load Briefings.');
+    expect((await screen.findByRole('alert')).textContent).toContain('briefing_reader_unavailable');
+    expect(within(sidebar).queryByRole('alert')).toBeNull();
+    expect(within(sidebar).queryByText('No Briefings have been reported yet.')).toBeNull();
+  });
+
+  it('keeps a local access interruption out of Briefing notices and empty states', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') return operatorSessionResponse();
+      if (url === '/api/briefings') return new Response(JSON.stringify({ error: 'local_access_unavailable' }), {
+        status: 503, headers: { 'content-type': 'application/json' },
+      });
+      return new Response(JSON.stringify({ incidents: [], counts: {} }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    }));
+
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+
+    const sidebar = await screen.findByRole('complementary', { name: 'Briefings' });
+    expect(await within(sidebar).findByText('Briefings have not loaded.')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(within(sidebar).queryByText('No Briefings have been reported yet.')).toBeNull();
   });
 
@@ -729,7 +764,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${method} ${url}`);
     }));
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({ ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE, selectedCollectionId: 'briefing:briefing-1' }));
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     const sidebar = await screen.findByRole('complementary', { name: 'Briefings' });
     expect((sidebar as HTMLElement).style.width).toBe('360px');
     expect(screen.getByRole('searchbox', { name: 'Search briefings' })).toBeTruthy();
@@ -806,7 +841,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${method} ${url}`);
     }));
 
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO.slice(0, 8)} instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO.slice(0, 8)} instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
     const submit = screen.getByRole('button', { name: 'Submit' });
     await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
@@ -836,7 +871,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${init?.method ?? 'GET'} ${url}`);
     }));
 
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={COPIED_PREVIEW_INSTANCE} /></AppShellProvider>);
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={COPIED_PREVIEW_INSTANCE} /></AppShellProvider>);
     const dismiss = await screen.findByRole('button', { name: 'Dismiss' }) as HTMLButtonElement;
     await waitFor(() => expect(dismiss.disabled).toBe(false));
 
@@ -869,7 +904,7 @@ describe('artifact-backed Briefing rounds', () => {
       }
       throw new Error(`unexpected ${url}`);
     }));
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     fireEvent.click(await screen.findByRole('button', { name: action }));
     const submit = screen.getByRole('button', { name: 'Submit' });
     await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
@@ -911,7 +946,7 @@ describe('artifact-backed Briefing rounds', () => {
       }
       throw new Error(`unexpected ${init?.method ?? 'GET'} ${url}`);
     }));
-    const shell = (roundId: string) => <AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+    const shell = (roundId: string) => <AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
       <BriefingDocumentRenderer briefingId="briefing-typed" roundId={roundId} instance={COPIED_PREVIEW_INSTANCE} />
     </AppShellProvider>;
     const view = render(shell(ROUND_ONE));
@@ -1040,7 +1075,7 @@ describe('artifact-backed Briefing rounds', () => {
         });
         return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
       }));
-      render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
         <BriefingDocumentRenderer briefingId={ids.briefing_id} roundId={ids.round_id} instance={previewInstance} />
       </AppShellProvider>);
 
@@ -1184,7 +1219,7 @@ describe('artifact-backed Briefing rounds', () => {
         return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
       }));
 
-      render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
         <BriefingDocumentRenderer briefingId={firstIds.briefing_id} roundId={firstIds.round_id} instance={previewInstance} />
       </AppShellProvider>);
       const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
@@ -1309,7 +1344,7 @@ describe('artifact-backed Briefing rounds', () => {
         if (method !== 'GET') mutationResponses.push({ url, status: result.status });
         return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
       }));
-      const shell = () => <AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+      const shell = () => <AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
         <BriefingDocumentRenderer briefingId={briefingId} roundId={selectedRoundId} instance={previewInstance} />
       </AppShellProvider>;
       const view = render(shell());
@@ -1429,7 +1464,7 @@ describe('artifact-backed Briefing rounds', () => {
       } }), { status: 200, headers: { 'content-type': 'application/json' } });
       throw new Error(`unexpected ${url}`);
     }));
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}>
       <BriefingDocumentRenderer briefingId="briefing-typed" roundId={ROUND_ONE} instance={instance} />
     </AppShellProvider>);
     const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
@@ -1450,7 +1485,7 @@ describe('artifact-backed Briefing rounds', () => {
       throw new Error(`unexpected ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={COPIED_PREVIEW_INSTANCE} /></AppShellProvider>);
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={COPIED_PREVIEW_INSTANCE} /></AppShellProvider>);
     await waitFor(() => expect(screen.getAllByText(/does not match its verified hash/)).toHaveLength(2));
     expect(screen.queryByRole('button', { name: 'Keep' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');

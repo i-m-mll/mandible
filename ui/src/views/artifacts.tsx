@@ -19,6 +19,7 @@ import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { shortRouteId } from '../routing';
+import { PRODUCTION_ORIGIN } from '../../../src/canonical-origin';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import {
@@ -2132,7 +2133,7 @@ function UnresolvedArtifact({ resolution }: { resolution: ArtifactResolveResult 
 }
 
 function UnsupportedArtifactBlob({ resolution }: { resolution: ArtifactResolveResult }): JSX.Element {
-  const issueUrl = 'http://localhost:19420/#/issues?repo=mandible&issue=7da339a&sidebar=hidden';
+  const issueUrl = `${PRODUCTION_ORIGIN}/#/issues?repo=mandible&issue=7da339a&sidebar=hidden`;
   return (
     <article className="artifact-detail">
       <header className="artifact-detail__header">

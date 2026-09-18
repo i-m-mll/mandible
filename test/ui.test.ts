@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/preact';
+import { render as testingRender, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
@@ -17,6 +17,7 @@ import {
   MAX_AUTH_OUTPUT_CHARS,
 } from '../ui/src/state';
 import { App } from '../ui/src/app';
+import { PRODUCTION_ORIGIN } from '../src/canonical-origin';
 import { APP_RAIL_PREVIEW_ORDER_STORAGE_KEY } from '../ui/src/app-rail-order';
 import {
   getWorkCompare,
@@ -47,7 +48,7 @@ import {
   spacesRouteFromHash,
 } from '../ui/src/routing';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
-import { __resetBrowserSessionForTests, initializeBrowserSession } from '../ui/src/client-auth-token';
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
 import {
   AppShellProvider,
   RightSidebarIcon,
@@ -167,9 +168,25 @@ vi.mock('@xterm/addon-fit', () => ({
   },
 }));
 
+const render: typeof testingRender = (view, options) => {
+  const noticeHost = document.getElementById('app-operational-notices');
+  const wrap = (content: typeof view) => h(AppShellProvider, { value: {
+    active: true,
+    noticeHost,
+    rightSidebar: null,
+    registerRightSidebar: () => () => undefined,
+    updateRightSidebar: () => undefined,
+  } }, content);
+  const result = testingRender(wrap(view), options);
+  return { ...result, rerender: (next) => result.rerender(wrap(next)) };
+};
+
 beforeEach(async () => {
+  const noticeHost = document.createElement('div');
+  noticeHost.id = 'app-operational-notices';
+  document.body.append(noticeHost);
   __resetBrowserSessionForTests();
-  await initializeBrowserSession(async () => new Response(JSON.stringify({
+  await ensureClientAccess(async () => new Response(JSON.stringify({
     authenticated: true,
     session: {
       family_id: 'test-family', audience: 'production', csrf_token: 'test-csrf',
@@ -195,6 +212,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  document.getElementById('app-operational-notices')?.remove();
   __resetBrowserSessionForTests();
   invalidateApiGetCache();
   cleanup();
@@ -804,7 +822,7 @@ describe('App routing', () => {
       readFileSync('src-tauri/capabilities/default.json', 'utf8'),
     ) as { remote?: { urls?: string[] }; permissions?: string[] };
 
-    expect(capability.remote?.urls).toEqual(['https://app.mandible.localhost:19420']);
+    expect(capability.remote?.urls).toEqual([PRODUCTION_ORIGIN]);
     expect(capability.permissions).toContain('deep-link:default');
   });
 
@@ -1556,6 +1574,10 @@ describe('app shell', () => {
     await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
       .map((link) => link.dataset.railItem)).toEqual(['auth', 'console']));
 
+    // The optimistic order precedes persistence; start the next drag only after its save completes.
+    await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Main navigation' }))
+      .getByRole('status').textContent).toContain('Chat moved to position'));
+
     const unifiedUpper = railGroupLinks(mounted.container, 'primary');
     mockRailRects(unifiedUpper);
     const projects = unifiedUpper.find((link) => link.dataset.railItem === 'work')!;
@@ -1668,7 +1690,7 @@ describe('app shell', () => {
     await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
     const movedSpaces = screen.getByRole('link', { name: 'Spaces' });
     expect(document.activeElement).toBe(movedSpaces);
-    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Spaces moved to position'));
+    await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('status').textContent).toContain('Spaces moved to position'));
     const persistedOrder = railGroupLinks(first.container, 'secondary').map((link) => link.dataset.railItem);
     expect(persistedOrder.indexOf('spaces')).toBeLessThan(persistedOrder.indexOf('graph'));
 
@@ -1710,7 +1732,7 @@ describe('app shell', () => {
     spaces.focus();
     fireEvent.keyDown(spaces, { key: 'ArrowUp', ctrlKey: true, shiftKey: true });
 
-    await waitFor(() => expect(screen.getByRole('status').textContent)
+    await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('status').textContent)
       .toBe('Navigation order was not saved. The previous order has been restored.'));
     expect(railGroupLinks(container, 'secondary').map((link) => link.dataset.railItem)).toEqual(original);
     await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Spaces'));
@@ -1972,20 +1994,32 @@ describe('app shell', () => {
     expect(document.documentElement.dataset.theme).toBe('dark');
   });
 
-  it('keeps desktop login in left chrome without a detail-pane overlay', () => {
+  it('owns operational notices in the main workspace without a rail login', () => {
     const appSource = readFileSync(
       `${process.cwd()}/ui/src/app.tsx`,
       'utf8',
     );
-    const footerStart = appSource.indexOf('<nav className="app-rail__footer"');
-    const footerEnd = appSource.indexOf('</nav>', footerStart);
-    const login = appSource.indexOf('<DesktopLoginStatus', footerStart);
+    expect(appSource).toContain('id="app-operational-notices"');
+    expect(appSource).not.toContain('<DesktopLoginStatus');
+  });
 
-    expect(footerStart).toBeGreaterThan(-1);
-    expect(login).toBeGreaterThan(footerStart);
-    expect(login).toBeLessThan(footerEnd);
-    expect(appSource).not.toContain('app-shell__session-status');
-    expect(readResolvedStylesheet()).not.toContain('.app-shell__session-status');
+  it('shows one actionable access failure in the main outlet without a signed-out view', async () => {
+    __resetBrowserSessionForTests();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes('/client-auth/whoami')
+        ? { authenticated: false, failure_reason: 'wrong_audience' }
+        : {},
+    ), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const mounted = render(h(App, {}));
+    await waitFor(() => expect(mounted.container.querySelectorAll(
+      '.app-content > #app-operational-notices [data-notice-source="local-access"][role="alert"]',
+    )).toHaveLength(1));
+    expect(mounted.container.querySelector('aside [role="alert"]')).toBeNull();
+    expect(mounted.container.querySelector('.desktop-login')).toBeNull();
+    const before = fetchMock.mock.calls.filter(([url]) => String(url).includes('/client-auth/whoami')).length;
+    fireEvent.click(within(mounted.container.querySelector('#app-operational-notices')!).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/client-auth/whoami'))).toHaveLength(before + 1));
   });
 
   it('renders a deep-linked issue detail while the global issue list is pending', async () => {
@@ -2346,7 +2380,8 @@ describe('app shell', () => {
 
     const notice = (await screen.findByText('Saving disabled in copied preview instance.')).closest('.detail-pane-notice')!;
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
-    expect(notice.closest('.spaces-shell__main')?.firstElementChild).toBe(notice);
+    expect(notice.parentElement?.id).toBe('app-operational-notices');
+    expect(document.querySelector('.spaces-shell__main .detail-pane-notice')).toBeNull();
   });
 });
 
@@ -5541,11 +5576,11 @@ describe('ArtifactsView', () => {
     const error = screen.getByText('Artifact detail: artifact not found');
     const header = document.querySelector('.artifact-detail__header');
     const body = document.querySelector('.artifact-detail__pane');
-    const anchoredNotice = document.querySelector('.artifact-detail .detail-pane-shell__notice');
+    const anchoredNotice = document.querySelector('#app-operational-notices');
     expect(header).toBeTruthy();
     expect(anchoredNotice?.contains(error)).toBe(true);
+    expect(document.querySelector('.artifact-detail .detail-pane-notice')).toBeNull();
     expect(body?.contains(error)).toBe(false);
-    expect(header?.compareDocumentPosition(error) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('renders HumbleB knowledge backrefs in artifact detail', async () => {

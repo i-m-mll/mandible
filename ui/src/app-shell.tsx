@@ -90,6 +90,8 @@ export type AppShellContextValue = {
   setViewSidebarWidth(width: number | null): void;
   viewSidebarWidth?: number | null;
   active: boolean;
+  /** The sole app-owned location for operational notices. */
+  noticeHost?: HTMLElement | null;
 };
 
 const noopContext: AppShellContextValue = {
@@ -105,7 +107,10 @@ const AppShellContext = createContext<AppShellContextValue>(noopContext);
 const noopUpdateRightSidebar = () => undefined;
 
 export function AppShellProvider({ value, children }: { value: AppShellContextValue; children: ComponentChildren }): JSX.Element {
-  return <AppShellContext.Provider value={value}>{children}</AppShellContext.Provider>;
+  const parent = useContext(AppShellContext);
+  return <AppShellContext.Provider value={value.noticeHost === undefined
+    ? { ...value, noticeHost: parent.noticeHost }
+    : value}>{children}</AppShellContext.Provider>;
 }
 
 export function useAppShell(): AppShellContextValue {

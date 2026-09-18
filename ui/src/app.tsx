@@ -48,12 +48,13 @@ import type { SSEPayload, SseConnectionState } from './sse-client';
 import { acquireSharedSse, shouldSkipFallbackPoll } from './sse-shared';
 import {
   browserSessionFetch,
-  initializeBrowserSession,
-  getClientAuthSessionState,
+  ensureClientAccess,
+  getClientAccessState,
+  retryClientAccess,
+  subscribeClientAccessState,
 } from './client-auth-token';
-import { recoverDesktopLoginAutomatically } from './desktop-login';
 import { keepSubmittedBriefingAnnotations } from './views/feedback/briefing-preferences';
-import { DesktopLoginStatus } from './components/DesktopLoginStatus';
+import { DetailPaneNotice } from './components/shared/DetailPaneNotice';
 import {
   daemonEpochChanged,
   daemonCommitChanged,
@@ -591,6 +592,27 @@ function MandibleHeaderLogo(): JSX.Element {
 }
 
 function App(): JSX.Element {
+  const [clientAccess, setClientAccess] = useState(getClientAccessState);
+  const [accessEverReady, setAccessEverReady] = useState(clientAccess.phase === 'ready');
+  const accessReady = clientAccess.phase === 'ready';
+  useEffect(() => {
+    const unsubscribe = subscribeClientAccessState((next) => {
+      setClientAccess(next);
+      if (next.phase === 'ready') setAccessEverReady(true);
+    });
+    void ensureClientAccess();
+    const retry = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (getClientAccessState().phase === 'failed') void retryClientAccess();
+    };
+    window.addEventListener('online', retry);
+    document.addEventListener('visibilitychange', retry);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('online', retry);
+      document.removeEventListener('visibilitychange', retry);
+    };
+  }, []);
   const [state, dispatch] = useReducer(appReducer, undefined, () => ({
     ...initialState,
     ...loadCachedState(),
@@ -629,6 +651,14 @@ function App(): JSX.Element {
   const [viewSidebarWidths, setViewSidebarWidths] = useState<ViewSidebarWidths>(
     readInitialViewSidebarWidths,
   );
+  const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
+  const [noticeHeight, setNoticeHeight] = useState(0);
+  useLayoutEffect(() => {
+    if (!noticeHost || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => setNoticeHeight(noticeHost.getBoundingClientRect().height));
+    observer.observe(noticeHost);
+    return () => observer.disconnect();
+  }, [noticeHost]);
   const [visitedTabs, setVisitedTabs] = useState<Set<RenderableTab>>(() => {
     const initial = parseHashRoute();
     return new Set<RenderableTab>([isRenderableTab(initial.tab) ? initial.tab : 'spaces']);
@@ -758,7 +788,8 @@ function App(): JSX.Element {
     setViewSidebarWidth,
     viewSidebarWidth,
     active: true,
-  }), [rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
+    noticeHost,
+  }), [noticeHost, rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
 
   const effectiveSettings = useMemo(() => (
     hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
@@ -996,6 +1027,7 @@ function App(): JSX.Element {
   }, []);
 
   const loadVisibleRouteData = useCallback(async (tab: Route['tab']) => {
+    if (!accessReady) return;
     try {
       switch (tab) {
         case 'auth':
@@ -1040,7 +1072,7 @@ function App(): JSX.Element {
     } catch {
       if (tab === 'inbox') dispatch({ type: 'setInboxLoading', loading: false });
     }
-  }, [loadWorkData]);
+  }, [accessReady, loadWorkData]);
   loadVisibleRouteDataRef.current = loadVisibleRouteData;
 
   const refreshRailOrder = useCallback(async (): Promise<void> => {
@@ -1110,6 +1142,7 @@ function App(): JSX.Element {
   }, [instanceInfo?.allowed_effects, typography]);
 
   useEffect(() => {
+    if (!accessReady) return;
     if (instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true) {
       railRequestRef.current += 1;
       railMutationRef.current += 1;
@@ -1129,7 +1162,7 @@ function App(): JSX.Element {
     railMutationPendingRef.current = false;
     setPendingRailOrder(null);
     setRailOrderReady(false);
-  }, [instanceInfo?.allowed_effects, refreshRailOrder]);
+  }, [accessReady, instanceInfo?.allowed_effects, refreshRailOrder]);
 
   useEffect(() => {
     const reconcileVisibleRailOrder = () => {
@@ -1140,6 +1173,7 @@ function App(): JSX.Element {
   }, [refreshRailOrder]);
 
   useEffect(() => {
+    if (!accessReady) return;
     // Start the visible view request before the small global aggregate.
     void loadVisibleRouteData(route.tab);
     void getSettings()
@@ -1148,11 +1182,12 @@ function App(): JSX.Element {
       })
       .catch(() => undefined);
     void loadDashboardBadges();
-  }, [route.tab, loadDashboardBadges, loadVisibleRouteData]);
+  }, [accessReady, route.tab, loadDashboardBadges, loadVisibleRouteData]);
 
   // SSE real-time updates: register handlers FIRST, then connect, so no
   // events arrive before we are ready to dispatch them.
   useEffect(() => {
+    if (!accessReady) return;
     const client = acquireSharedSse();
     // Coalesced badge refresh: an event burst schedules exactly one trailing
     // fetch instead of one per event. Reconnect resync still fetches immediately.
@@ -1535,7 +1570,7 @@ function App(): JSX.Element {
       outputCoalescer.dispose();
       client.close();
     };
-  }, [loadDashboardBadges, refreshRailOrder, refreshTypography]);
+  }, [accessReady, loadDashboardBadges, refreshRailOrder, refreshTypography]);
 
   // Graph-activation flush: when the graph tab becomes active (or becomes
   // visible again while active) and a graph-affecting event was buffered while
@@ -1556,6 +1591,7 @@ function App(): JSX.Element {
   // Fallback polling: periodically fetch fresh data so the UI stays current
   // even if the SSE connection drops events or disconnects silently.
   useEffect(() => {
+    if (!accessReady) return;
     const POLL_INTERVAL = 10_000;
     // Freshness is now connection health, not last-event receipt: while the
     // shared SSE socket is open and a server heartbeat arrived within the last
@@ -1572,7 +1608,7 @@ function App(): JSX.Element {
     }, POLL_INTERVAL);
 
     return () => window.clearInterval(timer);
-  }, [route.tab, loadDashboardBadges, loadVisibleRouteData, refreshRailOrder]);
+  }, [accessReady, route.tab, loadDashboardBadges, loadVisibleRouteData, refreshRailOrder]);
 
   // Bug: 645f8a8 — splash is active for either a self-merge rebuild (SSE-driven)
   // or a mid-startup / not-ready daemon (probe-driven). Mutations are gated off
@@ -2442,7 +2478,7 @@ function App(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [rightSidebarOpen]);
   const renderTabPanel = (tab: RenderableTab, children: ComponentChildren): JSX.Element | null => {
-    if (!visitedTabs.has(tab)) return null;
+    if (!accessEverReady || !visitedTabs.has(tab)) return null;
     const active = route.tab === tab;
     return (
       <AppShellProvider key={tab} value={active ? appShellContext : INACTIVE_APP_SHELL_CONTEXT}>
@@ -2450,6 +2486,8 @@ function App(): JSX.Element {
           className={`app-tab-panel app-tab-panel--${tab}`}
           hidden={!active}
           aria-hidden={active ? undefined : 'true'}
+          aria-busy={!accessReady}
+          inert={!accessReady}
           data-tab={tab}
         >
           <Suspense fallback={null}>
@@ -2608,10 +2646,6 @@ function App(): JSX.Element {
                   {railDisplayMode === 'both' && <span className="app-rail__label">{appThemeLabel}</span>}
                   {railDisplayMode !== 'both' && <span className="app-rail__tooltip">App theme: {appThemeLabel}</span>}
                 </button>
-                <DesktopLoginStatus
-                  placement="rail"
-                  showRailLabel={railDisplayMode === 'both'}
-                />
                 {renderRailItem(logsNavItem)}
                 {renderRailItem({
                   tab: 'settings',
@@ -2625,7 +2659,30 @@ function App(): JSX.Element {
         <main
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
           data-app-surface="main"
+          style={{ '--app-operational-notice-height': `${noticeHeight}px` } as JSX.CSSProperties}
         >
+        <div
+          id="app-operational-notices"
+          className="app-operational-notices"
+          data-testid="app-operational-notices"
+          ref={setNoticeHost}
+        >
+          {clientAccess.phase === 'initializing' || clientAccess.phase === 'recovering' ? (
+            <DetailPaneNotice severity="info" source="local-access">
+              {accessEverReady ? 'Reconnecting to Mandible…' : 'Connecting to Mandible…'}
+            </DetailPaneNotice>
+          ) : null}
+        </div>
+        {clientAccess.phase === 'failed' ? (
+          <DetailPaneNotice
+            severity="error"
+            source="local-access"
+            title="Mandible connection unavailable"
+            actions={<button type="button" onClick={() => { void retryClientAccess(); }}>Retry</button>}
+          >
+            {clientAccess.failure}
+          </DetailPaneNotice>
+        ) : null}
         {rightSidebarAvailable && !rightSidebarOpen ? (
           <AppRightSidebarToggleButton
             descriptor={rightSidebar!}
@@ -2829,9 +2886,6 @@ function App(): JSX.Element {
 
 const mountNode = typeof document !== 'undefined' ? document.getElementById('app') : null;
 if (mountNode) {
-  // Establish the origin-bound cookie session before first render so unsafe
-  // requests have the session's CSRF value. Browser bearer tokens and URL
-  // credentials are never used here.
   // Adopt the page-local binding before the first route parse. The parameter
   // deliberately remains in the hash and is preserved through navigation.
   adoptAgentSessionFragment();
@@ -2839,26 +2893,12 @@ if (mountNode) {
   if (isRenderableTab(initialRoute.tab)) {
     void ROUTE_CHUNK_LOADERS[initialRoute.tab]?.();
   }
-  void initializeBrowserSession()
-    .then(() => {
-      // Issue 54b5677 — in the desktop shell the bootstrap proof is usually
-      // gone, so a webview without an operator session asks the shell to enroll
-      // it (bootstrap file first, then the operator keychain credential). This
-      // is a no-op in a browser and when a session is already working, so an
-      // enrolled dashboard never mints a redundant session just by starting up.
-      const sessionState = getClientAuthSessionState();
-      if (sessionState === 'enrolled' || sessionState === 'migration-blocked') return undefined;
-      return recoverDesktopLoginAutomatically();
-    })
-    .catch(() => undefined)
-    .finally(() => {
-      render(
-        <QueryClientProvider client={queryClient}>
-          <App />
-        </QueryClientProvider>,
-        mountNode,
-      );
-    });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>,
+    mountNode,
+  );
 }
 
 export { App };

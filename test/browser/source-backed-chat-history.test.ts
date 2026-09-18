@@ -8,6 +8,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
 import { ConversationSourceStore } from '../../src/conversations/source-store.js';
+import { observeStableSourceAliasExtent } from '../../src/conversations/source-observer.js';
+import { getConversationStructureCache } from '../../src/conversations/structure-cache.js';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../../src/conversations/source-types.js';
 import { migrate, setDb } from '../../src/db.js';
 import { resolveInstanceInfo } from '../../src/instance-policy.js';
@@ -113,7 +115,8 @@ async function seedSourceBackedConversation(): Promise<void> {
       block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
     );
   }
-  await new ConversationSourceStore(db).recordConversation({
+  const sourceStore = new ConversationSourceStore(db);
+  await sourceStore.recordConversation({
     conversationId: 'source-backed-history',
     provider: 'codex',
     nativeSessionId: SOURCE_BACKED_HISTORY_SESSION_ID,
@@ -123,6 +126,21 @@ async function seedSourceBackedConversation(): Promise<void> {
     structuralMode: 'replace',
     ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
   });
+  const source = db.prepare(`
+    SELECT id FROM conversation_sources
+     WHERE conversation_id = 'source-backed-history' AND provider = 'codex'
+  `).get() as { id: string };
+  const alias = sourceStore.listAliases(source.id).find((entry) => entry.path === sourcePath);
+  if (!alias) throw new Error('Source-backed history fixture did not retain its provider alias.');
+  const observed = await observeStableSourceAliasExtent(alias);
+  db.prepare(`
+    INSERT INTO conversation_ingest_state
+      (file_path, byte_offset, line_count, tail_hash, partial_line, updated_at)
+    VALUES (?, ?, ?, ?, '', ?)
+  `).run(sourcePath, observed.byteLength, sourceBackedHistoryJsonl().trimEnd().split('\n').length,
+    observed.tailHash, Date.now());
+  const captured = getConversationStructureCache(db).captureDenseRows(db, 'source-backed-history', 'replace');
+  expect(captured.cached).toBe(SOURCE_BACKED_HISTORY_BLOCK_COUNT);
   const rows = db.prepare(`
     SELECT id, position FROM conversation_structural_blocks
      WHERE conversation_id = 'source-backed-history' AND status = 'current'
@@ -267,7 +285,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
   const preflightStartedAt = performance.now();
   const preflightResponse = await fetch(`${origin}/api/conversations/source-backed-history?target=initial`);
   const preflight = await preflightResponse.json() as { body_source: string; total: number; blocks: unknown[]; window: { limit: number } };
-  expect(preflightResponse.status).toBe(200);
+  expect(preflightResponse.status, JSON.stringify(preflight)).toBe(200);
   expect(preflight).toMatchObject({ body_source: 'source', total: SOURCE_BACKED_HISTORY_BLOCK_COUNT, window: { limit: 160 } });
   expect(preflight.blocks).toHaveLength(160);
   process.stdout.write(`SOURCE_BACKED_CHAT_STAGE source-http ${Math.round(performance.now() - preflightStartedAt)}ms\n`);

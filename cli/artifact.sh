@@ -885,7 +885,7 @@ cmd_format() {
       else $r.target_id end')"
   target_type="$(printf '%s\n' "$response" | jq -r --arg input_ref "$ref" '
     if ($input_ref | test("^artifact-series:"; "i")) then "artifact_series" else .resolution.target_type end')"
-  web_base="${MANDIBLE_WEB_BASE:-http://localhost:${MANDIBLE_PORT:-19420}}"
+  web_base="${MANDIBLE_WEB_BASE:-$MANDIBLE_CANONICAL_ORIGIN}"
   if [[ "$target_type" == "artifact_series" ]]; then
     series_ref="${identity%@*}"
     version_no=""

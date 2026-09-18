@@ -1,20 +1,21 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{command, AppHandle, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
+mod canonical_origin;
+use canonical_origin::PRODUCTION_ORIGIN;
 
 const DEFAULT_PORT: u16 = 29420;
-const PRODUCTION_ORIGIN: &str = "https://app.mandible.localhost:19420";
 const LEGACY_PRODUCTION_ORIGIN: &str = "http://127.0.0.1:19420";
-
 fn dashboard_origin_from_cutover(raw: Option<&[u8]>) -> &'static str {
     let Some(raw) = raw else {
         return PRODUCTION_ORIGIN;
@@ -89,6 +90,7 @@ const DEFAULT_LAUNCH_MODE: &str = "on_demand";
 const KEYCHAIN_OPERATOR_SERVICE: &str = "mandible-operator";
 static CLIENT_AUTH_BOOTSTRAP_CONSUMED: AtomicBool = AtomicBool::new(false);
 static CLIENT_AUTH_KEYCHAIN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static ACCESS_APPROVALS_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -236,6 +238,68 @@ fn is_secure_connections_setup_link(url: &tauri::Url) -> bool {
     url.as_str() == "mandible://connections/setup"
 }
 
+fn browser_access_reference(url: &tauri::Url) -> Option<String> {
+    if url.scheme() != "mandible" || url.host_str() != Some("access")
+        || !url.username().is_empty() || url.password().is_some() || url.port().is_some()
+        || url.path() != "/approve" || url.fragment().is_some()
+    {
+        return None;
+    }
+    let mut pairs = url.query_pairs();
+    let (key, value) = pairs.next()?;
+    if key != "reference" || value.len() != 12
+        || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) || pairs.next().is_some()
+    {
+        return None;
+    }
+    Some(value.into_owned())
+}
+
+fn approve_browser_access(reference: &str) -> Result<(), String> {
+    verify_same_user_daemon()?;
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| format!("failed to create browser-access client: {error}"))?;
+    let Some(mut credential) = read_keychain_operator_token(KEYCHAIN_OPERATOR_SERVICE)? else {
+        return Err("the installed app has no operator credential".to_string());
+    };
+    if !is_credential_material(&credential) {
+        credential.fill(0);
+        return Err("the installed-app operator credential is malformed".to_string());
+    }
+    let bearer = std::str::from_utf8(&credential)
+        .map_err(|_| "operator credential is not UTF-8".to_string())?;
+    let response = client
+        .post(format!("{PRODUCTION_ORIGIN}/api/client-auth/pairing/approve"))
+        .bearer_auth(bearer)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::json!({ "reference": reference }).to_string())
+        .send();
+    credential.fill(0);
+    let response = response.map_err(|error| format!("browser-access approval failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("the daemon refused browser access (HTTP {})", response.status()));
+    }
+    Ok(())
+}
+
+fn launch_browser_access_approval(url: &tauri::Url) {
+    let Some(reference) = browser_access_reference(url) else { return; };
+    let approvals = ACCESS_APPROVALS_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    if !approvals.lock().expect("access approval lock poisoned").insert(reference.clone()) {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Err(error) = approve_browser_access(&reference) {
+            eprintln!("mandible: {error}");
+        }
+        approvals.lock().expect("access approval lock poisoned").remove(&reference);
+    });
+}
+
 fn launch_native_ca_setup(handle: AppHandle, active: Arc<AtomicBool>) {
     if active.swap(true, Ordering::AcqRel) {
         return;
@@ -297,7 +361,8 @@ fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
         .ok_or_else(|| "failed to resolve daemon working directory".to_string())?;
     let repo_root = repo_root.to_path_buf();
     let port = daemon_port();
-    let log_file = log_file_path();
+    let log_file = log_file_path()?;
+    let pid_file = pid_file_path()?;
     let (log_stdout, log_stderr) = open_daemon_log(&log_file)?;
 
     let mut command = Command::new(node);
@@ -305,6 +370,7 @@ fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
         .arg(&entry)
         .current_dir(repo_root)
         .env("MANDIBLE_PORT", port.to_string())
+        .env("MANDIBLE_PID_FILE", pid_file)
         // The daemon rotates this file on a timer. Naming it explicitly makes
         // the rotation target and the actual stderr destination the same path
         // by construction rather than by both defaulting to the same constant.
@@ -323,7 +389,7 @@ fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
 
 #[command]
 fn daemon_stop(app: AppHandle) -> Result<DaemonStatus, String> {
-    if let Some(pid) = read_pid_file(pid_file_path()) {
+    if let Some(pid) = read_pid_file(pid_file_path()?) {
         signal_process(pid, "TERM")?;
         wait_for_shutdown(daemon_port(), Duration::from_secs(4));
     }
@@ -534,11 +600,11 @@ fn install_browser_session(app: &AppHandle, credential: &[u8]) -> Enrollment {
             "failed to install the browser session cookie: {error}"
         ));
     }
-    match window.cookies_for_url(production_url) {
+    match window.cookies_for_url(production_url.clone()) {
         Ok(cookies)
             if cookies.iter().any(|stored| {
                 stored.name() == "__Host-mandible-session"
-                    && stored.domain() == Some("app.mandible.localhost")
+                    && stored.domain() == production_url.host_str()
             }) => {}
         Ok(_) => {
             return Enrollment::Unreachable(
@@ -700,7 +766,7 @@ fn enrollment_daemon_registration() -> Result<(PathBuf, u16), String> {
     let raw = match fs::read(path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((pid_file_path(), daemon_port()))
+            return Ok((pid_file_path()?, daemon_port()))
         }
         Err(error) => {
             return Err(format!(
@@ -715,7 +781,7 @@ fn enrollment_daemon_registration_from_journal(raw: &[u8]) -> Result<(PathBuf, u
     let journal: serde_json::Value = serde_json::from_slice(&raw)
         .map_err(|_| "the Mandible service registration is invalid".to_string())?;
     if journal["state"] != "complete" {
-        return Ok((pid_file_path(), daemon_port()));
+        return Ok((pid_file_path()?, daemon_port()));
     }
     if journal["schema"] != "mandible-local-session-cutover@1" {
         return Err("the Mandible service registration has an unknown format".to_string());
@@ -797,6 +863,10 @@ fn mandible_home() -> PathBuf {
             return resolve_user_path(&path);
         }
     }
+    default_mandible_home()
+}
+
+fn default_mandible_home() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
@@ -836,8 +906,8 @@ fn get_daemon_status(app: &AppHandle) -> Result<DaemonStatus, String> {
     } else {
         daemon_port()
     };
-    let pid_file = pid_file_path();
-    let log_file = log_file_path();
+    let pid_file = pid_file_path()?;
+    let log_file = log_file_path()?;
     let pid = read_pid_file(pid_file.clone());
     let pid_alive = pid.map(process_alive).unwrap_or(false);
     let healthy = check_health(port);
@@ -908,6 +978,11 @@ fn write_desktop_config(app: &AppHandle, config: &DesktopConfig) -> Result<(), S
 }
 
 fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    // A disposable installation must never read or rewrite the installed
+    // app's launch-mode settings under the same bundle identifier.
+    if isolated_home_selected() || std::env::var_os("MANDIBLE_CONFIG_DIR").is_some() {
+        return Ok(mandible_config_dir().join("desktop.json"));
+    }
     let dir = app
         .path()
         .app_config_dir()
@@ -1023,12 +1098,20 @@ fn resolve_node_binary(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(PathBuf::from("node"))
 }
 
-fn pid_file_path() -> PathBuf {
-    cache_dir().join("daemon.pid")
+fn pid_file_path() -> Result<PathBuf, String> {
+    runtime_file_path(
+        std::env::var("MANDIBLE_PID_FILE").ok().as_deref(),
+        isolated_home_selected().then(mandible_home),
+        "daemon.pid",
+    )
 }
 
-fn log_file_path() -> PathBuf {
-    cache_dir().join("launchd-stderr.log")
+fn log_file_path() -> Result<PathBuf, String> {
+    runtime_file_path(
+        std::env::var("MANDIBLE_STDERR_LOG_PATH").ok().as_deref(),
+        isolated_home_selected().then(mandible_home),
+        "launchd-stderr.log",
+    )
 }
 
 /// Open the daemon log for an app-launched daemon and return append handles for
@@ -1065,12 +1148,29 @@ fn open_daemon_log(path: &Path) -> Result<(Stdio, Stdio), String> {
     Ok((Stdio::from(stdout), Stdio::from(stderr)))
 }
 
-fn cache_dir() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".cache")
-        .join("mandible")
+fn isolated_home_selected() -> bool {
+    std::env::var("MANDIBLE_HOME")
+        .is_ok_and(|value| !value.trim().is_empty() && mandible_home() != default_mandible_home())
+}
+
+fn runtime_file_path(
+    explicit: Option<&str>,
+    isolated_home: Option<PathBuf>,
+    filename: &str,
+) -> Result<PathBuf, String> {
+    if let Some(value) = explicit {
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err(format!("{filename} override must be an absolute path"));
+        }
+        return Ok(path);
+    }
+    let base = isolated_home.unwrap_or_else(|| {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+    });
+    Ok(base.join(".cache").join("mandible").join(filename))
 }
 
 fn read_pid_file(path: PathBuf) -> Option<u32> {
@@ -1175,9 +1275,45 @@ fn wait_for_shutdown(port: u16, timeout: Duration) {
 }
 
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    #[cfg(target_os = "macos")]
+    let isolated_store_identifier = isolated_home_selected().then(|| {
+        assert!(
+            macos_supports_custom_webkit_store(),
+            "isolated Mandible desktop requires macOS 14 or newer for a separate WebKit store"
+        );
+        isolated_webkit_store_identifier(&mandible_home())
+    });
+    #[cfg(not(target_os = "macos"))]
+    let isolated_store_identifier: Option<[u8; 16]> = None;
+    let mut isolated_window_labels = Vec::new();
+    if isolated_store_identifier.is_some() {
+        // Tauri's configured-window conversion in the locked runtime omits
+        // data_store_identifier. Defer only these windows so the supported
+        // builder method can pass it through to Wry before creation.
+        for window in &mut context.config_mut().app.windows {
+            if window.create {
+                isolated_window_labels.push(window.label.clone());
+                window.create = false;
+            }
+        }
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
-        .setup(|app| {
+        .setup(move |app| {
+            if let Some(identifier) = isolated_store_identifier {
+                for window in app
+                    .config()
+                    .app
+                    .windows
+                    .iter()
+                    .filter(|window| isolated_window_labels.contains(&window.label))
+                {
+                    tauri::WebviewWindowBuilder::from_config(app.handle(), window)?
+                        .data_store_identifier(identifier)
+                        .build()?;
+                }
+            }
             // Set the window and webview background to match the app's dark theme (#0b0f14).
             // This prevents a white flash in the title-bar area on macOS when using
             // titleBarStyle: "Transparent" — the native window chrome would otherwise
@@ -1210,13 +1346,20 @@ pub fn run() {
             let link_handle = app.handle().clone();
             let link_active = active_ca_setup.clone();
             app.deep_link().on_open_url(move |event| {
-                if event.urls().iter().any(is_secure_connections_setup_link) {
+                let urls = event.urls();
+                if urls.iter().any(is_secure_connections_setup_link) {
                     launch_native_ca_setup(link_handle.clone(), link_active.clone());
+                }
+                for url in urls {
+                    launch_browser_access_approval(&url);
                 }
             });
             if let Some(urls) = app.deep_link().get_current()? {
                 if urls.iter().any(is_secure_connections_setup_link) {
                     launch_native_ca_setup(app.handle().clone(), active_ca_setup);
+                }
+                for url in &urls {
+                    launch_browser_access_approval(url);
                 }
             }
             Ok(())
@@ -1235,17 +1378,43 @@ pub fn run() {
             zone2_status,
             zone2_bootstrap
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Mandible app");
+}
+
+#[cfg(target_os = "macos")]
+fn macos_supports_custom_webkit_store() -> bool {
+    Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|version| version.split('.').next()?.parse::<u32>().ok())
+        .is_some_and(|major| major >= 14)
+}
+
+#[cfg(target_os = "macos")]
+fn isolated_webkit_store_identifier(home: &Path) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    digest.update(b"mandible-isolated-webkit-store-v1\0");
+    digest.update(home.as_os_str().as_encoded_bytes());
+    let hash = digest.finalize();
+    let mut identifier = [0u8; 16];
+    identifier.copy_from_slice(&hash[..16]);
+    identifier
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         admits_native_command_origin, bind_session_cookie_to_production,
-        dashboard_origin_from_cutover, enrollment_daemon_registration_from_journal,
-        extract_credential, is_secure_connections_setup_link, read_client_auth_bootstrap,
-        resolve_user_path_from, LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN,
+        dashboard_origin_from_cutover,
+        enrollment_daemon_registration_from_journal, extract_credential,
+        is_secure_connections_setup_link, read_client_auth_bootstrap, resolve_user_path_from,
+        LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1273,6 +1442,23 @@ mod tests {
             assert!(!is_secure_connections_setup_link(
                 &tauri::Url::parse(denied).expect("URL")
             ));
+        }
+    }
+
+    #[test]
+    fn browser_access_link_accepts_only_one_exact_reference() {
+        let good = tauri::Url::parse("mandible://access/approve?reference=A1B2C3D4E5F6").unwrap();
+        assert_eq!(super::browser_access_reference(&good).as_deref(), Some("A1B2C3D4E5F6"));
+        for raw in [
+            "mandible://access/approve?reference=A1B2C3D4E5F6&extra=1",
+            "mandible://access/approve?reference=A1B2C3D4E5F6#fragment",
+            "mandible://other/approve?reference=A1B2C3D4E5F6",
+            "mandible://user@access/approve?reference=A1B2C3D4E5F6",
+            "mandible://access:123/approve?reference=A1B2C3D4E5F6",
+            "mandible://access/approve?reference=short",
+            "mandible://access/approve?reference=A1B2C3D4E5FG",
+        ] {
+            assert!(super::browser_access_reference(&tauri::Url::parse(raw).unwrap()).is_none());
         }
     }
 
@@ -1370,6 +1556,46 @@ mod tests {
             .unwrap()
             .push(duplicate);
         assert!(resolve(&journal).is_err());
+    }
+
+    #[test]
+    fn isolated_runtime_paths_never_resolve_to_the_installed_daemon_pid() {
+        let isolated = std::path::PathBuf::from("/tmp/mandible-candidate/.mandible");
+        let pid = super::runtime_file_path(None, Some(isolated.clone()), "daemon.pid").unwrap();
+        let log =
+            super::runtime_file_path(None, Some(isolated.clone()), "launchd-stderr.log").unwrap();
+        assert_eq!(pid, isolated.join(".cache/mandible/daemon.pid"));
+        assert_eq!(log, isolated.join(".cache/mandible/launchd-stderr.log"));
+        assert_ne!(
+            pid,
+            super::runtime_file_path(None, None, "daemon.pid").unwrap()
+        );
+        assert_eq!(
+            super::runtime_file_path(
+                Some("/tmp/explicit-candidate.pid"),
+                Some(isolated),
+                "daemon.pid"
+            )
+            .unwrap(),
+            std::path::PathBuf::from("/tmp/explicit-candidate.pid"),
+        );
+        assert!(super::runtime_file_path(Some("relative.pid"), None, "daemon.pid").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn isolated_webkit_store_is_stable_per_home() {
+        let first = std::path::Path::new("/tmp/mandible-candidate-one");
+        let second = std::path::Path::new("/tmp/mandible-candidate-two");
+        // This value is durable profile identity; rebuilding must not move its storage.
+        assert_eq!(
+            super::isolated_webkit_store_identifier(first),
+            [144, 63, 64, 251, 110, 109, 174, 172, 226, 170, 98, 98, 182, 233, 54, 66]
+        );
+        assert_ne!(
+            super::isolated_webkit_store_identifier(first),
+            super::isolated_webkit_store_identifier(second)
+        );
     }
 
     #[cfg(target_os = "macos")]

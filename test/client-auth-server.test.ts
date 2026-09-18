@@ -17,10 +17,12 @@ import { attachWebSocketUpgrade, createServer, Router } from "../src/server.js";
 import { registerClientAuthRoutes } from "../src/routes/client-auth.js";
 import { registerUserRoutes } from "../src/routes/users.js";
 import { SseManager } from "../src/sse.js";
+import { PRODUCTION_ORIGIN } from "../src/canonical-origin.js";
 import type { InstanceInfo } from "../src/types.js";
 import { createUser, setupOperator, updateUser } from "../src/users/store.js";
 
-const origin = "https://app.mandible.localhost:19420";
+const origin = PRODUCTION_ORIGIN;
+const productionHost = new URL(origin).host;
 let root = "";
 let db: Db;
 let server: http.Server;
@@ -132,12 +134,45 @@ afterEach(async () => {
 });
 
 describe("strict browser boundary", () => {
+  it("requires the installed-app approval and the browser-held one-time secret", async () => {
+    const headers = { Host: productionHost, Origin: origin, "Sec-Fetch-Site": "same-origin" };
+    const operator = setupOperator(db);
+    const operatorToken = auth.mintApiToken(operator.id).token;
+    const agent = createUser(db, { slug: "handoff-agent", kind: "agent", display_name: "Agent" });
+    const agentToken = auth.mintApiToken(agent.id).token;
+    expect((await request("POST", "/api/client-auth/pairing/start", {}, {
+      ...headers, Authorization: `Bearer ${agentToken}`,
+    })).status).toBe(400);
+    expect((await request("POST", "/api/client-auth/pairing/start", {}, {
+      Host: "app.mandible.localhost:19420", Authorization: `Bearer ${agentToken}`,
+    })).status).toBe(403);
+    const started = await requestAt(port, "POST", "/api/client-auth/pairing/start", { return_path: "/#/issues" }, headers);
+    expect(started.status).toBe(201);
+    const cookie = String(started.headers["set-cookie"]?.[0] ?? "").split(";")[0];
+    expect(cookie).toMatch(/^__Host-mandible-pairing=/);
+    const reference = started.body.reference as string;
+    expect((await request("POST", "/api/client-auth/pairing/complete", { reference }, { ...headers, Cookie: cookie })).status).toBe(409);
+    expect((await request("POST", "/api/client-auth/pairing/approve", { reference }, headers)).status).toBe(401);
+    expect((await request("POST", "/api/client-auth/pairing/approve", { reference }, {
+      Host: "app.mandible.localhost:19420", Authorization: `Bearer ${operatorToken}`,
+    })).status).toBe(200);
+    expect((await request("POST", "/api/client-auth/pairing/complete", { reference }, headers)).status).toBe(401);
+    const completed = await requestAt(port, "POST", "/api/client-auth/pairing/complete", { reference }, {
+      ...headers, Cookie: cookie,
+    });
+    expect(completed.status).toBe(200);
+    expect(String(completed.headers["set-cookie"]?.[0])).toContain("__Host-mandible-session=");
+    expect((await request("POST", "/api/client-auth/pairing/complete", { reference }, {
+      ...headers, Cookie: cookie,
+    })).status).toBe(409);
+  });
+
   it("accepts saved-state recovery only through the bound old-origin ingress", async () => {
     const prior = process.env.MANDIBLE_LEGACY_CONVERSION;
     process.env.MANDIBLE_LEGACY_CONVERSION = "allow";
     try {
       const headers = {
-        Host: "app.mandible.localhost:19420",
+        Host: productionHost,
         Origin: origin,
         "Sec-Fetch-Site": "cross-site",
         "X-Mandible-Target-Instance": "preview-test",
@@ -153,18 +188,20 @@ describe("strict browser boundary", () => {
       })).status).toBe(403);
       const accepted = await requestRaw("POST", "/api/client-auth/recovery/start", body, headers);
       expect(accepted.status).toBe(200);
-      expect(accepted.body).toContain("Reconnect this browser");
+      expect(accepted.body).toContain("Opening Mandible");
+      expect(accepted.body).toContain("mandible://access/approve?reference=");
+      expect(accepted.body).not.toContain("I approved it in Mandible");
       expect(auth.pendingBrowserRecoveries()).toMatchObject([{ source_audience: "preview-test", browser_state_entries: 1 }]);
       const reference = auth.pendingBrowserRecoveries()[0]!.reference;
       expect((await request("POST", "/api/client-auth/recovery/approve", { reference }, {
-        Host: "app.mandible.localhost:19420", Origin: origin, "Sec-Fetch-Site": "same-origin",
+        Host: productionHost, Origin: origin, "Sec-Fetch-Site": "same-origin",
       })).status).toBe(401);
       expect((await request("POST", "/api/client-auth/recovery/approve", { reference }, {
-        Host: "app.mandible.localhost:19420", Origin: origin, "Sec-Fetch-Site": "same-origin",
+        Host: productionHost, Origin: origin, "Sec-Fetch-Site": "same-origin",
         Cookie: `${COOKIE_NAME}=${browser.token}`,
       })).status).toBe(403);
       expect((await request("POST", "/api/client-auth/recovery/approve", { reference }, {
-        Host: "app.mandible.localhost:19420", Origin: origin, "Sec-Fetch-Site": "same-origin",
+        Host: productionHost, Origin: origin, "Sec-Fetch-Site": "same-origin",
         Cookie: `${COOKIE_NAME}=${browser.token}`, "X-Mandible-CSRF": browser.csrf_token,
       })).status).toBe(200);
     } finally {
@@ -175,7 +212,7 @@ describe("strict browser boundary", () => {
 
   it("serves a public preview bootstrap while keeping private preview reads authenticated", async () => {
     const headers = {
-      Host: "app.mandible.localhost:19420",
+      Host: productionHost,
       "X-Mandible-Target-Instance": "preview-test",
     };
     const bootstrap = await requestRaw("GET", "/api/client-auth/preview-bootstrap", undefined, headers);
@@ -197,7 +234,7 @@ describe("strict browser boundary", () => {
 
   it("rejects browser bearer fallback and hostile Host/Origin inputs", async () => {
     expect((await request("POST", "/api/issues/test-write", {}, {
-      Host: "app.mandible.localhost:19420",
+      Host: productionHost,
       Origin: origin,
       Authorization: "Bearer forbidden-in-browser",
     })).status).toBe(400);
@@ -208,7 +245,7 @@ describe("strict browser boundary", () => {
       "X-Mandible-Csrf": browser.csrf_token,
     })).status).toBe(403);
     expect((await request("POST", "/api/issues/test-write", {}, {
-      Host: "app.mandible.localhost:19420",
+      Host: productionHost,
       Origin: "https://evil.invalid",
       Cookie: `${COOKIE_NAME}=${browser.token}`,
       "X-Mandible-Csrf": browser.csrf_token,
@@ -218,16 +255,16 @@ describe("strict browser boundary", () => {
   it("requires exact Origin and session-bound CSRF for browser writes", async () => {
     const cookie = `${COOKIE_NAME}=${browser.token}`;
     expect((await request("POST", "/api/issues/test-write", {}, {
-      Host: "app.mandible.localhost:19420",
+      Host: productionHost,
       Cookie: cookie,
     })).status).toBe(403);
     expect((await request("POST", "/api/issues/test-write", {}, {
-      Host: "app.mandible.localhost:19420",
+      Host: productionHost,
       Origin: origin,
       Cookie: cookie,
     })).status).toBe(403);
     expect((await request("POST", "/api/issues/test-write", {}, {
-      Host: "app.mandible.localhost:19420",
+      Host: productionHost,
       Origin: origin,
       Cookie: cookie,
       "X-Mandible-Csrf": browser.csrf_token,
@@ -239,7 +276,7 @@ describe("strict browser boundary", () => {
     const token = auth.mintApiToken(operator.id).token;
     const preview = auth.issueBrowserSession(auth.authenticate(token, "http_bearer")!, "preview-test");
     const wrongAudience = await request("GET", "/api/read", undefined, {
-      Host: "app.mandible.localhost:19420",
+      Host: productionHost,
       Origin: origin,
       Cookie: `${COOKIE_NAME}=${preview.token}`,
     });
@@ -263,7 +300,7 @@ describe("strict browser boundary", () => {
     const session = auth.issueBrowserSession(auth.authenticate(pat, "http_bearer")!, "production");
     updateUser(db, user.id, { status: "retired" });
     const response = await request("PATCH", `/api/users/${user.id}`, { status: "active" }, {
-      Host: "app.mandible.localhost:19420",
+      Host: productionHost,
       Origin: origin,
       Cookie: `${COOKIE_NAME}=${session.token}`,
       "X-Mandible-Csrf": session.csrf_token,
@@ -370,7 +407,7 @@ describe("strict browser boundary", () => {
         reference: prepared.body.reference,
         secret: prepared.body.secret,
       }, {
-        Host: "app.mandible.localhost:19420",
+        Host: productionHost,
         Origin: origin,
         "Sec-Fetch-Site": "cross-site",
         "X-Mandible-Legacy-Migration": "complete-v1",
@@ -382,7 +419,7 @@ describe("strict browser boundary", () => {
       const cookie = String(completed.headers["set-cookie"]?.[0] ?? "").split(";", 1)[0];
       expect(cookie).toMatch(/^__Host-mandible-session=/);
       const preparedPage = await requestAt(port, "GET", "/api/client-auth/legacy-conversion/prepared", undefined, {
-        Host: "app.mandible.localhost:19420", Origin: origin, Cookie: cookie,
+        Host: productionHost, Origin: origin, Cookie: cookie,
         "X-Mandible-Target-Instance": targetAudience,
       });
       expect(preparedPage.status).toBe(200);
@@ -393,28 +430,28 @@ describe("strict browser boundary", () => {
         expect(preparedPage.body).not.toContain("Review browser connection requests");
       }
       const redirectedPage = await requestAt(port, "GET", "/api/client-auth/legacy-conversion/prepared", undefined, {
-        Host: "app.mandible.localhost:19420", Cookie: cookie,
+        Host: productionHost, Cookie: cookie,
         "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document",
         "X-Mandible-Target-Instance": targetAudience,
       });
       expect(redirectedPage.status).toBe(200);
       expect((await requestAt(port, "GET", "/api/client-auth/legacy-conversion/prepared", undefined, {
-        Host: "app.mandible.localhost:19420", Cookie: cookie,
+        Host: productionHost, Cookie: cookie,
         "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors",
         "X-Mandible-Target-Instance": targetAudience,
       })).status).toBe(403);
       const whoami = await requestAt(port, "GET", "/api/client-auth/whoami", undefined, {
-        Host: "app.mandible.localhost:19420", Origin: origin, Cookie: cookie,
+        Host: productionHost, Origin: origin, Cookie: cookie,
         "X-Mandible-Target-Instance": targetAudience,
       });
       expect(whoami.body).toMatchObject({ authenticated: true, audience: targetAudience });
       const verified = await requestAt(port, "GET", "/api/client-auth/legacy-conversion/verify", undefined, {
-        Host: "app.mandible.localhost:19420", Origin: origin, Cookie: cookie,
+        Host: productionHost, Origin: origin, Cookie: cookie,
         "X-Mandible-Target-Instance": targetAudience,
       });
       expect(verified).toMatchObject({ status: 200, body: { verified: true, audience: targetAudience } });
       const restored = await requestAt(port, "GET", "/api/client-auth/legacy-conversion/state", undefined, {
-        Host: "app.mandible.localhost:19420", Origin: origin, Cookie: cookie,
+        Host: productionHost, Origin: origin, Cookie: cookie,
         "X-Mandible-Target-Instance": targetAudience,
       });
       expect(restored.status).toBe(200);
@@ -428,7 +465,7 @@ describe("strict browser boundary", () => {
         const refused = await requestAt(port, "POST", "/api/client-auth/legacy-conversion/complete", {
           reference: prepared.body.reference, secret: prepared.body.secret,
         }, {
-          Host: "app.mandible.localhost:19420", Origin: origin,
+          Host: productionHost, Origin: origin,
           "Sec-Fetch-Site": "cross-site", "X-Mandible-Legacy-Migration": "complete-v1",
           "X-Mandible-Legacy-Origin": legacyOrigin,
           "X-Mandible-Target-Instance": targetAudience,
@@ -445,7 +482,7 @@ describe("strict browser boundary", () => {
 
   it("keeps real fetch, SSE, and WebSocket traffic on one session and closes streams on revocation", async () => {
     const headers = {
-      Host: "app.mandible.localhost:19420",
+      Host: productionHost,
       Origin: origin,
       Cookie: `${COOKIE_NAME}=${browser.token}`,
       "X-Mandible-Csrf": browser.csrf_token,

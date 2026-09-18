@@ -3,7 +3,8 @@
 // The home lane adds the home sidebar and typed-primary selected Space header.
 // These tests pin that normal selected Spaces no longer show all renderers as
 // equivalent tabs while explicit legacy renderer links still mount.
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { render } from './notice-test-render';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
@@ -138,10 +139,10 @@ describe('SpacesViewShell home polish', () => {
     const body = screen.getByTestId('spaces-shell-body');
     expect(notice.getAttribute('data-severity')).toBe('warning');
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
-    expect(main?.classList.contains('spaces-shell__main')).toBe(true);
+    expect(main?.id).toBe('app-operational-notices');
     expect(main?.firstElementChild).toBe(notice);
-    expect(notice.nextElementSibling).toBe(header);
-    expect(notice.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(header?.contains(notice)).toBe(false);
+    expect(body.contains(notice)).toBe(false);
   });
 
   it('hides the sidebar when sidebarHidden is true', () => {

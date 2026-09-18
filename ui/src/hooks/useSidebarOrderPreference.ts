@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 import {
+  ApiError,
   getSidebarOrderPreference,
   isApiErrorStatus,
   updateSidebarOrderPreference,
   type SidebarOrderPreferenceValue,
 } from '../api';
-import { subscribeClientAuthSessionState } from '../client-auth-token';
+import { subscribeClientAccessState } from '../client-auth-token';
 
 export const EMPTY_SIDEBAR_ORDER: SidebarOrderPreferenceValue = {
   pinnedConversationIds: null,
@@ -48,8 +49,12 @@ export function useSidebarOrderPreference() {
     } catch (error) {
       if (request !== requestRef.current || authEpoch !== authEpochRef.current || pendingWritesRef.current > 0) return;
       setReady(false);
+      if (error instanceof ApiError && error.code === 'local_access_unavailable') {
+        setNotice(null);
+        return;
+      }
       setNotice(isApiErrorStatus(error, 401) || isApiErrorStatus(error, 403)
-        ? 'Reconnect this browser to load its saved sidebar order.'
+        ? 'Sidebar order is unavailable until local access recovers.'
         : 'Sidebar order is unavailable. It will retry when Mandible reconnects.');
     }
   }, []);
@@ -57,19 +62,17 @@ export function useSidebarOrderPreference() {
   useEffect(() => {
     void load();
     const refresh = () => { if (document.visibilityState === 'visible') void load(); };
-    const unsubscribe = subscribeClientAuthSessionState((state) => {
+    const unsubscribe = subscribeClientAccessState((state) => {
       authEpochRef.current += 1;
       requestRef.current += 1;
-      if (state === 'enrolled') {
-        void load();
+      if (state.phase === 'ready') {
+        void queueRef.current.finally(() => load());
         return;
       }
-      revisionRef.current = 0;
-      durableRef.current = EMPTY_SIDEBAR_ORDER;
-      valueRef.current = EMPTY_SIDEBAR_ORDER;
-      setValue(EMPTY_SIDEBAR_ORDER);
+      // Recovery is not a reset. Retain both the last confirmed server order
+      // and any optimistic intent until the pending write settles.
       setReady(false);
-      setNotice('Reconnect this browser to load its saved sidebar order.');
+      setNotice(null);
     });
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
@@ -108,7 +111,8 @@ export function useSidebarOrderPreference() {
               if (authEpoch !== authEpochRef.current) return;
               valueRef.current = durableRef.current;
               setValue(durableRef.current);
-              setNotice('Sidebar order was not saved. Reload to recover the durable order.');
+              setNotice(error instanceof ApiError && error.code === 'local_access_unavailable'
+                ? null : 'Sidebar order was not saved. Reload to recover the durable order.');
               return;
             }
             try {
