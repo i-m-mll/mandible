@@ -16,18 +16,6 @@ use canonical_origin::PRODUCTION_ORIGIN;
 
 const DEFAULT_PORT: u16 = 29420;
 const LEGACY_PRODUCTION_ORIGIN: &str = "http://127.0.0.1:19420";
-const MIGRATING_PRODUCTION_ORIGIN: &str = "https://app.mandible.localhost:19420";
-
-fn dashboard_origin_from_origin_migration(raw: Option<&[u8]>) -> Option<&'static str> {
-    let journal = serde_json::from_slice::<serde_json::Value>(raw?).ok()?;
-    (journal["schema"] == "mandible-local-origin-migration@1"
-        && journal["state"] == "staged"
-        && journal["instance_id"] == "production"
-        && journal["old_origin"] == MIGRATING_PRODUCTION_ORIGIN
-        && journal["new_origin"] == PRODUCTION_ORIGIN)
-        .then_some(MIGRATING_PRODUCTION_ORIGIN)
-}
-
 fn dashboard_origin_from_cutover(raw: Option<&[u8]>) -> &'static str {
     let Some(raw) = raw else {
         return PRODUCTION_ORIGIN;
@@ -60,15 +48,6 @@ fn dashboard_origin_from_cutover(raw: Option<&[u8]>) -> &'static str {
 }
 
 fn desktop_dashboard_origin() -> &'static str {
-    let origin_journal = fs::read(
-        mandible_config_dir()
-            .join("local-sessions")
-            .join("origin-migration.json"),
-    )
-    .ok();
-    if let Some(origin) = dashboard_origin_from_origin_migration(origin_journal.as_deref()) {
-        return origin;
-    }
     let journal = fs::read(
         mandible_config_dir()
             .join("local-sessions")
@@ -1412,10 +1391,10 @@ fn isolated_webkit_store_identifier(home: &Path) -> [u8; 16] {
 mod tests {
     use super::{
         admits_native_command_origin, bind_session_cookie_to_production,
-        dashboard_origin_from_cutover, dashboard_origin_from_origin_migration,
+        dashboard_origin_from_cutover,
         enrollment_daemon_registration_from_journal, extract_credential,
         is_secure_connections_setup_link, read_client_auth_bootstrap, resolve_user_path_from,
-        LEGACY_PRODUCTION_ORIGIN, MIGRATING_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN,
+        LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1475,7 +1454,7 @@ mod tests {
 
     #[test]
     fn privileged_native_enrollment_is_pinned_to_https_production() {
-        assert_eq!(PRODUCTION_ORIGIN, "https://mandible.localhost");
+        assert_eq!(PRODUCTION_ORIGIN, "https://app.mandible.localhost:19420");
         assert!(admits_native_command_origin(PRODUCTION_ORIGIN));
         for denied in [
             "https://preview-0123456789abcdef.mandible.localhost:19421",
@@ -1521,27 +1500,6 @@ mod tests {
             dashboard_origin_from_cutover(Some(b"not json")),
             PRODUCTION_ORIGIN
         );
-    }
-
-    #[test]
-    fn desktop_opens_the_old_state_page_only_while_origin_migration_is_staged() {
-        let mut journal = serde_json::json!({
-            "schema": "mandible-local-origin-migration@1",
-            "state": "staged",
-            "instance_id": "production",
-            "old_origin": MIGRATING_PRODUCTION_ORIGIN,
-            "new_origin": PRODUCTION_ORIGIN,
-        });
-        let selected = |value: &serde_json::Value| {
-            let raw = serde_json::to_vec(value).expect("journal");
-            dashboard_origin_from_origin_migration(Some(&raw))
-        };
-        assert_eq!(selected(&journal), Some(MIGRATING_PRODUCTION_ORIGIN));
-        journal["state"] = "complete".into();
-        assert_eq!(selected(&journal), None);
-        journal["state"] = "staged".into();
-        journal["new_origin"] = "https://evil.invalid".into();
-        assert_eq!(selected(&journal), None);
     }
 
     #[test]

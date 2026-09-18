@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// @vitest-environment-options {"url":"https://mandible.localhost/"}
+// @vitest-environment-options {"url":"https://app.mandible.localhost:19420/"}
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   __resetBrowserSessionForTests,

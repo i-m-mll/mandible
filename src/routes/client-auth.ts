@@ -414,9 +414,7 @@ export function registerClientAuthRoutes(
 
   router.post("/api/client-auth/recovery/start", (req, res) => {
     try {
-      const originMigration = process.env.MANDIBLE_ORIGIN_MIGRATION === "allow"
-        && req.legacy_browser_origin === "https://app.mandible.localhost:19420";
-      if ((!originMigration && process.env.MANDIBLE_LEGACY_CONVERSION !== "allow")
+      if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow"
           || !req.legacy_browser_origin || !req.target_instance_id) {
         sendJson(res, 403, { error: "invalid_browser_recovery_ingress" });
         return;
@@ -436,8 +434,7 @@ export function registerClientAuthRoutes(
       res.header?.("Set-Cookie", serialize(PAIRING_COOKIE_NAME, recovery.secret, cookieOptions(600)));
       res.header?.("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'");
       const reference = htmlEscape(recovery.reference);
-      const openCanonicalDashboard = req.legacy_browser_origin === "https://app.mandible.localhost:19420";
-      res.html?.(`<!doctype html><meta charset="utf-8"><title>Opening Mandible</title><main style="font:16px system-ui;max-width:36rem;margin:4rem auto;line-height:1.5"><h1>Opening Mandible</h1><p id="result" role="status">Connecting this browser to the installed app…</p></main><script>(async()=>{const result=document.getElementById('result');const opener=document.createElement('a');opener.href='mandible://access/approve?reference=${reference}';opener.hidden=true;document.body.append(opener);opener.click();opener.remove();const deadline=Date.now()+30000;while(Date.now()<deadline){const response=await fetch('/api/client-auth/pairing/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reference:'${reference}'})});if(response.status===409){await new Promise(resolve=>setTimeout(resolve,500));continue}if(!response.ok)throw Error('The installed app could not establish browser access.');const body=await response.json();const proof=await fetch('/api/client-auth/recovery/verify',{method:'POST',headers:{'X-Mandible-CSRF':body.session.csrf_token}});if(!proof.ok)throw Error('The saved browser state could not be verified.');result.textContent='Browser connected.';${openCanonicalDashboard ? "location.replace('/')" : ""};return}throw Error('The installed app did not answer the browser handoff. Check that Mandible is installed and running.')})().catch(error=>{document.getElementById('result').textContent=error.message})</script>`);
+      res.html?.(`<!doctype html><meta charset="utf-8"><title>Opening Mandible</title><main style="font:16px system-ui;max-width:36rem;margin:4rem auto;line-height:1.5"><h1>Opening Mandible</h1><p id="result" role="status">Connecting this browser to the installed app…</p></main><script>(async()=>{const result=document.getElementById('result');const opener=document.createElement('a');opener.href='mandible://access/approve?reference=${reference}';opener.hidden=true;document.body.append(opener);opener.click();opener.remove();const deadline=Date.now()+30000;while(Date.now()<deadline){const response=await fetch('/api/client-auth/pairing/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reference:'${reference}'})});if(response.status===409){await new Promise(resolve=>setTimeout(resolve,500));continue}if(!response.ok)throw Error('The installed app could not establish browser access.');const body=await response.json();const proof=await fetch('/api/client-auth/recovery/verify',{method:'POST',headers:{'X-Mandible-CSRF':body.session.csrf_token}});if(!proof.ok)throw Error('The saved browser state could not be verified.');result.textContent='Browser connected.';return}throw Error('The installed app did not answer the browser handoff. Check that Mandible is installed and running.')})().catch(error=>{document.getElementById('result').textContent=error.message})</script>`);
     } catch (error) {
       handleError(res, error);
     }
@@ -445,7 +442,7 @@ export function registerClientAuthRoutes(
 
   router.get("/api/client-auth/recovery/requests", (req, res) => {
     try {
-      if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow" && process.env.MANDIBLE_ORIGIN_MIGRATION !== "allow") throw new Error("Browser recovery is not active.");
+      if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") throw new Error("Browser recovery is not active.");
       const identity = requireOperator(getDb(), req);
       if (identity.source !== "browser_cookie" || !identity.csrf_token) throw new Error("Open this page from the connected Mandible desktop app.");
       const pending = authenticator.pendingBrowserRecoveries();
@@ -460,7 +457,7 @@ export function registerClientAuthRoutes(
 
   router.post("/api/client-auth/recovery/approve", (req, res) => {
     try {
-      if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow" && process.env.MANDIBLE_ORIGIN_MIGRATION !== "allow") throw new Error("Browser recovery is not active.");
+      if (process.env.MANDIBLE_LEGACY_CONVERSION !== "allow") throw new Error("Browser recovery is not active.");
       const identity = requireOperator(getDb(), req);
       if (identity.source !== "browser_cookie") throw new Error("Desktop browser approval requires an active session.");
       const reference = (optionalString(bodyRecord(req), "reference") ?? "").trim();
