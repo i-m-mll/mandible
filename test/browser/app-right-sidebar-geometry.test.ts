@@ -47,11 +47,13 @@ function bundleFixture(directory: string): string {
   return readFileSync(output, 'utf8');
 }
 
+let fixtureBundle: string | undefined;
+
 function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): Result {
   if (!chrome) throw new Error('A Chromium browser is required for the app right-sidebar geometry gate.');
   const directory = mkdtempSync(join(tmpdir(), 'mandible-right-sidebar-'));
   try {
-    const bundle = bundleFixture(directory);
+    const bundle = fixtureBundle ??= bundleFixture(directory);
     const measure = `
       const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       const rect = node => { const r=node.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}; };
@@ -141,7 +143,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
     const html = `<!doctype html><html data-theme="${theme}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell,.app-layout{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{grid-column:2;grid-row:1;min-width:0}.native-fixture .app-rail{grid-column:1;grid-row:1}.native-fixture .conv-detail{height:100%}.native-fixture--chat .chat-right-sidebar__content::after{content:'';display:block;height:900px}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
     const path = join(directory, 'fixture.html');
     writeFileSync(path, html);
-    const rendered = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-sandbox', '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--window-size=${width},600`, `file://${path}?surface=${surface}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
+    const rendered = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-sandbox', '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--window-size=${width},600`, `file://${path}?surface=${surface}`], { encoding: 'utf8', maxBuffer: 20_000_000, timeout: 20_000 });
     if (rendered.status !== 0) throw new Error(`Chromium sidebar fixture failed: ${rendered.stderr}`);
     const fixtureError = rendered.stdout.match(/<title>fixture-error:([^<]+)<\/title>/)?.[1];
     if (fixtureError) throw new Error(Buffer.from(fixtureError, 'base64').toString('utf8'));
@@ -154,135 +156,133 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
 }
 
 describe('production app right sidebar geometry and interaction', () => {
-  it('keeps the native shell coherent across all consumers, widths, and themes', () => {
-    const results = (['light', 'dark'] as const).flatMap((theme) => [1280, 962, 600].flatMap((width) =>
-      (['chat', 'graph', 'timeline', 'console'] as const).map((surface) => renderCase(surface, width, theme))));
-    expect(results).toHaveLength(24);
-    for (const result of results) {
-      expect(result.autoCollapsed).toEqual({
-        right: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
-        rightDisplay: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH ? 'none' : 'grid',
-        view: result.width < VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
-      });
-      expect(result.reopenedLayout).toMatchObject({
-        right: true,
-        view: true,
-        presentation: 'dock',
-        mainInert: false,
-        railInert: false,
-      });
-      if (result.width === 600) {
-        expect((result.reopenedLayout as { mainWidth: number }).mainWidth).toBeLessThan(100);
-      }
-      const initial = result.initial as Record<string, unknown>;
-      expect(initial, `${result.surface}/${result.width}/${result.theme} initial sidebar`).toMatchObject({ toggleCount: 1, pressed: 'true', scrollMoved: true });
-      expect(initial.bodyOverflow).toBe(result.surface === 'chat' ? 'hidden' : 'auto');
-      expect(initial.presentation).toBe('dock');
-      const sidebarRect = initial.sidebar as { left: number; right: number; width: number };
-      expect(sidebarRect.left, `${result.surface}/${result.width}/${result.theme} sidebar visible`).toBeGreaterThanOrEqual(0);
-      expect((initial.header as { height: number }).height).toBe(48);
-      expect((initial.header as { bottom: number }).bottom).toBe((initial.body as { top: number }).top);
-      expect(result.closed, `${result.surface}/${result.width}/${result.theme} closed toggle`).toMatchObject({
-        count: 1,
-        pressed: 'false',
-        focused: true,
-        display: 'none',
-        sidebar: { width: 0 },
-        mainInert: false,
-      });
-      expect(result.reopened, `${result.surface}/${result.width}/${result.theme} reopened toggle`).toMatchObject({ count: 1, pressed: 'true', focused: true });
-      expect((result.reopened as { scrollTop: number }).scrollTop, `${result.surface}/${result.width}/${result.theme} preserved scroll`)
-        .toBe(result.preservedScrollTop);
-      expect(result.keyboardWidth).toBe(Math.min(720, Math.floor(result.width * 0.6)));
-      expect(result.pointerWidth).toBeLessThanOrEqual(result.keyboardWidth as number);
-      expect(result.stored).toContain('"width"');
-      expect(initial).toMatchObject({ mainInert: false, railInert: false });
-      if (result.tabResult) {
-        expect(result.tabResult).toMatchObject({ focused: result.surface === 'chat' ? 'Preview' : 'Message Info', selected: result.surface === 'chat' ? 'Preview' : 'Message Info' });
-        expect((result.tabResult as { text: string[] }).text).toEqual(result.surface === 'chat' ? ['', '', ''] : ['', '']);
-      }
-      if (result.surface === 'console') expect(result.afterStream).toBe(result.beforeStream);
-      if (result.surface === 'chat') {
-        type Rect = { top: number; bottom: number; left: number; right: number };
-        const geometry = result.chatGeometry as {
-          header: Rect;
-          body: Rect;
-          overlayControl: Rect;
-          overlayPointerEvents: string;
-          composer: Rect;
-          composerPointerEvents: string;
-          transcriptViewport: Rect;
-          transcriptBottomInset: number;
-          transcriptScrollState: { clientHeight: number; scrollHeight: number; scrollTop: number };
-          transcriptOuterState: { clientHeight: number; scrollHeight: number; scrollTop: number };
-          finalContent: Rect;
-          mask: Rect & { background: string };
-          mainBackground: string;
-        };
-        expect(result.closed).toMatchObject({ inHeader: true, rightmost: true });
-        expect(geometry.header.bottom).toBe(geometry.body.top);
-        expect(geometry.body.bottom).toBe(geometry.overlayControl.bottom);
-        expect(geometry.overlayControl.top).toBeLessThan(geometry.body.bottom);
-        expect(geometry.overlayControl.left).toBeCloseTo(geometry.body.left, 0);
-        expect(geometry.overlayControl.right).toBeCloseTo(geometry.body.right, 0);
-        expect(geometry.overlayPointerEvents).toBe('none');
-        expect(geometry.composer.top).toBeGreaterThanOrEqual(geometry.overlayControl.top);
-        expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.overlayControl.bottom);
-        expect(geometry.composerPointerEvents).toBe('auto');
-        if (result.width >= RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH) {
-          expect(geometry.composer.left).toBeGreaterThan(geometry.transcriptViewport.left);
-          expect(geometry.composer.right).toBeLessThan(geometry.transcriptViewport.right);
-          expect(geometry.transcriptViewport.left).toBeCloseTo(geometry.body.left, 0);
-          expect(geometry.transcriptViewport.right).toBeCloseTo(geometry.body.right, 0);
-        }
-        expect(geometry.transcriptViewport.top).toBeCloseTo(geometry.body.top, 0);
-        expect(geometry.transcriptViewport.bottom).toBeCloseTo(geometry.body.bottom, 0);
-        const composerHeight = geometry.composer.bottom - geometry.composer.top;
-        const composerBottomGap = geometry.transcriptViewport.bottom - geometry.composer.bottom;
-        const transcriptMaxScroll = geometry.transcriptScrollState.scrollHeight - geometry.transcriptScrollState.clientHeight;
-        expect(geometry.transcriptBottomInset).toBeCloseTo(composerHeight + (2 * composerBottomGap), 5);
-        expect(transcriptMaxScroll).toBeGreaterThan(0);
-        expect(geometry.transcriptScrollState.scrollTop).toBeCloseTo(transcriptMaxScroll, 5);
-        expect(geometry.transcriptOuterState.scrollHeight).toBe(geometry.transcriptOuterState.clientHeight);
-        expect(geometry.transcriptOuterState.scrollTop).toBe(0);
-        if (result.width >= RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH) {
-          expect(geometry.finalContent.left).toBeCloseTo(geometry.composer.left, 0);
-          expect(geometry.finalContent.right).toBeCloseTo(geometry.composer.right, 0);
-          expect(geometry.mask.left).toBeCloseTo(geometry.body.left, 0);
-          expect(geometry.mask.right).toBeCloseTo(geometry.composer.right, 0);
-        }
-        expect(geometry.finalContent.bottom).toBeLessThanOrEqual(geometry.composer.top - composerBottomGap + 0.5);
-        expect(Math.abs(geometry.mask.top - (geometry.composer.top + ((geometry.composer.bottom - geometry.composer.top) / 2)))).toBeLessThanOrEqual(1);
-        expect(geometry.mask.bottom).toBeCloseTo(geometry.overlayControl.bottom, 0);
-        const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; inlineVisibility: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number }; submit: Rect; submitVisual: { width: number; height: number }; submitIcon: Rect; submitLabel: string };
-        expect(runOptions.triggerText).toBe('');
-        expect(runOptions.triggerHasSvg).toBe(true);
-        expect(runOptions.submit).toMatchObject({ width: 34, height: 34 });
-        expect(runOptions.submitVisual).toEqual({ width: 25.5, height: 25.5 });
-        expect(runOptions.submitIcon).toMatchObject({ width: 17, height: 17 });
-        expect(runOptions.submitLabel).toBe('Send');
-        const jumpControl = result.jumpControl as { hit: Rect; visual: { width: number; height: number }; icon: Rect; label: string; title: string };
-        expect(jumpControl.hit).toMatchObject({ width: 34, height: 34 });
-        expect(jumpControl.visual).toEqual({ width: 22, height: 22 });
-        expect(jumpControl.icon).toMatchObject({ width: 14, height: 14 });
-        expect(jumpControl.label).toBe('Jump to latest');
-        expect(jumpControl.title).toBe('Jump to latest');
-        expect(runOptions.inlineDisplay).toBe('flex');
-        expect(runOptions.selectRects).toHaveLength(3);
-        expect(new Set(runOptions.selectRects.map((select) => select.right - select.left)).size).toBeGreaterThan(1);
-        if (runOptions.inlineVisibility === 'hidden') {
-          expect(runOptions.triggerDisplay).toBe('flex');
-        } else {
-          expect(runOptions.triggerDisplay).toBe('none');
-          expect(
-            runOptions.selectRects.every((select) => select.left >= runOptions.composer.left && select.right <= runOptions.composer.right),
-            `${result.surface}/${result.width}/${result.theme} run options ${JSON.stringify(runOptions)}`,
-          ).toBe(true);
-        }
-        expect(geometry.mask.background).toBe(geometry.mainBackground);
-        expect(result).toMatchObject({ deterministicRetry: 'false', transientRetry: 'true' });
-        expect(String(result.titleCopy)).not.toContain('provider_metadata_missing');
-      }
+  const cases = (['light', 'dark'] as const).flatMap((theme) => [1280, 962, 600].flatMap((width) =>
+    (['chat', 'graph', 'timeline', 'console'] as const).map((surface) => ({ surface, width, theme }))));
+  it.each(cases)('preserves the $surface sidebar at $width px in $theme', ({ surface, width, theme }) => {
+    const result = renderCase(surface, width, theme);
+    expect(result.autoCollapsed).toEqual({
+      right: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
+      rightDisplay: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH ? 'none' : 'grid',
+      view: result.width < VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
+    });
+    expect(result.reopenedLayout).toMatchObject({
+      right: true,
+      view: true,
+      presentation: 'dock',
+      mainInert: false,
+      railInert: false,
+    });
+    if (result.width === 600) {
+      expect((result.reopenedLayout as { mainWidth: number }).mainWidth).toBeLessThan(100);
     }
-  }, 60_000);
+    const initial = result.initial as Record<string, unknown>;
+    expect(initial, `${result.surface}/${result.width}/${result.theme} initial sidebar`).toMatchObject({ toggleCount: 1, pressed: 'true', scrollMoved: true });
+    expect(initial.bodyOverflow).toBe(result.surface === 'chat' ? 'hidden' : 'auto');
+    expect(initial.presentation).toBe('dock');
+    const sidebarRect = initial.sidebar as { left: number; right: number; width: number };
+    expect(sidebarRect.left, `${result.surface}/${result.width}/${result.theme} sidebar visible`).toBeGreaterThanOrEqual(0);
+    expect((initial.header as { height: number }).height).toBe(48);
+    expect((initial.header as { bottom: number }).bottom).toBe((initial.body as { top: number }).top);
+    expect(result.closed, `${result.surface}/${result.width}/${result.theme} closed toggle`).toMatchObject({
+      count: 1,
+      pressed: 'false',
+      focused: true,
+      display: 'none',
+      sidebar: { width: 0 },
+      mainInert: false,
+    });
+    expect(result.reopened, `${result.surface}/${result.width}/${result.theme} reopened toggle`).toMatchObject({ count: 1, pressed: 'true', focused: true });
+    expect((result.reopened as { scrollTop: number }).scrollTop, `${result.surface}/${result.width}/${result.theme} preserved scroll`)
+      .toBe(result.preservedScrollTop);
+    expect(result.keyboardWidth).toBe(Math.min(720, Math.floor(result.width * 0.6)));
+    expect(result.pointerWidth).toBeLessThanOrEqual(result.keyboardWidth as number);
+    expect(result.stored).toContain('"width"');
+    expect(initial).toMatchObject({ mainInert: false, railInert: false });
+    if (result.tabResult) {
+      expect(result.tabResult).toMatchObject({ focused: result.surface === 'chat' ? 'Preview' : 'Message Info', selected: result.surface === 'chat' ? 'Preview' : 'Message Info' });
+      expect((result.tabResult as { text: string[] }).text).toEqual(result.surface === 'chat' ? ['', '', ''] : ['', '']);
+    }
+    if (result.surface === 'console') expect(result.afterStream).toBe(result.beforeStream);
+    if (result.surface === 'chat') {
+      type Rect = { top: number; bottom: number; left: number; right: number };
+      const geometry = result.chatGeometry as {
+        header: Rect;
+        body: Rect;
+        overlayControl: Rect;
+        overlayPointerEvents: string;
+        composer: Rect;
+        composerPointerEvents: string;
+        transcriptViewport: Rect;
+        transcriptBottomInset: number;
+        transcriptScrollState: { clientHeight: number; scrollHeight: number; scrollTop: number };
+        transcriptOuterState: { clientHeight: number; scrollHeight: number; scrollTop: number };
+        finalContent: Rect;
+        mask: Rect & { background: string };
+        mainBackground: string;
+      };
+      expect(result.closed).toMatchObject({ inHeader: true, rightmost: true });
+      expect(geometry.header.bottom).toBe(geometry.body.top);
+      expect(geometry.body.bottom).toBe(geometry.overlayControl.bottom);
+      expect(geometry.overlayControl.top).toBeLessThan(geometry.body.bottom);
+      expect(geometry.overlayControl.left).toBeCloseTo(geometry.body.left, 0);
+      expect(geometry.overlayControl.right).toBeCloseTo(geometry.body.right, 0);
+      expect(geometry.overlayPointerEvents).toBe('none');
+      expect(geometry.composer.top).toBeGreaterThanOrEqual(geometry.overlayControl.top);
+      expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.overlayControl.bottom);
+      expect(geometry.composerPointerEvents).toBe('auto');
+      if (result.width >= RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH) {
+        expect(geometry.composer.left).toBeGreaterThan(geometry.transcriptViewport.left);
+        expect(geometry.composer.right).toBeLessThan(geometry.transcriptViewport.right);
+        expect(geometry.transcriptViewport.left).toBeCloseTo(geometry.body.left, 0);
+        expect(geometry.transcriptViewport.right).toBeCloseTo(geometry.body.right, 0);
+      }
+      expect(geometry.transcriptViewport.top).toBeCloseTo(geometry.body.top, 0);
+      expect(geometry.transcriptViewport.bottom).toBeCloseTo(geometry.body.bottom, 0);
+      const composerHeight = geometry.composer.bottom - geometry.composer.top;
+      const composerBottomGap = geometry.transcriptViewport.bottom - geometry.composer.bottom;
+      const transcriptMaxScroll = geometry.transcriptScrollState.scrollHeight - geometry.transcriptScrollState.clientHeight;
+      expect(geometry.transcriptBottomInset).toBeCloseTo(composerHeight + (2 * composerBottomGap), 5);
+      expect(transcriptMaxScroll).toBeGreaterThan(0);
+      expect(geometry.transcriptScrollState.scrollTop).toBeCloseTo(transcriptMaxScroll, 5);
+      expect(geometry.transcriptOuterState.scrollHeight).toBe(geometry.transcriptOuterState.clientHeight);
+      expect(geometry.transcriptOuterState.scrollTop).toBe(0);
+      if (result.width >= RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH) {
+        expect(geometry.finalContent.left).toBeCloseTo(geometry.composer.left, 0);
+        expect(geometry.finalContent.right).toBeCloseTo(geometry.composer.right, 0);
+        expect(geometry.mask.left).toBeCloseTo(geometry.body.left, 0);
+        expect(geometry.mask.right).toBeCloseTo(geometry.composer.right, 0);
+      }
+      expect(geometry.finalContent.bottom).toBeLessThanOrEqual(geometry.composer.top - composerBottomGap + 0.5);
+      expect(Math.abs(geometry.mask.top - (geometry.composer.top + ((geometry.composer.bottom - geometry.composer.top) / 2)))).toBeLessThanOrEqual(1);
+      expect(geometry.mask.bottom).toBeCloseTo(geometry.overlayControl.bottom, 0);
+      const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; inlineVisibility: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number }; submit: Rect; submitVisual: { width: number; height: number }; submitIcon: Rect; submitLabel: string };
+      expect(runOptions.triggerText).toBe('');
+      expect(runOptions.triggerHasSvg).toBe(true);
+      expect(runOptions.submit).toMatchObject({ width: 34, height: 34 });
+      expect(runOptions.submitVisual).toEqual({ width: 25.5, height: 25.5 });
+      expect(runOptions.submitIcon).toMatchObject({ width: 17, height: 17 });
+      expect(runOptions.submitLabel).toBe('Send');
+      const jumpControl = result.jumpControl as { hit: Rect; visual: { width: number; height: number }; icon: Rect; label: string; title: string };
+      expect(jumpControl.hit).toMatchObject({ width: 34, height: 34 });
+      expect(jumpControl.visual).toEqual({ width: 22, height: 22 });
+      expect(jumpControl.icon).toMatchObject({ width: 14, height: 14 });
+      expect(jumpControl.label).toBe('Jump to latest');
+      expect(jumpControl.title).toBe('Jump to latest');
+      expect(runOptions.inlineDisplay).toBe('flex');
+      expect(runOptions.selectRects).toHaveLength(3);
+      expect(new Set(runOptions.selectRects.map((select) => select.right - select.left)).size).toBeGreaterThan(1);
+      if (runOptions.inlineVisibility === 'hidden') {
+        expect(runOptions.triggerDisplay).toBe('flex');
+      } else {
+        expect(runOptions.triggerDisplay).toBe('none');
+        expect(
+          runOptions.selectRects.every((select) => select.left >= runOptions.composer.left && select.right <= runOptions.composer.right),
+          `${result.surface}/${result.width}/${result.theme} run options ${JSON.stringify(runOptions)}`,
+        ).toBe(true);
+      }
+      expect(geometry.mask.background).toBe(geometry.mainBackground);
+      expect(result).toMatchObject({ deterministicRetry: 'false', transientRetry: 'true' });
+      expect(String(result.titleCopy)).not.toContain('provider_metadata_missing');
+    }
+  }, 25_000);
 });
