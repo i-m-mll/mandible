@@ -13,6 +13,7 @@ describe('unmarked local human CLI', () => {
     try {
       const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
       const log = path.join(root, 'curl.log');
+      const keychainLog = path.join(root, 'keychain.log');
       const curl = path.join(bin, 'curl');
       fs.writeFileSync(curl, `#!/bin/bash
 printf '%s\\n' "$@" >> "$CURL_LOG"
@@ -34,8 +35,8 @@ printf 200
         CLAUDE_SESSION_ID: '', GEMINI_SESSION_ID: '', MANDIBLE_SESSION_ID: '',
         MANDIBLE_MANAGED_CLIENT: '', MANDIBLE_PROVIDER: '',
       };
-      const result = spawnSync('bash', ['-c', 'source "$API_HELPER"; api_http_exchange POST /api/issues/test-write "{}" "$OUTPUT"'], {
-        env: { ...env, API_HELPER: api, OUTPUT: path.join(root, 'response') }, encoding: 'utf8',
+      const result = spawnSync('bash', ['-c', 'source "$API_HELPER"; api_keychain_operator_token() { printf called >> "$KEYCHAIN_LOG"; printf revoked-token; }; api_http_exchange POST /api/issues/test-write "{}" "$OUTPUT"'], {
+        env: { ...env, API_HELPER: api, OUTPUT: path.join(root, 'response'), KEYCHAIN_LOG: keychainLog }, encoding: 'utf8',
       });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toBe('200');
@@ -45,6 +46,7 @@ printf 200
       expect(args).toContain('Sec-Fetch-Site: same-origin');
       expect(args).toContain('X-Mandible-CSRF: local-csrf');
       expect(args).not.toContain('Authorization: Bearer');
+      expect(fs.existsSync(keychainLog)).toBe(false);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 });

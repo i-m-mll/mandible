@@ -1,8 +1,7 @@
-import {
-  DETAIL_CACHE_ENTRY_KEY_PREFIX,
-  DETAIL_CACHE_INDEX_KEY,
-  LEGACY_DETAIL_CACHE_KEY,
-} from '../../src/client-auth/legacy-browser-state';
+// Browser-local detail cache keys. Refetchable data never moves between origins.
+const DETAIL_CACHE_INDEX_KEY = "mandible:detail-cache:v2";
+const DETAIL_CACHE_ENTRY_KEY_PREFIX = `${DETAIL_CACHE_INDEX_KEY}:e:`;
+const LEGACY_DETAIL_CACHE_KEY = "mandible:detail-cache:v1";
 
 // The index holds only lightweight per-entry metadata. Each cached value lives
 // in its own `${ENTRY_KEY_PREFIX}<id>` key so a read parses the small index plus

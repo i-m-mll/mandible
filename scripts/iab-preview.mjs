@@ -110,7 +110,7 @@ async function createOrReusePreview(options) {
     const existing = await healthyExistingPreview(branch, { worktree });
     if (existing) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
-      if (existing.legacyContractDrift) throw legacyPreviewCutoverRequired(existing);
+      if (existing.legacyContractDrift) throw legacyPreviewRetirementRequired(existing);
       const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
       if (existing.health?.startup_commit?.hash !== currentHead) {
         return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
@@ -140,7 +140,7 @@ async function createOrReusePreview(options) {
       : null;
     if (existing && !options.dryRun) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
-      if (existing.legacyContractDrift) throw legacyPreviewCutoverRequired(existing);
+      if (existing.legacyContractDrift) throw legacyPreviewRetirementRequired(existing);
       if (!selectedWorktree) {
         throw new Error(`Healthy preview metadata exists for ${branch}, but its worktree is not registered.`);
       }
@@ -1000,11 +1000,11 @@ function isExactLegacyPreview(metadata, health, previewRoot, drift) {
     drift.every((key) => LEGACY_PREVIEW_CONTRACT_DRIFT.has(key) && metadata.instanceEnv?.[key] === undefined);
 }
 
-function legacyPreviewCutoverRequired(existing) {
+function legacyPreviewRetirementRequired(existing) {
   return new Error(
     `Preview port ${existing.port} is a verified legacy public listener and cannot be replaced independently. ` +
-    "Run the coordinated local-session cutover for production and preview together; " +
-    "the ordinary launcher will not stop the listener or allocate a second browser origin.",
+    "Inspect and retire that listener through its recorded lifecycle before an ordinary preview launch. " +
+    "The launcher will not stop it or allocate a second browser origin.",
   );
 }
 
@@ -1724,8 +1724,7 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
     MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
-    // Unlike the preview copy, these fingerprints must survive cache cleanup so
-    // first cutover can verify and retire the exact legacy browser authority.
+    // Keep preview client-auth secrets outside disposable cache output.
     MANDIBLE_CLIENT_AUTH_DIR: path.join(
       mandibleHome(),
       "preview-authorities",
@@ -1804,7 +1803,7 @@ function assertOrdinaryPreviewLifecycleAllowed() {
     throw new Error(`Rolled-back local-session cutover journal lacks restoration receipts: ${journalPath}`);
   }
   throw new Error(
-    `Local-session cutover is ${journal.state}; ordinary preview lifecycle is disabled until it completes or rolls back.`,
+    `Local-session cutover is ${journal.state}; ordinary preview lifecycle is disabled until that historical state is explicitly reconciled.`,
   );
 }
 

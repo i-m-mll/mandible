@@ -1510,7 +1510,7 @@ describe("iab-preview launcher", () => {
     expect(payload.mode).toBe("current-integration");
   });
 
-  it("requires the coordinated cutover for the exact legacy preview instead of allocating another origin", async () => {
+  it("requires explicit retirement of the exact legacy preview instead of allocating another origin", async () => {
     const repo = createRepo();
     git(["checkout", "-b", "integration/test-preview"], repo);
     const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
@@ -1587,7 +1587,7 @@ describe("iab-preview launcher", () => {
       () => { throw new Error("legacy preview launch unexpectedly succeeded"); },
       (error: { stdout?: string }) => error,
     );
-    expect(JSON.parse(result.stdout ?? "{}").error).toContain("coordinated local-session cutover");
+    expect(JSON.parse(result.stdout ?? "{}").error).toContain("Inspect and retire that listener");
     expect(fs.readdirSync(previewRoot).filter((entry) => entry.startsWith("mandible-"))).toEqual(["mandible-legacy.db"]);
   });
 

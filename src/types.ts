@@ -140,7 +140,6 @@ export interface HealthResponse {
   client_auth?: {
     mode: "compat" | "strict";
     credential_directory?: string;
-    legacy_conversion?: boolean;
     authority_id?: string;
     telemetry?: unknown;
   };

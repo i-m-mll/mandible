@@ -22,15 +22,12 @@ export type InstanceRegistration = {
 };
 
 export type PreviewContext = {
-  family_id: string;
-  root_family_id: string;
   user_id: string;
   slug: string;
   audience: string;
   effect_ceiling: readonly Effect[];
   csrf_token: string;
-  expires_at: number;
-  evidence: { method: string; credential_id: string | null; authenticated_at: number };
+  evidence: { authenticated_at: number };
 };
 
 export class LocalSessionAuthority {
@@ -127,7 +124,7 @@ export class LocalSessionAuthority {
     const key = await importPKCS8(fs.readFileSync(this.privateKeyPath, "utf8"), "EdDSA");
     const effects = preview.effect_ceiling.filter((effect) => context.effect_ceiling.includes(effect));
     return new SignJWT({
-      sid: context.family_id, root: context.root_family_id, uid: context.user_id,
+      uid: context.user_id,
       slug: context.slug, effects, csrf: context.csrf_token,
       generation: preview.backend_generation, auth_time: context.evidence.authenticated_at,
     })
@@ -146,17 +143,14 @@ export class LocalSessionAuthority {
         issuer: registration.installation_id, audience: registration.instance_id,
         algorithms: ["EdDSA"], maxTokenAge: `${INTERNAL_CONTEXT_TTL_SECONDS}s`,
       });
-      if (typeof payload.sid !== "string" || typeof payload.root !== "string"
-          || typeof payload.uid !== "string" || typeof payload.slug !== "string"
+      if (typeof payload.uid !== "string" || typeof payload.slug !== "string"
           || typeof payload.csrf !== "string" || payload.generation !== registration.backend_generation
           || !Array.isArray(payload.effects)
           || payload.effects.some((effect) => !registration.effect_ceiling.includes(effect as Effect))) return null;
       return {
-        family_id: payload.sid, root_family_id: payload.root,
         user_id: payload.uid, slug: payload.slug, audience: registration.instance_id,
         effect_ceiling: payload.effects as Effect[], csrf_token: payload.csrf,
-        expires_at: Number(payload.exp) * 1_000,
-        evidence: { method: "installation_context", credential_id: null, authenticated_at: Number(payload.auth_time) },
+        evidence: { authenticated_at: Number(payload.auth_time) },
       };
     } catch { return null; }
   }

@@ -34,7 +34,6 @@ import {
 } from "./tokens.js";
 import {
   LocalSessionAuthority,
-  type PreviewContext,
   type InstanceRegistration,
 } from "./session-authority.js";
 
@@ -169,8 +168,6 @@ export class ClientAuthenticator implements ClientAuthGate {
       credential_id: null,
       source: "local_os_user",
       effect_ceiling: this.instance?.allowed_effects ?? PRODUCTION_EFFECTS,
-      session_family: `os-user:${this.clientAuthAuthorityId}`,
-      root_session_family: `os-user:${this.clientAuthAuthorityId}`,
       audience,
       csrf_token: createHmac("sha256", this.pepper)
         .update(`mandible:local-csrf:${this.clientAuthAuthorityId}:${audience}`)
@@ -184,11 +181,6 @@ export class ClientAuthenticator implements ClientAuthGate {
 
   productionRegistration(): InstanceRegistration | null {
     return this.sessionAuthority.instances().find((entry) => entry.role === "main") ?? null;
-  }
-
-  classifyFailure(credential: string | null | undefined): "expired" | "revoked" | "unknown" {
-    void credential;
-    return "unknown";
   }
 
   mode(): ClientAuthMode {
@@ -260,29 +252,22 @@ export class ClientAuthenticator implements ClientAuthGate {
 
   async signPreviewContext(identity: ResolvedClientIdentity, previewInstanceId: string): Promise<string> {
     if (!this.ownsSessionAuthority || identity.source !== "local_os_user"
-        || !identity.session_family || !identity.audience) {
+        || !identity.audience || !identity.csrf_token) {
       throw new Error("Local OS-user access is required for preview authorization.");
     }
     return this.sessionAuthority.signPreviewContext({
-      family_id: identity.session_family,
-      root_family_id: identity.root_session_family ?? identity.session_family,
       user_id: identity.user_id,
       slug: identity.slug,
       audience: identity.audience,
       effect_ceiling: identity.effect_ceiling,
-      csrf_token: identity.csrf_token ?? "",
-      expires_at: this.now(),
-      evidence: {
-        method: identity.method,
-        credential_id: identity.credential_id,
-        authenticated_at: this.now(),
-      },
+      csrf_token: identity.csrf_token,
+      evidence: { authenticated_at: this.now() },
     }, previewInstanceId);
   }
 
   async authenticateInternalContext(compact: string | null | undefined): Promise<ResolvedClientIdentity | null> {
     if (!compact || !this.instance || !this.contextVerificationKeyPem) return null;
-    const session = await LocalSessionAuthority.verifyPreviewContext(
+    const context = await LocalSessionAuthority.verifyPreviewContext(
       compact,
       this.contextVerificationKeyPem,
       {
@@ -296,43 +281,32 @@ export class ClientAuthenticator implements ClientAuthGate {
         writable_roots: this.instance.writable_roots,
       },
     );
-    if (!session) return null;
-    const user = getUserById(this.db, session.user_id);
-    if (!user || user.status !== "active") return null;
-    return this.identityFromBrowserSession(session, "installation_context");
-  }
-
-  validateBrowserCsrf(identity: ResolvedClientIdentity, csrf: string | null | undefined): boolean {
-    if (!identity.session_family || !identity.csrf_token) return false;
-    return csrf === identity.csrf_token;
-  }
-
-  browserSessionMetadata(identity: ResolvedClientIdentity): Record<string, unknown> | null {
-    if (!identity.session_family || !identity.audience) return null;
+    if (!context) return null;
+    const user = getUserById(this.db, context.user_id);
+    if (!user || user.status !== "active" || user.slug !== context.slug) return null;
     return {
-      family_id: identity.session_family,
-      audience: identity.audience,
-      csrf_token: identity.csrf_token,
-      effect_ceiling: identity.effect_ceiling,
+      user_id: user.id,
+      slug: user.slug,
+      method: "installation_context",
+      credential_id: null,
+      source: "installation_context",
+      effect_ceiling: context.effect_ceiling,
+      audience: context.audience,
+      csrf_token: context.csrf_token,
     };
   }
 
-  private identityFromBrowserSession(
-    session: PreviewContext,
-    source: ResolvedClientIdentity["source"],
-  ): ResolvedClientIdentity {
+  validateBrowserCsrf(identity: ResolvedClientIdentity, csrf: string | null | undefined): boolean {
+    return Boolean(identity.csrf_token && csrf === identity.csrf_token);
+  }
+
+  localAccessMetadata(identity: ResolvedClientIdentity): Record<string, unknown> | null {
+    if ((identity.source !== "local_os_user" && identity.source !== "installation_context")
+        || !identity.audience) return null;
     return {
-      user_id: session.user_id,
-      slug: session.slug,
-      method: source === "installation_context" ? "installation_context" : "browser_session",
-      credential_id: session.evidence.credential_id,
-      source,
-      effect_ceiling: session.effect_ceiling,
-      session_family: session.family_id,
-      root_session_family: session.root_family_id,
-      audience: session.audience,
-      csrf_token: session.csrf_token,
-      auth_context_expires_at: source === "installation_context" ? session.expires_at : null,
+      audience: identity.audience,
+      csrf_token: identity.csrf_token,
+      effect_ceiling: identity.effect_ceiling,
     };
   }
 

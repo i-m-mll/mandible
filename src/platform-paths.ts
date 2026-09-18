@@ -139,7 +139,7 @@ export function getLegacyMandibleConfigPath(...segments: string[]): string {
  * Copy a file or directory tree, reproducing each entry's permission bits.
  *
  * Mode fidelity is not cosmetic here: `client-auth/` is 0700 and holds 0600
- * secrets (the token pepper, the bootstrap token). A copy that widened those
+ * secrets (the token pepper and installation authority). A copy that widened those
  * modes would be a real regression, and `secret-store.ts` refuses secrets it
  * finds with broader permissions.
  */
