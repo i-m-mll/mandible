@@ -1245,19 +1245,6 @@ function App(): JSX.Element {
       }));
       scheduleBadgeRefresh();
     };
-    // Operational incidents (issue 5308097 §8). This handler is deliberately
-    // NARROW: it invalidates only the incident list and the badge aggregate,
-    // forwards the topic to the incident region, and refreshes the badge. It
-    // does not dispatch into app state, because no incident axis is mirrored
-    // there — the server projection is the only authority for all three.
-    const operationalIncidentHandler = (payload: SSEPayload) => {
-      lastDashboardSseAtRef.current = Date.now();
-      invalidateDashboardApiCacheForEvent(payload.type);
-      window.dispatchEvent(new CustomEvent('operational-incident:sse', {
-        detail: { type: payload.type },
-      }));
-      scheduleBadgeRefresh();
-    };
     const managedReminderHandler = (payload: SSEPayload) => {
       handler(payload);
       window.dispatchEvent(new CustomEvent('managed-reminder:sse', {
@@ -1473,10 +1460,6 @@ function App(): JSX.Element {
       client.on('briefing:annotated', briefingHandler),
       client.on('briefing:submitted', briefingHandler),
       client.on('briefing:title-updated', briefingHandler),
-      client.on('operational-incident:ingested', operationalIncidentHandler),
-      client.on('operational-incident:acknowledged', operationalIncidentHandler),
-      client.on('operational-incident:remediation-changed', operationalIncidentHandler),
-      client.on('operational-incident:closed', operationalIncidentHandler),
       client.on('managed-reminders.changed', managedReminderHandler),
       client.on('managed-reminders.occurred', managedReminderHandler),
       client.on('tasks.commands.changed', taskCommandHandler),
@@ -1539,13 +1522,6 @@ function App(): JSX.Element {
       void loadDashboardBadges();
       void refreshRailOrder();
       window.dispatchEvent(new CustomEvent('briefing:sse', {
-        detail: { type: 'reconnected' },
-      }));
-      // The same gap may have hidden an incident raise, acknowledgement or
-      // closure. The incident region refetches on this topic, so the three
-      // axes converge on stored server state instead of on whatever was on
-      // screen when the stream dropped.
-      window.dispatchEvent(new CustomEvent('operational-incident:sse', {
         detail: { type: 'reconnected' },
       }));
       // A reconnect gap may have missed graph-affecting events; converge the
@@ -2085,12 +2061,6 @@ function App(): JSX.Element {
       href: '#/briefing',
       label: 'Briefing',
       title: 'Briefing',
-      // Issue 5308097 §8 — a SECOND, independent badge for active and
-      // unacknowledged operational incidents. It is deliberately not folded
-      // into any Briefing lifecycle signal: an unattended executor failure and
-      // a Briefing awaiting review are different obligations.
-      secondaryBadge: badges.incidents,
-      secondaryBadgeClass: 'tab-badge--incidents',
       icon: BriefingIcon,
     },
     {

@@ -44,7 +44,6 @@ export type CollectionsSidebarProps = {
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
   onSelect(collection: FeedbackCollection): void;
   onSelectGroup?(group: BriefingGroup): void;
-  onSelectIncidents?(): void;
 };
 
 export function CollectionsSidebar({
@@ -60,7 +59,6 @@ export function CollectionsSidebar({
   setViewState,
   onSelect,
   onSelectGroup,
-  onSelectIncidents,
 }: CollectionsSidebarProps): JSX.Element {
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const filtered = useMemo(
@@ -384,12 +382,6 @@ export function CollectionsSidebar({
     >
       <div data-testid="feedback-collections-sidebar" {...topLevelReorder.list}>
         {topLevelReorder.assistive}
-        <button
-          type="button"
-          className="feedback-collections-sidebar__incidents"
-          aria-current={viewState.selectedSurface === 'incidents' ? 'page' : undefined}
-          onClick={onSelectIncidents}
-        >Operational incidents</button>
         {!confirmedLoaded && loadError ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty">Briefings have not loaded.</p>
