@@ -1,4 +1,0 @@
-# Mandible's only privileged network operation is this loopback redirect.
-# Caddy itself listens without privilege on 127.0.0.1 and ::1 port 19420.
-rdr pass on lo0 inet proto tcp from 127.0.0.1 to 127.0.0.1 port 443 -> 127.0.0.1 port 19420
-rdr pass on lo0 inet6 proto tcp from ::1 to ::1 port 443 -> ::1 port 19420

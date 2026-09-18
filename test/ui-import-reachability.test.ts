@@ -1,5 +1,5 @@
-// Guard for issue 048c7e2: a module outside every independently shipped
-// browser entry graph is dead
+// Guard for issue 048c7e2: the UI ships from one esbuild entry
+// (`ui/src/app.tsx`), so a module that falls off that import graph is dead
 // weight. Its JS is tree-shaken away, but any CSS it owns keeps shipping in the
 // eager `app.css` — that is how ~4,350 lines of unreachable modules and a
 // 1,542-line dead stylesheet accumulated unnoticed.
@@ -14,10 +14,10 @@ import { describe, expect, it } from 'vitest';
 import { computeReachability } from '../scripts/ui-reachability.mjs';
 
 describe('ui import-graph reachability', () => {
-  it('reaches every module under ui/src from the browser entries', () => {
+  it('reaches every module under ui/src from the app entry', () => {
     const report = computeReachability();
 
-    expect(report.entries).toEqual(['ui/src/app.tsx', 'ui/src/origin-migration.ts']);
+    expect(report.entry).toBe('ui/src/app.tsx');
     // Fail with the offending paths rather than a bare count.
     expect(report.unreachable).toEqual([]);
   });

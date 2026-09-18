@@ -7,8 +7,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = JSON.parse(fs.readFileSync(path.join(root, "config/canonical-origin.json"), "utf8"));
 const origin = new URL(source.production_origin);
 if (origin.origin !== source.production_origin || origin.protocol !== "https:"
-    || origin.hostname !== "mandible.localhost" || origin.port) {
-  throw new Error("The canonical production origin must be https://mandible.localhost on port 443.");
+    || origin.hostname !== "app.mandible.localhost" || origin.port !== "19420") {
+  throw new Error("The canonical production origin must be https://app.mandible.localhost:19420.");
 }
 const files = new Map([
   ["src/canonical-origin.ts", `// Generated from config/canonical-origin.json.\nexport const PRODUCTION_ORIGIN = ${JSON.stringify(origin.origin)};\n`],
@@ -16,20 +16,6 @@ const files = new Map([
   ["src-tauri/src/canonical_origin.rs", `// Generated from config/canonical-origin.json.\npub const PRODUCTION_ORIGIN: &str = ${JSON.stringify(origin.origin)};\n`],
   ["src-tauri/bootstrap/canonical-origin.js", `// Generated from config/canonical-origin.json.\nwindow.MANDIBLE_PRODUCTION_ORIGIN = ${JSON.stringify(origin.origin)};\n`],
   ["cli/canonical-origin.sh", `# Generated from config/canonical-origin.json.\nexport MANDIBLE_CANONICAL_ORIGIN=${JSON.stringify(origin.origin)}\n`],
-  ["ui/origin-migration.html", `<!doctype html>
-<html lang="en">
-<meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action ${origin.origin}; base-uri 'none'">
-<title>Opening Mandible</title>
-<main id="mandible-origin-migration" style="font:16px system-ui;max-width:38rem;margin:4rem auto;line-height:1.5">
-  <h1>Opening Mandible at its new address</h1>
-  <p>Your saved workspace is moving with you.</p>
-  <button id="move" type="button" hidden>Retry</button>
-  <p id="result" role="status"></p>
-</main>
-<script type="module" src="/dist/origin-migration.js"></script>
-</html>
-`],
   ["src-tauri/capabilities/default.json", `${JSON.stringify({
     $schema: "../gen/schemas/desktop-schema.json",
     identifier: "default",

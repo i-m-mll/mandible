@@ -31,7 +31,7 @@ function fixture() {
     instance_id: "production",
     installation_id: "install_test",
     role: "main",
-    public_origin: "https://mandible.localhost",
+    public_origin: "https://app.mandible.localhost:19420",
     backend_origin: "http://127.0.0.1:29420",
     backend_generation: "main-1",
     effect_ceiling: ["ledger:read", "ledger:write", "auth:protected"],

@@ -1596,8 +1596,8 @@ mod tests {
         .unwrap()
         .into_owned();
         let (cookie, url) = bind_session_cookie_to_production(cookie).unwrap();
-        assert_eq!(url.as_str(), "https://mandible.localhost/");
-        assert_eq!(cookie.domain(), Some("mandible.localhost"));
+        assert_eq!(url.as_str(), "https://app.mandible.localhost:19420/");
+        assert_eq!(cookie.domain(), Some("app.mandible.localhost"));
         assert_eq!(cookie.path(), Some("/"));
         assert_eq!(cookie.secure(), Some(true));
         assert_eq!(cookie.http_only(), Some(true));

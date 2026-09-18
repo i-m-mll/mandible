@@ -400,7 +400,7 @@ describe("strict browser boundary", () => {
       });
       expect(prepared.status).toBe(201);
       expect(prepared.body.complete_url).toBe(targetAudience === "production"
-        ? "https://mandible.localhost:19419/api/client-auth/legacy-conversion/complete"
+        ? "https://app.mandible.localhost:19419/api/client-auth/legacy-conversion/complete"
         : "https://preview-test.mandible.localhost:19419/api/client-auth/legacy-conversion/complete");
 
       const completed = await requestAt(port, "POST", "/api/client-auth/legacy-conversion/complete", {

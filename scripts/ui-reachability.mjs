@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Import-graph reachability guard for the UI bundle.
 //
-// The UI ships the app and origin migration entries declared by its build.
-// Modules that no longer sit on either import graph are dead weight: their JS is tree-shaken away
+// The UI ships from a single esbuild entry (`ui/src/app.tsx`). Modules that no
+// longer sit on that import graph are dead weight: their JS is tree-shaken away
 // but any CSS they `@import` (and any CSS file that is only referenced from
 // them) still ships in the eager `app.css`. This walker follows static imports,
 // re-exports and dynamic `import()` calls from the entry and reports every
@@ -14,11 +14,10 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { UI_ENTRY_POINTS } from '../ui/entry-points.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI_SRC = path.join(REPO_ROOT, 'ui', 'src');
-const ENTRIES = Object.values(UI_ENTRY_POINTS).map((entry) => path.join(REPO_ROOT, entry));
+const ENTRY = path.join(UI_SRC, 'app.tsx');
 
 const CODE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs'];
 const ASSET_EXTENSIONS = ['.css', '.svg', '.png', '.json'];
@@ -113,7 +112,7 @@ function extractSpecifiers(source, isCssFile) {
 
 export function computeReachability() {
   const reached = new Set();
-  const queue = [...ENTRIES];
+  const queue = [ENTRY];
 
   while (queue.length > 0) {
     const current = queue.pop();
@@ -156,7 +155,7 @@ export function computeReachability() {
     .sort();
 
   return {
-    entries: ENTRIES.map(toPosix),
+    entry: toPosix(ENTRY),
     reachedCount: [...reached].filter((file) => file.startsWith(UI_SRC)).length,
     totalCount: allFiles.length,
     unreachable,
@@ -169,7 +168,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
     process.stdout.write(
-      `entries=${report.entries.join(',')} reached=${report.reachedCount}/${report.totalCount}\n`,
+      `entry=${report.entry} reached=${report.reachedCount}/${report.totalCount}\n`,
     );
     if (report.unreachable.length === 0) process.stdout.write('no unreachable modules\n');
     else {

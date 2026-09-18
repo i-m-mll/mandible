@@ -44,7 +44,7 @@ function preview(overrides: NodeJS.ProcessEnv = {}) {
 describe("instance effect policy", () => {
   it("defaults production to a stable HTTPS identity", () => {
     expect(resolveInstanceInfo({ env: {} })).toMatchObject({
-      role: "main", instance_id: "production", public_origin: "https://mandible.localhost",
+      role: "main", instance_id: "production", public_origin: "https://app.mandible.localhost:19420",
     });
   });
 

@@ -64,8 +64,8 @@ describe("daemon write boundary", () => {
   it("admits only the gateway-bound cross-site migration completion", async () => {
     process.env.MANDIBLE_LEGACY_CONVERSION = "allow";
     const hostile = {
-      Host: "mandible.localhost",
-      Origin: "https://mandible.localhost",
+      Host: "app.mandible.localhost:19420",
+      Origin: "https://app.mandible.localhost:19420",
       "Sec-Fetch-Site": "cross-site",
       "X-Mandible-Target-Instance": "production",
     };
@@ -85,8 +85,8 @@ describe("daemon write boundary", () => {
 
   it("allows browser same-origin writes from the daemon origin", async () => {
     const response = await requestJson("POST", "/api/issues/test-write", { hello: "ui" }, {
-      Host: "mandible.localhost",
-      Origin: "https://mandible.localhost",
+      Host: "app.mandible.localhost:19420",
+      Origin: "https://app.mandible.localhost:19420",
       "Sec-Fetch-Site": "same-origin",
     });
 
@@ -96,7 +96,7 @@ describe("daemon write boundary", () => {
 
   it("rejects cross-origin browser writes before dispatching the route", async () => {
     const response = await requestJson("POST", "/api/issues/test-write", { hello: "evil" }, {
-      Host: "mandible.localhost",
+      Host: "app.mandible.localhost:19420",
       Origin: "https://example.com",
       "Sec-Fetch-Site": "cross-site",
     });
@@ -117,7 +117,7 @@ describe("daemon write boundary", () => {
 
   it("applies the registered browser origin boundary to safe reads", async () => {
     const response = await requestJson("GET", "/api/read", undefined, {
-      Host: "mandible.localhost",
+      Host: "app.mandible.localhost:19420",
       Origin: "https://example.com",
       "Sec-Fetch-Site": "cross-site",
     });
@@ -128,7 +128,7 @@ describe("daemon write boundary", () => {
 
   it("admits only a top-level document navigation from another app origin", async () => {
     const navigation = {
-      Host: "mandible.localhost",
+      Host: "app.mandible.localhost:19420",
       "Sec-Fetch-Site": "cross-site",
       "Sec-Fetch-Mode": "navigate",
       "Sec-Fetch-Dest": "document",
