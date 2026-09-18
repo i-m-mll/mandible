@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalSessionAuthority } from "../src/client-auth/session-authority.js";
 import { localCaPaths } from "../scripts/local-ca-trust.mjs";
@@ -132,6 +133,25 @@ describe("local HTTPS front door", () => {
     expect(poisoned.status).toBe(1);
     expect(poisoned.stderr).toContain("Refusing gateway self-route");
     expect(fs.readFileSync(configPath, "utf8")).toBe(originalConfig);
+
+    // Exercise default URL ports through the stored-data boundary. Registration
+    // requires explicit ports, but the gateway must still reject corrupted rows.
+    const db = new Database(path.join(home, "config", "local-sessions", "sessions.db"));
+    try {
+      const update = db.prepare("UPDATE instance_registrations SET public_origin = ?, backend_origin = ? WHERE instance_id = 'production'");
+      update.run("https://app.mandible.localhost", "http://127.0.0.1:443");
+      const defaultPortLoop = configure();
+      expect(defaultPortLoop.status).toBe(1);
+      expect(defaultPortLoop.stderr).toContain("backend port 443 is a public listener port");
+      expect(fs.readFileSync(configPath, "utf8")).toBe(originalConfig);
+
+      update.run("https://app.mandible.localhost", "http://127.0.0.1");
+      const distinctDefaults = configure();
+      expect(distinctDefaults.status, distinctDefaults.stderr).toBe(0);
+      expect(fs.readFileSync(configPath, "utf8")).toContain("reverse_proxy http://127.0.0.1");
+    } finally {
+      db.close();
+    }
   });
 
   it("refuses an old-storage gateway reload before writing empty pinned storage or a new Caddyfile", () => {
