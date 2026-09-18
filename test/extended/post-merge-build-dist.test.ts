@@ -31,6 +31,7 @@ function runHookAfterMerge(
   changedPath: string,
   failGitDiff = false,
   replayAfterUnrelatedMerge = false,
+  failGatewayReload = false,
 ): HookResult {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-post-merge-hook-"));
   tempRoots.push(tempDir);
@@ -50,6 +51,11 @@ function runHookAfterMerge(
     path.join(process.cwd(), "scripts", "local-session-production-runner.mjs"),
     path.join(repo, "scripts", "local-session-production-runner.mjs"),
   );
+  fs.writeFileSync(path.join(repo, "scripts", "local-front-door.mjs"), `
+import fs from "node:fs";
+fs.appendFileSync(process.env.MANDIBLE_TEST_TRACE, "gateway\\n");
+if (process.env.MANDIBLE_TEST_GATEWAY_FAIL === "1") process.exit(23);
+`);
   copyCliFile("instructions.sh", cliDir);
   copyCliFile("instructions-contract.json", cliDir);
   // instructions.sh's settings helper requires two shared modules from the same
@@ -125,6 +131,7 @@ exec "$REAL_GIT" "$@"
       MANDIBLE_POST_MERGE_DESKTOP_COMMAND:
         'printf "desktop\\n" >> "$MANDIBLE_TEST_DESKTOP_TRACE"',
       MANDIBLE_TEST_TRACE: tracePath,
+      MANDIBLE_TEST_GATEWAY_FAIL: failGatewayReload ? "1" : "0",
       MANDIBLE_TEST_DESKTOP_TRACE: desktopTracePath,
       MANDIBLE_AUTH_MERGE_BASE_SHA: replayAfterUnrelatedMerge ? mergeBaseSha : "",
       MANDIBLE_AUTH_MERGE_HEAD_SHA: replayAfterUnrelatedMerge ? mergeHeadSha : "",
@@ -219,6 +226,15 @@ describe("post-merge build hook", () => {
     expect(fs.existsSync(result.tracePath)).toBe(false);
     expect(fs.existsSync(result.desktopTracePath)).toBe(false);
     expect(fs.existsSync(path.join(result.home, ".claude", "CLAUDE.md"))).toBe(false);
+  });
+
+  it("replays gateway convergence from the reviewed range and propagates reload failure", () => {
+    const replay = runHookAfterMerge("scripts/local-front-door.mjs", false, true);
+    expect(replay.status, replay.stderr).toBe(0);
+    expect(fs.readFileSync(replay.tracePath, "utf8")).toBe("gateway\n");
+    const failed = runHookAfterMerge("scripts/local-front-door.mjs", false, false, true);
+    expect(failed.status).toBe(23);
+    expect(failed.stderr).not.toContain("gateway configuration converged");
   });
 
   it("exits nonzero when git diff fails", () => {

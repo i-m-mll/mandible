@@ -1,5 +1,7 @@
 # Mandible
 
+Read and follow the [local user access contract in AGENTS.md](AGENTS.md#local-user-access).
+
 Mandible is a local-first agent control plane and conversation browser. It provides:
 - An async auth queue for protected-branch merges (agent submits, user authenticates via YubiKey)
 - A web dashboard (sessions, issues, conversations, console)

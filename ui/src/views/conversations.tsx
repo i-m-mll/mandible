@@ -120,7 +120,7 @@ import {
 } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
-import { subscribeClientAuthSessionState } from '../client-auth-token';
+import { subscribeClientAccessState } from '../client-auth-token';
 import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding';
 import {
   flattenConversationTranscript,
@@ -2778,8 +2778,8 @@ export function ConversationsView({
     const reloadWhenVisible = () => {
       if (document.visibilityState === 'visible') void loadProjects();
     };
-    const unsubscribeAuth = subscribeClientAuthSessionState((state) => {
-      if (state === 'enrolled') void loadProjects();
+    const unsubscribeAuth = subscribeClientAccessState((state) => {
+      if (state.phase === 'ready') void loadProjects();
     });
     window.addEventListener('focus', reloadWhenVisible);
     document.addEventListener('visibilitychange', reloadWhenVisible);

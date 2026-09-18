@@ -461,36 +461,11 @@ export class SessionManager {
         .map((row) => row.id),
     );
 
-    // Issue a9ede3c round 2: while the operator's first-enrollment window is
-    // open (operator configured, zero active api_token credentials), constructing
-    // a non-operator backend would call revokeOperatorBootstrap() and destroy the
-    // 0600 bootstrap proof before the human can use it. The fix is construction
-    // deferral: retained NON-RUNNING non-operator sessions are held as
-    // DormantBackend instead of real backends, so createBackend() (hence the
-    // revoke) never runs for them at startup. No agent backend then coexists with
-    // a readable proof, yet nothing destroys the key before enrollment. Live and
-    // running sessions, the operator's own session, and deliberate user-initiated
-    // spawns (createBackend at create()/get()) keep normal behavior — a deliberate
-    // spawn during the window forfeits it. Once the operator enrolls an api_token
-    // mid-lifetime, the window closes but these deferred backends simply stay
-    // dormant until a normal resume flow (get()) touches them and reconstructs
-    // them the usual way; retention is only a scrollback convenience, so leaving
-    // them dormant is correct and needs no proactive rehydration.
-    const enrollmentWindowActive =
-      this.clientAuth?.isOperatorEnrollmentWindowActive?.() ?? false;
     const attributionResolver = new AttributionReadResolver(db);
     for (const row of rows) {
       const session = rowToSession(row, attributionResolver);
       this.pinClientIdentity(session);
       if (session.status !== "running" && !retainedTerminalIds.has(session.id)) {
-        this.sessions.set(session.id, new DormantBackend(session));
-        continue;
-      }
-      if (
-        enrollmentWindowActive
-        && session.status !== "running"
-        && !session.is_operator
-      ) {
         this.sessions.set(session.id, new DormantBackend(session));
         continue;
       }
@@ -1181,10 +1156,6 @@ export class SessionManager {
     options: { allowUnpersistedOperator?: boolean } = {},
   ): AgenticBackend {
     this.pinClientIdentity(session, options);
-    // The operator bootstrap file is a one-time human/Tauri enrollment proof.
-    // Remove it before constructing any non-operator backend so an agent under
-    // the same OS uid can never read or race that credential directly.
-    if (!session.is_operator) this.clientAuth?.revokeOperatorBootstrap?.();
     // Issue 8aadf70 — surface, never silently inherit, the Anthropic billing
     // path a Claude session will run on. `warn` for the API-key case because it
     // spends money outside the operator's subscription.

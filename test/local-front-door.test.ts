@@ -25,7 +25,19 @@ function fakeTrustedCa(home: string) {
 }
 
 describe("local HTTPS front door", () => {
-  it("includes legacy ingress only during the explicit migration phase", () => {
+  it("installs the gateway before certificate trust is configured", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-install-")); roots.add(home);
+    const binary = pinnedCaddyBinary(home);
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, "already installed");
+    const result = spawnSync(process.execPath, [path.resolve("scripts/local-front-door.mjs"), "install"], {
+      env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.existsSync(path.join(home, "config", "local-sessions", "Caddyfile"))).toBe(false);
+  });
+
+  it("forwards every preview request through scoped local authorization without cookies", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-")); roots.add(home);
     const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
     authority.registerInstance({
@@ -41,59 +53,29 @@ describe("local HTTPS front door", () => {
     authority.close();
     fakeTrustedCa(home);
     const script = path.resolve("scripts/local-front-door.mjs");
-    for (const [command, contains] of [["configure-migration", true], ["configure", false]] as const) {
-      const result = spawnSync(process.execPath, [script, command], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8" });
-      expect(result.status, result.stderr).toBe(0);
-      const config = fs.readFileSync(path.join(home, "config", "local-sessions", "Caddyfile"), "utf8");
-      const installedCaddy = pinnedCaddyBinary(path.join(os.homedir(), ".mandible"));
-      if (fs.existsSync(installedCaddy)) {
-        const adapted = spawnSync(installedCaddy, ["adapt", "--config", "-", "--adapter", "caddyfile"], {
-          input: config, encoding: "utf8",
-        });
-        expect(adapted.status, adapted.stderr).toBe(0);
-      }
-      expect(config).toContain("skip_install_trust");
-      expect(config).toContain(`storage file_system ${JSON.stringify(path.join(home, "config", "local-sessions", "caddy-storage"))}`);
-      expect(config.includes("legacy-conversion/complete")).toBe(contains);
-      if (contains) {
-        expect(config).toContain("http://127.0.0.1:19420, http://localhost:19420");
-        expect(config).toContain("http://127.0.0.1:19421, http://localhost:19421");
-        expect(config).toContain("https://preview-existing.mandible.localhost:19419");
-        expect(config).toContain("header_up X-Mandible-Target-Instance preview-existing");
-        expect(config).toContain("header_up X-Mandible-Legacy-Migration complete-v1");
-        expect(config).toContain("path /api/client-auth/legacy-conversion/verify /api/client-auth/legacy-conversion/prepared");
-        expect(config).toContain("path /api/client-auth/recovery/start");
-        expect(config).toContain("header_up X-Mandible-Legacy-Recovery state-v1");
-        expect(config).toContain("path /api/client-auth/recovery/approve /api/client-auth/recovery/verify /api/client-auth/pairing/complete");
-        expect(config).not.toContain("header_up -X-Mandible-Legacy-Recovery");
-        expect(config).not.toContain("header_up -X-Mandible-Legacy-Migration");
-        expect(config).toContain("header_up X-Mandible-Legacy-Origin http://127.0.0.1:19420");
-        expect(config).toContain("header_up X-Mandible-Legacy-Origin http://127.0.0.1:19421");
-        expect(config).not.toContain("header_up X-Mandible-Legacy-Origin {http.request.header.Origin}");
-        expect(config).toContain("header_up Host {http.request.hostport}");
-        expect(config).toContain("header Origin http://127.0.0.1:19420\n    header Origin http://localhost:19420");
-        expect(config).toContain("header Origin http://127.0.0.1:19421\n    header Origin http://localhost:19421");
-        expect(config).toContain("header Sec-Fetch-Site cross-site");
-        expect(config).toMatch(/http:\/\/127\.0\.0\.1:19420, http:\/\/localhost:19420 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29420[\s\S]*?X-Mandible-Target-Instance production/);
-        expect(config).toMatch(/http:\/\/127\.0\.0\.1:19421, http:\/\/localhost:19421 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29421[\s\S]*?X-Mandible-Target-Instance preview-existing/);
-        expect(config).not.toContain("https://app.mandible.localhost:19420 {");
-        expect(config).toContain("header_up -Authorization");
-      } else {
-        expect(config).not.toContain("X-Mandible-Legacy-Recovery");
-        expect(config).toContain("https://app.mandible.localhost:19420 {");
-        expect(config).not.toContain("http://127.0.0.1:19420");
-        expect(config).toContain("https://preview-existing.mandible.localhost:19421 {");
-        expect(config).toContain("rewrite * /api/client-auth/preview-bootstrap");
-        expect(config).toContain("not header Cookie *__Host-mandible-session=*");
-        expect(config).toContain("header_up X-Mandible-Session-Context {http.request.header.X-Mandible-Session-Context}");
-        expect(config).not.toContain("header_up -X-Mandible-Session-Context\n      header_up X-Mandible-Session-Context {http.request.header.X-Mandible-Session-Context}");
-        expect(config.indexOf("rewrite * /api/client-auth/preview-bootstrap"))
-          .toBeLessThan(config.indexOf("forward_auth"));
-      }
+    const result = spawnSync(process.execPath, [script, "configure"], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    const config = fs.readFileSync(path.join(home, "config", "local-sessions", "Caddyfile"), "utf8");
+    const installedCaddy = pinnedCaddyBinary(path.join(os.homedir(), ".mandible"));
+    if (fs.existsSync(installedCaddy)) {
+      const adapted = spawnSync(installedCaddy, ["adapt", "--config", "-", "--adapter", "caddyfile"], {
+        input: config, encoding: "utf8",
+      });
+      expect(adapted.status, adapted.stderr).toBe(0);
     }
+    expect(config).toContain("skip_install_trust");
+    expect(config).toContain("https://app.mandible.localhost:19420 {");
+    expect(config).toContain("https://preview-existing.mandible.localhost:19421 {");
+    expect(config).toContain("uri /api/client-auth/forward-auth");
+    expect(config).toContain("header_up X-Mandible-Target-Instance preview-existing");
+    expect(config).toContain("copy_headers X-Mandible-Session-Context");
+    expect(config).toContain("header_up -Cookie");
+    expect(config).not.toContain("preview-bootstrap");
+    expect(config).not.toContain("legacy-conversion");
+    expect(config).not.toContain("recovery/");
   });
 
-  it("routes multiple previews normally but refuses ambiguous legacy preview migration", () => {
+  it("routes multiple previews with their distinct target contexts", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-multiple-")); roots.add(home);
     const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
     authority.registerInstance({
@@ -121,11 +103,8 @@ describe("local HTTPS front door", () => {
     expect(config).toMatch(/https:\/\/preview-first\.mandible\.localhost:19421 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29421/);
     expect(config).toMatch(/https:\/\/preview-second\.mandible\.localhost:19421 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29422/);
 
-    const migration = spawnSync(process.execPath, [script, "configure-migration"], {
-      env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8",
-    });
-    expect(migration.status).toBe(1);
-    expect(migration.stderr).toContain("Legacy port 19421 is ambiguous across registered previews.");
+    expect(config).toContain("header_up X-Mandible-Target-Instance preview-first");
+    expect(config).toContain("header_up X-Mandible-Target-Instance preview-second");
   });
 
   it("refuses an old-storage gateway reload before writing empty pinned storage or a new Caddyfile", () => {
@@ -138,7 +117,7 @@ describe("local HTTPS front door", () => {
     const config = path.join(home, "config", "local-sessions", "Caddyfile");
     fs.writeFileSync(config, `1024 bytes of old gateway config: storage file_system ${JSON.stringify(oldStorage)}\n`);
     const script = path.resolve("scripts/local-front-door.mjs");
-    for (const command of ["configure", "configure-migration", "run", "run-migration"]) {
+    for (const command of ["configure", "run"]) {
       const result = spawnSync(process.execPath, [script, command], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8" });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("Secure local connections are not set up");

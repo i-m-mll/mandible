@@ -2877,34 +2877,6 @@ export async function setupSecureLocalConnections(): Promise<SecureLocalConnecti
   return invokeDesktop<SecureLocalConnectionsStatus>('secure_local_connections_setup');
 }
 
-/**
- * Where the desktop shell reads the credential it enrolls this webview with:
- * the one-shot operator bootstrap file, or the durable `mandible-operator`
- * keychain item that outlives the first-enrollment window (issue 54b5677).
- */
-export type DesktopEnrollmentSource = 'bootstrap' | 'keychain';
-
-/**
- * Ask the desktop shell to enroll this webview. Rust reads the local
- * credential, redeems it at the exact production origin, and installs the
- * returned HttpOnly cookie through Tauri's cookie API. No credential crosses
- * IPC or enters a URL. `route` preserves the current clean application route.
- */
-export async function enrollDesktopClientAuth(
-  source: DesktopEnrollmentSource,
-  options: { route?: string } = {},
-): Promise<boolean> {
-  if (!hasTauriRuntime()) {
-    return false;
-  }
-  if (source === 'bootstrap') {
-    return invokeDesktop<boolean>('client_auth_enroll');
-  }
-  return invokeDesktop<boolean>('client_auth_keychain_enroll', {
-    route: options.route ?? null,
-  });
-}
-
 export async function navigateToDesktopBootstrap(): Promise<void> {
   if (!hasTauriRuntime()) {
     return;

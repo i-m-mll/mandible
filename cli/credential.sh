@@ -61,8 +61,8 @@ inspection: it is never counted as patched. A patched file whose original
 permissions could not be put back is reported too, rather than left quietly
 readable by more accounts than before.
 
-Requires the local operator's credential (MANDIBLE_TOKEN or
-`mandible user dashboard-link`).
+An unmarked local operator shell uses the registered local service. Managed
+agent shells require their own explicit credential.
 EOF
 }
 

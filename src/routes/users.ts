@@ -1,7 +1,6 @@
 import { getDb } from "../db.js";
 import { redactCredential } from "../credential-redaction.js";
 import { PRODUCTION_EFFECTS } from "../security/effect-policy.js";
-import type { ClientAuthenticator } from "../client-auth/authenticator.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import {
   addBinding,
@@ -86,10 +85,7 @@ function userView(db: ReturnType<typeof getDb>, ref: string) {
   };
 }
 
-export function registerUserRoutes(
-  router: RouteRegistrar,
-  authenticator?: ClientAuthenticator,
-): void {
+export function registerUserRoutes(router: RouteRegistrar): void {
   // Literal subpaths must register before /api/users/:ref so the param route
   // does not shadow them.
 
@@ -120,10 +116,6 @@ export function registerUserRoutes(
         });
         return { user, agents: setupAgents ? setupAgentUsers(db) : [] };
       })();
-      // First setup happens after ClientAuthenticator construction. Publish the
-      // new same-user bootstrap credential immediately so subsequent protected
-      // setup/token/dashboard enrollment calls do not require a daemon restart.
-      authenticator?.refreshBootstrapTokenFile();
       sendJson(res, 200, { user, agents });
     } catch (error) {
       handleError(res, error);
