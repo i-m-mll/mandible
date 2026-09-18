@@ -95,7 +95,7 @@ Collection errors or the 10,000-file limit reject submission explicitly.
 - `422` — Merge preflight could not run safely, such as tracked dirty state or merge-check infrastructure failure
 
 ```bash
-curl -X POST http://127.0.0.1:29420/api/auth/request \
+curl -X POST http://localhost:19420/api/auth/request \
   -H 'Content-Type: application/json' \
   -d '{
     "command": "mandible auth merge feature/foo --into main",
@@ -150,7 +150,7 @@ Get details of a single auth request. Supports prefix matching on the ID.
 - `409` — Ambiguous prefix (matches multiple requests)
 
 ```bash
-curl http://127.0.0.1:29420/api/auth/request/a1b2c3d4
+curl http://localhost:19420/api/auth/request/a1b2c3d4
 ```
 
 ### PUT /api/auth/request/:id
@@ -168,7 +168,7 @@ Revise a pending auth request. Terminal and executing requests are immutable; su
 - `422` — Invalid command
 
 ```bash
-curl -X PUT http://127.0.0.1:29420/api/auth/request/a1b2c3d4 \
+curl -X PUT http://localhost:19420/api/auth/request/a1b2c3d4 \
   -H 'Content-Type: application/json' \
   -d '{"title": "Updated title", "diff_summary": "..."}'
 ```
@@ -207,8 +207,8 @@ the CLI is available and use this endpoint as the raw API fallback.
 ```
 
 ```bash
-curl http://127.0.0.1:29420/api/auth/queue
-curl http://127.0.0.1:29420/api/auth/queue?type=merge
+curl http://localhost:19420/api/auth/queue
+curl http://localhost:19420/api/auth/queue?type=merge
 ```
 
 ### GET /api/auth/history
@@ -225,7 +225,7 @@ List completed/terminal auth requests.
 **Response:** `200 OK` — same shape as `/api/auth/queue`.
 
 ```bash
-curl http://127.0.0.1:29420/api/auth/history?limit=10
+curl http://localhost:19420/api/auth/history?limit=10
 ```
 
 ### POST /api/auth/request/:id/approve
@@ -403,7 +403,7 @@ Create a new hook.
 **Response:** `201 Created` — hook object.
 
 ```bash
-curl -X POST http://127.0.0.1:29420/api/auth/hooks \
+curl -X POST http://localhost:19420/api/auth/hooks \
   -H 'Content-Type: application/json' \
   -d '{"repo_pattern": "mandible", "auth_type": "merge", "command": "npm run build && npm start", "label": "Rebuild and restart"}'
 ```

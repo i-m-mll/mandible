@@ -30,7 +30,7 @@ describe("local HTTPS front door", () => {
     const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
     authority.registerInstance({
       instance_id: "production", installation_id: "install_test", role: "main",
-      public_origin: "https://mandible.localhost", backend_origin: "http://127.0.0.1:29420",
+      public_origin: "https://app.mandible.localhost:19420", backend_origin: "http://127.0.0.1:29420",
       backend_generation: "main-1", effect_ceiling: ["ledger:read", "ledger:write"], writable_roots: [],
     });
     authority.registerInstance({
@@ -76,11 +76,11 @@ describe("local HTTPS front door", () => {
         expect(config).toContain("header Sec-Fetch-Site cross-site");
         expect(config).toMatch(/http:\/\/127\.0\.0\.1:19420, http:\/\/localhost:19420 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29420[\s\S]*?X-Mandible-Target-Instance production/);
         expect(config).toMatch(/http:\/\/127\.0\.0\.1:19421, http:\/\/localhost:19421 \{[\s\S]*?reverse_proxy http:\/\/127\.0\.0\.1:29421[\s\S]*?X-Mandible-Target-Instance preview-existing/);
-        expect(config).not.toContain("https://mandible.localhost {");
+        expect(config).not.toContain("https://app.mandible.localhost:19420 {");
         expect(config).toContain("header_up -Authorization");
       } else {
         expect(config).not.toContain("X-Mandible-Legacy-Recovery");
-        expect(config).toContain("https://mandible.localhost {");
+        expect(config).toContain("https://app.mandible.localhost:19420 {");
         expect(config).not.toContain("http://127.0.0.1:19420");
         expect(config).toContain("https://preview-existing.mandible.localhost:19421 {");
         expect(config).toContain("rewrite * /api/client-auth/preview-bootstrap");
@@ -91,16 +91,6 @@ describe("local HTTPS front door", () => {
           .toBeLessThan(config.indexOf("forward_auth"));
       }
     }
-    const originMigration = spawnSync(process.execPath, [script, "configure-origin-migration"], {
-      env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8",
-    });
-    expect(originMigration.status, originMigration.stderr).toBe(0);
-    const migrationConfig = fs.readFileSync(path.join(home, "config", "local-sessions", "Caddyfile"), "utf8");
-    expect(migrationConfig).toContain("https://mandible.localhost {");
-    expect(migrationConfig).toContain("https://app.mandible.localhost:19420 {");
-    expect(migrationConfig).toContain("header_up X-Mandible-Origin-Migration state-v1");
-    expect(migrationConfig).toContain("rewrite * /origin-migration.html");
-    expect(migrationConfig).not.toContain("legacy-conversion/complete");
   });
 
   it("routes multiple previews normally but refuses ambiguous legacy preview migration", () => {
@@ -108,7 +98,7 @@ describe("local HTTPS front door", () => {
     const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
     authority.registerInstance({
       instance_id: "production", installation_id: "install_test", role: "main",
-      public_origin: "https://mandible.localhost", backend_origin: "http://127.0.0.1:29420",
+      public_origin: "https://app.mandible.localhost:19420", backend_origin: "http://127.0.0.1:29420",
       backend_generation: "main-1", effect_ceiling: ["ledger:read", "ledger:write"], writable_roots: [],
     });
     for (const [suffix, port] of [["first", 29421], ["second", 29422]] as const) {

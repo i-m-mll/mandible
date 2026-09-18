@@ -7,7 +7,7 @@
   ],
   "remote": {
     "urls": [
-      "https://mandible.localhost"
+      "https://app.mandible.localhost:19420"
     ]
   },
   "permissions": [

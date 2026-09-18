@@ -21,7 +21,7 @@ Get all settings as a key-value object.
 ```
 
 ```bash
-curl http://127.0.0.1:29420/api/settings
+curl http://localhost:19420/api/settings
 ```
 
 ### GET /api/settings/:key
@@ -37,7 +37,7 @@ Get a single setting value.
 **Error:** `404` if the key does not exist.
 
 ```bash
-curl http://127.0.0.1:29420/api/settings/theme
+curl http://localhost:19420/api/settings/theme
 ```
 
 ### PUT /api/settings/:key
@@ -62,7 +62,7 @@ Create or update a setting. All values are stored as strings.
 - Legacy `reaper_*` settings may still be present in older databases and remain writable for compatibility, but Mandible no longer mirrors them to `~/.config/claude-reaper/config` or manages the standalone Reaper launchd job.
 
 ```bash
-curl -X PUT http://127.0.0.1:29420/api/settings/theme \
+curl -X PUT http://localhost:19420/api/settings/theme \
   -H 'Content-Type: application/json' \
   -d '{"value": "dark"}'
 ```

@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { build, context } from 'esbuild';
-import { UI_ENTRY_POINTS } from './entry-points.mjs';
 
 const isWatch = process.argv.includes('--watch');
 const outdir = 'ui/dist';
@@ -52,7 +51,7 @@ const assetManifestPlugin = {
       if (result.errors.length > 0 || !result.metafile) return;
       const outputs = result.metafile.outputs;
       const entries = Object.entries(outputs);
-      const appEntry = entries.find(([, output]) => output.entryPoint === UI_ENTRY_POINTS.app)?.[0];
+      const appEntry = entries.find(([, output]) => output.entryPoint === 'ui/src/app.tsx')?.[0];
       if (!appEntry) throw new Error('UI build did not emit the app entry point');
 
       const routes = {};
@@ -81,7 +80,7 @@ const assetManifestPlugin = {
 };
 
 const buildOptions = {
-  entryPoints: [UI_ENTRY_POINTS.app],
+  entryPoints: ['ui/src/app.tsx'],
   bundle: true,
   outdir,
   entryNames: 'app',
@@ -107,23 +106,10 @@ const buildOptions = {
   plugins: [assetManifestPlugin],
 };
 
-const originMigrationBuildOptions = {
-  entryPoints: [UI_ENTRY_POINTS.originMigration],
-  bundle: true,
-  outfile: 'ui/dist/origin-migration.js',
-  format: 'esm',
-  target: 'es2020',
-  minify: !isWatch,
-  logLevel: 'info',
-};
-
 if (isWatch) {
   const ctx = await context(buildOptions);
   await ctx.watch();
-  const migrationCtx = await context(originMigrationBuildOptions);
-  await migrationCtx.watch();
 } else {
   await fs.rm(buildOptions.outdir, { recursive: true, force: true });
   await build(buildOptions);
-  await build(originMigrationBuildOptions);
 }

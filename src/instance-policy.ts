@@ -244,7 +244,7 @@ function exactOrigin(value: string): string {
   if (!value) return "";
   const parsed = new URL(value);
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.pathname !== "/"
-      || parsed.search || parsed.hash || value !== parsed.origin) {
+      || parsed.search || parsed.hash || !parsed.port) {
     throw new Error(`Invalid registered HTTPS origin: ${value}`);
   }
   return parsed.origin;

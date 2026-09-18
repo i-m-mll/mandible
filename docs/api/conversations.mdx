@@ -49,7 +49,7 @@ List conversations with pagination, filtering, and sorting.
 ```
 
 ```bash
-curl "http://127.0.0.1:29420/api/conversations?source=claude_code&starred=true&limit=10"
+curl "http://localhost:19420/api/conversations?source=claude_code&starred=true&limit=10"
 ```
 
 ### GET /api/conversations/:id
@@ -154,7 +154,7 @@ Export a conversation in markdown, MDX, or JSON format.
 ```
 
 ```bash
-curl -X POST http://127.0.0.1:29420/api/conversations/abc123/export \
+curl -X POST http://localhost:19420/api/conversations/abc123/export \
   -H 'Content-Type: application/json' \
   -d '{"format": "mdx", "block_types": ["user_message", "assistant_message"]}'
 ```
