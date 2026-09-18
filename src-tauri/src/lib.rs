@@ -1276,24 +1276,44 @@ fn wait_for_shutdown(port: u16, timeout: Duration) {
 
 pub fn run() {
     let mut context = tauri::generate_context!();
-    if isolated_home_selected() {
-        // Tauri creates configured windows before setup(), so choose the
-        // separate WebKit store before handing the context to the builder.
-        #[cfg(target_os = "macos")]
-        {
-            assert!(
-                macos_supports_custom_webkit_store(),
-                "isolated Mandible desktop requires macOS 14 or newer for a separate WebKit store"
-            );
-            let identifier = isolated_webkit_store_identifier(&mandible_home());
-            for window in &mut context.config_mut().app.windows {
-                window.data_store_identifier = Some(identifier);
+    #[cfg(target_os = "macos")]
+    let isolated_store_identifier = isolated_home_selected().then(|| {
+        assert!(
+            macos_supports_custom_webkit_store(),
+            "isolated Mandible desktop requires macOS 14 or newer for a separate WebKit store"
+        );
+        isolated_webkit_store_identifier(&mandible_home())
+    });
+    #[cfg(not(target_os = "macos"))]
+    let isolated_store_identifier: Option<[u8; 16]> = None;
+    let mut isolated_window_labels = Vec::new();
+    if isolated_store_identifier.is_some() {
+        // Tauri's configured-window conversion in the locked runtime omits
+        // data_store_identifier. Defer only these windows so the supported
+        // builder method can pass it through to Wry before creation.
+        for window in &mut context.config_mut().app.windows {
+            if window.create {
+                isolated_window_labels.push(window.label.clone());
+                window.create = false;
             }
         }
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
-        .setup(|app| {
+        .setup(move |app| {
+            if let Some(identifier) = isolated_store_identifier {
+                for window in app
+                    .config()
+                    .app
+                    .windows
+                    .iter()
+                    .filter(|window| isolated_window_labels.contains(&window.label))
+                {
+                    tauri::WebviewWindowBuilder::from_config(app.handle(), window)?
+                        .data_store_identifier(identifier)
+                        .build()?;
+                }
+            }
             // Set the window and webview background to match the app's dark theme (#0b0f14).
             // This prevents a white flash in the title-bar area on macOS when using
             // titleBarStyle: "Transparent" — the native window chrome would otherwise
