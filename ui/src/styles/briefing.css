@@ -59,21 +59,6 @@
   font-size: var(--text-sm);
 }
 
-.feedback-collections-sidebar__incidents {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: var(--space-2) var(--space-3);
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-primary);
-  cursor: pointer;
-}
-
-.feedback-collections-sidebar__incidents[aria-current="page"] {
-  background: var(--surface-selected);
-}
 
 .feedback-collection-row {
   min-width: 0;
