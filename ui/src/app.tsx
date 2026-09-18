@@ -425,13 +425,6 @@ type NavItem = {
   title: string;
   badge?: number;
   badgeClass?: string;
-  /**
-   * A second, independent count rendered beside `badge` (issue 5308097). The
-   * two are never summed and never substituted for one another: they answer
-   * different questions and are sourced from different server counts.
-   */
-  secondaryBadge?: number;
-  secondaryBadgeClass?: string;
   icon: (props: { size?: number }) => JSX.Element;
 };
 
@@ -2375,13 +2368,6 @@ function App(): JSX.Element {
         {item.badge ? (
           <span className={`tab-badge app-rail__badge${item.badgeClass ? ` ${item.badgeClass}` : ''}`}>
             {item.badge}
-          </span>
-        ) : null}
-        {item.secondaryBadge ? (
-          <span
-            className={`tab-badge app-rail__badge app-rail__badge--secondary${item.secondaryBadgeClass ? ` ${item.secondaryBadgeClass}` : ''}`}
-          >
-            {item.secondaryBadge}
           </span>
         ) : null}
       </a>
