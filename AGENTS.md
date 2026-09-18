@@ -3,6 +3,17 @@
 These repo-local instructions supplement the global agent instructions and
 `CLAUDE.md`.
 
+## Local user access
+
+- Mandible belongs to the logged-in OS user.
+- Opening it always gives that user access.
+- Time passing, inactivity, restarting, or refreshing must never revoke that access.
+- Human authorship, agent identities, and approval requirements remain intact.
+
+Ordinary local access has no login, logout, pairing, or expiring user session.
+Do not reintroduce those concepts behind automatic renewal or recovery flows.
+Future multi-user support requires an explicit product decision.
+
 ## Mandible IAB Preview Launcher
 
 When the user asks to work on Mandible in the IAB, annotate Mandible in the
