@@ -240,18 +240,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     secretsDir: options.clientAuthDir,
     sessionAuthorityDir: process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR?.trim() || undefined,
   });
-  if (instance.role === "main") {
-    clientAuth.registerInstance({
-      instance_id: instance.instance_id,
-      installation_id: instance.installation_id,
-      role: "main",
-      public_origin: instance.public_origin,
-      backend_origin: `http://127.0.0.1:${port}`,
-      backend_generation: instance.backend_generation,
-      effect_ceiling: instance.allowed_effects,
-      writable_roots: instance.writable_roots,
-    });
-  }
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });
   const sessionRegistry = new SessionRegistry(db, logger);
@@ -479,6 +467,20 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }, instance);
 
   const actualPort = await startServer(server, port, { logger });
+  // A failed bind must not replace the healthy daemon's gateway target.
+  // Register the port the listener actually owns, including when port 0 was requested.
+  if (instance.role === "main") {
+    clientAuth.registerInstance({
+      instance_id: instance.instance_id,
+      installation_id: instance.installation_id,
+      role: "main",
+      public_origin: instance.public_origin,
+      backend_origin: `http://127.0.0.1:${actualPort}`,
+      backend_generation: instance.backend_generation,
+      effect_ceiling: instance.allowed_effects,
+      writable_roots: instance.writable_roots,
+    });
+  }
   writePidFile(process.pid, options.pidFilePath);
   logger("info", "server_started", { port: actualPort });
 
