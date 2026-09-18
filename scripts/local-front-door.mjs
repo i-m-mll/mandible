@@ -131,6 +131,18 @@ if (command === "initialize") {
   configure();
 } else if (command === "configure") {
   configure();
+} else if (command === "reload") {
+  if (!fs.existsSync(configPath) && process.argv[3] === "--if-configured") {
+    process.stderr.write("Local HTTPS gateway is not configured; no reload needed.\n");
+  } else {
+    if (!fs.existsSync(binary)) fail("The configured local HTTPS gateway binary is missing.");
+    configure();
+    const result = spawnSync(binary, ["reload", "--config", configPath, "--adapter", "caddyfile"], {
+      stdio: "inherit", timeout: 30_000,
+    });
+    if (result.error) fail(`Local HTTPS gateway reload failed: ${result.error.message}`);
+    process.exit(result.status ?? 1);
+  }
 } else if (command === "run") {
   requireTrustedCa();
   install();
@@ -142,5 +154,5 @@ if (command === "initialize") {
   try { ca = assertLocalCaIdentity(caPaths); } catch (error) { fail(error.message); }
   process.stdout.write(`${JSON.stringify({ version: CADDY_VERSION, binary, config: configPath, installed: fs.existsSync(binary), instances: fs.existsSync(authorityDb) ? readInstances().length : 0, ca })}\n`);
 } else {
-  fail("Usage: local-front-door.mjs initialize|install|configure|run|status");
+  fail("Usage: local-front-door.mjs initialize|install|configure|reload [--if-configured]|run|status");
 }

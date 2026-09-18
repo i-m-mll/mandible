@@ -23,6 +23,7 @@ desktop_command="${MANDIBLE_POST_MERGE_DESKTOP_COMMAND:-bash cli/install-desktop
 build_needed=false
 desktop_build_needed=false
 instruction_install_needed=false
+gateway_reload_needed=false
 merge_base_sha="${MANDIBLE_AUTH_MERGE_BASE_SHA:-}"
 merge_head_sha="${MANDIBLE_AUTH_MERGE_HEAD_SHA:-}"
 if [[ -n "$merge_base_sha" || -n "$merge_head_sha" ]]; then
@@ -58,10 +59,16 @@ if [[ -n "$merge_base_sha" && -n "$merge_head_sha" ]]; then
   if [[ -n "$instruction_install_changes" ]]; then
     instruction_install_needed=true
   fi
+  gateway_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
+    scripts/local-front-door.mjs scripts/local-ca-trust.mjs scripts/pinned-caddy.mjs)"
+  if [[ -n "$gateway_changes" ]]; then
+    gateway_reload_needed=true
+  fi
 else
   build_needed=true
   desktop_build_needed=true
   instruction_install_needed=true
+  gateway_reload_needed=true
 fi
 
 if [[ "$build_needed" == "true" ]]; then
@@ -85,6 +92,11 @@ fi
 if [[ "$instruction_install_needed" == "true" ]]; then
   bash cli/instructions.sh install
   err "[post-merge-build] installed managed instruction fragments"
+fi
+
+if [[ "$gateway_reload_needed" == "true" ]]; then
+  node scripts/local-front-door.mjs reload --if-configured
+  err "[post-merge-build] local HTTPS gateway configuration converged"
 fi
 
 # A completed local-session cutover runs behind launchd from a stable runner.
