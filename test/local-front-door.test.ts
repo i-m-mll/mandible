@@ -107,6 +107,33 @@ describe("local HTTPS front door", () => {
     expect(config).toContain("header_up X-Mandible-Target-Instance preview-second");
   });
 
+  it("keeps the last valid gateway config when registration points back at a public listener", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-self-route-")); roots.add(home);
+    const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
+    const production = {
+      instance_id: "production", installation_id: "install_test", role: "main" as const,
+      public_origin: "https://app.mandible.localhost:19420", backend_origin: "http://127.0.0.1:29420",
+      backend_generation: "main-1", effect_ceiling: ["ledger:read" as const], writable_roots: [],
+    };
+    authority.registerInstance(production);
+    fakeTrustedCa(home);
+    const script = path.resolve("scripts/local-front-door.mjs");
+    const configPath = path.join(home, "config", "local-sessions", "Caddyfile");
+    const configure = () => spawnSync(process.execPath, [script, "configure"], {
+      env: { ...process.env, MANDIBLE_HOME: home }, encoding: "utf8",
+    });
+    const valid = configure();
+    expect(valid.status, valid.stderr).toBe(0);
+    const originalConfig = fs.readFileSync(configPath, "utf8");
+
+    authority.registerInstance({ ...production, backend_origin: "http://127.0.0.1:19420" });
+    authority.close();
+    const poisoned = configure();
+    expect(poisoned.status).toBe(1);
+    expect(poisoned.stderr).toContain("Refusing gateway self-route");
+    expect(fs.readFileSync(configPath, "utf8")).toBe(originalConfig);
+  });
+
   it("refuses an old-storage gateway reload before writing empty pinned storage or a new Caddyfile", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-old-storage-")); roots.add(home);
     const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
