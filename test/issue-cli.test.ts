@@ -339,6 +339,13 @@ function listen(): Promise<number> {
         });
         return;
       }
+      if (req.method === "POST" && req.url === "/api/issues/resolutions") {
+        void readBody().then((body) => {
+          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+          res.end(JSON.stringify({ ok: true }));
+        });
+        return;
+      }
       if (
         req.url === "/api/ledger/issues/abc/umbrella-status" ||
         req.url === "/api/ledger/issues/abc/umbrella-status?deep=true"
@@ -638,6 +645,76 @@ describe("issue CLI body revisions", () => {
       method: "POST",
       body: { message: "Reopen comment", reopen: true },
     });
+  });
+
+  it("requires an explicit close resolution", async () => {
+    const result = await run(["issue", "close", "abc"], 9);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Missing --resolution");
+    expect(result.stderr).toContain("delivered, duplicate, wontfix");
+  });
+
+  it("closes a duplicate without creating commit-resolution evidence", async () => {
+    const port = await listen();
+    const { worktreeRoot } = makeGitRepoWithWorktree();
+    const result = await run(["issue", "close", "abc", "--resolution", "duplicate"], port, worktreeRoot);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("Closed issue abc as duplicate");
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc/comments",
+      method: "POST",
+      body: { message: "Resolved as duplicate" },
+    });
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc",
+      method: "PATCH",
+      body: { status: "closed", resolution: "duplicate" },
+    });
+    expect(requestBodies.some(({ path }) => path === "/api/issues/resolutions")).toBe(false);
+  });
+
+  it("retains commit-resolution evidence only for delivered closes", async () => {
+    const port = await listen();
+    const { worktreeRoot } = makeGitRepoWithWorktree();
+    const result = await run([
+      "issue",
+      "close",
+      "abc",
+      "--resolution",
+      "delivered",
+      "--commit",
+      "deadbeef",
+    ], port, worktreeRoot);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("Closed issue abc as delivered (resolved by deadbeef)");
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc",
+      method: "PATCH",
+      body: { status: "closed", resolution: "delivered" },
+    });
+    expect(requestBodies).toContainEqual({
+      path: "/api/issues/resolutions",
+      method: "POST",
+      body: { issue_id: "abc", commit_sha: "deadbeef", repo_id: "feature__demo" },
+    });
+  });
+
+  it("rejects commit links for non-delivered closes", async () => {
+    const result = await run([
+      "issue",
+      "close",
+      "abc",
+      "--resolution",
+      "wontfix",
+      "--commit",
+      "deadbeef",
+    ], 9);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--commit is only supported with --resolution delivered");
   });
 
   it("prints umbrella status through file RPC", async () => {

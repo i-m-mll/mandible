@@ -67,6 +67,10 @@
       "description": "Tombstone deliberate structured issue/comment relationship edges and emit relationship removal events. Accepted types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests."
     },
     {
+      "name": "mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]",
+      "description": "Close an issue with one explicit resolution. The optional --commit link is accepted only for delivered; reopening clears the resolution."
+    },
+    {
       "name": "mandible issue comment add <issue-ref> -m <text> [--reopen]",
       "description": "Append rendered Markdown comments with real newline characters and return the issue lifecycle status; --reopen atomically reopens and comments."
     },

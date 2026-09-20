@@ -13,7 +13,8 @@ import {
 } from '../api';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
-import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
+import { LedgerIssueDetail, type LedgerIssueCloseResolution } from '../components/ledger/IssueDetail';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import { shortRouteId } from '../routing';
@@ -485,6 +486,7 @@ export function IssuesView({
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailLoadFailed, setDetailLoadFailed] = useState(false);
   const [actionInFlight, setActionInFlight] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
@@ -496,6 +498,10 @@ export function IssuesView({
   const lastRestoredScrollKeyRef = useRef<string | null>(null);
   const issueDetailCacheRef = useRef<IssueDetailCache>(new Map());
   selectedIssueKeyRef.current = `${selectedRepoId ?? ''}:${selectedIssueId ?? ''}`;
+
+  useEffect(() => {
+    setActionError(null);
+  }, [selectedRepoId, selectedIssueId]);
 
   useEffect(() => {
     setViewState((current) => current.filterEdited
@@ -901,20 +907,26 @@ export function IssuesView({
     };
   }, [visibleLedgerIssueDetail?.id, visibleLedgerIssueDetail?.display_id, refreshLedgerIssueDetail]);
 
-  const handleCloseIssue = useCallback(async () => {
+  const handleCloseIssue = useCallback(async (resolution?: LedgerIssueCloseResolution) => {
     if (!visibleLedgerIssueDetail || actionInFlight) return;
+    if (!resolution) {
+      setActionError('Choose delivered, duplicate, or wontfix before closing the issue.');
+      return;
+    }
+    setActionError(null);
     setActionInFlight(true);
     try {
-      const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: 'closed' });
+      const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: 'closed', resolution });
       putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId ?? visibleLedgerIssueDetail.display_id, detail);
       setLedgerIssueDetail(detail);
       void onRescan();
-    } catch {
-      // silently fail
+    } catch (error) {
+      const reason = error instanceof Error && error.message ? error.message : 'the server rejected the request';
+      setActionError(`Could not close this issue as ${resolution}: ${reason}. The issue remains open; try again.`);
     } finally {
       setActionInFlight(false);
     }
-  }, [visibleLedgerIssueDetail, actionInFlight, onRescan]);
+  }, [visibleLedgerIssueDetail, actionInFlight, onRescan, selectedRepoId, selectedIssueId]);
 
   const handleReopenIssue = useCallback(async () => {
     if (!visibleLedgerIssueDetail || actionInFlight) return;
@@ -1182,6 +1194,16 @@ export function IssuesView({
           </div>
         ) : visibleLedgerIssueDetail ? (
           <div className="issues-detail__content" ref={issueDetailScrollRef}>
+            {actionError ? (
+              <DetailPaneNotice
+                severity="error"
+                density="compact"
+                title="Issue could not be closed"
+                source="issues:close"
+              >
+                {actionError}
+              </DetailPaneNotice>
+            ) : null}
             <LedgerIssueDetail
               detail={visibleLedgerIssueDetail}
               hydrating={detailLoading}
@@ -1189,7 +1211,7 @@ export function IssuesView({
               actionInFlight={actionInFlight}
               onAddComment={handleAddCommentBody}
               onUpdateWorkNotes={handleUpdateWorkNotes}
-              onSetStatus={(status) => status === 'open' ? handleReopenIssue() : handleCloseIssue()}
+              onSetStatus={(status, resolution) => status === 'open' ? handleReopenIssue() : handleCloseIssue(resolution)}
               onStartAgent={handleStartAgent}
               onOpenEntity={handleOpenLedgerEntity}
               onShowChildren={(detail) => {

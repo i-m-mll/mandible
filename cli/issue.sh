@@ -44,6 +44,8 @@ ISSUE_KINDS=(bug feature umbrella maintenance experiment unknown)
 CREATABLE_ISSUE_KINDS=(bug feature umbrella maintenance experiment)
 ACCEPTED_ISSUE_KINDS="bug, feature, umbrella, maintenance, experiment, unknown"
 ACCEPTED_CREATION_KINDS="bug, feature, umbrella, maintenance, experiment"
+ISSUE_CLOSE_RESOLUTIONS=(delivered duplicate wontfix)
+ACCEPTED_ISSUE_CLOSE_RESOLUTIONS="delivered, duplicate, wontfix"
 
 usage_link() {
   cat <<'LINK_USAGE'
@@ -124,6 +126,24 @@ require_creation_kind() {
   die "Invalid creation kind: ${candidate}. New issues require one of: ${ACCEPTED_CREATION_KINDS}" 2
 }
 
+valid_issue_close_resolution() {
+  local candidate="$1"
+  local accepted
+  for accepted in "${ISSUE_CLOSE_RESOLUTIONS[@]}"; do
+    if [[ "$candidate" == "$accepted" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_issue_close_resolution() {
+  local candidate="$1"
+  if ! valid_issue_close_resolution "$candidate"; then
+    die "Invalid issue resolution: ${candidate}. Accepted resolutions: ${ACCEPTED_ISSUE_CLOSE_RESOLUTIONS}" 2
+  fi
+}
+
 die_api_status() {
   local message="$1"
   local status="$2"
@@ -159,7 +179,8 @@ Usage:
                                                                   Link a branch to an issue
   mandible issue link <src> <target...> [--type t] [--note n]     Add structured issue/comment links
   mandible issue unlink <src> <target...> [--type t]              Remove structured issue/comment links
-  mandible issue close <id> [--commit <sha>]                      Close issue, recording resolving commit
+  mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]
+                                                                  Close issue with an explicit resolution; --commit is only for delivered
   mandible issue open <id>                                        Reopen a closed issue
   mandible issue description show <issue-ref> [--json]            Show only the issue description
   mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
@@ -265,6 +286,8 @@ print_issue_detail() {
 cmd_close() {
   local id=""
   local sha=""
+  local resolution=""
+  local commit_provided=0
 
   while (( $# > 0 )); do
     case "$1" in
@@ -273,6 +296,14 @@ cmd_close() {
           die "Missing value for --commit." 2
         fi
         sha="$2"
+        commit_provided=1
+        shift 2
+        ;;
+      --resolution)
+        if (( $# < 2 )); then
+          die "Missing value for --resolution." 2
+        fi
+        resolution="$2"
         shift 2
         ;;
       -*)
@@ -290,32 +321,50 @@ cmd_close() {
   done
 
   if [[ -z "$id" ]]; then
-    die "Usage: mandible issue close <id> [--commit <sha>]" 2
+    die "Usage: mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]" 2
   fi
 
-  if [[ -z "$sha" ]]; then
+  if [[ -z "$resolution" ]]; then
+    die "Missing --resolution. Accepted resolutions: ${ACCEPTED_ISSUE_CLOSE_RESOLUTIONS}" 2
+  fi
+  require_issue_close_resolution "$resolution"
+  if [[ "$resolution" != "delivered" && "$commit_provided" == "1" ]]; then
+    die "--commit is only supported with --resolution delivered." 2
+  fi
+
+  if [[ "$resolution" == "delivered" && -z "$sha" ]]; then
     sha=$(git rev-parse HEAD 2>/dev/null) || sha="unknown"
   fi
 
   require_tools
   local message_payload status_payload resolution_payload repo_id
-  message_payload=$(jq -n --arg message "Resolved by commit ${sha:0:12}" '{message:$message}')
+  if [[ "$resolution" == "delivered" && -n "$sha" && "$sha" != "unknown" ]]; then
+    message_payload=$(jq -n --arg message "Resolved as delivered by commit ${sha:0:12}" '{message:$message}')
+  else
+    message_payload=$(jq -n --arg message "Resolved as ${resolution}" '{message:$message}')
+  fi
   api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$message_payload" >/dev/null || true
 
-  status_payload=$(jq -n '{status:"closed", resolution:"delivered"}')
+  status_payload=$(jq -n --arg resolution "$resolution" '{status:"closed", resolution:$resolution}')
   api_send PATCH "/api/ledger/issues/$(urlencode "$id")" "$status_payload" >/dev/null \
     || die "${RED}Failed to close issue ${id}${RESET}" 1
 
-  git notes append -m "closes: ${id:0:8}" "$sha" 2>/dev/null || true
-  if ! git config --local push.notesRef >/dev/null 2>&1; then
-    git config --local push.notesRef "refs/notes/commits" 2>/dev/null || true
-  fi
+  if [[ "$resolution" == "delivered" && -n "$sha" && "$sha" != "unknown" ]]; then
+    git notes append -m "closes: ${id:0:8}" "$sha" 2>/dev/null || true
+    if ! git config --local push.notesRef >/dev/null 2>&1; then
+      git config --local push.notesRef "refs/notes/commits" 2>/dev/null || true
+    fi
 
-  repo_id=$(basename "$(repo_root)")
-  resolution_payload=$(jq -n --arg issue_id "$id" --arg commit_sha "$sha" --arg repo_id "$repo_id" \
-    '{issue_id:$issue_id, commit_sha:$commit_sha, repo_id:$repo_id}')
-  api_send POST "/api/issues/resolutions" "$resolution_payload" >/dev/null || true
-  err "${GREEN}Closed issue ${id} (resolved by ${sha:0:12})${RESET}"
+    repo_id=$(basename "$(repo_root)")
+    resolution_payload=$(jq -n --arg issue_id "$id" --arg commit_sha "$sha" --arg repo_id "$repo_id" \
+      '{issue_id:$issue_id, commit_sha:$commit_sha, repo_id:$repo_id}')
+    api_send POST "/api/issues/resolutions" "$resolution_payload" >/dev/null || true
+  fi
+  if [[ "$resolution" == "delivered" && -n "$sha" && "$sha" != "unknown" ]]; then
+    err "${GREEN}Closed issue ${id} as delivered (resolved by ${sha:0:12})${RESET}"
+  else
+    err "${GREEN}Closed issue ${id} as ${resolution}${RESET}"
+  fi
 }
 
 cmd_comment_add() {

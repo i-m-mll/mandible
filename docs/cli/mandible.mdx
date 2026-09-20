@@ -112,7 +112,7 @@ mandible issue list [--status open|closed|all]
 mandible issue show <id>
 mandible issue report <id> [--json]
 mandible issue triage [--repo <repo-ref>] [--status open|closed|all] [--label <label>] [--stale-days N] [--limit N] [--json]
-mandible issue close <id> [--commit <sha>]
+mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]
 mandible issue open <id>
 mandible issue description show <issue-ref> [--json]
 mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
@@ -142,7 +142,7 @@ mandible issue label rm <id> <label>
 | `triage` | Filter issues by status, label, stale age, and limit for deterministic review queues. |
 | `link` | Create deliberate structured issue/comment relationship edges without fabricating comments. |
 | `unlink` | Tombstone deliberate structured issue/comment relationship edges and record removal events. |
-| `close` | Close an issue, recording the resolving commit SHA. Adds a ledger comment, appends a git note, and reports the resolution to the Mandible API. |
+| `close` | Close an issue with an explicit `delivered`, `duplicate`, or `wontfix` resolution. An optional `--commit <sha>` link is supported only for `delivered`; that resolution adds a ledger comment, git note, and Mandible API resolution record. |
 | `open` | Reopen a closed issue |
 | `description show` | Show only the issue description, without comments or metadata in human output. |
 | `description edit` | Edit an issue description through the ledger body API, preserving issue-body revision history. |

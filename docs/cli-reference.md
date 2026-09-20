@@ -22,7 +22,7 @@ mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>
 mandible issue branch add <id> <branch> [--role primary|superseded]
 mandible issue link <src> <target...> [--type t] [--note n]
 mandible issue unlink <src> <target...> [--type t]
-mandible issue close <id> [--commit <sha>]
+mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]
 mandible issue open <id>
 mandible issue label add|rm <id> <label>
 mandible issue comment add <id> -m <text> [--reopen]
