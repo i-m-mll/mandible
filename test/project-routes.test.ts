@@ -358,4 +358,23 @@ describe("canonical project_key round-trip", () => {
     expect(resolved.ok).toBe(true);
     expect(resolved.ok && resolved.repoId).toBe("feedbax");
   });
+
+  it("filters lifecycle and resolution independently of free-form labels", async () => {
+    const { issue } = seedFeedbax();
+    const store = new LedgerStore(db);
+    const actor = { actor_type: "system" as const, author_display: "System", attribution: systemAction() };
+    store.setIssueStatus(issue.id, "closed", "delivered", actor);
+    store.setLabel(issue.id, "merged", true, "mandible", actor);
+    registerIssueRoutes(router, fakeScanner);
+    const ids = (body: unknown) => (body as Array<{ issues: Array<{ id: string }> }>).flatMap(repo => repo.issues.map(item => item.id));
+    const closed = await router.invoke({ method: "GET", url: "/api/issues?status=closed" });
+    expect(closed.status).toBe(200);
+    expect(ids(closed.body)).toContain(issue.short_id);
+    const delivered = await router.invoke({ method: "GET", url: "/api/issues?resolution=delivered" });
+    expect(ids(delivered.body)).toContain(issue.short_id);
+    const duplicate = await router.invoke({ method: "GET", url: "/api/issues?resolution=duplicate" });
+    expect(ids(duplicate.body)).toEqual([]);
+    const retired = await router.invoke({ method: "GET", url: "/api/issues?status=merged" });
+    expect(retired.status).toBe(400);
+  });
 });

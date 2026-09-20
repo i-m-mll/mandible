@@ -172,7 +172,7 @@ function withMarkdownBodyWarnings<T extends object>(
 
 function filterIssueSummaries(
   summaries: IssueRepoSummary[],
-  filters: { repo?: string; status?: string; label?: string },
+  filters: { repo?: string; status?: string; resolution?: string; label?: string },
 ): IssueRepoSummary[] {
   let filtered = summaries;
 
@@ -189,19 +189,17 @@ function filterIssueSummaries(
     );
   }
 
-  // Bug: e32ee8b — three-state filter: "merged" = closed + has "merged" label
-  if (filters.status === "open" || filters.status === "closed" || filters.status === "merged") {
+  if (filters.status === "open" || filters.status === "closed") {
     filtered = filtered.map((s) => ({
       ...s,
-      issues: s.issues.filter((issue) => {
-        if (filters.status === "merged") {
-          return issue.status === "closed" && issue.labels.includes("merged");
-        }
-        if (filters.status === "closed") {
-          return issue.status === "closed" && !issue.labels.includes("merged");
-        }
-        return issue.status === filters.status;
-      }),
+      issues: s.issues.filter((issue) => issue.status === filters.status),
+    }));
+  }
+
+  if (filters.resolution) {
+    filtered = filtered.map((s) => ({
+      ...s,
+      issues: s.issues.filter((issue) => issue.resolution === filters.resolution),
     }));
   }
 
@@ -214,7 +212,7 @@ function filterIssueSummaries(
     }));
   }
 
-  return filtered.filter((s) => s.issues.length > 0 || (!filters.status && !filters.label));
+  return filtered.filter((s) => s.issues.length > 0 || (!filters.status && !filters.resolution && !filters.label));
 }
 
 function resolveLedgerIssueId(
@@ -1307,7 +1305,16 @@ export function registerIssueRoutes(
   server.get("/api/issues", (req, res) => {
     const repoFilter = getQueryParam(req, "repo");
     const statusFilter = getQueryParam(req, "status");
+    const resolutionFilter = getQueryParam(req, "resolution");
     const labelFilter = getQueryParam(req, "label");
+    if (statusFilter && !["all", "open", "closed"].includes(statusFilter)) {
+      sendJson(res, 400, { error: "status must be open, closed, or all; use resolution=delivered instead of status=merged" });
+      return;
+    }
+    if (resolutionFilter && !(LEDGER_ISSUE_RESOLUTIONS as readonly string[]).includes(resolutionFilter)) {
+      sendJson(res, 400, { error: `resolution must be ${LEDGER_ISSUE_RESOLUTIONS.join(", ")}` });
+      return;
+    }
     const db = getDb();
 
     let summaries: IssueRepoSummary[];
@@ -1321,6 +1328,7 @@ export function registerIssueRoutes(
     summaries = filterIssueSummaries(summaries, {
       repo: repoFilter,
       status: statusFilter,
+      resolution: resolutionFilter,
       label: labelFilter,
     });
     summaries = summaries.filter((summary) => {
