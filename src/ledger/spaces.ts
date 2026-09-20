@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { Db } from "../db.js";
 import type { TimelineDiagnostic, TimelineIssuePredicate } from "../types.js";
-import type { LedgerIssueRelationshipSource } from "./types.js";
+import type { LedgerIssueRelationshipSource, LedgerRelationshipEdge } from "./types.js";
 import {
   buildParentChildrenByIssueId,
   evaluatePredicate,
@@ -935,7 +935,10 @@ export function seedSpaceFromPredicate(
   const issues = loadProjectIssueRows(db, space.project_id);
   const issueById = new Map(issues.map((issue) => [issue.id, issue]));
   const relationshipSources = loadProjectRelationshipSources(db, space.project_id);
-  const parentChildrenByIssueId = buildParentChildrenByIssueId(issues);
+  const parentChildrenByIssueId = buildParentChildrenByIssueId(
+    issues,
+    loadProjectParentChildEdges(db, space.project_id),
+  );
   const diagnostics: TimelineDiagnostic[] = [];
 
   const matchedSet = evaluatePredicate(
@@ -1005,4 +1008,18 @@ export function seedSpaceFromPredicate(
   });
 
   return run();
+}
+
+function loadProjectParentChildEdges(db: Db, projectId: string | null): LedgerRelationshipEdge[] {
+  if (!projectId) return [];
+  return db.prepare(
+    `SELECT *
+       FROM ledger_relationship_edges
+      WHERE target_project_id = ?
+        AND source_entity_type = 'issue'
+        AND target_entity_type = 'issue'
+        AND link_type = 'parent_child'
+        AND deleted_at IS NULL
+      ORDER BY created_at ASC, id ASC`,
+  ).all(projectId) as LedgerRelationshipEdge[];
 }

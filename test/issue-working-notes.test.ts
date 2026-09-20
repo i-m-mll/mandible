@@ -158,8 +158,8 @@ describe("working-notes migration", () => {
       { id: "issue-label", kind: "unknown", work_notes: "this issue had an active 'deferred' label, when 'deferred' was an active label" },
       { id: "issue-merged", kind: "feature", work_notes: "" },
       { id: "issue-obsolete", kind: "feature", work_notes: "" },
-      { id: "issue-question", kind: "unknown", work_notes: "this issue had kind 'question', when 'question' was a kind" },
-      { id: "issue-task", kind: "unknown", work_notes: "this issue had kind 'task', when 'task' was a kind" },
+      { id: "issue-question", kind: "unknown", work_notes: "" },
+      { id: "issue-task", kind: "unknown", work_notes: "" },
     ]);
     expect(migrated.prepare(
       "SELECT id, resolution FROM ledger_issues WHERE id LIKE 'issue-%' AND resolution IS NOT NULL ORDER BY id",

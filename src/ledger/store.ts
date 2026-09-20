@@ -807,9 +807,6 @@ export class LedgerStore {
         occurred_at: now,
       });
       emitted.push({ event, payload });
-      for (const status of ["none", "in_progress", "done", "blocked", "pivot-needed"] as const) {
-        this.setLabel(id, `mandible:status:${status}`, status === workerStatus, source, actor);
-      }
       return this.getIssue(id);
     });
 
@@ -864,7 +861,6 @@ export class LedgerStore {
         occurred_at: now,
       });
       emitted.push({ event, payload });
-      this.setLabel(issueId, `mandible:branch:${trimmedBranch}`, true, source, actor);
       return this.getIssueBranch(issueId, trimmedBranch);
     });
 

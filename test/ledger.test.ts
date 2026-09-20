@@ -466,7 +466,7 @@ describe("ledger store", () => {
     expect(broadcasts.filter((event) => event === "ledger:issue:closed")).toHaveLength(1);
   });
 
-  it("sets worker status and issue branches with mirrored labels", () => {
+  it("sets worker status and issue branches without metadata-label mirrors", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const issue = createIssue(store, project.project.id);
@@ -485,19 +485,16 @@ describe("ledger store", () => {
     ]);
     expect(store.getIssueDetail(issue.id).labels
       .filter((label) => label.deleted_at === null)
-      .map((label) => label.label)
-      .sort()).toContain("mandible:status:in_progress");
-    expect(store.getIssueDetail(issue.id).labels
-      .filter((label) => label.deleted_at === null)
-      .map((label) => label.label)
-      .sort()).toContain("mandible:branch:feature/demo");
+      .map((label) => label.label))
+      .not.toEqual(expect.arrayContaining([
+        "mandible:status:in_progress",
+        "mandible:branch:feature/demo",
+      ]));
     expect(store.listEvents({ entity_type: "issue", entity_id: issue.id })
       .map((event) => event.event_type)).toEqual([
         "issue.created",
         "issue.worker_status.updated",
-        "label.updated",
         "issue.branch.added",
-        "label.updated",
       ]);
   });
 

@@ -424,6 +424,7 @@ export interface GitBugIssue {
   status: "open" | "closed";
   kind?: import("./ledger/types.js").LedgerIssueKind;
   resolution?: import("./ledger/types.js").LedgerIssueResolution | null;
+  priority?: import("./ledger/types.js").LedgerPriority;
   labels: string[];
   author: string;
   author_legacy_display?: string;
@@ -434,7 +435,19 @@ export interface GitBugIssue {
   // body. Detail projections (GitBugIssueDetail) still populate it, so the
   // field is optional on the shared summary type rather than always present.
   description?: string;
-  parent_id?: string;  // derived from parent:<human_id> label
+  /** Compatibility projection; present only when exactly one canonical parent exists. */
+  parent_id?: string;
+  /** Canonical source issue ids for every active parent-child edge. */
+  parent_ids?: string[];
+  parent_relationships?: GitBugIssueParentRelationship[];
+}
+
+export interface GitBugIssueParentRelationship {
+  id: string;
+  parent_id: string;
+  parent_ref: string;
+  provenance: import("./ledger/types.js").LedgerRelationshipProvenance;
+  confidence: string;
 }
 
 export interface GitBugIssueDetail extends GitBugIssue {
@@ -461,7 +474,7 @@ export interface IssueRepoSummary {
   // omit it.
   project_key?: string;
   open_count: number;
-  merged_count: number;
+  delivered_count: number;
   closed_count: number;
   issues: GitBugIssue[];
 }

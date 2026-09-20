@@ -334,9 +334,8 @@ export function applyAuthRequestLedgerCompletion(
     /**
      * Issue 27241e6 — when a required post-merge hook has not converged, the
      * merge is real but the delivery is not live, so issue closure is
-     * withheld. Everything else still applies: the completion event is
-     * recorded and the `merged` label is set, because the merge genuinely
-     * happened. Only the "this is done" assertion waits.
+     * withheld. The completion event remains recorded; only the typed
+     * resolution and "this is done" assertion wait.
      */
     withhold_issue_closure?: boolean;
   },
@@ -376,20 +375,9 @@ export function applyAuthRequestLedgerCompletion(
         execution_evidence_id: input.execution_evidence_id ?? null,
       },
     });
-    if (hasActiveLabel(db, issueId, "coordination")) {
+    if (issue.kind === "tracker") {
       continue;
     }
-    store.setLabel(
-      issueId,
-      "merged",
-      true,
-      "auth_queue",
-      {
-        actor_type: "system",
-        actor_id: input.approval_lease_id ?? null,
-        attribution: actor.attribution,
-      },
-    );
     if (input.withhold_issue_closure) {
       continue;
     }
@@ -421,10 +409,10 @@ export function applyAuthRequestLedgerCompletion(
  * deferred, once post-merge convergence completed.
  *
  * This deliberately re-runs only the closing half of
- * `applyAuthRequestLedgerCompletion`: the completion event, the link sync, and
- * the `merged` label already landed at merge time, and re-recording them would
- * duplicate history for something that happened once. Issues already closed
- * are skipped, so the call is idempotent.
+ * `applyAuthRequestLedgerCompletion`: the completion event and link sync
+ * already landed at merge time, and re-recording them would duplicate history
+ * for something that happened once. Issues already closed are skipped, so the
+ * call is idempotent.
  */
 export function applyWithheldAuthRequestClosures(
   db: Db,
@@ -454,7 +442,7 @@ export function applyWithheldAuthRequestClosures(
     const issue = store.getIssue(issueId);
     if (issue.status !== "open") continue;
     if (completedAt != null && latestIssueReopenedAt(db, issueId) > completedAt) continue;
-    if (hasActiveLabel(db, issueId, "coordination")) continue;
+    if (issue.kind === "tracker") continue;
     if (mergeSha) {
       recordIssueResolution(db, {
         authRequestId: input.auth_request_id,
@@ -977,13 +965,6 @@ function extractMergeResultIssueRefs(output?: string | null): string[] {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-function hasActiveLabel(db: Db, issueId: string, label: string): boolean {
-  const row = db.prepare(
-    "SELECT 1 AS ok FROM ledger_labels WHERE issue_id = ? AND label = ? AND deleted_at IS NULL LIMIT 1",
-  ).get(issueId, label) as { ok: number } | undefined;
-  return Boolean(row);
 }
 
 function recordIssueResolution(

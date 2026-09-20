@@ -23,9 +23,10 @@ export type LedgerIssueResolution = (typeof LEDGER_ISSUE_RESOLUTIONS)[number];
 export const LEDGER_ISSUE_KINDS = [
   "bug",
   "feature",
-  "umbrella",
   "maintenance",
   "experiment",
+  "tracker",
+  "umbrella",
   "unknown",
 ] as const;
 export type LedgerIssueKind = (typeof LEDGER_ISSUE_KINDS)[number];
@@ -34,9 +35,10 @@ export type LedgerIssueKind = (typeof LEDGER_ISSUE_KINDS)[number];
 export const LEDGER_CONCRETE_ISSUE_KINDS = [
   "bug",
   "feature",
-  "umbrella",
   "maintenance",
   "experiment",
+  "tracker",
+  "umbrella",
 ] as const;
 export type LedgerConcreteIssueKind = (typeof LEDGER_CONCRETE_ISSUE_KINDS)[number];
 

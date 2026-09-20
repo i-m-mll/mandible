@@ -24,6 +24,7 @@ import type {
   LedgerIssueResolution,
   LedgerIssueStatus,
   LedgerPriority,
+  LedgerRelationshipEdge,
   LedgerRelationshipType,
 } from "./types.js";
 import {
@@ -164,7 +165,10 @@ export function buildProjectTimelineProjection(
   const eventToLinks = new Map<string, TimelineLink[]>();
   const rowById = new Map<string, TimelineRowOccurrence>();
 
-  const parentChildrenByIssueId = buildParentChildrenByIssueId(issues);
+  const parentChildrenByIssueId = buildParentChildrenByIssueId(
+    issues,
+    loadParentChildEdges(db, project.id),
+  );
   const rootSpecs = buildRootSpecs({
     rawInput: input,
     normalized,
@@ -573,6 +577,19 @@ function loadRelationshipSources(db: Db, projectId: string): LedgerIssueRelation
   ).all(projectId) as LedgerIssueRelationshipSource[];
 }
 
+function loadParentChildEdges(db: Db, projectId: string): LedgerRelationshipEdge[] {
+  return db.prepare(
+    `SELECT *
+       FROM ledger_relationship_edges
+      WHERE target_project_id = ?
+        AND source_entity_type = 'issue'
+        AND target_entity_type = 'issue'
+        AND link_type = 'parent_child'
+        AND deleted_at IS NULL
+      ORDER BY created_at ASC, id ASC`,
+  ).all(projectId) as LedgerRelationshipEdge[];
+}
+
 function loadLabelHistory(db: Db, projectId: string, issues: IssueRow[]): LabelHistoryIndex {
   const labelRows = db.prepare(
     `SELECT l.issue_id, l.label, l.created_at, l.deleted_at
@@ -859,11 +876,10 @@ function selectRootIssues(
   const explicit = new Set([...input.explicit_root_issue_ids, ...input.promoted_root_issue_ids]);
   return issues.filter((issue) => {
     if (issue.deleted_at !== null || !statusAllowed(issue.status, input)) return false;
-    const labels = labelList(issue);
-    const coordination = labels.includes("coordination");
-    if (input.root_policy === "coordination") return coordination || input.promoted_root_issue_ids.includes(issue.id);
+    const tracker = issue.kind === "tracker";
+    if (input.root_policy === "coordination") return tracker || input.promoted_root_issue_ids.includes(issue.id);
     if (input.root_policy === "explicit") return explicit.has(issue.id);
-    return coordination || explicit.has(issue.id);
+    return tracker || explicit.has(issue.id);
   });
 }
 
@@ -882,7 +898,7 @@ function buildRootSpecs(input: {
     id: `legacy:${issue.id}:${index}`,
     title: issue.title,
     anchor_issue_id: issue.id,
-      scope: labelList(issue).includes("coordination")
+      scope: issue.kind === "tracker"
         ? { type: "referenced_by", issue_id: issue.id }
         : null,
       anchorIssue: issue,
