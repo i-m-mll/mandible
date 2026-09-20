@@ -22,6 +22,14 @@ import { renderInlineMarkdown } from '../lib/markdown';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { useAppShell } from '../app-shell';
+import {
+  LEDGER_ISSUE_KINDS,
+  LEDGER_ISSUE_RESOLUTIONS,
+  LEDGER_ISSUE_STATUSES,
+  LEDGER_PRIORITIES,
+  normalizeLedgerIssueKind,
+  normalizeLedgerIssuePriority,
+} from '../types/issues';
 
 // --- Types ---
 
@@ -30,8 +38,9 @@ export type IssueSummary = {
   repo_id: string;
   repo_name: string;
   title: string;
-  status: 'open' | 'closed';
+  status: (typeof LEDGER_ISSUE_STATUSES)[number];
   kind?: string;
+  priority?: string;
   resolution?: string | null;
   labels: string[];
   author: string;
@@ -40,7 +49,11 @@ export type IssueSummary = {
   // The body arrives via the two-stage detail fetch on selection; the
   // synthesized instant-paint detail treats an absent description as empty.
   description?: string;
-  parent_id?: string;  // derived from parent:<human_id> label
+  // Canonical parent-child projection. parent_id is retained only for an
+  // unambiguous single-parent compatibility projection; parent_ids preserves
+  // multiple active parent_child edges.
+  parent_id?: string;
+  parent_ids?: string[];
 };
 
 export type IssueRepoSummary = {
@@ -122,32 +135,24 @@ export type IssuesViewProps = {
 
 // --- Helpers ---
 
-// Bug: e32ee8b — three-state lifecycle: open, merged (closed + "merged" label), closed
-type VisualState = 'open' | 'merged' | 'closed';
+type VisualState = 'open' | 'closed';
 
-function getVisualState(issue: { status: string; labels: string[] }): VisualState {
-  if (issue.status === 'open') return 'open';
-  if (issue.labels.includes('merged')) return 'merged';
-  return 'closed';
+function getVisualState(issue: { status: string }): VisualState {
+  return issue.status === 'open' ? 'open' : 'closed';
 }
 
 const KIND_FILTERS = [
-  { key: 'umbrella', label: 'umbrella' },
-  { key: 'feature', label: 'feature' },
-  { key: 'bug', label: 'bug' },
-  { key: 'maintenance', label: 'maintenance' },
-  { key: 'experiment', label: 'experiment' },
-  { key: 'unknown', label: 'unknown' },
+  ...LEDGER_ISSUE_KINDS.map((key) => ({ key, label: key })),
 ] as const;
 
 const PRIORITY_FILTERS = [
-  { key: 'important', label: 'important', labels: ['important'] },
-  { key: 'user-action-required', label: 'user action', labels: ['user-action-required'] },
+  ...LEDGER_PRIORITIES.map((key) => ({ key, label: key })),
 ] as const;
 
 type ParsedIssueFilter = {
   text: string;
   status: StatusFilter | null;
+  resolution: string | null;
   kinds: string[];
   priorities: string[];
 };
@@ -155,6 +160,7 @@ type ParsedIssueFilter = {
 function parseIssueFilter(value: string): ParsedIssueFilter {
   const textParts: string[] = [];
   let status: StatusFilter | null = null;
+  let resolution: string | null = null;
   const kinds = new Set<string>();
   const priorities = new Set<string>();
 
@@ -168,9 +174,14 @@ function parseIssueFilter(value: string): ParsedIssueFilter {
     const values = match[2].split(',').map((part) => part.trim().toLowerCase()).filter(Boolean);
     if (key === 'status') {
       const next = values[0];
-      if (next === 'all' || next === 'open' || next === 'merged' || next === 'closed') {
+      if (next === 'all' || next === 'open' || next === 'closed') {
         status = next;
       }
+      continue;
+    }
+    if (key === 'resolution') {
+      const next = values[0];
+      if ((LEDGER_ISSUE_RESOLUTIONS as readonly string[]).includes(next)) resolution = next;
       continue;
     }
     if (key === 'kind') {
@@ -187,6 +198,7 @@ function parseIssueFilter(value: string): ParsedIssueFilter {
   return {
     text: textParts.join(' '),
     status,
+    resolution,
     kinds: [...kinds],
     priorities: [...priorities],
   };
@@ -195,31 +207,29 @@ function parseIssueFilter(value: string): ParsedIssueFilter {
 function formatIssueFilter(parsed: ParsedIssueFilter): string {
   const tokens = [parsed.text.trim()].filter(Boolean);
   if (parsed.status) tokens.push(`status:${parsed.status}`);
+  if (parsed.resolution) tokens.push(`resolution:${parsed.resolution}`);
   if (parsed.kinds.length > 0) tokens.push(`kind:${parsed.kinds.join(',')}`);
   if (parsed.priorities.length > 0) tokens.push(`priority:${parsed.priorities.join(',')}`);
   return tokens.join(' ');
 }
 
-const CANONICAL_ISSUE_KINDS = new Set(['bug', 'feature', 'umbrella', 'maintenance', 'experiment', 'unknown']);
-
 function canonicalIssueKind(issue: { kind?: string }): string {
-  const kind = issue.kind?.trim().toLowerCase();
-  if (kind && CANONICAL_ISSUE_KINDS.has(kind)) return kind;
-  return 'unknown';
+  return normalizeLedgerIssueKind(issue.kind);
 }
 
-function issueHasAnyKind(issue: { kind?: string; labels: string[] }, selected: string[]): boolean {
+function issueHasAnyKind(issue: { kind?: string }, selected: string[]): boolean {
   if (selected.length === 0) return true;
   return selected.some((kind) => canonicalIssueKind(issue) === kind);
 }
 
-function issueHasAnyLabel(issue: { labels: string[] }, labelGroups: readonly { key: string; labels: readonly string[] }[], selected: string[]): boolean {
+function issueHasAnyPriority(issue: { priority?: string }, selected: string[]): boolean {
   if (selected.length === 0) return true;
-  return selected.some((key) => {
-    const option = labelGroups.find((candidate) => candidate.key === key);
-    const labels = option?.labels ?? [key];
-    return labels.some((label) => issue.labels.includes(label));
-  });
+  return selected.some((priority) => normalizeLedgerIssuePriority(issue.priority) === priority);
+}
+
+function issueParentIds(issue: IssueSummary): string[] {
+  if (Array.isArray(issue.parent_ids)) return issue.parent_ids;
+  return issue.parent_id ? [issue.parent_id] : [];
 }
 
 function ledgerDetailMatchesSelection(
@@ -336,11 +346,7 @@ function synthesizeLedgerIssueDetail(
   };
   const labels = issue.labels ?? [];
   const kind = canonicalIssueKind(issue);
-  const priority = labels.includes('important')
-    ? 'important'
-    : labels.includes('user-action-required')
-      ? 'user-action-required'
-      : 'normal';
+  const priority = normalizeLedgerIssuePriority(issue.priority);
   const resolution = issue.resolution ?? null;
   return {
     id: issue.id,
@@ -403,7 +409,7 @@ type ListItem = { kind: 'issue'; issue: IssueSummary; repo: IssueRepoSummary };
 
 // --- Components ---
 
-type StatusFilter = 'all' | 'open' | 'merged' | 'closed';
+type StatusFilter = 'all' | (typeof LEDGER_ISSUE_STATUSES)[number];
 
 const DEFAULT_ISSUES_FILTER = 'status:open';
 const ISSUES_VIEW_STATE_STORAGE_KEY = 'mandible_issues_view_state:v1';
@@ -411,13 +417,34 @@ const ISSUES_VIEW_STATE_STORAGE_KEY = 'mandible_issues_view_state:v1';
 type IssuesViewState = {
   filter: string;
   filterEdited: boolean;
+  filterNotice: string | null;
   parentFilter: string | null;
   selectedRepoId: string | null;
   selectedIssueId: string | null;
 };
 
-function normalizeIssueDefaultFilter(value: string | null | undefined): string {
-  return value?.trim() || DEFAULT_ISSUES_FILTER;
+function migrateIssueFilter(value: string): { filter: string; notice: string | null } {
+  const notices: string[] = [];
+  const migrated: string[] = [];
+  for (const token of value.trim().split(/\s+/).filter(Boolean)) {
+    if (/^status:merged$/i.test(token)) {
+      migrated.push('status:closed', 'resolution:delivered');
+    } else if (/^priority:important$/i.test(token)) {
+      migrated.push('priority:high');
+    } else if (/^priority:user-action-required$/i.test(token)) {
+      notices.push('The priority:user-action-required filter is obsolete; choose a canonical priority instead.');
+    } else {
+      migrated.push(token);
+    }
+  }
+  return {
+    filter: migrated.join(' ') || DEFAULT_ISSUES_FILTER,
+    notice: notices.length > 0 ? notices.join(' ') : null,
+  };
+}
+
+function normalizeIssueDefaultFilter(value: string | null | undefined): { filter: string; notice: string | null } {
+  return migrateIssueFilter(value?.trim() || DEFAULT_ISSUES_FILTER);
 }
 
 function normalizeIssuesViewState(value: unknown, defaults: Readonly<IssuesViewState>): IssuesViewState {
@@ -427,12 +454,14 @@ function normalizeIssuesViewState(value: unknown, defaults: Readonly<IssuesViewS
     ? (stored as Partial<IssuesViewState> & { repoFilter: string }).repoFilter.trim()
     : '';
   const storedFilter = editedFilter ?? defaults.filter;
-  const filter = legacyRepoFilter && !storedFilter.toLowerCase().includes(legacyRepoFilter.toLowerCase())
-    ? `${storedFilter} ${legacyRepoFilter}`.trim()
-    : storedFilter;
+  const migrated = migrateIssueFilter(storedFilter);
+  const filter = legacyRepoFilter && !migrated.filter.toLowerCase().includes(legacyRepoFilter.toLowerCase())
+    ? `${migrated.filter} ${legacyRepoFilter}`.trim()
+    : migrated.filter;
   return {
     filter,
     filterEdited: editedFilter !== null || Boolean(legacyRepoFilter),
+    filterNotice: migrated.notice,
     parentFilter: stored.parentFilter === null || typeof stored.parentFilter === 'string'
       ? stored.parentFilter
       : defaults.parentFilter,
@@ -460,8 +489,9 @@ export function IssuesView({
     [defaultFilter],
   );
   const defaultViewState = useMemo<IssuesViewState>(() => ({
-    filter: normalizedDefaultFilter,
+    filter: normalizedDefaultFilter.filter,
     filterEdited: false,
+    filterNotice: normalizedDefaultFilter.notice,
     parentFilter: null,
     selectedRepoId: null,
     selectedIssueId: null,
@@ -471,7 +501,7 @@ export function IssuesView({
     normalizeIssuesViewState,
     defaultViewState,
   );
-  const { filter, parentFilter } = viewState;
+  const { filter, filterNotice, parentFilter } = viewState;
   // Local state
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(
     initialRepoId ?? viewState.selectedRepoId,
@@ -512,7 +542,7 @@ export function IssuesView({
   useEffect(() => {
     setViewState((current) => current.filterEdited
       ? current
-      : { ...current, filter: normalizedDefaultFilter });
+      : { ...current, filter: normalizedDefaultFilter.filter, filterNotice: normalizedDefaultFilter.notice });
   }, [normalizedDefaultFilter]);
 
   const setIssueFilter = useCallback((nextFilter: string) => {
@@ -520,6 +550,7 @@ export function IssuesView({
       ...current,
       filter: nextFilter,
       filterEdited: true,
+      filterNotice: null,
     }));
   }, [setViewState]);
 
@@ -576,6 +607,7 @@ export function IssuesView({
   const parsedFilter = useMemo(() => parseIssueFilter(filter), [filter]);
   const normalizedFilter = useMemo(() => parsedFilter.text.trim().toLowerCase(), [parsedFilter.text]);
   const selectedStatus = parsedFilter.status;
+  const selectedResolution = parsedFilter.resolution;
   const selectedKinds = parsedFilter.kinds;
   const selectedPriorities = parsedFilter.priorities;
 
@@ -584,6 +616,7 @@ export function IssuesView({
       ...current,
       filter: formatIssueFilter({ ...parseIssueFilter(current.filter), ...next }),
       filterEdited: true,
+      filterNotice: null,
     }));
   }, [setViewState]);
 
@@ -600,6 +633,7 @@ export function IssuesView({
         ...current,
         filter: formatIssueFilter({ ...parsed, [field]: [...values] }),
         filterEdited: true,
+        filterNotice: null,
       };
     });
   }, [setViewState]);
@@ -612,6 +646,9 @@ export function IssuesView({
         let issues = repo.issues;
         if (selectedStatus && selectedStatus !== 'all') {
           issues = issues.filter((issue) => getVisualState(issue) === selectedStatus);
+        }
+        if (selectedResolution) {
+          issues = issues.filter((issue) => issue.resolution === selectedResolution);
         }
         if (normalizedFilter) {
           const repoMatches = [
@@ -632,15 +669,15 @@ export function IssuesView({
           issues = issues.filter((issue) => issueHasAnyKind(issue, selectedKinds));
         }
         if (selectedPriorities.length > 0) {
-          issues = issues.filter((issue) => issueHasAnyLabel(issue, PRIORITY_FILTERS, selectedPriorities));
+          issues = issues.filter((issue) => issueHasAnyPriority(issue, selectedPriorities));
         }
         if (parentFilter) {
-          issues = issues.filter((issue) => issue.parent_id === parentFilter);
+          issues = issues.filter((issue) => issueParentIds(issue).includes(parentFilter));
         }
         return { ...repo, issues };
       })
       .filter((repo) => repo.issues.length > 0);
-  }, [repos, selectedStatus, normalizedFilter, selectedKinds, selectedPriorities, parentFilter]);
+  }, [repos, selectedStatus, selectedResolution, normalizedFilter, selectedKinds, selectedPriorities, parentFilter]);
 
   // Build flat list items: all issues sorted by created_at descending (newest first)
   const items = useMemo<ListItem[]>(() => {
@@ -1133,7 +1170,7 @@ export function IssuesView({
               <div className="sidebar-search-filter__section">
                 <span className="sidebar-search-filter__label">Status</span>
                 <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
-                  {(['all', 'open', 'merged', 'closed'] as const).map((status) => (
+                  {(['all', ...LEDGER_ISSUE_STATUSES] as const).map((status) => (
                     <button
                       key={status}
                       type="button"
@@ -1156,6 +1193,21 @@ export function IssuesView({
                       onClick={() => toggleMultiFilter('kinds', kind.key)}
                     >
                       {kind.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="sidebar-search-filter__section">
+                <span className="sidebar-search-filter__label">Resolution</span>
+                <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
+                  {(['all', ...LEDGER_ISSUE_RESOLUTIONS] as const).map((resolution) => (
+                    <button
+                      key={resolution}
+                      type="button"
+                      className={`sidebar-search-filter__option${(resolution === 'all' ? selectedResolution === null : selectedResolution === resolution) ? ' sidebar-search-filter__option--active' : ''}`}
+                      onClick={() => updateStructuredFilter({ resolution: resolution === 'all' ? null : resolution })}
+                    >
+                      {resolution}
                     </button>
                   ))}
                 </div>
@@ -1199,6 +1251,12 @@ export function IssuesView({
         }
         bodyClassName="issues-tree__body"
       >
+
+        {filterNotice && (
+          <div className="issues-filter-notice" role="status">
+            {filterNotice}
+          </div>
+        )}
 
         {/* Flat issue list */}
         {items.length === 0 ? (

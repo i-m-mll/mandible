@@ -47,7 +47,7 @@ function detail(labels: string[]): LedgerIssueDetailProjection {
 }
 
 describe('issue detail label presentation', () => {
-  it('hides known branch and status mirror labels with other presentation metadata', () => {
+  it('displays labels as free-form metadata without hiding metadata-shaped names', () => {
     render(<LedgerIssueDetail detail={detail([
       'mandible:branch:feature/example',
       'mandible:status:in_progress',
@@ -55,25 +55,25 @@ describe('issue detail label presentation', () => {
       'visible',
     ])} />);
 
-    expect(screen.queryByText('mandible:branch:feature/example')).toBeNull();
-    expect(screen.queryByText('mandible:status:in_progress')).toBeNull();
-    expect(screen.queryByText('merged')).toBeNull();
+    expect(screen.getByText('mandible:branch:feature/example').textContent).toBe('mandible:branch:feature/example');
+    expect(screen.getByText('mandible:status:in_progress').textContent).toBe('mandible:status:in_progress');
+    expect(screen.getByText('merged').textContent).toBe('merged');
     expect(screen.getByText('visible').textContent).toBe('visible');
   });
 
-  it('preserves ordinary and colon-bearing labels while retaining error display mapping', () => {
+  it('preserves ordinary and colon-bearing labels without aliasing kind names', () => {
     const preserved = ['team:frontend', 'mandible:priority:high', 'mandible:branch', 'status:open'];
     render(<LedgerIssueDetail detail={detail([...preserved, 'error'])} />);
 
     for (const label of preserved) {
       expect(screen.getByText(label).textContent).toBe(label);
     }
-    expect(screen.queryByText('error')).toBeNull();
-    expect(screen.getByText('bug').textContent).toBe('bug');
+    expect(screen.getByText('error').textContent).toBe('error');
+    expect(screen.queryByText('bug')).toBeNull();
   });
 
   it('starts secondary issue shelves in shared collapsed panels', () => {
-    const projection = detail(['umbrella']);
+    const projection = detail([]);
     projection.relationships = [
       {
         id: 'child-edge', direction: 'outgoing', relationship_type: 'parent_child',

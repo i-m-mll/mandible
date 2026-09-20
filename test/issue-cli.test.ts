@@ -1077,7 +1077,7 @@ describe("issue CLI body revisions", () => {
 
     try {
       const result = await run([
-        "issue", "new", "-t", "Experiment", "-m", "Body", "--kind", "experiment", "--project", "mandible",
+        "issue", "new", "-t", "Coordination", "-m", "Body", "--kind", "coordination", "--project", "mandible",
       ], 0, process.cwd(), {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
@@ -1086,7 +1086,7 @@ describe("issue CLI body revisions", () => {
       expect(result.status).toBe(0);
       expect(result.stderr).toContain("Created issue new-1");
       expect(seen).toHaveLength(1);
-      expect(seen[0].body).toMatchObject({ kind: "experiment", title: "Experiment", body: "Body" });
+      expect(seen[0].body).toMatchObject({ kind: "coordination", title: "Coordination", body: "Body" });
     } finally {
       responder.stop();
     }
@@ -1843,7 +1843,7 @@ describe("issue CLI body revisions", () => {
     });
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Accepted issue kinds: bug, feature, umbrella, maintenance, experiment, unknown");
+    expect(result.stderr).toContain("Accepted issue kinds: bug, feature, umbrella, maintenance, experiment, coordination, unknown");
   });
 
   it("shows one comment by last-comment reference", async () => {
@@ -1979,6 +1979,9 @@ describe("issue CLI list repo scoping", () => {
                 {
                   id: "abc",
                   status: "open",
+                  kind: "coordination",
+                  priority: "high",
+                  resolution: "delivered",
                   title: "Read-only transport",
                   updated_at: "2026-06-12T12:00:00.000Z",
                   labels: ["feature"],
@@ -1986,6 +1989,8 @@ describe("issue CLI list repo scoping", () => {
                 {
                   id: "def",
                   status: "open",
+                  kind: "maintenance",
+                  priority: "normal",
                   title: "Other work",
                   updated_at: "2026-06-12T12:00:00.000Z",
                   labels: ["maintenance"],
@@ -1998,7 +2003,7 @@ describe("issue CLI list repo scoping", () => {
     );
 
     try {
-      const result = await run(["issue", "triage", "--repo", "/repo/mandible", "--label", "feature", "--json"], 0, os.tmpdir(), {
+      const result = await run(["issue", "triage", "--repo", "/repo/mandible", "--kind", "coordination", "--priority", "high", "--resolution", "delivered", "--label", "feature", "--json"], 0, os.tmpdir(), {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
       });

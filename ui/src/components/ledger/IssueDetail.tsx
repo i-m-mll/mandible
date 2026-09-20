@@ -30,6 +30,10 @@ import { DetailPaneModal } from '../shared/DetailPaneModal';
 import { DetailPaneShell, type DetailPanePresentation } from '../shared/DetailPaneShell';
 import { CollapsiblePanel } from '../shared/CollapsiblePanel';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import {
+  LEDGER_ISSUE_RESOLUTIONS,
+  type LedgerIssueResolution,
+} from '../../types/issues';
 
 const LEDGER_TIME_OPTIONS = { zeroIsEmpty: true } as const;
 
@@ -60,10 +64,10 @@ type WorkNotesDraft = {
   baseRevision: string | null;
 };
 
-export const LEDGER_ISSUE_CLOSE_RESOLUTIONS = ['delivered', 'duplicate', 'wontfix'] as const;
-export type LedgerIssueCloseResolution = (typeof LEDGER_ISSUE_CLOSE_RESOLUTIONS)[number];
-
-const UMBRELLA_LABEL = 'umbrella';
+// Keep the component's historical export name while sourcing the values from
+// the browser-safe canonical issue contract.
+export const LEDGER_ISSUE_CLOSE_RESOLUTIONS = LEDGER_ISSUE_RESOLUTIONS;
+export type LedgerIssueCloseResolution = LedgerIssueResolution;
 
 /**
  * Umbrella 96c5090: `parent_child` relationship edges are the only source of
@@ -100,7 +104,6 @@ export function partitionUmbrellaChildren(detail: LedgerIssueDetailProjection): 
   children: UmbrellaChildRelationship[];
   rest: LedgerIssueDetailRelationship[];
 } {
-  if (!detail.labels.includes(UMBRELLA_LABEL)) return { children: [], rest: detail.relationships };
   const children: UmbrellaChildRelationship[] = [];
   const rest: LedgerIssueDetailRelationship[] = [];
   for (const relationship of detail.relationships) {
@@ -182,8 +185,7 @@ export function LedgerIssueDetail({
   const primaryWorkUnit = detail.work_units[0] ?? null;
   const timeline = detail.timeline ?? fallbackTimeline(detail);
   const associatedArtifacts = detail.associated_artifacts ?? [];
-  const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
-  const isUmbrella = detail.labels.includes(UMBRELLA_LABEL);
+  const displayLabels = detail.labels;
   const { children: umbrellaChildren, rest: otherRelationships } = partitionUmbrellaChildren(detail);
   const dependencies = detail.dependencies ?? [];
   const editingCurrentIssue = editingWorkNotes && workNotesEditorIssueId === detail.id;
@@ -361,7 +363,7 @@ export function LedgerIssueDetail({
               onAddToSpace={onAddToSpace}
               onShowMetadata={hasIssueMetadata ? () => setMetadataOpen(true) : undefined}
               onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
-              onShowChildren={isUmbrella ? onShowChildren : undefined}
+              onShowChildren={umbrellaChildren.length > 0 ? onShowChildren : undefined}
             />
           ) : undefined}
           actionsLabel="Issue header actions"
@@ -1627,14 +1629,7 @@ function formatJsonValue(value: unknown): string {
 }
 
 function displayLabel(label: string): string {
-  if (label === 'error') return 'bug';
   return label;
-}
-
-function isMetadataLabel(label: string): boolean {
-  return label === 'merged'
-    || label.startsWith('mandible:branch:')
-    || label.startsWith('mandible:status:');
 }
 
 function authEvidenceLinkLabel(auth: LedgerIssueDetailAuthRequest): string {

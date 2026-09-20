@@ -3818,6 +3818,66 @@ describe('issue deep links', () => {
     expect(repoId).toBe('widgets');
   });
 
+  it('filters the issue list by canonical kind and priority rather than labels', () => {
+    stubIssuesLocalStorage();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const typedRepos: IssueRepoSummary[] = [{
+      ...repos[0],
+      issues: [
+        {
+          ...repos[0].issues[0],
+          id: 'coord-1',
+          title: 'Canonical coordination',
+          kind: 'coordination',
+          priority: 'high',
+          labels: ['feature', 'important'],
+        },
+        {
+          ...repos[0].issues[0],
+          id: 'feature-1',
+          title: 'Canonical feature',
+          kind: 'feature',
+          priority: 'normal',
+          labels: ['coordination', 'user-action-required'],
+        },
+      ],
+    }];
+
+    render(h(IssuesView, {
+      repos: typedRepos,
+      onRescan: async () => undefined,
+      defaultFilter: 'kind:coordination priority:high',
+    }));
+
+    expect(screen.getByRole('button', { name: /Canonical coordination/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Canonical feature/ })).toBeNull();
+  });
+
+  it('migrates legacy typed filters to canonical status, resolution, and priority', () => {
+    stubIssuesLocalStorage();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      defaultFilter: 'status:merged priority:important',
+    }));
+
+    expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value)
+      .toBe('status:closed resolution:delivered priority:high');
+  });
+
+  it('notifies when an obsolete user-action priority filter cannot be mapped', () => {
+    stubIssuesLocalStorage();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      defaultFilter: 'priority:user-action-required',
+    }));
+
+    expect(screen.getByRole('status').textContent).toContain('priority:user-action-required');
+  });
+
   it('renders selected issue metadata while ledger detail is still loading', async () => {
     let resolveDetail: (response: Response) => void = () => undefined;
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => {
@@ -4173,6 +4233,7 @@ describe('issue deep links', () => {
       expect(stored).toEqual({
         filter: 'toast',
         filterEdited: true,
+        filterNotice: null,
         parentFilter: null,
         selectedRepoId: 'mandible',
         selectedIssueId: '4c26383',
@@ -4305,7 +4366,7 @@ describe('issue deep links', () => {
     rerender(h(IssuesView, {
       repos: repos.map((repo) => ({ ...repo, issues: [...repo.issues] })),
       onRescan: async () => undefined,
-      defaultFilter: 'status:merged',
+      defaultFilter: 'status:closed',
     }));
     expect(filterInput.value).toBe('daemon');
     await waitFor(() => {
@@ -4345,13 +4406,13 @@ describe('issue deep links', () => {
       onRescan: async () => undefined,
       initialRepoId: 'mandible',
       initialIssueId: '4c26383',
-      defaultFilter: 'status:merged',
+      defaultFilter: 'status:closed',
     }));
     const filterInput = screen.getByLabelText('Filter issues') as HTMLInputElement;
-    await waitFor(() => expect(filterInput.value).toBe('status:merged'));
+    await waitFor(() => expect(filterInput.value).toBe('status:closed'));
     await waitFor(() => {
       const stored = JSON.parse(String(window.localStorage.getItem(storageKey)));
-      expect(stored.filter).toBe('status:merged');
+      expect(stored.filter).toBe('status:closed');
       expect(stored.filterEdited).toBe(false);
     });
   });

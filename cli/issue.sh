@@ -40,10 +40,12 @@ RELATIONSHIP_TYPES=(
 )
 ACCEPTED_RELATIONSHIP_TYPES="parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests"
 
-ISSUE_KINDS=(bug feature umbrella maintenance experiment unknown)
-CREATABLE_ISSUE_KINDS=(bug feature umbrella maintenance experiment)
-ACCEPTED_ISSUE_KINDS="bug, feature, umbrella, maintenance, experiment, unknown"
-ACCEPTED_CREATION_KINDS="bug, feature, umbrella, maintenance, experiment"
+ISSUE_KINDS=(bug feature umbrella maintenance experiment coordination unknown)
+CREATABLE_ISSUE_KINDS=(bug feature umbrella maintenance experiment coordination)
+ACCEPTED_ISSUE_KINDS="bug, feature, umbrella, maintenance, experiment, coordination, unknown"
+ACCEPTED_CREATION_KINDS="bug, feature, umbrella, maintenance, experiment, coordination"
+ISSUE_PRIORITIES=(low normal high urgent unknown)
+ACCEPTED_ISSUE_PRIORITIES="low, normal, high, urgent, unknown"
 ISSUE_CLOSE_RESOLUTIONS=(delivered duplicate wontfix)
 ACCEPTED_ISSUE_CLOSE_RESOLUTIONS="delivered, duplicate, wontfix"
 
@@ -126,6 +128,24 @@ require_creation_kind() {
   die "Invalid creation kind: ${candidate}. New issues require one of: ${ACCEPTED_CREATION_KINDS}" 2
 }
 
+valid_issue_priority() {
+  local candidate="$1"
+  local accepted
+  for accepted in "${ISSUE_PRIORITIES[@]}"; do
+    if [[ "$candidate" == "$accepted" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_issue_priority() {
+  local candidate="$1"
+  if ! valid_issue_priority "$candidate"; then
+    die "Invalid issue priority: ${candidate}. Accepted priorities: ${ACCEPTED_ISSUE_PRIORITIES}" 2
+  fi
+}
+
 valid_issue_close_resolution() {
   local candidate="$1"
   local accepted
@@ -165,7 +185,8 @@ Usage:
   mandible issue show <id>                                        Show issue details
   mandible issue title <id> [--json] [--graceful]                 Print issue title
   mandible issue report <id> [--json]                             Print deterministic issue context
-  mandible issue triage [opts] [--json]                           Filter issues for review
+  mandible issue triage [--status open|closed|all] [--resolution <resolution>] [--kind <kind>] [--priority <priority>] [--label <label>] [opts] [--json]
+                                                                  Filter issues for review
   mandible issue heads <id>... [--json]                            Print issue state digests
   mandible issue changed --since-manifest <file> [--json]          Compare issue digests to a manifest
   mandible issue changed --since-issue <id> [--kind <kind>] [--checkpoint <id>] [--json]
@@ -271,6 +292,8 @@ print_issue_detail() {
   api_jq_human '
     "\(.display_id) [\(.status)] \(.title)",
     "kind: \(.kind // "unknown")",
+    "priority: \(.priority // "unknown")",
+    "resolution: \(.resolution // "none")",
     (if (.labels | length) > 0 then "labels: \(.labels | join(", "))" else "labels:" end),
     (if ((.dependencies // []) | length) > 0 then
       "prerequisites:",
@@ -578,7 +601,10 @@ cmd_report() {
 
 cmd_triage() {
   local status="open"
+  local resolution=""
   local label=""
+  local kind=""
+  local priority=""
   local stale_days=""
   local limit=50
   local json=0
@@ -589,9 +615,18 @@ cmd_triage() {
       --status)
         if (( $# < 2 )); then die "Missing value for --status." 2; fi
         status="$2"; shift 2 ;;
+      --resolution)
+        if (( $# < 2 )); then die "Missing value for --resolution." 2; fi
+        resolution="$2"; shift 2 ;;
       --label)
         if (( $# < 2 )); then die "Missing value for --label." 2; fi
         label="$2"; shift 2 ;;
+      --kind)
+        if (( $# < 2 )); then die "Missing value for --kind." 2; fi
+        kind="$2"; shift 2 ;;
+      --priority)
+        if (( $# < 2 )); then die "Missing value for --priority." 2; fi
+        priority="$2"; shift 2 ;;
       --repo)
         if (( $# < 2 )); then die "Missing value for --repo." 2; fi
         repo="$2"; shift 2 ;;
@@ -610,9 +645,12 @@ cmd_triage() {
   done
 
   case "$status" in
-    open|closed|all|merged) ;;
-    *) die "Unknown status: $status (expected open, closed, merged, or all)" 2 ;;
+    open|closed|all) ;;
+    *) die "Unknown status: $status (expected open, closed, or all; use --status closed --resolution delivered for delivered issues)" 2 ;;
   esac
+  if [[ -n "$resolution" ]]; then require_issue_close_resolution "$resolution"; fi
+  if [[ -n "$kind" ]]; then require_issue_kind "$kind"; fi
+  if [[ -n "$priority" ]]; then require_issue_priority "$priority"; fi
   if [[ -n "$stale_days" && ! "$stale_days" =~ ^[0-9]+$ ]]; then
     die "--stale-days must be an integer" 2
   fi
@@ -631,6 +669,9 @@ cmd_triage() {
   query="repo=${root}&status=$(urlencode "$status")"
   api_get "/api/issues?${query}" | jq \
     --arg label_filter "$label" \
+    --arg resolution_filter "$resolution" \
+    --arg kind_filter "$kind" \
+    --arg priority_filter "$priority" \
     --arg stale_days "$stale_days" \
     --argjson limit "$limit" \
     --argjson json "$json" '
@@ -646,12 +687,15 @@ cmd_triage() {
         | $repo.issues[]
         | . + {repo_name: $repo.repo_name}
         | select($label_filter == "" or ((.labels // []) | index($label_filter)))
+        | select($resolution_filter == "" or .resolution == $resolution_filter)
+        | select($kind_filter == "" or .kind == $kind_filter)
+        | select($priority_filter == "" or .priority == $priority_filter)
         | select((stale_cutoff == null) or (epoch(.updated_at) <= stale_cutoff))
       ]
       | sort_by(.updated_at // "")
       | .[0:$limit]
       | if $json then .
-        else .[] | "\(.display_id // .short_id // .id)\t\(.status)\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
+        else .[] | "\(.display_id // .short_id // .id)\t\(.status)\t\(.kind // "unknown")\t\(.priority // "unknown")\t\(.resolution // "-")\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
         end
     '
 }
@@ -1454,8 +1498,8 @@ cmd_list() {
   done
 
   case "$status" in
-    open|closed|all|merged) ;;
-    *) die "Unknown status: $status (expected open, closed, merged, or all)" 2 ;;
+    open|closed|all) ;;
+    *) die "Unknown status: $status (expected open, closed, or all; use --status closed for delivered issues and inspect resolution with triage)" 2 ;;
   esac
 
   require_tools
