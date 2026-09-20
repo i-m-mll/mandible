@@ -159,6 +159,10 @@ export function renderIssueMarkdown(issue: LedgerIssueDetailProjection): string 
   lines.push("");
   lines.push(issue.body || "_No body._");
   lines.push("");
+  lines.push("## Working Notes");
+  lines.push("");
+  lines.push(issue.work_notes || "_No working notes._");
+  lines.push("");
   lines.push("## Comments");
   lines.push("");
   if (issue.comments.length === 0) {

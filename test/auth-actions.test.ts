@@ -198,7 +198,7 @@ describe("auth request action execution", () => {
       ]);
       expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
         status: "closed",
-        resolution: "merged",
+        resolution: "delivered",
         worker_status: "done",
       });
       expect(
@@ -352,7 +352,7 @@ describe("auth request action execution", () => {
       expect(queue.listActions(request.id)).toEqual([]);
       expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
         status: "closed",
-        resolution: "merged",
+        resolution: "delivered",
       });
     } finally {
       db.close();

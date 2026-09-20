@@ -404,7 +404,7 @@ export function applyAuthRequestLedgerCompletion(
     store.setIssueStatus(
       issueId,
       "closed",
-      input.resolution ?? "merged",
+      input.resolution ?? "delivered",
       {
         actor_type: "system",
         actor_id: input.approval_lease_id ?? null,
@@ -466,7 +466,7 @@ export function applyWithheldAuthRequestClosures(
     store.setIssueStatus(
       issueId,
       "closed",
-      input.resolution ?? "merged",
+      input.resolution ?? "delivered",
       {
         actor_type: "system",
         actor_id: input.approval_lease_id ?? null,

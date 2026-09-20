@@ -371,7 +371,7 @@ describe("ledger issue routes", () => {
   it("atomically reopens and comments through the ledger comment route", async () => {
     const repoInfo = repo("repo-1", "mandible");
     const { issue, store } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Closed writable" });
-    store.setIssueStatus(issue.id, "closed", "fixed", SYSTEM_ACTOR);
+    store.setIssueStatus(issue.id, "closed", "delivered", SYSTEM_ACTOR);
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
 

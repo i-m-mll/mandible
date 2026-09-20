@@ -134,9 +134,9 @@ describe("set-based issue summary projection", () => {
     store.setLabel(child.id, "deleted-label", true, "mandible", SYSTEM_ACTOR);
     store.setLabel(child.id, "deleted-label", false, "mandible", SYSTEM_ACTOR);
 
-    store.setIssueStatus(merged.id, "closed", "merged", SYSTEM_ACTOR);
+    store.setIssueStatus(merged.id, "closed", "delivered", SYSTEM_ACTOR);
     store.setLabel(merged.id, "merged", true, "mandible", SYSTEM_ACTOR);
-    store.setIssueStatus(closed.id, "closed", null, SYSTEM_ACTOR);
+    store.setIssueStatus(closed.id, "closed", "wontfix", SYSTEM_ACTOR);
 
     const summaries = listLedgerIssueSummaries(db, emptyScanner);
     expect(summaries).toHaveLength(1);

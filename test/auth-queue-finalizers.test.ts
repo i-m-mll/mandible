@@ -833,7 +833,7 @@ describe("auth queue", () => {
         .toEqual({ state: "resolved" });
       expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
         status: "closed",
-        resolution: "merged",
+        resolution: "delivered",
       });
     } finally {
       queue.dispose();
@@ -905,7 +905,7 @@ describe("auth queue", () => {
       expect(queue.getRequest(request.id)?.merge_finalized_at).toBe(finalizedAt);
       expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
         status: "closed",
-        resolution: "merged",
+        resolution: "delivered",
       });
     } finally {
       queue.dispose();

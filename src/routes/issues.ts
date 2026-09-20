@@ -4,7 +4,7 @@ import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { resolveSessionAlias, type SessionAliasResolution } from "../session-liveness.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
-import { LedgerStore } from "../ledger/store.js";
+import { ledgerIssueLifecycleError, LedgerStore } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
 import {
   attributionForRequest,
@@ -12,6 +12,7 @@ import {
   operatorOnlyManagedSessionRoute,
 } from "../client-auth/authz.js";
 import {
+  LEDGER_CONCRETE_ISSUE_KINDS,
   LEDGER_ISSUE_KINDS,
   LEDGER_ISSUE_BRANCH_ROLES,
   LEDGER_ISSUE_RESOLUTIONS,
@@ -32,6 +33,7 @@ import {
   type LedgerRelationshipType,
   type LedgerWorkerStatus,
 } from "../ledger/types.js";
+import { getUserById } from "../users/store.js";
 import {
   buildLedgerIssueDetailInitialProjection,
   buildLedgerIssueDetailProjection,
@@ -1012,7 +1014,7 @@ function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<s
   if (childIds.length === 0) return [];
   const { sql, bindings } = placeholders(childIds, "issue");
   const rows = db.prepare(
-    `SELECT id, short_id, title, status, worker_status
+    `SELECT id, short_id, title, status, worker_status, kind
        FROM ledger_issues
       WHERE id IN (${sql}) AND deleted_at IS NULL`,
   ).all(bindings) as Array<{
@@ -1021,6 +1023,7 @@ function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<s
     title: string;
     status: string;
     worker_status: string;
+    kind: LedgerIssueKind;
   }>;
   const byId = new Map(rows.map((row) => [row.id, row]));
   const labels = labelsByIssue(db, childIds);
@@ -1043,7 +1046,7 @@ function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<s
       status: row.status,
       worker_status: row.worker_status,
       labels: childLabels,
-      kind: kindFromLabels(childLabels),
+      kind: row.kind,
       child_count: childCounts.get(childId) ?? 0,
       head: heads.get(childId) ?? getLedgerIssueHead(db, childId),
       issue_branches: issueBranches,
@@ -1218,7 +1221,6 @@ function invalidRelationshipTypeResponse(value: unknown): {
 function kindFromLabels(labels: string[]): LedgerIssueKind {
   if (labels.includes("error")) return "bug";
   if (labels.includes("umbrella")) return "umbrella";
-  if (labels.includes("deferred")) return "deferred";
   if (labels.includes("feature")) return "feature";
   return "unknown";
 }
@@ -1608,6 +1610,26 @@ export function registerIssueRoutes(
     sendJson(res, 200, { revisions });
   }, { fileRpc: "allow" });
 
+  server.get("/api/ledger/issues/:issueId/work-notes/history", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
+    const revisions = new LedgerStore(db).listBodyRevisions({
+      entity_type: "issue_work_notes",
+      entity_id: resolved.issue_id,
+    });
+    sendJson(res, 200, { revisions });
+  }, { fileRpc: "allow" });
+
   server.post("/api/ledger/relationships", (req, res) => {
     const body = getBody(req) ?? {};
     const sourceRef = typeof body.source_ref === "string"
@@ -1845,9 +1867,16 @@ export function registerIssueRoutes(
     const title = typeof body.title === "string" ? body.title.trim() : "";
     const issueBody = typeof body.body === "string" ? body.body : "";
     const labels = getStringArray(body.labels ?? body.label) ?? [];
+    const requestedKind = body.kind === undefined
+      ? undefined
+      : enumValue(body.kind, LEDGER_ISSUE_KINDS);
     const root = typeof body.root === "string" && body.root.trim() ? body.root.trim() : repoRef;
     if (!title || !issueBody.trim()) {
       sendJson(res, 400, { error: "title and body are required" });
+      return;
+    }
+    if (body.kind !== undefined && !requestedKind) {
+      sendJson(res, 400, { error: "invalid kind" });
       return;
     }
 
@@ -1904,13 +1933,22 @@ export function registerIssueRoutes(
       }
       throw error;
     }
+    const caller = req.client_identity ? getUserById(db, req.client_identity.user_id) : null;
+    if (caller?.kind === "agent"
+      && (!requestedKind || !(LEDGER_CONCRETE_ISSUE_KINDS as readonly string[]).includes(requestedKind))) {
+      sendJson(res, 400, {
+        error: "agent issue creation requires an explicit concrete kind",
+        accepted_kinds: LEDGER_CONCRETE_ISSUE_KINDS,
+      });
+      return;
+    }
     const store = new LedgerStore(db);
     const issue = store.createIssue({
       project_id: project.id,
       title,
       body: issueBody,
       labels,
-      kind: kindFromLabels(labels),
+      kind: requestedKind ?? kindFromLabels(labels),
       actor_type: "mandible_user",
       author_display: "Mandible",
       attribution: attributionForRequest(db, req),
@@ -2097,6 +2135,7 @@ export function registerIssueRoutes(
     const patch: {
       title?: string;
       body?: string;
+      work_notes?: string;
       kind?: LedgerIssueKind;
       priority?: LedgerPriority;
     } = {};
@@ -2107,6 +2146,7 @@ export function registerIssueRoutes(
       markdownWarnings = markdownPolicy.warnings;
       patch.body = body.body;
     }
+    if (typeof body.work_notes === "string") patch.work_notes = body.work_notes;
     const kind = enumValue(body.kind, LEDGER_ISSUE_KINDS);
     const priority = enumValue(body.priority, LEDGER_PRIORITIES);
     if (body.kind !== undefined && !kind) {
@@ -2119,6 +2159,15 @@ export function registerIssueRoutes(
     }
     if (kind) patch.kind = kind;
     if (priority) patch.priority = priority;
+
+    const hasExpectedWorkNotesRevision = Object.prototype.hasOwnProperty.call(body, "expected_work_notes_revision");
+    const expectedWorkNotesRevision = body.expected_work_notes_revision;
+    if (hasExpectedWorkNotesRevision
+      && expectedWorkNotesRevision !== null
+      && typeof expectedWorkNotesRevision !== "string") {
+      sendJson(res, 400, { error: "expected_work_notes_revision must be a revision id or null" });
+      return;
+    }
 
     const store = new LedgerStore(db);
     if (Object.keys(patch).length > 0) {
@@ -2133,6 +2182,10 @@ export function registerIssueRoutes(
               ? body.base_revision_id
               : undefined,
           base_body_hash: typeof body.base_body_hash === "string" ? body.base_body_hash : undefined,
+          base_work_notes_revision_id: hasExpectedWorkNotesRevision
+            ? expectedWorkNotesRevision as string | null
+            : undefined,
+          base_work_notes_revision_provided: hasExpectedWorkNotesRevision,
         });
       } catch (error) {
         if (isBodyRevisionConflict(error)) {
@@ -2156,10 +2209,17 @@ export function registerIssueRoutes(
         return;
       }
       const current = store.getIssue(resolved.issue_id);
+      const nextStatus = (status ?? current.status) as LedgerIssueStatus;
+      const nextResolution = (body.resolution === undefined ? null : resolution) as LedgerIssueResolution | null;
+      const lifecycleError = ledgerIssueLifecycleError(nextStatus, nextResolution);
+      if (lifecycleError) {
+        sendJson(res, 400, { error: lifecycleError });
+        return;
+      }
       store.setIssueStatus(
         resolved.issue_id,
-        (status ?? current.status) as LedgerIssueStatus,
-        resolution as LedgerIssueResolution | null,
+        nextStatus,
+        nextResolution,
         { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
         "mandible",
       );

@@ -342,7 +342,7 @@ describe("ledger operational links", () => {
     expect(results).toHaveLength(1);
     expect(new LedgerStore(db).getIssue(resolvedIssue.id)).toMatchObject({
       status: "closed",
-      resolution: "merged",
+      resolution: "delivered",
     });
     expect(new LedgerStore(db).getIssue(referencedIssue.id)).toMatchObject({
       status: "open",
@@ -401,7 +401,7 @@ describe("ledger operational links", () => {
 
     expect(new LedgerStore(db).getIssue(resolvedIssue.id)).toMatchObject({
       status: "closed",
-      resolution: "merged",
+      resolution: "delivered",
     });
     expect(
       db.prepare(

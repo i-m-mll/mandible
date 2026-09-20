@@ -6,6 +6,7 @@ import {
 } from "../ambient-provider-identity.js";
 import { getDb } from "../db.js";
 import { linkWorkUnitToLedgerIssue, resolveOperationalIssueRef } from "../ledger/operational-links.js";
+import { getLedgerIssueWorkMetadata } from "../ledger/issue-detail.js";
 import { normalizeProjectRepoId } from "../ledger/project-registry.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { SessionRegistry } from "../registry.js";
@@ -149,6 +150,29 @@ function ledgerLinkFieldsForExisting(
   };
 }
 
+function ledgerIssueMetadataFields(
+  db: ReturnType<typeof getDb>,
+  outcome: LedgerLinkOutcome,
+  fallbackIssueId: string | null = null,
+): Record<string, unknown> {
+  const issueId = outcome.status === "linked" ? outcome.issue_id : fallbackIssueId;
+  if (!issueId) {
+    return {
+      work_notes: "",
+      work_notes_revision: null,
+      dependencies: [],
+      dependency_warning: false,
+    };
+  }
+  const metadata = getLedgerIssueWorkMetadata(db, issueId);
+  return {
+    work_notes: metadata.work_notes,
+    work_notes_revision: metadata.work_notes_revision,
+    dependencies: metadata.dependencies,
+    dependency_warning: metadata.dependency_warning,
+  };
+}
+
 function resolveLedgerIssueId(
   db: ReturnType<typeof getDb>,
   issueId: string,
@@ -222,6 +246,7 @@ export function registerWorkUnitRoutes(
         state: existing.state,
         existing: true,
         ...ledgerLinkFieldsForExisting(ledgerLink, existing.ledger_issue_id),
+        ...ledgerIssueMetadataFields(db, ledgerLink, existing.ledger_issue_id),
       });
       return;
     }
@@ -265,7 +290,11 @@ export function registerWorkUnitRoutes(
     if (credential) assignInitialCustody(db, id, credential.user_id, credential.credential_id, now);
 
     const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
-    sendJson(res, 201, { id, ...ledgerLinkFields(ledgerLink) });
+    sendJson(res, 201, {
+      id,
+      ...ledgerLinkFields(ledgerLink),
+      ...ledgerIssueMetadataFields(db, ledgerLink),
+    });
   }, { fileRpc: "allow" });
 
   // POST /api/work-units/activate — mark as committed, update timestamps
@@ -342,6 +371,7 @@ export function registerWorkUnitRoutes(
         id: existing.id,
         state: "committed",
         ...ledgerLinkFieldsForExisting(ledgerLink, existing.ledger_issue_id),
+        ...ledgerIssueMetadataFields(db, ledgerLink, existing.ledger_issue_id),
       });
     } else {
       // No existing work unit — create one in committed state (auto-claim)
@@ -382,7 +412,12 @@ export function registerWorkUnitRoutes(
       if (credential) assignInitialCustody(db, id, credential.user_id, credential.credential_id, now);
 
       const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
-      sendJson(res, 201, { id, state: "committed", ...ledgerLinkFields(ledgerLink) });
+      sendJson(res, 201, {
+        id,
+        state: "committed",
+        ...ledgerLinkFields(ledgerLink),
+        ...ledgerIssueMetadataFields(db, ledgerLink),
+      });
     }
   }, { fileRpc: "allow" });
 

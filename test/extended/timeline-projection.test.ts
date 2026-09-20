@@ -118,7 +118,7 @@ describe("project timeline projection", () => {
         state: expect.objectContaining({
           event_type: "issue.closed",
           status: "closed",
-          resolution: "merged",
+          resolution: "delivered",
         }),
         headline_source: "state",
       }),

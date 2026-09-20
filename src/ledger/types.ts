@@ -14,13 +14,9 @@ export const LEDGER_ISSUE_BRANCH_ROLES = ["primary", "superseded"] as const;
 export type LedgerIssueBranchRole = (typeof LEDGER_ISSUE_BRANCH_ROLES)[number];
 
 export const LEDGER_ISSUE_RESOLUTIONS = [
-  "fixed",
-  "merged",
+  "delivered",
   "duplicate",
   "wontfix",
-  "invalid",
-  "obsolete",
-  "unknown",
 ] as const;
 export type LedgerIssueResolution = (typeof LEDGER_ISSUE_RESOLUTIONS)[number];
 
@@ -28,13 +24,21 @@ export const LEDGER_ISSUE_KINDS = [
   "bug",
   "feature",
   "umbrella",
-  "task",
-  "question",
   "maintenance",
-  "deferred",
+  "experiment",
   "unknown",
 ] as const;
 export type LedgerIssueKind = (typeof LEDGER_ISSUE_KINDS)[number];
+
+/** Kinds permitted for newly created agent-owned issues. */
+export const LEDGER_CONCRETE_ISSUE_KINDS = [
+  "bug",
+  "feature",
+  "umbrella",
+  "maintenance",
+  "experiment",
+] as const;
+export type LedgerConcreteIssueKind = (typeof LEDGER_CONCRETE_ISSUE_KINDS)[number];
 
 export const LEDGER_PRIORITIES = ["low", "normal", "high", "urgent", "unknown"] as const;
 export type LedgerPriority = (typeof LEDGER_PRIORITIES)[number];
@@ -82,7 +86,7 @@ export type LedgerRelationshipProvenance = (typeof LEDGER_RELATIONSHIP_PROVENANC
 export const LEDGER_RELATIONSHIP_ENTITY_TYPES = ["issue", "comment"] as const;
 export type LedgerRelationshipEntityType = (typeof LEDGER_RELATIONSHIP_ENTITY_TYPES)[number];
 
-export const LEDGER_BODY_REVISION_ENTITY_TYPES = ["issue_body", "comment_body"] as const;
+export const LEDGER_BODY_REVISION_ENTITY_TYPES = ["issue_body", "issue_work_notes", "comment_body"] as const;
 export type LedgerBodyRevisionEntityType = (typeof LEDGER_BODY_REVISION_ENTITY_TYPES)[number];
 
 export const LEDGER_BODY_REVISION_REASONS = [
@@ -156,6 +160,7 @@ export interface LedgerIssue {
   project_id: string;
   title: string;
   body: string;
+  work_notes: string;
   status: LedgerIssueStatus;
   worker_status: LedgerWorkerStatus;
   resolution: LedgerIssueResolution | null;
