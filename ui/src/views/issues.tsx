@@ -489,10 +489,12 @@ export function IssuesView({
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
   const lastScrolledCommentRef = useRef<string | null>(null);
   const detailRequestSeqRef = useRef(0);
+  const selectedIssueKeyRef = useRef<string | null>(null);
   const issueDetailScrollRef = useRef<HTMLDivElement>(null);
   const scrollSaveTimerRef = useRef<number | null>(null);
   const lastRestoredScrollKeyRef = useRef<string | null>(null);
   const issueDetailCacheRef = useRef<IssueDetailCache>(new Map());
+  selectedIssueKeyRef.current = `${selectedRepoId ?? ''}:${selectedIssueId ?? ''}`;
 
   useEffect(() => {
     setViewState((current) => current.filterEdited
@@ -944,11 +946,14 @@ export function IssuesView({
 
   const handleUpdateWorkNotes = useCallback(async (workNotes: string, expectedRevision: string | null) => {
     if (!visibleLedgerIssueDetail || actionInFlight) return;
+    const saveSelectionKey = `${selectedRepoId ?? ''}:${selectedIssueId ?? ''}`;
+    const saveIssueId = visibleLedgerIssueDetail.id;
     setActionInFlight(true);
     try {
       const payload: Record<string, unknown> = { work_notes: workNotes };
       payload.expected_work_notes_revision = expectedRevision;
-      const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, payload);
+      const detail = await patchLedgerIssue(saveIssueId, payload);
+      if (selectedIssueKeyRef.current !== saveSelectionKey) return;
       putCachedIssueDetail(
         issueDetailCacheRef.current,
         selectedRepoId,
@@ -957,7 +962,7 @@ export function IssuesView({
       );
       setLedgerIssueDetail(detail);
     } catch (error) {
-      if (isApiErrorStatus(error, 409) && selectedRepoId && selectedIssueId) {
+      if (isApiErrorStatus(error, 409) && selectedIssueKeyRef.current === saveSelectionKey && selectedRepoId && selectedIssueId) {
         try {
           const latest = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
           putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId, latest);

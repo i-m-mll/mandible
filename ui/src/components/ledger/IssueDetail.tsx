@@ -55,6 +55,11 @@ type RenderTimelineEntry =
       created_at: number;
     };
 
+type WorkNotesDraft = {
+  draft: string;
+  baseRevision: string | null;
+};
+
 const UMBRELLA_LABEL = 'umbrella';
 
 /**
@@ -142,6 +147,7 @@ export function LedgerIssueDetail({
   const [commentText, setCommentText] = useState('');
   const [workNotesDraft, setWorkNotesDraft] = useState(detail.work_notes ?? '');
   const [editingWorkNotes, setEditingWorkNotes] = useState(false);
+  const [workNotesEditorIssueId, setWorkNotesEditorIssueId] = useState(detail.id);
   const [workNotesBaseRevision, setWorkNotesBaseRevision] = useState<string | null>(detail.work_notes_revision ?? null);
   const [workNotesSaveError, setWorkNotesSaveError] = useState<string | null>(null);
   const [workNotesConflict, setWorkNotesConflict] = useState(false);
@@ -159,6 +165,9 @@ export function LedgerIssueDetail({
   const [launchAgentOpen, setLaunchAgentOpen] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
   const headerRef = useRef<HTMLElement>(null);
+  const workNotesDetailIdRef = useRef(detail.id);
+  const workNotesDraftsRef = useRef(new Map<string, WorkNotesDraft>());
+  workNotesDetailIdRef.current = detail.id;
   const busy = actionInFlight || localBusy;
   const resolvingAuth = detail.auth_requests.find((auth) =>
     (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') &&
@@ -174,6 +183,7 @@ export function LedgerIssueDetail({
   const isUmbrella = detail.labels.includes(UMBRELLA_LABEL);
   const { children: umbrellaChildren, rest: otherRelationships } = partitionUmbrellaChildren(detail);
   const dependencies = detail.dependencies ?? [];
+  const editingCurrentIssue = editingWorkNotes && workNotesEditorIssueId === detail.id;
   const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
   const isInitialDetail = detail.detail_stage === 'initial';
   const shouldShowFullDetailLoading = (
@@ -205,12 +215,28 @@ export function LedgerIssueDetail({
   }, [detail.id]);
 
   useEffect(() => {
+    if (workNotesEditorIssueId !== detail.id) {
+      if (editingWorkNotes) {
+        workNotesDraftsRef.current.set(workNotesEditorIssueId, {
+          draft: workNotesDraft,
+          baseRevision: workNotesBaseRevision,
+        });
+      }
+      const savedDraft = workNotesDraftsRef.current.get(detail.id);
+      setWorkNotesEditorIssueId(detail.id);
+      setWorkNotesDraft(savedDraft?.draft ?? detail.work_notes ?? '');
+      setWorkNotesBaseRevision(savedDraft?.baseRevision ?? detail.work_notes_revision ?? null);
+      setWorkNotesSaveError(null);
+      setWorkNotesConflict(false);
+      setEditingWorkNotes(Boolean(savedDraft));
+      return;
+    }
     if (editingWorkNotes) return;
     setWorkNotesDraft(detail.work_notes ?? '');
     setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
     setWorkNotesSaveError(null);
     setWorkNotesConflict(false);
-  }, [detail.id, detail.work_notes, detail.work_notes_revision, editingWorkNotes]);
+  }, [detail.id, detail.work_notes, detail.work_notes_revision, editingWorkNotes, workNotesEditorIssueId]);
 
   const submitComment = async () => {
     if (!onAddComment || !commentText.trim() || busy) return;
@@ -225,14 +251,21 @@ export function LedgerIssueDetail({
   };
 
   const submitWorkNotes = async () => {
-    if (!onUpdateWorkNotes || busy) return;
+    if (!onUpdateWorkNotes || busy || !editingCurrentIssue) return;
+    const saveIssueId = detail.id;
+    const saveDraft = workNotesDraft;
+    const saveBaseRevision = workNotesBaseRevision;
     setLocalBusy(true);
     try {
-      await onUpdateWorkNotes(workNotesDraft, workNotesBaseRevision);
-      setWorkNotesSaveError(null);
-      setWorkNotesConflict(false);
-      setEditingWorkNotes(false);
+      await onUpdateWorkNotes(saveDraft, saveBaseRevision);
+      if (workNotesDetailIdRef.current === saveIssueId) {
+        workNotesDraftsRef.current.delete(saveIssueId);
+        setWorkNotesSaveError(null);
+        setWorkNotesConflict(false);
+        setEditingWorkNotes(false);
+      }
     } catch (error) {
+      if (workNotesDetailIdRef.current !== saveIssueId) return;
       if (isApiErrorStatus(error, 409)) {
         setWorkNotesConflict(true);
         setWorkNotesSaveError('Working notes changed while you were editing. Review the draft, then use the latest notes or save again after reconciling.');
@@ -370,10 +403,15 @@ export function LedgerIssueDetail({
           <section className="ledger-issue-detail__section ledger-issue-detail__working-notes-section">
             <div className="ledger-issue-detail__section-heading">
               <SectionTitle title="Working notes" />
-              {onUpdateWorkNotes && !editingWorkNotes && (
+              {onUpdateWorkNotes && !editingCurrentIssue && (
                 <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
+                  setWorkNotesEditorIssueId(detail.id);
                   setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
                   setWorkNotesDraft(detail.work_notes ?? '');
+                  workNotesDraftsRef.current.set(detail.id, {
+                    draft: detail.work_notes ?? '',
+                    baseRevision: detail.work_notes_revision ?? null,
+                  });
                   setWorkNotesSaveError(null);
                   setWorkNotesConflict(false);
                   setEditingWorkNotes(true);
@@ -382,14 +420,18 @@ export function LedgerIssueDetail({
                 </button>
               )}
             </div>
-            {editingWorkNotes ? (
+            {editingCurrentIssue ? (
               <>
                 <textarea
                   className="ledger-work-notes-editor"
                   aria-label="Working notes"
                   rows={compact ? 4 : 7}
                   value={workNotesDraft}
-                  onInput={(event) => setWorkNotesDraft(event.currentTarget.value)}
+                  onInput={(event) => {
+                    const draft = event.currentTarget.value;
+                    setWorkNotesDraft(draft);
+                    workNotesDraftsRef.current.set(detail.id, { draft, baseRevision: workNotesBaseRevision });
+                  }}
                 />
                 {workNotesSaveError && <p className="text-muted ledger-work-notes-error" role="alert">{workNotesSaveError}</p>}
                 <div className="ledger-comment-composer__actions">
@@ -400,6 +442,7 @@ export function LedgerIssueDetail({
                     <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
                       setWorkNotesDraft(detail.work_notes ?? '');
                       setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
+                      workNotesDraftsRef.current.delete(detail.id);
                       setWorkNotesSaveError(null);
                       setWorkNotesConflict(false);
                     }}>
@@ -409,6 +452,7 @@ export function LedgerIssueDetail({
                   <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
                     setWorkNotesDraft(detail.work_notes ?? '');
                     setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
+                    workNotesDraftsRef.current.delete(detail.id);
                     setWorkNotesSaveError(null);
                     setWorkNotesConflict(false);
                     setEditingWorkNotes(false);

@@ -166,6 +166,43 @@ describe('issue detail label presentation', () => {
     expect(screen.getByRole('alert').textContent).toContain('changed while you were editing');
   });
 
+  it('keeps unsaved notes scoped to the issue when switching away and back', async () => {
+    const initial = detail([]);
+    initial.work_notes = 'Issue one notes';
+    initial.work_notes_revision = 'issue-one-rev';
+    const other = { ...initial, id: 'issue-2', display_id: 'issue-2', work_notes: 'Issue two notes', work_notes_revision: 'issue-two-rev' };
+    const onUpdateWorkNotes = vi.fn(async () => undefined);
+    const view = render(<LedgerIssueDetail detail={initial} onUpdateWorkNotes={onUpdateWorkNotes} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.input(screen.getByRole('textbox', { name: 'Working notes' }), { target: { value: 'Issue one draft' } });
+    view.rerender(<LedgerIssueDetail detail={other} onUpdateWorkNotes={onUpdateWorkNotes} />);
+    expect(screen.queryByRole('textbox', { name: 'Working notes' })).toBeNull();
+    expect(screen.getByText('Issue two notes')).toBeTruthy();
+
+    view.rerender(<LedgerIssueDetail detail={initial} onUpdateWorkNotes={onUpdateWorkNotes} />);
+    await waitFor(() => expect((screen.getByRole('textbox', { name: 'Working notes' }) as HTMLTextAreaElement).value).toBe('Issue one draft'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save notes' }));
+    await waitFor(() => expect(onUpdateWorkNotes).toHaveBeenCalledWith('Issue one draft', 'issue-one-rev'));
+  });
+
+  it('does not let an old in-flight save alter the newly selected issue', async () => {
+    const initial = detail([]);
+    initial.work_notes = 'Issue one notes';
+    const other = { ...initial, id: 'issue-2', display_id: 'issue-2', work_notes: 'Issue two notes' };
+    let resolveSave: (() => void) | undefined;
+    const onUpdateWorkNotes = vi.fn(() => new Promise<void>((resolve) => { resolveSave = resolve; }));
+    const view = render(<LedgerIssueDetail detail={initial} onUpdateWorkNotes={onUpdateWorkNotes} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.input(screen.getByRole('textbox', { name: 'Working notes' }), { target: { value: 'Old issue save' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save notes' }));
+    view.rerender(<LedgerIssueDetail detail={other} onUpdateWorkNotes={onUpdateWorkNotes} />);
+    resolveSave?.();
+    await waitFor(() => expect(screen.getByText('Issue two notes')).toBeTruthy());
+    expect(screen.queryByText('Old issue save')).toBeNull();
+  });
+
   it('shows open dependency warnings without blocking issue actions', () => {
     const projection = detail([]);
     projection.dependencies = [{
