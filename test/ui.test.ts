@@ -5374,10 +5374,11 @@ describe('LedgerIssueDetail', () => {
       auth_requests: [],
     } as const;
 
+    const onSetStatus = vi.fn();
     render(h(LedgerIssueDetail, {
       detail,
       onAddComment: () => undefined,
-      onSetStatus: () => undefined,
+      onSetStatus,
       onStartAgent: () => undefined,
     }));
 
@@ -5395,6 +5396,15 @@ describe('LedgerIssueDetail', () => {
     expect(screen.getByText('Close Issue')).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getAllByText('Add Comment')).toHaveLength(2);
+
+    fireEvent.click(screen.getByText('Close Issue'));
+    expect(screen.getByRole('group', { name: 'Close issue resolution' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Close as delivered' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Close as duplicate' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Close as wontfix' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close as duplicate' }));
+    expect(onSetStatus).toHaveBeenCalledWith('closed', 'duplicate');
   });
 });
 

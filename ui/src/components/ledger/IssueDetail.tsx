@@ -60,6 +60,9 @@ type WorkNotesDraft = {
   baseRevision: string | null;
 };
 
+export const LEDGER_ISSUE_CLOSE_RESOLUTIONS = ['delivered', 'duplicate', 'wontfix'] as const;
+export type LedgerIssueCloseResolution = (typeof LEDGER_ISSUE_CLOSE_RESOLUTIONS)[number];
+
 const UMBRELLA_LABEL = 'umbrella';
 
 /**
@@ -116,7 +119,7 @@ export type LedgerIssueDetailProps = {
   actionInFlight?: boolean;
   onAddComment?: (body: string) => Promise<void> | void;
   onUpdateWorkNotes?: (body: string, expectedRevision: string | null) => Promise<void> | void;
-  onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
+  onSetStatus?: (status: 'open' | 'closed', resolution?: LedgerIssueCloseResolution) => Promise<void> | void;
   onStartAgent?: () => Promise<void> | void;
   onOpenEntity?: (type: EntityType, id: string, repoId?: string) => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
@@ -715,13 +718,14 @@ function IssueActionsMenu({
   onClose: () => void;
   onStartAgent?: () => Promise<void> | void;
   onLaunchAgent?: () => void;
-  onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
+  onSetStatus?: (status: 'open' | 'closed', resolution?: LedgerIssueCloseResolution) => Promise<void> | void;
   onAddComment?: () => void;
   onAddToSpace?: () => void;
   onShowMetadata?: () => void;
   onShowAuthEvidence?: () => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
 }): JSX.Element {
+  const [closeResolutionOpen, setCloseResolutionOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuStyle = useAnchoredMenu({
@@ -734,6 +738,9 @@ function IssueActionsMenu({
     callback();
     onClose();
   };
+  useEffect(() => {
+    if (!open) setCloseResolutionOpen(false);
+  }, [open]);
   return (
     <div className="ledger-issue-actions-menu">
       <button
@@ -844,15 +851,52 @@ function IssueActionsMenu({
               Auth Evidence
             </button>
           )}
-          {onSetStatus && (
+          {onSetStatus && detail.status === 'open' && !closeResolutionOpen && (
             <button
               type="button"
-              className={`ledger-issue-actions-menu__item${detail.status === 'open' ? ' ledger-issue-actions-menu__item--danger' : ''}`}
+              className="ledger-issue-actions-menu__item ledger-issue-actions-menu__item--danger"
               role="menuitem"
               disabled={busy}
-              onClick={() => closeAfter(() => void onSetStatus(detail.status === 'open' ? 'closed' : 'open'))}
+              onClick={() => setCloseResolutionOpen(true)}
             >
-              {detail.status === 'open' ? 'Close Issue' : 'Reopen Issue'}
+              Close Issue
+            </button>
+          )}
+          {onSetStatus && detail.status === 'open' && closeResolutionOpen && (
+            <div role="group" aria-label="Close issue resolution">
+              <div className="ledger-issue-actions-menu__subheading">Choose a resolution</div>
+              {LEDGER_ISSUE_CLOSE_RESOLUTIONS.map((resolution) => (
+                <button
+                  key={resolution}
+                  type="button"
+                  className="ledger-issue-actions-menu__item ledger-issue-actions-menu__item--danger"
+                  role="menuitem"
+                  disabled={busy}
+                  onClick={() => closeAfter(() => void onSetStatus('closed', resolution))}
+                >
+                  Close as {resolution}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="ledger-issue-actions-menu__item"
+                role="menuitem"
+                disabled={busy}
+                onClick={() => setCloseResolutionOpen(false)}
+              >
+                Back
+              </button>
+            </div>
+          )}
+          {onSetStatus && detail.status === 'closed' && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(() => void onSetStatus('open'))}
+            >
+              Reopen Issue
             </button>
           )}
         </div>
