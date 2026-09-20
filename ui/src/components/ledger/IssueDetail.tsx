@@ -225,7 +225,7 @@ export function LedgerIssueDetail({
       const savedDraft = workNotesDraftsRef.current.get(detail.id);
       setWorkNotesEditorIssueId(detail.id);
       setWorkNotesDraft(savedDraft?.draft ?? detail.work_notes ?? '');
-      setWorkNotesBaseRevision(savedDraft?.baseRevision ?? detail.work_notes_revision ?? null);
+      setWorkNotesBaseRevision(savedDraft ? savedDraft.baseRevision : detail.work_notes_revision ?? null);
       setWorkNotesSaveError(null);
       setWorkNotesConflict(false);
       setEditingWorkNotes(Boolean(savedDraft));

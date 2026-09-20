@@ -965,8 +965,10 @@ export function IssuesView({
       if (isApiErrorStatus(error, 409) && selectedIssueKeyRef.current === saveSelectionKey && selectedRepoId && selectedIssueId) {
         try {
           const latest = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
-          putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId, latest);
-          setLedgerIssueDetail(latest);
+          if (selectedIssueKeyRef.current === saveSelectionKey) {
+            putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId, latest);
+            setLedgerIssueDetail(latest);
+          }
         } catch {
           // Preserve the original conflict so the editor can explain it.
         }

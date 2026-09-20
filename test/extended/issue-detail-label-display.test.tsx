@@ -169,7 +169,7 @@ describe('issue detail label presentation', () => {
   it('keeps unsaved notes scoped to the issue when switching away and back', async () => {
     const initial = detail([]);
     initial.work_notes = 'Issue one notes';
-    initial.work_notes_revision = 'issue-one-rev';
+    initial.work_notes_revision = null;
     const other = { ...initial, id: 'issue-2', display_id: 'issue-2', work_notes: 'Issue two notes', work_notes_revision: 'issue-two-rev' };
     const onUpdateWorkNotes = vi.fn(async () => undefined);
     const view = render(<LedgerIssueDetail detail={initial} onUpdateWorkNotes={onUpdateWorkNotes} />);
@@ -180,10 +180,10 @@ describe('issue detail label presentation', () => {
     expect(screen.queryByRole('textbox', { name: 'Working notes' })).toBeNull();
     expect(screen.getByText('Issue two notes')).toBeTruthy();
 
-    view.rerender(<LedgerIssueDetail detail={initial} onUpdateWorkNotes={onUpdateWorkNotes} />);
+    view.rerender(<LedgerIssueDetail detail={{ ...initial, work_notes: 'Remote first notes', work_notes_revision: 'remote-first-revision' }} onUpdateWorkNotes={onUpdateWorkNotes} />);
     await waitFor(() => expect((screen.getByRole('textbox', { name: 'Working notes' }) as HTMLTextAreaElement).value).toBe('Issue one draft'));
     fireEvent.click(screen.getByRole('button', { name: 'Save notes' }));
-    await waitFor(() => expect(onUpdateWorkNotes).toHaveBeenCalledWith('Issue one draft', 'issue-one-rev'));
+    await waitFor(() => expect(onUpdateWorkNotes).toHaveBeenCalledWith('Issue one draft', null));
   });
 
   it('does not let an old in-flight save alter the newly selected issue', async () => {
