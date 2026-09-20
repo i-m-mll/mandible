@@ -302,7 +302,7 @@ cmd_close() {
   message_payload=$(jq -n --arg message "Resolved by commit ${sha:0:12}" '{message:$message}')
   api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$message_payload" >/dev/null || true
 
-  status_payload=$(jq -n '{status:"closed", resolution:"fixed"}')
+  status_payload=$(jq -n '{status:"closed", resolution:"delivered"}')
   api_send PATCH "/api/ledger/issues/$(urlencode "$id")" "$status_payload" >/dev/null \
     || die "${RED}Failed to close issue ${id}${RESET}" 1
 

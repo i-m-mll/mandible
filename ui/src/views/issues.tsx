@@ -31,6 +31,7 @@ export type IssueSummary = {
   title: string;
   status: 'open' | 'closed';
   kind?: string;
+  resolution?: string | null;
   labels: string[];
   author: string;
   created_at: string;
@@ -339,7 +340,7 @@ function synthesizeLedgerIssueDetail(
     : labels.includes('user-action-required')
       ? 'user-action-required'
       : 'normal';
-  const resolution = issue.status === 'closed' && labels.includes('merged') ? 'merged' : null;
+  const resolution = issue.resolution ?? null;
   return {
     id: issue.id,
     display_id: issue.id,

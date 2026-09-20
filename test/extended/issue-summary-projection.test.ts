@@ -98,7 +98,7 @@ describe("set-based issue summary projection", () => {
       project_id: checkout.project.id,
       title: "Child",
       body: "Child body",
-      kind: "feature",
+      kind: "maintenance",
       labels: ["feature", "zeta"],
       aliases: [{ alias_kind: "git_bug_human", alias: "chi1234", is_primary: true }],
     });
@@ -134,7 +134,7 @@ describe("set-based issue summary projection", () => {
     store.setLabel(child.id, "deleted-label", true, "mandible", SYSTEM_ACTOR);
     store.setLabel(child.id, "deleted-label", false, "mandible", SYSTEM_ACTOR);
 
-    store.setIssueStatus(merged.id, "closed", "merged", SYSTEM_ACTOR);
+    store.setIssueStatus(merged.id, "closed", "delivered", SYSTEM_ACTOR);
     store.setLabel(merged.id, "merged", true, "mandible", SYSTEM_ACTOR);
     store.setIssueStatus(closed.id, "closed", null, SYSTEM_ACTOR);
 
@@ -149,6 +149,8 @@ describe("set-based issue summary projection", () => {
     const byTitle = new Map(summary.issues.map((issue) => [issue.title, issue]));
 
     const childRow = byTitle.get("Child")!;
+    expect(childRow.kind).toBe("maintenance");
+    expect(byTitle.get("Merged")!.resolution).toBe("delivered");
     // Description omitted from list rows.
     expect(childRow.description).toBeUndefined();
     // Active labels only, sorted; deleted label excluded.

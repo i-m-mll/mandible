@@ -422,6 +422,8 @@ export interface GitBugIssue {
   repo_name: string;
   title: string;
   status: "open" | "closed";
+  kind?: import("./ledger/types.js").LedgerIssueKind;
+  resolution?: import("./ledger/types.js").LedgerIssueResolution | null;
   labels: string[];
   author: string;
   author_legacy_display?: string;

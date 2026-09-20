@@ -971,7 +971,7 @@ function StatusPill({
   size?: 'sm' | 'lg';
 }): JSX.Element {
   const label = status === 'closed' && resolution ? `${status}: ${resolution}` : status;
-  const cls = status === 'open' ? 'status-pill--success' : resolution === 'merged' ? 'status-pill--merged' : 'status-pill--dismissed';
+  const cls = status === 'open' ? 'status-pill--success' : resolution === 'delivered' ? 'status-pill--merged' : 'status-pill--dismissed';
   const sizeCls = size === 'lg' ? ' status-pill--lg' : '';
   if (linkedAuth && onOpenAuth) {
     return (
