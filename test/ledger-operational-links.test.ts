@@ -369,7 +369,7 @@ describe("ledger operational links", () => {
       db.prepare(
         "SELECT label FROM ledger_labels WHERE issue_id = ? AND label = 'merged' AND deleted_at IS NULL",
       ).get(resolvedIssue.id),
-    ).toEqual({ label: "merged" });
+    ).toBeUndefined();
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM ledger_comments WHERE issue_id = ?")
         .get(resolvedIssue.id),

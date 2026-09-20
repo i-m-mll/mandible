@@ -264,11 +264,7 @@ describe("ledger issue detail projection", () => {
       body: "Child body",
       worker_status: "in_progress",
     });
-    expect(projection.labels).toEqual([
-      "feature",
-      "mandible:branch:feature/detail",
-      "mandible:status:in_progress",
-    ]);
+    expect(projection.labels).toEqual(["feature"]);
     expect(projection.issue_branches).toMatchObject([
       { branch: "feature/detail", role: "primary" },
     ]);

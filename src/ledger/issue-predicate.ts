@@ -102,24 +102,22 @@ export function containsResidualPredicate(predicate: TimelineIssuePredicate): bo
   return false;
 }
 
-/**
- * Build the parent → children adjacency map from `parent:<ref>` labels.
- * Children lists are sorted for deterministic traversal.
- */
-export function buildParentChildrenByIssueId(issues: IssueRow[]): Map<string, string[]> {
+/** Build the parent → children adjacency map from canonical relationship edges. */
+export function buildParentChildrenByIssueId(
+  issues: IssueRow[],
+  edges: ReadonlyArray<Pick<LedgerIssueRelationshipSource, "source_issue_id" | "target_issue_id" | "deleted_at">> = [],
+): Map<string, string[]> {
   const issueById = new Map(issues.map((issue) => [issue.id, issue]));
   const children = new Map<string, string[]>();
-  for (const issue of issues) {
-    for (const label of labelList(issue)) {
-      if (!label.startsWith("parent:")) continue;
-      const parentId = resolveIssueId(label.slice("parent:".length), issueById);
-      if (!parentId) continue;
-      const list = children.get(parentId) ?? [];
-      list.push(issue.id);
-      children.set(parentId, list);
-    }
+  for (const edge of edges) {
+    if (edge.deleted_at !== null || !issueById.has(edge.target_issue_id)) continue;
+    const list = children.get(edge.source_issue_id) ?? [];
+    list.push(edge.target_issue_id);
+    children.set(edge.source_issue_id, list);
   }
-  for (const list of children.values()) list.sort();
+  for (const [parentId, list] of children) {
+    children.set(parentId, Array.from(new Set(list)).sort());
+  }
   return children;
 }
 
