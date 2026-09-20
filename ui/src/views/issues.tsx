@@ -493,14 +493,20 @@ export function IssuesView({
   const lastScrolledCommentRef = useRef<string | null>(null);
   const detailRequestSeqRef = useRef(0);
   const selectedIssueKeyRef = useRef<string | null>(null);
+  const selectedIssueGenerationRef = useRef(0);
   const issueDetailScrollRef = useRef<HTMLDivElement>(null);
   const scrollSaveTimerRef = useRef<number | null>(null);
   const lastRestoredScrollKeyRef = useRef<string | null>(null);
   const issueDetailCacheRef = useRef<IssueDetailCache>(new Map());
-  selectedIssueKeyRef.current = `${selectedRepoId ?? ''}:${selectedIssueId ?? ''}`;
+  const nextSelectedIssueKey = `${selectedRepoId ?? ''}:${selectedIssueId ?? ''}`;
+  if (selectedIssueKeyRef.current !== nextSelectedIssueKey) {
+    selectedIssueGenerationRef.current += 1;
+  }
+  selectedIssueKeyRef.current = nextSelectedIssueKey;
 
   useEffect(() => {
     setActionError(null);
+    setActionInFlight(false);
   }, [selectedRepoId, selectedIssueId]);
 
   useEffect(() => {
@@ -907,6 +913,39 @@ export function IssuesView({
     };
   }, [visibleLedgerIssueDetail?.id, visibleLedgerIssueDetail?.display_id, refreshLedgerIssueDetail]);
 
+  const handleIssueActionFailure = useCallback(async (
+    action: string,
+    selectionKey: string,
+    selectionGeneration: number,
+    error: unknown,
+  ) => {
+    const isCurrentSelection = () => (
+      selectedIssueKeyRef.current === selectionKey &&
+      selectedIssueGenerationRef.current === selectionGeneration
+    );
+    if (!isCurrentSelection()) return;
+    const reason = error instanceof Error && error.message ? error.message : 'the server did not confirm the request';
+    if (!selectedRepoId || !selectedIssueId) {
+      setActionError(`${action} request could not be confirmed: ${reason}. Refresh the issue before retrying.`);
+      return;
+    }
+    try {
+      const detail = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
+      if (!isCurrentSelection()) return;
+      putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId, detail);
+      setLedgerIssueDetail(detail);
+      const state = detail.status === 'closed'
+        ? `closed as ${detail.resolution ?? 'an unknown resolution'}`
+        : 'open';
+      setActionError(
+        `${action} request could not be confirmed: ${reason}. Authoritative refresh shows this issue is ${state}; refresh before retrying.`,
+      );
+    } catch {
+      if (!isCurrentSelection()) return;
+      setActionError(`${action} request could not be confirmed: ${reason}. Refresh the issue before retrying.`);
+    }
+  }, [selectedRepoId, selectedIssueId]);
+
   const handleCloseIssue = useCallback(async (resolution?: LedgerIssueCloseResolution) => {
     if (!visibleLedgerIssueDetail || actionInFlight) return;
     if (!resolution) {
@@ -914,34 +953,52 @@ export function IssuesView({
       return;
     }
     setActionError(null);
+    const selectionKey = selectedIssueKeyRef.current ?? '';
+    const selectionGeneration = selectedIssueGenerationRef.current;
     setActionInFlight(true);
     try {
       const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: 'closed', resolution });
+      if (
+        selectedIssueKeyRef.current !== selectionKey ||
+        selectedIssueGenerationRef.current !== selectionGeneration
+      ) return;
       putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId ?? visibleLedgerIssueDetail.display_id, detail);
       setLedgerIssueDetail(detail);
       void onRescan();
     } catch (error) {
-      const reason = error instanceof Error && error.message ? error.message : 'the server rejected the request';
-      setActionError(`Could not close this issue as ${resolution}: ${reason}. The issue remains open; try again.`);
+      await handleIssueActionFailure(`Close as ${resolution}`, selectionKey, selectionGeneration, error);
     } finally {
-      setActionInFlight(false);
+      if (
+        selectedIssueKeyRef.current === selectionKey &&
+        selectedIssueGenerationRef.current === selectionGeneration
+      ) setActionInFlight(false);
     }
-  }, [visibleLedgerIssueDetail, actionInFlight, onRescan, selectedRepoId, selectedIssueId]);
+  }, [visibleLedgerIssueDetail, actionInFlight, onRescan, selectedRepoId, selectedIssueId, handleIssueActionFailure]);
 
   const handleReopenIssue = useCallback(async () => {
     if (!visibleLedgerIssueDetail || actionInFlight) return;
+    setActionError(null);
+    const selectionKey = selectedIssueKeyRef.current ?? '';
+    const selectionGeneration = selectedIssueGenerationRef.current;
     setActionInFlight(true);
     try {
       const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: 'open', resolution: null });
+      if (
+        selectedIssueKeyRef.current !== selectionKey ||
+        selectedIssueGenerationRef.current !== selectionGeneration
+      ) return;
       putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId ?? visibleLedgerIssueDetail.display_id, detail);
       setLedgerIssueDetail(detail);
       void onRescan();
-    } catch {
-      // silently fail
+    } catch (error) {
+      await handleIssueActionFailure('Reopen', selectionKey, selectionGeneration, error);
     } finally {
-      setActionInFlight(false);
+      if (
+        selectedIssueKeyRef.current === selectionKey &&
+        selectedIssueGenerationRef.current === selectionGeneration
+      ) setActionInFlight(false);
     }
-  }, [visibleLedgerIssueDetail, actionInFlight, onRescan]);
+  }, [visibleLedgerIssueDetail, actionInFlight, onRescan, selectedRepoId, selectedIssueId, handleIssueActionFailure]);
 
   const handleAddCommentBody = useCallback(async (message: string) => {
     if (!visibleLedgerIssueDetail || !message.trim() || actionInFlight) return;
@@ -1198,7 +1255,7 @@ export function IssuesView({
               <DetailPaneNotice
                 severity="error"
                 density="compact"
-                title="Issue could not be closed"
+                title="Issue action could not be completed"
                 source="issues:close"
               >
                 {actionError}

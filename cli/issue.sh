@@ -332,24 +332,15 @@ cmd_close() {
     die "--commit is only supported with --resolution delivered." 2
   fi
 
-  if [[ "$resolution" == "delivered" && -z "$sha" ]]; then
-    sha=$(git rev-parse HEAD 2>/dev/null) || sha="unknown"
-  fi
-
   require_tools
   local message_payload status_payload resolution_payload repo_id
-  if [[ "$resolution" == "delivered" && -n "$sha" && "$sha" != "unknown" ]]; then
-    message_payload=$(jq -n --arg message "Resolved as delivered by commit ${sha:0:12}" '{message:$message}')
-  else
-    message_payload=$(jq -n --arg message "Resolved as ${resolution}" '{message:$message}')
-  fi
-  api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$message_payload" >/dev/null || true
-
   status_payload=$(jq -n --arg resolution "$resolution" '{status:"closed", resolution:$resolution}')
   api_send PATCH "/api/ledger/issues/$(urlencode "$id")" "$status_payload" >/dev/null \
     || die "${RED}Failed to close issue ${id}${RESET}" 1
 
-  if [[ "$resolution" == "delivered" && -n "$sha" && "$sha" != "unknown" ]]; then
+  if [[ "$resolution" == "delivered" && "$commit_provided" == "1" && -n "$sha" && "$sha" != "unknown" ]]; then
+    message_payload=$(jq -n --arg message "Resolved as delivered by commit ${sha:0:12}" '{message:$message}')
+    api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$message_payload" >/dev/null || true
     git notes append -m "closes: ${id:0:8}" "$sha" 2>/dev/null || true
     if ! git config --local push.notesRef >/dev/null 2>&1; then
       git config --local push.notesRef "refs/notes/commits" 2>/dev/null || true
@@ -360,7 +351,7 @@ cmd_close() {
       '{issue_id:$issue_id, commit_sha:$commit_sha, repo_id:$repo_id}')
     api_send POST "/api/issues/resolutions" "$resolution_payload" >/dev/null || true
   fi
-  if [[ "$resolution" == "delivered" && -n "$sha" && "$sha" != "unknown" ]]; then
+  if [[ "$resolution" == "delivered" && "$commit_provided" == "1" && -n "$sha" && "$sha" != "unknown" ]]; then
     err "${GREEN}Closed issue ${id} as delivered (resolved by ${sha:0:12})${RESET}"
   else
     err "${GREEN}Closed issue ${id} as ${resolution}${RESET}"

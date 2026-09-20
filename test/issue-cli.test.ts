@@ -663,15 +663,28 @@ describe("issue CLI body revisions", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("Closed issue abc as duplicate");
     expect(requestBodies).toContainEqual({
-      path: "/api/ledger/issues/abc/comments",
-      method: "POST",
-      body: { message: "Resolved as duplicate" },
-    });
-    expect(requestBodies).toContainEqual({
       path: "/api/ledger/issues/abc",
       method: "PATCH",
       body: { status: "closed", resolution: "duplicate" },
     });
+    expect(requestBodies.some(({ path }) => path === "/api/ledger/issues/abc/comments")).toBe(false);
+    expect(requestBodies.some(({ path }) => path === "/api/issues/resolutions")).toBe(false);
+  });
+
+  it("does not infer HEAD as delivered commit evidence", async () => {
+    const port = await listen();
+    const { worktreeRoot } = makeGitRepoWithWorktree();
+    const result = await run(["issue", "close", "abc", "--resolution", "delivered"], port, worktreeRoot);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("Closed issue abc as delivered");
+    expect(result.stderr).not.toContain("resolved by");
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc",
+      method: "PATCH",
+      body: { status: "closed", resolution: "delivered" },
+    });
+    expect(requestBodies.some(({ path }) => path === "/api/ledger/issues/abc/comments")).toBe(false);
     expect(requestBodies.some(({ path }) => path === "/api/issues/resolutions")).toBe(false);
   });
 
@@ -694,6 +707,11 @@ describe("issue CLI body revisions", () => {
       path: "/api/ledger/issues/abc",
       method: "PATCH",
       body: { status: "closed", resolution: "delivered" },
+    });
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc/comments",
+      method: "POST",
+      body: { message: "Resolved as delivered by commit deadbeef" },
     });
     expect(requestBodies).toContainEqual({
       path: "/api/issues/resolutions",
