@@ -107,11 +107,11 @@ mandible inbox watch <request-id>      Poll until auth request resolves (timeout
 Issue management wrapper around the Mandible ledger.
 
 ```
-mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment [--label <label>]...
+mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|coordination [--label <label>]...
 mandible issue list [--status open|closed|all]
 mandible issue show <id>
 mandible issue report <id> [--json]
-mandible issue triage [--repo <repo-ref>] [--status open|closed|all] [--label <label>] [--stale-days N] [--limit N] [--json]
+mandible issue triage [--repo <repo-ref>] [--status open|closed|all] [--resolution <resolution>] [--kind <kind>] [--priority <priority>] [--label <label>] [--stale-days N] [--limit N] [--json]
 mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]
 mandible issue open <id>
 mandible issue description show <issue-ref> [--json]
@@ -121,7 +121,7 @@ mandible issue work-notes show <issue-ref> [--json]
 mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]
 mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
 mandible issue work-notes history <issue-ref> [--json] [--with-body]
-mandible issue kind set <issue-ref> bug|feature|umbrella|maintenance|experiment|unknown
+mandible issue kind set <issue-ref> bug|feature|umbrella|maintenance|experiment|coordination|unknown
 mandible issue comment add <issue-ref> -m <text>
 mandible issue comment show <comment-ref> [--json]
 mandible issue comment history <comment-ref> [--json] [--with-body]
@@ -139,7 +139,7 @@ mandible issue label rm <id> <label>
 | `list` | List issues (default: open only) |
 | `show` | Show issue details |
 | `report` | Print deterministic issue context for agent handoff. This is factual metadata, comments, relationships, work units, sessions, auth requests, timeline, conflicts, and sync state; it does not synthesize remaining work. |
-| `triage` | Filter issues by status, label, stale age, and limit for deterministic review queues. |
+| `triage` | Filter issues by canonical status, resolution, kind, priority, free-form label, stale age, and limit for deterministic review queues. |
 | `link` | Create deliberate structured issue/comment relationship edges without fabricating comments. |
 | `unlink` | Tombstone deliberate structured issue/comment relationship edges and record removal events. |
 | `close` | Close an issue with an explicit `delivered`, `duplicate`, or `wontfix` resolution. An optional `--commit <sha>` link is supported only for `delivered`; that resolution adds a ledger comment, git note, and Mandible API resolution record. |
@@ -157,8 +157,8 @@ mandible issue label rm <id> <label>
 | `comment history` | Show read-only text revision history for one comment. Accepts a raw comment ID, `<issue-ref>#<ordinal>`, or `<issue-ref>#last`. |
 | `revision show` | Show one globally addressed text revision by revision ID. Revision IDs are unique across issue-description and comment revisions. |
 | `revision diff` | Print a unified diff between two text revisions. Cross-entity diffs are rejected unless `--force` is passed. |
-| `label add` | Add a label |
-| `label rm` | Remove a label |
+| `label add` | Add one free-form label; it does not change typed issue metadata. |
+| `label rm` | Remove one free-form label; it does not change typed issue metadata. |
 
 Prefer `mandible issue report <id> --json` when an agent needs issue context for a handoff or planning pass. Agents remain responsible for synthesis and decisions; the CLI output is only a deterministic fact packet.
 
