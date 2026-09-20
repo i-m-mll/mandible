@@ -85,7 +85,7 @@ export function IssuePredicateFilter({
   saveLabel,
   classPrefix = DEFAULT_PREFIX,
   ariaLabel,
-  placeholder = 'label:auth -kind:question',
+  placeholder = 'label:auth -kind:unknown',
   autoFocusInput = true,
   previewDetail,
   projectingLabel = 'Matches issues',

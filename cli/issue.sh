@@ -40,6 +40,11 @@ RELATIONSHIP_TYPES=(
 )
 ACCEPTED_RELATIONSHIP_TYPES="parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests"
 
+ISSUE_KINDS=(bug feature umbrella maintenance experiment unknown)
+CREATABLE_ISSUE_KINDS=(bug feature umbrella maintenance experiment)
+ACCEPTED_ISSUE_KINDS="bug, feature, umbrella, maintenance, experiment, unknown"
+ACCEPTED_CREATION_KINDS="bug, feature, umbrella, maintenance, experiment"
+
 usage_link() {
   cat <<'LINK_USAGE'
 Usage:
@@ -90,6 +95,35 @@ require_relationship_type() {
   fi
 }
 
+valid_issue_kind() {
+  local candidate="$1"
+  local accepted
+  for accepted in "${ISSUE_KINDS[@]}"; do
+    if [[ "$candidate" == "$accepted" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_issue_kind() {
+  local candidate="$1"
+  if ! valid_issue_kind "$candidate"; then
+    die "Invalid issue kind: ${candidate}. Accepted issue kinds: ${ACCEPTED_ISSUE_KINDS}" 2
+  fi
+}
+
+require_creation_kind() {
+  local candidate="$1"
+  local accepted
+  for accepted in "${CREATABLE_ISSUE_KINDS[@]}"; do
+    if [[ "$candidate" == "$accepted" ]]; then
+      return 0
+    fi
+  done
+  die "Invalid creation kind: ${candidate}. New issues require one of: ${ACCEPTED_CREATION_KINDS}" 2
+}
+
 die_api_status() {
   local message="$1"
   local status="$2"
@@ -106,7 +140,7 @@ die_api_status() {
 usage() {
   cat <<'USAGE'
 Usage:
-  mandible issue new -t <title> -m <body> [--label <label>]...   Create a new issue
+  mandible issue new -t <title> -m <body> --kind <kind> [--label <label>]...   Create a new issue
   mandible issue list [--status open|closed|all] [--repo <repo>]   List issues (default: open)
   mandible issue show <id>                                        Show issue details
   mandible issue title <id> [--json] [--graceful]                 Print issue title
@@ -132,6 +166,14 @@ Usage:
                                                                   Edit the issue description
   mandible issue description history <issue-ref> [--json] [--with-body]
                                                                   Show issue description revision history
+  mandible issue work-notes show <issue-ref> [--json]              Show current working notes
+  mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]
+                                                                  Edit current working notes
+  mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
+                                                                  Clear current working notes
+  mandible issue work-notes history <issue-ref> [--json] [--with-body]
+                                                                  Show working-notes revision history
+  mandible issue kind set <issue-ref> <kind>                       Set the canonical issue kind
   mandible issue comment add <issue-ref> -m <text> [--reopen]      Add a comment
   mandible issue comment edit <comment-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
                                                                   Edit a comment
@@ -207,7 +249,13 @@ labels_json() {
 print_issue_detail() {
   api_jq_human '
     "\(.display_id) [\(.status)] \(.title)",
+    "kind: \(.kind // "unknown")",
     (if (.labels | length) > 0 then "labels: \(.labels | join(", "))" else "labels:" end),
+    (if ((.dependencies // []) | length) > 0 then
+      "prerequisites:",
+      ((.dependencies // [])[] | "- \(.display_id // .id) \(.title) [status=\(.status // "unknown"); resolution=\(.resolution // "none")]" + (if .status == "open" then " (open warning)" else "" end))
+    else empty end),
+    (if ((.work_notes // "") | length) > 0 then "", "working notes:", .work_notes else empty end),
     "",
     .body,
     (.comments[]? | "\n---\n\(.id | mandible_short_id) \(.author.display) \(.source)\n\(.body)")
@@ -441,6 +489,9 @@ cmd_report() {
       issue_branches,
       priority,
       kind,
+      work_notes,
+      work_notes_revision,
+      dependencies,
       project,
       created_at,
       updated_at,
@@ -464,6 +515,8 @@ cmd_report() {
       "worker_status: \(.worker_status // "none")",
       "branches: \(list_or_dash((.issue_branches // []) | map(.branch + " (" + .role + ")")))",
       "labels: \(list_or_dash(.labels))",
+      "kind: \(.kind // "unknown")",
+      "prerequisites: \(list_or_dash((.dependencies // []) | map((.display_id // .id) + " " + .title + " [status=" + (.status // "unknown") + "; resolution=" + (.resolution // "none") + "]" + (if .status == "open" then " (open warning)" else "" end))))",
       "updated: \(.updated_at // "-")",
       "created: \(.created_at // "-")",
       "comments: \((.comments // []) | length)",
@@ -474,6 +527,7 @@ cmd_report() {
       "",
       "body:",
       (.body // ""),
+      (if ((.work_notes // "") | length) > 0 then "", "working notes:", .work_notes else empty end),
       "",
       "latest comments:",
       (((.comments // []) | sort_by(.created_at // "") | reverse | .[0:5][])?
@@ -1250,6 +1304,7 @@ CHECKPOINT_USAGE
 cmd_new() {
   local title=""
   local body=""
+  local kind=""
   local -a labels=()
   local project_ref=""
 
@@ -1267,6 +1322,13 @@ cmd_new() {
           die "Missing value for -m." 2
         fi
         body="$2"
+        shift 2
+        ;;
+      --kind)
+        if (( $# < 2 )); then
+          die "Missing value for --kind." 2
+        fi
+        kind="$2"
         shift 2
         ;;
       --label)
@@ -1292,9 +1354,10 @@ cmd_new() {
     esac
   done
 
-  if [[ -z "$title" || -z "$body" ]]; then
-    die "Usage: mandible issue new -t <title> -m <body> [--label <label>] [--project <ref>]..." 2
+  if [[ -z "$title" || -z "$body" || -z "$kind" ]]; then
+    die "Usage: mandible issue new -t <title> -m <body> --kind <kind> [--label <label>] [--project <ref>]..." 2
   fi
+  require_creation_kind "$kind"
 
   require_tools
   local root payload id label_json repo
@@ -1305,12 +1368,16 @@ cmd_new() {
     payload=$(jq -n \
       --arg title "$title" --arg body "$body" --arg root "$root" \
       --argjson labels "$label_json" --arg project "$project_ref" \
-      '{title:$title, body:$body, root:$root, labels:$labels, project:$project}')
+      --arg kind "$kind" \
+      '{title:$title, body:$body, root:$root, labels:$labels, project:$project}
+       + (if $kind == "" then {} else {kind:$kind} end)')
   else
     repo=$(basename "$root")
     payload=$(jq -n \
       --arg title "$title" --arg body "$body" --arg root "$root" --argjson labels "$label_json" \
-      '{title:$title, body:$body, root:$root, labels:$labels}')
+      --arg kind "$kind" \
+      '{title:$title, body:$body, root:$root, labels:$labels}
+       + (if $kind == "" then {} else {kind:$kind} end)')
   fi
   id=$(api_send POST "/api/issues/$(urlencode "$repo")" "$payload" | jq -r '.display_id // .id') \
     || die "${RED}Failed to create issue${RESET}" 1
@@ -1557,6 +1624,7 @@ cmd_open() {
 
 print_revision_history() {
   local with_body="$1"
+  local subject="${2:-body}"
   api_jq_human '
     def timestamp:
       ((.occurred_at // .observed_at // 0) / 1000 | todateiso8601);
@@ -1566,16 +1634,16 @@ print_revision_history() {
       ((.new_hash // "")[0:12]);
     .revisions as $revisions
     | if ($revisions | length) == 0 then
-        "No body revisions."
+        ("No " + $subject + " revisions.")
       else
         "rev\tid\treason\tsource\toccurred\tactor\thash",
         ($revisions[]
           | "#\(.revision_no)\t\(.id | mandible_short_id)\t\(.reason)\t\(.source)\t\(timestamp)\t\(actor | mandible_short_id)\t\(short_hash)",
             (if $with_body == "1" then
-              "----- body #\(.revision_no) -----\n\(.snapshot_body)\n----- end body #\(.revision_no) -----"
+              ("----- " + $subject + " #\(.revision_no) -----\n\(.snapshot_body)\n----- end " + $subject + " #\(.revision_no) -----")
             else empty end))
       end
-  ' --arg with_body "$with_body"
+  ' --arg with_body "$with_body" --arg subject "$subject"
 }
 
 cmd_description_show() {
@@ -1737,6 +1805,165 @@ DESCRIPTION_USAGE
       die "Unknown description action: $action (expected show, edit, or history)" 2
       ;;
   esac
+}
+
+cmd_work_notes_show() {
+  local issue_ref=""
+  local json=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then issue_ref="$1"; else die "Unexpected argument: $1" 2; fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: mandible issue work-notes show <issue-ref> [--json]" 2
+  fi
+
+  require_tools
+  local response
+  response=$(api_get "/api/ledger/issues/$(urlencode "$issue_ref")") \
+    || die "${RED}Failed to fetch issue ${issue_ref}${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq '{issue_id: .id, display_id, title, work_notes: (.work_notes // ""), work_notes_revision: (.work_notes_revision // null), updated_at}'
+  else
+    printf '%s\n' "$response" | jq -r '.work_notes // ""'
+  fi
+}
+
+cmd_work_notes_patch() {
+  local action="$1"
+  shift
+  local issue_ref=""
+  local message=""
+  local base_revision_id=""
+
+  while (( $# > 0 )); do
+    case "$1" in
+      -m)
+        if (( $# < 2 )); then die "Missing value for -m." 2; fi
+        message="$2"; shift 2 ;;
+      --base-revision|--expected-revision)
+        if (( $# < 2 )); then die "Missing value for $1." 2; fi
+        base_revision_id="$2"; shift 2 ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then issue_ref="$1"; else die "Unexpected argument: $1" 2; fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: mandible issue work-notes ${action} <issue-ref> $([[ "$action" == edit ]] && printf '%s' '-m <text> ') [--base-revision <rev>]" 2
+  fi
+  if [[ "$action" == edit && -z "$message" ]]; then
+    die "Usage: mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]" 2
+  fi
+
+  require_tools
+  local payload
+  payload=$(
+    jq -n \
+      --arg work_notes "$message" \
+      --arg expected_revision "$base_revision_id" \
+      '{work_notes: $work_notes}
+       + (if $expected_revision == "" then {} else {expected_work_notes_revision: $expected_revision} end)'
+  )
+  api_send PATCH "/api/ledger/issues/$(urlencode "$issue_ref")" "$payload" >/dev/null \
+    || die "${RED}Failed to ${action} work notes for issue ${issue_ref}${RESET}" 1
+  if [[ "$action" == edit ]]; then
+    err "${GREEN}Edited work notes for ${issue_ref}${RESET}"
+  else
+    err "${GREEN}Cleared work notes for ${issue_ref}${RESET}"
+  fi
+}
+
+cmd_work_notes_history() {
+  local issue_ref=""
+  local json=0
+  local with_body=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      --with-body) with_body=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then issue_ref="$1"; else die "Unexpected argument: $1" 2; fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: mandible issue work-notes history <issue-ref> [--json] [--with-body]" 2
+  fi
+
+  require_tools
+  local response
+  response=$(api_get "/api/ledger/issues/$(urlencode "$issue_ref")/work-notes/history") \
+    || die "${RED}Failed to fetch work-notes revisions for issue ${issue_ref}${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq '.'
+  else
+    printf '%s\n' "$response" | print_revision_history "$with_body" "work notes"
+  fi
+}
+
+cmd_work_notes() {
+  local action="${1:-}"
+  shift || true
+  case "$action" in
+    show) cmd_work_notes_show "$@" ;;
+    edit) cmd_work_notes_patch edit "$@" ;;
+    clear) cmd_work_notes_patch clear "$@" ;;
+    history) cmd_work_notes_history "$@" ;;
+    ""|-h|--help)
+      cat <<'WORK_NOTES_USAGE'
+Usage:
+  mandible issue work-notes show <issue-ref> [--json]
+  mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]
+  mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
+  mandible issue work-notes history <issue-ref> [--json] [--with-body]
+WORK_NOTES_USAGE
+      ;;
+    *) die "Unknown work-notes action: $action (expected show, edit, clear, or history)" 2 ;;
+  esac
+}
+
+cmd_kind() {
+  local action="${1:-}"
+  shift || true
+  if [[ "$action" != set ]]; then
+    if [[ -z "$action" || "$action" == -h || "$action" == --help ]]; then
+      cat <<'KIND_USAGE'
+Usage:
+  mandible issue kind set <issue-ref> <kind>
+KIND_USAGE
+      return 0
+    fi
+    die "Unknown kind action: $action (expected set)" 2
+  fi
+
+  local issue_ref="${1:-}"
+  local kind="${2:-}"
+  if [[ -z "$issue_ref" || -z "$kind" || $# -gt 2 ]]; then
+    die "Usage: mandible issue kind set <issue-ref> <kind>" 2
+  fi
+  require_issue_kind "$kind"
+  require_tools
+  local payload
+  payload=$(jq -n --arg kind "$kind" '{kind:$kind}')
+  api_send PATCH "/api/ledger/issues/$(urlencode "$issue_ref")" "$payload" >/dev/null \
+    || die "${RED}Failed to set kind for issue ${issue_ref}${RESET}" 1
+  err "${GREEN}Set kind for ${issue_ref} to ${kind}${RESET}"
 }
 
 resolve_comment_ref() {
@@ -2116,6 +2343,8 @@ case "$subcmd" in
   close)   cmd_close "$@" ;;
   open)    cmd_open "${1:-}" ;;
   description) cmd_description "$@" ;;
+  work-notes) cmd_work_notes "$@" ;;
+  kind)    cmd_kind "$@" ;;
   comment) cmd_comment "$@" ;;
   body-history) cmd_description_history "$@" ;;
   comment-history) cmd_comment_history "$@" ;;

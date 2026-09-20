@@ -390,11 +390,11 @@ describe("project CLI write round-trips", () => {
 describe("issue new --project integration", () => {
   it("routes issue creation to /api/issues/<project-ref> and includes project in body", async () => {
     const result = await runWithResponder(
-      ["issue", "new", "-t", "Test title", "-m", "Test body", "--project", "feedbax"],
+      ["issue", "new", "-t", "Test title", "-m", "Test body", "--kind", "feature", "--project", "feedbax"],
       (req) => {
         expect(req.method).toBe("POST");
         expect(req.path).toBe("/api/issues/feedbax");
-        expect(req.body).toMatchObject({ project: "feedbax" });
+        expect(req.body).toMatchObject({ project: "feedbax", kind: "feature" });
         return { status: 201, body: { id: "abc123", display_id: "abc123" } };
       },
     );

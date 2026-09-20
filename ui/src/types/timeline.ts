@@ -10,10 +10,8 @@ export type LedgerIssueKind =
   | 'bug'
   | 'feature'
   | 'umbrella'
-  | 'task'
-  | 'question'
   | 'maintenance'
-  | 'deferred'
+  | 'experiment'
   | 'unknown';
 
 // Canonical issue-predicate contract, shared with the backend

@@ -55,6 +55,17 @@ const oldCommentRevision = {
   snapshot_body: "Before",
 };
 
+const workNotesRevision = {
+  ...issueRevision,
+  id: "rev_notes_1",
+  entity_type: "issue_work_notes",
+  entity_id: "issue-1",
+  revision_no: 1,
+  reason: "edit",
+  new_hash: "d".repeat(64),
+  snapshot_body: "Current working notes",
+};
+
 const newCommentRevision = {
   ...oldCommentRevision,
   id: "rev_comment_2",
@@ -308,6 +319,10 @@ function listen(): Promise<number> {
         res.end(JSON.stringify({ revisions: [issueRevision] }));
         return;
       }
+      if (req.url === "/api/ledger/issues/abc/work-notes/history") {
+        res.end(JSON.stringify({ revisions: [workNotesRevision] }));
+        return;
+      }
       if (req.method === "POST" && req.url === "/api/ledger/issues/abc/comments") {
         void readBody().then((body) => {
           requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
@@ -497,8 +512,22 @@ function listen(): Promise<number> {
           status: "open",
           worker_status: "in_progress",
           labels: ["feature", "mandible:status:in_progress"],
+          kind: "feature",
           issue_branches: [{ branch: "feature/demo", role: "primary" }],
           body: "Issue body",
+          work_notes: "Current working notes",
+          work_notes_revision: "rev_notes_1",
+          dependencies: [{
+            id: "blocked-1",
+            display_id: "blocked-1",
+            project_id: "mandible",
+            title: "Open prerequisite",
+            status: "open",
+            resolution: null,
+            kind: "bug",
+            priority: "normal",
+            labels: [],
+          }],
           comments: [
             { id: "comment-1", ordinal: 1, body: "First comment" },
             { id: "comment-2", ordinal: 2, body: "Second comment" },
@@ -936,6 +965,45 @@ describe("issue CLI body revisions", () => {
     const body = JSON.parse(result.stdout);
     expect(body.worker_status).toBe("in_progress");
     expect(body.issue_branches).toEqual([{ branch: "feature/demo", role: "primary" }]);
+    expect(body.work_notes).toBe("Current working notes");
+    expect(body.work_notes_revision).toBe("rev_notes_1");
+    expect(body.dependencies).toEqual([expect.objectContaining({ display_id: "blocked-1", status: "open" })]);
+  });
+
+  it("requires and forwards a concrete canonical kind when creating an issue", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-new-kind-file-rpc-"));
+    tempRoots.push(spoolDir);
+    const seen: Array<Record<string, unknown>> = [];
+    const responder = startFileRpcResponder(spoolDir, (request) => {
+      seen.push(request);
+      expect(request).toMatchObject({ method: "POST", path: "/api/issues/mandible" });
+      return { status: 200, body: { display_id: "new-1" } };
+    });
+
+    try {
+      const result = await run([
+        "issue", "new", "-t", "Experiment", "-m", "Body", "--kind", "experiment", "--project", "mandible",
+      ], 0, process.cwd(), {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain("Created issue new-1");
+      expect(seen).toHaveLength(1);
+      expect(seen[0].body).toMatchObject({ kind: "experiment", title: "Experiment", body: "Body" });
+    } finally {
+      responder.stop();
+    }
+  });
+
+  it("rejects issue creation without a concrete kind", async () => {
+    const result = await run(["issue", "new", "-t", "Experiment", "-m", "Body"], 0, process.cwd(), {
+      MANDIBLE_BASE: "file:///nonexistent-mandible-test-spool",
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--kind");
   });
 
   it("reports through file RPC when MANDIBLE_BASE is a file URL", async () => {
@@ -1612,6 +1680,75 @@ describe("issue CLI body revisions", () => {
     expect(result.stdout).toContain("rev\tid\treason\tsource\toccurred\tactor\thash");
     expect(result.stdout).toContain("#1\trev_issue_1\tcreate\tmandible");
     expect(result.stdout).not.toContain("Issue body");
+  });
+
+  it("shows current working notes and their revision", async () => {
+    const port = await listen();
+    const result = await run(["issue", "work-notes", "show", "abc", "--json"], port);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      issue_id: "issue-1",
+      display_id: "abc",
+      work_notes: "Current working notes",
+      work_notes_revision: "rev_notes_1",
+    });
+  });
+
+  it("edits working notes through the issue PATCH API with an expected revision", async () => {
+    const port = await listen();
+    const result = await run([
+      "issue", "work-notes", "edit", "abc", "-m", "Updated working notes", "--base-revision", "rev_notes_1",
+    ], port);
+
+    expect(result.status).toBe(0);
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc",
+      method: "PATCH",
+      body: { work_notes: "Updated working notes", expected_work_notes_revision: "rev_notes_1" },
+    });
+  });
+
+  it("clears working notes while preserving the explicit empty value", async () => {
+    const port = await listen();
+    const result = await run(["issue", "work-notes", "clear", "abc"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc",
+      method: "PATCH",
+      body: { work_notes: "" },
+    });
+  });
+
+  it("prints working-notes history without snapshots by default", async () => {
+    const port = await listen();
+    const result = await run(["issue", "work-notes", "history", "abc"], port);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("#1\trev_notes_1\tedit\tmandible");
+    expect(result.stdout).not.toContain("Current working notes");
+  });
+
+  it("updates the canonical issue kind through the existing PATCH API", async () => {
+    const port = await listen();
+    const result = await run(["issue", "kind", "set", "abc", "experiment"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc",
+      method: "PATCH",
+      body: { kind: "experiment" },
+    });
+  });
+
+  it("rejects retired issue kinds instead of treating labels as kind aliases", async () => {
+    const result = await run(["issue", "kind", "set", "abc", "legacy"], 0, process.cwd(), {
+      MANDIBLE_BASE: "file:///nonexistent-mandible-test-spool",
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Accepted issue kinds: bug, feature, umbrella, maintenance, experiment, unknown");
   });
 
   it("shows one comment by last-comment reference", async () => {
