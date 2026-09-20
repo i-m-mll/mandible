@@ -7,6 +7,7 @@ import {
   getLedgerIssueInitialDetailByRef,
   patchLedgerIssue,
   spawnIssueAgent,
+  isApiErrorStatus,
   type LedgerIssueDetailActor,
   type LedgerIssueDetailProjection,
 } from '../api';
@@ -29,6 +30,7 @@ export type IssueSummary = {
   repo_name: string;
   title: string;
   status: 'open' | 'closed';
+  kind?: string;
   labels: string[];
   author: string;
   created_at: string;
@@ -128,11 +130,12 @@ function getVisualState(issue: { status: string; labels: string[] }): VisualStat
 }
 
 const KIND_FILTERS = [
-  { key: 'umbrella', label: 'umbrella', labels: ['umbrella'] },
-  { key: 'feature', label: 'feature', labels: ['feature'] },
-  { key: 'bug', label: 'bug', labels: ['error', 'bug'] },
-  { key: 'deferred', label: 'deferred', labels: ['deferred'] },
-  { key: 'coordination', label: 'coordination', labels: ['coordination'] },
+  { key: 'umbrella', label: 'umbrella' },
+  { key: 'feature', label: 'feature' },
+  { key: 'bug', label: 'bug' },
+  { key: 'maintenance', label: 'maintenance' },
+  { key: 'experiment', label: 'experiment' },
+  { key: 'unknown', label: 'unknown' },
 ] as const;
 
 const PRIORITY_FILTERS = [
@@ -193,6 +196,19 @@ function formatIssueFilter(parsed: ParsedIssueFilter): string {
   if (parsed.kinds.length > 0) tokens.push(`kind:${parsed.kinds.join(',')}`);
   if (parsed.priorities.length > 0) tokens.push(`priority:${parsed.priorities.join(',')}`);
   return tokens.join(' ');
+}
+
+const CANONICAL_ISSUE_KINDS = new Set(['bug', 'feature', 'umbrella', 'maintenance', 'experiment', 'unknown']);
+
+function canonicalIssueKind(issue: { kind?: string }): string {
+  const kind = issue.kind?.trim().toLowerCase();
+  if (kind && CANONICAL_ISSUE_KINDS.has(kind)) return kind;
+  return 'unknown';
+}
+
+function issueHasAnyKind(issue: { kind?: string; labels: string[] }, selected: string[]): boolean {
+  if (selected.length === 0) return true;
+  return selected.some((kind) => canonicalIssueKind(issue) === kind);
 }
 
 function issueHasAnyLabel(issue: { labels: string[] }, labelGroups: readonly { key: string; labels: readonly string[] }[], selected: string[]): boolean {
@@ -317,15 +333,7 @@ function synthesizeLedgerIssueDetail(
     attribution: null,
   };
   const labels = issue.labels ?? [];
-  const kind = labels.includes('umbrella')
-    ? 'umbrella'
-    : labels.some((label) => label === 'error' || label === 'bug')
-      ? 'bug'
-      : labels.includes('deferred')
-        ? 'deferred'
-        : labels.includes('coordination')
-          ? 'coordination'
-          : 'feature';
+  const kind = canonicalIssueKind(issue);
   const priority = labels.includes('important')
     ? 'important'
     : labels.includes('user-action-required')
@@ -481,10 +489,12 @@ export function IssuesView({
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
   const lastScrolledCommentRef = useRef<string | null>(null);
   const detailRequestSeqRef = useRef(0);
+  const selectedIssueKeyRef = useRef<string | null>(null);
   const issueDetailScrollRef = useRef<HTMLDivElement>(null);
   const scrollSaveTimerRef = useRef<number | null>(null);
   const lastRestoredScrollKeyRef = useRef<string | null>(null);
   const issueDetailCacheRef = useRef<IssueDetailCache>(new Map());
+  selectedIssueKeyRef.current = `${selectedRepoId ?? ''}:${selectedIssueId ?? ''}`;
 
   useEffect(() => {
     setViewState((current) => current.filterEdited
@@ -606,7 +616,7 @@ export function IssuesView({
           );
         }
         if (selectedKinds.length > 0) {
-          issues = issues.filter((issue) => issueHasAnyLabel(issue, KIND_FILTERS, selectedKinds));
+          issues = issues.filter((issue) => issueHasAnyKind(issue, selectedKinds));
         }
         if (selectedPriorities.length > 0) {
           issues = issues.filter((issue) => issueHasAnyLabel(issue, PRIORITY_FILTERS, selectedPriorities));
@@ -934,6 +944,39 @@ export function IssuesView({
     }
   }, [visibleLedgerIssueDetail, actionInFlight]);
 
+  const handleUpdateWorkNotes = useCallback(async (workNotes: string, expectedRevision: string | null) => {
+    if (!visibleLedgerIssueDetail || actionInFlight) return;
+    const saveSelectionKey = `${selectedRepoId ?? ''}:${selectedIssueId ?? ''}`;
+    const saveIssueId = visibleLedgerIssueDetail.id;
+    setActionInFlight(true);
+    try {
+      const payload: Record<string, unknown> = { work_notes: workNotes };
+      payload.expected_work_notes_revision = expectedRevision;
+      const detail = await patchLedgerIssue(saveIssueId, payload);
+      if (selectedIssueKeyRef.current !== saveSelectionKey) return;
+      putCachedIssueDetail(
+        issueDetailCacheRef.current,
+        selectedRepoId,
+        selectedIssueId ?? visibleLedgerIssueDetail.display_id,
+        detail,
+      );
+      setLedgerIssueDetail(detail);
+    } catch (error) {
+      if (isApiErrorStatus(error, 409) && selectedIssueKeyRef.current === saveSelectionKey && selectedRepoId && selectedIssueId) {
+        try {
+          const latest = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
+          putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId, latest);
+          setLedgerIssueDetail(latest);
+        } catch {
+          // Preserve the original conflict so the editor can explain it.
+        }
+      }
+      throw error;
+    } finally {
+      setActionInFlight(false);
+    }
+  }, [visibleLedgerIssueDetail, actionInFlight, selectedRepoId, selectedIssueId]);
+
   const handleStartAgent = useCallback(async () => {
     if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
     setActionInFlight(true);
@@ -1142,6 +1185,7 @@ export function IssuesView({
               fullLoadFailed={detailLoadFailed}
               actionInFlight={actionInFlight}
               onAddComment={handleAddCommentBody}
+              onUpdateWorkNotes={handleUpdateWorkNotes}
               onSetStatus={(status) => status === 'open' ? handleReopenIssue() : handleCloseIssue()}
               onStartAgent={handleStartAgent}
               onOpenEntity={handleOpenLedgerEntity}

@@ -107,7 +107,7 @@ mandible inbox watch <request-id>      Poll until auth request resolves (timeout
 Issue management wrapper around the Mandible ledger.
 
 ```
-mandible issue new -t <title> -m <body> [--label <label>]...
+mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment [--label <label>]...
 mandible issue list [--status open|closed|all]
 mandible issue show <id>
 mandible issue report <id> [--json]
@@ -117,6 +117,11 @@ mandible issue open <id>
 mandible issue description show <issue-ref> [--json]
 mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
 mandible issue description history <issue-ref> [--json] [--with-body]
+mandible issue work-notes show <issue-ref> [--json]
+mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]
+mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
+mandible issue work-notes history <issue-ref> [--json] [--with-body]
+mandible issue kind set <issue-ref> bug|feature|umbrella|maintenance|experiment|unknown
 mandible issue comment add <issue-ref> -m <text>
 mandible issue comment show <comment-ref> [--json]
 mandible issue comment history <comment-ref> [--json] [--with-body]
@@ -130,7 +135,7 @@ mandible issue label rm <id> <label>
 
 | Command | Description |
 |---|---|
-| `new` | Create a new issue with title, body, and optional labels |
+| `new` | Create a new issue with title, body, a required concrete kind, and optional labels |
 | `list` | List issues (default: open only) |
 | `show` | Show issue details |
 | `report` | Print deterministic issue context for agent handoff. This is factual metadata, comments, relationships, work units, sessions, auth requests, timeline, conflicts, and sync state; it does not synthesize remaining work. |
@@ -142,6 +147,11 @@ mandible issue label rm <id> <label>
 | `description show` | Show only the issue description, without comments or metadata in human output. |
 | `description edit` | Edit an issue description through the ledger body API, preserving issue-body revision history. |
 | `description history` | Show read-only revision history for the issue description. This maps to Mandible's `issue_body` revision entity. |
+| `work-notes show` | Show the current working notes without comments or metadata in human output. |
+| `work-notes edit` | Replace working notes through the issue PATCH API, preserving immutable working-notes history. |
+| `work-notes clear` | Clear working notes through the issue PATCH API, preserving the immutable clear event. |
+| `work-notes history` | Show read-only working-notes revision history. |
+| `kind set` | Set the canonical issue kind; labels remain independent presentation metadata. |
 | `comment add` | Add a comment to an issue. Compatibility alias: `mandible issue comment <issue-ref> -m <text>`. |
 | `comment show` | Show one comment. Accepts a raw comment ID, `<issue-ref>#<ordinal>`, or `<issue-ref>#last`. |
 | `comment history` | Show read-only text revision history for one comment. Accepts a raw comment ID, `<issue-ref>#<ordinal>`, or `<issue-ref>#last`. |

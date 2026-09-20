@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { artifactLinkBadgeLabel, formatAbsoluteTime, formatRelativeTime } from '../../lib/format';
 import { renderInlineMarkdown } from '../../lib/markdown';
+import { isApiErrorStatus } from '../../api';
 import {
   artifactDetailHref,
   compactArtifactBlobRef,
@@ -53,6 +54,11 @@ type RenderTimelineEntry =
       auth: LedgerIssueDetailAuthRequest;
       created_at: number;
     };
+
+type WorkNotesDraft = {
+  draft: string;
+  baseRevision: string | null;
+};
 
 const UMBRELLA_LABEL = 'umbrella';
 
@@ -109,6 +115,7 @@ export type LedgerIssueDetailProps = {
   fullLoadFailed?: boolean;
   actionInFlight?: boolean;
   onAddComment?: (body: string) => Promise<void> | void;
+  onUpdateWorkNotes?: (body: string, expectedRevision: string | null) => Promise<void> | void;
   onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
   onStartAgent?: () => Promise<void> | void;
   onOpenEntity?: (type: EntityType, id: string, repoId?: string) => void;
@@ -130,6 +137,7 @@ export function LedgerIssueDetail({
   fullLoadFailed = false,
   actionInFlight = false,
   onAddComment,
+  onUpdateWorkNotes,
   onSetStatus,
   onStartAgent,
   onOpenEntity,
@@ -137,6 +145,12 @@ export function LedgerIssueDetail({
   onAddToSpace,
 }: LedgerIssueDetailProps): JSX.Element {
   const [commentText, setCommentText] = useState('');
+  const [workNotesDraft, setWorkNotesDraft] = useState(detail.work_notes ?? '');
+  const [editingWorkNotes, setEditingWorkNotes] = useState(false);
+  const [workNotesEditorIssueId, setWorkNotesEditorIssueId] = useState(detail.id);
+  const [workNotesBaseRevision, setWorkNotesBaseRevision] = useState<string | null>(detail.work_notes_revision ?? null);
+  const [workNotesSaveError, setWorkNotesSaveError] = useState<string | null>(null);
+  const [workNotesConflict, setWorkNotesConflict] = useState(false);
   const [showComposer, setShowComposer] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
@@ -151,6 +165,9 @@ export function LedgerIssueDetail({
   const [launchAgentOpen, setLaunchAgentOpen] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
   const headerRef = useRef<HTMLElement>(null);
+  const workNotesDetailIdRef = useRef(detail.id);
+  const workNotesDraftsRef = useRef(new Map<string, WorkNotesDraft>());
+  workNotesDetailIdRef.current = detail.id;
   const busy = actionInFlight || localBusy;
   const resolvingAuth = detail.auth_requests.find((auth) =>
     (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') &&
@@ -165,6 +182,8 @@ export function LedgerIssueDetail({
   const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
   const isUmbrella = detail.labels.includes(UMBRELLA_LABEL);
   const { children: umbrellaChildren, rest: otherRelationships } = partitionUmbrellaChildren(detail);
+  const dependencies = detail.dependencies ?? [];
+  const editingCurrentIssue = editingWorkNotes && workNotesEditorIssueId === detail.id;
   const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
   const isInitialDetail = detail.detail_stage === 'initial';
   const shouldShowFullDetailLoading = (
@@ -195,6 +214,30 @@ export function LedgerIssueDetail({
     setArtifactsExpanded(false);
   }, [detail.id]);
 
+  useEffect(() => {
+    if (workNotesEditorIssueId !== detail.id) {
+      if (editingWorkNotes) {
+        workNotesDraftsRef.current.set(workNotesEditorIssueId, {
+          draft: workNotesDraft,
+          baseRevision: workNotesBaseRevision,
+        });
+      }
+      const savedDraft = workNotesDraftsRef.current.get(detail.id);
+      setWorkNotesEditorIssueId(detail.id);
+      setWorkNotesDraft(savedDraft?.draft ?? detail.work_notes ?? '');
+      setWorkNotesBaseRevision(savedDraft?.baseRevision ?? detail.work_notes_revision ?? null);
+      setWorkNotesSaveError(null);
+      setWorkNotesConflict(false);
+      setEditingWorkNotes(Boolean(savedDraft));
+      return;
+    }
+    if (editingWorkNotes) return;
+    setWorkNotesDraft(detail.work_notes ?? '');
+    setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
+    setWorkNotesSaveError(null);
+    setWorkNotesConflict(false);
+  }, [detail.id, detail.work_notes, detail.work_notes_revision, editingWorkNotes, workNotesEditorIssueId]);
+
   const submitComment = async () => {
     if (!onAddComment || !commentText.trim() || busy) return;
     setLocalBusy(true);
@@ -202,6 +245,34 @@ export function LedgerIssueDetail({
       await onAddComment(commentText.trim());
       setCommentText('');
       setShowComposer(false);
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+
+  const submitWorkNotes = async () => {
+    if (!onUpdateWorkNotes || busy || !editingCurrentIssue) return;
+    const saveIssueId = detail.id;
+    const saveDraft = workNotesDraft;
+    const saveBaseRevision = workNotesBaseRevision;
+    setLocalBusy(true);
+    try {
+      await onUpdateWorkNotes(saveDraft, saveBaseRevision);
+      if (workNotesDetailIdRef.current === saveIssueId) {
+        workNotesDraftsRef.current.delete(saveIssueId);
+        setWorkNotesSaveError(null);
+        setWorkNotesConflict(false);
+        setEditingWorkNotes(false);
+      }
+    } catch (error) {
+      if (workNotesDetailIdRef.current !== saveIssueId) return;
+      if (isApiErrorStatus(error, 409)) {
+        setWorkNotesConflict(true);
+        setWorkNotesSaveError('Working notes changed while you were editing. Review the draft, then use the latest notes or save again after reconciling.');
+      } else {
+        setWorkNotesConflict(false);
+        setWorkNotesSaveError('Could not save working notes. Your draft is still here.');
+      }
     } finally {
       setLocalBusy(false);
     }
@@ -326,6 +397,86 @@ export function LedgerIssueDetail({
           >
             <UmbrellaChildrenShelf rows={umbrellaChildren} onOpenEntity={onOpenEntity} />
           </CollapsiblePanel>
+        )}
+
+        {typeof detail.work_notes === 'string' && (onUpdateWorkNotes || Boolean(detail.work_notes)) && (
+          <section className="ledger-issue-detail__section ledger-issue-detail__working-notes-section">
+            <div className="ledger-issue-detail__section-heading">
+              <SectionTitle title="Working notes" />
+              {onUpdateWorkNotes && !editingCurrentIssue && (
+                <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
+                  setWorkNotesEditorIssueId(detail.id);
+                  setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
+                  setWorkNotesDraft(detail.work_notes ?? '');
+                  workNotesDraftsRef.current.set(detail.id, {
+                    draft: detail.work_notes ?? '',
+                    baseRevision: detail.work_notes_revision ?? null,
+                  });
+                  setWorkNotesSaveError(null);
+                  setWorkNotesConflict(false);
+                  setEditingWorkNotes(true);
+                }}>
+                  Edit
+                </button>
+              )}
+            </div>
+            {editingCurrentIssue ? (
+              <>
+                <textarea
+                  className="ledger-work-notes-editor"
+                  aria-label="Working notes"
+                  rows={compact ? 4 : 7}
+                  value={workNotesDraft}
+                  onInput={(event) => {
+                    const draft = event.currentTarget.value;
+                    setWorkNotesDraft(draft);
+                    workNotesDraftsRef.current.set(detail.id, { draft, baseRevision: workNotesBaseRevision });
+                  }}
+                />
+                {workNotesSaveError && <p className="text-muted ledger-work-notes-error" role="alert">{workNotesSaveError}</p>}
+                <div className="ledger-comment-composer__actions">
+                  <button type="button" className="btn btn--active" disabled={busy} onClick={() => void submitWorkNotes()}>
+                    Save notes
+                  </button>
+                  {workNotesConflict && (
+                    <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
+                      setWorkNotesDraft(detail.work_notes ?? '');
+                      setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
+                      workNotesDraftsRef.current.delete(detail.id);
+                      setWorkNotesSaveError(null);
+                      setWorkNotesConflict(false);
+                    }}>
+                      Use latest notes
+                    </button>
+                  )}
+                  <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
+                    setWorkNotesDraft(detail.work_notes ?? '');
+                    setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
+                    workNotesDraftsRef.current.delete(detail.id);
+                    setWorkNotesSaveError(null);
+                    setWorkNotesConflict(false);
+                    setEditingWorkNotes(false);
+                  }}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <LedgerRenderedBody
+                className="ledger-work-notes-body spec-panel"
+                source={detail.work_notes ?? ''}
+                empty="No working notes."
+                detail={detail}
+              />
+            )}
+          </section>
+        )}
+
+        {dependencies.length > 0 && (
+          <section className="ledger-issue-detail__section ledger-issue-detail__dependencies-section">
+            <SectionTitle title="Prerequisites" count={dependencies.length} />
+            <DependencyList dependencies={dependencies} onOpenEntity={onOpenEntity} />
+          </section>
         )}
 
         <section className="ledger-issue-detail__section">
@@ -897,6 +1048,10 @@ function TimelineEntryCard({
     );
   }
   if (entry.kind === 'event') {
+    const isWorkNotesEvent = entry.event_type === 'issue.work_notes_updated';
+    const resultingWorkNotes = isWorkNotesEvent && typeof entry.payload.work_notes === 'string'
+      ? entry.payload.work_notes
+      : null;
     return (
       <div className="ledger-timeline-event ledger-timeline-event--state">
         <span className="ledger-timeline-event__dot" aria-hidden="true" />
@@ -909,9 +1064,23 @@ function TimelineEntryCard({
           />
         </span>
         <time>{formatRelativeTime(entry.created_at, LEDGER_TIME_OPTIONS)}</time>
-        <MetadataDisclosure label="Timeline metadata">
-          <MetadataRows rows={eventMetadataRows(entry)} />
-        </MetadataDisclosure>
+        {resultingWorkNotes !== null ? (
+          <details className="ledger-work-notes-history">
+            <summary>{resultingWorkNotes ? 'View saved working notes' : 'Working notes cleared'}</summary>
+            {resultingWorkNotes && (
+              <LedgerRenderedBody
+                className="ledger-work-notes-history__body spec-panel"
+                source={resultingWorkNotes}
+                empty="Working notes cleared."
+                detail={detail}
+              />
+            )}
+          </details>
+        ) : (
+          <MetadataDisclosure label="Timeline metadata">
+            <MetadataRows rows={eventMetadataRows(entry)} />
+          </MetadataDisclosure>
+        )}
       </div>
     );
   }
@@ -1080,6 +1249,33 @@ function RelationshipList({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function DependencyList({
+  dependencies,
+  onOpenEntity,
+}: {
+  dependencies: LedgerIssueSummaryRef[];
+  onOpenEntity?: LedgerIssueDetailProps['onOpenEntity'];
+}): JSX.Element {
+  return (
+    <div className="ledger-dependency-list">
+      {dependencies.map((dependency) => (
+        <button
+          key={dependency.id}
+          type="button"
+          className="ledger-dependency-row"
+          disabled={!onOpenEntity}
+          onClick={() => onOpenEntity?.('issue', dependency.display_id, dependency.project_id)}
+        >
+          <code>{dependency.display_id}</code>
+          <strong>{dependency.title}</strong>
+          <StatusPill status={dependency.status} resolution={dependency.resolution} size="sm" />
+          {dependency.status === 'open' && <span className="ledger-dependency-row__warning">Open prerequisite</span>}
+        </button>
+      ))}
     </div>
   );
 }
@@ -1370,6 +1566,7 @@ function stateEntryLabel(entry: Extract<LedgerIssueTimelineEntry, { kind: 'state
 function timelineEventLabel(entry: Extract<LedgerIssueTimelineEntry, { kind: 'event' }>): string {
   if (entry.event_type === 'relationship.added') return 'Relationship added';
   if (entry.event_type === 'relationship.removed') return 'Relationship removed';
+  if (entry.event_type === 'issue.work_notes_updated') return 'Working notes updated';
   return entry.event_type;
 }
 
