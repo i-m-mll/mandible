@@ -131,8 +131,9 @@ beforeEach(async () => {
   const created = await router.invoke({
     method: "POST",
     url: "/api/issues/mandible",
-    body: { title: "Umbrella", body: "Umbrella body", project: "mandible" },
+    body: { title: "Umbrella", body: "Umbrella body", project: "mandible", kind: "umbrella" },
   });
+  expect(created.status).toBe(200);
   umbrellaId = (created.body as { id: string }).id;
 });
 

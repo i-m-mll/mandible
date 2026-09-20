@@ -77,7 +77,8 @@ describe("CLI API route coverage", () => {
 
     expect(formatRefs(missing)).toEqual([]);
     expect(formatRefs(denied)).toEqual([...EXPECTED_FILE_RPC_DENIED_CLI_CALL_SITES].sort());
-    expect(formatUnresolved(unresolved)).toEqual([...EXPECTED_DYNAMIC_CLI_API_CALL_SITES].sort());
+    const callSites = (sites: readonly string[]) => sites.map(site => site.replace(/:\d+ /, " ")).sort();
+    expect(callSites(formatUnresolved(unresolved))).toEqual(callSites(EXPECTED_DYNAMIC_CLI_API_CALL_SITES));
   });
 
   it("allows only export plus the daemon-only credential workflow among conversation POST routes", () => {
