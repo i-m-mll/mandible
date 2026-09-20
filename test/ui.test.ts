@@ -3828,7 +3828,7 @@ describe('issue deep links', () => {
           ...repos[0].issues[0],
           id: 'coord-1',
           title: 'Canonical coordination',
-          kind: 'coordination',
+          kind: 'tracker',
           priority: 'high',
           labels: ['feature', 'important'],
         },
@@ -3846,7 +3846,7 @@ describe('issue deep links', () => {
     render(h(IssuesView, {
       repos: typedRepos,
       onRescan: async () => undefined,
-      defaultFilter: 'kind:coordination priority:high',
+      defaultFilter: 'kind:tracker priority:high',
     }));
 
     expect(screen.getByRole('button', { name: /Canonical coordination/ })).toBeTruthy();

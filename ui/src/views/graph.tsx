@@ -278,9 +278,9 @@ function reactFlowId(id: string): string {
 function nodeColor(node: GraphNode): string {
   if (node.visual?.color) return node.visual.color;
   if (node.type === 'issue') {
-    if (node.labels?.includes('error')) return 'var(--accent-red)';
-    if (node.labels?.includes('feature')) return 'var(--accent-blue)';
-    if (node.labels?.includes('umbrella')) return 'var(--accent-purple)';
+    if (node.summary?.kind === 'bug') return 'var(--accent-red)';
+    if (node.summary?.kind === 'feature') return 'var(--accent-blue)';
+    if (node.summary?.kind === 'umbrella') return 'var(--accent-purple)';
     return appColors.textPrimarySoft;
   }
   if (node.type === 'session') {

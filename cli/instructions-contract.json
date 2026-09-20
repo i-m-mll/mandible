@@ -83,7 +83,7 @@
       "description": "Edit issue descriptions while preserving body revision history."
     },
     {
-      "name": "mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|coordination [--label <label>]...",
+      "name": "mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--label <label>]...",
       "description": "Create an issue with one required concrete canonical kind. New issues cannot omit the kind or use unknown; labels remain independent metadata."
     },
     {
@@ -91,7 +91,7 @@
       "description": "Read, replace, clear, or inspect immutable history for the issue's current working notes. Edits and clears use the issue PATCH API with an optional expected working-notes revision."
     },
     {
-      "name": "mandible issue kind set <issue-ref> <bug|feature|umbrella|maintenance|experiment|coordination|unknown>",
+      "name": "mandible issue kind set <issue-ref> <bug|feature|umbrella|maintenance|experiment|tracker|unknown>",
       "description": "Set the canonical issue kind through the existing issue PATCH API; kind is independent from labels."
     },
     {

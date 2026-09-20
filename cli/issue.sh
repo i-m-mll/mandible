@@ -40,10 +40,10 @@ RELATIONSHIP_TYPES=(
 )
 ACCEPTED_RELATIONSHIP_TYPES="parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests"
 
-ISSUE_KINDS=(bug feature umbrella maintenance experiment coordination unknown)
-CREATABLE_ISSUE_KINDS=(bug feature umbrella maintenance experiment coordination)
-ACCEPTED_ISSUE_KINDS="bug, feature, umbrella, maintenance, experiment, coordination, unknown"
-ACCEPTED_CREATION_KINDS="bug, feature, umbrella, maintenance, experiment, coordination"
+ISSUE_KINDS=(bug feature umbrella maintenance experiment tracker unknown)
+CREATABLE_ISSUE_KINDS=(bug feature umbrella maintenance experiment tracker)
+ACCEPTED_ISSUE_KINDS="bug, feature, umbrella, maintenance, experiment, tracker, unknown"
+ACCEPTED_CREATION_KINDS="bug, feature, umbrella, maintenance, experiment, tracker"
 ISSUE_PRIORITIES=(low normal high urgent unknown)
 ACCEPTED_ISSUE_PRIORITIES="low, normal, high, urgent, unknown"
 ISSUE_CLOSE_RESOLUTIONS=(delivered duplicate wontfix)

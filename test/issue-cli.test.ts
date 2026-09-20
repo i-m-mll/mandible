@@ -1077,7 +1077,7 @@ describe("issue CLI body revisions", () => {
 
     try {
       const result = await run([
-        "issue", "new", "-t", "Coordination", "-m", "Body", "--kind", "coordination", "--project", "mandible",
+        "issue", "new", "-t", "Coordination", "-m", "Body", "--kind", "tracker", "--project", "mandible",
       ], 0, process.cwd(), {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
@@ -1086,7 +1086,7 @@ describe("issue CLI body revisions", () => {
       expect(result.status).toBe(0);
       expect(result.stderr).toContain("Created issue new-1");
       expect(seen).toHaveLength(1);
-      expect(seen[0].body).toMatchObject({ kind: "coordination", title: "Coordination", body: "Body" });
+      expect(seen[0].body).toMatchObject({ kind: "tracker", title: "Coordination", body: "Body" });
     } finally {
       responder.stop();
     }
@@ -1843,7 +1843,7 @@ describe("issue CLI body revisions", () => {
     });
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Accepted issue kinds: bug, feature, umbrella, maintenance, experiment, coordination, unknown");
+    expect(result.stderr).toContain("Accepted issue kinds: bug, feature, umbrella, maintenance, experiment, tracker, unknown");
   });
 
   it("shows one comment by last-comment reference", async () => {
@@ -1979,7 +1979,7 @@ describe("issue CLI list repo scoping", () => {
                 {
                   id: "abc",
                   status: "open",
-                  kind: "coordination",
+                  kind: "tracker",
                   priority: "high",
                   resolution: "delivered",
                   title: "Read-only transport",
@@ -2003,7 +2003,7 @@ describe("issue CLI list repo scoping", () => {
     );
 
     try {
-      const result = await run(["issue", "triage", "--repo", "/repo/mandible", "--kind", "coordination", "--priority", "high", "--resolution", "delivered", "--label", "feature", "--json"], 0, os.tmpdir(), {
+      const result = await run(["issue", "triage", "--repo", "/repo/mandible", "--kind", "tracker", "--priority", "high", "--resolution", "delivered", "--label", "feature", "--json"], 0, os.tmpdir(), {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
       });

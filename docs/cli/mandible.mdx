@@ -107,7 +107,7 @@ mandible inbox watch <request-id>      Poll until auth request resolves (timeout
 Issue management wrapper around the Mandible ledger.
 
 ```
-mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|coordination [--label <label>]...
+mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--label <label>]...
 mandible issue list [--status open|closed|all]
 mandible issue show <id>
 mandible issue report <id> [--json]
@@ -121,7 +121,7 @@ mandible issue work-notes show <issue-ref> [--json]
 mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]
 mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
 mandible issue work-notes history <issue-ref> [--json] [--with-body]
-mandible issue kind set <issue-ref> bug|feature|umbrella|maintenance|experiment|coordination|unknown
+mandible issue kind set <issue-ref> bug|feature|umbrella|maintenance|experiment|tracker|unknown
 mandible issue comment add <issue-ref> -m <text>
 mandible issue comment show <comment-ref> [--json]
 mandible issue comment history <comment-ref> [--json] [--with-body]
