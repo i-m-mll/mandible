@@ -54,6 +54,7 @@ export type IssueSummary = {
   // multiple active parent_child edges.
   parent_id?: string;
   parent_ids?: string[];
+  parent_relationships?: import('../../../src/types.js').GitBugIssue['parent_relationships'];
 };
 
 export type IssueRepoSummary = {
@@ -62,7 +63,7 @@ export type IssueRepoSummary = {
   repo_name: string;
   repo_root?: string | null;
   open_count: number;
-  merged_count: number;
+  delivered_count: number;
   closed_count: number;
   issues: IssueSummary[];
 };
@@ -502,6 +503,11 @@ export function IssuesView({
     defaultViewState,
   );
   const { filter, filterNotice, parentFilter } = viewState;
+  const parentFilterLabel = parentFilter
+    ? repos.flatMap(repo => repo.issues.flatMap(issue => issue.parent_relationships ?? []))
+      .find(parent => parent.parent_id === parentFilter || parent.parent_ref === parentFilter)?.parent_ref
+      ?? 'selected issue'
+    : '';
   // Local state
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(
     initialRepoId ?? viewState.selectedRepoId,
@@ -672,7 +678,8 @@ export function IssuesView({
           issues = issues.filter((issue) => issueHasAnyPriority(issue, selectedPriorities));
         }
         if (parentFilter) {
-          issues = issues.filter((issue) => issueParentIds(issue).includes(parentFilter));
+          issues = issues.filter((issue) => issueParentIds(issue).includes(parentFilter)
+            || issue.parent_relationships?.some(parent => parent.parent_ref === parentFilter));
         }
         return { ...repo, issues };
       })
@@ -1236,7 +1243,7 @@ export function IssuesView({
         {parentFilter && (
           <div className="issues-parent-filter">
             <span className="issues-parent-filter__label">
-              Children of {parentFilter}
+              Children of {parentFilterLabel}
             </span>
             <button
               type="button"
@@ -1330,14 +1337,8 @@ export function IssuesView({
               onStartAgent={handleStartAgent}
               onOpenEntity={handleOpenLedgerEntity}
               onShowChildren={(detail) => {
-                const projectRef = detail.project.project_key ?? detail.project.repo_id;
-                if (projectRef) {
-                  setIssueFilter(formatIssueFilter({
-                    ...parseIssueFilter(filter),
-                    text: projectRef,
-                  }));
-                }
-                setParentFilter(detail.display_id);
+                setIssueFilter(formatIssueFilter({ ...parseIssueFilter(filter), text: '' }));
+                setParentFilter(detail.id);
               }}
             />
           </div>

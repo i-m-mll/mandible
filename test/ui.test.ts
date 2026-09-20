@@ -3753,7 +3753,7 @@ describe('issue deep links', () => {
       repo_name: 'mandible',
       repo_root: '/Users/mll/Main/10 Projects/05 Utils/mandible',
       open_count: 1,
-      merged_count: 0,
+      delivered_count: 0,
       closed_count: 0,
       issues: [
         {
@@ -3791,7 +3791,7 @@ describe('issue deep links', () => {
         repo_id: 'dotfiles',
         repo_name: 'dotfiles',
         open_count: 1,
-        merged_count: 0,
+        delivered_count: 0,
         closed_count: 0,
         issues: [],
       }],
@@ -3808,7 +3808,7 @@ describe('issue deep links', () => {
         project_key: 'widgets',
         repo_name: 'widgets',
         open_count: 1,
-        merged_count: 0,
+        delivered_count: 0,
         closed_count: 0,
         issues: [],
       }],
@@ -3851,6 +3851,29 @@ describe('issue deep links', () => {
 
     expect(screen.getByRole('button', { name: /Canonical coordination/ })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Canonical feature/ })).toBeNull();
+  });
+
+  it.each(['a'.repeat(64), 'aaaaaaa'])('preserves a saved parent filter %s against canonical relationships', (parentFilter) => {
+    stubIssuesLocalStorage({
+      'mandible_issues_view_state:v1': JSON.stringify({ filter: 'status:all', parentFilter }),
+    });
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const child = {
+      ...repos[0].issues[0],
+      title: 'Canonical child',
+      parent_ids: ['a'.repeat(64)],
+      parent_relationships: [{
+        id: 'edge-1', parent_id: 'a'.repeat(64), parent_ref: 'aaaaaaa',
+        provenance: 'manual' as const, confidence: 'observed' as const,
+      }],
+    };
+    render(h(IssuesView, {
+      repos: [{ ...repos[0], issues: [child, { ...child, id: 'other', title: 'Not a child', parent_ids: [], parent_relationships: [] }] }],
+      onRescan: async () => undefined,
+    }));
+    expect(screen.getByRole('button', { name: /Canonical child/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Not a child/ })).toBeNull();
+    expect(screen.getByText('Children of aaaaaaa')).toBeTruthy();
   });
 
   it('migrates legacy typed filters to canonical status, resolution, and priority', () => {
@@ -3942,7 +3965,7 @@ describe('issue deep links', () => {
       repo_name: 'Feedbax',
       repo_root: '/Users/mll/Main/10 Projects/10 PhD/20 Feedbax/feedbax',
       open_count: 1,
-      merged_count: 0,
+      delivered_count: 0,
       closed_count: 0,
       issues: [{
         id: 'fbx1234',
@@ -4281,7 +4304,7 @@ describe('issue deep links', () => {
         repo_name: 'Feedbax',
         repo_root: '/workspace/feedbax',
         open_count: 1,
-        merged_count: 0,
+        delivered_count: 0,
         closed_count: 0,
         issues: [{
           id: 'fbx1234',
