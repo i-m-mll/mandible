@@ -82,7 +82,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     title: "Closed target",
     body: "Closed target body.",
     status: "closed",
-    resolution: "obsolete",
+    resolution: "wontfix",
     kind: "feature",
     labels: ["feature"],
     aliases: [{ alias_kind: "git_bug_short", alias: "closed" }],
@@ -183,7 +183,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
   store.setLabel(nested.id, `parent:${shared.short_id}`, true, "mandible", SYSTEM_ACTOR);
   store.setLabel(cycle.id, `parent:${nested.short_id}`, true, "mandible", SYSTEM_ACTOR);
   store.setLabel(shared.id, `parent:${cycle.short_id}`, true, "mandible", SYSTEM_ACTOR);
-  store.setIssueStatus(rootA.id, "closed", "merged", SYSTEM_ACTOR);
+  store.setIssueStatus(rootA.id, "closed", "delivered", SYSTEM_ACTOR);
   store.setIssueStatus(rootA.id, "open", null, SYSTEM_ACTOR);
   store.setLabel(rootB.id, "needs-review", true, "mandible", SYSTEM_ACTOR);
   store.setLabel(rootB.id, "needs-review", false, "mandible", SYSTEM_ACTOR);
@@ -217,7 +217,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
   store.setIssueStatus(
     authDone.id,
     "closed",
-    "merged",
+    "delivered",
     { ...SYSTEM_ACTOR, actor_type: "system", actor_id: null },
     "auth_queue",
   );

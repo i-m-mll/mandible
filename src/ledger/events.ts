@@ -3,6 +3,7 @@ import type { LedgerEvent } from "./types.js";
 const LEDGER_EVENT_SSE_TYPES: Record<string, string> = {
   "issue.created": "ledger:issue:created",
   "issue.updated": "ledger:issue:updated",
+  "issue.work_notes_updated": "ledger:issue:updated",
   "issue.closed": "ledger:issue:closed",
   "issue.reopened": "ledger:issue:reopened",
   "comment.created": "ledger:comment:created",

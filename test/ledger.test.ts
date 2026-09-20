@@ -422,11 +422,11 @@ describe("ledger store", () => {
     });
     const issue = createIssue(store, project.project.id);
 
-    const closed = store.setIssueStatus(issue.id, "closed", "merged", SYSTEM_ACTOR);
+    const closed = store.setIssueStatus(issue.id, "closed", "delivered", SYSTEM_ACTOR);
     const reopened = store.setIssueStatus(issue.id, "open", null, SYSTEM_ACTOR);
     const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
 
-    expect(closed).toMatchObject({ status: "closed", resolution: "merged" });
+    expect(closed).toMatchObject({ status: "closed", resolution: "delivered" });
     expect(closed.closed_at).not.toBeNull();
     expect(reopened).toMatchObject({ status: "open", resolution: null, closed_at: null });
     expect(events.map((event) => event.event_type)).toEqual([
@@ -434,6 +434,14 @@ describe("ledger store", () => {
       "issue.closed",
       "issue.reopened",
     ]);
+    expect(JSON.parse(events[1].payload_json)).toMatchObject({
+      previous_resolution: null,
+      resolution: "delivered",
+    });
+    expect(JSON.parse(events[2].payload_json)).toMatchObject({
+      previous_resolution: "delivered",
+      resolution: null,
+    });
     expect(events.every((event) => /^[0-9a-f]{64}$/.test(event.id))).toBe(true);
     expect(broadcasts).toContain("ledger:issue:closed");
     expect(broadcasts).toContain("ledger:issue:reopened");
@@ -447,8 +455,8 @@ describe("ledger store", () => {
     });
     const issue = createIssue(store, project.project.id);
 
-    store.setIssueStatus(issue.id, "closed", "merged", SYSTEM_ACTOR);
-    store.setIssueStatus(issue.id, "closed", "merged", SYSTEM_ACTOR);
+    store.setIssueStatus(issue.id, "closed", "delivered", SYSTEM_ACTOR);
+    store.setIssueStatus(issue.id, "closed", "delivered", SYSTEM_ACTOR);
 
     const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
     expect(events.map((event) => event.event_type)).toEqual([

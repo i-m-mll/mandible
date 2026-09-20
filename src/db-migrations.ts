@@ -38,6 +38,8 @@ export interface Migration {
   version: number;
   name: string;
   statements: string[];
+  /** SQLite cannot toggle foreign_keys from inside a transaction. */
+  requires_foreign_keys_off?: boolean;
 }
 
 /**
@@ -1079,6 +1081,282 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "briefing_destination_mutation_receipts",
     statements: [...BRIEFING_DESTINATION_MUTATION_SCHEMA_SQL],
   },
+  {
+    version: 183,
+    name: "issue_work_notes_and_kind_retirement",
+    requires_foreign_keys_off: true,
+    statements: [
+      `CREATE TEMP TABLE ledger_resolution_migration (
+        issue_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        previous_resolution TEXT NOT NULL,
+        next_resolution TEXT,
+        legacy_updated_at INTEGER NOT NULL,
+        occurred_at INTEGER NOT NULL,
+        observed_at INTEGER NOT NULL,
+        event_id TEXT NOT NULL UNIQUE
+      )`,
+      `INSERT INTO ledger_resolution_migration (
+        issue_id, project_id, previous_resolution, next_resolution, legacy_updated_at, occurred_at, observed_at, event_id
+      )
+      SELECT id, project_id, resolution,
+        CASE resolution
+          WHEN 'fixed' THEN 'delivered'
+          WHEN 'merged' THEN 'delivered'
+          WHEN 'obsolete' THEN 'wontfix'
+          WHEN 'duplicate' THEN 'duplicate'
+          WHEN 'wontfix' THEN 'wontfix'
+          ELSE NULL
+        END,
+        updated_at,
+        CAST(strftime('%s', 'now') AS INTEGER) * 1000,
+        CAST(strftime('%s', 'now') AS INTEGER) * 1000,
+        lower(hex(randomblob(32)))
+      FROM ledger_issues
+      WHERE resolution IN ('fixed', 'merged', 'obsolete', 'invalid', 'unknown')`,
+      `CREATE TEMP TABLE ledger_issue_lifecycle_guard (
+        check_name TEXT PRIMARY KEY,
+        offending INTEGER NOT NULL CHECK(offending = 0)
+      )`,
+      `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
+       SELECT 'closed_without_resolution', COUNT(*)
+       FROM ledger_issues
+       WHERE status = 'closed' AND resolution IS NULL`,
+      `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
+       SELECT 'open_with_resolution', COUNT(*)
+       FROM ledger_issues
+       WHERE status = 'open' AND resolution IS NOT NULL`,
+      "DROP INDEX idx_ledger_issues_author_user",
+      "DROP INDEX idx_ledger_issues_kind",
+      "DROP INDEX idx_ledger_issues_project_short_id",
+      "DROP INDEX idx_ledger_issues_project_status_updated",
+      `CREATE TABLE ledger_issues_new (
+        id TEXT PRIMARY KEY,
+        short_id TEXT NOT NULL DEFAULT '',
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        work_notes TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK(status IN ('open','closed')),
+        resolution TEXT CHECK(resolution IN ('delivered','duplicate','wontfix') OR resolution IS NULL),
+        kind TEXT NOT NULL DEFAULT 'unknown'
+          CHECK(kind IN ('bug','feature','umbrella','maintenance','experiment','unknown')),
+        priority TEXT NOT NULL DEFAULT 'unknown'
+          CHECK(priority IN ('low','normal','high','urgent','unknown')),
+        author_actor_id TEXT,
+        author_actor_type TEXT NOT NULL DEFAULT 'external_adapter'
+          CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),
+        author_display TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'mandible'
+          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        closed_at INTEGER,
+        deleted_at INTEGER
+      , worker_status TEXT NOT NULL DEFAULT 'none'
+          CHECK(worker_status IN ('none','in_progress','done','blocked','pivot-needed')),
+        author_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        evidence_method TEXT,
+        evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL,
+        CHECK((status = 'open' AND resolution IS NULL) OR (status = 'closed' AND resolution IS NOT NULL))
+      )`,
+      `INSERT INTO ledger_issues_new (
+        id, short_id, project_id, title, body, work_notes, status, resolution, kind, priority,
+        author_actor_id, author_actor_type, author_display, source, created_at, updated_at,
+        closed_at, deleted_at, worker_status, author_user_id, evidence_method, evidence_id
+      )
+      SELECT id, short_id, project_id, title, body,
+        CASE WHEN kind = 'deferred'
+          THEN 'this issue had kind ''deferred'', when ''deferred'' was a kind'
+          WHEN kind = 'task'
+          THEN 'this issue had kind ''task'', when ''task'' was a kind'
+          WHEN kind = 'question'
+          THEN 'this issue had kind ''question'', when ''question'' was a kind'
+          ELSE '' END
+        || CASE WHEN EXISTS (
+            SELECT 1 FROM ledger_labels l
+             WHERE l.issue_id = ledger_issues.id
+               AND l.label = 'deferred'
+               AND l.deleted_at IS NULL
+          ) THEN CASE WHEN kind IN ('deferred', 'task', 'question') THEN char(10) ELSE '' END
+            || 'this issue had an active ''deferred'' label, when ''deferred'' was an active label'
+          ELSE '' END,
+        status,
+        CASE resolution
+          WHEN 'fixed' THEN 'delivered'
+          WHEN 'merged' THEN 'delivered'
+          WHEN 'obsolete' THEN 'wontfix'
+          WHEN 'invalid' THEN NULL
+          WHEN 'unknown' THEN NULL
+          ELSE resolution
+        END,
+        CASE WHEN kind IN ('deferred', 'task', 'question') THEN 'unknown' ELSE kind END,
+        priority, author_actor_id, author_actor_type, author_display, source, created_at, updated_at,
+        closed_at, deleted_at, worker_status, author_user_id, evidence_method, evidence_id
+      FROM ledger_issues`,
+      "DROP TABLE ledger_issues",
+      `CREATE TABLE ledger_issues (
+        id TEXT PRIMARY KEY,
+        short_id TEXT NOT NULL DEFAULT '',
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        work_notes TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK(status IN ('open','closed')),
+        resolution TEXT CHECK(resolution IN ('delivered','duplicate','wontfix') OR resolution IS NULL),
+        kind TEXT NOT NULL DEFAULT 'unknown'
+          CHECK(kind IN ('bug','feature','umbrella','maintenance','experiment','unknown')),
+        priority TEXT NOT NULL DEFAULT 'unknown'
+          CHECK(priority IN ('low','normal','high','urgent','unknown')),
+        author_actor_id TEXT,
+        author_actor_type TEXT NOT NULL DEFAULT 'external_adapter'
+          CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),
+        author_display TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'mandible'
+          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        closed_at INTEGER,
+        deleted_at INTEGER
+      , worker_status TEXT NOT NULL DEFAULT 'none'
+        CHECK(worker_status IN ('none','in_progress','done','blocked','pivot-needed')), author_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, evidence_method TEXT, evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL,
+        CHECK((status = 'open' AND resolution IS NULL) OR (status = 'closed' AND resolution IS NOT NULL)))`,
+      `INSERT INTO ledger_issues
+        SELECT id, short_id, project_id, title, body, work_notes, status, resolution, kind, priority,
+          author_actor_id, author_actor_type, author_display, source, created_at, updated_at,
+          closed_at, deleted_at, worker_status, author_user_id, evidence_method, evidence_id
+        FROM ledger_issues_new`,
+      "DROP TABLE ledger_issues_new",
+      `INSERT INTO ledger_events (
+        id, entity_type, entity_id, event_type, actor_id, actor_type, source,
+        payload_json, occurred_at, observed_at, actor_user_id, evidence_method, evidence_id
+      )
+      SELECT event_id, 'issue', issue_id, 'issue.updated', 'schema-migration-v183', 'system', 'system',
+        json_object(
+          'issue_id', issue_id,
+          'patch', json_object('resolution', next_resolution),
+          'previous_resolution', previous_resolution,
+          'resolution', next_resolution,
+          'migration', 'resolution_retirement',
+          'retired_resolution', previous_resolution,
+          'replacement_resolution', next_resolution,
+          'legacy_updated_at', legacy_updated_at
+        ),
+        occurred_at, observed_at, NULL, NULL, NULL
+      FROM ledger_resolution_migration`,
+      `INSERT INTO ledger_change_feed_state (project_id, next_sequence, retained_from_sequence, updated_at)
+       SELECT project_id, 1, 1, MAX(observed_at)
+       FROM ledger_resolution_migration
+       GROUP BY project_id
+       ON CONFLICT(project_id) DO NOTHING`,
+      `INSERT INTO ledger_change_log (project_id, sequence, event_id, recorded_at)
+       SELECT m.project_id,
+         s.next_sequence + ROW_NUMBER() OVER (PARTITION BY m.project_id ORDER BY m.issue_id) - 1,
+         m.event_id,
+         m.observed_at
+       FROM ledger_resolution_migration m
+       JOIN ledger_change_feed_state s ON s.project_id = m.project_id`,
+      `UPDATE ledger_change_feed_state
+       SET next_sequence = next_sequence + (
+         SELECT COUNT(*) FROM ledger_resolution_migration m
+         WHERE m.project_id = ledger_change_feed_state.project_id
+       ),
+       updated_at = (
+         SELECT MAX(m.observed_at) FROM ledger_resolution_migration m
+         WHERE m.project_id = ledger_change_feed_state.project_id
+       )
+       WHERE project_id IN (SELECT project_id FROM ledger_resolution_migration)`,
+      `UPDATE ledger_labels
+          SET deleted_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
+        WHERE label = 'deferred' AND deleted_at IS NULL`,
+      `CREATE TABLE ledger_body_revisions_new (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('issue_body','issue_work_notes','comment_body')),
+        entity_id TEXT NOT NULL,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        revision_no INTEGER NOT NULL,
+        event_id TEXT UNIQUE REFERENCES ledger_events(id) ON DELETE SET NULL,
+        actor_id TEXT,
+        actor_type TEXT NOT NULL CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),
+        source TEXT NOT NULL CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        reason TEXT NOT NULL DEFAULT 'edit'
+          CHECK(reason IN ('create','edit','import_snapshot','external_update','normalize','migration_snapshot','restore')),
+        occurred_at INTEGER NOT NULL,
+        observed_at INTEGER NOT NULL,
+        base_revision_id TEXT REFERENCES ledger_body_revisions(id) ON DELETE SET NULL,
+        base_hash TEXT,
+        new_hash TEXT NOT NULL,
+        snapshot_body TEXT NOT NULL,
+        patch_format TEXT,
+        patch_text TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        redacted_at INTEGER,
+        redacted_by_actor_id TEXT,
+        redaction_reason TEXT,
+        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        evidence_method TEXT,
+        evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL,
+        redacted_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        UNIQUE(entity_type, entity_id, revision_no)
+      )`,
+      `INSERT INTO ledger_body_revisions_new
+        SELECT id, entity_type, entity_id, issue_id, project_id, revision_no, event_id,
+          actor_id, actor_type, source, reason, occurred_at, observed_at, base_revision_id,
+          base_hash, new_hash, snapshot_body, patch_format, patch_text, metadata_json,
+          redacted_at, redacted_by_actor_id, redaction_reason, actor_user_id, evidence_method,
+          evidence_id, redacted_by_user_id
+        FROM ledger_body_revisions`,
+      "DROP INDEX idx_ledger_body_revisions_entity",
+      "DROP INDEX idx_ledger_body_revisions_event",
+      "DROP INDEX idx_ledger_body_revisions_issue",
+      "DROP TABLE ledger_body_revisions",
+      `CREATE TABLE ledger_body_revisions (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('issue_body','issue_work_notes','comment_body')),
+        entity_id TEXT NOT NULL,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        revision_no INTEGER NOT NULL,
+        event_id TEXT UNIQUE REFERENCES ledger_events(id) ON DELETE SET NULL,
+        actor_id TEXT,
+        actor_type TEXT NOT NULL CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),
+        source TEXT NOT NULL CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        reason TEXT NOT NULL DEFAULT 'edit'
+          CHECK(reason IN ('create','edit','import_snapshot','external_update','normalize','migration_snapshot','restore')),
+        occurred_at INTEGER NOT NULL,
+        observed_at INTEGER NOT NULL,
+        base_revision_id TEXT REFERENCES ledger_body_revisions(id) ON DELETE SET NULL,
+        base_hash TEXT,
+        new_hash TEXT NOT NULL,
+        snapshot_body TEXT NOT NULL,
+        patch_format TEXT,
+        patch_text TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        redacted_at INTEGER,
+        redacted_by_actor_id TEXT,
+        redaction_reason TEXT, actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, evidence_method TEXT, evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL, redacted_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        UNIQUE(entity_type, entity_id, revision_no)
+      )`,
+      `INSERT INTO ledger_body_revisions
+        SELECT id, entity_type, entity_id, issue_id, project_id, revision_no, event_id,
+          actor_id, actor_type, source, reason, occurred_at, observed_at, base_revision_id,
+          base_hash, new_hash, snapshot_body, patch_format, patch_text, metadata_json,
+          redacted_at, redacted_by_actor_id, redaction_reason, actor_user_id, evidence_method,
+          evidence_id, redacted_by_user_id
+        FROM ledger_body_revisions_new`,
+      "DROP TABLE ledger_body_revisions_new",
+      "CREATE INDEX idx_ledger_body_revisions_entity ON ledger_body_revisions(entity_type, entity_id, revision_no)",
+      "CREATE INDEX idx_ledger_body_revisions_event ON ledger_body_revisions(event_id) WHERE event_id IS NOT NULL",
+      "CREATE INDEX idx_ledger_body_revisions_issue ON ledger_body_revisions(issue_id, occurred_at)",
+      "CREATE INDEX idx_ledger_issues_author_user ON ledger_issues(author_user_id) WHERE author_user_id IS NOT NULL",
+      "CREATE INDEX idx_ledger_issues_kind ON ledger_issues(kind)",
+      "CREATE UNIQUE INDEX idx_ledger_issues_project_short_id ON ledger_issues(project_id, short_id) WHERE short_id != ''",
+      "CREATE INDEX idx_ledger_issues_project_status_updated ON ledger_issues(project_id, status, updated_at DESC)",
+      "DROP TABLE ledger_issue_lifecycle_guard",
+      "DROP TABLE ledger_resolution_migration",
+    ],
+  },
 ];
 
 /**
@@ -1210,14 +1488,53 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
   const setVersion = db.prepare(
     "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   );
-  db.transaction(() => {
-    for (const migration of migrations) {
-      for (const statement of migration.statements) {
-        db.exec(statement);
+  let normal: Migration[] = [];
+  const applyNormal = (): void => {
+    if (normal.length === 0) return;
+    const group = normal;
+    normal = [];
+    db.transaction(() => {
+      for (const migration of group) {
+        for (const statement of migration.statements) db.exec(statement);
+        setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
       }
-      setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
+    })();
+  };
+  for (const migration of migrations) {
+    if (!migration.requires_foreign_keys_off) {
+      normal.push(migration);
+      continue;
     }
-  })();
+    applyNormal();
+    const baselineForeignKeyViolations = db.pragma("foreign_key_check") as Array<Record<string, unknown>>;
+    const foreignKeysWereEnabled = Number(db.pragma("foreign_keys", { simple: true })) === 1;
+    if (foreignKeysWereEnabled) db.pragma("foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        for (const statement of migration.statements) db.exec(statement);
+        const remainingViolations = db.pragma("foreign_key_check") as Array<Record<string, unknown>>;
+        const baselineCounts = new Map<string, number>();
+        for (const violation of baselineForeignKeyViolations) {
+          const key = JSON.stringify(violation);
+          baselineCounts.set(key, (baselineCounts.get(key) ?? 0) + 1);
+        }
+        const unexpected = remainingViolations.filter((violation) => {
+          const key = JSON.stringify(violation);
+          const count = baselineCounts.get(key) ?? 0;
+          if (count === 0) return true;
+          baselineCounts.set(key, count - 1);
+          return false;
+        });
+        if (unexpected.length > 0) {
+          throw new Error(`Migration v${migration.version} left foreign-key violations`);
+        }
+        setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
+      })();
+    } finally {
+      if (foreignKeysWereEnabled) db.pragma("foreign_keys = ON");
+    }
+  }
+  applyNormal();
 }
 
 export function migrate(db: Db): void {

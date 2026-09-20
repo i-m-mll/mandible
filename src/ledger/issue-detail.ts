@@ -146,6 +146,13 @@ export interface LedgerIssueSummaryRef {
   labels: string[];
 }
 
+export interface LedgerIssueWorkMetadata {
+  work_notes: string;
+  work_notes_revision: string | null;
+  dependencies: LedgerIssueSummaryRef[];
+  dependency_warning: boolean;
+}
+
 export interface LedgerIssueDetailRelationship {
   id: string;
   direction: "incoming" | "outgoing";
@@ -283,6 +290,8 @@ export interface LedgerIssueDetailProjection {
   project: LedgerIssueDetailProject;
   title: string;
   body: string;
+  work_notes: string;
+  work_notes_revision: string | null;
   status: LedgerIssueStatus;
   worker_status: LedgerWorkerStatus;
   resolution: LedgerIssueResolution | null;
@@ -300,6 +309,8 @@ export interface LedgerIssueDetailProjection {
   checkpoints: LedgerIssueDetailCheckpoint[];
   timeline: LedgerIssueTimelineEntry[];
   relationships: LedgerIssueDetailRelationship[];
+  dependencies: LedgerIssueSummaryRef[];
+  dependency_warning: boolean;
   work_units: LedgerIssueDetailWorkUnit[];
   sessions: LedgerIssueDetailSession[];
   auth_requests: LedgerIssueDetailAuthRequest[];
@@ -411,6 +422,7 @@ export function buildLedgerIssueDetailProjectionWithProfile(
   const mappedAliases = aliases.map(mapAlias);
   const activeIssueLabels = activeLabels(labels);
   const relationships = stage === "initial" ? [] : measure("relationships", () => buildRelationships(db, detail));
+  const workMetadata = measure("work_notes_and_dependencies", () => getLedgerIssueWorkMetadata(db, issue.id));
   const author = mapActor(attributionResolver, {
     actor_id: issue.author_actor_id,
     actor_type: issue.author_actor_type,
@@ -448,6 +460,8 @@ export function buildLedgerIssueDetailProjectionWithProfile(
     project: measure("project", () => getProjectInfo(db, issue.project_id)),
     title: issue.title,
     body: issue.body,
+    work_notes: workMetadata.work_notes,
+    work_notes_revision: workMetadata.work_notes_revision,
     status: issue.status,
     worker_status: issue.worker_status,
     resolution: issue.resolution,
@@ -465,6 +479,8 @@ export function buildLedgerIssueDetailProjectionWithProfile(
     checkpoints,
     timeline,
     relationships,
+    dependencies: workMetadata.dependencies,
+    dependency_warning: workMetadata.dependency_warning,
     work_units: workUnits,
     sessions,
     auth_requests: authRequests,
@@ -993,11 +1009,30 @@ function buildTimeline(
     `SELECT * FROM ledger_events
      WHERE entity_type = 'issue'
        AND entity_id = ?
-       AND event_type IN ('issue.updated', 'issue.closed', 'issue.reopened')
+       AND event_type IN ('issue.updated', 'issue.work_notes_updated', 'issue.closed', 'issue.reopened')
      ORDER BY occurred_at, observed_at`,
   ).all(issue.id) as LedgerEvent[]);
   for (const event of events) {
     const payload = parseJsonObject(event.payload_json);
+    if (event.event_type === "issue.work_notes_updated") {
+      entries.push({
+        id: event.id,
+        kind: "event",
+        event_type: event.event_type,
+        author: mapActor(attributionResolver, {
+          actor_id: event.actor_id,
+          actor_type: event.actor_type,
+          legacy_display: actorTypeLabel(event.actor_type),
+          user_id: event.actor_user_id,
+          evidence_method: event.evidence_method,
+          evidence_id: event.evidence_id,
+        }),
+        source: event.source,
+        created_at: event.occurred_at,
+        payload,
+      });
+      continue;
+    }
     const patch = parsePatch(payload);
     const status = lifecycleStatusForEvent(event.event_type)
       ?? (typeof patch.status === "string" ? patch.status as LedgerIssueStatus : null);
@@ -1344,6 +1379,51 @@ function getIssueSummary(db: Db, issueId: string): LedgerIssueSummaryRef | null 
     kind: row.kind,
     priority: row.priority,
     labels,
+  };
+}
+
+export function getLedgerIssueWorkMetadata(db: Db, issueId: string): LedgerIssueWorkMetadata {
+  const issue = db.prepare(
+    "SELECT work_notes FROM ledger_issues WHERE id = ?",
+  ).get(issueId) as { work_notes?: string } | undefined;
+  const revision = db.prepare(
+    `SELECT id FROM ledger_body_revisions
+      WHERE entity_type = 'issue_work_notes' AND entity_id = ?
+      ORDER BY revision_no DESC
+      LIMIT 1`,
+  ).get(issueId) as { id?: string } | undefined;
+  const dependencyIds = new Set<string>();
+  const canonical = db.prepare(
+    `SELECT source_issue_id FROM ledger_issue_relationships
+      WHERE target_issue_id = ?
+        AND relationship_type = 'blocks'
+        AND deleted_at IS NULL`,
+  ).all(issueId) as Array<{ source_issue_id: string }>;
+  for (const row of canonical) {
+    if (row.source_issue_id !== issueId) dependencyIds.add(row.source_issue_id);
+  }
+  if (tableExists(db, "ledger_relationship_edges")) {
+    const edges = db.prepare(
+      `SELECT source_issue_id FROM ledger_relationship_edges
+        WHERE target_issue_id = ?
+          AND source_entity_type = 'issue'
+          AND target_entity_type = 'issue'
+          AND link_type = 'blocks'
+          AND deleted_at IS NULL`,
+    ).all(issueId) as Array<{ source_issue_id: string }>;
+    for (const row of edges) {
+      if (row.source_issue_id !== issueId) dependencyIds.add(row.source_issue_id);
+    }
+  }
+  const dependencies = Array.from(dependencyIds)
+    .map((dependencyId) => getIssueSummary(db, dependencyId))
+    .filter((dependency): dependency is LedgerIssueSummaryRef => dependency !== null)
+    .sort((left, right) => left.display_id.localeCompare(right.display_id) || left.id.localeCompare(right.id));
+  return {
+    work_notes: issue?.work_notes ?? "",
+    work_notes_revision: revision?.id ?? null,
+    dependencies,
+    dependency_warning: dependencies.some((dependency) => dependency.status === "open"),
   };
 }
 
