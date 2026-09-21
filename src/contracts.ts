@@ -698,7 +698,7 @@ export type ArtifactRecord = {
   manifest_id: string | null;
   metadata: Record<string, unknown>;
   pinned: boolean;
-  custody_mode: "link" | "copy" | "managed" | "external";
+  custody_mode: "git" | "managed" | null;
   home_repo_id: string | null;
   repo_locator: Record<string, unknown>;
   availability: "present" | "missing" | "stale" | "unchecked" | "remote_only" | "pinned";
@@ -728,10 +728,6 @@ export type ArtifactBlobRecord = {
   provider_id: string | null;
   manifest_id: string | null;
   metadata: Record<string, unknown>;
-  custody_mode: "link" | "copy" | "managed" | "external";
-  availability: "present" | "missing" | "stale" | "unchecked" | "remote_only" | "pinned";
-  retention: Record<string, unknown>;
-  reference: Record<string, unknown>;
   created_at: number;
 };
 
@@ -759,12 +755,11 @@ export type CanonicalArtifactVersionRecord = {
   source_kind: Exclude<ArtifactIdentitySourceKind, "mixed">;
   content_hash: string;
   source_project_id: string | null;
-  source_repo_id: string | null;
   repo_path: string | null;
   commit_sha: string | null;
   observed_path: string | null;
-  source_locator: Record<string, unknown>;
-  custody_mode: "link" | "copy" | "managed" | "external" | null;
+  parent_version_id: string | null;
+  custody_mode: "git" | "managed";
   label: string | null;
   note: string | null;
   metadata: Record<string, unknown>;
@@ -842,8 +837,6 @@ export type ArtifactResolveResult = {
   logical_artifact?: ArtifactIdentityRecord | null;
   artifact_version?: CanonicalArtifactVersionRecord | null;
   artifact_blob?: ArtifactBlobRecord | null;
-  series?: ArtifactSeriesRecord | null;
-  version?: ArtifactVersionRecord | null;
   warnings?: string[];
 };
 

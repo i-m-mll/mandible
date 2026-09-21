@@ -9,7 +9,6 @@ import {
   canonicalArtifactBlobShortRef,
   canonicalLogicalArtifactShortRef,
   canonicalArtifactShortRef,
-  ingestArtifact,
   projectArtifactPublicValue,
   recordArtifactVersion,
   resolveArtifactIdentity,
@@ -18,6 +17,11 @@ import {
 
 let db: Db;
 let tempDir = "";
+
+// Synthetic descriptor hashes isolate prefix ambiguity; no version or byte custody is claimed.
+function seedDescriptor(hash:string) {
+  db.prepare('INSERT INTO artifact_blob(id,content_hash,created_at) VALUES (?,?,1)').run(`artifact-blob:${hash}`,hash);
+}
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-artifact-identity-"));
@@ -44,7 +48,7 @@ describe("artifact identity contract", () => {
 
   it("resolves an unambiguous compact immutable id with a canonical blob target", () => {
     const hash = `53f3c8c30295${"0".repeat(52)}`;
-    ingestArtifact(db, { sha256: hash, uri: `artifact-blob:${hash}` }, 1000, tempDir);
+    seedDescriptor(hash);
 
     const strict = resolveArtifactIdentity(db, "artifact:53f3c8c30295", "strict-read");
     expect(strict).toMatchObject({
@@ -65,8 +69,8 @@ describe("artifact identity contract", () => {
   it("fails closed for ambiguous compact ids", () => {
     const first = `abcdef0${"0".repeat(57)}`;
     const second = `abcdef0${"1".repeat(57)}`;
-    ingestArtifact(db, { sha256: first, uri: `artifact-blob:${first}` }, 1000, tempDir);
-    ingestArtifact(db, { sha256: second, uri: `artifact-blob:${second}` }, 1001, tempDir);
+    seedDescriptor(first);
+    seedDescriptor(second);
 
     expect(resolveArtifactIdentity(db, "artifact:abcdef0", "strict-read")).toMatchObject({
       status: "ambiguous",
@@ -81,8 +85,8 @@ describe("artifact identity contract", () => {
   it("projects current API values to the shortest unambiguous compact id", () => {
     const first = `1234567890ab0${"0".repeat(51)}`;
     const second = `1234567890ab1${"1".repeat(51)}`;
-    ingestArtifact(db, { sha256: first, uri: `artifact-blob:${first}` }, 1000, tempDir);
-    ingestArtifact(db, { sha256: second, uri: `artifact-blob:${second}` }, 1001, tempDir);
+    seedDescriptor(first);
+    seedDescriptor(second);
 
     expect(canonicalArtifactShortRef(db, first)).toBe("artifact:1234567890ab0");
     expect(projectArtifactPublicValue(db, {
@@ -96,7 +100,7 @@ describe("artifact identity contract", () => {
 
   it("projects typed blob and logical identities to collision-safe short refs", () => {
     const hash = `89abcdef0123${"4".repeat(52)}`;
-    ingestArtifact(db, { sha256: hash, uri: `artifact-blob:${hash}` }, 1000, tempDir);
+    seedDescriptor(hash);
     const recorded = recordArtifactVersion(db, {
       source_kind: "managed",
       provider_id: "test",
@@ -134,28 +138,11 @@ describe("artifact identity contract", () => {
     expect(strict).toMatchObject({ status: "unresolved", kind: "unresolved", target_id: null });
     expect(after.n).toBe(before.n);
 
-    const materialized = resolveArtifactIdentity(
-      db,
-      "https://example.invalid/new.txt",
-      "materializing",
-      900,
-    );
-    expect(materialized).toMatchObject({
-      status: "resolved",
-      kind: "alias",
-      target_type: "artifact_blob",
-      target_id: expect.stringMatching(/^artifact-blob:/),
-      alias: { normalized_ref: "https://example.invalid/new.txt" },
-    });
-    expect(resolveArtifactIdentity(db, "https://example.invalid/new.txt", "strict-read")).toMatchObject({
-      status: "resolved",
-      kind: "alias",
-      target_type: "artifact_blob",
-      target_id: materialized.target_id,
-    });
+    expect(resolveArtifactIdentity(db, "https://example.invalid/new.txt", "link", 900)).toMatchObject({status:"unresolved",target_id:null});
+    expect(db.prepare("SELECT COUNT(*) AS n FROM artifact_aliases").get()).toEqual(before);
 
     const hash = `1234567${"a".repeat(57)}`;
-    ingestArtifact(db, { sha256: hash, uri: `artifact-blob:${hash}` }, 1000, tempDir);
+    seedDescriptor(hash);
     expect(resolveArtifactIdentity(db, `artifact:sha256:${hash}`, "strict-read")).toMatchObject({
       status: "unsupported",
       kind: "unsupported",

@@ -177,7 +177,7 @@ describe("artifact series list", () => {
     expect(summaries[0].links).toHaveLength(1);
     expect(summaries[0].links[0]).toMatchObject({
       id: link?.id,
-      artifact_id: first.artifact.id,
+      artifact_id: `artifact-blob:${first.artifact.content_hash}`,
       series_id: first.series.id,
       link_kind: "living",
       entity_id: issueId,
@@ -292,9 +292,9 @@ describe("artifact series list", () => {
     expect(resolved.status).toBe(200);
     expect((resolved.body as any).resolution).toMatchObject({
       status: "resolved",
-      artifact: { id: `artifact:${second.artifact.content_hash.slice(0, 12)}` },
-      series: { id: first.series.id, ref: expect.stringMatching(/^artifact-series:.{12,}$/) },
-      version: { version_no: 2, ref: expect.stringMatching(/^artifact-version:.{12,}$/) },
+      artifact: { id: second.version.id },
+      logical_artifact: { id: first.series.id.replace("artifact-series:","artifact:") },
+      artifact_version: { version_no: 2 },
     });
     expect(history.status).toBe(200);
     expect((history.body as any).history).toMatchObject({
@@ -323,7 +323,7 @@ describe("artifact series list", () => {
     const publicId = (list.body as any).series[0].latest_version.artifact_id as string;
     const encodedId = encodeURIComponent(publicId);
 
-    expect(publicId).toBe(`artifact:${selected.artifact.content_hash.slice(0, 12)}`);
+    expect(publicId).toBe(selected.version.id);
 
     const [detail, content, check] = await Promise.all([
       router.invoke({ method: "GET", url: `/api/artifacts/${encodedId}` }),

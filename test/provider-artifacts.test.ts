@@ -270,40 +270,11 @@ describe("provider/artifact substrate", () => {
     }, 2000, tempDir);
 
     expect(first.id).toBe(second.id);
-    expect(first.id).toMatch(/^artifact:sha256:/);
+    expect(first.id).toMatch(/^artifact-blob:/);
     expect(first.custody_mode).toBe("managed");
     expect(first.availability).toBe("present");
-    expect(first.retention).toMatchObject({ pinned: true });
+    expect(first.retention).toEqual({});
     expect(fs.existsSync(first.uri.replace("file://", ""))).toBe(true);
-  });
-
-  it("stores explicit artifact custody and cross-repo reference metadata", () => {
-    const artifact = ingestArtifact(db, {
-      provider_id: "mandible",
-      role: "document_snapshot",
-      media_type: "text/markdown",
-      sha256: "e".repeat(64),
-      uri: "file:///tmp/rlrmp/results/b41c940/report.md",
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      availability: "unchecked",
-      repo_locator: {
-        repo_id: "rlrmp",
-        ref: "main",
-        path: "results/b41c940/report.md",
-      },
-      retention: { pin_reason: "bridge-fixture" },
-      reference: { owner_system: "repo", document_role: "report" },
-    }, 1000, tempDir);
-
-    expect(artifact).toMatchObject({
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      availability: "unchecked",
-      pinned: true,
-    });
-    expect(artifact.repo_locator).toMatchObject({ repo_id: "rlrmp", path: "results/b41c940/report.md" });
-    expect(artifact.reference).toMatchObject({ owner_system: "repo", document_role: "report" });
   });
 
   it("lists managed artifacts with aliases and filterable custody metadata", () => {
@@ -359,71 +330,9 @@ describe("provider/artifact substrate", () => {
     expect(summary?.links).toBeUndefined();
     expect(summary?.alias_schemes).toEqual(expect.arrayContaining(["artifact-blob", "file"]));
     expect(detail?.metadata).toMatchObject({ nested: { expensive: expect.any(String) } });
-    expect(detail?.reference).toMatchObject({ owner_system: "repo" });
+    expect(detail?.reference).not.toHaveProperty("owner_system");
     expect(detail?.aliases?.length).toBeGreaterThan(0);
     expect(detail?.links?.map((link) => link.entity_id)).toContain("mandible/419fa00");
-  });
-
-  it("resolves compact artifact-blob hash prefixes without changing canonical artifact identity", () => {
-    const hash = "1234567890abcdef".repeat(4);
-    const artifact = ingestArtifact(db, {
-      sha256: hash,
-      role: "report",
-      uri: "repo://mandible@main/results/report.md",
-      custody_mode: "link",
-      repo_locator: { repo_id: "mandible", ref: "main", path: "results/report.md" },
-    }, 1000, tempDir);
-
-    const compact = resolveArtifactRef(db, "artifact-blob:1234567890ab", 2000);
-    const canonicalBlob = resolveArtifactRef(db, `artifact-blob:${hash}`, 2000);
-    const legacyColon = resolveArtifactRef(db, `artifact:sha256:${hash}`, 2000);
-    const unsupportedPlain = resolveArtifactRef(db, `sha256:${hash}`, 2000);
-
-    expect(compact).toMatchObject({
-      status: "resolved",
-      artifact: { id: artifact.id, content_hash: hash },
-      alias: null,
-      artifact_blob: { id: `artifact-blob:${hash}`, content_hash: hash },
-    });
-    expect(canonicalBlob).toMatchObject({
-      status: "resolved",
-      artifact: { id: artifact.id, content_hash: hash },
-      alias: null,
-      artifact_blob: { id: `artifact-blob:${hash}`, content_hash: hash },
-    });
-    expect(legacyColon).toMatchObject({ status: "unsupported", artifact: null, alias: null });
-    expect(unsupportedPlain).toMatchObject({ status: "unsupported", artifact: null, alias: null });
-    expect(getArtifact(db, artifact.id)?.id).toBe(`artifact:sha256:${hash}`);
-  });
-
-  it("reports ambiguous, unresolved, and unsupported compact artifact-blob hash refs explicitly", () => {
-    const firstHash = `abc1234${"0".repeat(57)}`;
-    const secondHash = `abc1234${"1".repeat(57)}`;
-    ingestArtifact(db, { sha256: firstHash, uri: `artifact-blob:${firstHash}` }, 1000, tempDir);
-    ingestArtifact(db, { sha256: secondHash, uri: `artifact-blob:${secondHash}` }, 1001, tempDir);
-
-    const ambiguous = resolveArtifactRef(db, "artifact-blob:abc1234", 2000);
-    const unresolved = resolveArtifactRef(db, "artifact-blob:fffffff", 2001);
-    const unsupported = resolveArtifactRef(db, "artifact-blob:abc", 2002);
-
-    expect(ambiguous).toMatchObject({
-      status: "ambiguous",
-      artifact: null,
-      alias: null,
-      warnings: ["artifact_blob_ambiguous"],
-    });
-    expect(unresolved).toMatchObject({
-      status: "unresolved",
-      artifact: null,
-      alias: null,
-      warnings: ["artifact_blob_unresolved"],
-    });
-    expect(unsupported).toMatchObject({
-      status: "unsupported",
-      artifact: null,
-      alias: null,
-      warnings: ["artifact_blob_prefix_too_short"],
-    });
   });
 
   it("resolves logical artifact and version prefixes with explicit ambiguity states", () => {
@@ -515,8 +424,8 @@ describe("provider/artifact substrate", () => {
     expect(versionPrefix).toMatchObject({
       status: "resolved",
       artifact: { id: second.artifact.id },
-      series: { id: first.series.id },
-      version: { id: second.version.id },
+      logical_artifact: { id: first.series.id.replace("artifact-series:","artifact:") },
+      artifact_version: { id: second.version.id },
       warnings: [],
     });
     expect(ambiguous).toMatchObject({
@@ -546,13 +455,13 @@ describe("provider/artifact substrate", () => {
     expect(seriesLatest).toMatchObject({
       status: "resolved",
       artifact: { id: second.artifact.id },
-      series: { id: first.series.id },
-      version: { version_no: 2 },
+      logical_artifact: { id: first.series.id.replace("artifact-series:","artifact:") },
+      artifact_version: { version_no: 2 },
     });
     expect(seriesPinned).toMatchObject({
       status: "resolved",
       artifact: { id: first.artifact.id },
-      version: { version_no: 1 },
+      artifact_version: { version_no: 1 },
     });
     expect(seriesAmbiguous).toMatchObject({
       status: "ambiguous",
@@ -571,8 +480,8 @@ describe("provider/artifact substrate", () => {
     const versionRef = canonicalArtifactVersionShortRef(db, first.version.id);
     expect(seriesRef).toMatch(/^artifact-series:.{12,}$/);
     expect(versionRef).toMatch(/^artifact-version:.{12,}$/);
-    expect(resolveArtifactRef(db, seriesRef)).toMatchObject({ status: "resolved", series: { id: first.series.id } });
-    expect(resolveArtifactRef(db, versionRef)).toMatchObject({ status: "resolved", version: { id: first.version.id } });
+    expect(resolveArtifactRef(db, seriesRef)).toMatchObject({ status: "resolved", logical_artifact: { id: first.series.id.replace("artifact-series:","artifact:") } });
+    expect(resolveArtifactRef(db, versionRef)).toMatchObject({ status: "resolved", artifact_version: { id: first.version.id } });
     expect(projectArtifactPublicValue(db, { series: first.series, version: first.version })).toMatchObject({
       series: { ref: seriesRef },
       version: { ref: versionRef },
@@ -598,36 +507,6 @@ describe("provider/artifact substrate", () => {
     expect(history?.series.id).toBe(recorded.series.id);
     expect(history?.versions.map((version) => version.id)).toEqual([recorded.version.id]);
     expect(versionHistory?.series.id).toBe(recorded.series.id);
-  });
-
-  it("resolves repo and provider aliases without requiring issue association", () => {
-    const hash = "f".repeat(64);
-    createLedgerCheckout("rlrmp", path.join(tempDir, "rlrmp"));
-    const artifact = ingestArtifact(db, {
-      provider_id: "feedbax",
-      role: "model_parameters",
-      media_type: "application/x-equinox",
-      sha256: hash,
-      uri: "feedbax://models/baseline/parameters",
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: {
-        repo_id: "rlrmp",
-        ref: "main",
-        path: "_artifacts/b41c940/model.params.eqx",
-      },
-      availability: "unchecked",
-    }, 1000, tempDir);
-
-    const repoResolution = resolveArtifactRef(db, "repo://rlrmp@main/_artifacts/b41c940/model.params.eqx", 2000);
-    const providerResolution = resolveArtifactRef(db, "feedbax://models/baseline/parameters", 2000);
-    const repoList = listArtifacts(db, { repo: "rlrmp", scheme: "repo" });
-    const providerList = listArtifacts(db, { provider: "feedbax", scheme: "feedbax" });
-
-    expect(repoResolution).toMatchObject({ status: "resolved", artifact: { id: artifact.id } });
-    expect(providerResolution).toMatchObject({ status: "resolved", artifact: { id: artifact.id } });
-    expect(repoList.map((item) => item.id)).toEqual([artifact.id]);
-    expect(providerList.map((item) => item.id)).toEqual([artifact.id]);
   });
 
   it("rejects arbitrary feature-worktree repo refs before materializing artifact rows", () => {
@@ -689,38 +568,6 @@ describe("provider/artifact substrate", () => {
     expect(linkedToAuth.map((item) => item.id)).toEqual([first.id]);
   });
 
-  it("materializes unknown scheme refs as external artifact records instead of failing", () => {
-    const resolution = resolveArtifactRef(db, "zotero://library/items/ABC123", 1000);
-    const row = db.prepare(
-      "SELECT scheme, normalized_ref, resolution_status, blob_id FROM artifact_aliases WHERE alias = ?"
-    ).get("zotero://library/items/ABC123") as {
-      scheme: string;
-      normalized_ref: string;
-      resolution_status: string;
-      blob_id: string | null;
-    };
-
-    expect(resolution).toMatchObject({
-      status: "resolved",
-      scheme: "zotero",
-      artifact: {
-        algorithm: "ref-sha256",
-        uri: "zotero://library/items/ABC123",
-        custody_mode: "external",
-        availability: "remote_only",
-      },
-    });
-    expect(row).toMatchObject({
-      scheme: "zotero",
-      normalized_ref: "zotero://library/items/ABC123",
-      resolution_status: "resolved",
-      blob_id: `artifact-blob:${resolution.artifact?.content_hash}`,
-    });
-    expect(listArtifacts(db, { scheme: "zotero" }).map((item) => item.id)).toEqual([
-      resolution.artifact?.id,
-    ]);
-  });
-
   it("does not materialize missing legacy content-hash refs as external records", () => {
     const hash = "a".repeat(64);
     const resolution = resolveArtifactRef(db, `artifact:${hash}`, 1000);
@@ -739,412 +586,6 @@ describe("provider/artifact substrate", () => {
     );
   });
 
-  it("scaffolds clean tracked repo artifact output with repo_commit recoverability", () => {
-    const report = "# Run report\n\nComplete.\n";
-    const commit = "1234567890abcdef1234567890abcdef12345678";
-    const repoRef = `repo://rlrmp@${commit}/results/run-1/report.md`;
-
-    const artifact = ingestArtifact(db, {
-      sha256: sha256(report),
-      uri: repoRef,
-      role: "report",
-      media_type: "text/markdown",
-      size_bytes: Buffer.byteLength(report),
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: {
-        repo_id: "rlrmp",
-        ref: commit,
-        path: "results/run-1/report.md",
-        git: { tracked: true, ignored: false, staged: false, dirty: false },
-      },
-      availability: "present",
-      reference: {
-        recoverability: "repo_commit",
-        preferred_ref: repoRef,
-        warnings: [],
-        git: { tracked: true, ignored: false, staged: false, dirty: false, commit },
-      },
-      metadata: {
-        source: "artifact_cli_contract",
-        warning_codes: [],
-      },
-    }, 1000, tempDir);
-
-    expect(artifact).toMatchObject({
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      availability: "present",
-      content_hash: sha256(report),
-      reference: expect.objectContaining({ recoverability: "repo_commit", preferred_ref: repoRef }),
-    });
-    expect(artifact.repo_locator).toMatchObject({
-      repo_id: "rlrmp",
-      ref: commit,
-      path: "results/run-1/report.md",
-    });
-    expect(artifact.aliases?.map((alias) => alias.normalized_ref)).toContain(repoRef);
-    expect(artifact.metadata.warning_codes).not.toContain("local_only");
-    expect(artifact.reference.warnings).not.toContain("local_only");
-  });
-
-  it("scaffolds ignored local repo artifacts as local_only without repo_commit claims", () => {
-    const checkpointPath = path.join(tempDir, "repo", "_artifacts", "run-1", "checkpoint.bin");
-    const checkpoint = Buffer.from("checkpoint bytes");
-    fs.mkdirSync(path.dirname(checkpointPath), { recursive: true });
-    fs.writeFileSync(checkpointPath, checkpoint);
-
-    const artifact = ingestArtifact(db, {
-      sha256: sha256(checkpoint),
-      uri: `file://${checkpointPath}`,
-      role: "model_checkpoint",
-      media_type: "application/octet-stream",
-      size_bytes: checkpoint.length,
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: {
-        repo_id: "rlrmp",
-        path: "_artifacts/run-1/checkpoint.bin",
-        git: { tracked: false, ignored: true, staged: false, dirty: false },
-      },
-      availability: "present",
-      reference: {
-        recoverability: "local_only",
-        preferred_ref: `artifact:${sha256(checkpoint)}`,
-        warnings: ["local_only"],
-        git: { tracked: false, ignored: true, staged: false, dirty: false },
-      },
-      metadata: {
-        source: "artifact_cli_contract",
-        warning_codes: ["local_only"],
-      },
-    }, 1000, tempDir);
-
-    expect(artifact).toMatchObject({
-      custody_mode: "link",
-      availability: "present",
-      content_hash: sha256(checkpoint),
-      reference: expect.objectContaining({ recoverability: "local_only" }),
-    });
-    expect(artifact.metadata.warning_codes).toContain("local_only");
-    expect(artifact.reference.warnings).toContain("local_only");
-    expect(artifact.reference).not.toMatchObject({ recoverability: "repo_commit" });
-    expect(artifact.repo_locator).not.toMatchObject({ ref: expect.any(String) });
-  });
-
-  it("registers clean tracked local paths as commit-pinned repo artifacts", () => {
-    const repoRoot = path.join(tempDir, "tracked-repo");
-    const reportPath = path.join(repoRoot, "results", "report.md");
-    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-    execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
-    git(repoRoot, ["config", "user.email", "test@example.invalid"]);
-    git(repoRoot, ["config", "user.name", "Test User"]);
-    git(repoRoot, ["config", "commit.gpgsign", "false"]);
-    fs.writeFileSync(reportPath, "# Report\n", "utf8");
-    git(repoRoot, ["add", "results/report.md"]);
-    git(repoRoot, ["commit", "-m", "add report"]);
-    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
-    createLedgerCheckout("mandible", fs.realpathSync(repoRoot));
-
-    const registered = registerLocalArtifactPath(db, {
-      path: reportPath,
-      role: "report",
-    }, 1000, tempDir);
-    const check = checkArtifactMaterialization(db, registered.artifact.id);
-
-    expect(registered).toMatchObject({
-      recoverability: "repo_commit",
-      warnings: [],
-      artifact: {
-        custody_mode: "link",
-        availability: "present",
-        home_repo_id: "mandible",
-        repo_locator: {
-          repo_id: "mandible",
-          ref: commit,
-          commit,
-          path: "results/report.md",
-        },
-        metadata: expect.objectContaining({ recoverability: "repo_commit" }),
-      },
-    });
-    expect(registered.artifact.uri).toBe(`repo://mandible@${commit}/results/report.md`);
-    expect(check).toMatchObject({
-      materializable: true,
-      hash_matches: true,
-      recoverability: "repo_commit",
-      source: expect.stringContaining(`repo_commit:mandible@${commit}:results/report.md`),
-    });
-  });
-
-  it("canonicalizes a registered feature worktree checkout to the project key", () => {
-    const mainRepo = path.join(tempDir, "rlrmp-main");
-    initGitRepo(mainRepo);
-    const commit = commitRepoFile(mainRepo, "results/report.md", "# Report\n");
-    const featureRoot = path.join(tempDir, "worktrees", "feature__31e67ff-redo");
-    fs.mkdirSync(path.dirname(featureRoot), { recursive: true });
-    git(mainRepo, ["worktree", "add", "-b", "feature/31e67ff-redo", featureRoot]);
-    createLedgerCheckout("rlrmp", fs.realpathSync(mainRepo));
-    createLedgerCheckout("feature__31e67ff-redo", fs.realpathSync(featureRoot), {
-      projectKey: "rlrmp",
-      workRepoId: "feature__31e67ff-redo",
-    });
-
-    const registered = registerLocalArtifactPath(db, {
-      path: path.join(featureRoot, "results", "report.md"),
-      role: "report",
-    }, 1000, tempDir);
-
-    expect(registered.artifact).toMatchObject({
-      home_repo_id: "rlrmp",
-      repo_locator: {
-        repo_id: "rlrmp",
-        ref: commit,
-        commit,
-        path: "results/report.md",
-      },
-    });
-    expect(registered.artifact.uri).toBe(`repo://rlrmp@${commit}/results/report.md`);
-    expect(registered.artifact.uri).not.toContain("feature__31e67ff-redo");
-  });
-
-  it("resolves an unregistered feature worktree through the registered common git dir", () => {
-    const mainRepo = path.join(tempDir, "rlrmp-main");
-    initGitRepo(mainRepo);
-    const commit = commitRepoFile(mainRepo, "results/report.md", "# Report\n");
-    const featureRoot = path.join(tempDir, "worktrees", "feature__unregistered");
-    fs.mkdirSync(path.dirname(featureRoot), { recursive: true });
-    git(mainRepo, ["worktree", "add", "-b", "feature/unregistered", featureRoot]);
-    createLedgerCheckout("rlrmp", fs.realpathSync(mainRepo));
-
-    const registered = registerLocalArtifactPath(db, {
-      path: path.join(featureRoot, "results", "report.md"),
-      role: "report",
-    }, 1000, tempDir);
-
-    expect(registered.artifact).toMatchObject({
-      home_repo_id: "rlrmp",
-      repo_locator: {
-        repo_id: "rlrmp",
-        ref: commit,
-        path: "results/report.md",
-      },
-    });
-    expect(registered.artifact.uri).toBe(`repo://rlrmp@${commit}/results/report.md`);
-  });
-
-  it("fails closed for clean tracked files in unknown repos instead of inventing repo ids", () => {
-    const repoRoot = path.join(tempDir, "unknown-feature");
-    initGitRepo(repoRoot);
-    commitRepoFile(repoRoot, "results/report.md", "# Report\n");
-
-    const registered = registerLocalArtifactPath(db, {
-      path: path.join(repoRoot, "results", "report.md"),
-      role: "report",
-    }, 1000, tempDir);
-
-    expect(registered.recoverability).toBe("local_only");
-    expect(registered.warnings).toEqual(
-      expect.arrayContaining(["unknown_repo_identity", "local_only_link_requires_override_for_issue_evidence"]),
-    );
-    expect(registered.artifact.home_repo_id).toBeNull();
-    expect(registered.artifact.repo_locator).toEqual({});
-    expect(registered.artifact.uri).toMatch(/^file:\/\//);
-    expect(registered.artifact.uri).not.toContain("repo://unknown-feature");
-  });
-
-  it("links existing repo and artifact refs directly to issues", () => {
-    const issueId = createLedgerIssue(
-      "mandible",
-      "44074ed",
-      "Artifact CLI for custody-aware registration, bundles, and issue links",
-    );
-    const repoResolution = resolveArtifactRef(
-      db,
-      "repo://mandible@1234567890abcdef1234567890abcdef12345678/results/run-1/report.md",
-      1000,
-    );
-    const hash = "b".repeat(64);
-    ingestArtifact(db, {
-      sha256: hash,
-      uri: `artifact-blob:${hash}`,
-      custody_mode: "external",
-      availability: "remote_only",
-    }, 1000, tempDir);
-    const hashResolution = resolveArtifactRef(db, `artifact-blob:${hash}`, 1000);
-
-    const repoLink = resolveAndLinkArtifact(db, {
-      ref: repoResolution.normalized_ref,
-      entity_type: "issue",
-      entity_id: "44074ed",
-      issue_project: "mandible",
-      link_type: "evidence",
-      role: "report",
-      repo_id: "mandible",
-      source: "artifact_cli",
-      metadata: { input_ref: repoResolution.normalized_ref },
-    }, 2000).link;
-    const hashLink = resolveAndLinkArtifact(db, {
-      ref: `artifact-blob:${hash}`,
-      entity_type: "issue",
-      entity_id: issueId,
-      link_type: "references",
-      role: "external_hash",
-      repo_id: "mandible",
-      source: "artifact_cli",
-      metadata: { input_ref: hashResolution.normalized_ref },
-    }, 2000).link;
-
-    expect(repoLink).toMatchObject({
-      artifact_id: repoResolution.artifact?.id,
-      entity_type: "issue",
-      entity_id: issueId,
-      link_type: "evidence",
-      role: "report",
-      source: "artifact_cli",
-    });
-    expect(hashLink).toMatchObject({
-      artifact_id: hashResolution.artifact?.id,
-      entity_type: "issue",
-      entity_id: issueId,
-      link_type: "references",
-      role: "external_hash",
-    });
-    expect(listArtifacts(db, { linkedEntityType: "issue", linkedEntityId: issueId }).map((item) => item.id).sort())
-      .toEqual([hashResolution.artifact?.id, repoResolution.artifact?.id].sort());
-  });
-
-  it("distinguishes repo artifact hash mismatch from missing bytes", () => {
-    const repoRoot = path.join(tempDir, "repo");
-    const reportPath = path.join(repoRoot, "results", "report.md");
-    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-    fs.writeFileSync(reportPath, "original\n", "utf8");
-    createLedgerCheckout("rlrmp", repoRoot);
-
-    const artifact = ingestArtifact(db, {
-      sha256: sha256("original\n"),
-      uri: "repo://rlrmp@main/results/report.md",
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: { repo_id: "rlrmp", ref: "main", path: "results/report.md" },
-      availability: "present",
-    }, 1000, tempDir);
-
-    fs.writeFileSync(reportPath, "changed\n", "utf8");
-    const mismatched = getArtifactContent(db, artifact.id);
-    fs.rmSync(reportPath);
-    const missing = getArtifactContent(db, artifact.id);
-
-    expect(mismatched).toMatchObject({
-      status: "unavailable",
-      reason: "artifact bytes do not match registered sha256",
-      download: { available: false, reason: "artifact bytes do not match registered sha256" },
-    });
-    expect(missing).toMatchObject({
-      status: "unavailable",
-      reason: "artifact bytes are not available on disk",
-      download: { available: false, reason: "artifact bytes are not available on disk" },
-    });
-    expect(mismatched?.reason).not.toBe(missing?.reason);
-  });
-
-  it("promotes a hash-only external artifact when bytes are snapshotted into Mandible custody", () => {
-    const content = "external bytes\n";
-    const hash = sha256(content);
-    ingestArtifact(db, {
-      sha256: hash,
-      uri: `artifact-blob:${hash}`,
-      custody_mode: "external",
-      availability: "remote_only",
-    }, 1000, tempDir);
-    const external = resolveArtifactRef(db, `artifact-blob:${hash}`, 1000);
-
-    expect(external.artifact).toMatchObject({
-      id: `artifact:sha256:${hash}`,
-      custody_mode: "external",
-      availability: "remote_only",
-    });
-
-    const snapshotted = snapshotArtifactBytes(db, {
-      ref: `artifact-blob:${hash}`,
-      content,
-      media_type: "text/plain",
-      filename: "external.txt",
-      custody_mode: "copy",
-      reference: {
-        snapshot_of: external.artifact?.id,
-      },
-    }, 2000, tempDir);
-    const contentResult = getArtifactContent(db, snapshotted.id);
-
-    expect(snapshotted).toMatchObject({
-      id: external.artifact?.id,
-      custody_mode: "copy",
-      availability: "present",
-      uri: expect.stringMatching(/^file:\/\//),
-    });
-    expect(contentResult).toMatchObject({
-      status: "available",
-      source: { kind: "managed_file" },
-      download: { available: true, filename: "external.txt" },
-    });
-  });
-
-  it("promotes a present local-only link artifact when bytes are snapshotted into Mandible custody", () => {
-    const content = "local-only bytes\n";
-    const hash = sha256(content);
-    const localPath = path.join(tempDir, "run-output.txt");
-    fs.writeFileSync(localPath, content, "utf8");
-    const linked = ingestArtifact(db, {
-      sha256: hash,
-      uri: `file://${localPath}`,
-      custody_mode: "link",
-      availability: "present",
-      media_type: "text/plain",
-      filename: "run-output.txt",
-      reference: { recoverability: "local_only", warnings: ["local_only"] },
-      metadata: { recoverability: "local_only", warning_codes: ["local_only"] },
-    }, 1000, tempDir);
-
-    expect(linked).toMatchObject({
-      custody_mode: "link",
-      availability: "present",
-      reference: expect.objectContaining({ recoverability: "local_only" }),
-      metadata: expect.objectContaining({ recoverability: "local_only" }),
-    });
-
-    const snapshotted = snapshotArtifactBytes(db, {
-      ref: `artifact-blob:${hash}`,
-      content,
-      media_type: "text/plain",
-      filename: "run-output.txt",
-      custody_mode: "copy",
-    }, 2000, tempDir);
-    fs.rmSync(localPath);
-    const detail = getArtifact(db, linked.id);
-    const contentResult = getArtifactContent(db, linked.id);
-    const materialization = checkArtifactMaterialization(db, linked.id);
-
-    expect(snapshotted.id).toBe(linked.id);
-    expect(detail).toMatchObject({
-      custody_mode: "copy",
-      availability: "present",
-      metadata: expect.objectContaining({ recoverability: "mandible_cas" }),
-      reference: expect.objectContaining({ recoverability: "mandible_cas" }),
-    });
-    expect(detail?.aliases?.map((alias) => alias.normalized_ref)).toContain(`file://${localPath}`);
-    expect(contentResult).toMatchObject({
-      status: "available",
-      source: { kind: "managed_file" },
-      download: { available: true, filename: "run-output.txt" },
-    });
-    expect(materialization).toMatchObject({
-      materializable: true,
-      hash_matches: true,
-      recoverability: "mandible_cas",
-    });
-  });
-
   it("ingests multi-MiB bytes from a daemon-visible content_path without inline base64 (issue 833e972)", () => {
     const big = crypto.randomBytes(3 * 1024 * 1024); // 3 MiB, well over OS ARG_MAX
     const srcPath = path.join(tempDir, "big-ingest.bin");
@@ -1155,13 +596,13 @@ describe("provider/artifact substrate", () => {
       sha256: sha256(big),
       filename: "big-ingest.bin",
       media_type: "application/octet-stream",
-      custody_mode: "copy",
+      custody_mode: "managed",
       availability: "present",
     }, 1000, tempDir);
 
     expect(artifact).toMatchObject({
-      id: `artifact:sha256:${sha256(big)}`,
-      custody_mode: "copy",
+      id: `artifact-blob:${sha256(big)}`,
+      custody_mode: "managed",
       availability: "present",
       size_bytes: big.length,
     });
@@ -1178,7 +619,7 @@ describe("provider/artifact substrate", () => {
       ingestArtifact(db, {
         content_path: srcPath,
         sha256: sha256("a different declared value"),
-        custody_mode: "copy",
+        custody_mode: "managed",
         availability: "present",
       }, 1000, tempDir),
     ).toThrow(/sha256 does not match supplied content/);
@@ -1193,12 +634,12 @@ describe("provider/artifact substrate", () => {
       content_path: srcPath,
       media_type: "application/octet-stream",
       filename: "big-snapshot.bin",
-      custody_mode: "copy",
+      custody_mode: "managed",
     }, 1000, tempDir);
 
     expect(snapshotted).toMatchObject({
-      id: `artifact:sha256:${sha256(big)}`,
-      custody_mode: "copy",
+      id: `artifact-blob:${sha256(big)}`,
+      custody_mode: "managed",
       availability: "present",
       size_bytes: big.length,
       uri: expect.stringMatching(/^file:\/\//),
@@ -1213,9 +654,8 @@ describe("provider/artifact substrate", () => {
     const otherHash = sha256("registered-as-something-else");
     ingestArtifact(db, {
       sha256: otherHash,
-      uri: `artifact-blob:${otherHash}`,
-      custody_mode: "external",
-      availability: "remote_only",
+      content: "registered-as-something-else",
+      custody_mode: "managed",
     }, 1500, tempDir);
     const conflictPath = path.join(tempDir, "conflict.bin");
     fs.writeFileSync(conflictPath, crypto.randomBytes(1024 * 1024));
@@ -1223,7 +663,7 @@ describe("provider/artifact substrate", () => {
       snapshotArtifactBytes(db, {
         ref: `artifact-blob:${otherHash}`,
         content_path: conflictPath,
-        custody_mode: "copy",
+        custody_mode: "managed",
       }, 2000, tempDir),
     ).toThrow(/do not match registered sha256/);
   });
@@ -1235,13 +675,13 @@ describe("provider/artifact substrate", () => {
 
     const registration = registerLocalArtifactPath(db, {
       path: srcPath,
-      custody_mode: "copy",
+      custody_mode: "managed",
       filename: "local-copy.bin",
     }, 1000, tempDir);
 
     expect(registration.artifact).toMatchObject({
-      id: `artifact:sha256:${sha256(big)}`,
-      custody_mode: "copy",
+      id: `artifact-blob:${sha256(big)}`,
+      custody_mode: "managed",
       availability: "present",
       size_bytes: big.length,
     });
@@ -1255,43 +695,9 @@ describe("provider/artifact substrate", () => {
     const commit = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
     const runJson = '{"status":"complete"}\n';
     const checkpoint = Buffer.from("checkpoint");
-    const tracked = ingestArtifact(db, {
-      sha256: sha256(runJson),
-      uri: `repo://rlrmp@${commit}/results/run-7/run.json`,
-      role: "run_record",
-      media_type: "application/json",
-      size_bytes: Buffer.byteLength(runJson),
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: { repo_id: "rlrmp", ref: commit, path: "results/run-7/run.json" },
-      availability: "present",
-      reference: { recoverability: "repo_commit", warnings: [] },
-    }, 1000, tempDir);
-    const local = ingestArtifact(db, {
-      sha256: sha256(checkpoint),
-      uri: "file:///tmp/rlrmp/_artifacts/run-7/checkpoint.bin",
-      role: "model_checkpoint",
-      media_type: "application/octet-stream",
-      size_bytes: checkpoint.length,
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: { repo_id: "rlrmp", path: "_artifacts/run-7/checkpoint.bin" },
-      availability: "present",
-      reference: { recoverability: "local_only", warnings: ["local_only"] },
-      metadata: { warning_codes: ["local_only"] },
-    }, 1000, tempDir);
-    const figure = ingestArtifact(db, {
-      sha256: sha256("figure\n"),
-      uri: "file:///tmp/rlrmp/_artifacts/run-7/figure.png",
-      role: "figure",
-      media_type: "image/png",
-      size_bytes: Buffer.byteLength("figure\n"),
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: { repo_id: "rlrmp", path: "_artifacts/run-7/figure.png" },
-      availability: "present",
-      reference: { recoverability: "local_only", warnings: ["local_only"] },
-    }, 1000, tempDir);
+    const tracked=ingestArtifact(db,{content:runJson,role:'run_record',media_type:'application/json'},1000,tempDir);
+    const local=ingestArtifact(db,{content_buffer:checkpoint,role:'model_checkpoint'},1000,tempDir);
+    const figure=ingestArtifact(db,{content:'figure\n',role:'figure',media_type:'image/png'},1000,tempDir);
     const bundleResult = createArtifactBundle(db, {
       name: "run-7 packet",
       role: "artifact_bundle",
@@ -1315,13 +721,12 @@ describe("provider/artifact substrate", () => {
       role: "artifact_bundle",
       custody_mode: "managed",
       availability: "present",
-      reference: expect.objectContaining({ identity_kind: "artifact_bundle" }),
     });
     expect(bundleResult.members).toHaveLength(2);
     expect(appended.members.map((member) => member.artifact.id).sort()).toEqual([figure.id, local.id, tracked.id].sort());
     expect(bundleDetail?.members.map((member) => member.artifact.id).sort()).toEqual([figure.id, local.id, tracked.id].sort());
-    expect(trackedDetail?.reference).toMatchObject({ recoverability: "repo_commit" });
-    expect(localDetail?.reference).toMatchObject({ recoverability: "local_only" });
+    expect(trackedDetail?.custody_mode).toBe("managed");
+    expect(localDetail?.custody_mode).toBe("managed");
     expect(trackedDetail?.links).toContainEqual(expect.objectContaining({
       entity_type: "artifact_bundle",
       entity_id: bundle.id,
@@ -1367,7 +772,7 @@ describe("provider/artifact substrate", () => {
     expect(dryRun.discovered_artifacts?.[0]).toMatchObject({ relative_path: "results/summary.md" });
     expect(afterDryRun).toEqual([]);
     expect(registered).toMatchObject({ discovered: 1, ingested: 1 });
-    expect(listArtifacts(db).map((artifact) => artifact.repo_locator.path)).toEqual(["results/summary.md"]);
+    expect(registered.artifacts.map((artifact) => artifact.metadata.logical_name)).toEqual(["results/summary.md"]);
   });
 
   it("ingests provider manifests into lineage graph nodes and edges", () => {
@@ -1519,13 +924,7 @@ describe("provider/artifact substrate", () => {
 
     expect(manifest.provider_id).toBe("feedbax");
     expect(manifest.manifest_type).toBe("TrainingRunManifest");
-    expect(getArtifact(db, `artifact:sha256:${checkpointHash}`)).toMatchObject({
-      id: `artifact:sha256:${checkpointHash}`,
-      provider_id: "feedbax",
-      manifest_id: manifest.id,
-      role: "training_checkpoint",
-      size_bytes: 16,
-    });
+    expect(getArtifact(db, `artifact-blob:${checkpointHash}`)).toBeNull();
 
     const graph = getIndexedGraph(db, { mode: "provider-lineage", limit: 100 });
     const nodeIds = new Set(graph.nodes.map((node) => node.id));
@@ -1533,7 +932,7 @@ describe("provider/artifact substrate", () => {
     expect(nodeIds).toContain("provider:feedbax");
     expect(nodeIds).toContain(manifest.id);
     expect(nodeIds).toContain("run:feedbax:feedbax-training-run:stub-job");
-    expect(nodeIds).toContain(`artifact:sha256:${checkpointHash}`);
+    expect(graph.nodes.some(node => node.type === 'external_reference' && node.status === 'referenced')).toBe(true);
     expect(graph.nodes.some((node) => node.type === "provider_spec" && node.detail?.manifest_id === manifest.id)).toBe(true);
     expect(edgeTypes).toContain("manifest_declares");
     expect(edgeTypes).toContain("manifest_references_artifact");
@@ -1702,7 +1101,7 @@ describe("provider/artifact substrate", () => {
     const edgeTypes = graph.edges.map((edge) => edge.type);
 
     expect(nodeIds).toContain("model:feedbax:feedbax-model:baseline");
-    expect(nodeIds).toContain(`artifact:sha256:${parameterHash}`);
+    expect(graph.nodes.some(node => node.type === 'external_reference')).toBe(true);
     expect(nodeIds).toContain("provider_spec:feedbax:feedbax-graph:baseline");
     expect(nodeIds).toContain("issue:rlrmp:b41c940");
     expect(edgeTypes).toContain("model_references_store");
@@ -1710,15 +1109,7 @@ describe("provider/artifact substrate", () => {
     expect(edgeTypes).toContain("derived_from");
     expect(edgeTypes).toContain("requested_by");
 
-    const parameterArtifact = getArtifact(db, `artifact:sha256:${parameterHash}`);
-    expect(parameterArtifact).toMatchObject({
-      role: "parameter_store",
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      manifest_id: manifest.id,
-    });
-    expect(parameterArtifact?.metadata).toMatchObject({ store_field: "parameter_store" });
-    expect(parameterArtifact?.repo_locator).toMatchObject({ repo_id: "rlrmp" });
+    expect(getArtifact(db, `artifact-blob:${parameterHash}`)).toBeNull();
     expect(graph.nodes.find((node) => node.id === "model:feedbax:feedbax-model:baseline")?.detail).toMatchObject({
       validation_records: [{ validator: "feedbax", status: "passed" }],
       migration_records: [{ from: "legacy-equinox", to: "graph-spec" }],
@@ -1905,7 +1296,7 @@ describe("provider/artifact substrate", () => {
     expect(content).toMatchObject({
       status: "available",
       kind: "json",
-      warnings: ["large artifact preview defers full sha256 validation"],
+      warnings: [],
       preview: {
         truncated: true,
         format_skipped: "partial_preview",
@@ -1977,111 +1368,6 @@ describe("provider/artifact substrate", () => {
     });
   });
 
-  it("serves present link-custody local file URI previews", () => {
-    const outsidePath = path.join(tempDir, "outside.txt");
-    fs.writeFileSync(outsidePath, "not managed\n", "utf8");
-    const artifact = ingestArtifact(db, {
-      sha256: sha256("not managed\n"),
-      media_type: "text/plain",
-      uri: `file://${outsidePath}`,
-      custody_mode: "link",
-      availability: "present",
-      reference: { recoverability: "local_only" },
-    }, 1000, tempDir);
-
-    const content = getArtifactContent(db, artifact.id);
-
-    expect(content).toMatchObject({
-      status: "available",
-      kind: "text",
-      source: { kind: "local_file", locator: `file://${outsidePath}` },
-      download: { available: true },
-    });
-    expect(content?.preview?.text).toBe("not managed\n");
-  });
-
-  it("falls back to a resolved local file alias when the primary local link path is missing", () => {
-    const missingPath = path.join(tempDir, "old-worktree", "detail.json");
-    const aliasPath = path.join(tempDir, "repo", "_artifacts", "detail.json");
-    fs.mkdirSync(path.dirname(aliasPath), { recursive: true });
-    fs.writeFileSync(aliasPath, '{"status":"current"}\n', "utf8");
-    const artifact = ingestArtifact(db, {
-      sha256: sha256('{"status":"registered"}\n'),
-      media_type: "text/plain",
-      uri: `file://${missingPath}`,
-      custody_mode: "link",
-      availability: "present",
-    }, 1000, tempDir);
-    registerArtifactAlias(db, {
-      artifactId: artifact.id,
-      ref: `file://${aliasPath}`,
-      source: "artifact_cli",
-      now: 1001,
-    });
-
-    const content = getArtifactContent(db, artifact.id);
-    const check = checkArtifactMaterialization(db, artifact.id);
-
-    expect(content).toMatchObject({
-      status: "available",
-      kind: "text",
-      source: { kind: "local_file", locator: `file://${aliasPath}` },
-      warnings: ["local_only artifact bytes differ from the registered sha256; previewing current local bytes"],
-    });
-    expect(content?.preview?.text).toBe('{"status":"current"}\n');
-    expect(check).toMatchObject({
-      materializable: true,
-      hash_matches: false,
-      source: "local_file",
-      reasons: ["local_file_drift"],
-      warnings: ["local_only artifact bytes differ from the registered sha256"],
-    });
-  });
-
-  it("treats bare local file links as mutable drift without weakening managed integrity", () => {
-    const outsidePath = path.join(tempDir, "mutable.txt");
-    fs.writeFileSync(outsidePath, "original\n", "utf8");
-    const local = ingestArtifact(db, {
-      sha256: sha256("original\n"),
-      media_type: "text/plain",
-      uri: `file://${outsidePath}`,
-      custody_mode: "link",
-      availability: "present",
-    }, 1000, tempDir);
-    const managed = ingestArtifact(db, {
-      content: "managed original\n",
-      media_type: "text/plain",
-      filename: "managed.txt",
-    }, 1000, tempDir);
-    const managedPath = new URL(managed.uri);
-
-    fs.writeFileSync(outsidePath, "changed\n", "utf8");
-    fs.writeFileSync(managedPath, "managed changed\n", "utf8");
-
-    const localContent = getArtifactContent(db, local.id);
-    const localCheck = checkArtifactMaterialization(db, local.id);
-    const managedContent = getArtifactContent(db, managed.id);
-
-    expect(localContent).toMatchObject({
-      status: "available",
-      kind: "text",
-      source: { kind: "local_file", locator: `file://${outsidePath}` },
-      warnings: ["local_only artifact bytes differ from the registered sha256; previewing current local bytes"],
-    });
-    expect(localContent?.preview?.text).toBe("changed\n");
-    expect(localCheck).toMatchObject({
-      materializable: true,
-      hash_matches: false,
-      reasons: ["local_file_drift"],
-      warnings: ["local_only artifact bytes differ from the registered sha256"],
-    });
-    expect(managedContent).toMatchObject({
-      status: "unavailable",
-      reason: "artifact bytes do not match registered sha256",
-      download: { available: false, reason: "artifact bytes do not match registered sha256" },
-    });
-  });
-
   it("serves HTML artifacts as sandboxable inline previews", () => {
     const html = "<!doctype html><html><body><h1>Plot</h1><script>window.plotReady = true;</script></body></html>";
     const artifact = ingestArtifact(db, {
@@ -2102,136 +1388,6 @@ describe("provider/artifact substrate", () => {
     expect(content?.preview?.text).toContain("<script>window.plotReady = true;</script>");
   });
 
-  it("serves repo locator previews only under a registered checkout", () => {
-    const repoRoot = path.join(tempDir, "repo");
-    const reportPath = path.join(repoRoot, "results", "report.md");
-    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-    fs.writeFileSync(reportPath, "# Report\n\nReady.\n", "utf8");
-    createLedgerCheckout("rlrmp", repoRoot);
-
-    const artifact = ingestArtifact(db, {
-      sha256: sha256("# Report\n\nReady.\n"),
-      media_type: "text/markdown",
-      uri: "repo://rlrmp@main/results/report.md",
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: { repo_id: "rlrmp", ref: "main", path: "results/report.md" },
-      availability: "present",
-    }, 1000, tempDir);
-
-    const content = getArtifactContent(db, artifact.id);
-
-    expect(content).toMatchObject({
-      status: "available",
-      kind: "markdown",
-      source: { kind: "repo_locator", locator: "repo://rlrmp/results/report.md" },
-      download: { available: true },
-    });
-    expect(content?.preview?.text).toContain("# Report");
-  });
-
-  it("serves exact commit-pinned bytes when the file is absent from the registered checkout", async () => {
-    const repoRoot = path.join(tempDir, "repo");
-    const reportPath = path.join(repoRoot, "results", "report.md");
-    const report = "# Pinned report\n\nExact committed bytes.\n";
-    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-    execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
-    git(repoRoot, ["config", "user.email", "test@example.invalid"]);
-    git(repoRoot, ["config", "user.name", "Test User"]);
-    git(repoRoot, ["config", "commit.gpgsign", "false"]);
-    fs.writeFileSync(reportPath, report, "utf8");
-    git(repoRoot, ["add", "results/report.md"]);
-    git(repoRoot, ["commit", "-m", "add pinned report"]);
-    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
-    createLedgerCheckout("rlrmp", repoRoot);
-
-    const artifact = ingestArtifact(db, {
-      sha256: sha256(report),
-      media_type: "text/markdown",
-      uri: `repo://rlrmp@${commit}/results/report.md`,
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: { repo_id: "rlrmp", ref: commit, commit, path: "results/report.md" },
-      availability: "present",
-      metadata: { filename: "report.md", recoverability: "repo_commit" },
-      reference: { recoverability: "repo_commit" },
-    }, 1000, tempDir);
-
-    fs.rmSync(reportPath);
-    expect(fs.existsSync(reportPath)).toBe(false);
-
-    const content = getArtifactContent(db, artifact.id);
-    const asyncContent = await getArtifactContentAsync(db, artifact.id);
-
-    for (const result of [content, asyncContent]) {
-      expect(result).toMatchObject({
-        status: "available",
-        kind: "markdown",
-        size_bytes: Buffer.byteLength(report),
-        source: {
-          kind: "repo_locator",
-          locator: `repo_commit:rlrmp@${commit}:results/report.md`,
-        },
-        preview: { text: report, truncated: false },
-        download: { available: true, size_bytes: Buffer.byteLength(report), filename: "report.md" },
-      });
-    }
-    expect(checkArtifactMaterialization(db, artifact.id)).toMatchObject({
-      materializable: true,
-      hash_matches: true,
-      source: `repo_commit:rlrmp@${commit}:results/report.md`,
-    });
-
-    const mismatched = ingestArtifact(db, {
-      sha256: sha256("wrong bytes\n"),
-      media_type: "text/markdown",
-      uri: `repo://rlrmp@${commit}/results/report.md`,
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: { repo_id: "rlrmp", ref: commit, commit, path: "results/report.md" },
-      availability: "present",
-      metadata: { filename: "report.md", recoverability: "repo_commit" },
-      reference: { recoverability: "repo_commit" },
-    }, 2000, tempDir);
-    expect(getArtifactContent(db, mismatched.id)).toMatchObject({
-      status: "unavailable",
-      reason: "artifact bytes do not match registered sha256",
-      download: { available: false, reason: "artifact bytes do not match registered sha256" },
-    });
-    expect(checkArtifactMaterialization(db, mismatched.id)).toMatchObject({
-      materializable: true,
-      hash_matches: false,
-      reasons: ["hash_mismatch"],
-    });
-  });
-
-  it("rejects repo locator traversal outside the registered checkout", () => {
-    const repoRoot = path.join(tempDir, "repo");
-    const outsidePath = path.join(tempDir, "outside.txt");
-    fs.mkdirSync(repoRoot, { recursive: true });
-    fs.writeFileSync(outsidePath, "outside", "utf8");
-    createLedgerCheckout("rlrmp", repoRoot);
-
-    const artifact = ingestArtifact(db, {
-      sha256: sha256("outside"),
-      media_type: "text/plain",
-      uri: "repo://rlrmp/../outside.txt",
-      custody_mode: "link",
-      home_repo_id: "rlrmp",
-      repo_locator: { repo_id: "rlrmp", path: "../outside.txt" },
-      availability: "present",
-    }, 1000, tempDir);
-
-    const content = getArtifactContent(db, artifact.id);
-
-    expect(content).toMatchObject({
-      status: "unavailable",
-      kind: "unavailable",
-      download: { available: false },
-      reason: "artifact repo locator path is outside the registered checkout",
-    });
-  });
-
   it("scans repo-owned artifacts with repo locators, hashes, and inferred issue links", () => {
     const repoRoot = path.join(tempDir, "repo");
     fs.mkdirSync(path.join(repoRoot, "docs"), { recursive: true });
@@ -2239,6 +1395,9 @@ describe("provider/artifact substrate", () => {
     fs.writeFileSync(path.join(repoRoot, "docs", "report.md"), "# Report\n\nDone.\n");
     fs.writeFileSync(path.join(repoRoot, "results", "issue-5423f64", "metrics.json"), '{"loss":0.1}\n');
     const issueId = createLedgerIssue("mandible", "5423f64", "Repo artifact discovery and indexing");
+    initGitRepo(repoRoot);git(repoRoot,['add','.']);git(repoRoot,['commit','-m','artifacts']);
+    db.prepare("UPDATE ledger_project_checkouts SET root=? WHERE project_id=(SELECT id FROM ledger_projects WHERE project_key='mandible')").run(repoRoot);
+
 
     const result = scanRepoArtifacts(db, {
       roots: [{ root: repoRoot, repo_id: "mandible", name: "mandible", default_branch: "main" }],
@@ -2251,17 +1410,17 @@ describe("provider/artifact substrate", () => {
 
     const report = result.artifacts.find((artifact) => artifact.repo_locator.path === "docs/report.md");
     expect(report).toMatchObject({
-      custody_mode: "link",
-      home_repo_id: "mandible",
+      custody_mode: "git",
+      home_repo_id: expect.any(String),
       availability: "present",
       media_type: "text/markdown",
       role: "report",
-      repo_locator: { repo_id: "mandible", ref: "main", path: "docs/report.md", root: repoRoot },
+      repo_locator: { repo_id: expect.any(String), commit: expect.any(String), path: "docs/report.md" },
     });
     expect(report?.content_hash).toBe(
       crypto.createHash("sha256").update("# Report\n\nDone.\n").digest("hex"),
     );
-    expect(report?.aliases?.map((alias) => alias.normalized_ref)).toContain("repo://mandible@main/docs/report.md");
+    expect(report?.aliases?.some(alias=>alias.normalized_ref.endsWith("/docs/report.md"))).toBe(true);
 
     const metrics = result.artifacts.find(
       (artifact) => artifact.repo_locator.path === "results/issue-5423f64/metrics.json",
@@ -2293,12 +1452,9 @@ describe("provider/artifact substrate", () => {
 
     expect(result.scanned_repos).toEqual([{ repo_id: "rlrmp", root: featureRoot, exists: true }]);
     expect(result.artifacts[0]).toMatchObject({
-      home_repo_id: "rlrmp",
-      repo_locator: { repo_id: "rlrmp", ref: "main", path: "results/report.md", root: featureRoot },
+      custody_mode: "managed", home_repo_id: null, repo_locator: {},
     });
-    expect(result.artifacts[0].aliases?.map((alias) => alias.normalized_ref)).toContain(
-      "repo://rlrmp@main/results/report.md",
-    );
+    expect(db.prepare("SELECT source_json FROM artifact_source").get()).toEqual({source_json:JSON.stringify({kind:'repo',project_id:'prj_rlrmp',path:'results/report.md'})});
   });
 
   it("uses configured repo roots and skips dependency, build, and bulk directories", () => {
@@ -2379,160 +1535,14 @@ describe("durable local-only artifact paths across worktree symlinks (issue 2f9c
       persistentReal: fs.realpathSync(path.join(persistentArtifacts, "plot.html")),
     };
   }
-
-  it("stores the persistent realpath and materializes after the feature worktree is deleted", () => {
-    const fixture = buildWorktreeSymlinkFixture();
-
-    const registration = registerLocalArtifactPath(db, {
-      path: fixture.disposablePath,
-      role: "figure",
-      allow_local_only: true,
-    }, 1000, tempDir);
-
-    expect(registration.recoverability).toBe("local_only");
-    expect(registration.artifact.uri).toBe(`file://${fixture.persistentReal}`);
-    expect(registration.artifact.uri).not.toContain(`${path.sep}feat${path.sep}`);
-    expect(registration.warnings).toContain("symlink_resolved_to_durable_target");
-    expect(registration.artifact.metadata.path_decision).toMatchObject({
-      symlink_resolved: true,
-      symlink_class: "same_repo_durable",
-      worktree_substitution: true,
-      resolved_path: fixture.persistentReal,
-      input_path: path.resolve(fixture.disposablePath),
-      stored_uri: `file://${fixture.persistentReal}`,
-    });
-    // The disposable input path is preserved as metadata, not the only locator.
-    expect(registration.artifact.metadata.input_path).toBe(path.resolve(fixture.disposablePath));
-
-    expect(checkArtifactMaterialization(db, registration.artifact.id)).toMatchObject({ materializable: true });
-
-    // Remove the disposable feature worktree; the persistent target remains.
-    fs.rmSync(fixture.featWorktree, { recursive: true, force: true });
-    expect(fs.existsSync(fixture.disposablePath)).toBe(false);
-    expect(fs.existsSync(fixture.persistentReal)).toBe(true);
-
-    expect(checkArtifactMaterialization(db, registration.artifact.id)).toMatchObject({ materializable: true });
-    expect(getArtifactContent(db, registration.artifact.id)).toMatchObject({ status: "available" });
+  it("stores symlinked input bytes independently of disposable and original paths",()=>{
+    const fixture=buildWorktreeSymlinkFixture();
+    const saved=recordArtifactVersion(db,{source_kind:'local_only',path:fixture.disposablePath,custody_mode:'managed'});
+    fs.unlinkSync(path.join(fixture.featWorktree,'_artifacts'));
+    fs.unlinkSync(fixture.persistentReal);
+    expect(getArtifactContent(db,saved.version.id)?.preview?.text).toBe('<html>plot</html>\n');
   });
 
-  it("plan endpoint classification equals what registration stores", () => {
-    const fixture = buildWorktreeSymlinkFixture();
-    const plan = planLocalArtifactPath(db, { path: fixture.disposablePath, allow_local_only: true });
-    const registration = registerLocalArtifactPath(db, {
-      path: fixture.disposablePath,
-      allow_local_only: true,
-    }, 1000, tempDir);
-
-    expect(plan.uri).toBe(registration.artifact.uri);
-    expect(plan.recoverability).toBe(registration.recoverability);
-    expect(plan.sha256).toBe(registration.artifact.content_hash);
-    expect(plan.path_decision).toMatchObject(
-      registration.artifact.metadata.path_decision as Record<string, unknown>,
-    );
-  });
-
-  it("CLI dry-run classification matches backend registration for the symlink fixture", () => {
-    const fixture = buildWorktreeSymlinkFixture();
-    const registration = registerLocalArtifactPath(db, {
-      path: fixture.disposablePath,
-      allow_local_only: true,
-    }, 1000, tempDir);
-
-    const cli = spawnSync(
-      path.join(process.cwd(), "bin", "mandible"),
-      ["artifact", "ingest", fixture.disposablePath, "--allow-local-only", "--dry-run", "--json"],
-      { cwd: fixture.featWorktree, encoding: "utf8", env: { ...process.env, MANDIBLE_PORT: "9" } },
-    );
-    expect(cli.status).toBe(0);
-    const planned = JSON.parse(cli.stdout).registered[0].planned_payload;
-    expect(planned.uri).toBe(registration.artifact.uri);
-    expect(planned.metadata.recoverability).toBe(registration.recoverability);
-    expect(planned.metadata.path_decision.symlink_class).toBe(
-      (registration.artifact.metadata.path_decision as Record<string, unknown>).symlink_class,
-    );
-    expect(planned.metadata.path_decision.resolved_path).toBe(
-      (registration.artifact.metadata.path_decision as Record<string, unknown>).resolved_path,
-    );
-  });
-
-  it("flags cross-repo symlinks while keeping them local-only", () => {
-    const repoA = path.join(tempDir, "repo-a");
-    const repoB = path.join(tempDir, "repo-b");
-    initRepo(repoA);
-    commitFile(repoA, "a.txt", "a\n");
-    initRepo(repoB);
-    commitFile(repoB, "b.txt", "b\n");
-    const repoBData = path.join(repoB, "data");
-    fs.mkdirSync(repoBData, { recursive: true });
-    fs.writeFileSync(path.join(repoBData, "result.bin"), "result\n", "utf8");
-    fs.symlinkSync(repoBData, path.join(repoA, "link"));
-    const crossPath = path.join(repoA, "link", "result.bin");
-
-    const registration = registerLocalArtifactPath(db, {
-      path: crossPath,
-      allow_local_only: true,
-    }, 1000, tempDir);
-
-    expect(registration.recoverability).toBe("local_only");
-    expect(registration.warnings).toContain("cross_repo_symlink");
-    expect(registration.artifact.metadata.path_decision).toMatchObject({
-      symlink_class: "cross_repo",
-      worktree_substitution: true,
-    });
-    expect(registration.artifact.uri).toBe(`file://${fs.realpathSync(path.join(repoBData, "result.bin"))}`);
-  });
-
-  it("rejects an outside-repo symlink for link custody unless explicitly allowed", () => {
-    const repoOut = path.join(tempDir, "repo-out");
-    initRepo(repoOut);
-    commitFile(repoOut, "a.txt", "a\n");
-    const outsideDir = path.join(tempDir, "outside-store");
-    fs.mkdirSync(outsideDir, { recursive: true });
-    fs.writeFileSync(path.join(outsideDir, "blob.bin"), "blob\n", "utf8");
-    fs.symlinkSync(outsideDir, path.join(repoOut, "ext"));
-    const outsidePath = path.join(repoOut, "ext", "blob.bin");
-
-    // Without allow_local_only, link custody to an outside-repo symlink is gated
-    // (the override-required warning is the backend's "warn or reject" signal;
-    // the CLI turns the same classification into a hard outside_repo rejection).
-    const gated = registerLocalArtifactPath(db, {
-      path: outsidePath,
-    }, 1000, tempDir);
-    expect(gated.warnings).toEqual(
-      expect.arrayContaining(["outside_repo", "outside_repo_symlink", "local_only_link_requires_override_for_issue_evidence"]),
-    );
-
-    const allowed = registerLocalArtifactPath(db, {
-      path: outsidePath,
-      allow_local_only: true,
-    }, 2000, tempDir);
-    expect(allowed.recoverability).toBe("local_only");
-    expect(allowed.artifact.metadata.path_decision).toMatchObject({
-      symlink_class: "outside_repo",
-      worktree_substitution: false,
-    });
-    expect(allowed.artifact.uri).toBe(`file://${fs.realpathSync(path.join(outsideDir, "blob.bin"))}`);
-  });
-
-  it("freezes a durable realpath ref for a symlinked local-only bundle member", () => {
-    const fixture = buildWorktreeSymlinkFixture();
-    const bundle = createArtifactBundle(db, {
-      name: "symlinked packet",
-      members: [{ path: fixture.disposablePath, role: "figure", allow_local_only: true }],
-    }, 2000, tempDir);
-
-    const member = bundle.members[0];
-    expect(member.artifact.uri).toBe(`file://${fixture.persistentReal}`);
-
-    const content = getArtifactContent(db, bundle.bundle.id);
-    const manifest = JSON.parse(content?.preview?.text ?? "{}");
-    expect(manifest.members[0].ref).toBe(`file://${fixture.persistentReal}`);
-    expect(manifest.members[0].input_path).toBe(fixture.disposablePath);
-
-    // The frozen ref still materializes after the feature worktree is deleted.
-    fs.rmSync(fixture.featWorktree, { recursive: true, force: true });
-    expect(checkArtifactMaterialization(db, member.artifact.id)).toMatchObject({ materializable: true });
-  });
 });
 
 describe("artifact version series", () => {

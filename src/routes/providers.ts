@@ -404,12 +404,6 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         const inputs: RecordArtifactVersionInput[] = [];
         for (const path of paths as string[]) {
           const local = body.commit ? null : await planLocalArtifactPathAsync(getDb(), { ...body, path });
-          if (local && (body.custody_mode ?? 'link') === 'link') {
-            const error = !local.git_state.repo_id ? 'outside_repo_requires_copy_or_managed'
-              : body.issue && local.recoverability === 'repo_worktree' && !body.allow_dirty_link ? 'dirty_link_requires_override'
-              : body.issue && local.recoverability === 'local_only' && !body.allow_local_only ? 'local_only_issue_link_requires_override' : null;
-            if (error) { sendJson(res, 400, { error, code: 'invalid_input' }); return; }
-          }
           inputs.push({ ...body, artifact_id: artifactId, path,
             source_kind: body.commit || local?.git_state.tracked && local?.git_state.repo_id ? 'tracked_repo' : 'local_only' });
         }

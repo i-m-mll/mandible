@@ -70,7 +70,7 @@ artifact_api_request() {
 usage() {
   cat <<'EOF'
 Usage:
-  mandible artifact ingest <path...> [--project <project>] [--commit <git-ref>] [--artifact <artifact-ref>] [--issue <id>] [--role <role>] [--managed|--copy|--link] [--upload] [--allow-local-only] [--allow-dirty-link] [--blob-only] [--dry-run] [--json]
+  mandible artifact ingest <path...> [--project <project>] [--commit <git-ref>] [--artifact <artifact-ref>] [--issue <id>] [--role <role>] [--managed|--git] [--upload] [--blob-only] [--dry-run] [--json]
   mandible artifact ref <uri...> [--issue <id>] [--role <role>] [--json]
   mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--pinned|--living] [--json]
   mandible artifact resolve <ref> [--json]
@@ -91,22 +91,17 @@ Usage:
   mandible artifact snapshot <path...> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact scan-repos [--repo <repo>] [--max-depth N] [--register] [--dry-run] [--json]
-  mandible artifact bundle create --name <name> <path-or-ref...> [--issue <id>] [--role <role>] [--allow-local-only] [--allow-dirty-link] [--json]
+  mandible artifact bundle create --name <name> <path-or-ref...> [--issue <id>] [--role <role>] [--json]
   mandible artifact bundle create --manifest <bundle.json> [--issue <id>] [--json]
-  mandible artifact bundle add <bundle-ref> <path-or-ref...> [--allow-local-only] [--allow-dirty-link] [--json]
+  mandible artifact bundle add <bundle-ref> <path-or-ref...> [--json]
   mandible artifact bundle show <bundle-ref> [--json]
   mandible artifact bundle check <bundle-ref> [--json]
 
 Custody:
-  link       Repo/local/provider remains authoritative; refs carry repo/path/hash metadata.
-  copy       Mandible stores a byte snapshot, preserving the source metadata.
-  managed    Mandible-owned content-addressed storage.
+  git        Exact committed bytes in a registered project, retained by a Git ref.
+  managed    Verified bytes stored in Mandible content-addressed storage.
 
-Recoverability:
-  repo_commit   bytes are recoverable from a commit-pinned repo locator.
-  repo_worktree bytes are observed in a worktree but not proven committed.
-  local_only    bytes are observed locally only.
-  mandible_cas  bytes are stored in Mandible artifact storage.
+Current sources locate future updates; they never supply saved-version reads.
 
 Artifact refs:
   artifact:<short-id>            logical artifact.
@@ -229,7 +224,7 @@ elif not inside_worktree:
         worktree_substitution=False,
         decision_warnings=["outside_repo_symlink"],
         reason="input traverses a symlink whose target is outside any git repo; "
-        "link custody is non-durable, use --copy/--managed",
+        "link custody is non-durable, use --managed",
     )
 else:
     root_abs = os.path.abspath(real_root)
@@ -438,7 +433,7 @@ classify_path() {
     canonical_ref="artifact-blob:${sha}"
     repo_locator='{}'
     recoverability="local_only"
-    warnings="$(jq -n '[{code:"outside_repo", message:"outside-repo paths require --copy or --managed for durable registration"}]')"
+    warnings="$(jq -n '[{code:"outside_repo", message:"outside-repo paths require --managed for durable registration"}]')"
     git_json="$(jq -n '{repo_id:null, relative_path:null, tracked:false, ignored:false, staged:false, dirty:false, untracked:false}')"
   fi
 
@@ -479,7 +474,7 @@ classify_path() {
       canonical_ref:(if $recoverability == "local_only" then "artifact-blob:" + $sha256 else $uri end),
       recoverability:$recoverability,
       availability:$availability,
-      custody_mode:"link",
+      custody_mode:"git",
       repo_locator:$repo_locator,
       git:$git,
       path_decision:$path_decision,
@@ -505,21 +500,21 @@ payload_for_path() {
   ignored="$(printf '%s' "$classified" | jq -r '.git.ignored')"
   repo_id="$(printf '%s' "$classified" | jq -r '.git.repo_id // empty')"
 
-  if [[ "$mode" == "link" && -z "$repo_id" ]]; then
+  if [[ "$mode" == "git" && -z "$repo_id" ]]; then
     printf '%s' "$classified" | jq '{input, status:"failed", error:"outside_repo_requires_copy_or_managed", warnings}'
     return 1
   fi
-  if [[ "$mode" == "link" && -n "$issue_id" && "$tracked" == "true" && ( "$dirty" == "true" || "$staged" == "true" ) && "$allow_dirty" != "1" ]]; then
+  if [[ "$mode" == "git" && -n "$issue_id" && "$tracked" == "true" && ( "$dirty" == "true" || "$staged" == "true" ) && "$allow_dirty" != "1" ]]; then
     printf '%s' "$classified" | jq '{input, status:"failed", error:"dirty_link_requires_override", warnings}'
     return 1
   fi
-  if [[ "$mode" == "link" && -n "$issue_id" && ( "$untracked" == "true" || "$ignored" == "true" ) && "$allow_local" != "1" ]]; then
+  if [[ "$mode" == "git" && -n "$issue_id" && ( "$untracked" == "true" || "$ignored" == "true" ) && "$allow_local" != "1" ]]; then
     printf '%s' "$classified" | jq '{input, status:"failed", error:"local_only_issue_link_requires_override", warnings}'
     return 1
   fi
 
   links="$(issue_link_json "$relation" "$(printf '%s' "$classified" | jq -r '.role')")"
-  if [[ "$mode" == "managed" || "$mode" == "copy" ]]; then
+  if [[ "$mode" == "managed" ]]; then
     # Bytes are NOT embedded here. They are delivered to the daemon out-of-band:
     # a daemon-visible content_path over local HTTP, or a spool attachment over
     # file-RPC (issue 833e972). This keeps large files off argv/JSON entirely.
@@ -559,7 +554,7 @@ payload_for_path() {
       media_type,
       role,
       size_bytes,
-      custody_mode:"link",
+      custody_mode:"git",
       availability,
       home_repo_id:(.git.repo_id // null),
       repo_locator,
@@ -621,11 +616,8 @@ cmd_ingest_like() {
       --issue) issue="$2"; shift 2 ;;
       --role) role="$2"; shift 2 ;;
       --managed) mode="managed"; mode_explicit=1; shift ;;
-      --copy) mode="copy"; mode_explicit=1; shift ;;
-      --link) mode="link"; mode_explicit=1; shift ;;
+      --git) mode="git"; mode_explicit=1; shift ;;
       --upload) upload=1; shift ;;
-      --allow-local-only) allow_local=1; shift ;;
-      --allow-dirty-link) allow_dirty=1; shift ;;
       --blob-only) blob_only=1; shift ;;
       --dry-run) dry_run=1; shift ;;
       --json) json=1; shift ;;
@@ -639,23 +631,24 @@ cmd_ingest_like() {
   fi
   require_tools
   if (( upload )) || api_is_file_rpc; then
-    if [[ "$mode" == "link" ]]; then
+    if [[ "$mode" == "git" ]]; then
       if (( mode_explicit )); then
-        die "${RED}link custody requires daemon-visible host paths; use --copy or --managed for upload mode.${RESET}" 2
+        die "${RED}git custody requires daemon-visible host paths; use --managed for upload mode.${RESET}" 2
       fi
-      mode="copy"
+      mode="managed"
     fi
   fi
   if [[ -n "$commit" || -n "$project" ]] && { (( upload || blob_only )) || api_is_file_rpc; }; then
     die "--project/--commit ingestion requires daemon-visible repository paths over HTTP" 2
   fi
-  if (( ! upload && ! blob_only )) && ! api_is_file_rpc && { (( ${#paths[@]} > 1 )) || [[ -n "$commit" || -n "$project" ]]; }; then
+  if (( ! upload && ! blob_only )) && ! api_is_file_rpc; then
     local batch_payload batch_result
     batch_payload="$(python3 - "$PWD" "$commit" "$project" "$artifact_target" "$mode" "$role" "$issue" "$dry_run" "$allow_local" "$allow_dirty" "${paths[@]}" <<'PYBATCH'
 import json, os, sys
 cwd, commit, project, artifact, mode, role, issue, dry_run, allow_local, allow_dirty, *paths = sys.argv[1:]
 body = dict(paths=paths if commit else [os.path.abspath(os.path.expanduser(p)) for p in paths], cwd=cwd,
-            custody_mode=mode, dry_run=dry_run == '1', allow_local_only=allow_local == '1', allow_dirty_link=allow_dirty == '1')
+            dry_run=dry_run == '1')
+if mode: body['custody_mode'] = mode
 body.update({k: v for k, v in dict(commit=commit, project=project, artifact_id=artifact, role=role, issue=issue).items() if v})
 print(json.dumps(body))
 PYBATCH
@@ -668,11 +661,12 @@ PYBATCH
     return 0
   fi
   [[ -n "$issue" ]] && resolve_issue "$issue"
+  [[ -n "$mode" ]] || mode="managed"
 
   local registered='[]' failed='[]' planned='[]' payload response result version_payload version_response
   local abs resp_tmp resp_status err availability
   local needs_bytes=0
-  [[ "$mode" == "copy" || "$mode" == "managed" ]] && needs_bytes=1
+  [[ "$mode" == "managed" ]] && needs_bytes=1
   for path_arg in "${paths[@]}"; do
     if payload="$(payload_for_path "$path_arg" "$mode" "$role" "$allow_local" "$allow_dirty" "$relation")"; then
       planned="$(printf '%s' "$planned" | jq --argjson payload "$payload" '. + [$payload]')"
@@ -765,11 +759,12 @@ cmd_ref() {
   (( ${#refs[@]} > 0 )) || die "No refs supplied." 2
   require_tools
   [[ -n "$issue" ]] && resolve_issue "$issue"
+  [[ -n "$mode" ]] || mode="managed"
 
   local registered='[]' failed='[]' ref response artifact link_payload link_response result
   for ref in "${refs[@]}"; do
     if [[ -e "$ref" ]]; then
-      if response="$(payload_for_path "$ref" "link" "$role" 1 1 "references")"; then
+      if response="$(payload_for_path "$ref" "git" "$role" 1 1 "references")"; then
         response="$(api_post "/api/artifacts/ingest" "$response")" || {
           failed="$(printf '%s' "$failed" | jq --arg ref "$ref" '. + [{ref:$ref, error:"api_ingest_failed"}]')"
           continue
@@ -1389,7 +1384,7 @@ cmd_snapshot() {
     (( upload )) && forwarded+=(--upload)
     (( dry_run )) && forwarded+=(--dry-run)
     (( json )) && forwarded+=(--json)
-    cmd_ingest_like "copy" "${forwarded[@]}"
+    cmd_ingest_like "managed" "${forwarded[@]}"
     return
   fi
 
@@ -1418,7 +1413,7 @@ cmd_snapshot() {
         filename:$filename,
         logical_name:$filename,
         media_type:$media_type,
-        custody_mode:"copy",
+        custody_mode:"managed",
         metadata:{source:"artifact_cli", snapshot_source_path:$source_path},
         reference:{owner_system:"artifact_cli"}
       } + (if $role == "" then {} else {role:$role} end)')"
@@ -1436,7 +1431,7 @@ cmd_snapshot() {
     # Local HTTP: the daemon shares the filesystem, so send the daemon-visible
     # absolute path and let it read the bytes (no base64 anywhere).
     payload="$(jq -n --arg ref "$ref" --arg path "$abs_from" --arg role "$role" \
-      '{ref:$ref, path:$path, custody_mode:"copy"} + (if $role == "" then {} else {role:$role} end)')"
+      '{ref:$ref, path:$path, custody_mode:"managed"} + (if $role == "" then {} else {role:$role} end)')"
     response="$(api_post "/api/artifacts/snapshot" "$payload")" || die "${RED}Failed to snapshot artifact bytes.${RESET}" 1
   fi
   artifact="$(printf '%s' "$response" | jq '.artifact')"
@@ -1465,8 +1460,6 @@ bundle_create() {
       --manifest) manifest="$2"; shift 2 ;;
       --issue) issue="$2"; shift 2 ;;
       --role) role="$2"; shift 2 ;;
-      --allow-local-only) allow_local=1; shift ;;
-      --allow-dirty-link) allow_dirty=1; shift ;;
       --dry-run) dry_run=1; shift ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
@@ -1493,7 +1486,7 @@ bundle_create() {
   else
     for member in "${members[@]}"; do
       if [[ -e "$member" ]]; then
-        members_payload="$(printf '%s' "$members_payload" | jq --arg path "$member" --argjson allow_local "$allow_local" --argjson allow_dirty "$allow_dirty" '. + [{path:$path, allow_local_only:($allow_local == 1), allow_dirty_link:($allow_dirty == 1)}]')"
+        members_payload="$(printf '%s' "$members_payload" | jq --arg path "$member" '. + [{path:$path}]')"
       else
         members_payload="$(printf '%s' "$members_payload" | jq --arg ref "$member" '. + [{ref:$ref}]')"
       fi
@@ -1514,7 +1507,7 @@ bundle_create() {
 
   for member in "${members[@]}"; do
     if [[ -e "$member" ]]; then
-      if ! payload=$(payload_for_path "$member" "link" "" "$allow_local" "$allow_dirty" "references"); then
+      if ! payload=$(payload_for_path "$member" "git" "" "$allow_local" "$allow_dirty" "references"); then
         failed="$(printf '%s' "$failed" | jq --argjson item "$payload" '. + [$item]')"
         continue
       fi
@@ -1600,19 +1593,17 @@ bundle_add() {
   while (( $# > 0 )); do
     case "$1" in
       --json) json=1; shift ;;
-      --allow-local-only) allow_local=1; shift ;;
-      --allow-dirty-link) allow_dirty=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) if [[ -z "$bundle_ref" ]]; then bundle_ref="$1"; else members+=("$1"); fi; shift ;;
     esac
   done
-  [[ -n "$bundle_ref" && ${#members[@]} -gt 0 ]] || die "Usage: mandible artifact bundle add <bundle-ref> <path-or-ref...> [--allow-local-only] [--allow-dirty-link] [--json]" 2
+  [[ -n "$bundle_ref" && ${#members[@]} -gt 0 ]] || die "Usage: mandible artifact bundle add <bundle-ref> <path-or-ref...> [--json]" 2
   require_tools
   local bundle_id member artifact response payload linked='[]' failed='[]' members_payload='[]'
   bundle_id="$(artifact_id_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
   for member in "${members[@]}"; do
     if [[ -e "$member" ]]; then
-      members_payload="$(printf '%s' "$members_payload" | jq --arg path "$member" --argjson allow_local "$allow_local" --argjson allow_dirty "$allow_dirty" '. + [{path:$path, allow_local_only:($allow_local == 1), allow_dirty_link:($allow_dirty == 1)}]')"
+      members_payload="$(printf '%s' "$members_payload" | jq --arg path "$member" '. + [{path:$path}]')"
     else
       members_payload="$(printf '%s' "$members_payload" | jq --arg ref "$member" '. + [{ref:$ref}]')"
     fi
@@ -1677,7 +1668,7 @@ shift
 case "$cmd" in
   move) cmd_move "$@" ;;
   source) cmd_source "$@" ;;
-  ingest) cmd_ingest_like "link" "$@" ;;
+  ingest) cmd_ingest_like "" "$@" ;;
   snapshot) cmd_snapshot "$@" ;;
   ref) cmd_ref "$@" ;;
   link) cmd_link "$@" ;;

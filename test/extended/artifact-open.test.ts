@@ -1,4 +1,4 @@
-import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -22,18 +22,6 @@ afterEach(() => {
   delete process.env.MANDIBLE_ARTIFACT_DIR;
 });
 
-/** Seed one linked canonical blob and return its compatibility artifact id. */
-function insertLinkedArtifact(targetPath: string): string {
-  const bytes = fs.statSync(targetPath).isFile() ? fs.readFileSync(targetPath) : Buffer.from("directory");
-  const hash = crypto.createHash("sha256").update(bytes).digest("hex");
-  db.prepare(
-    `INSERT INTO artifact_blob (
-       id, content_hash, storage_uri, size_bytes, custody_mode, availability, created_at
-     ) VALUES (?, ?, ?, ?, 'link', 'present', 1)`,
-  ).run(`artifact-blob:${hash}`, hash, `file://${targetPath}`, bytes.length);
-  return `artifact:sha256:${hash}`;
-}
-
 describe("artifact external open", () => {
   it("opens managed artifact custody through the injected default-app seam", async () => {
     const recorded = recordArtifactVersion(db, {
@@ -53,17 +41,14 @@ describe("artifact external open", () => {
     expect(fs.readFileSync(opener.mock.calls[0][0], "utf8")).toBe("managed material\n");
   });
 
-  it("opens a registered linked file and never accepts a caller path", async () => {
-    const linkedPath = path.join(tempDir, "linked.txt");
-    fs.writeFileSync(linkedPath, "linked material\n");
-    const linkedId = insertLinkedArtifact(linkedPath);
-    const opener = vi.fn(async () => undefined);
-
-    await expect(openArtifactExternally(db, linkedId, opener)).resolves.toEqual({
-      ok: true,
-      artifact_id: linkedId,
-    });
-    expect(opener).toHaveBeenCalledWith(fs.realpathSync(linkedPath));
+  it("opens stored input bytes after the original path changes",async()=>{
+    const input=path.join(tempDir,'input.txt');fs.writeFileSync(input,'saved material');
+    const saved=recordArtifactVersion(db,{source_kind:'local_only',path:input,custody_mode:'managed'});
+    fs.writeFileSync(input,'new material');
+    const opener=vi.fn(async()=>undefined);
+    expect(await openArtifactExternally(db,saved.version.id,opener)).toMatchObject({ok:true});
+    expect(opener.mock.calls[0][0]).not.toBe(input);
+    expect(fs.readFileSync(opener.mock.calls[0][0],'utf8')).toBe('saved material');
   });
 
   it("opens tracked repo material only through its registered checkout locator", async () => {
@@ -79,41 +64,31 @@ describe("artifact external open", () => {
       `INSERT INTO ledger_project_checkouts (id, project_id, work_repo_id, root, name, created_at, updated_at)
        VALUES ('checkout_repo', 'prj_repo', 'repo', ?, 'repo', 1, 1)`,
     ).run(repoRoot);
-    const hash = crypto.createHash("sha256").update("tracked material\n").digest("hex");
-    db.prepare(
-      `INSERT INTO artifact_blob (
-         id, content_hash, storage_uri, size_bytes, custody_mode,
-         metadata_json, availability, created_at
-       ) VALUES (?, ?, 'repo://repo/results/report.md', 17, 'link', ?, 'present', 1)`,
-    ).run(`artifact-blob:${hash}`, hash, JSON.stringify({
-      home_repo_id: "repo",
-      repo_locator: { repo_id: "repo", path: "results/report.md" },
-    }));
+    const git=(args:string[])=>execFileSync('git',['-C',repoRoot,...args],{stdio:'pipe'});
+    git(['init','-b','main']);git(['config','user.name','Test']);git(['config','user.email','test@example.invalid']);git(['config','commit.gpgsign','false']);git(['add','.']);git(['commit','-m','save']);
+    const saved=recordArtifactVersion(db,{source_kind:'tracked_repo',path:trackedPath,custody_mode:'git'});
+    fs.writeFileSync(trackedPath,'changed checkout');
     const opener = vi.fn(async () => undefined);
 
-    await expect(openArtifactExternally(db, `artifact:sha256:${hash}`, opener))
+    await expect(openArtifactExternally(db, saved.version.id, opener))
       .resolves.toMatchObject({ ok: true });
-    expect(opener).toHaveBeenCalledWith(fs.realpathSync(trackedPath));
+    expect(opener.mock.calls[0][0]).not.toBe(trackedPath);
+    expect(fs.readFileSync(opener.mock.calls[0][0],'utf8')).toBe('tracked material\n');
   });
 
   it("rejects unavailable and non-file material without invoking the OS", async () => {
-    const missingPath = path.join(tempDir, "missing.txt");
-    const missingHash = "0".repeat(64);
-    db.prepare(
-      `INSERT INTO artifact_blob (id, content_hash, storage_uri, custody_mode, availability, created_at)
-       VALUES (?, ?, ?, 'link', 'missing', 1)`,
-    ).run(`artifact-blob:${missingHash}`, missingHash, `file://${missingPath}`);
-    const directoryPath = path.join(tempDir, "directory");
-    fs.mkdirSync(directoryPath);
-    const directoryId = insertLinkedArtifact(directoryPath);
+    const missing=recordArtifactVersion(db,{source_kind:'managed',series_key:'missing',content:'missing'});
+    fs.unlinkSync(new URL(missing.artifact.uri));
+    const directory=recordArtifactVersion(db,{source_kind:'managed',series_key:'directory',content:'directory'});
+    const directoryPath=new URL(directory.artifact.uri);fs.unlinkSync(directoryPath);fs.mkdirSync(directoryPath);
     const opener = vi.fn(async () => undefined);
 
-    await expect(openArtifactExternally(db, `artifact:sha256:${missingHash}`, opener))
+    await expect(openArtifactExternally(db, missing.version.id, opener))
       .resolves.toMatchObject({ ok: false, status: 409 });
-    await expect(openArtifactExternally(db, directoryId, opener)).resolves.toMatchObject({
+    await expect(openArtifactExternally(db, directory.version.id, opener)).resolves.toMatchObject({
       ok: false,
       status: 409,
-      reason: "artifact locator does not point to a regular file",
+      reason: "stored artifact is not a regular file",
     });
     expect(opener).not.toHaveBeenCalled();
   });

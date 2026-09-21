@@ -76,8 +76,7 @@ type ReviewSnapshotRow = {
   version_custody_mode: string | null;
   commit_sha: string | null;
   artifact_source_kind: string | null;
-  blob_custody_mode: string | null;
-  blob_availability: string | null;
+  blob_storage_uri: string | null;
 };
 
 function reviewBundleSnapshot(db: Db, bundleId: string): ReviewSnapshotRow[] {
@@ -85,8 +84,7 @@ function reviewBundleSnapshot(db: Db, bundleId: string): ReviewSnapshotRow[] {
       b.id AS briefing_id, b.archived_at, r.id AS round_id,
       r.artifact_version_id, av.artifact_id, av.content_hash, av.source_kind AS version_source_kind,
       av.custody_mode AS version_custody_mode, av.commit_sha,
-      a.source_kind AS artifact_source_kind, blob.custody_mode AS blob_custody_mode,
-      blob.availability AS blob_availability
+      a.source_kind AS artifact_source_kind, blob.storage_uri AS blob_storage_uri
     FROM briefing_bundle_members bm
     JOIN briefings b ON b.id = bm.briefing_id
     LEFT JOIN briefing_rounds r ON r.id = b.latest_round_id
@@ -283,9 +281,8 @@ function humanReviewCandidate(
     const changed = base?.artifact_version_id !== row.artifact_version_id;
     const authoritative = (row.artifact_source_kind === "managed" || row.artifact_source_kind === "local_only")
       && (row.version_source_kind === "managed" || row.version_source_kind === "local_only")
-      && (row.version_custody_mode === "managed" || row.version_custody_mode === "copy")
-      && (row.blob_custody_mode === "managed" || row.blob_custody_mode === "copy")
-      && (row.blob_availability === "present" || row.blob_availability === "pinned")
+      && row.version_custody_mode === "managed"
+      && Boolean(row.blob_storage_uri)
       && row.commit_sha === null;
     if (!authoritative) return blockedReviewCandidate(
       input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,

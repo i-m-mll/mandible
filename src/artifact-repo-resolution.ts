@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -227,7 +228,7 @@ export function readCommittedArtifactFiles(db: Db, input: {
   if (!repo.ok) throw new Error(`Committed source repository is ${repo.reason}`);
   const roots = allProjectCheckoutRows(db).filter(r => r.project_id === repo.project_id && r.checkout_root)
     .map(r => r.checkout_root!);
-  const root = roots.find(r => fs.existsSync(r) && gitCommonDir(r));
+  const root = roots.find(r => fs.existsSync(r) && runGit(r, ['rev-parse','--verify','--end-of-options',`${input.commit}^{commit}`]));
   if (!root) throw new Error('Committed source requires an available registered repository object store');
   const git = (args: string[], stdin?: string) => execFileSync('git', ['--no-optional-locks', '-C', root, ...args], {
     input: stdin, timeout: 15_000, maxBuffer: 128 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'],
@@ -262,4 +263,20 @@ export function readCommittedArtifactFiles(db: Db, input: {
     offset = end + size + 2;
     return { project_id: repo.project_id, project_key: repo.project_key, commit, path: p, bytes };
   });
+}
+
+/** Pin a verified committed source against branch removal and ordinary Git GC. */
+export function retainArtifactCommit(db: Db, input: {
+  project: string; commit: string; path: string; sha256: string;
+}): string {
+  const file = readCommittedArtifactFiles(db, {project:input.project,commit:input.commit,paths:[input.path]})[0];
+  if (createHash('sha256').update(file.bytes).digest('hex') !== input.sha256) throw new Error('Git artifact bytes do not match registered sha256');
+  const roots = allProjectCheckoutRows(db).filter(r => r.project_id === file.project_id && r.checkout_root).map(r => r.checkout_root!);
+  const ref = `refs/mandible/artifacts/${file.commit}`;
+  for (const root of roots) {
+    if (runGit(root, ['rev-parse','--verify',`${file.commit}^{commit}`]) !== file.commit) continue;
+    execFileSync('git',['--no-optional-locks','-C',root,'update-ref',ref,file.commit],{timeout:15000,stdio:['ignore','pipe','pipe']});
+    return ref;
+  }
+  throw new Error('No available repository can retain artifact commit');
 }

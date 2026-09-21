@@ -108,10 +108,10 @@ it('backfills only consistent sources and preserves duplicate/ambiguous history 
   expect(legacy.pragma('foreign_key_check')).toEqual([]);legacy.close();
 });
 
-it('explicit copy custody keeps registered repo identity but reads frozen bytes after repository deletion',()=>{
+it('explicit managed custody keeps registered repo identity but reads frozen bytes after repository deletion',()=>{
   const a=repo('a');const first=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});const id=identity(first.series.id);
-  const copy=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,custody_mode:'copy'});
-  expect(copy.series.id).toBe(first.series.id);expect(copy.version.custody_mode).toBe('copy');
+  const copy=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,custody_mode:'managed'});
+  expect(copy.series.id).toBe(first.series.id);expect(copy.version.custody_mode).toBe('managed');
   expect(getArtifactCurrentSource(db,id)?.source).toEqual({kind:'repo',project_id:a.project,path:'report.md'});
   fs.rmSync(a.root,{recursive:true});
   expect(readArtifactBytesFull(db,copy.version.id)).toMatchObject({ok:true,bytes:Buffer.from('same bytes')});
@@ -134,7 +134,7 @@ it('uses the registered file source and project gate independently of version ki
   const a=repo('a');setProjectRestricted(db,a.project,true);setClientAuthMode(db,'strict');
   const first=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});const id=identity(first.series.id);
   for(const source_kind of ['tracked_repo','local_only','managed'] as const) {
-    for(const custody_mode of ['copy','managed'] as const) {
+    for(const custody_mode of ['managed'] as const) {
       fs.writeFileSync(a.file,`${source_kind}-${custody_mode}`);
       const plan=ok(planArtifactVersion(db,{source_kind,path:a.file,custody_mode}));
       expect(plan.artifact_id).toBe(id);
@@ -186,26 +186,27 @@ it.each(['production commit/path', 'unmerged project/commit/path'])('reuses %s v
   const historical = recordArtifactVersion(db, { ...input, path: 'report.md', project: 'upgrade', commit: first.version.commit_sha! });
   expect(historical.created).toBe(false); expect(historical.version.id).toBe(oldId);
   expect(db.prepare('SELECT * FROM artifact_version').all()).toEqual(before);
-  const trackedProducer = { series_id: first.series.id, artifact_id: first.artifact.id,
+  const trackedProducer = { series_id: first.series.id, artifact_id: `artifact-blob:${first.version.content_hash}`,
     source_kind: 'tracked_repo' as const, source_project_id: a.project, source_repo_id: 'upgrade',
     repo_path: 'report.md', commit_sha: first.version.commit_sha!, content_hash: first.version.content_hash,
-    custody_mode: 'link', metadata: input.metadata, natural_key: 'producer-run' };
+    custody_mode: 'git', metadata: input.metadata, natural_key: 'producer-run' };
   const explicit = appendArtifactVersion(db, trackedProducer);
   expect(explicit.created).toBe(true); expect(explicit.version.id).not.toBe(oldId);
   expect(appendArtifactVersion(db, trackedProducer).version.id).toBe(explicit.version.id);
   expect(appendArtifactVersion(db, { ...trackedProducer, natural_key: 'another-producer-run' }).created).toBe(true);
   const changed = recordArtifactVersion(db, { ...input, metadata: { x: 2, y: 2 } });
   expect(changed.created).toBe(true); expect(changed.version.id).not.toBe(oldId);
-  const producer = { series_id: first.series.id, artifact_id: first.artifact.id, source_kind: 'managed' as const,
+  const producer = { series_id: first.series.id, artifact_id: `artifact-blob:${first.version.content_hash}`, source_kind: 'managed' as const,
     content_hash: first.version.content_hash, custody_mode: 'managed', metadata: { producer: 'test' } };
+  recordArtifactVersion(db, { ...input, custody_mode: 'managed' });
   const eventA = appendArtifactVersion(db, { ...producer, natural_key: 'event-a' });
   const eventB = appendArtifactVersion(db, { ...producer, natural_key: 'event-b' });
   expect(eventA.version.id).not.toBe(eventB.version.id);
   expect(appendArtifactVersion(db, { ...producer, natural_key: 'event-a' }).created).toBe(false);
-  const copied = recordArtifactVersion(db, { ...input, custody_mode: 'copy' });
-  expect(copied.created).toBe(true);
+  const copied = recordArtifactVersion(db, { ...input, custody_mode: 'managed' });
+  expect(copied.created).toBe(false);
   git(a.root, 'commit', '--allow-empty', '-m', 'same bytes at another commit');
-  expect(recordArtifactVersion(db, { ...input, custody_mode: 'copy' }).created).toBe(true);
+  expect(recordArtifactVersion(db, { ...input, custody_mode: 'managed' }).created).toBe(true);
 });
 
 it('rejects stale later batch members before writing earlier custody', () => {
@@ -226,4 +227,35 @@ it('pins a symbolic commit once even when the checkout and ref advance before co
   const result = ok(commitArtifactVersion(db, plan));
   expect(result.version.commit_sha).toBe(commit);
   expect(readArtifactBytesFull(db, result.version.id)).toMatchObject({ ok: true, bytes: Buffer.from('same bytes') });
+});
+
+
+it('keeps Git authority after equal-byte managed ingestion and retains abandoned commits through GC',()=>{
+  const a=repo('retained','original');
+  const first=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});
+  const commit=first.version.commit_sha!;
+  expect(first.version.artifact_id).toBe(first.version.id);
+  const managed=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,custody_mode:'managed'});
+  expect(db.prepare('SELECT custody_mode FROM artifact_version ORDER BY version_no').all()).toEqual([{custody_mode:'git'},{custody_mode:'managed'}]);
+  expect(db.prepare('PRAGMA table_info(artifact_blob)').all().map((x:any)=>x.name)).not.toContain('custody_mode');
+  git(a.root,'checkout','--orphan','replacement');
+  fs.writeFileSync(a.file,'replacement');git(a.root,'add','.');git(a.root,'commit','-m','replacement');
+  git(a.root,'branch','-D','main');git(a.root,'reflog','expire','--expire=now','--all');git(a.root,'gc','--prune=now');
+  expect(git(a.root,'rev-parse',`refs/mandible/artifacts/${commit}`)).toBe(commit);
+  expect(readArtifactBytesFull(db,first.version.id)).toMatchObject({ok:true,bytes:Buffer.from('original')});
+  fs.rmSync(a.root,{recursive:true});
+  expect(readArtifactBytesFull(db,first.version.id).ok).toBe(false);
+  expect(readArtifactBytesFull(db,managed.version.id)).toMatchObject({ok:true,bytes:Buffer.from('original')});
+});
+
+it('rejects obsolete custody, uncommitted Git authority, and corrupt stored bytes',()=>{
+  const a=repo('boundary');
+  for(const custody_mode of ['copy','link','external']) expect(planArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,custody_mode}).ok).toBe(false);
+  fs.writeFileSync(a.file,'uncommitted');
+  expect(planArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,custody_mode:'git'}).ok).toBe(false);
+  const v=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,custody_mode:'managed'});
+  expect(()=>db.prepare("UPDATE artifact_version SET content_hash=? WHERE id=?").run('a'.repeat(64),v.version.id)).toThrow('immutable');
+  const blob=db.prepare('SELECT storage_uri FROM artifact_blob WHERE content_hash=?').get(v.version.content_hash) as {storage_uri:string};
+  fs.writeFileSync(new URL(blob.storage_uri),'tampered');
+  expect(readArtifactBytesFull(db,v.version.id)).toMatchObject({ok:false,reason:expect.stringContaining('sha256')});
 });

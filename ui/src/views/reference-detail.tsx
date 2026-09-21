@@ -198,13 +198,13 @@ export function ArtifactReferenceDetail({
         if (cancelled) return;
         const nextArtifact =
           nextResolution.artifact ??
-          (nextResolution.version
-            ? await getArtifact(nextResolution.version.artifact_id)
+          (nextResolution.artifact_version
+            ? await getArtifact(nextResolution.artifact_version.id)
             : await getArtifact(artifactRef));
         if (cancelled) return;
         setResolution(nextResolution);
-        setSelectedVersionNo(nextResolution.version?.version_no ?? null);
-        const historyRef = nextResolution.series?.id ?? nextArtifact.id;
+        setSelectedVersionNo(nextResolution.artifact_version?.version_no ?? null);
+        const historyRef = nextResolution.logical_artifact?.id ?? nextArtifact.id;
         try {
           const history = await getArtifactVersions(historyRef);
           if (!cancelled) {

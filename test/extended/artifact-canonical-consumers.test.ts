@@ -98,8 +98,8 @@ describe("canonical artifact compatibility consumers", () => {
 
   it("paginates canonical series and filtered matches beyond the first 500 blobs", () => {
     const insertBlob = db.prepare(
-      `INSERT INTO artifact_blob (id, content_hash, role, created_at)
-       VALUES (?, ?, 'bulk-filter', ?)`,
+      `INSERT INTO artifact_blob (id, content_hash, role, storage_uri, created_at)
+       VALUES (?, ?, 'bulk-filter', 'file:///fixture-list-only', ?)`,
     );
     const insertArtifact = db.prepare(
       `INSERT INTO artifact (
@@ -108,8 +108,8 @@ describe("canonical artifact compatibility consumers", () => {
     );
     const insertVersion = db.prepare(
       `INSERT INTO artifact_version (
-        id, artifact_id, version_no, blob_id, source_kind, content_hash, created_at
-      ) VALUES (?, ?, 1, ?, 'managed', ?, ?)`,
+        id, artifact_id, version_no, blob_id, source_kind, content_hash, custody_mode, created_at
+      ) VALUES (?, ?, 1, ?, 'managed', ?, 'managed', ?)`,
     );
     db.transaction(() => {
       for (let index = 0; index < 505; index += 1) {
@@ -135,19 +135,17 @@ describe("canonical artifact compatibility consumers", () => {
   it("keeps new ingest, reference, snapshot, and version writes canonical-only", () => {
     const ingested = ingestArtifact(db, {
       content: "canonical ingest\n",
-      custody_mode: "copy",
+      custody_mode: "managed",
       media_type: "text/plain",
     }, 900, tempDir);
     const reference = resolveArtifactRef(db, "https://example.invalid/report.md", 901);
-    expect(reference.artifact?.id).toMatch(/^artifact:ref:/);
+    expect(reference.status).toBe("unresolved");
 
     const promotableBytes = Buffer.from("promote me\n", "utf8");
     const promotableHash = crypto.createHash("sha256").update(promotableBytes).digest("hex");
     ingestArtifact(db, {
-      sha256: promotableHash,
-      uri: "https://example.invalid/promote.txt",
-      custody_mode: "external",
-      availability: "remote_only",
+      content_buffer: promotableBytes,
+      custody_mode: "managed",
     }, 902, tempDir);
     const promoted = snapshotArtifactBytes(db, {
       ref: `artifact-blob:${promotableHash}`,
@@ -155,7 +153,7 @@ describe("canonical artifact compatibility consumers", () => {
       custody_mode: "managed",
     }, 903, tempDir);
     expect(promoted).toMatchObject({
-      id: `artifact:sha256:${promotableHash}`,
+      id: `artifact-blob:${promotableHash}`,
       custody_mode: "managed",
       availability: "present",
     });
@@ -185,7 +183,7 @@ describe("canonical artifact compatibility consumers", () => {
       content: "canonical bytes\n",
       media_type: "text/plain",
       filename: "canonical.txt",
-      custody_mode: "copy",
+      custody_mode: "managed",
     }, 1000, tempDir);
     const fileRef = artifact.uri;
     const link = registerArtifactLink(db, artifact.id, {
@@ -214,7 +212,7 @@ describe("canonical artifact compatibility consumers", () => {
     expect(projected).toMatchObject({
       id: artifact.id,
       content_hash: artifact.content_hash,
-      custody_mode: "copy",
+      custody_mode: "managed",
       availability: "present",
     });
     expect(resolveArtifactRefReadonlyFull(db, fileRef)).toMatchObject({
@@ -325,8 +323,8 @@ describe("canonical artifact compatibility consumers", () => {
   });
 
   it("isolates logical projections for a shared blob and applies q, repo, location, and same-row link filters", () => {
-    insertRawLedgerProject(db, { name: "repo-a" });
-    insertRawLedgerProject(db, { name: "repo-b" });
+    insertRawLedgerProject(db, { name: "repo-a", projectKey: "repo-a" });
+    insertRawLedgerProject(db, { name: "repo-b", projectKey: "repo-b" });
     const first = recordManaged("projection-a", "shared projection\n", 3500, "repo-a");
     const second = recordManaged("projection-b", "shared projection\n", 3501, "repo-b");
     const firstRefs = canonicalRefs(first);
@@ -337,8 +335,7 @@ describe("canonical artifact compatibility consumers", () => {
       .run('{"logical_only":"b"}', secondRefs.logical);
     db.prepare(
       `UPDATE artifact_version
-          SET repo_path = '/docs/a.md', source_repo_id = 'repo-a',
-              source_locator_json = '{"path":"/docs/a.md"}'
+          SET observed_path = '/docs/a.md'
         WHERE id = ?`,
     ).run(firstRefs.version);
     const matching = resolveAndLinkArtifact(db, {

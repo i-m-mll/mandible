@@ -1,14 +1,16 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { MINIMUM_SUPPORTED_SCHEMA_VERSION, openDb } from "../src/db.js";
+import { MINIMUM_SUPPORTED_SCHEMA_VERSION } from "../src/db.js";
+import { MIGRATIONS } from "../src/db-migrations.js";
 
 // The live database proves only that the live database migrates. This is the
 // support floor: a v158 database carrying one row of every artifact shape the
-// binary still claims to upgrade, migrated to head, with every surviving fact
+// historical retirement migration accepts, migrated through v184, with every surviving fact
 // asserted. The migration's guards fail closed, so a corpus that trips one
 // aborts the transaction and fails here rather than silently losing rows.
 
@@ -224,7 +226,14 @@ describe.sequential("artifact retirement support floor", () => {
     const dbPath = path.join(tempDir, "corpus.db");
     seedFloorCorpus(dbPath);
 
-    const db = openDb(dbPath);
+    // This corpus exercises the legacy-table retirement ports, including intentionally
+    // unmaterializable descriptors. The subsequent v185 custody recovery owns their
+    // verified recovery or dependency-guarded retirement in its separate corpus.
+    const db = new Database(dbPath);
+    db.function('mandible_sha256',{deterministic:true},(value:unknown)=>createHash('sha256').update(String(value)).digest('hex'));
+    for (const migration of MIGRATIONS.filter(m=>m.version>MINIMUM_SUPPORTED_SCHEMA_VERSION && m.version<=184)) {
+      db.transaction(()=>{for (const sql of migration.statements) db.exec(sql);})();
+    }
     try {
       expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
       expect(db.pragma("foreign_key_check")).toEqual([]);

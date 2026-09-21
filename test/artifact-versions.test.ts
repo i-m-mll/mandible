@@ -176,9 +176,9 @@ describe("managed custody versions", () => {
       version.parent_version_id)).toEqual([null, r1.version.id]);
 
     const storedLocator = db.prepare(
-      "SELECT source_locator_json FROM artifact_version WHERE id = ?",
-    ).get(r2.version.id) as { source_locator_json: string };
-    expect(JSON.parse(storedLocator.source_locator_json).parent_version_id).toBe(r1.version.id);
+      "SELECT parent_version_id FROM artifact_version WHERE id = ?",
+    ).get(r2.version.id) as { parent_version_id: string };
+    expect(storedLocator.parent_version_id).toBe(r1.version.id);
 
     const c1 = getArtifactContent(db, r1.version.artifact_id);
     const c2 = getArtifactContent(db, r2.version.artifact_id);
@@ -243,7 +243,7 @@ describe("canonical ref resolution and no silent retarget", () => {
     expect(version.target_type).toBe("artifact_version");
     expect(version.target_id).toBe(r1.version.id);
     expect(version.artifact_version?.blob_id).toBe(blobRef);
-    expect(version.version?.id).toBe(r1.version.id);
+    expect(version.artifact_version?.id).toBe(r1.version.id);
 
     const blob = resolveArtifactRef(db, blobRef.slice(0, "artifact-blob:".length + 12));
     expect(blob.status).toBe("resolved");
@@ -310,25 +310,25 @@ describe("canonical ref resolution and no silent retarget", () => {
 
   it("resolves artifact:<hex> as the canonical compact immutable ref", () => {
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "A\n", media_type: "text/plain", logical_name: "ev" }, 1000);
-    const compactId = `artifact:${r1.artifact.content_hash.slice(0, 12)}`;
+    const compactId = `artifact-blob:${r1.artifact.content_hash}`;
     const resolved = resolveArtifactRef(db, `artifact:${r1.artifact.content_hash}`);
     expect(resolved.status).toBe("resolved");
     expect(resolved.target_type).toBe("artifact_blob");
     expect(resolved.target_id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
-    expect(resolved.artifact?.id).toBe(r1.artifact.id);
+    expect(resolved.artifact?.id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
     expect(resolved.warnings).toEqual([]);
     expect((projectArtifactPublicValue(db, resolved) as typeof resolved).artifact?.id).toBe(compactId);
 
     const blob = resolveArtifactRef(db, `artifact-blob:${r1.artifact.content_hash}`);
     expect(blob.status).toBe("resolved");
     expect(blob.target_type).toBe("artifact_blob");
-    expect(blob.artifact?.id).toBe(r1.artifact.id);
+    expect(blob.artifact?.id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
     expect((projectArtifactPublicValue(db, blob) as typeof blob).artifact?.id).toBe(compactId);
 
     const versionResolved = resolveArtifactRef(db, r1.version.id);
     expect(versionResolved.artifact?.id).toBe(r1.artifact.id);
-    expect((projectArtifactPublicValue(db, versionResolved) as typeof versionResolved).artifact?.id).toBe(compactId);
-    expect(versionResolved.version?.id).toBe(r1.version.id);
+    expect((projectArtifactPublicValue(db, versionResolved) as typeof versionResolved).artifact?.id).toBe(r1.version.id);
+    expect(versionResolved.artifact_version?.id).toBe(r1.version.id);
     expect(versionResolved.warnings ?? []).toEqual([]);
   });
 
@@ -343,7 +343,7 @@ describe("canonical ref resolution and no silent retarget", () => {
       entity_id: issueId,
       link_type: "evidence",
     }, 1100);
-    expect(linked.link?.artifact_id).toBe(artifactA);
+    expect(linked.link?.artifact_id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
 
     // Record a newer version into the SAME series.
     const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "evidence v2\n", media_type: "text/plain", logical_name: "ev" }, 2000);
@@ -450,8 +450,8 @@ describe("mixed custody", () => {
     const first = recordArtifactVersion(db, { source_kind: "local_only", path: filePath });
     const appended = recordArtifactVersion(db, { source_kind: "managed", artifact_id: first.series.id.replace('artifact-series:', 'artifact:'), content: "draft bytes" });
     expect(appended.series.id).toBe(first.series.id);
-    expect(appended.series.source_kind).toBe("mixed");
-    expect(getArtifactVersion(db, first.version.id)?.source_kind).toBe("local_only");
+    expect(appended.series.source_kind).toBe("managed");
+    expect(getArtifactVersion(db, first.version.id)?.source_kind).toBe("managed");
   });
 });
 
@@ -468,7 +468,7 @@ describe("codex review fixes", () => {
     // Dirty (uncommitted) bytes A → CAS snapshot, NOT commit-pinned.
     fs.writeFileSync(filePath, "dirty-A\n", "utf8");
     const v2 = recordArtifactVersion(db, { source_kind: "tracked_repo", path: filePath }, 2000);
-    expect(v2.version.source_kind).toBe("local_only");
+    expect(v2.version.source_kind).toBe("managed");
     expect(v2.warnings).toContain("tracked_repo_dirty_recorded_as_local_only");
     expect(v2.version.commit_sha).toBeNull();
 
@@ -499,9 +499,9 @@ describe("codex review fixes", () => {
   it("HIGH-2: managed ref records a durable CAS snapshot that survives source deletion", () => {
     const src = path.join(tempDir, "mutable-src.txt");
     fs.writeFileSync(src, "managed-src\n", "utf8");
-    // A link-custody (mutable) local artifact.
-    const link = registerLocalArtifactPath(db, { path: src, custody_mode: "link", allow_local_only: true }, 1000);
-    expect(link.artifact.custody_mode).toBe("link");
+    // Ingest the local input into immutable managed custody.
+    const link = registerLocalArtifactPath(db, { path: src, custody_mode: "managed", allow_local_only: true }, 1000);
+    expect(link.artifact.custody_mode).toBe("managed");
 
     const rec = recordArtifactVersion(db, {
       source_kind: "managed",
@@ -578,10 +578,10 @@ describe("codex review fixes", () => {
 });
 
 describe("codex re-review hardening", () => {
-  it("RR-1: CAS-fallback reads verify bytes hash and fail loudly on a tampered blob", () => {
+  it("RR-1: Stored-byte reads verify bytes hash and fail loudly on a tampered blob", () => {
     const src = path.join(tempDir, "cas-src.txt");
     fs.writeFileSync(src, "cas-int\n", "utf8");
-    const link = registerLocalArtifactPath(db, { path: src, custody_mode: "link", allow_local_only: true }, 1000);
+    const link = registerLocalArtifactPath(db, { path: src, custody_mode: "managed", allow_local_only: true }, 1000);
     const rec = recordArtifactVersion(db, {
       source_kind: "managed",
       ref: `artifact-blob:${link.artifact.content_hash}`,
@@ -600,7 +600,7 @@ describe("codex re-review hardening", () => {
 
     const read = readArtifactBytesFull(db, rec.version.artifact_id);
     expect(read.ok).toBe(false);
-    if (!read.ok) expect(read.reason).toMatch(/hash mismatch/i);
+    if (!read.ok) expect(read.reason).toMatch(/sha256|hash mismatch/i);
 
     // A managed re-snapshot of the same (now-corrupt) ref must refuse, not
     // silently re-snapshot wrong bytes.
@@ -625,7 +625,7 @@ describe("codex re-review hardening", () => {
 
     fs.writeFileSync(filePath, "dirty-bytes\n", "utf8");
     const rec = recordArtifactVersion(db, { source_kind: "tracked_repo", path: filePath }, 2000);
-    expect(rec.version.source_kind).toBe("local_only");
+    expect(rec.version.source_kind).toBe("managed");
     expect(rec.version.commit_sha).toBeNull();
     expect(rec.version.metadata.head_commit).toBe(head);
     expect(rec.version.metadata.dirty_at_commit).toBe(head);
