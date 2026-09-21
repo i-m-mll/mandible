@@ -275,7 +275,10 @@ export function retainArtifactCommit(db: Db, input: {
   const ref = `refs/mandible/artifacts/${file.commit}`;
   for (const root of roots) {
     if (runGit(root, ['rev-parse','--verify',`${file.commit}^{commit}`]) !== file.commit) continue;
-    execFileSync('git',['--no-optional-locks','-C',root,'update-ref',ref,file.commit],{timeout:15000,stdio:['ignore','pipe','pipe']});
+    if (runGit(root,['symbolic-ref','-q',ref])) throw new Error('Artifact retention ref must not be symbolic');
+    const existing=runGit(root,['rev-parse','--verify',ref]);
+    if (existing && existing !== file.commit) throw new Error('Artifact retention ref points to an unexpected commit');
+    execFileSync('git',['--no-optional-locks','-C',root,'update-ref','--no-deref',ref,file.commit,existing ?? '0'.repeat(file.commit.length)],{timeout:15000,stdio:['ignore','pipe','pipe']});
     return ref;
   }
   throw new Error('No available repository can retain artifact commit');

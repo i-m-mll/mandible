@@ -17,6 +17,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   db.close();
   fs.rmSync(tempDir, { recursive: true, force: true });
   delete process.env.MANDIBLE_ARTIFACT_DIR;
@@ -68,12 +69,29 @@ describe("artifact external open", () => {
     git(['init','-b','main']);git(['config','user.name','Test']);git(['config','user.email','test@example.invalid']);git(['config','commit.gpgsign','false']);git(['add','.']);git(['commit','-m','save']);
     const saved=recordArtifactVersion(db,{source_kind:'tracked_repo',path:trackedPath,custody_mode:'git'});
     fs.writeFileSync(trackedPath,'changed checkout');
+    db.prepare('UPDATE artifact_version SET metadata_json=? WHERE id=?').run(JSON.stringify({filename:'../../escaped.md'}),saved.version.id);
     const opener = vi.fn(async () => undefined);
 
     await expect(openArtifactExternally(db, saved.version.id, opener))
       .resolves.toMatchObject({ ok: true });
     expect(opener.mock.calls[0][0]).not.toBe(trackedPath);
     expect(fs.readFileSync(opener.mock.calls[0][0],'utf8')).toBe('tracked material\n');
+    const opened=opener.mock.calls[0][0];
+    expect(path.basename(opened)).toBe('escaped.md');
+    expect(fs.realpathSync(path.dirname(path.dirname(opened)))).toBe(fs.realpathSync(os.tmpdir()));
+    fs.rmSync(path.dirname(opened),{recursive:true});
+    const victim=path.join(tempDir,'victim');fs.writeFileSync(victim,'keep');
+    const originalOpen=fs.openSync;
+    const spy=vi.spyOn(fs,'openSync').mockImplementation((filename,flags,mode)=>{
+      if (typeof flags === 'number' && (flags & fs.constants.O_EXCL)) fs.symlinkSync(victim,filename);
+      return originalOpen(filename,flags,mode);
+    });
+    opener.mockClear();
+    expect(await openArtifactExternally(db,saved.version.id,opener)).toMatchObject({ok:false,status:409});
+    spy.mockRestore();
+    expect(opener).not.toHaveBeenCalled();
+    expect(fs.readFileSync(victim,'utf8')).toBe('keep');
+
   });
 
   it("rejects unavailable and non-file material without invoking the OS", async () => {

@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { migrate } from '../dist/db.js';
+import { MIGRATIONS } from '../dist/db-migrations.js';
 import { evaluateProjectAccess } from '../dist/permissions/store.js';
 import { artifactAccessProjectIds } from '../dist/permissions/resources.js';
 
@@ -37,7 +37,13 @@ const ids = [...before.artifacts,...before.versions].map(row=>row.id);
 const access = new Map(ids.map(id=>[id,oldAccess(id)]));
 const fkBefore = db.pragma('foreign_key_check');
 const started = performance.now();
-migrate(db);
+// This proof is specifically the v183-to-v184 source migration, not custody recovery.
+const sourceMigration=MIGRATIONS.find(migration=>migration.version===184);
+assert(sourceMigration);
+db.transaction(()=>{
+  for(const statement of sourceMigration.statements) db.exec(statement);
+  db.prepare("UPDATE meta SET value='184' WHERE key='schema_version'").run();
+})();
 const migrationMs = performance.now()-started;
 const after = sets();
 for (const field of ['artifacts','versions','blobs','references']) assert.deepEqual(after[field],before[field]);

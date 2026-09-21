@@ -1,3 +1,4 @@
+import { retainArtifactCommit } from '../src/artifact-repo-resolution.js';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -8,7 +9,7 @@ import Database from 'better-sqlite3';
 import { openDb, type Db } from '../src/db.js';
 import { appendArtifactVersion, planArtifactVersionBatch, commitArtifactVersionBatch, planArtifactVersion, commitArtifactVersion, recordArtifactVersion, associateProjectArtifact, getCanonicalArtifactVersion } from '../src/provider-artifacts.js';
 import { getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove, type ArtifactLifecycleResult } from '../src/artifact-source.js';
-import { readArtifactBytesFull } from '../src/artifact-content.js';
+import { readArtifactBytesFull, checkArtifactMaterialization } from '../src/artifact-content.js';
 import { resolveArtifactProject, artifactAccessProjectIds } from '../src/permissions/resources.js';
 import { evaluateProjectAccess, setProjectRestricted } from '../src/permissions/store.js';
 import { setClientAuthMode } from '../src/client-auth/mode.js';
@@ -234,6 +235,7 @@ it('keeps Git authority after equal-byte managed ingestion and retains abandoned
   const a=repo('retained','original');
   const first=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});
   const commit=first.version.commit_sha!;
+  expect(checkArtifactMaterialization(db,`artifact-blob:${first.version.content_hash}`)).toMatchObject({materializable:false,recoverability:null});
   expect(first.version.artifact_id).toBe(first.version.id);
   const managed=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,custody_mode:'managed'});
   expect(db.prepare('SELECT custody_mode FROM artifact_version ORDER BY version_no').all()).toEqual([{custody_mode:'git'},{custody_mode:'managed'}]);
@@ -258,4 +260,14 @@ it('rejects obsolete custody, uncommitted Git authority, and corrupt stored byte
   const blob=db.prepare('SELECT storage_uri FROM artifact_blob WHERE content_hash=?').get(v.version.content_hash) as {storage_uri:string};
   fs.writeFileSync(new URL(blob.storage_uri),'tampered');
   expect(readArtifactBytesFull(db,v.version.id)).toMatchObject({ok:false,reason:expect.stringContaining('sha256')});
+});
+
+it('refuses an unexpected existing Git retention target without overwriting it',()=>{
+  const a=repo('guarded');
+  const saved=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});
+  const ref=`refs/mandible/artifacts/${saved.version.commit_sha}`;
+  git(a.root,'commit','--allow-empty','-m','other');
+  const other=git(a.root,'rev-parse','HEAD');git(a.root,'update-ref',ref,other);
+  expect(()=>retainArtifactCommit(db,{project:'guarded',commit:saved.version.commit_sha!,path:'report.md',sha256:saved.version.content_hash})).toThrow('unexpected commit');
+  expect(git(a.root,'rev-parse',ref)).toBe(other);
 });

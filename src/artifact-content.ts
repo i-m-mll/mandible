@@ -94,7 +94,7 @@ export function checkArtifactMaterialization(db: Db,id:string,options:{ref?:stri
   return {artifact_id:artifact.id,ref:options.ref,materializable:read.ok,
     hash_matches:read.ok ? true : read.reason.includes("do not match registered sha256") ? false : null,expected_sha256:artifact.content_hash,
     actual_sha256:read.ok ? artifact.content_hash : null,source:read.ok ? read.source : null,
-    recoverability:artifact.custody_mode === 'git' ? 'repo_commit' : 'mandible_cas',
+    recoverability:artifact.custody_mode === 'git' ? 'repo_commit' : artifact.custody_mode === 'managed' ? 'mandible_cas' : null,
     reasons:read.ok ? [] : [read.reason],warnings:[]};
 }
 
@@ -140,11 +140,20 @@ export async function resolveArtifactOpenFile(db:Db,id:string):Promise<ArtifactO
   const read=readArtifactBytesFull(db,id,Number.MAX_SAFE_INTEGER);
   if (!read.ok) return read;
   if (artifact.custody_mode === 'managed') return {ok:true,artifact_id:artifact.id,path:fileURLToPath(artifact.uri),source_kind:'managed_file'};
-  // Opening a historical Git version materializes a disposable verified view, never the worktree file.
-  const filename=path.join(os.tmpdir(),'mandible-artifact-open',artifact.content_hash,artifactFilename(artifact) ?? 'artifact');
-  fs.mkdirSync(path.dirname(filename),{recursive:true});
-  fs.writeFileSync(filename,read.bytes);
-  return {ok:true,artifact_id:artifact.id,path:filename,source_kind:'repo_locator'};
+  // Metadata may suggest a filename, but cannot choose a directory or existing file.
+  const suggested=path.win32.basename(path.basename(artifactFilename(artifact) ?? 'artifact')).replace(/\0/g,'');
+  const basename=!suggested || suggested === '.' || suggested === '..' ? 'artifact' : suggested;
+  let directory: string | undefined;
+  try {
+    directory=fs.mkdtempSync(path.join(os.tmpdir(),'mandible-artifact-open-'));
+    const filename=path.join(directory,basename);
+    const fd=fs.openSync(filename,fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,0o600);
+    try { fs.writeFileSync(fd,read.bytes); } finally { fs.closeSync(fd); }
+    return {ok:true,artifact_id:artifact.id,path:filename,source_kind:'repo_locator'};
+  } catch(error) {
+    if (directory) fs.rmSync(directory,{recursive:true,force:true});
+    return {ok:false,reason:`Could not materialize Git artifact: ${String(error)}`};
+  }
 }
 
 function artifactContentFromBytes(
