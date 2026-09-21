@@ -57,7 +57,7 @@ export const ARTIFACT_SOURCE_BACKFILL_SQL = [
       ELSE NULL END,
       1, 'migration_pending', a.updated_at FROM artifact a`,
   `UPDATE artifact_source SET reconciliation_reason = NULL WHERE source_json IS NOT NULL
-    AND source_json NOT IN (SELECT source_json FROM artifact_source GROUP BY source_json HAVING COUNT(*) > 1)`,
+    AND source_json NOT IN (SELECT source_json FROM artifact_source WHERE source_json IS NOT NULL GROUP BY source_json HAVING COUNT(*) > 1)`,
   `UPDATE artifact_source SET reconciliation_reason = 'historical_source_ambiguous'
     WHERE source_json IS NULL`,
   `UPDATE artifact_source SET reconciliation_reason = 'duplicate_current_source'
@@ -68,11 +68,9 @@ export const ARTIFACT_SOURCE_BACKFILL_SQL = [
       AND pa.target_id=artifact.id AND pa.association_kind='canonical' AND pa.status='active'
     HAVING COUNT(DISTINCT project_id)=1
   ) WHERE source_project_id IS NULL`,
-  `UPDATE artifact SET source_project_id = json_extract((SELECT source_json FROM artifact_source s
-    WHERE s.artifact_id=artifact.id AND s.reconciliation_reason IS NULL),'$.project_id')
-    WHERE source_project_id IS NULL`,
   `UPDATE artifact SET metadata_json=json_set(metadata_json,'$.registered_source_migration',
-    json_object('source_repo_id',source_repo_id,'source_path',source_path))
+    json_object('source_repo_id',source_repo_id,'source_path',source_path,
+      'prior_metadata',json_extract(metadata_json,'$.registered_source_migration')))
     WHERE source_repo_id IS NOT NULL OR source_path IS NOT NULL`,
   `DROP INDEX idx_artifact_source_repo`,
   `ALTER TABLE artifact DROP COLUMN source_repo_id`,

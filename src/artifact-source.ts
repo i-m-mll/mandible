@@ -73,7 +73,7 @@ export function artifactRequiredProjects(db: Db, artifactId: string | null, ...s
   return [...new Set([...(artifactId ? artifactAccessProjectIds(db, artifactId) : []),
     ...sources.map(s => s?.kind === 'repo' ? s.project_id : null)].filter((id): id is string => Boolean(id)))].sort();
 }
-export interface ArtifactSourceMoveInput { artifact_id: string; expected_revision: number; source: ArtifactSource; actor: string }
+export interface ArtifactSourceMoveInput { artifact_id: string; expected_revision: number; source: ArtifactSource; actor: string; reconcile?: boolean }
 export interface ArtifactSourceMovePlan extends ArtifactSourceMoveInput {
   previous_source: ArtifactSource | null;
   required_project_ids: string[];
@@ -84,14 +84,17 @@ export function planArtifactSourceMove(db: Db, input: ArtifactSourceMoveInput): 
   if (!valid.ok) return valid;
   const state = getArtifactCurrentSource(db, input.artifact_id);
   if (!state) return artifactFailure('unknown_artifact', 'Canonical artifact not found');
-  if (state.reconciliation_reason) return artifactFailure('reconciliation_required', state.reconciliation_reason);
+  if (state.reconciliation_reason && input.reconcile !== true) return artifactFailure('reconciliation_required', state.reconciliation_reason);
   if (state.revision !== input.expected_revision) return artifactFailure('stale_plan', 'Current source revision changed');
   if (!input.actor.trim()) return artifactFailure('invalid_input', 'Source moves require an authenticated actor');
-  const target = lookupArtifactCurrentSource(db, valid.value);
-  if (!target.ok) return target;
-  if (target.value && target.value.artifact_id !== input.artifact_id) return artifactFailure('source_mismatch', 'Destination source already belongs to another artifact');
+  const target = db.prepare('SELECT artifact_id FROM artifact_source WHERE source_json=? AND artifact_id != ?').all(sourceKey(valid.value),input.artifact_id);
+  if (target.length) return artifactFailure('source_mismatch', 'Destination source already belongs to another artifact');
   const plan = { ...input, source: valid.value, previous_source: state.source,
     required_project_ids: artifactRequiredProjects(db, input.artifact_id, state.source, valid.value) };
+  if (state.reconciliation_reason) {
+    const historical = db.prepare('SELECT DISTINCT source_project_id FROM artifact_version WHERE artifact_id=? AND source_project_id IS NOT NULL').all(input.artifact_id) as {source_project_id:string}[];
+    plan.required_project_ids = [...new Set([...plan.required_project_ids,...historical.map(row=>row.source_project_id)])].sort();
+  }
   movePlans.set(plan, {db, frozen: JSON.stringify(plan)});
   return { ok: true, value: plan };
 }
@@ -103,7 +106,7 @@ export function commitArtifactSourceMove(db: Db, plan: ArtifactSourceMovePlan, n
       const current = planArtifactSourceMove(db, plan);
       if (!current.ok) return current;
       if (JSON.stringify(current.value) !== issued.frozen) return artifactFailure('stale_plan', 'Source move authorization facts changed');
-      db.prepare('UPDATE artifact_source SET source_json=?, revision=revision+1, updated_at=? WHERE artifact_id=?')
+      db.prepare('UPDATE artifact_source SET source_json=?, revision=revision+1, reconciliation_reason=NULL, updated_at=? WHERE artifact_id=?')
         .run(sourceKey(plan.source), now, plan.artifact_id);
       db.prepare(`INSERT INTO artifact_source_move VALUES (?,?,?,?,?,?,?,?)`).run(crypto.randomUUID(), plan.artifact_id,
         plan.previous_source ? sourceKey(plan.previous_source) : null, sourceKey(plan.source), plan.expected_revision,

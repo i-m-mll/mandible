@@ -5230,6 +5230,7 @@ export interface ArtifactVersionPlan {
   expected_source_revision: number | null;
   required_project_ids: string[];
   content_hash: string;
+  custody_mode: "link" | "copy" | "managed";
   source_kind: ArtifactVersionSourceKind;
   commit_sha: string | null;
   repo_path: string | null;
@@ -5267,6 +5268,7 @@ export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): 
     let mediaType = input.media_type;
     let seriesKey = input.series_key;
     const warnings: string[] = [];
+    if (input.custody_mode && !['link','copy','managed'].includes(input.custody_mode)) return artifactFailure('invalid_input', 'Unsupported version custody mode');
     const named = input.artifact_id ? getLogicalArtifactPrefix(db, input.artifact_id) : null;
     if (named && named.status !== 'resolved') return artifactFailure('unknown_artifact', 'Canonical artifact ID did not resolve unambiguously');
     const explicit = named?.value ?? null;
@@ -5299,6 +5301,7 @@ export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): 
       source = { kind: 'repo', project_id: projectId, path: repoPath };
       if (local.recoverability === 'repo_commit') {
         commit = local.git_state.commit ?? null;
+        if (input.custody_mode === 'copy' || input.custody_mode === 'managed') kind = 'managed';
         if (!commit) return artifactFailure('invalid_input', 'Tracked version requires a commit');
       } else {
         kind = 'local_only';
@@ -5339,12 +5342,14 @@ export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): 
       ownerProject = owner.project_id;
     }
     if (target) ownerProject = target.source_project_id;
-    else ownerProject ??= projectId;
+    else ownerProject ??= projectId ?? (source.kind === 'repo' ? source.project_id : null);
     const required = artifactRequiredProjects(db, target?.id ?? null, source);
     if (ownerProject && !required.includes(ownerProject)) required.push(ownerProject);
     const plan: ArtifactVersionPlan = {
       artifact_id: target?.id ?? null, source, expected_source_revision: state?.revision ?? null,
       required_project_ids: required.sort(), content_hash: hashBuffer(bytes), source_kind: kind,
+      custody_mode: input.custody_mode === 'copy' || input.custody_mode === 'managed' ? input.custody_mode
+        : kind === 'tracked_repo' ? 'link' : kind === 'managed' ? 'managed' : 'copy',
       commit_sha: commit, repo_path: repoPath, source_project_id: projectId, source_repo_id: repoId,
       observed_path: observed, warnings: Array.from(new Set(warnings)),
     };
@@ -5378,8 +5383,8 @@ export function commitArtifactVersion(
             prepared.owner_project_id, prepared.logical_name ?? null, jsonStringify(input.metadata ?? {}), now, now);
         db.prepare('INSERT INTO artifact_source VALUES (?,?,1,NULL,?)').run(logicalId, sourceKey(plan.source), now);
       }
-      const linked = plan.source_kind === 'tracked_repo';
-      const custody = linked ? 'link' : plan.source_kind === 'managed' ? 'managed' : 'copy';
+      const linked = plan.custody_mode === 'link';
+      const custody = plan.custody_mode;
       const locator = linked ? { repo_id: plan.source_project_id, path: plan.repo_path, commit: plan.commit_sha } : {};
       const artifact = ingestArtifact(db, {
         ...(linked ? { sha256: plan.content_hash, uri: `repo://${plan.source_repo_id}@${plan.commit_sha}/${plan.repo_path}` }
