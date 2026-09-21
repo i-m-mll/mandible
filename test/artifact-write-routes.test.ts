@@ -74,6 +74,55 @@ describe("artifact write authorization", () => {
     })).status).toBe(200);
   });
 
+  it("cannot bypass a registered repository's rights or identity by changing custody labels", async () => {
+    const repo = path.join(root, "restricted-repo"); fs.mkdirSync(repo);
+    const git = (...args: string[]) => execFileSync("git", ["--no-optional-locks", ...args], { cwd: repo, stdio: "pipe" });
+    git("init"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.invalid");
+    git("config", "commit.gpgsign", "false");
+    const filename = path.join(repo, "report.md"); fs.writeFileSync(filename, "committed\n");
+    git("add", "report.md"); git("commit", "-m", "fixture");
+    const project = addProject(db, { project_key: "restricted-repo", display_name: "Restricted repo" });
+    addOrUpdateCheckout(db, project.id, { root: fs.realpathSync(repo), work_repo_id: "restricted-repo" });
+    setProjectRestricted(db, project.id, true);
+    const inputs = [
+      { source_kind: "tracked_repo", path: filename },
+      { source_kind: "local_only", path: filename },
+      { source_kind: "managed", path: filename, series_key: "attempted-custody-fork" },
+    ];
+    const before = snapshot();
+    for (const body of inputs) {
+      const response = await invoke("POST", "/api/artifacts/versions", body);
+      expect(response.status, JSON.stringify(response.body)).toBe(403);
+      expect(snapshot()).toEqual(before);
+    }
+    grant(project.id);
+    const identities: string[] = [];
+    for (const body of inputs) {
+      const response = await invoke("POST", "/api/artifacts/versions", body);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      identities.push((response.body as any).result.series.id);
+    }
+    expect(new Set(identities).size).toBe(1);
+  });
+
+  it("assigns a new uploaded repository source to its project and keeps reads restricted", async () => {
+    const project = addProject(db, { project_key: "upload-owner", display_name: "Upload owner" });
+    setProjectRestricted(db, project.id, true);
+    const body = { source_kind: "managed", source: { kind: "repo", project_id: project.id, path: "uploaded.md" }, content: "private upload" };
+    const before = snapshot();
+    expect((await invoke("POST", "/api/artifacts/versions", body)).status).toBe(403);
+    expect(snapshot()).toEqual(before);
+    grant(project.id);
+    const response = await invoke("POST", "/api/artifacts/versions", body);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const id = (response.body as any).result.series.id.replace(/^artifact-series:/, "artifact:");
+    expect(db.prepare("SELECT source_project_id FROM artifact WHERE id=?").get(id)).toEqual({ source_project_id: project.id });
+    const reader = createUser(db, { slug: "upload-reader", kind: "agent", display_name: "Upload reader" });
+    const readerRouter = authenticatedTestRouter(reader); registerProviderRoutes(readerRouter);
+    const read = await readerRouter.invoke({ method: "GET", url: `/api/artifacts/${encodeURIComponent(id)}/content`, transport: "http" });
+    expect(read.status).toBe(403);
+  });
+
   it("requires owner, previous source and destination rights; preserves ownership and rejects stale moves", async () => {
     const projects = ["owner", "origin", "destination"].map(project_key => addProject(db, { project_key, display_name: project_key }));
     for (const project of projects) setProjectRestricted(db, project.id, true);
