@@ -203,8 +203,20 @@
       "description": "List ledger tables and views, print their exact CREATE statements, or report the open database's path, size, journal mode, and write-ahead-log bytes. Same read-only connection as `mandible db query`; these replace the sqlite3 dot-commands so exploring the schema never requires opening the database file by hand."
     },
     {
-      "name": "mandible artifact ingest <path...> [--blob-only] [--json]",
-      "description": "Register a logical artifact version by default. --blob-only is the explicit low-level escape hatch for registering immutable bytes without a logical artifact/version identity."
+      "name": "mandible artifact ingest <path...> [--project <project>] [--commit <git-ref>] [--artifact <artifact-ref>] [--blob-only] [--json]",
+      "description": "Record logical artifact versions by registered source. --commit reads tracked Git objects from a registered project without checkout; paths are repository-relative and --project accepts friendly refs. Historical ingestion retains the current source and requires unique current/historical lineage, or --artifact when a former path was reused. Host-visible multi-path ingestion uses one atomic metadata request; all paths are validated and authorized before writes. Exact retries are unchanged. Multi-path upload, file-RPC, and blob-only modes retain per-item requests and results; they are not atomic. --commit requires host-visible repository access over HTTP."
+    },
+    {
+      "name": "mandible artifact move <artifact-ref> [--project <project>] [--path <path>] [--if-revision <n>] [--reconcile] [--json]",
+      "description": "Change source registration in one transactional request. Omitted fields retain current values; request at least one field. Friendly project refs resolve on the server. Requires artifact, owner, current-source and destination write access; preserves filesystem, ownership and history. Optional --if-revision rejects stale state, occupied destinations fail, and no-op moves are unchanged. --reconcile explicitly resolves legacy source ambiguity."
+    },
+    {
+      "name": "mandible artifact source show <artifact-ref> [--json]",
+      "description": "Inspect one canonical artifact's registered current source, revision, and reconciliation status."
+    },
+    {
+      "name": "mandible artifact source move <artifact-ref> --expected-revision <n> --source <json> [--reconcile] [--json]",
+      "description": "Move a registered source with an exact prior revision guard. Source JSON is repo (canonical project_id and relative path), local (absolute path), or managed (producer key). Requires write access to the artifact and old/new source projects; preserves ownership and historical versions. --reconcile explicitly resolves a migration reconciliation requirement for this exact identity."
     },
     {
       "name": "mandible artifact format <ref> [--as id|url|markdown|full] [--label <text>] [--json]",

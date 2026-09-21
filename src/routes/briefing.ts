@@ -1,6 +1,7 @@
 import { ClientAuthzError, isOperator, requireIdentity } from "../client-auth/authz.js";
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson } from "../canonical-json.js";
+import { artifactRequiredProjects, getArtifactCurrentSource } from "../artifact-source.js";
 import { getDb, type Db } from "../db.js";
 import {
   applyBriefingAnnotations,
@@ -126,6 +127,18 @@ function destinationPrincipal(db: Db, req: RequestLike) {
       "Briefing destination writes require an active agent or the configured operator.");
   }
   return { userId: user.id, credentialId: identity.credential_id };
+}
+
+function artifactPublisherAccess(db: Db, req: RequestLike, artifactId: string): void {
+  const scope = resolveArtifactProject(db, artifactId);
+  if (!scope.ok && scope.reason !== "unassociated") {
+    throw new BriefingStoreError("Artifact project ownership is ambiguous", 409, "ambiguous_project");
+  }
+  if (scope.ok) requireProjectAccess(db, req, scope.project_id, "write");
+  const current = getArtifactCurrentSource(db, artifactId);
+  for (const project of artifactRequiredProjects(db, artifactId, current?.source ?? null)) {
+    requireProjectAccess(db, req, project, "write");
+  }
 }
 
 function artifactProjectForWrite(db: Db, req: RequestLike, artifactRef: string):
@@ -1014,6 +1027,10 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
           throw new ClientAuthzError(403, "source_namespace_forbidden",
             `Identity '${publisher.slug}' is not permitted to publish '${request.task_identity}' to '${request.source_health.source}'.`);
         }
+        for (const input of request.inputs) {
+          const route = inspectBriefingDestinationRoutes(db, input.route_key);
+          for (const entry of route.routes) artifactPublisherAccess(db, req, entry.logical_artifact_id);
+        }
         const replayed = Boolean(db.prepare(
           "SELECT 1 FROM briefing_composition_runs WHERE publisher_user_id = ? AND task_identity = ? AND run_key = ?",
         ).get(publisher.userId, request.task_identity, request.run_key));
@@ -1040,7 +1057,10 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         throw new ClientAuthzError(403, "source_namespace_forbidden",
           `Identity '${publisher.slug}' is not permitted to publish '${request.task_identity}' to '${request.source_health.source}'.`);
       }
-      const existed = Boolean(db.prepare("SELECT 1 FROM briefings WHERE briefing_key = ?").get(request.briefing_key));
+      const existing = db.prepare("SELECT logical_artifact_id FROM briefings WHERE briefing_key = ?")
+        .get(request.briefing_key) as { logical_artifact_id: string | null } | undefined;
+      if (existing?.logical_artifact_id) artifactPublisherAccess(db, req, existing.logical_artifact_id);
+      const existed = Boolean(existing);
       const replayed = Boolean(db.prepare(
         "SELECT 1 FROM briefing_runs WHERE publisher_user_id = ? AND task_identity = ? AND run_key = ?",
       ).get(publisher.userId, request.task_identity, request.run_key));

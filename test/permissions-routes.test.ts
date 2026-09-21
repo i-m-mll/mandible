@@ -406,8 +406,8 @@ describe("restricted project route enforcement", () => {
       source_kind: "managed", provider_id: "permission-route-test", content: "pinned bytes\n",
       media_type: "text/plain", logical_name: "pinned-document",
     }, 1_000, tempDir);
-    db.prepare("UPDATE artifact_version SET source_project_id = ? WHERE id = ?")
-      .run(project.id, recorded.version.id);
+    associateProjectArtifact(db, { project_ref: project.id, target_type: "artifact_version",
+      target_id: recorded.version.id, source: "system" });
     registerProviderRoutes(router);
     const agent = createUser(db, { slug: "version-reader", kind: "agent", display_name: "Version Reader" });
     const { token } = authenticator.mintApiToken(agent.id);

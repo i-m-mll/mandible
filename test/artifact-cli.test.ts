@@ -176,17 +176,21 @@ describe("artifact CLI", () => {
     try {
       const env = { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` };
       const ordinary = await runAsync(["artifact", "ingest", "report.md", "--json"], tempDir, env);
-      const blobOnly = await runAsync(["artifact", "ingest", "report.md", "--blob-only", "--json"], tempDir, env);
+      const blobOnly = await runAsync(["artifact", "ingest", "report.md", "missing.md", "report.md", "--blob-only", "--json"], tempDir, env);
 
       expect(ordinary.status).toBe(0);
       expect(JSON.parse(ordinary.stdout).registered[0].version.ref).toBe("artifact-version:report");
-      expect(blobOnly.status).toBe(0);
+      expect(blobOnly.status).toBe(1);
+      expect(JSON.parse(blobOnly.stdout).registered).toHaveLength(2);
+      expect(JSON.parse(blobOnly.stdout).failed).toHaveLength(1);
+      expect(JSON.parse(blobOnly.stdout).atomic).toBeUndefined();
       expect(JSON.parse(blobOnly.stdout).registered[0]).toMatchObject({
         blob_only: true,
         artifact: { ref: "artifact-blob:abc" },
       });
       expect(recorder.requests.map((request) => request.url)).toEqual([
         "/api/artifacts/versions",
+        "/api/artifacts/ingest",
         "/api/artifacts/ingest",
       ]);
     } finally {
@@ -492,7 +496,7 @@ describe("artifact CLI", () => {
     expect(result.stderr).toContain("link custody requires daemon-visible host paths");
   });
 
-  it("sends snapshot bytes through a file RPC attachment, not inline base64", async () => {
+  it("preserves multi-path file RPC attachments and per-item partial failures", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-artifact-"));
     tempRoots.push(spoolDir);
     const seen: Array<Record<string, unknown>> = [];
@@ -530,15 +534,20 @@ describe("artifact CLI", () => {
     });
 
     try {
-      const result = await runAsync(["artifact", "snapshot", "report.md", "--issue", "abc", "--json"], tempDir, {
+      fs.writeFileSync(path.join(tempDir, "second.md"), "second snapshot");
+      const result = await runAsync(["artifact", "snapshot", "report.md", "missing.md", "second.md", "--issue", "abc", "--json"], tempDir, {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout).registered).toHaveLength(2);
+      expect(JSON.parse(result.stdout).failed).toHaveLength(1);
+      expect(JSON.parse(result.stdout).atomic).toBeUndefined();
       expect(JSON.parse(result.stdout).registered[0].version.ref).toBe("artifact-version:report");
       expect(seen.map((request) => request.path)).toEqual([
         "/api/ledger/issues/abc",
+        "/api/artifacts/versions",
         "/api/artifacts/versions",
       ]);
       const record = seen.find((request) => request.path === "/api/artifacts/versions")!;
@@ -548,7 +557,8 @@ describe("artifact CLI", () => {
       expect(recordBody).not.toHaveProperty("content_base64");
       expect(recordBody).not.toHaveProperty("path");
       expect((record.attachments as Record<string, string>).path).toMatch(/\.attach-path$/);
-      expect(attachmentReads).toHaveLength(1);
+      expect(attachmentReads).toHaveLength(2);
+      expect(attachmentReads[1].bytes).toBe("second snapshot");
       expect(attachmentReads[0].bytes).toBe("# Report\n\nReady.\n");
     } finally {
       responder.stop();

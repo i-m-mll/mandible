@@ -227,3 +227,89 @@ mandible artifact scan-repos --repo rlrmp --register --json
 Scan output should report discovered, skipped, and failed paths. It should not
 register arbitrary source files just because they exist; paths should be
 artifact-like by convention or explicitly registered by the user.
+
+## Stable identity and explicit source moves
+
+A logical artifact keeps its identity when its source moves. Ordinary `ingest`
+resolves the registered source; an unbound path creates a new artifact. Use
+`--artifact <artifact-ref>` with one input path to update an exact existing
+artifact. `record` accepts the same option. It must match the registered source;
+`--series-key` cannot override that check or change ownership.
+
+Move its registered source with ordinary project and path arguments:
+
+```bash
+mandible artifact move abc1234 --path reports/renamed.md
+mandible artifact move abc1234 --project research
+mandible artifact move abc1234 --project research --path reports/final.md
+mandible artifact ingest reports/final.md --artifact abc1234
+```
+
+Omitted fields retain their current values. Project names, keys and other
+unambiguous registry refs are accepted. Repository paths are relative to the
+repository root; local sources use absolute paths. At least one field is
+required. Defaults, actor identity, permissions and the change are resolved in
+one server transaction. `--if-revision 3` optionally rejects a stale move;
+no preliminary source lookup is needed for ordinary use.
+
+Moves change metadata only. Move the actual file separately. Ownership and old
+versions stay unchanged. Write access to the artifact, its owner and current
+and destination source projects is required. Occupied destinations fail without
+mutation. Repeating a move to the same source returns `unchanged` without
+advancing the revision. Reusing the former path with ordinary ingest creates a
+separate document.
+
+### Import a committed path without checkout
+
+```bash
+mandible artifact ingest reports/old-name.md --project research --commit release-1
+mandible artifact ingest reports/a.md reports/b.md --project research --commit HEAD~2 --copy
+mandible artifact ingest reports/old-name.md --project research --commit release-1 --artifact abc1234
+```
+
+The daemon resolves the Git ref once and reads regular-file blobs directly
+from an available registered repository. Commit paths are repository-relative;
+without `--project`, the CLI's working repository selects the project. Neither
+the path nor the requested commit needs to be checked out. Versions retain the
+canonical project, full commit, path and content hash. `--copy` or `--managed`
+stores the same bytes in Mandible custody.
+
+Historical imports leave the current source unchanged. Current sources, prior
+moves and recorded version provenance establish lineage. One matching artifact
+is selected automatically; multiple candidates (including a reused old path)
+require `--artifact`. An explicit artifact must have lineage for that exact
+project/path. No candidate creates a new document. A different commit, custody
+choice or version metadata creates a distinct version; identical evidence
+returns the same version, including versions recorded before this extension.
+
+### Batch and advanced contracts
+
+Host-visible multi-path ingestion sends one request. Every path is validated
+and authorized before custody or metadata writes, and metadata commits in one
+transaction. A denied or invalid batch changes nothing. Upload, file-RPC and
+blob-only modes retain one request per item, with explicit `registered` and
+`failed` results; earlier successful items remain registered if a later item
+fails. Those transport batches are not atomic. Commit ingestion requires host
+HTTP access to the registered repository. `--dry-run` plans without mutation.
+
+Human output reports `created`, `updated` or `unchanged`, with the artifact and
+pinned version. Use `--json` for structured details.
+
+`POST /api/artifacts/ingest` accepts `paths`, optional `project`, `commit`,
+`artifact_id`, and custody options. `POST /api/artifacts/source/move` accepts
+`artifact_id`, optional `project`, `path`, and `expected_revision`. Both resolve
+authorization through the canonical lifecycle. The advanced
+`artifact source move --expected-revision N --source JSON` contract remains for
+explicit source-kind changes, such as a managed producer key. `source show`
+exposes the current source and revision. Source JSON uses canonical project
+IDs and normalized paths.
+
+Uploaded file bytes use Mandible custody with an explicit source descriptor.
+The source identifies the document; it does not claim that uploaded bytes are
+committed in Git. A named managed snapshot retains the artifact's registered
+source when no replacement source is supplied.
+
+When `source show` reports `reconciliation_reason`, inspect the retained versions
+and choose the correct source explicitly. `move ... --reconcile` (or the advanced source command) clears
+that requirement for the named artifact under the same revision, destination,
+and permission guards. It never merges identities or infers historical lineage.

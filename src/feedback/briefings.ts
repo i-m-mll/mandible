@@ -302,7 +302,9 @@ export function publishBriefingRun(
       const artifact = recordArtifactVersion(db, {
         source_kind: "managed",
         content: request.document.markdown,
-        series_key: `mandible:briefing:${briefing.id}`,
+        ...(briefing.logical_artifact_id
+          ? { artifact_id: briefing.logical_artifact_id }
+          : { series_key: `mandible:briefing:${briefing.id}` }),
         logical_name: `${request.briefing_key}.md`,
         title: request.title,
         role: "briefing-document",

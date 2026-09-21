@@ -123,7 +123,7 @@ type RouteRow = {
 type BaseDocument = {
   groupId: string; groupName: string; baseBundleId: string; briefingId: string; title: string;
   briefingKey: string; latestRoundId: string; logicalArtifactId: string; artifactVersionId: string;
-  source: string; seriesKey: string; logicalName: string;
+  source: string; logicalName: string;
 };
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -328,7 +328,7 @@ function currentBaseDocument(db: Db, route: Pick<RouteRow, "group_id" | "logical
       "briefing_destination_base_unavailable");
   }
   const rows = db.prepare(`SELECT b.id AS briefing_id, b.briefing_key, b.title, b.latest_round_id,
-      r.artifact_version_id, a.identity_key, a.logical_name
+      r.artifact_version_id, a.logical_name
     FROM briefing_bundle_members bm
     JOIN briefings b ON b.id = bm.briefing_id
     JOIN briefing_rounds r ON r.id = b.latest_round_id
@@ -336,7 +336,7 @@ function currentBaseDocument(db: Db, route: Pick<RouteRow, "group_id" | "logical
     WHERE bm.bundle_id = ? AND b.logical_artifact_id = ? AND b.archived_at IS NULL`)
     .all(group.current_bundle_id, route.logical_artifact_id) as Array<{
       briefing_id: string; briefing_key: string; title: string; latest_round_id: string;
-      artifact_version_id: string; identity_key: string; logical_name: string | null;
+      artifact_version_id: string; logical_name: string | null;
     }>;
   if (rows.length !== 1) {
     throw new BriefingStoreError("destination route must resolve to exactly one Base document", 409,
@@ -348,7 +348,7 @@ function currentBaseDocument(db: Db, route: Pick<RouteRow, "group_id" | "logical
   return { groupId: group.id, groupName: group.name, baseBundleId: group.current_bundle_id,
     briefingId: rows[0].briefing_id, briefingKey: rows[0].briefing_key, latestRoundId: rows[0].latest_round_id,
     title: rows[0].title, logicalArtifactId: route.logical_artifact_id,
-    artifactVersionId: rows[0].artifact_version_id, source: bytes.bytes.toString("utf8"), seriesKey: rows[0].identity_key,
+    artifactVersionId: rows[0].artifact_version_id, source: bytes.bytes.toString("utf8"),
     logicalName: rows[0].logical_name ?? `${rows[0].title}.md` };
 }
 
@@ -922,13 +922,17 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         }
       }
       const contributionIds = contributions.map((entry) => String(entry.id));
-      const artifact = recordArtifactVersion(db, { source_kind: "managed", content: markdown,
-        series_key: current.seriesKey, logical_name: current.logicalName, title: current.title,
+      // Report rounds deliberately reuse prior document bytes; run provenance belongs to the publication receipt.
+      const priorDocument = db.prepare(`SELECT id FROM artifact_version WHERE artifact_id=? AND content_hash=?
+        AND source_kind='managed' AND custody_mode='managed' ORDER BY version_no DESC LIMIT 1`)
+        .get(current.logicalArtifactId, createHash('sha256').update(markdown).digest('hex')) as { id: string } | undefined;
+      const artifactVersionId = priorDocument?.id ?? recordArtifactVersion(db, { source_kind: "managed", content: markdown,
+        artifact_id: current.logicalArtifactId, logical_name: current.logicalName, title: current.title,
         role: "briefing-document", media_type: "text/markdown",
         metadata: { composer: BRIEFING_COMPOSITION_SCHEMA,
-          previous_current_artifact_version_id: current.artifactVersionId } }, now);
+          previous_current_artifact_version_id: current.artifactVersionId } }, now).version.id;
       const published = publishBriefingReportRound(db, { briefing_id: current.briefingId,
-        artifact_version_ref: artifact.version.id,
+        artifact_version_ref: artifactVersionId,
         expected_current_round_id: inputs.get(documentRoutes[0].route_key)!.expected_current_round_id!,
         expected_current_artifact_version_ref: current.artifactVersionId,
         responder_user_ids: request.responder_user_ids }, now);
@@ -1041,7 +1045,7 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
           continue;
         }
         const artifact = recordArtifactVersion(db, { source_kind: "managed", content: markdown,
-          series_key: document.base.seriesKey, logical_name: document.base.logicalName, title: document.base.title,
+          artifact_id: document.base.logicalArtifactId, logical_name: document.base.logicalName, title: document.base.title,
           role: "briefing-document", media_type: "text/markdown",
           metadata: { composer: BRIEFING_COMPOSITION_SCHEMA, base_artifact_version_id: document.base.artifactVersionId } }, now);
         const published = publishBriefingFromArtifactVersion(db, { briefing_key: `composition:${artifact.version.id}`,
