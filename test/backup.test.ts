@@ -281,8 +281,8 @@ describe("backup routes", () => {
     expect(idx("project_artifact_associations")).toBeGreaterThan(idx("artifact_versions"));
 
     db.prepare(
-      `INSERT INTO artifact_blob (id, algorithm, content_hash, storage_uri, custody_mode, created_at)
-       VALUES ('artifact-blob:hash-bk', 'sha256', 'hash-bk', 'file:///tmp/hash-bk', 'managed', 1)`,
+      `INSERT INTO artifact_blob (id, algorithm, content_hash, storage_uri, created_at)
+       VALUES ('artifact-blob:hash-bk', 'sha256', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'file:///tmp/hash-bk', 1)`,
     ).run();
     db.prepare(
       `INSERT INTO artifact (id, identity_key, source_kind, title, version_count, created_at, updated_at)
@@ -290,8 +290,8 @@ describe("backup routes", () => {
     ).run();
     db.prepare(
       `INSERT INTO artifact_version (
-        id, artifact_id, version_no, blob_id, source_kind, content_hash, created_at
-      ) VALUES ('artifact-version:bk-v1', 'artifact:bk', 1, 'artifact-blob:hash-bk', 'managed', 'hash-bk', 1)`,
+        id, artifact_id, version_no, blob_id, source_kind, content_hash, custody_mode, created_at
+      ) VALUES ('artifact-version:bk-v1', 'artifact:bk', 1, 'artifact-blob:hash-bk', 'managed', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'managed', 1)`,
     ).run();
 
     const dump = buildMetadataBackupSql(db);

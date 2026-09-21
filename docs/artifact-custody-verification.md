@@ -42,6 +42,10 @@ A fresh consistent v184 backup was recovered and migrated using the exact v185 S
 Recovery plan digest: `d03e43bf2d59523b0b70e9ef2d4727c7419a973fce2e07e107ad9ac3cea2ff9b`.
 The preserved rehearsal directory is `~/.cache/mandible/rehearsals/38aa695-bw8Xnz`: `before.db` is the original consistent backup; `candidate.db` is the isolated result; `final-recovery.json`, `final-retirements.json`, `source-reconciliation.json`, and `final-proof.json` preserve evidence. The rehearsal made no live ledger changes or Git ref writes in registered repositories. Prior recovery-worker rehearsal side effects are recorded separately by that lane.
 
+## Integration repair verification
+
+The five files identified by the parent default-suite run pass together: 222 tests in backup, schema convergence, permissions routes, Spaces routes, and UI. Fresh-schema table quoting now matches the SQLite rename result. Fixtures use version custody and canonical resolver fields; logical identity title assertions and restricted-project denial assertions remain enforced. The synthetic Briefing lineage fixture tests its declared v161 transition without claiming recoverable v185 bytes. No broad default-suite repeat was run in the worker.
+
 ## Delivery boundary
 
 Worker verification does not establish live migration, packaged-desktop health, or protected delivery. Integration must run recovery before applying v185 and run the required production daemon plus packaged desktop gate from the exact final candidate. Recovery failure must stop startup before v185.

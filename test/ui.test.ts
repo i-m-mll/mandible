@@ -7032,8 +7032,8 @@ describe('ArtifactsView', () => {
             normalized_ref: ref,
             artifact: v2,
             alias: null,
-            series: artifactSeries.history.series,
-            version: artifactSeries.history.versions[1],
+            logical_artifact: { ...artifactSeries.history.series, id: 'artifact:latest-series' },
+            artifact_version: artifactSeries.history.versions[1],
             warnings: ['series_latest_not_pinned'],
           },
         });
@@ -7060,7 +7060,7 @@ describe('ArtifactsView', () => {
 
     render(h(ArtifactsView, { initialArtifactId: ref }));
 
-    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('latest-v2.md'));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('latest-report.md'));
     expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('');
     expect(document.querySelector('.artifact-detail__badge')).toBeNull();
     expect(screen.getByText('series_latest_not_pinned')).toBeTruthy();
@@ -7161,8 +7161,8 @@ describe('ArtifactsView', () => {
               artifact_blob: kind === 'blob' ? { id: ref, ref } : undefined,
               artifact,
               alias: null,
-              series: kind === 'blob' ? undefined : artifactSeries.history.series,
-              version,
+              logical_artifact: kind === 'blob' ? undefined : { ...artifactSeries.history.series, id: 'artifact:typed-series' },
+              artifact_version: version,
               warnings: kind === 'series' ? ['series_latest_not_pinned'] : [],
             },
           });
