@@ -232,6 +232,8 @@ export interface ArtifactRecoveryPlan {
   source_schema_version: number | null;
   summary: ArtifactRecoverySummary;
   versions: PlannedVersion[];
+  artifacts: ArtifactLogicalRow[];
+  sources: JsonObject[];
   blobs: PlannedBlob[];
   retirement_packet: ArtifactRetirementPacket;
   dependency_scan_errors: string[];
@@ -1210,6 +1212,8 @@ export function planArtifactRecovery(db: Db, options: ArtifactRecoveryOptions = 
     source_schema_version: sourceSchemaVersion(db),
     summary: makeSummary(planned, plannedBlobs, dependencyScanErrors),
     versions: planned,
+    artifacts: db.prepare("SELECT * FROM artifact ORDER BY id").all() as ArtifactLogicalRow[],
+    sources: tableExists(db,"artifact_source") ? db.prepare("SELECT * FROM artifact_source ORDER BY artifact_id").all() as JsonObject[] : [],
     blobs: plannedBlobs,
     retirement_packet: retirementPacket,
     dependency_scan_errors: dependencyScanErrors,
@@ -1296,6 +1300,8 @@ function writeRecoveryReceipt(
       dependencies: version.dependencies,
       artifact_dependencies: version.artifact_dependencies,
     })),
+    artifacts: plan.artifacts,
+    sources: plan.sources,
     blobs: plan.blobs,
     retirement_packet: plan.retirement_packet,
     ...(execution ? { execution } : {}),
@@ -1471,6 +1477,12 @@ function assertPlanInputsUnchanged(
   expectedBlobStorage = new Map<string, string | null>(),
   stageRoot?: string,
 ): void {
+  const originals = new Map(plan.artifacts.map(row => [row.id, row]));
+  const currentArtifacts = db.prepare("SELECT id,metadata_json FROM artifact ORDER BY id").all() as {id:string;metadata_json:string}[];
+  for (const current of currentArtifacts) {
+    const original = originals.get(current.id);
+    if (!original || original.metadata_json !== current.metadata_json) throw new Error(`artifact metadata changed since recovery plan: ${current.id}`);
+  }
   const currentVersions = readVersionRows(db);
   const currentById = new Map(currentVersions.map(version => [version.id, version]));
   const currentDependencyScan = collectDependencies(db, currentVersions);
@@ -1711,10 +1723,10 @@ export function applyArtifactRecovery(db: Db, plan: ArtifactRecoveryPlan, option
           custody_mode: version.desired.custody_mode,
           metadata_json: version.desired.metadata_json,
         });
-        if (version.desired.source_project_id) historicalSourceAssociations += ensureHistoricalSourceAssociation(db, version);
+        if (version.original.source_project_id) historicalSourceAssociations += ensureHistoricalSourceAssociation(db, version);
         appliedVersions += 1;
       }
-      if (version.desired.source_project_id && currentFingerprint === desiredVersionFingerprint(version)) {
+      if (version.original.source_project_id && currentFingerprint === desiredVersionFingerprint(version)) {
         historicalSourceAssociations += ensureHistoricalSourceAssociation(db, version);
       }
     }

@@ -1,3 +1,5 @@
+import Database from 'better-sqlite3';
+import { MIGRATIONS } from '../src/db-migrations.js';
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -11,8 +13,20 @@ import {
   planArtifactRecovery,
   recoverArtifactCustody,
 } from "../src/artifact-recovery.js";
-import { createMigratedDb, insertRawLedgerCheckout, insertRawLedgerProject } from "./helpers/ledger-fixtures.js";
+import { insertRawLedgerCheckout, insertRawLedgerProject } from "./helpers/ledger-fixtures.js";
 import type { Db } from "../src/db.js";
+
+function createMigratedDb(): Db {
+  const db=new Database(':memory:');
+  db.exec(fs.readFileSync('test/fixtures/schema-v158.sql','utf8'));
+  db.function('mandible_sha256',{deterministic:true},(value:unknown)=>crypto.createHash('sha256').update(String(value)).digest('hex'));
+  for(const migration of MIGRATIONS.filter(m=>m.version>158 && m.version<=184)) {
+    db.transaction(()=>{for(const sql of migration.statements) db.exec(sql);})();
+  }
+  db.prepare("UPDATE meta SET value='184' WHERE key='schema_version'").run();
+  db.pragma('foreign_keys=ON');
+  return db;
+}
 
 const sha256 = (bytes: Buffer | string): string => crypto.createHash("sha256").update(bytes).digest("hex");
 

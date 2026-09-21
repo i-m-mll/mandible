@@ -22,6 +22,8 @@ Project associations target a logical artifact or an exact version, with explici
 
 ## Cutover
 
-The v185 schema removes blob custody/availability/retention/reference envelopes and duplicate version repository aliases and locator JSON. Recovery must inventory every retained version, verify the original hash, stage durable bytes or Git retention first, and atomically normalize metadata before the strict schema transition. Irrecoverable records require explicit backed-up retirement that preserves unrelated user/review content. No legacy authority envelope remains active after cutover.
+The v185 schema removes blob custody/availability/retention/reference envelopes and duplicate version repository aliases and locator JSON. Recovery must inventory every retained version, verify the original hash, stage durable bytes or Git retention first, and atomically normalize metadata before the strict schema transition. Irrecoverable records require explicit backed-up retirement that preserves unrelated user/review content. No legacy authority envelope remains active after cutover. The external recovery receipt preserves original logical-artifact, version, blob, and current-source rows before metadata cleanup.
+
+Historical source ambiguity is reconciled separately from version custody. A sole verified Git project/path can become the current source; a managed document without a trustworthy single input uses its stable logical source key. If preserved identities compete for a previously unowned path, each receives a managed logical source rather than selecting an owner by age or merging identities. Exact Git version authority remains intact. Collision dispositions are recorded externally and in source-move history; future path-following updates require an explicit source move.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>
