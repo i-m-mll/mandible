@@ -1,3 +1,4 @@
+import { artifactDescriptiveMetadataJson } from './artifact-metadata.js';
 import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from './artifact-custody-schema.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
@@ -1895,6 +1896,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
 }
 
 export function migrate(db: Db): void {
+  db.function("mandible_artifact_metadata", { deterministic: true }, artifactDescriptiveMetadataJson);
   db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
     createHash("sha256").update(String(value)).digest("hex"));
   assertMigrationSequence();

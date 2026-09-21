@@ -1,3 +1,4 @@
+import { artifactDescriptiveMetadata as descriptiveArtifactMetadata } from './artifact-metadata.js';
 import { fileURLToPath } from "node:url";
 import { artifactFailure, artifactSourceLineage, artifactRequiredProjects, getArtifactCurrentSource, lookupArtifactCurrentSource, sourceKey, validateArtifactSource, type ArtifactSource, type ArtifactLifecycleResult } from './artifact-source.js';
 import crypto from "node:crypto";
@@ -1665,10 +1666,6 @@ function asRecoverability(value: unknown, fallback: ArtifactRecoverability): Art
     : fallback;
 }
 
-const OBSOLETE_ARTIFACT_METADATA = new Set(['custody_mode','availability','recoverability','home_repo_id','repo_id','repo_locator','storage_backend','artifact_id','compatibility_artifact_id','registered_source_migration']);
-function descriptiveArtifactMetadata(value: JsonRecord): JsonRecord {
-  return Object.fromEntries(Object.entries(value).filter(([key]) => !OBSOLETE_ARTIFACT_METADATA.has(key)));
-}
 
 function mergeJsonRecords(...records: Array<JsonRecord | undefined>): JsonRecord {
   return Object.assign({}, ...records.filter(Boolean));
@@ -5253,7 +5250,7 @@ function commitPreparedArtifactVersion(db: Db, plan: ArtifactVersionPlan, prepar
         db.prepare(`INSERT INTO artifact (id,identity_key,source_kind,title,source_project_id,
           logical_name,version_count,metadata_json,created_at,updated_at)
           VALUES (?,?,?,?,?,?,0,?,?,?)`).run(logicalId, identityKey, plan.source_kind, input.title ?? null,
-            prepared.owner_project_id, prepared.logical_name ?? null, jsonStringify(input.metadata ?? {}), now, now);
+            prepared.owner_project_id, prepared.logical_name ?? null, jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})), now, now);
         db.prepare('INSERT INTO artifact_source VALUES (?,?,1,NULL,?)').run(logicalId, sourceKey(plan.source), now);
       }
       const linked = plan.custody_mode === 'git';
