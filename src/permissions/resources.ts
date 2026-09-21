@@ -20,52 +20,30 @@ export function resolveIssueProject(
   return row ? { ok: true, project_id: row.project_id } : { ok: false, reason: "not_found" };
 }
 
-/**
- * Resolve an artifact or version to its canonical project association. Multiple
- * distinct associations are deliberately ambiguous rather than choosing one.
- */
-export function resolveArtifactProject(
-  db: Db,
-  artifactOrVersionId: string,
-): ResourceProjectResolution {
-  const rows = db.prepare(
-    `SELECT DISTINCT project_id FROM (
-       SELECT source_project_id AS project_id FROM artifact
-        WHERE id = ? AND source_project_id IS NOT NULL
-       UNION
-       SELECT source_project_id AS project_id FROM artifact_version
-        WHERE id = ? AND source_project_id IS NOT NULL
-       UNION
-       SELECT source_project_id AS project_id FROM artifact_version
-        WHERE artifact_id = ? AND source_project_id IS NOT NULL
-       UNION
-      SELECT project_id FROM project_artifact_associations
-        WHERE target_id = ? AND status = 'active'
-       UNION
-       SELECT a.source_project_id AS project_id
-         FROM artifact_version v
-         JOIN artifact a ON a.id = v.artifact_id
-        WHERE v.id = ? AND a.source_project_id IS NOT NULL
-       UNION
-       SELECT pa.project_id
-         FROM project_artifact_associations pa
-         JOIN artifact_version v ON v.id = pa.target_id
-        WHERE pa.target_type = 'artifact_version'
-          AND v.artifact_id = ?
-          AND pa.status = 'active'
-     ) ORDER BY project_id`,
-  ).all(
-    artifactOrVersionId,
-    artifactOrVersionId,
-    artifactOrVersionId,
-    artifactOrVersionId,
-    artifactOrVersionId,
-    artifactOrVersionId,
-  ) as
-    Array<{ project_id: string }>;
-  if (rows.length === 0) return { ok: false, reason: "unassociated" };
-  if (rows.length > 1) return { ok: false, reason: "ambiguous" };
-  return { ok: true, project_id: rows[0].project_id };
+/** Project access constraints are ownership and explicit associations, never version provenance. */
+export function artifactAccessProjectIds(db: Db, artifactOrVersionId: string): string[] {
+  return (db.prepare(`WITH target AS (
+    SELECT id artifact_id, NULL version_id FROM artifact WHERE id=@id
+    UNION ALL SELECT artifact_id, id version_id FROM artifact_version WHERE id=@id
+  ) SELECT DISTINCT project_id FROM (
+    SELECT project_id FROM project_artifact_associations WHERE target_id=@id AND status='active'
+    UNION
+    SELECT a.source_project_id project_id FROM artifact a JOIN target t ON a.id=t.artifact_id
+      WHERE a.source_project_id IS NOT NULL
+    UNION
+    SELECT pa.project_id FROM project_artifact_associations pa JOIN target t
+      ON (pa.target_type='artifact' AND pa.target_id=t.artifact_id)
+      OR (pa.target_type='artifact_version' AND (pa.target_id=t.version_id OR
+        (t.version_id IS NULL AND pa.target_id IN (SELECT id FROM artifact_version WHERE artifact_id=t.artifact_id))))
+      WHERE pa.status='active'
+  ) ORDER BY project_id`).all({id: artifactOrVersionId}) as {project_id:string}[]).map(row => row.project_id);
+}
+
+export function resolveArtifactProject(db: Db, artifactOrVersionId: string): ResourceProjectResolution {
+  const projects = artifactAccessProjectIds(db, artifactOrVersionId);
+  if (projects.length === 0) return { ok: false, reason: "unassociated" };
+  if (projects.length > 1) return { ok: false, reason: "ambiguous" };
+  return { ok: true, project_id: projects[0] };
 }
 
 /** Resolve work-scanner ids, checkout roots, or canonical refs to one project. */
