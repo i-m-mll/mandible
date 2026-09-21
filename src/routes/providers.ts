@@ -31,8 +31,8 @@ import {
   planLocalArtifactPathAsync,
   projectArtifactPublicValue,
   publishArtifactDraft,
-  recordArtifactVersion,
-  registerLocalArtifactPathAsync,
+  planArtifactVersion,
+  commitArtifactVersion,
   registerProvider,
   resolveAndLinkArtifact,
   resolveArtifactRef,
@@ -43,6 +43,12 @@ import {
   saveArtifactDraft,
   snapshotArtifactBytesAsync,
 } from "../provider-artifacts.js";
+import { ClientAuthzError, requireIdentity } from "../client-auth/authz.js";
+import {
+  getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove,
+  type ArtifactSource, type ArtifactLifecycleResult,
+} from "../artifact-source.js";
+import type { RecordArtifactVersionInput } from "../provider-artifacts.js";
 import type { ArtifactVersionSourceKind } from "../types.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
@@ -55,6 +61,10 @@ import {
 
 
 function handleError(res: ResponseLike, error: unknown): void {
+  if (error instanceof PermissionError || error instanceof ClientAuthzError) {
+    sendJson(res, error.status, { error: error.message, code: error.code });
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   sendJson(res, 400, { error: message });
 }
@@ -91,7 +101,10 @@ function enforceProjectRefWrite(req: RequestLike, res: ResponseLike, projectRef:
     sendJson(res, 403, { error: "ambiguous project", code: "ambiguous_project" });
     return false;
   }
-  if (!resolved.ok || !resolved.project) return true;
+  if (!resolved.ok || !resolved.project) {
+    sendJson(res, 404, { error: "project not found", code: "unknown_project" });
+    return false;
+  }
   try {
     requireProjectAccess(db, req, resolved.project.id, "write");
     return true;
@@ -112,6 +125,7 @@ function enforceArtifactAccess(
 ): boolean {
   const db = getDb();
   const resolved = resolveArtifactProject(db, artifactId);
+  // A successfully resolved artifact without a project is deliberately unscoped.
   if (!resolved.ok && resolved.reason === "unassociated") return true;
   if (!resolved.ok) {
     sendJson(res, 403, { error: "ambiguous artifact project", code: "ambiguous_project" });
@@ -161,8 +175,72 @@ function enforceArtifactRefAccess(
     }
     return id ? enforceArtifactAccess(req, res, id, role) : true;
   } catch {
-    return true;
+    sendJson(res, 500, { error: "Artifact access check failed", code: "artifact_access_check_failed" });
+    return false;
   }
+}
+
+function lifecycleValue<T>(res: ResponseLike, result: ArtifactLifecycleResult<T>): T | undefined {
+  if (result.ok) return result.value;
+  const status = result.error.code === "unknown_artifact" ? 404
+    : result.error.code === "storage_error" ? 500
+      : ["invalid_source", "invalid_input"].includes(result.error.code) ? 400 : 409;
+  sendJson(res, status, { error: result.error.message, code: result.error.code });
+  return undefined;
+}
+
+function canonicalArtifactId(res: ResponseLike, ref: unknown): string | undefined {
+  if (typeof ref !== "string" || !ref.trim() || ref.startsWith("artifact-series:") || ref.startsWith("artifact-version:")) {
+    sendJson(res, 400, { error: "canonical artifact identity is required", code: "invalid_input" });
+    return;
+  }
+  const resolved = resolveArtifactIdentity(getDb(), ref, "surface");
+  if (resolved.status !== "resolved" || resolved.target_type !== "artifact" || !resolved.logical_artifact) {
+    sendJson(res, 404, { error: "ref must name one logical artifact", code: "unknown_artifact" });
+    return;
+  }
+  return resolved.logical_artifact.id;
+}
+
+function authorizeArtifactPlan(req: RequestLike, res: ResponseLike,
+  plan: { artifact_id: string | null; required_project_ids: string[] }): boolean {
+  if (plan.artifact_id && !enforceArtifactAccess(req, res, plan.artifact_id, "write")) return false;
+  for (const projectId of plan.required_project_ids) requireProjectAccess(getDb(), req, projectId, "write");
+  return true;
+}
+
+function recordAuthorizedVersion(req: RequestLike, res: ResponseLike, input: RecordArtifactVersionInput) {
+  if (input.artifact_id !== undefined) {
+    const id = canonicalArtifactId(res, input.artifact_id);
+    if (!id) return;
+    input = { ...input, artifact_id: id };
+  }
+  if (input.source !== undefined) {
+    const source = sourceInput(input.source);
+    if (!source) { sendJson(res, 400, { error: "invalid source", code: "invalid_source" }); return; }
+    if (source.kind === "repo") {
+      const project = resolveProjectRef(getDb(), source.project_id);
+      if (!project.ok || !project.project || project.ambiguous) {
+        sendJson(res, 400, { error: "source project is unknown or ambiguous", code: "invalid_source" }); return;
+      }
+      source.project_id = project.project.id;
+    }
+    input = { ...input, source };
+  }
+  const plan = lifecycleValue(res, planArtifactVersion(getDb(), input));
+  if (!plan || !authorizeArtifactPlan(req, res, plan)) return;
+  return lifecycleValue(res, commitArtifactVersion(getDb(), plan));
+}
+
+function sourceInput(value: unknown): ArtifactSource | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (source.kind === "repo" && typeof source.project_id === "string" && typeof source.path === "string") {
+    return { kind: "repo", project_id: source.project_id, path: source.path };
+  }
+  if (source.kind === "local" && typeof source.path === "string") return { kind: "local", path: source.path };
+  if (source.kind === "managed" && typeof source.key === "string") return { kind: "managed", key: source.key };
+  return null;
 }
 
 function enforceBodyArtifactRefs(
@@ -315,10 +393,22 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
           ? body.local_path
           : undefined;
       if (localPath) {
-        const result = await registerLocalArtifactPathAsync(getDb(), { ...body, path: localPath });
-        sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
+        const local = await planLocalArtifactPathAsync(getDb(), { ...body, path: localPath });
+        const source_kind = local.git_state.repo_id ? "tracked_repo" : "local_only";
+        const result = recordAuthorizedVersion(req, res, { ...body, source_kind, path: localPath });
+        if (result) sendJson(res, 200, projectArtifactPublicValue(getDb(), { ...result,
+          git_state: local.git_state, recoverability: local.recoverability, warnings: local.warnings }));
         return;
       }
+      // Blob-only ingress cannot select or update a logical identity.
+      if (body.artifact_id || body.series_key) {
+        sendJson(res, 400, { error: "logical updates require /api/artifacts/versions", code: "invalid_input" });
+        return;
+      }
+      if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
+      const metadata = body.metadata as { git?: { repo_id?: string } } | undefined;
+      const repoRef = typeof body.repo_id === "string" ? body.repo_id : metadata?.git?.repo_id;
+      if (repoRef && !enforceProjectRefWrite(req, res, repoRef)) return;
       const artifact = await ingestArtifactAsync(getDb(), body);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
     } catch (error) {
@@ -735,14 +825,42 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "source_kind is required (tracked_repo, local_only, or managed)" });
         return;
       }
-      const result = recordArtifactVersion(getDb(), {
-        ...body,
-        source_kind: sourceKind as ArtifactVersionSourceKind,
-      });
-      sendJson(res, 200, projectArtifactPublicValue(getDb(), { result }));
+      const input: RecordArtifactVersionInput = { ...body, source_kind: sourceKind as ArtifactVersionSourceKind };
+      const result = recordAuthorizedVersion(req, res, input);
+      if (result) sendJson(res, 200, projectArtifactPublicValue(getDb(), { result }));
     } catch (error) {
       handleError(res, error);
     }
+  }, { fileRpc: "allow" });
+
+  app.get("/api/artifacts/source", (req, res) => {
+    try {
+      const id = canonicalArtifactId(res, queryString(req, "ref"));
+      if (!id || !enforceArtifactAccess(req, res, id, "read")) return;
+      const source = getArtifactCurrentSource(getDb(), id);
+      if (!source) { sendJson(res, 404, { error: "source state not found", code: "unknown_artifact" }); return; }
+      sendJson(res, 200, { source });
+    } catch (error) { handleError(res, error); }
+  }, { fileRpc: "allow" });
+
+  app.post("/api/artifacts/source/move", (req, res) => {
+    try {
+      const actor = requireIdentity(req).user_id;
+      const body = bodyRecord(req);
+      const id = canonicalArtifactId(res, body.artifact_id);
+      if (!id || !enforceArtifactAccess(req, res, id, "write")) return;
+      const source = sourceInput(body.source);
+      if (!source || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 0) {
+        sendJson(res, 400, { error: "source and nonnegative expected_revision are required", code: "invalid_input" });
+        return;
+      }
+      const plan = lifecycleValue(res, planArtifactSourceMove(getDb(), {
+        artifact_id: id, expected_revision: Number(body.expected_revision), source, actor,
+      }));
+      if (!plan || !authorizeArtifactPlan(req, res, plan)) return;
+      const state = lifecycleValue(res, commitArtifactSourceMove(getDb(), plan));
+      if (state) sendJson(res, 200, { source: state });
+    } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 
   app.post("/api/artifacts/bundles", async (req, res) => {

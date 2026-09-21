@@ -70,7 +70,7 @@ artifact_api_request() {
 usage() {
   cat <<'EOF'
 Usage:
-  mandible artifact ingest <path...> [--issue <id>] [--role <role>] [--managed|--copy|--link] [--upload] [--allow-local-only] [--allow-dirty-link] [--blob-only] [--dry-run] [--json]
+  mandible artifact ingest <path...> [--artifact <artifact-ref>] [--issue <id>] [--role <role>] [--managed|--copy|--link] [--upload] [--allow-local-only] [--allow-dirty-link] [--blob-only] [--dry-run] [--json]
   mandible artifact ref <uri...> [--issue <id>] [--role <role>] [--json]
   mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--pinned|--living] [--json]
   mandible artifact resolve <ref> [--json]
@@ -81,9 +81,11 @@ Usage:
   mandible artifact show <ref> [--json]
   mandible artifact content <ref> [--output <path>] [--json]
   mandible artifact check <ref...> [--json]
+  mandible artifact source show <artifact-ref> [--json]
+  mandible artifact source move <artifact-ref> --expected-revision <n> --source <json> [--json]
   mandible artifact versions <ref> [--json]
   mandible artifact diff <refA> <refB> [--json]
-  mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key <key>] [--logical-name <name>] [--provider <id>] [--repo <id>] [--issue <id>] [--label <label>] [--note <note>] [--role <role>] [--title <title>] [--json]
+  mandible artifact record <path> --kind tracked_repo|local_only|managed [--artifact <artifact-ref>] [--series-key <key>] [--logical-name <name>] [--provider <id>] [--repo <id>] [--issue <id>] [--label <label>] [--note <note>] [--role <role>] [--title <title>] [--json]
   mandible artifact record --ref <artifact-ref> --kind managed [--series-key <key>] [--logical-name <name>] [--provider <id>|--repo <id>|--issue <id>] [--json]
   mandible artifact snapshot <path...> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--upload] [--json]
@@ -597,9 +599,9 @@ artifact_version_payload_for_upload() {
   printf '%s' "$payload" | jq \
     --arg issue "$issue_id_value" \
     '{source_kind:"managed",
-      series_key:(if (.metadata.git.repo_id // "") != "" and (.metadata.git.relative_path // "") != ""
-        then "repo:" + .metadata.git.repo_id + ":" + .metadata.git.relative_path
-        else "local:" + (.metadata.source_path // .filename) end),
+      source:(if (.metadata.git.repo_id // "") != "" and (.metadata.git.relative_path // "") != ""
+        then {kind:"repo", project_id:.metadata.git.repo_id, path:.metadata.git.relative_path}
+        else {kind:"local", path:.metadata.source_path} end),
       logical_name, role, media_type, custody_mode,
       title:(.metadata.title // null)}
       + (if $issue != "" then {issue:$issue} else {} end)'
@@ -608,10 +610,11 @@ artifact_version_payload_for_upload() {
 cmd_ingest_like() {
   local mode="$1"
   shift
-  local issue="" role="" json=0 dry_run=0 allow_local=0 allow_dirty=0 upload=0 mode_explicit=0 blob_only=0 relation="references"
+  local artifact_target="" issue="" role="" json=0 dry_run=0 allow_local=0 allow_dirty=0 upload=0 mode_explicit=0 blob_only=0 relation="references"
   local paths=()
   while (( $# > 0 )); do
     case "$1" in
+      --artifact) artifact_target="$2"; shift 2 ;;
       --issue) issue="$2"; shift 2 ;;
       --role) role="$2"; shift 2 ;;
       --managed) mode="managed"; mode_explicit=1; shift ;;
@@ -628,6 +631,9 @@ cmd_ingest_like() {
     esac
   done
   (( ${#paths[@]} > 0 )) || die "No paths supplied." 2
+  if [[ -n "$artifact_target" ]] && (( ${#paths[@]} != 1 || blob_only )); then
+    die "--artifact requires exactly one path and cannot be combined with --blob-only" 2
+  fi
   require_tools
   if (( upload )) || api_is_file_rpc; then
     if [[ "$mode" == "link" ]]; then
@@ -659,6 +665,7 @@ cmd_ingest_like() {
         abs="$(python_path abs "$path_arg")"
         if (( upload )) || api_is_file_rpc; then
           version_payload="$(artifact_version_payload_for_upload "$payload" "${issue_id:-}")"
+          version_payload="$(printf '%s' "$version_payload" | jq --arg id "$artifact_target" 'if $id == "" then . else . + {artifact_id:$id} end')"
           resp_tmp="$(mktemp)"
           resp_status="$(api_send_content POST "/api/artifacts/versions" "$version_payload" "path" "$abs" "$resp_tmp")"
           if [[ ! "$resp_status" =~ ^2 ]]; then
@@ -671,6 +678,7 @@ cmd_ingest_like() {
           rm -f "$resp_tmp"
         else
           version_payload="$(artifact_version_payload_for_path "$payload" "$path_arg" "${issue_id:-}")"
+          version_payload="$(printf '%s' "$version_payload" | jq --arg id "$artifact_target" 'if $id == "" then . else . + {artifact_id:$id} end')"
           version_response="$(artifact_api_request POST "/api/artifacts/versions" "$version_payload")" || {
             failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" '. + [{input:$input, error:"api_version_record_failed"}]')"
             continue
@@ -1170,10 +1178,43 @@ cmd_diff() {
 # Explicit version recording remains available when callers need to control the
 # series identity or source kind. Ordinary named ingest now records a version by
 # default; --blob-only is the explicit byte-identity escape hatch.
-cmd_record() {
-  local kind="" input_path="" ref="" series_key="" logical_name="" label="" note="" role="" title="" custody="" provider="" repo="" issue="" json=0
+cmd_source() {
+  local operation="${1:-}" ref="${2:-}"
+  [[ "$operation" == "show" || "$operation" == "move" ]] && [[ -n "$ref" ]] \
+    || die "Usage: mandible artifact source <show|move> <artifact-ref> [--expected-revision N --source JSON] [--json]" 2
+  shift 2
+  local revision="" source_json="" json=0 response
   while (( $# > 0 )); do
     case "$1" in
+      --expected-revision) revision="$2"; shift 2 ;;
+      --source) source_json="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      *) die "Unknown option: $1" 2 ;;
+    esac
+  done
+  require_tools
+  if [[ "$operation" == "show" ]]; then
+    [[ -z "$revision" && -z "$source_json" ]] || die "show does not accept move options" 2
+    response="$(artifact_api_request GET "/api/artifacts/source?ref=$(urlencode "$ref")")" || return $?
+  else
+    [[ "$revision" =~ ^[0-9]+$ && -n "$source_json" ]] || die "move requires --expected-revision N and --source JSON" 2
+    printf '%s' "$source_json" | jq -e 'type == "object" and (.kind == "repo" or .kind == "local" or .kind == "managed")' >/dev/null \
+      || die "--source must be a repo, local or managed source object" 2
+    local payload
+    payload="$(jq -n --arg artifact_id "$ref" --argjson expected_revision "$revision" --argjson source "$source_json" \
+      '{artifact_id:$artifact_id,expected_revision:$expected_revision,source:$source}')"
+    response="$(artifact_api_request POST "/api/artifacts/source/move" "$payload")" || return $?
+  fi
+  if (( json )); then printf '%s\n' "$response" | jq .
+  else printf '%s\n' "$response" | jq '.source | {revision,source,reconciliation_reason}'
+  fi
+}
+
+cmd_record() {
+  local artifact_target="" kind="" input_path="" ref="" series_key="" logical_name="" label="" note="" role="" title="" custody="" provider="" repo="" issue="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --artifact) artifact_target="$2"; shift 2 ;;
       --kind) kind="$2"; shift 2 ;;
       --ref) ref="$2"; shift 2 ;;
       --series-key) series_key="$2"; shift 2 ;;
@@ -1204,6 +1245,7 @@ cmd_record() {
   fi
   local payload
   payload="$(jq -n \
+    --arg artifact_id "$artifact_target" \
     --arg source_kind "$kind" \
     --arg path "$abs" \
     --arg ref "$ref" \
@@ -1218,6 +1260,7 @@ cmd_record() {
     --arg repo_id "$repo" \
     --arg issue "$issue" \
     '{source_kind:$source_kind}
+      + (if $artifact_id != "" then {artifact_id:$artifact_id} else {} end)
       + (if $path != "" then {path:$path} else {} end)
       + (if $ref != "" then {ref:$ref} else {} end)
       + (if $series_key != "" then {series_key:$series_key} else {} end)
@@ -1580,6 +1623,7 @@ fi
 cmd="$1"
 shift
 case "$cmd" in
+  source) cmd_source "$@" ;;
   ingest) cmd_ingest_like "link" "$@" ;;
   snapshot) cmd_snapshot "$@" ;;
   ref) cmd_ref "$@" ;;

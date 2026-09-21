@@ -227,3 +227,35 @@ mandible artifact scan-repos --repo rlrmp --register --json
 Scan output should report discovered, skipped, and failed paths. It should not
 register arbitrary source files just because they exist; paths should be
 artifact-like by convention or explicitly registered by the user.
+
+## Stable identity and explicit source moves
+
+A logical artifact keeps its identity when its source moves. Ordinary `ingest`
+resolves the registered source; an unbound path creates a new artifact. Use
+`--artifact <artifact-ref>` with one input path to update an exact existing
+artifact. `record` accepts the same option. It must match the registered source;
+`--series-key` cannot override that check or change ownership.
+
+Inspect the source and copy its revision before moving it:
+
+```bash
+mandible artifact source show artifact:abc1234 --json
+mandible artifact source move artifact:abc1234 --expected-revision 1 \
+  --source '{"kind":"repo","project_id":"<canonical-project-id>","path":"reports/renamed.md"}' --json
+mandible artifact ingest reports/renamed.md --artifact artifact:abc1234 --json
+```
+
+Source objects are `{ "kind": "repo", "project_id": "...", "path": "relative/path" }`,
+`{ "kind": "local", "path": "/absolute/path" }`, or
+`{ "kind": "managed", "key": "producer-key" }`. Use the canonical project ID
+from the project registry for a repository source. Moving a source records the
+actor and requires write access to the artifact and both source projects.
+A stale revision or occupied destination fails without mutation. The operation
+changes the registration; move the actual file separately. Canonical ownership
+stays unchanged, and old versions retain their exact committed or stored bytes.
+Reusing the former path creates a separate document.
+
+API equivalents are `GET /api/artifacts/source?ref=<artifact-ref>` and
+`POST /api/artifacts/source/move` with `artifact_id`, `expected_revision`, and
+`source`. `POST /api/artifacts/versions` accepts `artifact_id` for exact updates.
+Planning and permission checks precede blob, version, and source mutations.
