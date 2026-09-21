@@ -46,7 +46,7 @@ Other tabs (Monitor, Inbox, Graph) link to issues via `EntityPill` components. C
 Issues can also be managed from the command line:
 
 ```bash
-mandible issue new -t 'Title' -m 'Body' --label feature
+mandible issue new -t 'Title' -m 'Body' --kind feature
 mandible issue list --status open
 mandible issue show <id>
 mandible issue description show <id>
@@ -58,3 +58,18 @@ mandible issue comment add <id> -m 'Comment'
 ```
 
 See the CLI reference for the full command set.
+
+## Upgrading older issue metadata
+
+Schema 183 applies general rules such as `fixed` → `delivered` and converts
+unambiguous metadata labels into structured fields. It contains no decisions
+about particular issues and does not fetch review artifacts during startup.
+Already-upgraded databases retain their issue data and migration history unchanged.
+
+An older database with missing closure reasons, conflicting kinds, unresolved
+parent references, or inconsistent branch/worker metadata stops with
+`v183_metadata_requires_explicit_review`. Back up that database and reconcile
+the affected records using the older version's supported issue commands before
+retrying the upgrade. Do not invent a closure reason or alter the schema-version
+marker to bypass review. One-time review evidence belongs in Mandible custody
+and issue history, not application source.
