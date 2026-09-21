@@ -115,3 +115,51 @@ it('explicit copy custody keeps registered repo identity but reads frozen bytes 
   fs.rmSync(a.root,{recursive:true});
   expect(readArtifactBytesFull(db,copy.version.id)).toMatchObject({ok:true,bytes:Buffer.from('same bytes')});
 });
+
+it('owns uploaded repository-source artifacts without a separate repo argument and preserves that owner on moves',()=>{
+  const a=repo('a'), b=repo('b');setProjectRestricted(db,b.project,true);setClientAuthMode(db,'strict');
+  const planned=ok(planArtifactVersion(db,{source_kind:'managed',source:{kind:'repo',project_id:b.project,path:'uploaded.md'},content:'private upload'}));
+  expect(planned.required_project_ids).toEqual([b.project]);
+  const created=ok(commitArtifactVersion(db,planned));const id=identity(created.series.id);
+  expect(resolveArtifactProject(db,id)).toEqual({ok:true,project_id:b.project});
+  expect(resolveArtifactProject(db,created.version.id)).toEqual({ok:true,project_id:b.project});
+  expect(evaluateProjectAccess(db,{identity:null,project_id:b.project,required_role:'read'}).allowed).toBe(false);
+  const move=ok(planArtifactSourceMove(db,{artifact_id:id,expected_revision:1,source:{kind:'repo',project_id:a.project,path:'uploaded.md'},actor:'operator'}));
+  expect(move.required_project_ids).toEqual([a.project,b.project].sort());ok(commitArtifactSourceMove(db,move));
+  expect(resolveArtifactProject(db,id)).toEqual({ok:true,project_id:b.project});
+});
+
+it('uses the registered file source and project gate independently of version kind and custody',()=>{
+  const a=repo('a');setProjectRestricted(db,a.project,true);setClientAuthMode(db,'strict');
+  const first=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});const id=identity(first.series.id);
+  for(const source_kind of ['tracked_repo','local_only','managed'] as const) {
+    for(const custody_mode of ['copy','managed'] as const) {
+      fs.writeFileSync(a.file,`${source_kind}-${custody_mode}`);
+      const plan=ok(planArtifactVersion(db,{source_kind,path:a.file,custody_mode}));
+      expect(plan.artifact_id).toBe(id);
+      expect(plan.source).toEqual({kind:'repo',project_id:a.project,path:'report.md'});
+      expect(plan.required_project_ids).toEqual([a.project]);
+      expect(plan.required_project_ids.every(project_id=>evaluateProjectAccess(db,{identity:null,project_id,required_role:'write'}).allowed)).toBe(false);
+      expect(plan.custody_mode).toBe(custody_mode);
+      const written=ok(commitArtifactVersion(db,plan));
+      expect(written.version.custody_mode).toBe(custody_mode);
+      expect(resolveArtifactProject(db,identity(written.series.id))).toEqual({ok:true,project_id:a.project});
+      expect(readArtifactBytesFull(db,written.version.id)).toMatchObject({ok:true,bytes:Buffer.from(`${source_kind}-${custody_mode}`)});
+    }
+  }
+  expect(db.prepare('SELECT COUNT(*) n FROM artifact').get()).toEqual({n:1});
+  expect(planArtifactVersion(db,{source_kind:'managed',path:a.file,source:{kind:'local',path:a.file}})).toMatchObject({ok:false,error:{code:'source_mismatch'}});
+  const untracked=path.join(a.root,'untracked.txt');fs.writeFileSync(untracked,'untracked');
+  const plan=ok(planArtifactVersion(db,{source_kind:'local_only',path:untracked}));
+  expect(plan.required_project_ids).toEqual([a.project]);
+  expect(plan.source).toEqual({kind:'repo',project_id:a.project,path:'untracked.txt'});
+});
+
+
+it('requires registered project access for files in checkouts without Git metadata',()=>{
+  const root=path.join(dir,'registered-folder');fs.mkdirSync(root);const file=path.join(root,'notes.txt');fs.writeFileSync(file,'private');
+  const project=insertRawLedgerProject(db,{name:'folder'});insertRawLedgerCheckout(db,{projectId:project,name:'folder',root,conflict:'replace'});
+  const plan=ok(planArtifactVersion(db,{source_kind:'managed',path:file}));
+  expect(plan.source).toEqual({kind:'repo',project_id:project,path:'notes.txt'});
+  expect(plan.required_project_ids).toEqual([project]);
+});

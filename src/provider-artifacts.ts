@@ -5291,28 +5291,37 @@ export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): 
       bytes = bufferFromSnapshotInput(input);
     } else return artifactFailure('invalid_input', 'Version requires a path, content, content_base64, json, or ref');
 
-    if (kind === 'tracked_repo') {
-      if (!local?.git_state.repo_id || !local.git_state.relative_path) return artifactFailure('invalid_input', 'tracked_repo version requires a tracked file inside a registered repo');
-      const repo = resolveCanonicalArtifactRepoRef(db, local.git_state.repo_id);
-      if (!repo.ok) return artifactFailure('invalid_source', 'Repository is unknown or ambiguous');
-      projectId = repo.project_id;
-      repoId = repo.project_key;
-      repoPath = local.git_state.relative_path;
-      source = { kind: 'repo', project_id: projectId, path: repoPath };
-      if (local.recoverability === 'repo_commit') {
-        commit = local.git_state.commit ?? null;
-        if (input.custody_mode === 'copy' || input.custody_mode === 'managed') kind = 'managed';
-        if (!commit) return artifactFailure('invalid_input', 'Tracked version requires a commit');
+    if (local) {
+      const git = local.git_state;
+      const repo = resolveCanonicalArtifactRepoForRoot(db, git.repo_root ?? path.dirname(local.resolved_path));
+      if (repo && !repo.ok && repo.reason === 'ambiguous_repo') return artifactFailure('invalid_source', 'Repository is ambiguous');
+      if (repo.ok && (git.relative_path || repo.checkout_root)) {
+        projectId = repo.project_id;
+        repoId = repo.project_key;
+        repoPath = repo.matched_by === 'checkout_ancestry' || !git.relative_path
+          ? path.relative(safeRealpathSync(repo.checkout_root!), local.resolved_path).split(path.sep).join('/')
+          : git.relative_path;
+        source = { kind: 'repo', project_id: projectId, path: repoPath };
+        seriesKey ??= `repo:${repoId}:${repoPath}`;
+        if (local.recoverability === 'repo_commit') commit = git.commit ?? null;
       } else {
-        kind = 'local_only';
-        warnings.push('tracked_repo_dirty_recorded_as_local_only', ...local.warnings);
+        source = { kind: 'local', path: local.resolved_path };
+        seriesKey ??= `local:${local.resolved_path}`;
       }
-      seriesKey ??= `repo:${repoId}:${repoPath}`;
-    } else if (kind === 'local_only') {
-      if (!local) return artifactFailure('invalid_input', 'local_only version requires a file path');
-      source = { kind: 'local', path: local.resolved_path };
-      seriesKey ??= `local:${local.resolved_path}`;
+      if (input.source && sourceKey(input.source) !== sourceKey(source)) {
+        return artifactFailure('source_mismatch', 'Declared source differs from the actual file source');
+      }
+      if (kind === 'tracked_repo') {
+        if (source.kind !== 'repo') return artifactFailure('invalid_input', 'tracked_repo version requires a file inside a registered repo');
+        if (commit) {
+          if (input.custody_mode === 'copy' || input.custody_mode === 'managed') kind = 'managed';
+        } else {
+          kind = 'local_only';
+          warnings.push('tracked_repo_dirty_recorded_as_local_only', ...local.warnings);
+        }
+      }
     } else {
+      if (kind !== 'managed') return artifactFailure('invalid_input', `${kind} version requires a file path`);
       const namespace = asString(input.provider_id) ?? asString(input.repo_id) ?? asString(input.issue);
       if (!seriesKey && !explicit && !input.source) {
         if (!logicalName || !namespace) return artifactFailure('invalid_input', 'managed version requires logical_name and a namespace or an explicit series_key');
