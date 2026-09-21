@@ -46,7 +46,7 @@ import {
 } from "../provider-artifacts.js";
 import { ClientAuthzError, requireIdentity } from "../client-auth/authz.js";
 import {
-  getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove,
+  artifactRequiredProjects, getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove,
   type ArtifactSource, type ArtifactLifecycleResult,
 } from "../artifact-source.js";
 import type { RecordArtifactVersionInput } from "../provider-artifacts.js";
@@ -798,6 +798,14 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         return;
       }
       if (!enforceArtifactRefAccess(req, res, ref, "write")) return;
+      const resolved = resolveArtifactIdentity(getDb(), ref, "surface");
+      if (!resolved.logical_artifact) {
+        sendJson(res, 404, { error: "draft artifact not found", code: "unknown_artifact" }); return;
+      }
+      const current = getArtifactCurrentSource(getDb(), resolved.logical_artifact.id);
+      for (const projectId of artifactRequiredProjects(getDb(), resolved.logical_artifact.id, current?.source ?? null)) {
+        requireProjectAccess(getDb(), req, projectId, "write");
+      }
       sendJson(res, 200, projectArtifactPublicValue(getDb(), publishArtifactDraft(getDb(), {
         ref,
         label: typeof body.label === "string" ? body.label : null,
@@ -823,7 +831,6 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   }, { fileRpc: "allow" });
 
-  // EXPLICIT version recording — the only write path into the version tables.
   app.post("/api/artifacts/versions", (req, res) => {
     try {
       const body = bodyRecord(req);

@@ -11,7 +11,7 @@ import { setSetting } from "../src/client-auth/settings-kv.js";
 import { registerBriefingRoutes } from "../src/routes/briefing.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
-import { recordArtifactVersion } from "../src/provider-artifacts.js";
+import { recordArtifactVersion, saveArtifactDraft, getArtifactDraft } from "../src/provider-artifacts.js";
 import { getArtifactCurrentSource } from "../src/artifact-source.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
@@ -115,6 +115,29 @@ describe("artifact write authorization", () => {
       source_kind: "managed", artifact_id: recorded.series.id.replace(/^artifact-series:/, "artifact:"), content: "new",
     })).status).toBe(500);
     expect(snapshot()).toEqual(before);
+  });
+
+  it("requires the moved source project before publishing a managed draft", async () => {
+    const owner = addProject(db, { project_key: "draft-owner", display_name: "Draft owner" });
+    const destination = addProject(db, { project_key: "draft-source", display_name: "Draft source" });
+    setProjectRestricted(db, owner.id, true); setProjectRestricted(db, destination.id, true);
+    const recorded = recordArtifactVersion(db, { source_kind: "managed", series_key: "draft-test", content: "old" });
+    const id = recorded.series.id.replace(/^artifact-series:/, "artifact:");
+    db.prepare("UPDATE artifact SET source_project_id=? WHERE id=?").run(owner.id, id);
+    const operatorRouter = authenticatedTestRouter(operator); registerProviderRoutes(operatorRouter);
+    expect((await operatorRouter.invoke({ method: "POST", url: "/api/artifacts/source/move", transport: "http", body: {
+      artifact_id: id, expected_revision: getArtifactCurrentSource(db, id)!.revision,
+      source: { kind: "repo", project_id: destination.id, path: "draft.md" },
+    } })).status).toBe(200);
+    saveArtifactDraft(db, { ref: id, base_version_id: recorded.version.id, content: "draft", media_type: "text/plain" });
+    grant(owner.id);
+    const before = snapshot(); const draft = getArtifactDraft(db, id);
+    expect((await invoke("POST", "/api/artifacts/drafts/publish", { ref: id })).status).toBe(403);
+    expect(snapshot()).toEqual(before); expect(getArtifactDraft(db, id)).toEqual(draft);
+    grant(destination.id);
+    const published = await invoke("POST", "/api/artifacts/drafts/publish", { ref: id });
+    expect(published.status, JSON.stringify(published.body)).toBe(200);
+    expect(getArtifactDraft(db, id)).toBeNull();
   });
 
   it("requires deliberate guarded reconciliation of unresolved source state", async () => {
