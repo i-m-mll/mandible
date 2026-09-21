@@ -1,3 +1,4 @@
+import { ARTIFACT_SOURCE_SCHEMA_SQL } from './artifact-source-schema.js';
 import type { Db } from "./db.js";
 import { AUTH_CLEARANCE_SCHEMA_SQL } from "./auth-clearance-schema.js";
 import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
@@ -15,7 +16,7 @@ import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 183;
+export const BASELINE_SCHEMA_VERSION = 184;
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -191,7 +192,7 @@ const TASK_COMMAND_V2_INDEX_SQL: readonly string[] = [
 ];
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
-  "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
+  "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        logical_name      TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
   "CREATE TABLE \"artifact_aliases\" (\n          id                TEXT PRIMARY KEY,\n          blob_id           TEXT REFERENCES artifact_blob(id) ON DELETE RESTRICT,\n          scheme            TEXT NOT NULL,\n          alias             TEXT NOT NULL,\n          normalized_ref    TEXT NOT NULL,\n          locator_json      TEXT NOT NULL DEFAULT '{}',\n          resolution_status TEXT NOT NULL DEFAULT 'resolved'\n            CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),\n          source            TEXT NOT NULL DEFAULT 'artifact_registry',\n          created_at        INTEGER NOT NULL,\n          updated_at        INTEGER NOT NULL,\n          CHECK (\n            (resolution_status = 'resolved' AND blob_id IS NOT NULL) OR\n            (resolution_status != 'resolved' AND blob_id IS NULL)\n          )\n        )",
   "CREATE TABLE artifact_blob (\n        id             TEXT PRIMARY KEY,\n        algorithm      TEXT NOT NULL DEFAULT 'sha256',\n        content_hash   TEXT NOT NULL,\n        storage_uri    TEXT,\n        media_type     TEXT,\n        role           TEXT,\n        size_bytes     INTEGER NOT NULL DEFAULT 0,\n        provider_id    TEXT,\n        manifest_id    TEXT,\n        metadata_json  TEXT NOT NULL DEFAULT '{}',\n        custody_mode   TEXT NOT NULL DEFAULT 'managed'\n          CHECK(custody_mode IN ('link','copy','managed','external')),\n        availability   TEXT NOT NULL DEFAULT 'unchecked'\n          CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned')),\n        retention_json TEXT NOT NULL DEFAULT '{}',\n        reference_json TEXT NOT NULL DEFAULT '{}',\n        created_at     INTEGER NOT NULL,\n        UNIQUE(algorithm, content_hash)\n      )",
   "CREATE TABLE \"artifact_drafts\" (\n          id              TEXT PRIMARY KEY,\n          artifact_id     TEXT NOT NULL REFERENCES artifact(id) ON DELETE CASCADE,\n          version_id      TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,\n          content         TEXT NOT NULL,\n          media_type      TEXT,\n          label           TEXT,\n          note            TEXT,\n          metadata_json   TEXT NOT NULL DEFAULT '{}',\n          created_at      INTEGER NOT NULL,\n          updated_at      INTEGER NOT NULL,\n          UNIQUE(artifact_id)\n        )",
@@ -314,7 +315,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_artifact_links_target\n      ON artifact_links(target_type, target_id)",
   "CREATE INDEX idx_artifact_source_kind\n        ON artifact(source_kind)",
   "CREATE INDEX idx_artifact_source_project\n        ON artifact(source_project_id)\n        WHERE source_project_id IS NOT NULL",
-  "CREATE INDEX idx_artifact_source_repo\n        ON artifact(source_repo_id)\n        WHERE source_repo_id IS NOT NULL",
   "CREATE INDEX idx_artifact_version_artifact\n        ON artifact_version(artifact_id, version_no DESC)",
   "CREATE INDEX idx_artifact_version_blob\n        ON artifact_version(blob_id)",
   "CREATE INDEX idx_artifact_version_hash\n        ON artifact_version(content_hash)",
@@ -710,6 +710,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   ...TASK_COMMAND_V2_INDEX_SQL.slice(1),
   ...BRIEFING_SCHEMA_SQL,
   ...CONVERSATION_SOURCE_SCHEMA_SQL,
+  ...ARTIFACT_SOURCE_SCHEMA_SQL,
 ];
 
 const DEFAULT_SETTINGS: ReadonlyArray<readonly [string, string]> = [

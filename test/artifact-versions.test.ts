@@ -6,7 +6,6 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, openDb, type Db } from "../src/db.js";
 import {
-  appendArtifactVersion,
   getArtifact,
   getArtifactSeries,
   getArtifactVersion,
@@ -444,23 +443,15 @@ describe("backup/export coverage", () => {
   });
 });
 
-describe("appendArtifactVersion mixed source kinds", () => {
-  it("marks a series mixed when versions span source kinds", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "x\n", media_type: "text/plain", logical_name: "mix", series_key: "shared:mix" }, 1000);
-    expect(getArtifactSeries(db, r1.series.id)?.source_kind).toBe("managed");
-    // Append a local_only-kind version under the same series id directly.
-    const art = getArtifact(db, r1.artifact.id)!;
-    const appended = appendArtifactVersion(db, {
-      series_id: r1.series.id,
-      artifact_id: art.id,
-      source_kind: "local_only",
-      content_hash: art.content_hash,
-      natural_key: "distinct-observation",
-      observed_path: "/tmp/whatever",
-    }, 2000);
-    expect(appended.created).toBe(true);
-    expect(getArtifactSeries(db, r1.series.id)?.source_kind).toBe("mixed");
-    expect(getArtifactVersion(db, appended.version.id)?.source_kind).toBe("local_only");
+describe("mixed custody", () => {
+  it("adds a managed snapshot to a registered file identity without moving its source", () => {
+    const filePath = path.join(tempDir, "mixed.txt");
+    fs.writeFileSync(filePath, "file bytes");
+    const first = recordArtifactVersion(db, { source_kind: "local_only", path: filePath });
+    const appended = recordArtifactVersion(db, { source_kind: "managed", artifact_id: first.series.id.replace('artifact-series:', 'artifact:'), content: "draft bytes" });
+    expect(appended.series.id).toBe(first.series.id);
+    expect(appended.series.source_kind).toBe("mixed");
+    expect(getArtifactVersion(db, first.version.id)?.source_kind).toBe("local_only");
   });
 });
 

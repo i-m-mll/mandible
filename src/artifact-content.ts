@@ -1264,13 +1264,13 @@ export function diffArtifacts(db: Db, refA: string, refB: string): ArtifactDiffR
     && artifactB.algorithm === "sha256"
     && artifactA.content_hash.toLowerCase() === artifactB.content_hash.toLowerCase();
 
-  const bytesA = readArtifactBytesFull(db, artifactA.id);
+  const bytesA = readArtifactBytesFull(db, stringValue(artifactA.reference.canonical_version_id) ?? artifactA.id);
   if (!bytesA.ok) {
     sideA.available = false;
     sideA.reason = bytesA.reason;
     return fail(`left artifact bytes unavailable: ${bytesA.reason}`);
   }
-  const bytesB = readArtifactBytesFull(db, artifactB.id);
+  const bytesB = readArtifactBytesFull(db, stringValue(artifactB.reference.canonical_version_id) ?? artifactB.id);
   if (!bytesB.ok) {
     sideB.available = false;
     sideB.reason = bytesB.reason;

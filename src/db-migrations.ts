@@ -1,3 +1,4 @@
+import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
   BASELINE_SCHEMA_VERSION,
   createFreshSchemaBaseline,
@@ -1710,6 +1711,7 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP TABLE ledger_resolution_migration",
     ],
   },
+  { version: 184, name: "artifact_registered_sources", statements: [...ARTIFACT_SOURCE_SCHEMA_SQL, ...ARTIFACT_SOURCE_BACKFILL_SQL] },
 ];
 
 /**

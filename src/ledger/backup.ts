@@ -74,6 +74,8 @@ export const METADATA_BACKUP_TABLES = [
   "artifact_blob",
   "artifact",
   "artifact_version",
+  "artifact_source",
+  "artifact_source_move",
   "provider_manifests",
   "artifact_aliases",
   "artifact_links",
