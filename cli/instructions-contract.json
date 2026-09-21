@@ -211,8 +211,8 @@
       "description": "Inspect one canonical artifact's registered current source, revision, and reconciliation status."
     },
     {
-      "name": "mandible artifact source move <artifact-ref> --expected-revision <n> --source <json> [--json]",
-      "description": "Move a registered source with an exact prior revision guard. Source JSON is repo (canonical project_id and relative path), local (absolute path), or managed (producer key). Requires write access to the artifact and old/new source projects; preserves ownership and historical versions."
+      "name": "mandible artifact source move <artifact-ref> --expected-revision <n> --source <json> [--reconcile] [--json]",
+      "description": "Move a registered source with an exact prior revision guard. Source JSON is repo (canonical project_id and relative path), local (absolute path), or managed (producer key). Requires write access to the artifact and old/new source projects; preserves ownership and historical versions. --reconcile explicitly resolves a migration reconciliation requirement for this exact identity."
     },
     {
       "name": "mandible artifact format <ref> [--as id|url|markdown|full] [--label <text>] [--json]",

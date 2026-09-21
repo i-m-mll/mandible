@@ -259,3 +259,13 @@ API equivalents are `GET /api/artifacts/source?ref=<artifact-ref>` and
 `POST /api/artifacts/source/move` with `artifact_id`, `expected_revision`, and
 `source`. `POST /api/artifacts/versions` accepts `artifact_id` for exact updates.
 Planning and permission checks precede blob, version, and source mutations.
+
+Uploaded file bytes use Mandible custody with an explicit source descriptor.
+The source identifies the document; it does not claim that uploaded bytes are
+committed in Git. A named managed snapshot retains the artifact's registered
+source when no replacement source is supplied.
+
+When `source show` reports `reconciliation_reason`, inspect the retained versions
+and choose the correct source explicitly. `source move ... --reconcile` clears
+that requirement for the named artifact under the same revision, destination,
+and permission guards. It never merges identities or infers historical lineage.

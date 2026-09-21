@@ -82,11 +82,11 @@ Usage:
   mandible artifact content <ref> [--output <path>] [--json]
   mandible artifact check <ref...> [--json]
   mandible artifact source show <artifact-ref> [--json]
-  mandible artifact source move <artifact-ref> --expected-revision <n> --source <json> [--json]
+  mandible artifact source move <artifact-ref> --expected-revision <n> --source <json> [--reconcile] [--json]
   mandible artifact versions <ref> [--json]
   mandible artifact diff <refA> <refB> [--json]
   mandible artifact record <path> --kind tracked_repo|local_only|managed [--artifact <artifact-ref>] [--series-key <key>] [--logical-name <name>] [--provider <id>] [--repo <id>] [--issue <id>] [--label <label>] [--note <note>] [--role <role>] [--title <title>] [--json]
-  mandible artifact record --ref <artifact-ref> --kind managed [--series-key <key>] [--logical-name <name>] [--provider <id>|--repo <id>|--issue <id>] [--json]
+  mandible artifact record --ref <artifact-ref> --kind managed [--artifact <artifact-ref>] [--series-key <key>] [--logical-name <name>] [--provider <id>|--repo <id>|--issue <id>] [--json]
   mandible artifact snapshot <path...> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact scan-repos [--repo <repo>] [--max-depth N] [--register] [--dry-run] [--json]
@@ -583,7 +583,7 @@ artifact_version_payload_for_path() {
   local payload="$1" path_arg="$2" issue_id_value="$3"
   local abs source_kind
   abs="$(python_path abs "$path_arg")"
-  source_kind="$(printf '%s' "$payload" | jq -r 'if .metadata.recoverability == "repo_commit" then "tracked_repo" else "local_only" end')"
+  source_kind="$(printf '%s' "$payload" | jq -r 'if .metadata.git.tracked == true and (.metadata.git.repo_id // "") != "" then "tracked_repo" else "local_only" end')"
   printf '%s' "$payload" | jq \
     --arg source_kind "$source_kind" \
     --arg path "$abs" \
@@ -599,7 +599,7 @@ artifact_version_payload_for_upload() {
   printf '%s' "$payload" | jq \
     --arg issue "$issue_id_value" \
     '{source_kind:"managed",
-      source:(if (.metadata.git.repo_id // "") != "" and (.metadata.git.relative_path // "") != ""
+      source:(if .metadata.git.tracked == true and (.metadata.git.repo_id // "") != "" and (.metadata.git.relative_path // "") != ""
         then {kind:"repo", project_id:.metadata.git.repo_id, path:.metadata.git.relative_path}
         else {kind:"local", path:.metadata.source_path} end),
       logical_name, role, media_type, custody_mode,
@@ -1175,34 +1175,34 @@ cmd_diff() {
   fi
 }
 
-# Explicit version recording remains available when callers need to control the
-# series identity or source kind. Ordinary named ingest now records a version by
-# default; --blob-only is the explicit byte-identity escape hatch.
+# Explicit recording selects custody and a canonical target; source changes
+# require a guarded move. Ordinary ingest resolves the registered source.
 cmd_source() {
   local operation="${1:-}" ref="${2:-}"
   [[ "$operation" == "show" || "$operation" == "move" ]] && [[ -n "$ref" ]] \
     || die "Usage: mandible artifact source <show|move> <artifact-ref> [--expected-revision N --source JSON] [--json]" 2
   shift 2
-  local revision="" source_json="" json=0 response
+  local revision="" source_json="" reconcile=0 json=0 response
   while (( $# > 0 )); do
     case "$1" in
       --expected-revision) revision="$2"; shift 2 ;;
       --source) source_json="$2"; shift 2 ;;
+      --reconcile) reconcile=1; shift ;;
       --json) json=1; shift ;;
       *) die "Unknown option: $1" 2 ;;
     esac
   done
   require_tools
   if [[ "$operation" == "show" ]]; then
-    [[ -z "$revision" && -z "$source_json" ]] || die "show does not accept move options" 2
+    [[ -z "$revision" && -z "$source_json" && "$reconcile" == "0" ]] || die "show does not accept move options" 2
     response="$(artifact_api_request GET "/api/artifacts/source?ref=$(urlencode "$ref")")" || return $?
   else
     [[ "$revision" =~ ^[0-9]+$ && -n "$source_json" ]] || die "move requires --expected-revision N and --source JSON" 2
     printf '%s' "$source_json" | jq -e 'type == "object" and (.kind == "repo" or .kind == "local" or .kind == "managed")' >/dev/null \
       || die "--source must be a repo, local or managed source object" 2
     local payload
-    payload="$(jq -n --arg artifact_id "$ref" --argjson expected_revision "$revision" --argjson source "$source_json" \
-      '{artifact_id:$artifact_id,expected_revision:$expected_revision,source:$source}')"
+    payload="$(jq -n --arg artifact_id "$ref" --argjson expected_revision "$revision" --argjson source "$source_json" --argjson reconcile "$reconcile" \
+      '{artifact_id:$artifact_id,expected_revision:$expected_revision,source:$source,reconcile:($reconcile == 1)}')"
     response="$(artifact_api_request POST "/api/artifacts/source/move" "$payload")" || return $?
   fi
   if (( json )); then printf '%s\n' "$response" | jq .

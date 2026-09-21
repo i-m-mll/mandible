@@ -33,6 +33,7 @@ import {
   publishArtifactDraft,
   planArtifactVersion,
   commitArtifactVersion,
+  registerLocalArtifactPathAsync,
   registerProvider,
   resolveAndLinkArtifact,
   resolveArtifactRef,
@@ -394,7 +395,17 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
           : undefined;
       if (localPath) {
         const local = await planLocalArtifactPathAsync(getDb(), { ...body, path: localPath });
-        const source_kind = local.git_state.repo_id ? "tracked_repo" : "local_only";
+        const source_kind = local.git_state.tracked && local.git_state.repo_id ? "tracked_repo" : "local_only";
+        if (body.blob_only === true || body.identity_mode === "blob_only") {
+          if (body.artifact_id || body.series_key) {
+            sendJson(res, 400, { error: "blob-only ingest cannot target a logical artifact", code: "invalid_input" }); return;
+          }
+          const plan = lifecycleValue(res, planArtifactVersion(getDb(), { source_kind, path: localPath }));
+          if (!plan || !authorizeArtifactPlan(req, res, plan)) return;
+          const result = await registerLocalArtifactPathAsync(getDb(), { ...body, path: localPath });
+          sendJson(res, 200, projectArtifactPublicValue(getDb(), { ...result, blob_only: true }));
+          return;
+        }
         const result = recordAuthorizedVersion(req, res, { ...body, source_kind, path: localPath });
         if (result) sendJson(res, 200, projectArtifactPublicValue(getDb(), { ...result,
           git_state: local.git_state, recoverability: local.recoverability, warnings: local.warnings }));
@@ -855,7 +866,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         return;
       }
       const plan = lifecycleValue(res, planArtifactSourceMove(getDb(), {
-        artifact_id: id, expected_revision: Number(body.expected_revision), source, actor,
+        artifact_id: id, expected_revision: Number(body.expected_revision), source, actor, reconcile: body.reconcile === true,
       }));
       if (!plan || !authorizeArtifactPlan(req, res, plan)) return;
       const state = lifecycleValue(res, commitArtifactSourceMove(getDb(), plan));

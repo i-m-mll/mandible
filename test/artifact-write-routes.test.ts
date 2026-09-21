@@ -2,14 +2,14 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { registerBriefingRoutes } from "../src/routes/briefing.js";
-import { addProject } from "../src/ledger/project-registry.js";
+import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { recordArtifactVersion } from "../src/provider-artifacts.js";
 import { getArtifactCurrentSource } from "../src/artifact-source.js";
@@ -25,8 +25,11 @@ let router: Router;
 let agent: ReturnType<typeof createUser>;
 let operator: ReturnType<typeof setupOperator>;
 function snapshot() {
-  return Object.fromEntries(["artifact", "artifact_blob", "artifact_version", "artifact_source", "artifact_source_move"]
+  const state = Object.fromEntries(["artifact", "artifact_blob", "artifact_version", "artifact_source", "artifact_source_move"]
     .map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  const cas = path.join(root, "cas");
+  state.custody_files = fs.existsSync(cas) ? fs.readdirSync(cas, { recursive: true }).sort() : [];
+  return state;
 }
 function invoke(method: "GET" | "POST", url: string, body?: unknown) {
   return router.invoke({ method, url, body, transport: "http" });
@@ -50,7 +53,7 @@ describe("artifact write authorization", () => {
     setProjectRestricted(db, project.id, true);
     const filename = path.join(root, "report.md"); fs.writeFileSync(filename, "original\n");
     const recorded = recordArtifactVersion(db, { source_kind: "local_only", path: filename });
-    const id = recorded.version.artifact_id;
+    const id = recorded.series.id.replace(/^artifact-series:/, "artifact:");
     db.prepare("UPDATE artifact SET source_project_id=? WHERE id=?").run(project.id, id);
     fs.writeFileSync(filename, "changed\n");
     const before = snapshot();
@@ -58,7 +61,7 @@ describe("artifact write authorization", () => {
       ["/api/artifacts/ingest", { path: filename, allow_local_only: true }],
       ["/api/artifacts/versions", { source_kind: "local_only", path: filename }],
       ["/api/artifacts/versions", { source_kind: "managed", artifact_id: id, content: "new bytes" }],
-      ["/api/artifacts/versions", { source_kind: "managed", source: { kind: "local", path: filename }, content: "uploaded" }],
+      ["/api/artifacts/versions", { source_kind: "managed", source: getArtifactCurrentSource(db, id)!.source, content: "uploaded" }],
       ["/api/artifacts/versions", { source_kind: "local_only", path: filename, series_key: recorded.series.series_key }],
     ] as const) {
       const response = await invoke("POST", url, body);
@@ -75,7 +78,7 @@ describe("artifact write authorization", () => {
     const projects = ["owner", "origin", "destination"].map(project_key => addProject(db, { project_key, display_name: project_key }));
     for (const project of projects) setProjectRestricted(db, project.id, true);
     const recorded = recordArtifactVersion(db, { source_kind: "managed", series_key: "move-test", content: "old\n" });
-    const id = recorded.version.artifact_id;
+    const id = recorded.series.id.replace(/^artifact-series:/, "artifact:");
     db.prepare("UPDATE artifact SET source_project_id=? WHERE id=?").run(projects[0].id, id);
     const operatorRouter = authenticatedTestRouter(operator); registerProviderRoutes(operatorRouter);
     const initial = getArtifactCurrentSource(db, id)!;
@@ -103,15 +106,41 @@ describe("artifact write authorization", () => {
     const recorded = recordArtifactVersion(db, { source_kind: "managed", series_key: "failure", content: "old\n" });
     const before = snapshot();
     expect((await invoke("POST", "/api/artifacts/versions", {
-      source_kind: "managed", artifact_id: recorded.version.artifact_id, content: "new", project: "missing-project",
+      source_kind: "managed", artifact_id: recorded.series.id.replace(/^artifact-series:/, "artifact:"), content: "new", project: "missing-project",
     })).status).toBe(404);
     expect(snapshot()).toEqual(before);
     db.exec("DROP TABLE project_artifact_associations");
-    expect((await invoke("GET", `/api/artifacts/resolve?ref=${encodeURIComponent(recorded.version.artifact_id)}`)).status).toBe(500);
+    expect((await invoke("GET", `/api/artifacts/resolve?ref=${encodeURIComponent(recorded.series.id.replace(/^artifact-series:/, "artifact:"))}`)).status).toBe(500);
     expect((await invoke("POST", "/api/artifacts/versions", {
-      source_kind: "managed", artifact_id: recorded.version.artifact_id, content: "new",
+      source_kind: "managed", artifact_id: recorded.series.id.replace(/^artifact-series:/, "artifact:"), content: "new",
     })).status).toBe(500);
     expect(snapshot()).toEqual(before);
+  });
+
+  it("requires deliberate guarded reconciliation of unresolved source state", async () => {
+    const recorded = recordArtifactVersion(db, { source_kind: "managed", series_key: "unresolved", content: "retained" });
+    const id = recorded.series.id.replace(/^artifact-series:/, "artifact:");
+    db.prepare("UPDATE artifact_source SET source_json=NULL, reconciliation_reason='historical ambiguity' WHERE artifact_id=?").run(id);
+    const before = snapshot();
+    const body = { artifact_id: id, expected_revision: getArtifactCurrentSource(db, id)!.revision,
+      source: { kind: "managed", key: "resolved-source" } };
+    expect((await invoke("POST", "/api/artifacts/source/move", body)).status).toBe(409);
+    expect(snapshot()).toEqual(before);
+    expect((await invoke("POST", "/api/artifacts/source/move", { ...body, reconcile: true })).status).toBe(200);
+    expect(getArtifactCurrentSource(db, id)?.reconciliation_reason).toBeNull();
+    expect(readArtifactBytesFull(db, recorded.version.id).ok).toBe(true);
+  });
+
+  it("keeps explicit byte-only path ingress free of logical versions", async () => {
+    const filename = path.join(root, "blob.md"); fs.writeFileSync(filename, "blob bytes");
+    const before = snapshot();
+    const result = await invoke("POST", "/api/artifacts/ingest", {
+      path: filename, custody_mode: "copy", identity_mode: "blob_only",
+    });
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    const after = snapshot();
+    for (const table of ["artifact", "artifact_version", "artifact_source", "artifact_source_move"]) expect(after[table]).toEqual(before[table]);
+    expect(after.artifact_blob).toHaveLength(1);
   });
 
   it("denies recurring publication before artifact, source, run or round mutation", async () => {
@@ -168,19 +197,43 @@ describe("artifact write authorization", () => {
       fs.writeFileSync(oldPath, "original\n");
       const first = await cli(["ingest", oldPath, "--copy"]);
       const version = first.registered[0].version;
-      const id = version.artifact_id;
+      const id = first.registered[0].series.id.replace(/^artifact-series:/, "artifact:");
+      const uploaded = await cli(["ingest", oldPath, "--copy", "--upload"]);
+      expect(uploaded.registered[0].series.id).toBe(first.registered[0].series.id);
+      expect(uploaded.registered[0].version.commit_sha).toBeNull();
       const current = await cli(["source", "show", id]);
       fs.renameSync(oldPath, newPath);
-      await cli(["source", "move", id, "--expected-revision", String(current.source.revision),
+      await cli(["source", "move", id, "--reconcile", "--expected-revision", String(current.source.revision),
         "--source", JSON.stringify({ kind: "local", path: fs.realpathSync(newPath) })]);
       fs.writeFileSync(newPath, "updated\n");
       const second = await cli(["ingest", newPath, "--copy", "--artifact", id]);
-      expect(second.registered[0].version.artifact_id).toBe(id);
+      expect(second.registered[0].series.id).toBe(first.registered[0].series.id);
       fs.writeFileSync(oldPath, "different document\n");
       const reused = await cli(["ingest", oldPath, "--copy"]);
-      expect(reused.registered[0].version.artifact_id).not.toBe(id);
+      expect(reused.registered[0].series.id).not.toBe(first.registered[0].series.id);
       const bytes = readArtifactBytesFull(db, version.id);
       expect(bytes.ok && bytes.bytes.toString()).toBe("original\n");
+
+      const repo = path.join(root, "tracked-repo"); fs.mkdirSync(repo);
+      const git = (...args: string[]) => execFileSync("git", ["--no-optional-locks", ...args], { cwd: repo, stdio: "pipe" });
+      git("init"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.invalid");
+      git("config", "commit.gpgsign", "false");
+      const tracked = path.join(repo, "tracked.md"); fs.writeFileSync(tracked, "committed\n");
+      git("add", "tracked.md"); git("commit", "-m", "fixture");
+      const project = addProject(db, { project_key: "tracked-repo", display_name: "Tracked repo" });
+      addOrUpdateCheckout(db, project.id, { root: fs.realpathSync(repo), work_repo_id: "tracked-repo" });
+      const linked = await cli(["ingest", tracked]);
+      const trackedId = linked.registered[0].series.id.replace(/^artifact-series:/, "artifact:");
+      const copied = await cli(["ingest", tracked, "--copy"]);
+      expect(copied.registered[0].series.id).toBe(linked.registered[0].series.id);
+      expect(copied.registered[0].version.custody_mode).toBe("copy");
+      expect(getArtifactCurrentSource(db, trackedId)?.source).toEqual({ kind: "repo", project_id: project.id, path: "tracked.md" });
+      fs.writeFileSync(tracked, "dirty\n");
+      const dirty = await cli(["ingest", tracked, "--copy"]);
+      expect(dirty.registered[0].series.id).toBe(linked.registered[0].series.id);
+      expect(dirty.registered[0].version.commit_sha).toBeNull();
+      const historical = readArtifactBytesFull(db, linked.registered[0].version.id);
+      expect(historical.ok && historical.bytes.toString()).toBe("committed\n");
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 });
