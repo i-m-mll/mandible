@@ -1808,8 +1808,8 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
                   value={viewState.rootPolicy}
                   onChange={(event) => updateState({ rootPolicy: (event.currentTarget as HTMLSelectElement).value as TimelineRootPolicy })}
                 >
-                  <option value="coordination_and_explicit">Coordination + explicit</option>
-                  <option value="coordination">Coordination</option>
+                  <option value="coordination_and_explicit">Trackers + explicit</option>
+                  <option value="coordination">Trackers</option>
                   <option value="explicit">Explicit</option>
                 </select>
               </label>

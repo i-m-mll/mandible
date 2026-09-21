@@ -54,6 +54,7 @@ function createIssue(
     body: `${title} body`,
     kind: options.kind ?? "feature",
     status: options.status ?? "open",
+    resolution: options.status === "closed" ? "delivered" : null,
     source: "git_bug",
     labels: options.labels ?? [],
     aliases: [{ alias_kind: "git_bug_short", alias, source: "git_bug", is_primary: true }],

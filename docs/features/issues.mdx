@@ -15,9 +15,10 @@ The view is split into a resizable sidebar (issue list) and a detail panel.
 
 - **Search filter** — free-text search across issue titles and IDs.
 - **Repo filter** — autocomplete dropdown to narrow to a single repository. Mandible scans all repos registered in your `repos.toml` and any repo that has had a session.
-- **Status pills** — toggle between All, Open, Merged, and Closed. Issues have a three-state lifecycle: open issues are active work; merged issues were closed via `mandible auth merge` (they carry a `merged` label); closed issues were manually closed without a merge.
-- **Label pills** — filter by label: `umbrella`, `feature`, `bug` (displayed as "bug" but stored as `error` internally), `deferred`.
-- **Parent filter** — when viewing an umbrella issue, the "Show children" button narrows the list to its child issues.
+- **Status pills** — toggle between All, Open, and Closed. A closed issue carries one canonical resolution: `delivered`, `duplicate`, or `wontfix`.
+- **Typed filters** — filter by canonical kind (`bug`, `feature`, `umbrella`, `maintenance`, `experiment`, `tracker`, or `unknown`) and priority (`low`, `normal`, `high`, `urgent`, or `unknown`). These fields are independent from labels.
+- **Labels** — display and filter free-form labels exactly as stored. Labels never stand in for kind, priority, status, resolution, parentage, or branch metadata.
+- **Children** — when an issue has outgoing `parent_child` relationships, the "Show children" button narrows the list to those actual child edges. The affordance is based on relationships, not on the issue kind or a label.
 
 Issues are sorted newest-first.
 
@@ -25,7 +26,7 @@ Issues are sorted newest-first.
 
 Selecting an issue shows:
 
-- **Title** (rendered as inline Markdown), status pill, label pills.
+- **Title** (rendered as inline Markdown), canonical status/resolution pill, typed metadata, and free-form label pills.
 - **Work unit status** — if the issue has an assigned work unit, this line shows the branch, assignment state (committed/assigned), and agent liveness (active, idle, or unassigned).
 - **Action buttons**:
   - *Open in Console* — if an SDK session is actively working on this issue.
@@ -52,7 +53,7 @@ mandible issue description show <id>
 mandible issue description history <id>
 mandible issue comment show issue-ref#last
 mandible issue comment history issue-ref#comment-ordinal
-mandible issue close <id>
+mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]
 mandible issue comment add <id> -m 'Comment'
 ```
 

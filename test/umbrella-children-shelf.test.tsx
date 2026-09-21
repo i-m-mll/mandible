@@ -126,11 +126,11 @@ describe("partitionUmbrellaChildren", () => {
     expect(children.length + rest.length).toBe(source.relationships.length);
   });
 
-  it("claims nothing on a non-umbrella, whose relationships stay untouched", () => {
+  it("shows canonical children for a feature without an umbrella label", () => {
     const source = detail({ labels: ["ui"] });
     const { children, rest } = partitionUmbrellaChildren(source);
-    expect(children).toEqual([]);
-    expect(rest).toBe(source.relationships);
+    expect(children).toEqual(source.relationships);
+    expect(rest).toEqual([]);
   });
 
   it("leaves an unresolved edge in the relationship list, where it stays visible", () => {
@@ -180,11 +180,10 @@ describe("umbrella children shelf", () => {
     expect(rowsNaming("7abe784")).toHaveLength(1);
   });
 
-  it("shows no shelf on a non-umbrella, whose relationship list is unchanged", () => {
+  it("shows the children shelf for any kind with canonical children", () => {
     render(h(LedgerIssueDetail, { detail: detail({ labels: ["ui"] }) }));
 
-    expect(screen.queryByText("Children")).toBeNull();
-    fireEvent.click(screen.getByText("Relationships").closest("button")!);
+    fireEvent.click(screen.getByText("Children").closest("button")!);
     expect(rowsNaming("d894231")).toHaveLength(1);
   });
 });

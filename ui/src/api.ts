@@ -1535,6 +1535,8 @@ export type LedgerIssueDetailProjection = {
   };
   title: string;
   body: string;
+  work_notes?: string;
+  work_notes_revision?: string | null;
   status: 'open' | 'closed';
   resolution: string | null;
   kind: string;
@@ -1550,6 +1552,7 @@ export type LedgerIssueDetailProjection = {
   checkpoints: LedgerIssueDetailCheckpoint[];
   timeline: LedgerIssueTimelineEntry[];
   relationships: LedgerIssueDetailRelationship[];
+  dependencies?: LedgerIssueSummaryRef[];
   work_units: LedgerIssueDetailWorkUnit[];
   sessions: LedgerIssueDetailSession[];
   auth_requests: LedgerIssueDetailAuthRequest[];
@@ -1560,7 +1563,7 @@ export type LedgerIssueDetailProjection = {
 
 export type LedgerBodyRevision = {
   id: string;
-  entity_type: 'issue_body' | 'comment_body';
+  entity_type: 'issue_body' | 'comment_body' | 'issue_work_notes';
   entity_id: string;
   issue_id: string;
   project_id: string;
@@ -1591,6 +1594,12 @@ export async function getLedgerIssueDetail(issueId: string): Promise<LedgerIssue
 
 export async function getLedgerIssueBodyRevisions(issueId: string): Promise<LedgerBodyRevision[]> {
   const response = await apiGet(`/api/ledger/issues/${encodeURIComponent(issueId)}/body/revisions`);
+  const payload = (await parseMaybeJson(response)) as { revisions?: LedgerBodyRevision[] };
+  return payload.revisions ?? [];
+}
+
+export async function getLedgerIssueWorkNotesRevisions(issueId: string): Promise<LedgerBodyRevision[]> {
+  const response = await apiGet(`/api/ledger/issues/${encodeURIComponent(issueId)}/work-notes/history`);
   const payload = (await parseMaybeJson(response)) as { revisions?: LedgerBodyRevision[] };
   return payload.revisions ?? [];
 }

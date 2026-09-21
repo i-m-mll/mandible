@@ -3753,7 +3753,7 @@ describe('issue deep links', () => {
       repo_name: 'mandible',
       repo_root: '/Users/mll/Main/10 Projects/05 Utils/mandible',
       open_count: 1,
-      merged_count: 0,
+      delivered_count: 0,
       closed_count: 0,
       issues: [
         {
@@ -3791,7 +3791,7 @@ describe('issue deep links', () => {
         repo_id: 'dotfiles',
         repo_name: 'dotfiles',
         open_count: 1,
-        merged_count: 0,
+        delivered_count: 0,
         closed_count: 0,
         issues: [],
       }],
@@ -3808,7 +3808,7 @@ describe('issue deep links', () => {
         project_key: 'widgets',
         repo_name: 'widgets',
         open_count: 1,
-        merged_count: 0,
+        delivered_count: 0,
         closed_count: 0,
         issues: [],
       }],
@@ -3816,6 +3816,89 @@ describe('issue deep links', () => {
     );
 
     expect(repoId).toBe('widgets');
+  });
+
+  it('filters the issue list by canonical kind and priority rather than labels', () => {
+    stubIssuesLocalStorage();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const typedRepos: IssueRepoSummary[] = [{
+      ...repos[0],
+      issues: [
+        {
+          ...repos[0].issues[0],
+          id: 'coord-1',
+          title: 'Canonical coordination',
+          kind: 'tracker',
+          priority: 'high',
+          labels: ['feature', 'important'],
+        },
+        {
+          ...repos[0].issues[0],
+          id: 'feature-1',
+          title: 'Canonical feature',
+          kind: 'feature',
+          priority: 'normal',
+          labels: ['coordination', 'user-action-required'],
+        },
+      ],
+    }];
+
+    render(h(IssuesView, {
+      repos: typedRepos,
+      onRescan: async () => undefined,
+      defaultFilter: 'kind:tracker priority:high',
+    }));
+
+    expect(screen.getByRole('button', { name: /Canonical coordination/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Canonical feature/ })).toBeNull();
+  });
+
+  it.each(['a'.repeat(64), 'aaaaaaa'])('preserves a saved parent filter %s against canonical relationships', (parentFilter) => {
+    stubIssuesLocalStorage({
+      'mandible_issues_view_state:v1': JSON.stringify({ filter: 'status:all', parentFilter }),
+    });
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const child = {
+      ...repos[0].issues[0],
+      title: 'Canonical child',
+      parent_ids: ['a'.repeat(64)],
+      parent_relationships: [{
+        id: 'edge-1', parent_id: 'a'.repeat(64), parent_ref: 'aaaaaaa',
+        provenance: 'manual' as const, confidence: 'observed' as const,
+      }],
+    };
+    render(h(IssuesView, {
+      repos: [{ ...repos[0], issues: [child, { ...child, id: 'other', title: 'Not a child', parent_ids: [], parent_relationships: [] }] }],
+      onRescan: async () => undefined,
+    }));
+    expect(screen.getByRole('button', { name: /Canonical child/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Not a child/ })).toBeNull();
+    expect(screen.getByText('Children of aaaaaaa')).toBeTruthy();
+  });
+
+  it('migrates legacy typed filters to canonical status, resolution, and priority', () => {
+    stubIssuesLocalStorage();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      defaultFilter: 'status:merged priority:important',
+    }));
+
+    expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value)
+      .toBe('status:closed resolution:delivered priority:high');
+  });
+
+  it('notifies when an obsolete user-action priority filter cannot be mapped', () => {
+    stubIssuesLocalStorage();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      defaultFilter: 'priority:user-action-required',
+    }));
+
+    expect(screen.getByRole('status').textContent).toContain('priority:user-action-required');
   });
 
   it('renders selected issue metadata while ledger detail is still loading', async () => {
@@ -3882,7 +3965,7 @@ describe('issue deep links', () => {
       repo_name: 'Feedbax',
       repo_root: '/Users/mll/Main/10 Projects/10 PhD/20 Feedbax/feedbax',
       open_count: 1,
-      merged_count: 0,
+      delivered_count: 0,
       closed_count: 0,
       issues: [{
         id: 'fbx1234',
@@ -4173,6 +4256,7 @@ describe('issue deep links', () => {
       expect(stored).toEqual({
         filter: 'toast',
         filterEdited: true,
+        filterNotice: null,
         parentFilter: null,
         selectedRepoId: 'mandible',
         selectedIssueId: '4c26383',
@@ -4220,7 +4304,7 @@ describe('issue deep links', () => {
         repo_name: 'Feedbax',
         repo_root: '/workspace/feedbax',
         open_count: 1,
-        merged_count: 0,
+        delivered_count: 0,
         closed_count: 0,
         issues: [{
           id: 'fbx1234',
@@ -4305,7 +4389,7 @@ describe('issue deep links', () => {
     rerender(h(IssuesView, {
       repos: repos.map((repo) => ({ ...repo, issues: [...repo.issues] })),
       onRescan: async () => undefined,
-      defaultFilter: 'status:merged',
+      defaultFilter: 'status:closed',
     }));
     expect(filterInput.value).toBe('daemon');
     await waitFor(() => {
@@ -4345,13 +4429,13 @@ describe('issue deep links', () => {
       onRescan: async () => undefined,
       initialRepoId: 'mandible',
       initialIssueId: '4c26383',
-      defaultFilter: 'status:merged',
+      defaultFilter: 'status:closed',
     }));
     const filterInput = screen.getByLabelText('Filter issues') as HTMLInputElement;
-    await waitFor(() => expect(filterInput.value).toBe('status:merged'));
+    await waitFor(() => expect(filterInput.value).toBe('status:closed'));
     await waitFor(() => {
       const stored = JSON.parse(String(window.localStorage.getItem(storageKey)));
-      expect(stored.filter).toBe('status:merged');
+      expect(stored.filter).toBe('status:closed');
       expect(stored.filterEdited).toBe(false);
     });
   });
@@ -5374,10 +5458,11 @@ describe('LedgerIssueDetail', () => {
       auth_requests: [],
     } as const;
 
+    const onSetStatus = vi.fn();
     render(h(LedgerIssueDetail, {
       detail,
       onAddComment: () => undefined,
-      onSetStatus: () => undefined,
+      onSetStatus,
       onStartAgent: () => undefined,
     }));
 
@@ -5395,6 +5480,15 @@ describe('LedgerIssueDetail', () => {
     expect(screen.getByText('Close Issue')).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getAllByText('Add Comment')).toHaveLength(2);
+
+    fireEvent.click(screen.getByText('Close Issue'));
+    expect(screen.getByRole('group', { name: 'Close issue resolution' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Close as delivered' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Close as duplicate' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Close as wontfix' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close as duplicate' }));
+    expect(onSetStatus).toHaveBeenCalledWith('closed', 'duplicate');
   });
 });
 

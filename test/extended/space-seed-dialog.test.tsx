@@ -59,7 +59,7 @@ describe('SpaceSeedDialog', () => {
     render(<SpaceSeedDialog spaceId="space-1" projectId="proj-1" />);
     // Default source is the saved-filter composer; add a chip token.
     fireEvent.click(screen.getByTestId('seed-source-filter'));
-    const input = screen.getByPlaceholderText('label:auth -kind:question') as HTMLInputElement;
+    const input = screen.getByPlaceholderText('label:auth -kind:unknown') as HTMLInputElement;
     fireEvent.input(input, { target: { value: 'label:auth' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 

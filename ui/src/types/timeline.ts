@@ -3,18 +3,10 @@ export type TimelineDensity = 'compact' | 'comfortable' | 'expanded';
 export type TimelineEventKind = 'body' | 'comment' | 'state';
 export type TimelineRowOccurrenceKind = 'root' | 'promoted_root' | 'explicit_root' | 'transient' | 'member';
 
-// Canonical issue-kind union, mirrored from the backend ledger
-// (`LEDGER_ISSUE_KINDS` in `src/ledger/types.ts`). Kept as a UI-local copy so
-// the bundle does not import backend modules; keep both lists in sync.
-export type LedgerIssueKind =
-  | 'bug'
-  | 'feature'
-  | 'umbrella'
-  | 'task'
-  | 'question'
-  | 'maintenance'
-  | 'deferred'
-  | 'unknown';
+// Re-export the browser-safe canonical issue kind so timeline predicates and
+// issue views cannot drift into separate UI contracts.
+import type { LedgerIssueKind } from './issues';
+export type { LedgerIssueKind } from './issues';
 
 // Canonical issue-predicate contract, shared with the backend
 // (`TimelineIssuePredicate` in `src/types.ts`, evaluated by

@@ -82,7 +82,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     title: "Closed target",
     body: "Closed target body.",
     status: "closed",
-    resolution: "obsolete",
+    resolution: "wontfix",
     kind: "feature",
     labels: ["feature"],
     aliases: [{ alias_kind: "git_bug_short", alias: "closed" }],
@@ -123,8 +123,8 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     project_id: checkout.project.id,
     title: "Coordination Alpha",
     body: `## Alpha plan\nBody refs [issue:${shared.short_id}] and [issue:${closed.short_id}].`,
-    kind: "umbrella",
-    labels: ["coordination", "timeline"],
+    kind: "tracker",
+    labels: ["timeline"],
     aliases: [{ alias_kind: "git_bug_short", alias: "roota" }],
     created_at: BASE + 10,
   });
@@ -133,8 +133,8 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     project_id: checkout.project.id,
     title: "Coordination Beta",
     body: `Beta also references [issue:${shared.short_id}] for repeated target coverage.`,
-    kind: "umbrella",
-    labels: ["coordination", "timeline"],
+    kind: "tracker",
+    labels: ["timeline"],
     aliases: [{ alias_kind: "git_bug_short", alias: "rootb" }],
     created_at: BASE + 20,
   });
@@ -179,11 +179,21 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
   });
   store.setLabel(shared.id, "needs-review", true, "mandible", SYSTEM_ACTOR);
   store.setLabel(nested.id, "needs-review", true, "mandible", SYSTEM_ACTOR);
-  store.setLabel(shared.id, `parent:${rootA.short_id}`, true, "mandible", SYSTEM_ACTOR);
-  store.setLabel(nested.id, `parent:${shared.short_id}`, true, "mandible", SYSTEM_ACTOR);
-  store.setLabel(cycle.id, `parent:${nested.short_id}`, true, "mandible", SYSTEM_ACTOR);
-  store.setLabel(shared.id, `parent:${cycle.short_id}`, true, "mandible", SYSTEM_ACTOR);
-  store.setIssueStatus(rootA.id, "closed", "merged", SYSTEM_ACTOR);
+  for (const [parent, child] of [
+    [rootA, shared],
+    [shared, nested],
+    [nested, cycle],
+    [cycle, shared],
+  ] as const) {
+    store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
+      source_entity: { entity_type: "issue", entity_id: parent.id },
+      target_entities: [{ entity_type: "issue", entity_id: child.id }],
+      link_type: "parent_child",
+      provenance: "manual",
+    });
+  }
+  store.setIssueStatus(rootA.id, "closed", "delivered", SYSTEM_ACTOR);
   store.setIssueStatus(rootA.id, "open", null, SYSTEM_ACTOR);
   store.setLabel(rootB.id, "needs-review", true, "mandible", SYSTEM_ACTOR);
   store.setLabel(rootB.id, "needs-review", false, "mandible", SYSTEM_ACTOR);
@@ -217,7 +227,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
   store.setIssueStatus(
     authDone.id,
     "closed",
-    "merged",
+    "delivered",
     { ...SYSTEM_ACTOR, actor_type: "system", actor_id: null },
     "auth_queue",
   );

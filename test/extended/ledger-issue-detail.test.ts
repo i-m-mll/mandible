@@ -207,7 +207,7 @@ describe("ledger issue detail projection", () => {
     });
     store.setWorkerStatus(child.id, "in_progress", SYSTEM_ACTOR);
     store.addIssueBranch(child.id, "feature/detail", "primary", SYSTEM_ACTOR);
-    store.setIssueStatus(child.id, "closed", "merged", SYSTEM_ACTOR);
+    store.setIssueStatus(child.id, "closed", "delivered", SYSTEM_ACTOR);
     store.setIssueStatus(child.id, "open", null, SYSTEM_ACTOR);
     const relationship = store.upsertIssueRelationship({
       actor: SYSTEM_ACTOR,
@@ -264,11 +264,7 @@ describe("ledger issue detail projection", () => {
       body: "Child body",
       worker_status: "in_progress",
     });
-    expect(projection.labels).toEqual([
-      "feature",
-      "mandible:branch:feature/detail",
-      "mandible:status:in_progress",
-    ]);
+    expect(projection.labels).toEqual(["feature"]);
     expect(projection.issue_branches).toMatchObject([
       { branch: "feature/detail", role: "primary" },
     ]);
@@ -294,7 +290,7 @@ describe("ledger issue detail projection", () => {
     expect(projection.timeline).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "checkpoint", checkpoint_kind: "delegation-manifest" }),
       expect.objectContaining({
-        kind: "state", event_type: "issue.closed", status: "closed", resolution: "merged",
+        kind: "state", event_type: "issue.closed", status: "closed", resolution: "delivered",
       }),
       expect.objectContaining({
         kind: "state", event_type: "issue.reopened", status: "open", resolution: null,
@@ -601,15 +597,15 @@ describe("ledger issue detail projection", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "dup123", is_primary: true }],
     });
 
-    store.setIssueStatus(issue.id, "closed", "merged", SYSTEM_ACTOR);
-    store.setIssueStatus(issue.id, "closed", "merged", SYSTEM_ACTOR);
+    store.setIssueStatus(issue.id, "closed", "delivered", SYSTEM_ACTOR);
+    store.setIssueStatus(issue.id, "closed", "delivered", SYSTEM_ACTOR);
 
     const states = buildLedgerIssueDetailProjection(db, issue.id).timeline.filter(
       (entry) => entry.kind === "state",
     );
 
     expect(states).toMatchObject([
-      { event_type: "issue.closed", status: "closed", resolution: "merged" },
+      { event_type: "issue.closed", status: "closed", resolution: "delivered" },
     ]);
   });
 

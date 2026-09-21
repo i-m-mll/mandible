@@ -2,6 +2,7 @@ import type { Db } from "../db.js";
 import type {
   GitBugComment,
   GitBugIssue,
+  GitBugIssueParentRelationship,
   GitBugIssueDetail,
   IssueRepoSummary,
 } from "../types.js";
@@ -49,8 +50,8 @@ export function listLedgerIssueSummaries(
       repo_root: checkout.repo_root,
       project_key: checkout.project_key || undefined,
       open_count: issues.filter((issue) => issue.status === "open").length,
-      merged_count: issues.filter((issue) => issue.status === "closed" && issue.labels.includes("merged")).length,
-      closed_count: issues.filter((issue) => issue.status === "closed" && !issue.labels.includes("merged")).length,
+      delivered_count: issues.filter((issue) => issue.resolution === "delivered").length,
+      closed_count: issues.filter((issue) => issue.status === "closed").length,
       issues,
     });
   }
@@ -62,7 +63,7 @@ export function listLedgerIssueSummaries(
  *
  * Replaces the previous per-issue `getIssueDetail` fan-out (7 queries each,
  * ~22k queries per call across the ledger). All per-issue data the list rows
- * need — labels and derived parent refs — is fetched with a fixed, small number
+ * need — labels and canonical parent edges — is fetched with a fixed, small number
  * of batched queries over the whole project id set. Descriptions are omitted
  * from list rows: the endpoint no longer rehydrates every issue body, and the
  * UI two-stage detail fetch supplies the body on selection.
@@ -75,17 +76,20 @@ function buildProjectIssueSummaries(
   if (issues.length === 0) return [];
   const issueIds = issues.map((issue) => issue.id);
   const labelsByIssue = batchLabelsByIssue(db, issueIds);
-  const parentByIssue = batchParentRefsByIssue(db, checkout.project_id, issueIds, labelsByIssue);
+  const parentByIssue = batchParentRelationshipsByIssue(db, issueIds);
   return issues.map((issue) => ({
     id: issue.short_id || issue.id.slice(0, 7),
     repo_id: checkout.repo_id,
     repo_name: checkout.repo_name,
     title: issue.title,
     status: issue.status,
+    kind: issue.kind,
+    resolution: issue.resolution,
+    priority: issue.priority,
     labels: labelsByIssue.get(issue.id) ?? [],
     author: issue.author_display,
     created_at: new Date(issue.created_at).toISOString(),
-    parent_id: parentByIssue.get(issue.id),
+    ...(parentByIssue.get(issue.id) ? parentProjection(parentByIssue.get(issue.id)!) : {}),
   }));
 }
 
@@ -111,68 +115,56 @@ function batchLabelsByIssue(db: Db, issueIds: string[]): Map<string, string[]> {
   return labels;
 }
 
-/**
- * Derive each issue's parent ref set-wise, preserving the per-issue
- * `parentRef` precedence: a legacy `parent:<id>` label wins; otherwise the
- * earliest active incoming parent_child relationship, resolved to the parent's
- * primary alias (falling back to the raw source issue id).
- */
-function batchParentRefsByIssue(
+function batchParentRelationshipsByIssue(
   db: Db,
-  projectId: string,
   issueIds: string[],
-  labelsByIssue: Map<string, string[]>,
-): Map<string, string> {
-  const parents = new Map<string, string>();
-
-  const needsRelationship: string[] = [];
-  for (const issueId of issueIds) {
-    const legacy = (labelsByIssue.get(issueId) ?? [])
-      .find((label) => label.startsWith("parent:"))
-      ?.slice("parent:".length);
-    if (legacy) parents.set(issueId, legacy);
-    else needsRelationship.push(issueId);
-  }
-  if (needsRelationship.length === 0) return parents;
-
-  // Earliest active incoming parent_child relationship per target issue.
-  const parentSourceByIssue = new Map<string, string>();
-  for (const ids of chunk(needsRelationship, IN_CLAUSE_CHUNK)) {
+): Map<string, GitBugIssueParentRelationship[]> {
+  const parents = new Map<string, GitBugIssueParentRelationship[]>();
+  for (const ids of chunk(issueIds, IN_CLAUSE_CHUNK)) {
     const placeholders = ids.map(() => "?").join(", ");
     const rows = db.prepare(
-      `SELECT target_issue_id, source_issue_id FROM ledger_issue_relationships
-       WHERE relationship_type = 'parent_child'
-         AND deleted_at IS NULL
-         AND target_issue_id IN (${placeholders})
-       ORDER BY target_issue_id, created_at, id`,
-    ).all(...ids) as Array<{ target_issue_id: string; source_issue_id: string }>;
+      `SELECT e.id, e.target_issue_id, e.source_issue_id, e.provenance,
+              parent.short_id AS parent_ref
+         FROM ledger_relationship_edges e
+         JOIN ledger_issues parent ON parent.id = e.source_issue_id
+        WHERE e.target_issue_id IN (${placeholders})
+          AND e.source_entity_type = 'issue'
+          AND e.target_entity_type = 'issue'
+          AND e.link_type = 'parent_child'
+          AND e.deleted_at IS NULL
+        ORDER BY e.target_issue_id, e.created_at, e.id`,
+    ).all(...ids) as Array<{
+      id: string;
+      target_issue_id: string;
+      source_issue_id: string;
+      provenance: GitBugIssueParentRelationship["provenance"];
+      parent_ref: string | null;
+    }>;
+    const seen = new Set<string>();
     for (const row of rows) {
-      if (!parentSourceByIssue.has(row.target_issue_id)) {
-        parentSourceByIssue.set(row.target_issue_id, row.source_issue_id);
-      }
+      const key = `${row.target_issue_id}:${row.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const list = parents.get(row.target_issue_id) ?? [];
+      list.push({
+        id: row.id,
+        parent_id: row.source_issue_id,
+        parent_ref: row.parent_ref ?? row.source_issue_id,
+        provenance: row.provenance,
+        confidence: "observed",
+      });
+      parents.set(row.target_issue_id, list);
     }
-  }
-  if (parentSourceByIssue.size === 0) return parents;
-
-  // Primary alias per parent source issue, scoped to this project.
-  const parentSourceIds = Array.from(new Set(parentSourceByIssue.values()));
-  const aliasBySource = new Map<string, string>();
-  for (const ids of chunk(parentSourceIds, IN_CLAUSE_CHUNK)) {
-    const placeholders = ids.map(() => "?").join(", ");
-    const rows = db.prepare(
-      `SELECT issue_id, alias FROM ledger_issue_aliases
-       WHERE project_id = ? AND issue_id IN (${placeholders})
-       ORDER BY issue_id, is_primary DESC, alias_kind`,
-    ).all(projectId, ...ids) as Array<{ issue_id: string; alias: string }>;
-    for (const row of rows) {
-      if (!aliasBySource.has(row.issue_id)) aliasBySource.set(row.issue_id, row.alias);
-    }
-  }
-
-  for (const [issueId, sourceId] of parentSourceByIssue) {
-    parents.set(issueId, aliasBySource.get(sourceId) ?? sourceId);
   }
   return parents;
+}
+
+function parentProjection(parents: GitBugIssueParentRelationship[]): Pick<GitBugIssue, "parent_id" | "parent_ids" | "parent_relationships"> {
+  return {
+    ...(parents.length === 1 ? { parent_id: parents[0].parent_ref } : {}),
+    parent_ids: parents.map((parent) => parent.parent_id),
+    parent_relationships: parents,
+  };
 }
 
 export function findLedgerIssueAcrossRepos(
@@ -380,19 +372,23 @@ function ledgerIssueToRouteIssue(
     .filter((label) => label.deleted_at === null)
     .map((label) => label.label)
     .sort();
+  const parents = batchParentRelationshipsByIssue(db, [detail.id]).get(detail.id) ?? [];
   return {
     id: displayIssueId(detail),
     repo_id: checkout.repo_id,
     repo_name: checkout.repo_name,
     title: detail.title,
     status: detail.status,
+    kind: detail.kind,
+    resolution: detail.resolution,
+    priority: detail.priority,
     labels,
     author: resolvedActorDisplay(detail.author_display, detail.author_actor_type, attribution),
     author_legacy_display: detail.author_display,
     author_attribution: attribution,
     created_at: new Date(detail.created_at).toISOString(),
     description: detail.body,
-    parent_id: parentRef(db, detail, labels),
+    ...parentProjection(parents),
   };
 }
 
@@ -427,22 +423,6 @@ function ledgerIssueToRouteDetail(
 
 function displayIssueId(detail: LedgerIssueDetail): string {
   return detail.short_id || detail.id.slice(0, 7);
-}
-
-function parentRef(db: Db, detail: LedgerIssueDetail, labels: string[]): string | undefined {
-  const legacy = labels.find((label) => label.startsWith("parent:"))?.slice("parent:".length);
-  if (legacy) return legacy;
-  const parent = detail.incoming_relationships.find((relationship) =>
-    relationship.relationship_type === "parent_child" && relationship.deleted_at === null
-  );
-  if (!parent) return undefined;
-  const row = db.prepare(
-    `SELECT alias FROM ledger_issue_aliases
-     WHERE issue_id = ? AND project_id = ?
-     ORDER BY is_primary DESC, alias_kind
-     LIMIT 1`,
-  ).get(parent.source_issue_id, detail.project_id) as { alias: string } | undefined;
-  return row?.alias ?? parent.source_issue_id;
 }
 
 function resolveError(resolved: Exclude<ResolveIssueRefResult, { ok: true }>) {

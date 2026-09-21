@@ -359,6 +359,15 @@
   white-space: nowrap;
 }
 
+.ledger-issue-actions-menu__subheading {
+  padding: 7px 10px 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
 .ledger-issue-actions-menu__item:hover:not(:disabled) {
   background: var(--neutral-alpha-06);
 }
@@ -411,6 +420,36 @@
   padding: 1px 5px;
   border-radius: 999px;
   background: var(--neutral-alpha-05);
+}
+
+.ledger-issue-detail__section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ledger-work-notes-body,
+.ledger-work-notes-history__body {
+  overflow-wrap: anywhere;
+}
+
+.ledger-work-notes-editor {
+  display: block;
+  width: 100%;
+  min-height: 88px;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid var(--neutral-alpha-12);
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: var(--surface-content);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.ledger-work-notes-error {
+  margin: 8px 0 0;
 }
 
 .ledger-collapsible-panel__count {
@@ -533,6 +572,22 @@
   margin-left: auto;
   color: var(--text-muted);
   flex-shrink: 0;
+}
+
+.ledger-work-notes-history {
+  margin-left: auto;
+  max-width: min(520px, 100%);
+  color: var(--text-secondary);
+}
+
+.ledger-work-notes-history summary {
+  cursor: pointer;
+  color: var(--accent-blue);
+}
+
+.ledger-work-notes-history__body {
+  margin-top: 8px;
+  padding: 8px;
 }
 
 .ledger-comment-card__header {
@@ -704,6 +759,7 @@
 
 .ledger-relationship-row,
 .ledger-child-row,
+.ledger-dependency-row,
 .ledger-evidence-row,
 .ledger-session-row {
   display: grid;
@@ -724,6 +780,7 @@
 }
 
 .ledger-child-row,
+.ledger-dependency-row,
 .ledger-evidence-row,
 .ledger-session-row {
   grid-template-columns: 96px minmax(0, 1fr) auto;
@@ -736,6 +793,7 @@
 
 .ledger-relationship-row:not(:disabled),
 .ledger-child-row:not(:disabled),
+.ledger-dependency-row:not(:disabled),
 .ledger-evidence-row:not(:disabled),
 .ledger-session-row:not(:disabled) {
   cursor: pointer;
@@ -743,6 +801,7 @@
 
 .ledger-relationship-row:not(:disabled):hover,
 .ledger-child-row:not(:disabled):hover,
+.ledger-dependency-row:not(:disabled):hover,
 .ledger-evidence-row:not(:disabled):hover,
 .ledger-session-row:not(:disabled):hover {
   border-color: rgba(77,163,255,0.28);
@@ -759,6 +818,7 @@
 
 .ledger-relationship-row strong,
 .ledger-child-row strong,
+.ledger-dependency-row strong,
 .ledger-evidence-row strong,
 .ledger-session-row strong {
   overflow: hidden;
@@ -770,6 +830,7 @@
 
 .ledger-relationship-row code,
 .ledger-child-row code,
+.ledger-dependency-row code,
 .ledger-evidence-row code,
 .ledger-session-row code,
 .ledger-kv-card code {
@@ -780,6 +841,17 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-primary);
+}
+
+.ledger-dependency-row {
+  grid-template-columns: 96px minmax(0, 1fr) auto auto;
+  padding: 8px;
+}
+
+.ledger-dependency-row__warning {
+  color: var(--accent-orange, #f0ad4e);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .ledger-session-row__owner {

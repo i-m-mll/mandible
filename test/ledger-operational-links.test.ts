@@ -342,7 +342,7 @@ describe("ledger operational links", () => {
     expect(results).toHaveLength(1);
     expect(new LedgerStore(db).getIssue(resolvedIssue.id)).toMatchObject({
       status: "closed",
-      resolution: "merged",
+      resolution: "delivered",
     });
     expect(new LedgerStore(db).getIssue(referencedIssue.id)).toMatchObject({
       status: "open",
@@ -369,7 +369,7 @@ describe("ledger operational links", () => {
       db.prepare(
         "SELECT label FROM ledger_labels WHERE issue_id = ? AND label = 'merged' AND deleted_at IS NULL",
       ).get(resolvedIssue.id),
-    ).toEqual({ label: "merged" });
+    ).toBeUndefined();
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM ledger_comments WHERE issue_id = ?")
         .get(resolvedIssue.id),
@@ -401,7 +401,7 @@ describe("ledger operational links", () => {
 
     expect(new LedgerStore(db).getIssue(resolvedIssue.id)).toMatchObject({
       status: "closed",
-      resolution: "merged",
+      resolution: "delivered",
     });
     expect(
       db.prepare(

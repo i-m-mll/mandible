@@ -63,7 +63,7 @@ describe("restricted project route enforcement", () => {
     const request = (title: string) => ({
       method: "POST",
       url: "/api/issues/anything",
-      body: { project: project.id, title, body: "Body" },
+      body: { project: project.id, title, body: "Body", kind: "feature" },
       credential: token,
     } as const);
 
@@ -72,7 +72,7 @@ describe("restricted project route enforcement", () => {
     expect((await runFileRpc(rpc, {
       method: "POST",
       path: "/api/issues/anything",
-      body: { project: project.id, title: "RPC denied", body: "Body" },
+      body: { project: project.id, title: "RPC denied", body: "Body", kind: "feature" },
       capability_token: token,
     })).status).toBe(403);
 
@@ -87,7 +87,7 @@ describe("restricted project route enforcement", () => {
     expect((await runFileRpc(rpc, {
       method: "POST",
       path: "/api/issues/anything",
-      body: { project: project.id, title: "RPC granted", body: "Body" },
+      body: { project: project.id, title: "RPC granted", body: "Body", kind: "feature" },
       capability_token: token,
     })).status).toBe(200);
   });

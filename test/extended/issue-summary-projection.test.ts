@@ -98,7 +98,7 @@ describe("set-based issue summary projection", () => {
       project_id: checkout.project.id,
       title: "Child",
       body: "Child body",
-      kind: "feature",
+      kind: "maintenance",
       labels: ["feature", "zeta"],
       aliases: [{ alias_kind: "git_bug_human", alias: "chi1234", is_primary: true }],
     });
@@ -121,12 +121,12 @@ describe("set-based issue summary projection", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "clo1234", is_primary: true }],
     });
 
-    // Structured parent relationship: child -> parent (derives via alias).
-    store.upsertIssueRelationship({
+    // Structured parent relationship: parent -> child.
+    store.linkRelationshipEdges({
       actor: SYSTEM_ACTOR,
-      source_issue_id: parent.id,
-      target_issue_id: child.id,
-      relationship_type: "parent_child",
+      source_entity: { entity_type: "issue", entity_id: parent.id },
+      target_entities: [{ entity_type: "issue", entity_id: child.id }],
+      link_type: "parent_child",
       provenance: "manual",
     });
 
@@ -134,33 +134,34 @@ describe("set-based issue summary projection", () => {
     store.setLabel(child.id, "deleted-label", true, "mandible", SYSTEM_ACTOR);
     store.setLabel(child.id, "deleted-label", false, "mandible", SYSTEM_ACTOR);
 
-    store.setIssueStatus(merged.id, "closed", "merged", SYSTEM_ACTOR);
+    store.setIssueStatus(merged.id, "closed", "delivered", SYSTEM_ACTOR);
     store.setLabel(merged.id, "merged", true, "mandible", SYSTEM_ACTOR);
-    store.setIssueStatus(closed.id, "closed", null, SYSTEM_ACTOR);
+    store.setIssueStatus(closed.id, "closed", "wontfix", SYSTEM_ACTOR);
 
     const summaries = listLedgerIssueSummaries(db, emptyScanner);
     expect(summaries).toHaveLength(1);
     const summary = summaries[0];
 
     expect(summary.open_count).toBe(2); // parent + child
-    expect(summary.merged_count).toBe(1);
-    expect(summary.closed_count).toBe(1);
+    expect(summary.delivered_count).toBe(1);
+    expect(summary.closed_count).toBe(2);
 
     const byTitle = new Map(summary.issues.map((issue) => [issue.title, issue]));
 
     const childRow = byTitle.get("Child")!;
+    expect(childRow.kind).toBe("maintenance");
+    expect(byTitle.get("Merged")!.resolution).toBe("delivered");
     // Description omitted from list rows.
     expect(childRow.description).toBeUndefined();
     // Active labels only, sorted; deleted label excluded.
     expect(childRow.labels).toEqual(["feature", "zeta"]);
-    // Parent ref resolved from the incoming parent_child relationship, using the
-    // same alias ordering (is_primary DESC, alias_kind) as the per-issue path —
-    // the canonical alias (= issue id) sorts ahead of git_bug_human.
-    expect(childRow.parent_id).toBe(parent.id);
+    // Parent ref comes from the canonical edge and the parent's short id.
+    expect(childRow.parent_id).toBe(parent.short_id);
+    expect(childRow.parent_ids).toEqual([parent.id]);
 
-    // Legacy parent:<id> label wins for parent ref derivation.
+    // Legacy parent:<id> labels no longer derive parentage.
     const closedRow = byTitle.get("Closed")!;
-    expect(closedRow.parent_id).toBe("manual99");
+    expect(closedRow.parent_id).toBeUndefined();
 
     // Issue with no parent has no parent_id.
     expect(byTitle.get("Umbrella")!.parent_id).toBeUndefined();

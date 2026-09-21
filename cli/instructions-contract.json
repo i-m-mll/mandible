@@ -1,6 +1,6 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 13,
+  "version": 14,
   "commands": [
     {
       "name": "mandible changes --project <ref> [--cursor <cursor>] [--limit <1-200>] [--schema mandible-ledger-change-feed@1] [--json]",
@@ -67,6 +67,10 @@
       "description": "Tombstone deliberate structured issue/comment relationship edges and emit relationship removal events. Accepted types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests."
     },
     {
+      "name": "mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]",
+      "description": "Close an issue with one explicit resolution. The optional --commit link is accepted only for delivered; reopening clears the resolution."
+    },
+    {
       "name": "mandible issue comment add <issue-ref> -m <text> [--reopen]",
       "description": "Append rendered Markdown comments with real newline characters and return the issue lifecycle status; --reopen atomically reopens and comments."
     },
@@ -79,8 +83,20 @@
       "description": "Edit issue descriptions while preserving body revision history."
     },
     {
+      "name": "mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--label <label>]...",
+      "description": "Create an issue with one required concrete canonical kind. New issues cannot omit the kind or use unknown; labels remain independent metadata."
+    },
+    {
+      "name": "mandible issue work-notes show|edit|clear|history <issue-ref> [opts]",
+      "description": "Read, replace, clear, or inspect immutable history for the issue's current working notes. Edits and clears use the issue PATCH API with an optional expected working-notes revision."
+    },
+    {
+      "name": "mandible issue kind set <issue-ref> <bug|feature|umbrella|maintenance|experiment|tracker|unknown>",
+      "description": "Set the canonical issue kind through the existing issue PATCH API; kind is independent from labels."
+    },
+    {
       "name": "mandible issue label add|rm <id> <label>",
-      "description": "Mirror portable issue facts such as mandible:status:<value> labels."
+      "description": "Add or remove one free-form label; labels never mirror or mutate canonical issue metadata."
     },
     {
       "name": "mandible auth list [--repo <repo>] [--head <branch>] [--base <branch>] [--status <status>] [--json]",

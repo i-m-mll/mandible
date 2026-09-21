@@ -628,10 +628,10 @@ function filterComposerProjection(): ProjectTimelineProjection {
     },
     {
       ...base.rows[0].issue,
-      id: 'issue_auth_question',
+      id: 'issue_auth_unknown',
       display_id: 'auth222',
-      title: 'Auth question row',
-      kind: 'question',
+      title: 'Auth unknown row',
+      kind: 'unknown',
       labels: ['auth'],
     },
     {

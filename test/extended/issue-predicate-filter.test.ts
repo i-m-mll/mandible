@@ -29,9 +29,9 @@ describe('issue-predicate filter logic', () => {
       values: ['auth'],
       negated: false,
     });
-    expect(parseFilterToken('-kind:question')).toEqual({
+    expect(parseFilterToken('-kind:unknown')).toEqual({
       field: 'kind',
-      values: ['question'],
+      values: ['unknown'],
       negated: true,
     });
     expect(parseFilterToken('label:auth,security')).toEqual({
@@ -116,7 +116,7 @@ describe('issue-predicate filter logic', () => {
     // both surfaces emit this identical shape.
     const chips: TimelineFilterChip[] = [
       { field: 'label', values: ['auth', 'security'], negated: false },
-      { field: 'kind', values: ['question'], negated: true },
+      { field: 'kind', values: ['unknown'], negated: true },
     ];
     const row = rowSpecFromChips(chips);
     expect(row).not.toBeNull();
@@ -132,7 +132,7 @@ describe('issue-predicate filter logic', () => {
             { type: 'label', name: 'security' },
           ],
         },
-        { type: 'not', predicate: { type: 'kind', kind: 'question' } },
+        { type: 'not', predicate: { type: 'kind', kind: 'unknown' } },
       ],
     };
     expect(row?.scope).toEqual(expectedScope);

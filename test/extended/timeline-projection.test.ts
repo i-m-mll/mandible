@@ -118,7 +118,7 @@ describe("project timeline projection", () => {
         state: expect.objectContaining({
           event_type: "issue.closed",
           status: "closed",
-          resolution: "merged",
+          resolution: "delivered",
         }),
         headline_source: "state",
       }),
@@ -807,12 +807,12 @@ describe("project timeline projection", () => {
           },
         },
         {
-          id: "feature-or-umbrella",
+          id: "feature-or-tracker",
           scope: {
             type: "or",
             predicates: [
               { type: "kind", kind: "feature" },
-              { type: "kind", kind: "umbrella" },
+              { type: "kind", kind: "tracker" },
             ],
           },
         },
@@ -832,7 +832,7 @@ describe("project timeline projection", () => {
       fixture.issues.cycle.id,
       fixture.issues.loner.id,
     ]);
-    expect(memberIssueIds(projection, "feature-or-umbrella")).toEqual([
+    expect(memberIssueIds(projection, "feature-or-tracker")).toEqual([
       fixture.issues.rootA.id,
       fixture.issues.rootB.id,
       fixture.issues.shared.id,
@@ -872,8 +872,8 @@ describe("project timeline projection", () => {
       project_id: checkout.project.id,
       title: "Feedbax coordination",
       body: "Project-local coordination body.",
-      kind: "umbrella",
-      labels: ["coordination"],
+      kind: "tracker",
+      labels: [],
       aliases: [{ alias_kind: "git_bug_short", alias: "fbcoord" }],
       created_at: 1_900_000_000_000,
     });

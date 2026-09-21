@@ -73,6 +73,7 @@ function relationshipSource(sourceIssueId: string, targetIssueId: string): Ledge
 interface ContextOverrides {
   issues?: IssueRow[];
   relationshipSources?: LedgerIssueRelationshipSource[];
+  parentEdges?: Array<{ source_issue_id: string; target_issue_id: string; deleted_at: number | null }>;
   residualCoveredIssueIds?: Set<string>;
   labelHistory?: LabelHistoryIndex;
   window?: { from: number | null; to: number | null };
@@ -86,7 +87,7 @@ function makeContext(overrides: ContextOverrides = {}): PredicateEvalContext {
     allIssues: issues,
     issueById,
     relationshipSources: overrides.relationshipSources ?? [],
-    parentChildrenByIssueId: buildParentChildrenByIssueId(issues),
+    parentChildrenByIssueId: buildParentChildrenByIssueId(issues, overrides.parentEdges),
     residualCoveredIssueIds: overrides.residualCoveredIssueIds ?? new Set<string>(),
     labelHistory: overrides.labelHistory ?? { intervalsByLabel: new Map() },
     window: overrides.window ?? { from: null, to: null },
@@ -147,13 +148,16 @@ describe("issue-predicate helpers", () => {
     })).toBe(true);
   });
 
-  it("builds a sorted parent-children adjacency map from parent labels", () => {
+  it("builds a sorted parent-children adjacency map from canonical edges", () => {
     const issues = [
       makeIssue("root", "umbrella", [], "r"),
       makeIssue("child-b", "feature", ["parent:r"], "cb"),
       makeIssue("child-a", "feature", ["parent:r"], "ca"),
     ];
-    const map = buildParentChildrenByIssueId(issues);
+    const map = buildParentChildrenByIssueId(issues, [
+      { source_issue_id: "root", target_issue_id: "child-b", deleted_at: null },
+      { source_issue_id: "root", target_issue_id: "child-a", deleted_at: null },
+    ]);
     expect(map.get("root")).toEqual(["child-a", "child-b"]);
   });
 });
@@ -234,7 +238,15 @@ describe("evaluatePredicate", () => {
     ];
     // introduce a cycle: grand's parent label also points back through loop
     issues[2] = makeIssue("grand", "feature", ["parent:c", "parent:l"], "g");
-    const context = makeContext({ issues });
+    const context = makeContext({
+      issues,
+      parentEdges: [
+        { source_issue_id: "root", target_issue_id: "child", deleted_at: null },
+        { source_issue_id: "child", target_issue_id: "grand", deleted_at: null },
+        { source_issue_id: "grand", target_issue_id: "loop", deleted_at: null },
+        { source_issue_id: "loop", target_issue_id: "grand", deleted_at: null },
+      ],
+    });
     const result = evalIds({ type: "parent_subtree", issue_id: "r" }, context);
     expect(result.ids).toEqual(["child", "grand", "loop"]);
     expect(result.diagnostics.some((d) => d.kind === "cycle")).toBe(true);

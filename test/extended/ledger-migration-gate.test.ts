@@ -182,7 +182,21 @@ describe("ledger issue projection", () => {
       alias: "abc123",
       title: "Projected issue",
       body: "Projected body",
-      labels: ["feature", "parent:par123"],
+      labels: ["feature"],
+    });
+    const parent = store.createIssue({
+      ...SYSTEM_ACTOR,
+      project_id: issue.project_id,
+      title: "Parent issue",
+      body: "Parent body",
+      kind: "umbrella",
+    });
+    store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
+      source_entity: { entity_type: "issue", entity_id: parent.id },
+      target_entities: [{ entity_type: "issue", entity_id: issue.id }],
+      link_type: "parent_child",
+      provenance: "manual",
     });
     store.addComment(issue.id, { ...SYSTEM_ACTOR, body: "Comment", author_display: "Codex", actor_type: "agent" });
     const workScanner = fakeWorkScanner([repoInfo]);
@@ -191,16 +205,17 @@ describe("ledger issue projection", () => {
     const detail = getLedgerIssueDetailForRoute(db, workScanner, "mandible", "abc123");
 
     expect(summaries).toHaveLength(1);
-    expect(summaries[0].issues[0]).toMatchObject({
+    const projected = summaries[0].issues.find((candidate) => candidate.id === issue.short_id);
+    expect(projected).toMatchObject({
       id: issue.short_id,
       repo_id: "mandible",
       repo_name: "mandible",
       title: "Projected issue",
-      parent_id: "par123",
+      parent_id: parent.short_id,
     });
     // Perf (issue e5fc02b): the set-based list projection omits description from
     // list rows; the detail projection still carries the full body.
-    expect(summaries[0].issues[0].description).toBeUndefined();
+    expect(projected?.description).toBeUndefined();
     expect(detail.ok && detail.detail.description).toBe("Projected body");
     expect(detail.ok && detail.detail.comments).toHaveLength(1);
   });
@@ -371,7 +386,7 @@ describe("ledger issue routes", () => {
   it("atomically reopens and comments through the ledger comment route", async () => {
     const repoInfo = repo("repo-1", "mandible");
     const { issue, store } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Closed writable" });
-    store.setIssueStatus(issue.id, "closed", "fixed", SYSTEM_ACTOR);
+    store.setIssueStatus(issue.id, "closed", "delivered", SYSTEM_ACTOR);
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
 

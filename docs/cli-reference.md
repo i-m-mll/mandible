@@ -2,8 +2,8 @@
 
 ```
 ## ISSUE
-mandible issue new -t <title> -m <body> [--label <label>]...
-mandible issue list [--status open|closed|all|merged] [--repo R]  # NO --json, NO --limit
+mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--label <label>]...
+mandible issue list [--status open|closed|all] [--repo R]  # NO --json, NO --limit
 mandible issue show <id>                                      # NO --json
 mandible issue title <id> [--json] [--graceful]
 mandible issue report <id> [--json]                          # exit 3 = NOT from this CLI (curl -sf exits 22 on HTTP err)
@@ -12,7 +12,7 @@ mandible umbrella adopt <umbrella> <children...> [--json]
 mandible umbrella manifest refresh <umbrella> [--json]
 mandible issue parent-role status <umbrella> [--json]
 mandible issue parent-role assume <umbrella> [--session S] [--mechanism M] [--override] [--json]
-mandible issue triage [--status open|closed|all|merged] [--label L] [--repo R] [--stale-days N] [--limit N] [--json]
+mandible issue triage [--status open|closed|all] [--resolution R] [--kind K] [--priority P] [--label L] [--repo R] [--stale-days N] [--limit N] [--json]
 mandible issue heads <id>... [--json]
 mandible issue changed --since-manifest <file> [--json]
 mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--checkpoint <id>] [--json]
@@ -22,7 +22,7 @@ mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>
 mandible issue branch add <id> <branch> [--role primary|superseded]
 mandible issue link <src> <target...> [--type t] [--note n]
 mandible issue unlink <src> <target...> [--type t]
-mandible issue close <id> [--commit <sha>]
+mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]
 mandible issue open <id>
 mandible issue label add|rm <id> <label>
 mandible issue comment add <id> -m <text> [--reopen]
@@ -31,6 +31,11 @@ mandible issue comment history <ref> [--json] [--with-body]
 mandible issue description show <ref> [--json]
 mandible issue description edit <ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
 mandible issue description history <ref> [--json] [--with-body]
+mandible issue work-notes show <ref> [--json]
+mandible issue work-notes edit <ref> -m <text> [--base-revision <rev>]
+mandible issue work-notes clear <ref> [--base-revision <rev>]
+mandible issue work-notes history <ref> [--json] [--with-body]
+mandible issue kind set <ref> bug|feature|umbrella|maintenance|experiment|tracker|unknown
 mandible issue revision show <rev-id> [--json]
 mandible issue revision diff <old-rev-id> <new-rev-id> [--force]
 mandible issue refs backfill [--dry-run] [--apply] [--repo R] [--issue I] [--since D] [--until D] [--json]

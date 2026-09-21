@@ -214,7 +214,7 @@ function completedIssueIds(db: Db, request: AuthRequest): Set<string> {
        WHERE l.auth_request_id = ?
          AND l.link_type IN ('resolves', 'fixed_by')
          AND i.status = 'closed'
-         AND (i.resolution IS NULL OR i.resolution = 'merged')`,
+         AND i.resolution = 'delivered'`,
     ).all(request.id) as Array<{ id: string }>;
     for (const row of rows) {
       ids.add(row.id);

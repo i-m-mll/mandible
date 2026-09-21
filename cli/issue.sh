@@ -40,6 +40,15 @@ RELATIONSHIP_TYPES=(
 )
 ACCEPTED_RELATIONSHIP_TYPES="parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests"
 
+ISSUE_KINDS=(bug feature umbrella maintenance experiment tracker unknown)
+CREATABLE_ISSUE_KINDS=(bug feature umbrella maintenance experiment tracker)
+ACCEPTED_ISSUE_KINDS="bug, feature, umbrella, maintenance, experiment, tracker, unknown"
+ACCEPTED_CREATION_KINDS="bug, feature, umbrella, maintenance, experiment, tracker"
+ISSUE_PRIORITIES=(low normal high urgent unknown)
+ACCEPTED_ISSUE_PRIORITIES="low, normal, high, urgent, unknown"
+ISSUE_CLOSE_RESOLUTIONS=(delivered duplicate wontfix)
+ACCEPTED_ISSUE_CLOSE_RESOLUTIONS="delivered, duplicate, wontfix"
+
 usage_link() {
   cat <<'LINK_USAGE'
 Usage:
@@ -90,6 +99,71 @@ require_relationship_type() {
   fi
 }
 
+valid_issue_kind() {
+  local candidate="$1"
+  local accepted
+  for accepted in "${ISSUE_KINDS[@]}"; do
+    if [[ "$candidate" == "$accepted" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_issue_kind() {
+  local candidate="$1"
+  if ! valid_issue_kind "$candidate"; then
+    die "Invalid issue kind: ${candidate}. Accepted issue kinds: ${ACCEPTED_ISSUE_KINDS}" 2
+  fi
+}
+
+require_creation_kind() {
+  local candidate="$1"
+  local accepted
+  for accepted in "${CREATABLE_ISSUE_KINDS[@]}"; do
+    if [[ "$candidate" == "$accepted" ]]; then
+      return 0
+    fi
+  done
+  die "Invalid creation kind: ${candidate}. New issues require one of: ${ACCEPTED_CREATION_KINDS}" 2
+}
+
+valid_issue_priority() {
+  local candidate="$1"
+  local accepted
+  for accepted in "${ISSUE_PRIORITIES[@]}"; do
+    if [[ "$candidate" == "$accepted" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_issue_priority() {
+  local candidate="$1"
+  if ! valid_issue_priority "$candidate"; then
+    die "Invalid issue priority: ${candidate}. Accepted priorities: ${ACCEPTED_ISSUE_PRIORITIES}" 2
+  fi
+}
+
+valid_issue_close_resolution() {
+  local candidate="$1"
+  local accepted
+  for accepted in "${ISSUE_CLOSE_RESOLUTIONS[@]}"; do
+    if [[ "$candidate" == "$accepted" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_issue_close_resolution() {
+  local candidate="$1"
+  if ! valid_issue_close_resolution "$candidate"; then
+    die "Invalid issue resolution: ${candidate}. Accepted resolutions: ${ACCEPTED_ISSUE_CLOSE_RESOLUTIONS}" 2
+  fi
+}
+
 die_api_status() {
   local message="$1"
   local status="$2"
@@ -106,12 +180,13 @@ die_api_status() {
 usage() {
   cat <<'USAGE'
 Usage:
-  mandible issue new -t <title> -m <body> [--label <label>]...   Create a new issue
+  mandible issue new -t <title> -m <body> --kind <kind> [--label <label>]...   Create a new issue
   mandible issue list [--status open|closed|all] [--repo <repo>]   List issues (default: open)
   mandible issue show <id>                                        Show issue details
   mandible issue title <id> [--json] [--graceful]                 Print issue title
   mandible issue report <id> [--json]                             Print deterministic issue context
-  mandible issue triage [opts] [--json]                           Filter issues for review
+  mandible issue triage [--status open|closed|all] [--resolution <resolution>] [--kind <kind>] [--priority <priority>] [--label <label>] [opts] [--json]
+                                                                  Filter issues for review
   mandible issue heads <id>... [--json]                            Print issue state digests
   mandible issue changed --since-manifest <file> [--json]          Compare issue digests to a manifest
   mandible issue changed --since-issue <id> [--kind <kind>] [--checkpoint <id>] [--json]
@@ -125,13 +200,22 @@ Usage:
                                                                   Link a branch to an issue
   mandible issue link <src> <target...> [--type t] [--note n]     Add structured issue/comment links
   mandible issue unlink <src> <target...> [--type t]              Remove structured issue/comment links
-  mandible issue close <id> [--commit <sha>]                      Close issue, recording resolving commit
+  mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]
+                                                                  Close issue with an explicit resolution; --commit is only for delivered
   mandible issue open <id>                                        Reopen a closed issue
   mandible issue description show <issue-ref> [--json]            Show only the issue description
   mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
                                                                   Edit the issue description
   mandible issue description history <issue-ref> [--json] [--with-body]
                                                                   Show issue description revision history
+  mandible issue work-notes show <issue-ref> [--json]              Show current working notes
+  mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]
+                                                                  Edit current working notes
+  mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
+                                                                  Clear current working notes
+  mandible issue work-notes history <issue-ref> [--json] [--with-body]
+                                                                  Show working-notes revision history
+  mandible issue kind set <issue-ref> <kind>                       Set the canonical issue kind
   mandible issue comment add <issue-ref> -m <text> [--reopen]      Add a comment
   mandible issue comment edit <comment-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
                                                                   Edit a comment
@@ -207,7 +291,15 @@ labels_json() {
 print_issue_detail() {
   api_jq_human '
     "\(.display_id) [\(.status)] \(.title)",
+    "kind: \(.kind // "unknown")",
+    "priority: \(.priority // "unknown")",
+    "resolution: \(.resolution // "none")",
     (if (.labels | length) > 0 then "labels: \(.labels | join(", "))" else "labels:" end),
+    (if ((.dependencies // []) | length) > 0 then
+      "prerequisites:",
+      ((.dependencies // [])[] | "- \(.display_id // .id) \(.title) [status=\(.status // "unknown"); resolution=\(.resolution // "none")]" + (if .status == "open" then " (open warning)" else "" end))
+    else empty end),
+    (if ((.work_notes // "") | length) > 0 then "", "working notes:", .work_notes else empty end),
     "",
     .body,
     (.comments[]? | "\n---\n\(.id | mandible_short_id) \(.author.display) \(.source)\n\(.body)")
@@ -217,6 +309,8 @@ print_issue_detail() {
 cmd_close() {
   local id=""
   local sha=""
+  local resolution=""
+  local commit_provided=0
 
   while (( $# > 0 )); do
     case "$1" in
@@ -225,6 +319,14 @@ cmd_close() {
           die "Missing value for --commit." 2
         fi
         sha="$2"
+        commit_provided=1
+        shift 2
+        ;;
+      --resolution)
+        if (( $# < 2 )); then
+          die "Missing value for --resolution." 2
+        fi
+        resolution="$2"
         shift 2
         ;;
       -*)
@@ -242,32 +344,41 @@ cmd_close() {
   done
 
   if [[ -z "$id" ]]; then
-    die "Usage: mandible issue close <id> [--commit <sha>]" 2
+    die "Usage: mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]" 2
   fi
 
-  if [[ -z "$sha" ]]; then
-    sha=$(git rev-parse HEAD 2>/dev/null) || sha="unknown"
+  if [[ -z "$resolution" ]]; then
+    die "Missing --resolution. Accepted resolutions: ${ACCEPTED_ISSUE_CLOSE_RESOLUTIONS}" 2
+  fi
+  require_issue_close_resolution "$resolution"
+  if [[ "$resolution" != "delivered" && "$commit_provided" == "1" ]]; then
+    die "--commit is only supported with --resolution delivered." 2
   fi
 
   require_tools
   local message_payload status_payload resolution_payload repo_id
-  message_payload=$(jq -n --arg message "Resolved by commit ${sha:0:12}" '{message:$message}')
-  api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$message_payload" >/dev/null || true
-
-  status_payload=$(jq -n '{status:"closed", resolution:"fixed"}')
+  status_payload=$(jq -n --arg resolution "$resolution" '{status:"closed", resolution:$resolution}')
   api_send PATCH "/api/ledger/issues/$(urlencode "$id")" "$status_payload" >/dev/null \
     || die "${RED}Failed to close issue ${id}${RESET}" 1
 
-  git notes append -m "closes: ${id:0:8}" "$sha" 2>/dev/null || true
-  if ! git config --local push.notesRef >/dev/null 2>&1; then
-    git config --local push.notesRef "refs/notes/commits" 2>/dev/null || true
-  fi
+  if [[ "$resolution" == "delivered" && "$commit_provided" == "1" && -n "$sha" && "$sha" != "unknown" ]]; then
+    message_payload=$(jq -n --arg message "Resolved as delivered by commit ${sha:0:12}" '{message:$message}')
+    api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$message_payload" >/dev/null || true
+    git notes append -m "closes: ${id:0:8}" "$sha" 2>/dev/null || true
+    if ! git config --local push.notesRef >/dev/null 2>&1; then
+      git config --local push.notesRef "refs/notes/commits" 2>/dev/null || true
+    fi
 
-  repo_id=$(basename "$(repo_root)")
-  resolution_payload=$(jq -n --arg issue_id "$id" --arg commit_sha "$sha" --arg repo_id "$repo_id" \
-    '{issue_id:$issue_id, commit_sha:$commit_sha, repo_id:$repo_id}')
-  api_send POST "/api/issues/resolutions" "$resolution_payload" >/dev/null || true
-  err "${GREEN}Closed issue ${id} (resolved by ${sha:0:12})${RESET}"
+    repo_id=$(basename "$(repo_root)")
+    resolution_payload=$(jq -n --arg issue_id "$id" --arg commit_sha "$sha" --arg repo_id "$repo_id" \
+      '{issue_id:$issue_id, commit_sha:$commit_sha, repo_id:$repo_id}')
+    api_send POST "/api/issues/resolutions" "$resolution_payload" >/dev/null || true
+  fi
+  if [[ "$resolution" == "delivered" && "$commit_provided" == "1" && -n "$sha" && "$sha" != "unknown" ]]; then
+    err "${GREEN}Closed issue ${id} as delivered (resolved by ${sha:0:12})${RESET}"
+  else
+    err "${GREEN}Closed issue ${id} as ${resolution}${RESET}"
+  fi
 }
 
 cmd_comment_add() {
@@ -441,6 +552,9 @@ cmd_report() {
       issue_branches,
       priority,
       kind,
+      work_notes,
+      work_notes_revision,
+      dependencies,
       project,
       created_at,
       updated_at,
@@ -464,6 +578,8 @@ cmd_report() {
       "worker_status: \(.worker_status // "none")",
       "branches: \(list_or_dash((.issue_branches // []) | map(.branch + " (" + .role + ")")))",
       "labels: \(list_or_dash(.labels))",
+      "kind: \(.kind // "unknown")",
+      "prerequisites: \(list_or_dash((.dependencies // []) | map((.display_id // .id) + " " + .title + " [status=" + (.status // "unknown") + "; resolution=" + (.resolution // "none") + "]" + (if .status == "open" then " (open warning)" else "" end))))",
       "updated: \(.updated_at // "-")",
       "created: \(.created_at // "-")",
       "comments: \((.comments // []) | length)",
@@ -474,6 +590,7 @@ cmd_report() {
       "",
       "body:",
       (.body // ""),
+      (if ((.work_notes // "") | length) > 0 then "", "working notes:", .work_notes else empty end),
       "",
       "latest comments:",
       (((.comments // []) | sort_by(.created_at // "") | reverse | .[0:5][])?
@@ -484,7 +601,10 @@ cmd_report() {
 
 cmd_triage() {
   local status="open"
+  local resolution=""
   local label=""
+  local kind=""
+  local priority=""
   local stale_days=""
   local limit=50
   local json=0
@@ -495,9 +615,18 @@ cmd_triage() {
       --status)
         if (( $# < 2 )); then die "Missing value for --status." 2; fi
         status="$2"; shift 2 ;;
+      --resolution)
+        if (( $# < 2 )); then die "Missing value for --resolution." 2; fi
+        resolution="$2"; shift 2 ;;
       --label)
         if (( $# < 2 )); then die "Missing value for --label." 2; fi
         label="$2"; shift 2 ;;
+      --kind)
+        if (( $# < 2 )); then die "Missing value for --kind." 2; fi
+        kind="$2"; shift 2 ;;
+      --priority)
+        if (( $# < 2 )); then die "Missing value for --priority." 2; fi
+        priority="$2"; shift 2 ;;
       --repo)
         if (( $# < 2 )); then die "Missing value for --repo." 2; fi
         repo="$2"; shift 2 ;;
@@ -516,9 +645,12 @@ cmd_triage() {
   done
 
   case "$status" in
-    open|closed|all|merged) ;;
-    *) die "Unknown status: $status (expected open, closed, merged, or all)" 2 ;;
+    open|closed|all) ;;
+    *) die "Unknown status: $status (expected open, closed, or all; use --status closed --resolution delivered for delivered issues)" 2 ;;
   esac
+  if [[ -n "$resolution" ]]; then require_issue_close_resolution "$resolution"; fi
+  if [[ -n "$kind" ]]; then require_issue_kind "$kind"; fi
+  if [[ -n "$priority" ]]; then require_issue_priority "$priority"; fi
   if [[ -n "$stale_days" && ! "$stale_days" =~ ^[0-9]+$ ]]; then
     die "--stale-days must be an integer" 2
   fi
@@ -537,6 +669,9 @@ cmd_triage() {
   query="repo=${root}&status=$(urlencode "$status")"
   api_get "/api/issues?${query}" | jq \
     --arg label_filter "$label" \
+    --arg resolution_filter "$resolution" \
+    --arg kind_filter "$kind" \
+    --arg priority_filter "$priority" \
     --arg stale_days "$stale_days" \
     --argjson limit "$limit" \
     --argjson json "$json" '
@@ -552,12 +687,15 @@ cmd_triage() {
         | $repo.issues[]
         | . + {repo_name: $repo.repo_name}
         | select($label_filter == "" or ((.labels // []) | index($label_filter)))
+        | select($resolution_filter == "" or .resolution == $resolution_filter)
+        | select($kind_filter == "" or .kind == $kind_filter)
+        | select($priority_filter == "" or .priority == $priority_filter)
         | select((stale_cutoff == null) or (epoch(.updated_at) <= stale_cutoff))
       ]
       | sort_by(.updated_at // "")
       | .[0:$limit]
       | if $json then .
-        else .[] | "\(.display_id // .short_id // .id)\t\(.status)\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
+        else .[] | "\(.display_id // .short_id // .id)\t\(.status)\t\(.kind // "unknown")\t\(.priority // "unknown")\t\(.resolution // "-")\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
         end
     '
 }
@@ -1250,6 +1388,7 @@ CHECKPOINT_USAGE
 cmd_new() {
   local title=""
   local body=""
+  local kind=""
   local -a labels=()
   local project_ref=""
 
@@ -1267,6 +1406,13 @@ cmd_new() {
           die "Missing value for -m." 2
         fi
         body="$2"
+        shift 2
+        ;;
+      --kind)
+        if (( $# < 2 )); then
+          die "Missing value for --kind." 2
+        fi
+        kind="$2"
         shift 2
         ;;
       --label)
@@ -1292,9 +1438,10 @@ cmd_new() {
     esac
   done
 
-  if [[ -z "$title" || -z "$body" ]]; then
-    die "Usage: mandible issue new -t <title> -m <body> [--label <label>] [--project <ref>]..." 2
+  if [[ -z "$title" || -z "$body" || -z "$kind" ]]; then
+    die "Usage: mandible issue new -t <title> -m <body> --kind <kind> [--label <label>] [--project <ref>]..." 2
   fi
+  require_creation_kind "$kind"
 
   require_tools
   local root payload id label_json repo
@@ -1305,12 +1452,16 @@ cmd_new() {
     payload=$(jq -n \
       --arg title "$title" --arg body "$body" --arg root "$root" \
       --argjson labels "$label_json" --arg project "$project_ref" \
-      '{title:$title, body:$body, root:$root, labels:$labels, project:$project}')
+      --arg kind "$kind" \
+      '{title:$title, body:$body, root:$root, labels:$labels, project:$project}
+       + (if $kind == "" then {} else {kind:$kind} end)')
   else
     repo=$(basename "$root")
     payload=$(jq -n \
       --arg title "$title" --arg body "$body" --arg root "$root" --argjson labels "$label_json" \
-      '{title:$title, body:$body, root:$root, labels:$labels}')
+      --arg kind "$kind" \
+      '{title:$title, body:$body, root:$root, labels:$labels}
+       + (if $kind == "" then {} else {kind:$kind} end)')
   fi
   id=$(api_send POST "/api/issues/$(urlencode "$repo")" "$payload" | jq -r '.display_id // .id') \
     || die "${RED}Failed to create issue${RESET}" 1
@@ -1347,8 +1498,8 @@ cmd_list() {
   done
 
   case "$status" in
-    open|closed|all|merged) ;;
-    *) die "Unknown status: $status (expected open, closed, merged, or all)" 2 ;;
+    open|closed|all) ;;
+    *) die "Unknown status: $status (expected open, closed, or all; use --status closed for delivered issues and inspect resolution with triage)" 2 ;;
   esac
 
   require_tools
@@ -1557,6 +1708,7 @@ cmd_open() {
 
 print_revision_history() {
   local with_body="$1"
+  local subject="${2:-body}"
   api_jq_human '
     def timestamp:
       ((.occurred_at // .observed_at // 0) / 1000 | todateiso8601);
@@ -1566,16 +1718,16 @@ print_revision_history() {
       ((.new_hash // "")[0:12]);
     .revisions as $revisions
     | if ($revisions | length) == 0 then
-        "No body revisions."
+        ("No " + $subject + " revisions.")
       else
         "rev\tid\treason\tsource\toccurred\tactor\thash",
         ($revisions[]
           | "#\(.revision_no)\t\(.id | mandible_short_id)\t\(.reason)\t\(.source)\t\(timestamp)\t\(actor | mandible_short_id)\t\(short_hash)",
             (if $with_body == "1" then
-              "----- body #\(.revision_no) -----\n\(.snapshot_body)\n----- end body #\(.revision_no) -----"
+              ("----- " + $subject + " #\(.revision_no) -----\n\(.snapshot_body)\n----- end " + $subject + " #\(.revision_no) -----")
             else empty end))
       end
-  ' --arg with_body "$with_body"
+  ' --arg with_body "$with_body" --arg subject "$subject"
 }
 
 cmd_description_show() {
@@ -1737,6 +1889,165 @@ DESCRIPTION_USAGE
       die "Unknown description action: $action (expected show, edit, or history)" 2
       ;;
   esac
+}
+
+cmd_work_notes_show() {
+  local issue_ref=""
+  local json=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then issue_ref="$1"; else die "Unexpected argument: $1" 2; fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: mandible issue work-notes show <issue-ref> [--json]" 2
+  fi
+
+  require_tools
+  local response
+  response=$(api_get "/api/ledger/issues/$(urlencode "$issue_ref")") \
+    || die "${RED}Failed to fetch issue ${issue_ref}${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq '{issue_id: .id, display_id, title, work_notes: (.work_notes // ""), work_notes_revision: (.work_notes_revision // null), updated_at}'
+  else
+    printf '%s\n' "$response" | jq -r '.work_notes // ""'
+  fi
+}
+
+cmd_work_notes_patch() {
+  local action="$1"
+  shift
+  local issue_ref=""
+  local message=""
+  local base_revision_id=""
+
+  while (( $# > 0 )); do
+    case "$1" in
+      -m)
+        if (( $# < 2 )); then die "Missing value for -m." 2; fi
+        message="$2"; shift 2 ;;
+      --base-revision|--expected-revision)
+        if (( $# < 2 )); then die "Missing value for $1." 2; fi
+        base_revision_id="$2"; shift 2 ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then issue_ref="$1"; else die "Unexpected argument: $1" 2; fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: mandible issue work-notes ${action} <issue-ref> $([[ "$action" == edit ]] && printf '%s' '-m <text> ') [--base-revision <rev>]" 2
+  fi
+  if [[ "$action" == edit && -z "$message" ]]; then
+    die "Usage: mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]" 2
+  fi
+
+  require_tools
+  local payload
+  payload=$(
+    jq -n \
+      --arg work_notes "$message" \
+      --arg expected_revision "$base_revision_id" \
+      '{work_notes: $work_notes}
+       + (if $expected_revision == "" then {} else {expected_work_notes_revision: $expected_revision} end)'
+  )
+  api_send PATCH "/api/ledger/issues/$(urlencode "$issue_ref")" "$payload" >/dev/null \
+    || die "${RED}Failed to ${action} work notes for issue ${issue_ref}${RESET}" 1
+  if [[ "$action" == edit ]]; then
+    err "${GREEN}Edited work notes for ${issue_ref}${RESET}"
+  else
+    err "${GREEN}Cleared work notes for ${issue_ref}${RESET}"
+  fi
+}
+
+cmd_work_notes_history() {
+  local issue_ref=""
+  local json=0
+  local with_body=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      --with-body) with_body=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then issue_ref="$1"; else die "Unexpected argument: $1" 2; fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: mandible issue work-notes history <issue-ref> [--json] [--with-body]" 2
+  fi
+
+  require_tools
+  local response
+  response=$(api_get "/api/ledger/issues/$(urlencode "$issue_ref")/work-notes/history") \
+    || die "${RED}Failed to fetch work-notes revisions for issue ${issue_ref}${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq '.'
+  else
+    printf '%s\n' "$response" | print_revision_history "$with_body" "work notes"
+  fi
+}
+
+cmd_work_notes() {
+  local action="${1:-}"
+  shift || true
+  case "$action" in
+    show) cmd_work_notes_show "$@" ;;
+    edit) cmd_work_notes_patch edit "$@" ;;
+    clear) cmd_work_notes_patch clear "$@" ;;
+    history) cmd_work_notes_history "$@" ;;
+    ""|-h|--help)
+      cat <<'WORK_NOTES_USAGE'
+Usage:
+  mandible issue work-notes show <issue-ref> [--json]
+  mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]
+  mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
+  mandible issue work-notes history <issue-ref> [--json] [--with-body]
+WORK_NOTES_USAGE
+      ;;
+    *) die "Unknown work-notes action: $action (expected show, edit, clear, or history)" 2 ;;
+  esac
+}
+
+cmd_kind() {
+  local action="${1:-}"
+  shift || true
+  if [[ "$action" != set ]]; then
+    if [[ -z "$action" || "$action" == -h || "$action" == --help ]]; then
+      cat <<'KIND_USAGE'
+Usage:
+  mandible issue kind set <issue-ref> <kind>
+KIND_USAGE
+      return 0
+    fi
+    die "Unknown kind action: $action (expected set)" 2
+  fi
+
+  local issue_ref="${1:-}"
+  local kind="${2:-}"
+  if [[ -z "$issue_ref" || -z "$kind" || $# -gt 2 ]]; then
+    die "Usage: mandible issue kind set <issue-ref> <kind>" 2
+  fi
+  require_issue_kind "$kind"
+  require_tools
+  local payload
+  payload=$(jq -n --arg kind "$kind" '{kind:$kind}')
+  api_send PATCH "/api/ledger/issues/$(urlencode "$issue_ref")" "$payload" >/dev/null \
+    || die "${RED}Failed to set kind for issue ${issue_ref}${RESET}" 1
+  err "${GREEN}Set kind for ${issue_ref} to ${kind}${RESET}"
 }
 
 resolve_comment_ref() {
@@ -2116,6 +2427,8 @@ case "$subcmd" in
   close)   cmd_close "$@" ;;
   open)    cmd_open "${1:-}" ;;
   description) cmd_description "$@" ;;
+  work-notes) cmd_work_notes "$@" ;;
+  kind)    cmd_kind "$@" ;;
   comment) cmd_comment "$@" ;;
   body-history) cmd_description_history "$@" ;;
   comment-history) cmd_comment_history "$@" ;;
