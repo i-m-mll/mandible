@@ -287,9 +287,10 @@ returns the same version, including versions recorded before this extension.
 Host-visible multi-path ingestion sends one request. Every path is validated
 and authorized before custody or metadata writes, and metadata commits in one
 transaction. A denied or invalid batch changes nothing. Upload, file-RPC and
-blob-only modes accept one path per command; requesting an unsupported batch
-fails before sending any writes. Commit ingestion requires host HTTP access to
-the registered repository. `--dry-run` plans without mutation.
+blob-only modes retain one request per item, with explicit `registered` and
+`failed` results; earlier successful items remain registered if a later item
+fails. Those transport batches are not atomic. Commit ingestion requires host
+HTTP access to the registered repository. `--dry-run` plans without mutation.
 
 Human output reports `created`, `updated` or `unchanged`, with the artifact and
 pinned version. Use `--json` for structured details.

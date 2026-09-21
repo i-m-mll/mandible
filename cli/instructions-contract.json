@@ -204,7 +204,7 @@
     },
     {
       "name": "mandible artifact ingest <path...> [--project <project>] [--commit <git-ref>] [--artifact <artifact-ref>] [--blob-only] [--json]",
-      "description": "Record logical artifact versions by registered source. --commit reads tracked Git objects from a registered project without checkout; paths are repository-relative and --project accepts friendly refs. Historical ingestion retains the current source and requires unique current/historical lineage, or --artifact when a former path was reused. Host-visible multi-path ingestion uses one atomic metadata request; all paths are validated and authorized before writes. Exact retries are unchanged. Multi-path upload, file-RPC, and blob-only modes are unsupported and fail before writes."
+      "description": "Record logical artifact versions by registered source. --commit reads tracked Git objects from a registered project without checkout; paths are repository-relative and --project accepts friendly refs. Historical ingestion retains the current source and requires unique current/historical lineage, or --artifact when a former path was reused. Host-visible multi-path ingestion uses one atomic metadata request; all paths are validated and authorized before writes. Exact retries are unchanged. Multi-path upload, file-RPC, and blob-only modes retain per-item requests and results; they are not atomic. --commit requires host-visible repository access over HTTP."
     },
     {
       "name": "mandible artifact move <artifact-ref> [--project <project>] [--path <path>] [--if-revision <n>] [--reconcile] [--json]",

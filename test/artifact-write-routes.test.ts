@@ -289,7 +289,10 @@ describe("artifact write authorization", () => {
       });
       let stdout = "", stderr = "";
       child.stdout.on("data", x => stdout += x); child.stderr.on("data", x => stderr += x);
-      child.on("error", reject); child.on("close", code => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr + stdout)));
+      child.on("error", reject); child.on("close", code => {
+        try { code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr + stdout)); }
+        catch (error) { reject(error); }
+      });
     });
     try {
       const oldPath = path.join(root, "old.md"), newPath = path.join(root, "new.md");
@@ -377,8 +380,14 @@ describe("artifact write authorization", () => {
       expect(both.source.source).toEqual({ kind: 'repo', project_id: project.id, path: 'final.md' });
       expect(db.prepare('SELECT source_project_id FROM artifact WHERE id=?').get(trackedId)).toEqual({ source_project_id: project.id });
       const transportStart = requests.length;
-      await expect(cli(['ingest', oldPath, newPath, '--copy', '--upload'])).rejects.toThrow(/Batch ingest requires daemon-visible paths/);
-      expect(requests).toHaveLength(transportStart);
+      const uploadedBatch = await cli(['ingest', oldPath, newPath, '--copy', '--upload']);
+      expect(uploadedBatch.registered).toHaveLength(2);
+      expect(uploadedBatch.failed).toEqual([]);
+      expect(requests.slice(transportStart)).toEqual(['POST /api/artifacts/versions', 'POST /api/artifacts/versions']);
+      expect(uploadedBatch.atomic).toBeUndefined();
+      const unsupportedStart = requests.length;
+      await expect(cli(['ingest', oldPath, '--commit', commit, '--copy', '--upload'])).rejects.toThrow(/requires daemon-visible repository paths/);
+      expect(requests).toHaveLength(unsupportedStart);
       const batchStart = requests.length, batchTime = performance.now();
       const batch = await cli(['ingest', oldPath, newPath, '--copy']);
       expect(batch.registered).toHaveLength(2);

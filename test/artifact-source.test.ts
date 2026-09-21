@@ -165,17 +165,19 @@ it('requires registered project access for files in checkouts without Git metada
   expect(plan.required_project_ids).toEqual([project]);
 });
 
-it('reuses pre-extension version IDs only when immutable evidence matches and preserves producer keys', () => {
+it.each(['production commit/path', 'unmerged project/commit/path'])('reuses %s version IDs only when evidence matches and preserves producer keys', (shape) => {
   const a = repo('upgrade');
   const input = { source_kind: 'tracked_repo' as const, path: a.file, metadata: { x: 1, y: 2 } };
   const first = recordArtifactVersion(db, input);
   const id = identity(first.series.id);
-  const key = `${a.project}:${first.version.commit_sha}:report.md`;
+  const key = shape === 'production commit/path' ? `${first.version.commit_sha}:report.md`
+    : `${a.project}:${first.version.commit_sha}:report.md`;
   const oldId = 'artifact-version:' + crypto.createHash('sha256')
     .update(JSON.stringify([first.series.id, 'tracked_repo', key])).digest('hex').slice(0, 32);
   db.transaction(() => {
     db.prepare('UPDATE artifact SET latest_version_id=NULL WHERE id=?').run(id);
     db.prepare('UPDATE artifact_version SET id=? WHERE id=?').run(oldId, first.version.id);
+    if (shape === 'production commit/path') db.prepare('UPDATE artifact_version SET observed_path=NULL WHERE id=?').run(oldId);
     db.prepare('UPDATE artifact SET latest_version_id=? WHERE id=?').run(oldId, id);
   })();
   const before = db.prepare('SELECT * FROM artifact_version').all();
@@ -184,6 +186,14 @@ it('reuses pre-extension version IDs only when immutable evidence matches and pr
   const historical = recordArtifactVersion(db, { ...input, path: 'report.md', project: 'upgrade', commit: first.version.commit_sha! });
   expect(historical.created).toBe(false); expect(historical.version.id).toBe(oldId);
   expect(db.prepare('SELECT * FROM artifact_version').all()).toEqual(before);
+  const trackedProducer = { series_id: first.series.id, artifact_id: first.artifact.id,
+    source_kind: 'tracked_repo' as const, source_project_id: a.project, source_repo_id: 'upgrade',
+    repo_path: 'report.md', commit_sha: first.version.commit_sha!, content_hash: first.version.content_hash,
+    custody_mode: 'link', metadata: input.metadata, natural_key: 'producer-run' };
+  const explicit = appendArtifactVersion(db, trackedProducer);
+  expect(explicit.created).toBe(true); expect(explicit.version.id).not.toBe(oldId);
+  expect(appendArtifactVersion(db, trackedProducer).version.id).toBe(explicit.version.id);
+  expect(appendArtifactVersion(db, { ...trackedProducer, natural_key: 'another-producer-run' }).created).toBe(true);
   const changed = recordArtifactVersion(db, { ...input, metadata: { x: 2, y: 2 } });
   expect(changed.created).toBe(true); expect(changed.version.id).not.toBe(oldId);
   const producer = { series_id: first.series.id, artifact_id: first.artifact.id, source_kind: 'managed' as const,

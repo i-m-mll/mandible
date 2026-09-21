@@ -5098,13 +5098,22 @@ function artifactEvidenceVersionId(seriesId: string, input: Omit<AppendArtifactV
   return versionIdFor(seriesId, input.source_kind, stableJsonStringify([input.natural_key ?? null, artifactVersionEvidence(input)]));
 }
 
-function findRepeatedArtifactVersion(db: Db, seriesId: string, input: Omit<AppendArtifactVersionInput, 'series_id' | 'artifact_id'>): CanonicalArtifactVersionRecord | null {
+function findRepeatedArtifactVersion(db: Db, seriesId: string, input: Omit<AppendArtifactVersionInput, 'series_id' | 'artifact_id'>, registeredFile = false): CanonicalArtifactVersionRecord | null {
   const current = getCanonicalArtifactVersion(db, artifactEvidenceVersionId(seriesId, input));
   if (current) return current;
   const legacyKey = input.natural_key ?? (input.source_kind === 'tracked_repo'
     ? `${input.commit_sha ?? ''}:${input.repo_path ?? ''}` : input.content_hash);
-  const legacy = getCanonicalArtifactVersion(db, versionIdFor(seriesId, input.source_kind, legacyKey));
-  return legacy && artifactVersionEvidence(input) === artifactVersionEvidence(legacy) ? legacy : null;
+  const keys = new Set([legacyKey]);
+  if (registeredFile && input.source_kind === 'tracked_repo') {
+    // Registered file writes used both automatic key shapes; explicit producer keys remain distinct.
+    keys.add(`${input.commit_sha}:${input.repo_path}`);
+    keys.add(`${input.source_project_id}:${input.commit_sha}:${input.repo_path}`);
+  }
+  for (const key of keys) {
+    const legacy = getCanonicalArtifactVersion(db, versionIdFor(seriesId, input.source_kind, key));
+    if (legacy && artifactVersionEvidence(input) === artifactVersionEvidence(legacy)) return legacy;
+  }
+  return null;
 }
 
 export function appendArtifactVersion(
@@ -5509,7 +5518,7 @@ function commitPreparedArtifactVersion(db: Db, plan: ArtifactVersionPlan, prepar
         label: input.label, note: input.note, metadata: prepared.metadata,
       };
       const seriesId = legacySeriesIdFromCanonicalArtifact(logicalId);
-      const repeated = findRepeatedArtifactVersion(db, seriesId, evidence);
+      const repeated = findRepeatedArtifactVersion(db, seriesId, evidence, true);
       if (repeated) return { ok: true, value: { series: getArtifactSeries(db, seriesId)!,
         artifact: projectCanonicalArtifactRecord(getArtifactBlob(db, repeated.content_hash)!, getLogicalArtifact(db, logicalId), repeated),
         version: projectCanonicalVersionRecord(db, repeated), created: false, warnings: plan.warnings } };

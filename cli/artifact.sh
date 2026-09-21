@@ -646,9 +646,6 @@ cmd_ingest_like() {
       mode="copy"
     fi
   fi
-  if (( ${#paths[@]} > 1 )) && { (( upload || blob_only )) || api_is_file_rpc; }; then
-    die "Batch ingest requires daemon-visible paths; upload, file-RPC and blob-only accept one path per command" 2
-  fi
   if [[ -n "$commit" || -n "$project" ]] && { (( upload || blob_only )) || api_is_file_rpc; }; then
     die "--project/--commit ingestion requires daemon-visible repository paths over HTTP" 2
   fi
@@ -673,6 +670,7 @@ PYBATCH
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
   local registered='[]' failed='[]' planned='[]' payload response result version_payload version_response
+  local abs resp_tmp resp_status err availability
   local needs_bytes=0
   [[ "$mode" == "copy" || "$mode" == "managed" ]] && needs_bytes=1
   for path_arg in "${paths[@]}"; do
@@ -688,7 +686,6 @@ PYBATCH
                    then ($payload + {content_transport:"daemon-visible path or file-RPC attachment (bytes omitted in dry-run)"})
                    else $payload end)}]')"
       elif (( ! blob_only )); then
-        local abs resp_tmp resp_status err
         abs="$(python_path abs "$path_arg")"
         if (( upload )) || api_is_file_rpc; then
           version_payload="$(artifact_version_payload_for_upload "$payload" "${issue_id:-}")"
@@ -713,7 +710,6 @@ PYBATCH
         fi
         registered="$(printf '%s' "$registered" | jq --argjson result "$(printf '%s' "$version_response" | jq '.result')" '. + [$result]')"
       elif (( needs_bytes )); then
-        local abs resp_tmp resp_status err availability
         abs="$(python_path abs "$path_arg")"
         resp_tmp="$(mktemp)"
         resp_status="$(api_send_content POST "/api/artifacts/ingest" "$payload" "content_path" "$abs" "$resp_tmp")"
