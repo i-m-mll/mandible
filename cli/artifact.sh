@@ -70,7 +70,7 @@ artifact_api_request() {
 usage() {
   cat <<'EOF'
 Usage:
-  mandible artifact ingest <path...> [--artifact <artifact-ref>] [--issue <id>] [--role <role>] [--managed|--copy|--link] [--upload] [--allow-local-only] [--allow-dirty-link] [--blob-only] [--dry-run] [--json]
+  mandible artifact ingest <path...> [--project <project>] [--commit <git-ref>] [--artifact <artifact-ref>] [--issue <id>] [--role <role>] [--managed|--copy|--link] [--upload] [--allow-local-only] [--allow-dirty-link] [--blob-only] [--dry-run] [--json]
   mandible artifact ref <uri...> [--issue <id>] [--role <role>] [--json]
   mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--pinned|--living] [--json]
   mandible artifact resolve <ref> [--json]
@@ -81,6 +81,7 @@ Usage:
   mandible artifact show <ref> [--json]
   mandible artifact content <ref> [--output <path>] [--json]
   mandible artifact check <ref...> [--json]
+  mandible artifact move <artifact-ref> [--project <project>] [--path <path>] [--if-revision <n>] [--reconcile] [--json]
   mandible artifact source show <artifact-ref> [--json]
   mandible artifact source move <artifact-ref> --expected-revision <n> --source <json> [--reconcile] [--json]
   mandible artifact versions <ref> [--json]
@@ -571,7 +572,7 @@ payload_for_path() {
 print_batch_human() {
   api_jq_human '
     (.registered[]? |
-      if .version then "registered \(.version | mandible_display_ref) in \(.series | mandible_display_ref)"
+      if .version then "\(.status // (if .created == false then "unchanged" elif .version.version_no == 1 then "created" else "updated" end)) \(.artifact | mandible_display_ref) \(.version | mandible_display_ref)"
       elif .blob_only then "registered blob \(.artifact | mandible_display_ref)"
       else "registered \(.artifact | mandible_display_ref) \(.artifact.custody_mode) \(.artifact.metadata.recoverability // .artifact.reference.recoverability // "-")" end),
     (.linked[]? | "linked \(.artifact | mandible_display_ref) \(.link.link_type) issue:\(.link.entity_id | mandible_short_id)"),
@@ -610,10 +611,12 @@ artifact_version_payload_for_upload() {
 cmd_ingest_like() {
   local mode="$1"
   shift
-  local artifact_target="" issue="" role="" json=0 dry_run=0 allow_local=0 allow_dirty=0 upload=0 mode_explicit=0 blob_only=0 relation="references"
+  local project="" commit="" artifact_target="" issue="" role="" json=0 dry_run=0 allow_local=0 allow_dirty=0 upload=0 mode_explicit=0 blob_only=0 relation="references"
   local paths=()
   while (( $# > 0 )); do
     case "$1" in
+      --project) project="$2"; shift 2 ;;
+      --commit) commit="$2"; shift 2 ;;
       --artifact) artifact_target="$2"; shift 2 ;;
       --issue) issue="$2"; shift 2 ;;
       --role) role="$2"; shift 2 ;;
@@ -642,6 +645,30 @@ cmd_ingest_like() {
       fi
       mode="copy"
     fi
+  fi
+  if (( ${#paths[@]} > 1 )) && { (( upload || blob_only )) || api_is_file_rpc; }; then
+    die "Batch ingest requires daemon-visible paths; upload, file-RPC and blob-only accept one path per command" 2
+  fi
+  if [[ -n "$commit" || -n "$project" ]] && { (( upload || blob_only )) || api_is_file_rpc; }; then
+    die "--project/--commit ingestion requires daemon-visible repository paths over HTTP" 2
+  fi
+  if (( ! upload && ! blob_only )) && ! api_is_file_rpc && { (( ${#paths[@]} > 1 )) || [[ -n "$commit" || -n "$project" ]]; }; then
+    local batch_payload batch_result
+    batch_payload="$(python3 - "$PWD" "$commit" "$project" "$artifact_target" "$mode" "$role" "$issue" "$dry_run" "$allow_local" "$allow_dirty" "${paths[@]}" <<'PYBATCH'
+import json, os, sys
+cwd, commit, project, artifact, mode, role, issue, dry_run, allow_local, allow_dirty, *paths = sys.argv[1:]
+body = dict(paths=paths if commit else [os.path.abspath(os.path.expanduser(p)) for p in paths], cwd=cwd,
+            custody_mode=mode, dry_run=dry_run == '1', allow_local_only=allow_local == '1', allow_dirty_link=allow_dirty == '1')
+body.update({k: v for k, v in dict(commit=commit, project=project, artifact_id=artifact, role=role, issue=issue).items() if v})
+print(json.dumps(body))
+PYBATCH
+)"
+    batch_result="$(artifact_api_request POST "/api/artifacts/ingest" "$batch_payload")" || return $?
+    if (( json )); then printf '%s\n' "$batch_result" | jq .
+    elif (( dry_run )); then printf '%s\n' "$batch_result" | jq '.plans'
+    else printf '%s\n' "$batch_result" | print_batch_human
+    fi
+    return 0
   fi
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
@@ -1177,6 +1204,35 @@ cmd_diff() {
 
 # Explicit recording selects custody and a canonical target; source changes
 # require a guarded move. Ordinary ingest resolves the registered source.
+cmd_move() {
+  local ref="${1:-}" project="" target_path="" revision="" reconcile=0 json=0
+  [[ -n "$ref" ]] || die "Usage: mandible artifact move <artifact> [--project P] [--path PATH] [--if-revision N]" 2
+  shift
+  while (( $# > 0 )); do
+    case "$1" in
+      --project) project="$2"; shift 2 ;;
+      --path) target_path="$2"; shift 2 ;;
+      --if-revision) revision="$2"; shift 2 ;;
+      --reconcile) reconcile=1; shift ;;
+      --json) json=1; shift ;;
+      *) die "Unknown option: $1" 2 ;;
+    esac
+  done
+  [[ -n "$project" || -n "$target_path" ]] || die "move requires --project or --path" 2
+  [[ -z "$revision" || "$revision" =~ ^[0-9]+$ ]] || die "--if-revision must be a nonnegative integer" 2
+  require_tools
+  local payload response
+  payload="$(jq -n --arg artifact_id "$ref" --arg project "$project" --arg path "$target_path" --arg revision "$revision" --argjson reconcile "$reconcile" '
+    {artifact_id:$artifact_id,reconcile:($reconcile == 1)}
+    + (if $project == "" then {} else {project:$project} end)
+    + (if $path == "" then {} else {path:$path} end)
+    + (if $revision == "" then {} else {expected_revision:($revision|tonumber)} end)')"
+  response="$(artifact_api_request POST "/api/artifacts/source/move" "$payload")" || return $?
+  if (( json )); then printf '%s\n' "$response" | jq .
+  else printf '%s\n' "$response" | api_jq_human '"\(.status) \(.source.artifact_id | mandible_display_ref)"'
+  fi
+}
+
 cmd_source() {
   local operation="${1:-}" ref="${2:-}"
   [[ "$operation" == "show" || "$operation" == "move" ]] && [[ -n "$ref" ]] \
@@ -1623,6 +1679,7 @@ fi
 cmd="$1"
 shift
 case "$cmd" in
+  move) cmd_move "$@" ;;
   source) cmd_source "$@" ;;
   ingest) cmd_ingest_like "link" "$@" ;;
   snapshot) cmd_snapshot "$@" ;;

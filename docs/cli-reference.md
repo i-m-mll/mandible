@@ -89,8 +89,9 @@ mandible search "<query>" [--provider claude|gemini|codex|all] [--role user|assi
   [--since Nd] [--limit N] [--title]             # NO --json flag
 
 ## ARTIFACT
-mandible artifact ingest <path...> [--issue <id>] [--role R] [--managed|--copy|--link]
+mandible artifact ingest <path...> [--project P] [--commit REF] [--artifact REF] [--issue <id>] [--role R] [--managed|--copy|--link]
   [--upload] [--allow-local-only] [--allow-dirty-link] [--dry-run] [--json]
+mandible artifact move <artifact-ref> [--project P] [--path PATH] [--if-revision N] [--reconcile] [--json]
 mandible artifact list [--repo R] [--issue <id>] [--role R] [--custody M] [--json]
 mandible artifact show <ref> [--json]
 mandible artifact resolve <ref> [--json]

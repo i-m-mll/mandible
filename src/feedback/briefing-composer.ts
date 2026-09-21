@@ -922,13 +922,17 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         }
       }
       const contributionIds = contributions.map((entry) => String(entry.id));
-      const artifact = recordArtifactVersion(db, { source_kind: "managed", content: markdown,
+      // Report rounds deliberately reuse prior document bytes; run provenance belongs to the publication receipt.
+      const priorDocument = db.prepare(`SELECT id FROM artifact_version WHERE artifact_id=? AND content_hash=?
+        AND source_kind='managed' AND custody_mode='managed' ORDER BY version_no DESC LIMIT 1`)
+        .get(current.logicalArtifactId, createHash('sha256').update(markdown).digest('hex')) as { id: string } | undefined;
+      const artifactVersionId = priorDocument?.id ?? recordArtifactVersion(db, { source_kind: "managed", content: markdown,
         artifact_id: current.logicalArtifactId, logical_name: current.logicalName, title: current.title,
         role: "briefing-document", media_type: "text/markdown",
         metadata: { composer: BRIEFING_COMPOSITION_SCHEMA,
-          previous_current_artifact_version_id: current.artifactVersionId } }, now);
+          previous_current_artifact_version_id: current.artifactVersionId } }, now).version.id;
       const published = publishBriefingReportRound(db, { briefing_id: current.briefingId,
-        artifact_version_ref: artifact.version.id,
+        artifact_version_ref: artifactVersionId,
         expected_current_round_id: inputs.get(documentRoutes[0].route_key)!.expected_current_round_id!,
         expected_current_artifact_version_ref: current.artifactVersionId,
         responder_user_ids: request.responder_user_ids }, now);

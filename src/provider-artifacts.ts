@@ -1,4 +1,4 @@
-import { artifactFailure, artifactRequiredProjects, getArtifactCurrentSource, lookupArtifactCurrentSource, sourceKey, validateArtifactSource, type ArtifactSource, type ArtifactLifecycleResult } from './artifact-source.js';
+import { artifactFailure, artifactSourceLineage, artifactRequiredProjects, getArtifactCurrentSource, lookupArtifactCurrentSource, sourceKey, validateArtifactSource, type ArtifactSource, type ArtifactLifecycleResult } from './artifact-source.js';
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -8,6 +8,7 @@ import type { Db } from "./db.js";
 import { columnExists, tableExists } from "./db-introspection.js";
 import { mediaTypeForPath } from "./artifact-media-type.js";
 import {
+  readCommittedArtifactFiles, type CommittedArtifactFile,
   resolveCanonicalArtifactRepoForRoot,
   resolveCanonicalArtifactRepoRef,
 } from "./artifact-repo-resolution.js";
@@ -5083,6 +5084,29 @@ function canonicalParentVersionId(db: Db, artifactId: string, versionNo: number)
   return parent.id;
 }
 
+type VersionEvidenceInput = {
+  [K in keyof Omit<AppendArtifactVersionInput, 'series_id' | 'artifact_id' | 'source_kind'>]?: AppendArtifactVersionInput[K] | null;
+};
+function artifactVersionEvidence(input: VersionEvidenceInput): string {
+  return stableJsonStringify({
+    hash: input.content_hash, project: input.source_project_id ?? null, commit: input.commit_sha ?? null,
+    path: input.repo_path ?? null, observed: input.commit_sha ? null : input.observed_path ?? null,
+    custody: input.custody_mode ?? null, label: input.label ?? null, note: input.note ?? null, metadata: input.metadata ?? {},
+  });
+}
+function artifactEvidenceVersionId(seriesId: string, input: Omit<AppendArtifactVersionInput, 'series_id' | 'artifact_id'>): string {
+  return versionIdFor(seriesId, input.source_kind, stableJsonStringify([input.natural_key ?? null, artifactVersionEvidence(input)]));
+}
+
+function findRepeatedArtifactVersion(db: Db, seriesId: string, input: Omit<AppendArtifactVersionInput, 'series_id' | 'artifact_id'>): CanonicalArtifactVersionRecord | null {
+  const current = getCanonicalArtifactVersion(db, artifactEvidenceVersionId(seriesId, input));
+  if (current) return current;
+  const legacyKey = input.natural_key ?? (input.source_kind === 'tracked_repo'
+    ? `${input.commit_sha ?? ''}:${input.repo_path ?? ''}` : input.content_hash);
+  const legacy = getCanonicalArtifactVersion(db, versionIdFor(seriesId, input.source_kind, legacyKey));
+  return legacy && artifactVersionEvidence(input) === artifactVersionEvidence(legacy) ? legacy : null;
+}
+
 export function appendArtifactVersion(
   db: Db,
   input: AppendArtifactVersionInput,
@@ -5111,7 +5135,8 @@ export function appendArtifactVersion(
     const state = getArtifactCurrentSource(db, logicalId);
     if (!state?.source || state.reconciliation_reason) throw new Error('Artifact source requires reconciliation');
     if (input.source_kind === 'tracked_repo' || (input.source_kind === 'local_only' && input.repo_path)) {
-      if (state.source.kind !== 'repo' || state.source.project_id !== input.source_project_id || state.source.path !== input.repo_path) {
+      if ((state.source.kind !== 'repo' || state.source.project_id !== input.source_project_id || state.source.path !== input.repo_path)
+        && !(input.commit_sha && input.source_project_id && input.repo_path && artifactSourceLineage(db, { kind: 'repo', project_id: input.source_project_id, path: input.repo_path }).includes(logicalId))) {
         throw new Error('Version source does not match registered source');
       }
     } else if (input.source_kind === 'local_only' && (state.source.kind !== 'local' || state.source.path !== input.observed_path)) {
@@ -5119,17 +5144,9 @@ export function appendArtifactVersion(
     }
     if (input.source_kind === 'tracked_repo') {
       if (!input.commit_sha || !/^[a-f0-9]{40,64}$/i.test(input.commit_sha) || !input.repo_path || !input.source_project_id) throw new Error('Tracked versions require canonical repository, commit and path');
-      const repeated = db.prepare(`SELECT * FROM artifact_version WHERE artifact_id=? AND source_kind='tracked_repo'
-        AND source_project_id=? AND commit_sha=? AND repo_path=? AND content_hash=? LIMIT 1`)
-        .get(logicalId,input.source_project_id,input.commit_sha,input.repo_path,input.content_hash) as Record<string,unknown>|undefined;
-      if (repeated) return {version:projectCanonicalVersionRecord(db,canonicalArtifactVersionFromRow(repeated)),created:false};
     }
-    const naturalKey = input.natural_key
-      ?? (input.source_kind === "tracked_repo"
-        ? `${input.commit_sha ?? ""}:${input.repo_path ?? ""}`
-        : input.content_hash);
-    const versionId = versionIdFor(series.id, input.source_kind, naturalKey);
-    const existing = getCanonicalArtifactVersion(db, versionId);
+    const versionId = artifactEvidenceVersionId(series.id, input);
+    const existing = findRepeatedArtifactVersion(db, series.id, input);
     if (existing) return { version: projectCanonicalVersionRecord(db, existing), created: false };
     const nextNo = Number((db.prepare(
       "SELECT COALESCE(MAX(version_no), 0) AS n FROM artifact_version WHERE artifact_id = ?",
@@ -5198,6 +5215,9 @@ export function appendArtifactVersion(
 }
 
 export interface RecordArtifactVersionInput {
+  commit?: string;
+  project?: string;
+  cwd?: string;
   artifact_id?: string;
   source?: ArtifactSource;
   source_kind: ArtifactVersionSourceKind;
@@ -5249,10 +5269,46 @@ interface PreparedArtifactVersion {
   media_type?: string;
   owner_project_id: string | null;
   metadata: JsonRecord;
+  committed?: CommittedArtifactFile;
 }
 const versionPlans = new WeakMap<ArtifactVersionPlan, PreparedArtifactVersion>();
 
 export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): ArtifactLifecycleResult<ArtifactVersionPlan> {
+  try {
+    const committed = input.commit ? readCommittedArtifactFiles(db, {
+      project: input.project, cwd: input.cwd, commit: input.commit, paths: [input.path ?? ''],
+    })[0] : undefined;
+    return prepareArtifactVersion(db, input, committed);
+  } catch (error) { return artifactFailure('invalid_input', String(error)); }
+}
+
+export function planArtifactVersionBatch(db: Db, inputs: RecordArtifactVersionInput[]): ArtifactLifecycleResult<ArtifactVersionPlan[]> {
+  try {
+    const plans: ArtifactVersionPlan[] = [];
+    const groups = new Map<string, { indices: number[]; input: RecordArtifactVersionInput }>();
+    inputs.forEach((input, index) => {
+      if (!input.commit) return;
+      const key = JSON.stringify([input.project, input.cwd, input.commit]);
+      const group = groups.get(key) ?? { indices: [], input };
+      group.indices.push(index); groups.set(key, group);
+    });
+    const committed = new Map<number, CommittedArtifactFile>();
+    for (const {indices, input} of groups.values()) {
+      const files = readCommittedArtifactFiles(db, { project: input.project, cwd: input.cwd,
+        commit: input.commit!, paths: indices.map(i => inputs[i].path ?? '') });
+      indices.forEach((index, i) => committed.set(index, files[i]));
+    }
+    for (const [i, input] of inputs.entries()) {
+      const plan = prepareArtifactVersion(db, input, committed.get(i));
+      if (!plan.ok) return plan;
+      if (plans.some(p => sourceKey(p.source) === sourceKey(plan.value.source))) return artifactFailure('invalid_input', 'Batch paths must name distinct sources');
+      plans.push(plan.value);
+    }
+    return { ok: true, value: plans };
+  } catch (error) { return artifactFailure('invalid_input', String(error)); }
+}
+
+function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, committed?: CommittedArtifactFile): ArtifactLifecycleResult<ArtifactVersionPlan> {
   try {
     if (!VERSION_SOURCE_KINDS.has(input.source_kind)) return artifactFailure('invalid_input', `unsupported version source_kind: ${input.source_kind}`);
     let source: ArtifactSource;
@@ -5272,7 +5328,11 @@ export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): 
     const named = input.artifact_id ? getLogicalArtifactPrefix(db, input.artifact_id) : null;
     if (named && named.status !== 'resolved') return artifactFailure('unknown_artifact', 'Canonical artifact ID did not resolve unambiguously');
     const explicit = named?.value ?? null;
-    if (input.path) {
+    if (committed) {
+      bytes = committed.bytes;
+      logicalName ??= path.posix.basename(committed.path);
+      mediaType ??= mediaTypeForPath(committed.path);
+    } else if (input.path) {
       local = planLocalArtifactPath(db, { path: input.path, custody_mode: 'link' });
       bytes = fs.readFileSync(local.resolved_path);
       if (hashBuffer(bytes) !== local.sha256) return artifactFailure('stale_plan', 'File changed while planning');
@@ -5291,7 +5351,14 @@ export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): 
       bytes = bufferFromSnapshotInput(input);
     } else return artifactFailure('invalid_input', 'Version requires a path, content, content_base64, json, or ref');
 
-    if (local) {
+    if (committed) {
+      projectId = committed.project_id; repoId = committed.project_key;
+      repoPath = committed.path; commit = committed.commit;
+      source = { kind: 'repo', project_id: projectId, path: repoPath };
+      seriesKey ??= `repo:${repoId}:${repoPath}`;
+      kind = input.custody_mode === 'copy' || input.custody_mode === 'managed' ? 'managed' : 'tracked_repo';
+      if (input.source && sourceKey(input.source) !== sourceKey(source)) return artifactFailure('source_mismatch', 'Declared source differs from committed source');
+    } else if (local) {
       const git = local.git_state;
       const repo = resolveCanonicalArtifactRepoForRoot(db, git.repo_root ?? path.dirname(local.resolved_path));
       if (repo && !repo.ok && repo.reason === 'ambiguous_repo') return artifactFailure('invalid_source', 'Repository is ambiguous');
@@ -5334,15 +5401,23 @@ export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): 
     }
     const valid = validateArtifactSource(db, source);
     if (!valid.ok) return valid;
-    const lookup = lookupArtifactCurrentSource(db, source);
+    if (input.project) {
+      const project = resolveCanonicalArtifactRepoRef(db, input.project);
+      if (!project.ok || source.kind !== 'repo' || source.project_id !== project.project_id) return artifactFailure('source_mismatch', 'Selected project differs from source repository');
+    }
+    const lineage = committed ? artifactSourceLineage(db, source) : [];
+    if (committed && explicit && !lineage.includes(explicit.id)) return artifactFailure('source_mismatch', 'Historical target has no source lineage for this path');
+    if (committed && !explicit && lineage.length > 1) return artifactFailure('ambiguous_source', 'Historical path belongs to multiple artifacts; select --artifact');
+    const lookup = committed ? { ok: true as const, value: null } : lookupArtifactCurrentSource(db, source);
     if (!lookup.ok) return lookup;
-    let target = explicit ?? (lookup.value ? getLogicalArtifact(db, lookup.value.artifact_id) : null);
+    const target = explicit ?? (committed && lineage.length === 1 ? getLogicalArtifact(db, lineage[0])
+      : lookup.value ? getLogicalArtifact(db, lookup.value.artifact_id) : null);
     // A creation label cannot redirect a write to a different registered source.
     const keyed = input.series_key ? getLogicalArtifactForSeriesRef(db, input.series_key) : null;
     if (keyed && (!target || keyed.id !== target.id)) return artifactFailure('source_mismatch', 'series_key names a different artifact; use its canonical artifact_id and registered source');
     const state = target ? getArtifactCurrentSource(db, target.id) : null;
     if (target && (!state || state.reconciliation_reason || !state.source)) return artifactFailure('reconciliation_required', state?.reconciliation_reason ?? 'Artifact current source is missing');
-    if (state?.source && sourceKey(state.source) !== sourceKey(source)) return artifactFailure('source_mismatch', 'Artifact source differs; use an explicit guarded source move');
+    if (!committed && state?.source && sourceKey(state.source) !== sourceKey(source)) return artifactFailure('source_mismatch', 'Artifact source differs; use an explicit guarded source move');
     if (lookup.value && target && lookup.value.artifact_id !== target.id) return artifactFailure('source_mismatch', 'Source is registered to another artifact');
     let ownerProject: string | null = null;
     if (input.repo_id) {
@@ -5352,7 +5427,7 @@ export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): 
     }
     if (target) ownerProject = target.source_project_id;
     else ownerProject ??= projectId ?? (source.kind === 'repo' ? source.project_id : null);
-    const required = artifactRequiredProjects(db, target?.id ?? null, source);
+    const required = artifactRequiredProjects(db, target?.id ?? null, state?.source ?? null, source);
     if (ownerProject && !required.includes(ownerProject)) required.push(ownerProject);
     const plan: ArtifactVersionPlan = {
       artifact_id: target?.id ?? null, source, expected_source_revision: state?.revision ?? null,
@@ -5362,7 +5437,7 @@ export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): 
       commit_sha: commit, repo_path: repoPath, source_project_id: projectId, source_repo_id: repoId,
       observed_path: observed, warnings: Array.from(new Set(warnings)),
     };
-    versionPlans.set(plan, { db, input: structuredClone(input), bytes, frozen: JSON.stringify(plan),
+    versionPlans.set(plan, { db, input: structuredClone(input), bytes, committed, frozen: JSON.stringify(plan),
       series_key: seriesKey!, logical_name: logicalName, media_type: mediaType, owner_project_id: ownerProject,
       metadata: mergeJsonRecords(input.metadata, input.source_kind === "tracked_repo" && kind === "local_only"
         ? { head_commit: local?.git_state.commit, dirty_at_commit: local?.git_state.commit } : {}) });
@@ -5370,16 +5445,46 @@ export function planArtifactVersion(db: Db, input: RecordArtifactVersionInput): 
   } catch (error) { return artifactFailure('invalid_input', String(error)); }
 }
 
+function revalidateArtifactVersion(db: Db, plan: ArtifactVersionPlan): ArtifactLifecycleResult<PreparedArtifactVersion> {
+  const prepared = versionPlans.get(plan);
+  if (!prepared || prepared.db !== db || prepared.frozen !== JSON.stringify(plan)) return artifactFailure('stale_plan', 'Version plan is not an unchanged issued plan');
+  const fresh = prepareArtifactVersion(db, prepared.input, prepared.committed);
+  if (!fresh.ok) return fresh;
+  if (JSON.stringify(fresh.value) !== prepared.frozen) return artifactFailure('stale_plan', 'Artifact source, ownership, or content changed after planning');
+  return { ok: true, value: prepared };
+}
+
+export function commitArtifactVersionBatch(db: Db, plans: ArtifactVersionPlan[], now = Date.now(), artifactRoot = getArtifactRoot(db)): ArtifactLifecycleResult<ArtifactVersionRecordResult[]> {
+  try {
+    return db.transaction((): ArtifactLifecycleResult<ArtifactVersionRecordResult[]> => {
+      for (const plan of plans) {
+        const checked = revalidateArtifactVersion(db, plan);
+        if (!checked.ok) return checked;
+      }
+      const results = plans.map(plan => {
+        const result = commitPreparedArtifactVersion(db, plan, versionPlans.get(plan)!, now, artifactRoot);
+        if (!result.ok) throw new Error(result.error.message);
+        return result.value;
+      });
+      return { ok: true, value: results };
+    }).immediate();
+  } catch (error) { return artifactFailure('storage_error', String(error)); }
+}
+
 export function commitArtifactVersion(
   db: Db, plan: ArtifactVersionPlan, now = Date.now(), artifactRoot = getArtifactRoot(db),
 ): ArtifactLifecycleResult<ArtifactVersionRecordResult> {
-  const prepared = versionPlans.get(plan);
-  if (!prepared || prepared.db !== db || prepared.frozen !== JSON.stringify(plan)) return artifactFailure('stale_plan', 'Version plan is not an unchanged issued plan');
+  return db.transaction((): ArtifactLifecycleResult<ArtifactVersionRecordResult> => {
+    const checked = revalidateArtifactVersion(db, plan);
+    if (!checked.ok) return checked;
+    return commitPreparedArtifactVersion(db, plan, checked.value, now, artifactRoot);
+  }).immediate();
+}
+
+function commitPreparedArtifactVersion(db: Db, plan: ArtifactVersionPlan, prepared: PreparedArtifactVersion,
+  now: number, artifactRoot: string): ArtifactLifecycleResult<ArtifactVersionRecordResult> {
   try {
     return db.transaction((): ArtifactLifecycleResult<ArtifactVersionRecordResult> => {
-      const fresh = planArtifactVersion(db, prepared.input);
-      if (!fresh.ok) return fresh;
-      if (JSON.stringify(fresh.value) !== prepared.frozen) return artifactFailure('stale_plan', 'Artifact source, ownership, or content changed after planning');
       const input = prepared.input;
       let logicalId = plan.artifact_id;
       if (!logicalId) {
@@ -5395,6 +5500,19 @@ export function commitArtifactVersion(
       const linked = plan.custody_mode === 'link';
       const custody = plan.custody_mode;
       const locator = linked ? { repo_id: plan.source_project_id, path: plan.repo_path, commit: plan.commit_sha } : {};
+      const evidence = {
+        source_kind: plan.source_kind, content_hash: plan.content_hash,
+        source_project_id: plan.source_project_id ?? undefined, source_repo_id: plan.source_repo_id ?? undefined,
+        natural_key: linked ? `${plan.source_project_id}:${plan.commit_sha}:${plan.repo_path}` : undefined,
+        commit_sha: plan.commit_sha ?? undefined, repo_path: plan.repo_path ?? undefined,
+        observed_path: plan.observed_path ?? undefined, custody_mode: custody,
+        label: input.label, note: input.note, metadata: prepared.metadata,
+      };
+      const seriesId = legacySeriesIdFromCanonicalArtifact(logicalId);
+      const repeated = findRepeatedArtifactVersion(db, seriesId, evidence);
+      if (repeated) return { ok: true, value: { series: getArtifactSeries(db, seriesId)!,
+        artifact: projectCanonicalArtifactRecord(getArtifactBlob(db, repeated.content_hash)!, getLogicalArtifact(db, logicalId), repeated),
+        version: projectCanonicalVersionRecord(db, repeated), created: false, warnings: plan.warnings } };
       const artifact = ingestArtifact(db, {
         ...(linked ? { sha256: plan.content_hash, uri: `repo://${plan.source_repo_id}@${plan.commit_sha}/${plan.repo_path}` }
           : { content_buffer: prepared.bytes }),
@@ -5404,15 +5522,7 @@ export function commitArtifactVersion(
         metadata: mergeJsonRecords(input.metadata, { recoverability: linked ? 'repo_commit' : 'mandible_cas',
           observed_path: plan.observed_path, filename: prepared.logical_name }),
       }, now, artifactRoot);
-      const seriesId = legacySeriesIdFromCanonicalArtifact(logicalId);
-      const appended = appendArtifactVersion(db, {
-        series_id: seriesId, artifact_id: artifact.id, source_kind: plan.source_kind, content_hash: plan.content_hash,
-        source_project_id: plan.source_project_id ?? undefined, source_repo_id: plan.source_repo_id ?? undefined,
-        natural_key: linked ? `${plan.source_project_id}:${plan.commit_sha}:${plan.repo_path}` : undefined,
-        commit_sha: plan.commit_sha ?? undefined, repo_path: plan.repo_path ?? undefined,
-        observed_path: plan.observed_path ?? undefined, custody_mode: custody,
-        label: input.label, note: input.note, metadata: prepared.metadata,
-      }, now);
+      const appended = appendArtifactVersion(db, { ...evidence, series_id: seriesId, artifact_id: artifact.id }, now);
       return { ok: true, value: { series: getArtifactSeries(db, seriesId)!,
         artifact: projectCanonicalArtifactRecord(getArtifactBlob(db, artifact.content_hash)!, getLogicalArtifact(db, logicalId), getCanonicalArtifactVersion(db, appended.version.id)),
         ...appended, warnings: plan.warnings } };

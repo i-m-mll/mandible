@@ -203,8 +203,12 @@
       "description": "List ledger tables and views, print their exact CREATE statements, or report the open database's path, size, journal mode, and write-ahead-log bytes. Same read-only connection as `mandible db query`; these replace the sqlite3 dot-commands so exploring the schema never requires opening the database file by hand."
     },
     {
-      "name": "mandible artifact ingest <path...> [--artifact <artifact-ref>] [--blob-only] [--json]",
-      "description": "Resolve the registered current source and record a logical artifact version. --artifact targets one canonical artifact and requires a matching source. Reusing a moved source creates a new artifact. --blob-only is the explicit low-level escape hatch for registering immutable bytes without a logical artifact/version identity."
+      "name": "mandible artifact ingest <path...> [--project <project>] [--commit <git-ref>] [--artifact <artifact-ref>] [--blob-only] [--json]",
+      "description": "Record logical artifact versions by registered source. --commit reads tracked Git objects from a registered project without checkout; paths are repository-relative and --project accepts friendly refs. Historical ingestion retains the current source and requires unique current/historical lineage, or --artifact when a former path was reused. Host-visible multi-path ingestion uses one atomic metadata request; all paths are validated and authorized before writes. Exact retries are unchanged. Multi-path upload, file-RPC, and blob-only modes are unsupported and fail before writes."
+    },
+    {
+      "name": "mandible artifact move <artifact-ref> [--project <project>] [--path <path>] [--if-revision <n>] [--reconcile] [--json]",
+      "description": "Change source registration in one transactional request. Omitted fields retain current values; request at least one field. Friendly project refs resolve on the server. Requires artifact, owner, current-source and destination write access; preserves filesystem, ownership and history. Optional --if-revision rejects stale state, occupied destinations fail, and no-op moves are unchanged. --reconcile explicitly resolves legacy source ambiguity."
     },
     {
       "name": "mandible artifact source show <artifact-ref> [--json]",

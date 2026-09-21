@@ -135,7 +135,7 @@ describe("artifact write authorization", () => {
       body: { artifact_id: id, expected_revision: initial.revision, source: { kind: "repo", project_id: projects[1].id, path: "old.md" } } });
     expect(origin.status, JSON.stringify(origin.body)).toBe(200);
     const body = { artifact_id: id, expected_revision: getArtifactCurrentSource(db, id)!.revision,
-      source: { kind: "repo", project_id: projects[2].id, path: "new.md" } };
+      project: "destination", path: "new.md" };
     for (const project of projects) {
       const before = snapshot();
       expect((await invoke("POST", "/api/artifacts/source/move", body)).status).toBe(403);
@@ -243,8 +243,35 @@ describe("artifact write authorization", () => {
     expect((await invoke("POST", "/api/briefings/runs", changed)).status).toBe(200);
   });
 
+  it("validates and authorizes every batch member before custody or metadata mutations", async () => {
+    const first = path.join(root, 'first.md'), second = path.join(root, 'second.md');
+    fs.writeFileSync(first, 'first'); fs.writeFileSync(second, 'second');
+    const owned = recordArtifactVersion(db, { source_kind: 'local_only', path: second });
+    const project = addProject(db, { project_key: 'batch-owner', display_name: 'Batch owner' });
+    setProjectRestricted(db, project.id, true);
+    db.prepare('UPDATE artifact SET source_project_id=? WHERE id=?').run(project.id, owned.series.id.replace('artifact-series:', 'artifact:'));
+    fs.writeFileSync(second, 'changed');
+    const before = snapshot();
+    expect((await invoke('POST', '/api/artifacts/ingest', { paths: [first, second], custody_mode: 'copy' })).status).toBe(403);
+    expect(snapshot()).toEqual(before);
+    grant(project.id);
+    for (const paths of [[first, path.join(root, 'missing.md')], [first, first]]) {
+      expect((await invoke('POST', '/api/artifacts/ingest', { paths, custody_mode: 'copy' })).status).toBe(400);
+      expect(snapshot()).toEqual(before);
+    }
+    const result = await invoke('POST', '/api/artifacts/ingest', { paths: [first, second], custody_mode: 'copy' });
+    expect(result.status).toBe(200);
+    expect((result.body as any).registered.map((r: any) => r.status)).toEqual(['created', 'updated']);
+    const after = snapshot();
+    const repeated = await invoke('POST', '/api/artifacts/ingest', { paths: [first, second], custody_mode: 'copy' });
+    expect((repeated.body as any).registered.map((r: any) => r.status)).toEqual(['unchanged', 'unchanged']);
+    expect(snapshot()).toEqual(after);
+  });
+
   it("runs CLI ingest, guarded rename, old-path reuse and exact historical reads against the API", async () => {
+    const requests: string[] = [];
     const server = http.createServer((req, res) => {
+      requests.push(`${req.method} ${req.url}`);
       const chunks: Buffer[] = [];
       req.on("data", chunk => chunks.push(chunk));
       req.on("end", () => {
@@ -273,10 +300,15 @@ describe("artifact write authorization", () => {
       const uploaded = await cli(["ingest", oldPath, "--copy", "--upload"]);
       expect(uploaded.registered[0].series.id).toBe(first.registered[0].series.id);
       expect(uploaded.registered[0].version.commit_sha).toBeNull();
-      const current = await cli(["source", "show", id]);
       fs.renameSync(oldPath, newPath);
-      await cli(["source", "move", id, "--reconcile", "--expected-revision", String(current.source.revision),
-        "--source", JSON.stringify({ kind: "local", path: fs.realpathSync(newPath) })]);
+      const moveStart = requests.length;
+      const moved = await cli(['move', id, '--path', fs.realpathSync(newPath)]);
+      expect(requests.slice(moveStart)).toEqual(['POST /api/artifacts/source/move']);
+      const stableMove = snapshot();
+      expect((await cli(['move', id, '--path', fs.realpathSync(newPath)])).status).toBe('unchanged');
+      expect(snapshot()).toEqual(stableMove);
+      await expect(cli(['move', id, '--path', oldPath, '--if-revision', String(moved.source.revision - 1)])).rejects.toThrow(/revision changed/);
+      expect(snapshot()).toEqual(stableMove);
       fs.writeFileSync(newPath, "updated\n");
       const second = await cli(["ingest", newPath, "--copy", "--artifact", id]);
       expect(second.registered[0].series.id).toBe(first.registered[0].series.id);
@@ -291,7 +323,8 @@ describe("artifact write authorization", () => {
       git("init"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.invalid");
       git("config", "commit.gpgsign", "false");
       const tracked = path.join(repo, "tracked.md"); fs.writeFileSync(tracked, "committed\n");
-      git("add", "tracked.md"); git("commit", "-m", "fixture");
+      fs.writeFileSync(path.join(repo, "forgotten.md"), "historical only\n");
+      git("add", "tracked.md", "forgotten.md"); git("commit", "-m", "fixture");
       const project = addProject(db, { project_key: "tracked-repo", display_name: "Tracked repo" });
       addOrUpdateCheckout(db, project.id, { root: fs.realpathSync(repo), work_repo_id: "tracked-repo" });
       const linked = await cli(["ingest", tracked]);
@@ -306,6 +339,53 @@ describe("artifact write authorization", () => {
       expect(dirty.registered[0].version.commit_sha).toBeNull();
       const historical = readArtifactBytesFull(db, linked.registered[0].version.id);
       expect(historical.ok && historical.bytes.toString()).toBe("committed\n");
+      fs.writeFileSync(tracked, 'committed\n');
+      const commit = git('rev-parse', 'HEAD').toString().trim();
+      git('mv', 'tracked.md', 'renamed.md'); git('rm', 'forgotten.md'); git('commit', '-m', 'rename');
+      await cli(['move', trackedId, '--path', 'renamed.md']);
+      const sourceBeforeHistory = getArtifactCurrentSource(db, trackedId);
+      const historyStart = requests.length, started = performance.now();
+      const imported = await cli(['ingest', 'tracked.md', 'forgotten.md', '--project', 'Tracked repo', '--commit', commit]);
+      expect(imported.registered[0].version.id).toBe(linked.registered[0].version.id);
+      expect(imported.registered[0].status).toBe('unchanged');
+      expect(imported.registered[1].status).toBe('created');
+      expect(readArtifactBytesFull(db, imported.registered[1].version.id)).toMatchObject({ ok: true, bytes: Buffer.from('historical only\n') });
+      expect(requests.slice(historyStart)).toEqual(['POST /api/artifacts/ingest']);
+      console.log(`historical CLI: ${Math.round(performance.now() - started)}ms, 1 request`);
+      expect(getArtifactCurrentSource(db, trackedId)).toEqual(sourceBeforeHistory);
+      fs.writeFileSync(tracked, 'reused path'); git('add', 'tracked.md'); git('commit', '-m', 'reuse');
+      const reusedTracked = await cli(['ingest', tracked]);
+      const reuseId = reusedTracked.registered[0].series.id.replace('artifact-series:', 'artifact:');
+      const ambiguousBefore = snapshot();
+      await expect(cli(['ingest', 'tracked.md', '--project', 'tracked-repo', '--commit', commit])).rejects.toThrow(/multiple artifacts/);
+      expect(snapshot()).toEqual(ambiguousBefore);
+      const selected = await cli(['ingest', 'tracked.md', '--project', 'tracked-repo', '--commit', commit, '--artifact', trackedId]);
+      expect(selected.registered[0].version.id).toBe(linked.registered[0].version.id);
+      await expect(cli(['ingest', 'tracked.md', '--project', 'tracked-repo', '--commit', commit, '--artifact', id])).rejects.toThrow(/no source lineage/);
+      expect(snapshot()).toEqual(ambiguousBefore);
+      await expect(cli(['move', trackedId, '--path', 'tracked.md'])).rejects.toThrow(/already belongs/);
+      expect(snapshot()).toEqual(ambiguousBefore);
+      const other = addProject(db, { project_key: 'other', display_name: 'Other project' });
+      const projectOnly = await cli(['move', trackedId, '--project', 'Other project']);
+      expect(projectOnly.source.source).toEqual({ kind: 'repo', project_id: other.id, path: 'renamed.md' });
+      setProjectRestricted(db, other.id, true);
+      const deniedHistory = snapshot();
+      await expect(cli(['ingest', 'tracked.md', '--project', 'tracked-repo', '--commit', commit, '--artifact', trackedId, '--copy'])).rejects.toThrow(/403/);
+      expect(snapshot()).toEqual(deniedHistory);
+      grant(other.id);
+      const both = await cli(['move', trackedId, '--project', 'tracked-repo', '--path', 'final.md']);
+      expect(both.source.source).toEqual({ kind: 'repo', project_id: project.id, path: 'final.md' });
+      expect(db.prepare('SELECT source_project_id FROM artifact WHERE id=?').get(trackedId)).toEqual({ source_project_id: project.id });
+      const transportStart = requests.length;
+      await expect(cli(['ingest', oldPath, newPath, '--copy', '--upload'])).rejects.toThrow(/Batch ingest requires daemon-visible paths/);
+      expect(requests).toHaveLength(transportStart);
+      const batchStart = requests.length, batchTime = performance.now();
+      const batch = await cli(['ingest', oldPath, newPath, '--copy']);
+      expect(batch.registered).toHaveLength(2);
+      expect(requests.slice(batchStart)).toEqual(['POST /api/artifacts/ingest']);
+      console.log(`two-path CLI: ${Math.round(performance.now() - batchTime)}ms, 1 request`);
+      expect(reuseId).not.toBe(trackedId);
+
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
-  });
+  }, 20_000);
 });

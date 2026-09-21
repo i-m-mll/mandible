@@ -106,6 +106,8 @@ export function commitArtifactSourceMove(db: Db, plan: ArtifactSourceMovePlan, n
       const current = planArtifactSourceMove(db, plan);
       if (!current.ok) return current;
       if (JSON.stringify(current.value) !== issued.frozen) return artifactFailure('stale_plan', 'Source move authorization facts changed');
+      const state = getArtifactCurrentSource(db, plan.artifact_id)!;
+      if (!state.reconciliation_reason && state.source && sourceKey(state.source) === sourceKey(plan.source)) return { ok: true, value: state };
       db.prepare('UPDATE artifact_source SET source_json=?, revision=revision+1, reconciliation_reason=NULL, updated_at=? WHERE artifact_id=?')
         .run(sourceKey(plan.source), now, plan.artifact_id);
       db.prepare(`INSERT INTO artifact_source_move VALUES (?,?,?,?,?,?,?,?)`).run(crypto.randomUUID(), plan.artifact_id,
@@ -114,4 +116,13 @@ export function commitArtifactSourceMove(db: Db, plan: ArtifactSourceMovePlan, n
       return { ok: true, value: getArtifactCurrentSource(db, plan.artifact_id)! };
     }).immediate();
   } catch (error) { return artifactFailure('storage_error', String(error)); }
+}
+
+export function artifactSourceLineage(db: Db, source: ArtifactSource): string[] {
+  const key = sourceKey(source);
+  const rows = db.prepare(`SELECT artifact_id FROM artifact_source WHERE source_json=?
+    UNION SELECT artifact_id FROM artifact_source_move WHERE previous_source_json=? OR source_json=?
+    UNION SELECT artifact_id FROM artifact_version WHERE source_project_id=? AND repo_path=?`)
+    .all(key, key, key, source.kind === 'repo' ? source.project_id : null, source.kind === 'repo' ? source.path : null) as { artifact_id: string }[];
+  return rows.map(row => row.artifact_id);
 }

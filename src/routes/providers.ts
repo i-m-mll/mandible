@@ -32,7 +32,9 @@ import {
   projectArtifactPublicValue,
   publishArtifactDraft,
   planArtifactVersion,
+  planArtifactVersionBatch,
   commitArtifactVersion,
+  commitArtifactVersionBatch,
   registerLocalArtifactPathAsync,
   registerProvider,
   resolveAndLinkArtifact,
@@ -385,6 +387,45 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   app.post("/api/artifacts/ingest", async (req, res) => {
     try {
       const body = bodyRecord(req);
+      if (body.paths !== undefined || body.commit !== undefined) {
+        if (body.blob_only || body.identity_mode === 'blob_only' || body.content_path || body.content_base64) {
+          sendJson(res, 400, { error: 'Batch/commit ingestion requires daemon-visible paths and logical versions', code: 'invalid_input' }); return;
+        }
+        const paths = body.paths ?? [body.path];
+        if (!Array.isArray(paths) || paths.length === 0 || paths.length > 256 || paths.some(p => typeof p !== 'string' || !p.trim())
+          || (body.commit !== undefined && (typeof body.commit !== 'string' || !body.commit.trim()))
+          || (body.project !== undefined && (typeof body.project !== 'string' || !body.project.trim()))
+          || (body.artifact_id && paths.length !== 1)) {
+          sendJson(res, 400, { error: 'Supply 1–256 paths, an optional commit/project, and at most one path with artifact_id', code: 'invalid_input' }); return;
+        }
+        const artifactId = body.artifact_id === undefined ? undefined : canonicalArtifactId(res, body.artifact_id);
+        if (body.artifact_id !== undefined && !artifactId) return;
+        if (typeof body.issue === 'string' && !enforceIssueRefWrite(req, res, body.issue)) return;
+        const inputs: RecordArtifactVersionInput[] = [];
+        for (const path of paths as string[]) {
+          const local = body.commit ? null : await planLocalArtifactPathAsync(getDb(), { ...body, path });
+          if (local && (body.custody_mode ?? 'link') === 'link') {
+            const error = !local.git_state.repo_id ? 'outside_repo_requires_copy_or_managed'
+              : body.issue && local.recoverability === 'repo_worktree' && !body.allow_dirty_link ? 'dirty_link_requires_override'
+              : body.issue && local.recoverability === 'local_only' && !body.allow_local_only ? 'local_only_issue_link_requires_override' : null;
+            if (error) { sendJson(res, 400, { error, code: 'invalid_input' }); return; }
+          }
+          inputs.push({ ...body, artifact_id: artifactId, path,
+            source_kind: body.commit || local?.git_state.tracked && local?.git_state.repo_id ? 'tracked_repo' : 'local_only' });
+        }
+        const batch = getDb().transaction(() => {
+          const plans = lifecycleValue(res, planArtifactVersionBatch(getDb(), inputs));
+          if (!plans || !plans.every(plan => authorizeArtifactPlan(req, res, plan))) return;
+          if (body.dry_run === true) { sendJson(res, 200, { command: 'ingest', dry_run: true, plans, registered: [], failed: [] }); return; }
+          const committed = lifecycleValue(res, commitArtifactVersionBatch(getDb(), plans));
+          if (!committed) return;
+          const registered = committed.map((result, index) => ({ ...result,
+            status: !result.created ? 'unchanged' : plans[index].artifact_id ? 'updated' : 'created' }));
+          return projectArtifactPublicValue(getDb(), { command: 'ingest', registered, failed: [], atomic: true });
+        }).immediate();
+        if (batch) sendJson(res, 200, batch);
+        return;
+      }
       const projectRef = [body.source_project_id, body.project_id, body.project]
         .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
       if (projectRef && !enforceProjectRefWrite(req, res, projectRef)) return;
@@ -863,21 +904,48 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   app.post("/api/artifacts/source/move", (req, res) => {
     try {
-      const actor = requireIdentity(req).user_id;
-      const body = bodyRecord(req);
-      const id = canonicalArtifactId(res, body.artifact_id);
-      if (!id || !enforceArtifactAccess(req, res, id, "write")) return;
-      const source = sourceInput(body.source);
-      if (!source || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 0) {
-        sendJson(res, 400, { error: "source and nonnegative expected_revision are required", code: "invalid_input" });
-        return;
-      }
-      const plan = lifecycleValue(res, planArtifactSourceMove(getDb(), {
-        artifact_id: id, expected_revision: Number(body.expected_revision), source, actor, reconcile: body.reconcile === true,
-      }));
-      if (!plan || !authorizeArtifactPlan(req, res, plan)) return;
-      const state = lifecycleValue(res, commitArtifactSourceMove(getDb(), plan));
-      if (state) sendJson(res, 200, { source: state });
+      getDb().transaction(() => {
+        const actor = requireIdentity(req).user_id;
+        const body = bodyRecord(req);
+        const id = canonicalArtifactId(res, body.artifact_id);
+        if (!id || !enforceArtifactAccess(req, res, id, "write")) return;
+        const current = getArtifactCurrentSource(getDb(), id);
+        if (!current) { sendJson(res, 404, { error: 'source state not found', code: 'unknown_artifact' }); return; }
+        let source = sourceInput(body.source);
+        const advanced = body.source !== undefined;
+        if (advanced && (body.project !== undefined || body.path !== undefined)) {
+          sendJson(res, 400, { error: 'Use source or project/path, not both', code: 'invalid_input' }); return;
+        }
+        if (!advanced) {
+          if (body.project === undefined && body.path === undefined) {
+            sendJson(res, 400, { error: 'Request a project or path change', code: 'invalid_input' }); return;
+          }
+          if ((body.path !== undefined && (typeof body.path !== 'string' || !body.path.trim()))
+            || (body.project !== undefined && (typeof body.project !== 'string' || !body.project.trim()))) {
+            sendJson(res, 400, { error: 'project and path must be nonempty strings', code: 'invalid_input' }); return;
+          }
+          if (body.project !== undefined) {
+            const project = resolveProjectRef(getDb(), body.project as string);
+            if (!project.ok || !project.project || project.ambiguous) {
+              sendJson(res, 400, { error: 'Project is unknown or ambiguous', code: 'invalid_source' }); return;
+            }
+            const path = body.path ?? (current.source?.kind === 'repo' ? current.source.path : undefined);
+            if (typeof path === 'string') source = { kind: 'repo', project_id: project.project.id, path };
+          } else if (current.source?.kind === 'repo' || current.source?.kind === 'local') {
+            source = { ...current.source, path: body.path as string };
+          }
+        }
+        const revision = body.expected_revision === undefined ? (advanced ? undefined : current.revision) : body.expected_revision;
+        if (!source || !Number.isSafeInteger(revision) || Number(revision) < 0) {
+          sendJson(res, 400, { error: 'A valid source and optional nonnegative revision are required; unresolved sources need project and path or advanced source JSON', code: 'invalid_input' }); return;
+        }
+        const plan = lifecycleValue(res, planArtifactSourceMove(getDb(), {
+          artifact_id: id, expected_revision: Number(revision), source, actor, reconcile: body.reconcile === true,
+        }));
+        if (!plan || !authorizeArtifactPlan(req, res, plan)) return;
+        const state = lifecycleValue(res, commitArtifactSourceMove(getDb(), plan));
+        if (state) sendJson(res, 200, { source: state, status: state.revision === current.revision ? 'unchanged' : 'updated' });
+      }).immediate();
     } catch (error) { handleError(res, error); }
   }, { fileRpc: "allow" });
 

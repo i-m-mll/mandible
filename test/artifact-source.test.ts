@@ -1,11 +1,12 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { openDb, type Db } from '../src/db.js';
-import { planArtifactVersion, commitArtifactVersion, recordArtifactVersion, associateProjectArtifact, getCanonicalArtifactVersion } from '../src/provider-artifacts.js';
+import { appendArtifactVersion, planArtifactVersionBatch, commitArtifactVersionBatch, planArtifactVersion, commitArtifactVersion, recordArtifactVersion, associateProjectArtifact, getCanonicalArtifactVersion } from '../src/provider-artifacts.js';
 import { getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove, type ArtifactLifecycleResult } from '../src/artifact-source.js';
 import { readArtifactBytesFull } from '../src/artifact-content.js';
 import { resolveArtifactProject, artifactAccessProjectIds } from '../src/permissions/resources.js';
@@ -162,4 +163,57 @@ it('requires registered project access for files in checkouts without Git metada
   const plan=ok(planArtifactVersion(db,{source_kind:'managed',path:file}));
   expect(plan.source).toEqual({kind:'repo',project_id:project,path:'notes.txt'});
   expect(plan.required_project_ids).toEqual([project]);
+});
+
+it('reuses pre-extension version IDs only when immutable evidence matches and preserves producer keys', () => {
+  const a = repo('upgrade');
+  const input = { source_kind: 'tracked_repo' as const, path: a.file, metadata: { x: 1, y: 2 } };
+  const first = recordArtifactVersion(db, input);
+  const id = identity(first.series.id);
+  const key = `${a.project}:${first.version.commit_sha}:report.md`;
+  const oldId = 'artifact-version:' + crypto.createHash('sha256')
+    .update(JSON.stringify([first.series.id, 'tracked_repo', key])).digest('hex').slice(0, 32);
+  db.transaction(() => {
+    db.prepare('UPDATE artifact SET latest_version_id=NULL WHERE id=?').run(id);
+    db.prepare('UPDATE artifact_version SET id=? WHERE id=?').run(oldId, first.version.id);
+    db.prepare('UPDATE artifact SET latest_version_id=? WHERE id=?').run(oldId, id);
+  })();
+  const before = db.prepare('SELECT * FROM artifact_version').all();
+  const again = recordArtifactVersion(db, { ...input, metadata: { y: 2, x: 1 } });
+  expect(again.created).toBe(false); expect(again.version.id).toBe(oldId);
+  const historical = recordArtifactVersion(db, { ...input, path: 'report.md', project: 'upgrade', commit: first.version.commit_sha! });
+  expect(historical.created).toBe(false); expect(historical.version.id).toBe(oldId);
+  expect(db.prepare('SELECT * FROM artifact_version').all()).toEqual(before);
+  const changed = recordArtifactVersion(db, { ...input, metadata: { x: 2, y: 2 } });
+  expect(changed.created).toBe(true); expect(changed.version.id).not.toBe(oldId);
+  const producer = { series_id: first.series.id, artifact_id: first.artifact.id, source_kind: 'managed' as const,
+    content_hash: first.version.content_hash, custody_mode: 'managed', metadata: { producer: 'test' } };
+  const eventA = appendArtifactVersion(db, { ...producer, natural_key: 'event-a' });
+  const eventB = appendArtifactVersion(db, { ...producer, natural_key: 'event-b' });
+  expect(eventA.version.id).not.toBe(eventB.version.id);
+  expect(appendArtifactVersion(db, { ...producer, natural_key: 'event-a' }).created).toBe(false);
+  const copied = recordArtifactVersion(db, { ...input, custody_mode: 'copy' });
+  expect(copied.created).toBe(true);
+  git(a.root, 'commit', '--allow-empty', '-m', 'same bytes at another commit');
+  expect(recordArtifactVersion(db, { ...input, custody_mode: 'copy' }).created).toBe(true);
+});
+
+it('rejects stale later batch members before writing earlier custody', () => {
+  const a = path.join(dir, 'a.md'), b = path.join(dir, 'b.md');
+  fs.writeFileSync(a, 'a'); fs.writeFileSync(b, 'b');
+  const plans = ok(planArtifactVersionBatch(db, [a, b].map(path => ({ source_kind: 'local_only', path }))));
+  fs.writeFileSync(b, 'changed');
+  expect(commitArtifactVersionBatch(db, plans)).toMatchObject({ ok: false, error: { code: 'stale_plan' } });
+  expect(db.prepare('SELECT COUNT(*) n FROM artifact').get()).toEqual({ n: 0 });
+  expect(fs.existsSync(path.join(dir, 'cas'))).toBe(false);
+});
+
+it('pins a symbolic commit once even when the checkout and ref advance before commit', () => {
+  const a = repo('pinned');
+  const commit = git(a.root, 'rev-parse', 'HEAD');
+  const plan = ok(planArtifactVersion(db, { source_kind: 'tracked_repo', path: 'report.md', cwd: a.root, commit: 'HEAD' }));
+  fs.writeFileSync(a.file, 'new checkout bytes'); git(a.root, 'add', '.'); git(a.root, 'commit', '-m', 'advance');
+  const result = ok(commitArtifactVersion(db, plan));
+  expect(result.version.commit_sha).toBe(commit);
+  expect(readArtifactBytesFull(db, result.version.id)).toMatchObject({ ok: true, bytes: Buffer.from('same bytes') });
 });
