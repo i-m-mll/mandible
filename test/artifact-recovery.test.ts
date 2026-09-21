@@ -136,6 +136,40 @@ function addDerivedRefs(db: Db, versionId: string, blobId: string, projectId: st
   ).run(`association-${versionId}`, projectId, versionId);
 }
 
+function addGraphEntity(db: Db, input: {
+  id: string;
+  entityType?: string;
+  source?: string;
+  externalId?: string | null;
+  summary?: object;
+  detail?: object;
+}): void {
+  db.prepare(
+    `INSERT INTO graph_entities
+      (id, entity_type, repo_id, provider_id, external_id, title, status,
+       labels_json, summary_json, detail_ref_json, action_context_json,
+       visual_json, created_at, updated_at, observed_at, source)
+     VALUES (?, ?, NULL, NULL, ?, ?, 'present', '[]', ?, ?, '[]', '{}', 1, 1, 1, ?)`,
+  ).run(
+    input.id,
+    input.entityType ?? "artifact",
+    input.externalId ?? input.id,
+    input.id,
+    JSON.stringify(input.summary ?? { custody_mode: "external", availability: "remote_only" }),
+    JSON.stringify(input.detail ?? { custody: { mode: "external" }, artifact_id: input.id }),
+    input.source ?? "artifacts",
+  );
+}
+
+function addGraphEdge(db: Db, input: { id: string; sourceId: string; targetId: string }): void {
+  db.prepare(
+    `INSERT INTO graph_edges
+      (id, source_id, target_id, edge_type, edge_class, provenance, confidence,
+       metadata_json, created_at, observed_at, source)
+     VALUES (?, ?, ?, 'bundle_contains', 'provenance', 'artifact_bundle', 'observed', '{}', 1, 1, 'artifact_bundle')`,
+  ).run(input.id, input.sourceId, input.targetId);
+}
+
 let db: Db | undefined;
 let tempRoot: string | undefined;
 let previousArtifactDir: string | undefined;
@@ -271,17 +305,53 @@ describe("artifact custody recovery", () => {
       metadata: { descriptor: "retain me", legacy_blob_id: `artifact:ref:${sha256("not present")}` },
     });
     addDerivedRefs(db, "version-retire", "blob-retire", project);
+    const staleGraphId = `artifact-blob:${missingHash}`;
+    const keptGraphId = `artifact-blob:${keptHash}`;
+    addGraphEntity(db, { id: staleGraphId });
+    addGraphEntity(db, { id: keptGraphId });
+    addGraphEntity(db, {
+      id: "artifact:ref:external-reference",
+      source: "artifact_references",
+      externalId: "git+ssh://example.invalid/repo.git@{ref}",
+      summary: { role: "external_reference", custody_mode: "external", availability: "remote_only" },
+      detail: { uri: "git+ssh://example.invalid/repo.git@{ref}", artifact_id: "artifact:ref:external-reference", custody: { mode: "external" } },
+    });
+    addGraphEntity(db, { id: "bundle-test", entityType: "artifact_bundle", source: "artifact_bundle" });
+    addGraphEdge(db, { id: "bundle-edge-stale", sourceId: "bundle-test", targetId: staleGraphId });
     const packetPath = path.join(tempRoot, "retirement", "packet.json");
     const recoveryReceiptPath = path.join(tempRoot, "recovery.receipt.json");
     const plan = planArtifactRecovery(db, { retirement_packet_path: packetPath, recovery_receipt_path: recoveryReceiptPath });
-    expect(plan.summary).toMatchObject({ versions: 1, retire: 1, blobs: 2, blobs_managed: 1, blobs_retire: 1, content_owning_dependencies: 0 });
+    expect(plan.summary).toMatchObject({
+      versions: 1,
+      retire: 1,
+      blobs: 2,
+      blobs_managed: 1,
+      blobs_retire: 1,
+      content_owning_dependencies: 0,
+      graph_entities: 1,
+      graph_edges: 1,
+      graph_legacy_authority_entities: 3,
+      graph_unknown_references: 0,
+    });
     expect(plan.versions[0].hash_origin).toBe("legacy-uri-derived");
     const result = recoverArtifactCustody(db, { retirement_packet_path: packetPath, recovery_receipt_path: recoveryReceiptPath });
-    expect(result).toMatchObject({ status: "applied", retired_versions: 1, retirement_packet_path: packetPath });
+    expect(result).toMatchObject({
+      status: "applied",
+      retired_versions: 1,
+      retirement_packet_path: packetPath,
+      removed_graph_entities: 1,
+      removed_graph_edges: 1,
+    });
     const packet = JSON.parse(fs.readFileSync(packetPath, "utf8")) as Record<string, unknown>;
     expect(packet).toMatchObject({ schema: "mandible-artifact-retirement@1", plan_digest: plan.plan_digest });
     expect((packet.versions as Array<Record<string, unknown>>)[0]).toMatchObject({ id: "version-retire", metadata_json: expect.any(String) });
     expect((packet.dependencies as Array<Record<string, unknown>>)[0].row).toHaveProperty("id");
+    expect(packet.graph_entities).toEqual([expect.objectContaining({ id: staleGraphId })]);
+    expect(packet.graph_edges).toEqual([expect.objectContaining({ id: "bundle-edge-stale" })]);
+    expect(packet.graph_reclassified_entities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: keptGraphId }),
+      expect.objectContaining({ id: "artifact:ref:external-reference" }),
+    ]));
     expect(JSON.parse(fs.readFileSync(recoveryReceiptPath, "utf8"))).toMatchObject({ schema: "mandible-artifact-recovery-receipt@1", plan_digest: plan.plan_digest });
     expect(db.prepare("SELECT COUNT(*) AS count FROM artifact_version WHERE id = 'version-retire'").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM artifact WHERE id = 'artifact-retire'").get()).toEqual({ count: 0 });
@@ -290,6 +360,53 @@ describe("artifact custody recovery", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM artifact_blob WHERE id = 'blob-retire'").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT storage_uri FROM artifact_blob WHERE id = 'blob-orphan-kept'").get())
       .toEqual({ storage_uri: `file://${keptPath}` });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM graph_entities WHERE id = ?").get(staleGraphId)).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM graph_edges WHERE id = 'bundle-edge-stale'").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT entity_type FROM graph_entities WHERE id = 'bundle-test'").get()).toEqual({ entity_type: "artifact_bundle" });
+    expect(db.prepare("SELECT entity_type, summary_json, detail_ref_json FROM graph_entities WHERE id = ?").get(keptGraphId))
+      .toMatchObject({ entity_type: "artifact" });
+    const keptGraph = db.prepare("SELECT summary_json, detail_ref_json FROM graph_entities WHERE id = ?").get(keptGraphId) as { summary_json: string; detail_ref_json: string };
+    expect(keptGraph.summary_json).not.toContain("custody_mode");
+    expect(keptGraph.detail_ref_json).not.toContain("custody");
+    const externalReference = db.prepare("SELECT entity_type, summary_json, detail_ref_json FROM graph_entities WHERE id = 'artifact:ref:external-reference'").get() as {
+      entity_type: string;
+      summary_json: string;
+      detail_ref_json: string;
+    };
+    expect(externalReference).toMatchObject({ entity_type: "external_reference" });
+    expect(externalReference.summary_json).not.toContain("custody_mode");
+    expect(externalReference.detail_ref_json).not.toContain("custody");
+    expect(externalReference.detail_ref_json).toContain("git+ssh://example.invalid/repo.git@{ref}");
+  });
+
+  it("blocks graph cleanup when a retiring projection has an unknown edge endpoint", () => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "artifact-recovery-graph-block-"));
+    db = createMigratedDb();
+    const missingHash = sha256("unknown graph endpoint");
+    addArtifact(db, {
+      id: "artifact-graph-block",
+      versionId: "version-graph-block",
+      blobId: "blob-graph-block",
+      hash: missingHash,
+      sourceKind: "external",
+      custodyMode: "external",
+      blobCustody: "external",
+      blobAvailability: "remote_only",
+    });
+    const graphId = `artifact:sha256:${missingHash}`;
+    addGraphEntity(db, { id: graphId });
+    addGraphEdge(db, { id: "graph-edge-unknown", sourceId: graphId, targetId: "missing-independent-content" });
+    const receiptPath = path.join(tempRoot, "graph-block.receipt.json");
+    const packetPath = path.join(tempRoot, "graph-block.packet.json");
+    const plan = planArtifactRecovery(db, { recovery_receipt_path: receiptPath, retirement_packet_path: packetPath });
+    expect(plan.graph_entities).toEqual([expect.objectContaining({ id: graphId })]);
+    expect(plan.summary.graph_unknown_references).toBe(1);
+    const result = applyArtifactRecovery(db, plan, { recovery_receipt_path: receiptPath, retirement_packet_path: packetPath });
+    expect(result).toMatchObject({ status: "blocked", removed_graph_entities: 0, removed_graph_edges: 0 });
+    expect(result.blockers.join(" ")).toContain("unknown reference");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM artifact_version WHERE id = 'version-graph-block'").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM graph_entities WHERE id = ?").get(graphId)).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM graph_edges WHERE id = 'graph-edge-unknown'").get()).toEqual({ count: 1 });
   });
 
   it("blocks retirement when a Briefing round owns the unresolved version", () => {

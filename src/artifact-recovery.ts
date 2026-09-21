@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { canonicalJson } from "./canonical-json.js";
+import { artifactDescriptiveMetadata } from "./artifact-metadata.js";
 import { readCommittedArtifactFiles } from "./artifact-repo-resolution.js";
 import type { Db } from "./db.js";
 
@@ -200,6 +201,9 @@ export interface ArtifactRetirementPacket {
   artifacts: JsonObject[];
   blobs: JsonObject[];
   dependencies: ArtifactDependencyReference[];
+  graph_entities: JsonObject[];
+  graph_edges: JsonObject[];
+  graph_reclassified_entities: JsonObject[];
 }
 
 export interface ArtifactRecoverySummary {
@@ -225,6 +229,10 @@ export interface ArtifactRecoverySummary {
   blobs_retire: number;
   blob_content_owning_dependencies: number;
   blob_derived_dependencies: number;
+  graph_entities: number;
+  graph_edges: number;
+  graph_legacy_authority_entities: number;
+  graph_unknown_references: number;
 }
 
 export interface ArtifactRecoveryPlan {
@@ -235,6 +243,11 @@ export interface ArtifactRecoveryPlan {
   artifacts: ArtifactLogicalRow[];
   sources: JsonObject[];
   blobs: PlannedBlob[];
+  graph_entities: JsonObject[];
+  graph_observed_entities: JsonObject[];
+  graph_edges: JsonObject[];
+  graph_reclassified_entities: Array<{ original: JsonObject; desired: JsonObject }>;
+  graph_blockers: string[];
   retirement_packet: ArtifactRetirementPacket;
   dependency_scan_errors: string[];
   plan_digest: string;
@@ -252,6 +265,8 @@ export interface ArtifactRecoveryApplyResult {
   recovery_receipt_path: string | null;
   retired_versions: number;
   retired_blobs: number;
+  removed_graph_entities: number;
+  removed_graph_edges: number;
   staged_managed_blobs: number;
   retained_git_commits: string[];
   historical_source_associations: number;
@@ -262,7 +277,8 @@ export class ArtifactRecoveryBlockedError extends Error {
   constructor(readonly plan: ArtifactRecoveryPlan) {
     super(
       `Artifact recovery is blocked by ${plan.summary.retire} unresolved version(s), `
-      + `${plan.summary.blobs_retire} unresolved blob(s), or unsafe dependency evidence; `
+      + `${plan.summary.blobs_retire} unresolved blob(s), ${plan.summary.graph_unknown_references} unsafe graph reference(s), `
+      + "or unsafe dependency evidence; "
       + "the v185 migration must not discard them without a restorable retirement policy",
     );
     this.name = "ArtifactRecoveryBlockedError";
@@ -271,6 +287,26 @@ export class ArtifactRecoveryBlockedError extends Error {
 
 const SHA256_RE = /^[a-f0-9]{64}$/i;
 const COMMIT_RE = /^[a-f0-9]{7,64}$/i;
+const DERIVED_ARTIFACT_GRAPH_SOURCES = new Set(["artifacts", "artifact_references"]);
+const LEGACY_ARTIFACT_AUTHORITY_KEYS = new Set([
+  "availability",
+  "custody_mode",
+  "home_repo_id",
+  "recoverability",
+  "reference",
+  "repo_locator",
+  "retention",
+  "storage_backend",
+]);
+
+interface ArtifactGraphScan {
+  entities: JsonObject[];
+  observedEntities: JsonObject[];
+  edges: JsonObject[];
+  reclassifiedEntities: Array<{ original: JsonObject; desired: JsonObject }>;
+  blockers: string[];
+  legacyAuthorityEntities: number;
+}
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -292,10 +328,213 @@ function parseJsonObject(value: unknown): { value: JsonObject; valid: boolean } 
   }
 }
 
+function parseJsonValue(value: unknown): unknown {
+  if (typeof value !== "string") return null;
+  try { return JSON.parse(value) as unknown; } catch { return null; }
+}
+
 function tableExists(db: Db, table: string): boolean {
   return Boolean(db.prepare(
     "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
   ).get(table));
+}
+
+function containsLegacyArtifactAuthority(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(item => containsLegacyArtifactAuthority(item));
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value as JsonObject).some(([key, child]) =>
+    LEGACY_ARTIFACT_AUTHORITY_KEYS.has(key) || containsLegacyArtifactAuthority(child));
+}
+
+function graphRowsEqual(left: JsonObject[], right: JsonObject[]): boolean {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+function graphIdentityKeys(value: unknown): string[] {
+  const text = asString(value);
+  if (!text) return [];
+  const keys = new Set([text]);
+  const sha256 = text.match(/^artifact-(?:blob|sha256):([a-f0-9]{64})$/i)?.[1]
+    ?? text.match(/^artifact:sha256:([a-f0-9]{64})$/i)?.[1]
+    ?? (SHA256_RE.test(text) ? text : undefined);
+  if (sha256) keys.add(`sha256:${sha256.toLowerCase()}`);
+  return Array.from(keys);
+}
+
+function stripGraphAuthority(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripGraphAuthority);
+  if (!value || typeof value !== "object") return value;
+  const removed = new Set([
+    "artifact_id",
+    "artifact_recovery",
+    "availability",
+    "content_identity",
+    "custody",
+    "custody_mode",
+    "home_repo_id",
+    "recoverability",
+    "registered_source_migration",
+    "repo_locator",
+    "repo_locator_json",
+    "retention",
+    "source_locator",
+    "source_locator_json",
+    "storage_backend",
+    "storage_uri",
+  ]);
+  return Object.fromEntries(Object.entries(value as JsonObject)
+    .filter(([key]) => !removed.has(key))
+    .map(([key, child]) => [key, stripGraphAuthority(child)]));
+}
+
+function jsonObjectString(value: unknown): string {
+  return JSON.stringify(stripGraphAuthority(value));
+}
+
+function graphBlobForEntity(db: Db, entity: JsonObject): ArtifactBlobRow | null {
+  for (const value of [entity.id, entity.external_id]) {
+    for (const key of graphIdentityKeys(value)) {
+      const exactId = key.startsWith("sha256:") ? `artifact-blob:${key.slice("sha256:".length)}` : key;
+      const byId = readBlob(db, exactId);
+      if (byId) return byId;
+      if (key.startsWith("sha256:")) {
+        const byHash = db.prepare("SELECT * FROM artifact_blob WHERE algorithm = 'sha256' AND lower(content_hash) = ? LIMIT 1")
+          .get(key.slice("sha256:".length)) as ArtifactBlobRow | undefined;
+        if (byHash) return byHash;
+      }
+    }
+  }
+  return null;
+}
+
+function regeneratedArtifactGraphEntity(db: Db, entity: JsonObject): JsonObject | null {
+  const blob = graphBlobForEntity(db, entity);
+  if (!blob) return null;
+  const version = db.prepare(
+    `SELECT * FROM artifact_version WHERE blob_id = ? ORDER BY version_no DESC, id DESC LIMIT 1`,
+  ).get(blob.id) as JsonObject | undefined;
+  const logical = version ? readArtifact(db, String(version.artifact_id)) : null;
+  const blobMetadata = parseJsonObject(blob.metadata_json).value;
+  const logicalMetadata = parseJsonObject(logical?.metadata_json).value;
+  const versionMetadata = parseJsonObject(version?.metadata_json).value;
+  const metadata = artifactDescriptiveMetadata({ ...blobMetadata, ...logicalMetadata, ...versionMetadata });
+  const contentHash = String(blob.content_hash).toLowerCase();
+  return {
+    ...entity,
+    entity_type: "artifact",
+    repo_id: null,
+    provider_id: blob.provider_id ?? null,
+    external_id: contentHash,
+    status: blob.storage_uri || version?.custody_mode === "link" ? "available" : "missing",
+    labels_json: "[]",
+    summary_json: JSON.stringify({
+      role: blob.role ?? null,
+      media_type: blob.media_type ?? null,
+      size_bytes: blob.size_bytes,
+    }),
+    detail_ref_json: JSON.stringify({ content_hash: contentHash, metadata }),
+    action_context_json: JSON.stringify([
+      { id: "open-artifact", label: "Open Artifact", kind: "preview", target: entity.id },
+      { id: "validate-artifact", label: "Validate", kind: "validate", target: entity.id },
+    ]),
+    visual_json: JSON.stringify({ icon: "artifact", shape: "document" }),
+    source: "artifacts",
+  };
+}
+
+function externalReferenceGraphEntity(entity: JsonObject): JsonObject {
+  return {
+    ...entity,
+    entity_type: "external_reference",
+    repo_id: null,
+    summary_json: jsonObjectString(parseJsonObject(entity.summary_json).value),
+    detail_ref_json: jsonObjectString(parseJsonObject(entity.detail_ref_json).value),
+    action_context_json: JSON.stringify([
+      { id: "inspect", label: "Inspect", kind: "preview", target: entity.id },
+    ]),
+    visual_json: JSON.stringify({ icon: "link", shape: "document" }),
+  };
+}
+
+function readArtifactGraphScan(
+  db: Db,
+  retirementIdentityKeys: Set<string>,
+): ArtifactGraphScan {
+  if (!tableExists(db, "graph_entities")) {
+    return {
+      entities: [], observedEntities: [], edges: [], reclassifiedEntities: [], blockers: [], legacyAuthorityEntities: 0,
+    };
+  }
+  const observedEntities = db.prepare(
+    "SELECT * FROM graph_entities WHERE entity_type = 'artifact' ORDER BY id",
+  ).all() as JsonObject[];
+  const blockers: string[] = [];
+  const entities: JsonObject[] = [];
+  const reclassifiedEntities: Array<{ original: JsonObject; desired: JsonObject }> = [];
+  for (const entity of observedEntities) {
+    const source = asString(entity.source);
+    const identityMatch = [...graphIdentityKeys(entity.id), ...graphIdentityKeys(entity.external_id)]
+      .some(key => retirementIdentityKeys.has(key));
+    if (source === "artifact_references") {
+      // These rows are provenance references, not custody-bearing artifacts.
+      // Keep their identity and incident edges, but make the graph type agree
+      // with the current provenance-only producer and strip old authority.
+      reclassifiedEntities.push({ original: { ...entity }, desired: externalReferenceGraphEntity(entity) });
+      continue;
+    }
+    if (!DERIVED_ARTIFACT_GRAPH_SOURCES.has(source ?? "") && identityMatch) {
+      blockers.push(`artifact graph entity ${String(entity.id)} has unknown source ${source ?? "<missing>"}`);
+      continue;
+    }
+    if (!DERIVED_ARTIFACT_GRAPH_SOURCES.has(source ?? "")) continue;
+    const regenerated = regeneratedArtifactGraphEntity(db, entity);
+    if (!regenerated) {
+      if (identityMatch) {
+        entities.push({ ...entity });
+        continue;
+      }
+      blockers.push(`artifact graph entity ${String(entity.id)} has no canonical artifact blob`);
+      continue;
+    }
+    // Remove only canonical projections whose content identity is retiring.
+    // Retained projections are regenerated below so no old custody envelope
+    // survives merely because a graph row happened to be retained.
+    if (identityMatch) entities.push({ ...entity });
+    else if (canonicalJson(entity) !== canonicalJson(regenerated)) {
+      reclassifiedEntities.push({ original: { ...entity }, desired: regenerated });
+    }
+  }
+  const removedIds = new Set(entities.map(entity => String(entity.id)));
+  const entityIds = tableExists(db, "graph_entities")
+    ? new Set((db.prepare("SELECT id FROM graph_entities").all() as Array<{ id: string }>).map(row => String(row.id)))
+    : new Set<string>();
+  const legacyAuthorityEntities = observedEntities.filter(entity => [
+    "summary_json",
+    "detail_ref_json",
+    "action_context_json",
+  ].some(column => containsLegacyArtifactAuthority(parseJsonValue(entity[column])))).length;
+  const edges = tableExists(db, "graph_edges")
+    ? (db.prepare("SELECT * FROM graph_edges ORDER BY id").all() as JsonObject[])
+      .filter(edge => removedIds.has(String(edge.source_id)) || removedIds.has(String(edge.target_id)))
+    : [];
+  for (const edge of edges) {
+    const sourceId = String(edge.source_id);
+    const targetId = String(edge.target_id);
+    if (!entityIds.has(sourceId) || !entityIds.has(targetId)) {
+      blockers.push(
+        `artifact graph edge ${String(edge.id)} references unknown or independent endpoint `
+        + `${sourceId} -> ${targetId}`,
+      );
+    }
+  }
+  return {
+    entities,
+    observedEntities,
+    edges,
+    reclassifiedEntities,
+    blockers: Array.from(new Set(blockers)).sort(),
+    legacyAuthorityEntities,
+  };
 }
 
 function quoteIdentifier(value: string): string {
@@ -1019,7 +1258,11 @@ function planBlobRecovery(
   });
 }
 
-function buildRetirementPacket(versions: PlannedVersion[], blobPlans: PlannedBlob[]): ArtifactRetirementPacket {
+function buildRetirementPacket(
+  versions: PlannedVersion[],
+  blobPlans: PlannedBlob[],
+  graph: ArtifactGraphScan,
+): ArtifactRetirementPacket {
   const retired = versions.filter(version => version.disposition === "retire");
   const artifacts = new Map<string, JsonObject>();
   const blobRows = new Map<string, JsonObject>();
@@ -1045,6 +1288,10 @@ function buildRetirementPacket(versions: PlannedVersion[], blobPlans: PlannedBlo
     artifacts: Array.from(artifacts.values()).sort((a, b) => String(a.id).localeCompare(String(b.id))),
     blobs: Array.from(blobRows.values()).sort((a, b) => String(a.id).localeCompare(String(b.id))),
     dependencies: dependencies.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b))),
+    graph_entities: graph.entities.map(row => ({ ...row })).sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    graph_edges: graph.edges.map(row => ({ ...row })).sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    graph_reclassified_entities: graph.reclassifiedEntities.map(item => ({ ...item.original }))
+      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
   };
 }
 
@@ -1085,6 +1332,10 @@ function makeSummary(versions: PlannedVersion[], blobs: PlannedBlob[], dependenc
     blobs_retire: blobs.filter(blob => blob.disposition === "retire").length,
     blob_content_owning_dependencies: blobs.flatMap(blob => blob.dependencies).filter(dependency => dependency.unique_user_content).length,
     blob_derived_dependencies: blobs.flatMap(blob => blob.dependencies).filter(dependency => !dependency.unique_user_content).length,
+    graph_entities: 0,
+    graph_edges: 0,
+    graph_legacy_authority_entities: 0,
+    graph_unknown_references: 0,
   };
 }
 
@@ -1206,15 +1457,38 @@ export function planArtifactRecovery(db: Db, options: ArtifactRecoveryOptions = 
 
   planned.sort((a, b) => a.version_id.localeCompare(b.version_id));
   const plannedBlobs = planBlobRecovery(db, blobRows, planned, blobDependencyScan.references);
-  const retirementPacket = buildRetirementPacket(planned, plannedBlobs);
+  const retirementIdentityKeys = new Set<string>();
+  for (const version of planned.filter(item => item.disposition === "retire")) {
+    for (const value of [version.version_id, version.artifact_id, version.blob_id]) {
+      for (const key of graphIdentityKeys(value)) retirementIdentityKeys.add(key);
+    }
+  }
+  for (const blob of plannedBlobs.filter(item => item.disposition === "retire")) {
+    for (const key of graphIdentityKeys(blob.blob_id)) retirementIdentityKeys.add(key);
+    for (const key of graphIdentityKeys(blob.content_hash)) retirementIdentityKeys.add(key);
+  }
+  const graphScan = readArtifactGraphScan(db, retirementIdentityKeys);
+  const retirementPacket = buildRetirementPacket(planned, plannedBlobs, graphScan);
+  const summary: ArtifactRecoverySummary = {
+    ...makeSummary(planned, plannedBlobs, dependencyScanErrors),
+    graph_entities: graphScan.entities.length,
+    graph_edges: graphScan.edges.length,
+    graph_legacy_authority_entities: graphScan.legacyAuthorityEntities,
+    graph_unknown_references: graphScan.blockers.length,
+  };
   const withoutDigest: Omit<ArtifactRecoveryPlan, "plan_digest"> = {
     schema: ARTIFACT_RECOVERY_SCHEMA,
     source_schema_version: sourceSchemaVersion(db),
-    summary: makeSummary(planned, plannedBlobs, dependencyScanErrors),
+    summary,
     versions: planned,
     artifacts: db.prepare("SELECT * FROM artifact ORDER BY id").all() as ArtifactLogicalRow[],
     sources: tableExists(db,"artifact_source") ? db.prepare("SELECT * FROM artifact_source ORDER BY artifact_id").all() as JsonObject[] : [],
     blobs: plannedBlobs,
+    graph_entities: graphScan.entities,
+    graph_observed_entities: graphScan.observedEntities,
+    graph_edges: graphScan.edges,
+    graph_reclassified_entities: graphScan.reclassifiedEntities,
+    graph_blockers: graphScan.blockers,
     retirement_packet: retirementPacket,
     dependency_scan_errors: dependencyScanErrors,
   };
@@ -1267,7 +1541,8 @@ function verifyPlan(plan: ArtifactRecoveryPlan): void {
 }
 
 function packetPath(db: Db, plan: ArtifactRecoveryPlan, options: ArtifactRecoveryOptions): string | null {
-  if (plan.summary.retire === 0 && plan.summary.blobs_retire === 0) return null;
+  if (plan.summary.retire === 0 && plan.summary.blobs_retire === 0
+    && plan.graph_entities.length === 0 && plan.graph_edges.length === 0 && plan.graph_reclassified_entities.length === 0) return null;
   return path.resolve(options.retirement_packet_path
     ?? path.join(path.dirname(defaultArtifactRoot(db)), "repairs", "artifact-recovery", `${plan.plan_digest}.json`));
 }
@@ -1303,6 +1578,11 @@ function writeRecoveryReceipt(
     artifacts: plan.artifacts,
     sources: plan.sources,
     blobs: plan.blobs,
+    graph_entities: plan.graph_entities,
+    graph_observed_entities: plan.graph_observed_entities,
+    graph_edges: plan.graph_edges,
+    graph_reclassified_entities: plan.graph_reclassified_entities,
+    graph_blockers: plan.graph_blockers,
     retirement_packet: plan.retirement_packet,
     ...(execution ? { execution } : {}),
   };
@@ -1463,6 +1743,70 @@ function assertRetirementDependencyRowsUnchanged(
   }
 }
 
+function currentArtifactGraphEntities(db: Db): JsonObject[] {
+  if (!tableExists(db, "graph_entities")) return [];
+  return db.prepare("SELECT * FROM graph_entities WHERE entity_type = 'artifact' ORDER BY id").all() as JsonObject[];
+}
+
+function currentGraphEntitiesById(db: Db, ids: Set<string>): Map<string, JsonObject> {
+  if (!tableExists(db, "graph_entities") || ids.size === 0) return new Map();
+  const rows = db.prepare("SELECT * FROM graph_entities ORDER BY id").all() as JsonObject[];
+  return new Map(rows.filter(row => ids.has(String(row.id))).map(row => [String(row.id), row]));
+}
+
+function currentIncidentGraphEdges(db: Db, ids: Set<string>): JsonObject[] {
+  if (!tableExists(db, "graph_edges") || ids.size === 0) return [];
+  return (db.prepare("SELECT * FROM graph_edges ORDER BY id").all() as JsonObject[])
+    .filter(edge => ids.has(String(edge.source_id)) || ids.has(String(edge.target_id)));
+}
+
+function assertArtifactGraphInputsUnchanged(db: Db, plan: ArtifactRecoveryPlan): void {
+  if (!tableExists(db, "graph_entities")) {
+    if (plan.graph_observed_entities.length > 0 || plan.graph_entities.length > 0 || plan.graph_reclassified_entities.length > 0) {
+      throw new Error("artifact graph tables disappeared since recovery plan");
+    }
+    return;
+  }
+  const removedIds = new Set(plan.graph_entities.map(row => String(row.id)));
+  const reclassifiedById = new Map(plan.graph_reclassified_entities.map(item => [String(item.original.id), item]));
+  const expectedPost = plan.graph_observed_entities
+    .filter(row => !removedIds.has(String(row.id)))
+    .flatMap(row => {
+      const desired = reclassifiedById.get(String(row.id))?.desired ?? row;
+      return desired.entity_type === "artifact" ? [desired] : [];
+    })
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  const current = currentArtifactGraphEntities(db);
+  const pre = [...plan.graph_observed_entities].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  if (!graphRowsEqual(current, pre) && !graphRowsEqual(current, expectedPost)) {
+    throw new Error("artifact graph entities changed since recovery plan");
+  }
+  const allIds = new Set([
+    ...plan.graph_observed_entities.map(row => String(row.id)),
+    ...plan.graph_reclassified_entities.map(item => String(item.original.id)),
+  ]);
+  const currentById = currentGraphEntitiesById(db, allIds);
+  for (const row of plan.graph_entities) {
+    const actual = currentById.get(String(row.id));
+    if (actual && canonicalJson(actual) !== canonicalJson(row)) {
+      throw new Error(`retiring artifact graph entity changed since recovery plan: ${String(row.id)}`);
+    }
+  }
+  for (const item of plan.graph_reclassified_entities) {
+    const actual = currentById.get(String(item.original.id));
+    const isOriginal = actual && canonicalJson(actual) === canonicalJson(item.original);
+    const isDesired = actual && canonicalJson(actual) === canonicalJson(item.desired);
+    if (!actual || (!isOriginal && !isDesired)) {
+      throw new Error(`artifact graph entity changed since recovery plan: ${String(item.original.id)}`);
+    }
+  }
+  const currentEdges = currentIncidentGraphEdges(db, removedIds);
+  const plannedEdges = [...plan.graph_edges].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  if (currentEdges.length > 0 && !graphRowsEqual(currentEdges.sort((a, b) => String(a.id).localeCompare(String(b.id))), plannedEdges)) {
+    throw new Error("artifact graph edges changed since recovery plan");
+  }
+}
+
 function artifactWillBeRemoved(db: Db, plan: ArtifactRecoveryPlan, artifactId: string): boolean {
   const plannedRetirements = new Set(
     plan.versions.filter(version => version.disposition === "retire").map(version => version.version_id),
@@ -1477,6 +1821,7 @@ function assertPlanInputsUnchanged(
   expectedBlobStorage = new Map<string, string | null>(),
   stageRoot?: string,
 ): void {
+  assertArtifactGraphInputsUnchanged(db, plan);
   const originals = new Map(plan.artifacts.map(row => [row.id, row]));
   const currentArtifacts = db.prepare("SELECT id,metadata_json FROM artifact ORDER BY id").all() as {id:string;metadata_json:string}[];
   for (const current of currentArtifacts) {
@@ -1612,6 +1957,12 @@ export function applyArtifactRecovery(db: Db, plan: ArtifactRecoveryPlan, option
       `blob retirement is blocked by ${blobRetirementDependencies.filter(dependency => dependency.unique_user_content).length} content-owning dependency reference(s)`,
     );
   }
+  if (plan.graph_blockers.length > 0) {
+    blockers.push(
+      `artifact graph reconciliation is blocked by ${plan.graph_blockers.length} unknown reference(s): `
+      + plan.graph_blockers.join(", "),
+    );
+  }
   if (blockers.length > 0) {
     writeRecoveryReceipt(plan, recoveryReceiptPath);
     writeRetirementPacket(plan, retirementPacketPath);
@@ -1627,6 +1978,8 @@ export function applyArtifactRecovery(db: Db, plan: ArtifactRecoveryPlan, option
       recovery_receipt_path: recoveryReceiptPath,
       retired_versions: 0,
       retired_blobs: 0,
+      removed_graph_entities: 0,
+      removed_graph_edges: 0,
       staged_managed_blobs: 0,
       retained_git_commits: [],
       historical_source_associations: 0,
@@ -1681,6 +2034,8 @@ export function applyArtifactRecovery(db: Db, plan: ArtifactRecoveryPlan, option
   let updatedBlobs = 0;
   let retiredVersions = 0;
   let retiredBlobs = 0;
+  let removedGraphEntities = 0;
+  let removedGraphEdges = 0;
   let historicalSourceAssociations = 0;
   const affectedArtifacts = new Set(plan.versions.map(version => version.artifact_id));
   const apply = db.transaction(() => {
@@ -1752,6 +2107,35 @@ export function applyArtifactRecovery(db: Db, plan: ArtifactRecoveryPlan, option
         updatedBlobs += 1;
       }
     }
+    for (const edge of plan.graph_edges) {
+      const result = db.prepare("DELETE FROM graph_edges WHERE id = ?").run(edge.id);
+      removedGraphEdges += result.changes;
+    }
+    for (const entity of plan.graph_entities) {
+      const result = db.prepare("DELETE FROM graph_entities WHERE id = ?").run(entity.id);
+      removedGraphEntities += result.changes;
+    }
+    for (const item of plan.graph_reclassified_entities) {
+      db.prepare(
+        `UPDATE graph_entities
+            SET entity_type = @entity_type,
+                repo_id = @repo_id,
+                provider_id = @provider_id,
+                external_id = @external_id,
+                title = @title,
+                status = @status,
+                labels_json = @labels_json,
+                summary_json = @summary_json,
+                detail_ref_json = @detail_ref_json,
+                action_context_json = @action_context_json,
+                visual_json = @visual_json,
+                created_at = @created_at,
+                updated_at = @updated_at,
+                observed_at = @observed_at,
+                source = @source
+          WHERE id = @id`,
+      ).run(item.desired);
+    }
     recalculateArtifacts(db, affectedArtifacts);
   });
   apply.immediate();
@@ -1761,6 +2145,8 @@ export function applyArtifactRecovery(db: Db, plan: ArtifactRecoveryPlan, option
     skipped_versions: skippedVersions,
     retired_versions: retiredVersions,
     retired_blobs: retiredBlobs,
+    removed_graph_entities: removedGraphEntities,
+    removed_graph_edges: removedGraphEdges,
     updated_blobs: updatedBlobs,
     staged_managed_bytes: stagedManagedBytes,
     staged_managed_blobs: stagedManagedBlobs,
@@ -1779,6 +2165,8 @@ export function applyArtifactRecovery(db: Db, plan: ArtifactRecoveryPlan, option
     recovery_receipt_path: recoveryReceiptPath,
     retired_versions: retiredVersions,
     retired_blobs: retiredBlobs,
+    removed_graph_entities: removedGraphEntities,
+    removed_graph_edges: removedGraphEdges,
     staged_managed_blobs: stagedManagedBlobs,
     retained_git_commits: retainedGitCommits,
     historical_source_associations: historicalSourceAssociations,
