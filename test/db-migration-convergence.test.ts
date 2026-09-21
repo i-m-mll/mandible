@@ -5,8 +5,9 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { CURRENT_SCHEMA_VERSION, MINIMUM_SUPPORTED_SCHEMA_VERSION, openDb, type Db } from "../src/db.js";
+import { CURRENT_SCHEMA_VERSION, MINIMUM_SUPPORTED_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
 import { MIGRATIONS } from "../src/db-migrations.js";
+import { insertRawLedgerIssue, insertRawLedgerProject } from "./helpers/ledger-fixtures.js";
 import {
   builtinAuthHooks,
   metaRows,
@@ -55,6 +56,65 @@ function migrateFixtureThrough(db: Database.Database, targetVersion: number): vo
     }).immediate();
   }
 }
+
+function createLegacyMetadataDatabase(): Db {
+  const dbPath = path.join(tempDir, "metadata-v182.db");
+  createFloorDatabase(dbPath);
+  const db = new Database(dbPath);
+  db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
+    crypto.createHash("sha256").update(String(value)).digest("hex"));
+  migrateFixtureThrough(db, 182);
+  insertRawLedgerProject(db, { id: "metadata-project", name: "Metadata" });
+  insertRawLedgerIssue(db, { id: "parent", projectId: "metadata-project", kind: "feature" });
+  insertRawLedgerIssue(db, { id: "child", projectId: "metadata-project", kind: "unknown" });
+  return db;
+}
+
+describe("generic issue metadata upgrade", () => {
+  it("migrates rules without installation-specific records and leaves v183 data unchanged on reopen", () => {
+    const db = createLegacyMetadataDatabase();
+    try {
+      db.exec(`UPDATE ledger_issues SET status = 'closed', resolution = 'fixed' WHERE id = 'parent';
+        INSERT INTO ledger_labels (issue_id, label, created_at) VALUES
+          ('child', 'coordination', 1), ('child', 'parent:parent', 1),
+          ('child', 'user-action-required', 1), ('child', 'general-topic', 1)`);
+      migrate(db);
+      expect(db.prepare("SELECT resolution FROM ledger_issues WHERE id = 'parent'").get())
+        .toEqual({ resolution: "delivered" });
+      expect(db.prepare("SELECT kind, work_notes FROM ledger_issues WHERE id = 'child'").get())
+        .toEqual({ kind: "tracker", work_notes: "user action required" });
+      expect(db.prepare("SELECT label FROM ledger_labels WHERE deleted_at IS NULL").all())
+        .toEqual([{ label: "general-topic" }]);
+      expect(db.prepare("SELECT source_issue_id, target_issue_id FROM ledger_relationship_edges WHERE link_type = 'parent_child'").all())
+        .toEqual([{ source_issue_id: "parent", target_issue_id: "child" }]);
+      expect(db.prepare("SELECT snapshot_body FROM ledger_body_revisions WHERE entity_type = 'issue_work_notes'").get())
+        .toEqual({ snapshot_body: "user action required" });
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+      const snapshot = db.serialize();
+      migrate(db);
+      expect(db.serialize()).toEqual(snapshot);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    "UPDATE ledger_issues SET status = 'closed', resolution = NULL WHERE id = 'child'",
+    "INSERT INTO ledger_labels (issue_id, label, created_at) VALUES ('child', 'bug', 1), ('child', 'feature', 1)",
+    "INSERT INTO ledger_labels (issue_id, label, created_at) VALUES ('child', 'parent:missing', 1)",
+  ])("refuses unresolved legacy metadata without changing the database: %s", (seed) => {
+    const db = createLegacyMetadataDatabase();
+    try {
+      db.exec(seed);
+      const snapshot = db.serialize();
+      expect(() => migrate(db)).toThrow("v183_metadata_requires_explicit_review");
+      expect(schemaVersion(db)).toBe("182");
+      expect(db.serialize()).toEqual(snapshot);
+    } finally {
+      db.close();
+    }
+  });
+});
 
 function seedBriefingLineage(db: Database.Database, mixed: boolean): { rounds: unknown[] } {
   for (const [suffix, hash] of [["a", "a".repeat(64)], ["b", "b".repeat(64)]] as const) {

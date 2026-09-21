@@ -19,12 +19,6 @@ import {
   BRIEFING_GROUP_SCHEMA_SQL,
 } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
-import {
-  REVIEWED_KIND_MIGRATION_DATA,
-  REVIEWED_RESOLUTION_MIGRATION_DATA,
-  REVIEWED_RESOLUTION_MIGRATION_SCHEMA,
-} from "./ledger/migration-data.js";
-import { REVIEWED_PARENT_EDGE_MIGRATION_DATA } from "./ledger/parent-migration-data.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -433,58 +427,6 @@ const RETIRE_LEGACY_ARTIFACT_MODEL: string[] = [
 
   "DROP TABLE artifact_retirement_guard",
 ];
-
-function sqlText(value: string | null): string {
-  if (value === null) return "NULL";
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-function sqlJson(value: unknown): string {
-  return sqlText(JSON.stringify(value));
-}
-
-function normalizedReviewedKindLabels(labels: readonly string[]): string[] {
-  return Array.from(new Set(labels.map((label) => {
-    if (label === "error") return "bug";
-    if (label === "enhancement") return "feature";
-    if (label === "coordination") return "tracker";
-    return label;
-  }))).sort();
-}
-
-const REVIEWED_RESOLUTION_MIGRATION_INSERTS = REVIEWED_RESOLUTION_MIGRATION_DATA.map((record) => `
-      INSERT INTO ledger_reviewed_resolutions (
-        issue_id, project_key, short_id, next_resolution, confidence, rationale,
-        evidence_json, observed_status, observed_resolution, observed_updated_at,
-        observed_kind, review_schema
-      ) VALUES (
-        ${sqlText(record.id)}, ${sqlText(record.project_key)}, ${sqlText(record.short_id)},
-        ${sqlText(record.resolution)}, ${sqlText(record.confidence)}, ${sqlText(record.rationale)},
-        ${sqlJson(record.evidence)}, ${sqlText(record.observed_status)},
-        ${sqlText(record.observed_resolution)}, ${record.observed_updated_at},
-        ${sqlText(record.observed_kind)}, ${sqlText(REVIEWED_RESOLUTION_MIGRATION_SCHEMA)}
-      )`);
-
-const REVIEWED_KIND_MIGRATION_INSERTS = REVIEWED_KIND_MIGRATION_DATA.map((record) => `
-      INSERT INTO ledger_reviewed_kinds (
-        issue_id, project_key, short_id, next_kind, confidence, rationale,
-        evidence_json, observed_status, observed_resolution, observed_updated_at,
-        observed_kind, observed_labels_json
-      ) VALUES (
-        ${sqlText(record.id)}, ${sqlText(record.project_key)}, ${sqlText(record.short_id)},
-        ${sqlText(record.kind)}, ${sqlText(record.confidence)}, ${sqlText(record.rationale)},
-        ${sqlJson(record.evidence)}, ${sqlText(record.observed_status)},
-        ${sqlText(record.observed_resolution)}, ${record.observed_updated_at},
-        ${sqlText(record.observed_kind)}, ${sqlJson(normalizedReviewedKindLabels(record.observed_labels))}
-      )`);
-
-const REVIEWED_PARENT_EDGE_MIGRATION_INSERTS = REVIEWED_PARENT_EDGE_MIGRATION_DATA.map((record) => `
-      INSERT INTO ledger_reviewed_parent_edges (
-        child_issue_id, child_project_key, label, raw_ref, parent_issue_id, parent_project_key
-      ) VALUES (
-        ${sqlText(record.child_issue_id)}, ${sqlText(record.child_project)}, ${sqlText(record.label)},
-        ${sqlText(record.raw_ref)}, ${sqlText(record.parent_issue_id)}, ${sqlText(record.parent_project)}
-      )`);
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1149,46 +1091,6 @@ export const MIGRATIONS: readonly Migration[] = [
         project_id TEXT NOT NULL,
         occurred_at INTEGER NOT NULL
       )`,
-      `CREATE TEMP TABLE ledger_reviewed_resolutions (
-        issue_id TEXT PRIMARY KEY,
-        project_key TEXT NOT NULL,
-        short_id TEXT NOT NULL,
-        next_resolution TEXT NOT NULL CHECK(next_resolution IN ('delivered','duplicate','wontfix')),
-        confidence TEXT NOT NULL,
-        rationale TEXT NOT NULL,
-        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json) AND json_type(evidence_json) = 'array'),
-        observed_status TEXT NOT NULL,
-        observed_resolution TEXT,
-        observed_updated_at INTEGER NOT NULL,
-        observed_kind TEXT,
-        review_schema TEXT NOT NULL
-      )`,
-      ...REVIEWED_RESOLUTION_MIGRATION_INSERTS,
-      `CREATE TEMP TABLE ledger_reviewed_kinds (
-        issue_id TEXT PRIMARY KEY,
-        project_key TEXT NOT NULL,
-        short_id TEXT NOT NULL,
-        next_kind TEXT NOT NULL CHECK(next_kind IN ('bug','feature','maintenance','experiment','tracker','umbrella','unknown')),
-        confidence TEXT NOT NULL,
-        rationale TEXT NOT NULL,
-        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json) AND json_type(evidence_json) = 'array'),
-        observed_status TEXT NOT NULL,
-        observed_resolution TEXT,
-        observed_updated_at INTEGER NOT NULL,
-        observed_kind TEXT NOT NULL,
-        observed_labels_json TEXT NOT NULL CHECK(json_valid(observed_labels_json) AND json_type(observed_labels_json) = 'array')
-      )`,
-      ...REVIEWED_KIND_MIGRATION_INSERTS,
-      `CREATE TEMP TABLE ledger_reviewed_parent_edges (
-        child_issue_id TEXT NOT NULL,
-        child_project_key TEXT NOT NULL,
-        label TEXT NOT NULL,
-        raw_ref TEXT NOT NULL,
-        parent_issue_id TEXT NOT NULL,
-        parent_project_key TEXT NOT NULL,
-        PRIMARY KEY(child_issue_id, label)
-      )`,
-      ...REVIEWED_PARENT_EDGE_MIGRATION_INSERTS,
       `CREATE TEMP TABLE ledger_resolution_migration (
         issue_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -1197,18 +1099,11 @@ export const MIGRATIONS: readonly Migration[] = [
         legacy_updated_at INTEGER NOT NULL,
         occurred_at INTEGER NOT NULL,
         observed_at INTEGER NOT NULL,
-        event_id TEXT NOT NULL UNIQUE,
-        review_schema TEXT,
-        review_confidence TEXT,
-        review_rationale TEXT,
-        review_evidence_json TEXT,
-        review_observed_updated_at INTEGER,
-        review_observed_kind TEXT
+        event_id TEXT NOT NULL UNIQUE
       )`,
       `INSERT INTO ledger_resolution_migration (
         issue_id, project_id, previous_resolution, next_resolution, legacy_updated_at, occurred_at, observed_at,
-        event_id, review_schema, review_confidence, review_rationale, review_evidence_json,
-        review_observed_updated_at, review_observed_kind
+        event_id
       )
       SELECT id, project_id, resolution,
         CASE resolution
@@ -1222,74 +1117,21 @@ export const MIGRATIONS: readonly Migration[] = [
         updated_at,
         CAST(strftime('%s', 'now') AS INTEGER) * 1000,
         CAST(strftime('%s', 'now') AS INTEGER) * 1000,
-        lower(hex(randomblob(32))),
-        NULL, NULL, NULL, NULL, NULL, NULL
+        lower(hex(randomblob(32)))
       FROM ledger_issues
-      WHERE resolution IN ('fixed', 'merged', 'obsolete', 'invalid', 'unknown')
-        AND NOT EXISTS (
-          SELECT 1 FROM ledger_reviewed_resolutions r WHERE r.issue_id = ledger_issues.id
-        )`,
-      `INSERT INTO ledger_resolution_migration (
-        issue_id, project_id, previous_resolution, next_resolution, legacy_updated_at,
-        occurred_at, observed_at, event_id, review_schema, review_confidence,
-        review_rationale, review_evidence_json, review_observed_updated_at, review_observed_kind
-      )
-      SELECT i.id, i.project_id, i.resolution, r.next_resolution, i.updated_at,
-        CAST(strftime('%s', 'now') AS INTEGER) * 1000,
-        CAST(strftime('%s', 'now') AS INTEGER) * 1000,
-        lower(hex(randomblob(32))), r.review_schema, r.confidence, r.rationale,
-        r.evidence_json, r.observed_updated_at, r.observed_kind
-      FROM ledger_issues i
-      JOIN ledger_reviewed_resolutions r ON r.issue_id = i.id
-      WHERE i.status = r.observed_status
-        AND COALESCE(i.resolution, '') = COALESCE(r.observed_resolution, '')`,
+      WHERE resolution IN ('fixed', 'merged', 'obsolete')`,
       `CREATE TEMP TABLE ledger_issue_lifecycle_guard (
         check_name TEXT PRIMARY KEY,
-        offending INTEGER NOT NULL CHECK(offending = 0)
+        offending INTEGER NOT NULL CONSTRAINT v183_metadata_requires_explicit_review CHECK(offending = 0)
       )`,
-      `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
-       SELECT 'reviewed_resolution_project_mismatch', COUNT(*)
-       FROM ledger_reviewed_resolutions r
-       JOIN ledger_issues i ON i.id = r.issue_id
-       LEFT JOIN ledger_projects p
-         ON p.id = i.project_id AND p.project_key = r.project_key
-       WHERE p.id IS NULL`,
-      `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
-       SELECT 'reviewed_resolution_state_drift', COUNT(*)
-       FROM ledger_reviewed_resolutions r
-       JOIN ledger_issues i ON i.id = r.issue_id
-       WHERE i.status <> r.observed_status
-          OR COALESCE(i.resolution, '') <> COALESCE(r.observed_resolution, '')
-          OR i.updated_at <> r.observed_updated_at`,
       `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
        SELECT 'closed_without_resolution', COUNT(*)
        FROM ledger_issues
-       WHERE status = 'closed' AND resolution IS NULL
-         AND NOT EXISTS (
-           SELECT 1 FROM ledger_reviewed_resolutions r
-           JOIN ledger_projects p ON p.project_key = r.project_key
-            AND p.id = ledger_issues.project_id
-           WHERE r.issue_id = ledger_issues.id
-         )`,
+       WHERE status = 'closed' AND (resolution IS NULL OR resolution IN ('invalid', 'unknown'))`,
       `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
        SELECT 'open_with_resolution', COUNT(*)
        FROM ledger_issues
        WHERE status = 'open' AND resolution IS NOT NULL`,
-      `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
-       SELECT 'reviewed_parent_state_drift', COUNT(*)
-       FROM ledger_reviewed_parent_edges r
-       JOIN ledger_issues child ON child.id = r.child_issue_id
-       JOIN ledger_projects child_project ON child_project.id = child.project_id
-       JOIN ledger_issues parent ON parent.id = r.parent_issue_id
-       JOIN ledger_projects parent_project ON parent_project.id = parent.project_id
-       LEFT JOIN ledger_labels label
-         ON label.issue_id = r.child_issue_id
-        AND label.label = r.label
-        AND label.deleted_at IS NULL
-       WHERE child_project.project_key <> r.child_project_key
-          OR parent.id IS NULL
-          OR parent_project.project_key <> r.parent_project_key
-          OR label.issue_id IS NULL`,
       `CREATE TEMP TABLE ledger_parent_label_migration (
         issue_id TEXT NOT NULL,
         project_id TEXT NOT NULL,
@@ -1325,14 +1167,6 @@ export const MIGRATIONS: readonly Migration[] = [
               AND alias.project_id = p.project_id
               AND alias.alias = p.parent_ref
           )
-        UNION ALL
-        SELECT p.issue_id, p.project_id, p.label, p.parent_ref,
-          parent.id AS parent_id, parent.project_id AS parent_project_id
-        FROM parsed p
-        JOIN ledger_reviewed_parent_edges reviewed
-          ON reviewed.child_issue_id = p.issue_id
-         AND reviewed.label = p.label
-        JOIN ledger_issues parent ON parent.id = reviewed.parent_issue_id
       )
       INSERT INTO ledger_parent_label_migration (
         issue_id, project_id, label, parent_ref, parent_project_id, resolved_parent_id,
@@ -1345,6 +1179,9 @@ export const MIGRATIONS: readonly Migration[] = [
         CAST(strftime('%s', 'now') AS INTEGER) * 1000
       FROM candidates
       GROUP BY issue_id, project_id, label, parent_ref`,
+      `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
+       SELECT 'unresolved_parent_reference', COUNT(*)
+       FROM ledger_parent_label_migration WHERE match_count <> 1`,
       `CREATE TEMP TABLE ledger_parent_relationship_migration AS
       SELECT p.resolved_parent_id AS parent_id, p.issue_id AS child_id,
         p.parent_project_id, p.project_id, 'migration-v183-parent-edge:' || p.resolved_parent_id || ':' || p.issue_id AS relationship_id,
@@ -1359,49 +1196,16 @@ export const MIGRATIONS: readonly Migration[] = [
             AND r.link_type = 'parent_child'
         )
       GROUP BY p.resolved_parent_id, p.issue_id, p.parent_project_id, p.project_id, p.occurred_at`,
-      `CREATE TEMP TABLE ledger_kind_label_state (
-        issue_id TEXT PRIMARY KEY,
-        labels_json TEXT NOT NULL
-      )`,
-      `INSERT INTO ledger_kind_label_state (issue_id, labels_json)
-      SELECT i.id,
-        COALESCE((
-          SELECT json_group_array(normalized_label)
-          FROM (
-            SELECT CASE l.label
-              WHEN 'error' THEN 'bug'
-              WHEN 'enhancement' THEN 'feature'
-              WHEN 'coordination' THEN 'tracker'
-              ELSE l.label
-            END AS normalized_label
-            FROM ledger_labels l
-            WHERE l.issue_id = i.id AND l.deleted_at IS NULL
-              AND l.label IN (
-                'bug','error','feature','enhancement','maintenance','experiment',
-                'coordination','umbrella','unknown','task','question'
-              )
-            GROUP BY normalized_label
-            ORDER BY normalized_label
-          )
-        ), '[]')
-      FROM ledger_issues i`,
       `CREATE TEMP TABLE ledger_kind_migration (
         issue_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
         previous_kind TEXT NOT NULL,
         next_kind TEXT NOT NULL CHECK(next_kind IN ('bug','feature','maintenance','experiment','tracker','umbrella','unknown')),
-        review_confidence TEXT,
-        review_rationale TEXT,
-        review_evidence_json TEXT,
-        review_observed_kind TEXT,
         event_id TEXT NOT NULL UNIQUE,
         occurred_at INTEGER NOT NULL
       )`,
-      `WITH candidates AS (
-        SELECT i.id, i.project_id, i.kind, i.status, i.resolution, i.updated_at,
-          k.next_kind AS reviewed_kind, k.confidence, k.rationale, k.evidence_json,
-          k.observed_kind, k.observed_status, k.observed_resolution, k.observed_updated_at,
-          s.labels_json,
+      `CREATE TEMP TABLE ledger_kind_candidates AS
+        SELECT i.id, i.project_id, i.kind,
           (SELECT COUNT(DISTINCT CASE l.label
              WHEN 'error' THEN 'bug'
              WHEN 'enhancement' THEN 'feature'
@@ -1421,18 +1225,12 @@ export const MIGRATIONS: readonly Migration[] = [
              FROM ledger_labels l
             WHERE l.issue_id = i.id AND l.deleted_at IS NULL
               AND l.label IN ('bug','error','feature','enhancement','maintenance','experiment','coordination','umbrella','unknown')) AS candidate_kind
-        FROM ledger_issues i
-        JOIN ledger_kind_label_state s ON s.issue_id = i.id
-        LEFT JOIN ledger_reviewed_kinds k ON k.issue_id = i.id
-      )
-      INSERT INTO ledger_kind_migration (
-        issue_id, project_id, previous_kind, next_kind, review_confidence,
-        review_rationale, review_evidence_json, review_observed_kind,
-        event_id, occurred_at
+        FROM ledger_issues i`,
+      `INSERT INTO ledger_kind_migration (
+        issue_id, project_id, previous_kind, next_kind, event_id, occurred_at
       )
       SELECT id, project_id, kind,
         CASE
-          WHEN reviewed_kind IS NOT NULL THEN reviewed_kind
           WHEN kind = 'error' THEN 'bug'
           WHEN kind = 'enhancement' THEN 'feature'
           WHEN kind = 'coordination' THEN 'tracker'
@@ -1441,40 +1239,14 @@ export const MIGRATIONS: readonly Migration[] = [
             AND (kind = candidate_kind OR kind = 'unknown') THEN candidate_kind
           ELSE kind
         END,
-        confidence, rationale, evidence_json, observed_kind,
         lower(hex(randomblob(32))), CAST(strftime('%s', 'now') AS INTEGER) * 1000
-      FROM candidates
-      WHERE reviewed_kind IS NOT NULL
-         OR kind IN ('error','enhancement','coordination','deferred','task','question')
+      FROM ledger_kind_candidates
+      WHERE kind IN ('error','enhancement','coordination','deferred','task','question')
          OR (candidate_count = 1 AND (kind = 'unknown' OR kind = candidate_kind))`,
       `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
-      WITH candidates AS (
-        SELECT i.id, i.kind,
-          (SELECT COUNT(DISTINCT CASE l.label
-             WHEN 'error' THEN 'bug'
-             WHEN 'enhancement' THEN 'feature'
-             WHEN 'coordination' THEN 'tracker'
-             ELSE l.label END)
-             FROM ledger_labels l
-            WHERE l.issue_id = i.id AND l.deleted_at IS NULL
-              AND l.label IN ('bug','error','feature','enhancement','maintenance','experiment','coordination','umbrella','unknown')) AS candidate_count,
-          (SELECT MAX(CASE WHEN l.label IN ('task','question') THEN 1 ELSE 0 END)
-             FROM ledger_labels l
-            WHERE l.issue_id = i.id AND l.deleted_at IS NULL) AS retired_label,
-          (SELECT MAX(CASE l.label
-             WHEN 'error' THEN 'bug'
-             WHEN 'enhancement' THEN 'feature'
-             WHEN 'coordination' THEN 'tracker'
-             ELSE l.label END)
-             FROM ledger_labels l
-            WHERE l.issue_id = i.id AND l.deleted_at IS NULL
-              AND l.label IN ('bug','error','feature','enhancement','maintenance','experiment','coordination','umbrella','unknown')) AS candidate_kind
-        FROM ledger_issues i
-      )
       SELECT 'unreviewed_ambiguous_kind', COUNT(*)
-      FROM candidates c
-      WHERE NOT EXISTS (SELECT 1 FROM ledger_reviewed_kinds k WHERE k.issue_id = c.id)
-        AND (
+      FROM ledger_kind_candidates c
+      WHERE (
           c.candidate_count > 1
           OR c.retired_label = 1
           OR (c.candidate_count = 1
@@ -1484,22 +1256,6 @@ export const MIGRATIONS: readonly Migration[] = [
               AND c.kind IN ('bug','feature','maintenance','experiment','tracker','umbrella')
               AND c.kind <> c.candidate_kind)
         )`,
-      `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
-       SELECT 'reviewed_kind_project_mismatch', COUNT(*)
-       FROM ledger_reviewed_kinds k
-       JOIN ledger_issues i ON i.id = k.issue_id
-       LEFT JOIN ledger_projects p ON p.id = i.project_id AND p.project_key = k.project_key
-       WHERE p.id IS NULL`,
-      `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
-       SELECT 'reviewed_kind_state_drift', COUNT(*)
-       FROM ledger_reviewed_kinds k
-       JOIN ledger_issues i ON i.id = k.issue_id
-       JOIN ledger_kind_label_state s ON s.issue_id = i.id
-      WHERE i.status <> k.observed_status
-          OR COALESCE(i.resolution, '') <> COALESCE(k.observed_resolution, '')
-          OR i.updated_at <> k.observed_updated_at
-          OR i.kind <> k.observed_kind
-          OR s.labels_json <> k.observed_labels_json`,
       `INSERT INTO ledger_issue_lifecycle_guard (check_name, offending)
        SELECT 'branch_label_without_structured_row', COUNT(*)
        FROM ledger_labels l
@@ -1727,15 +1483,7 @@ export const MIGRATIONS: readonly Migration[] = [
           'migration', 'resolution_retirement',
           'retired_resolution', previous_resolution,
           'replacement_resolution', next_resolution,
-          'legacy_updated_at', legacy_updated_at,
-          'review', CASE WHEN review_schema IS NULL THEN NULL ELSE json_object(
-            'schema', review_schema,
-            'confidence', review_confidence,
-            'rationale', review_rationale,
-            'evidence', json(review_evidence_json),
-            'observed_updated_at', review_observed_updated_at,
-            'observed_kind', review_observed_kind
-          ) END
+          'legacy_updated_at', legacy_updated_at
         ),
         occurred_at, observed_at, NULL, NULL, NULL
       FROM ledger_resolution_migration`,
@@ -1751,13 +1499,7 @@ export const MIGRATIONS: readonly Migration[] = [
           'patch', json_object('kind', next_kind),
           'previous_kind', previous_kind,
           'kind', next_kind,
-          'migration', 'kind_normalization',
-          'review', CASE WHEN review_confidence IS NULL THEN NULL ELSE json_object(
-            'confidence', review_confidence,
-            'rationale', review_rationale,
-            'evidence', json(review_evidence_json),
-            'observed_kind', review_observed_kind
-          ) END
+          'migration', 'kind_normalization'
         ),
         occurred_at, occurred_at, NULL, NULL, NULL
       FROM ledger_kind_migration`,
@@ -1963,10 +1705,7 @@ export const MIGRATIONS: readonly Migration[] = [
       "DROP TABLE ledger_parent_relationship_migration",
       "DROP TABLE ledger_parent_label_migration",
       "DROP TABLE ledger_kind_migration",
-      "DROP TABLE ledger_kind_label_state",
-      "DROP TABLE ledger_reviewed_kinds",
-      "DROP TABLE ledger_reviewed_parent_edges",
-      "DROP TABLE ledger_reviewed_resolutions",
+      "DROP TABLE ledger_kind_candidates",
       "DROP TABLE ledger_migration_events",
       "DROP TABLE ledger_resolution_migration",
     ],
