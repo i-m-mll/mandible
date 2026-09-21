@@ -90,12 +90,28 @@ it('backfills only consistent sources and preserves duplicate/ambiguous history 
     CREATE TABLE artifact_version(id TEXT PRIMARY KEY,artifact_id TEXT,source_kind TEXT,source_project_id TEXT,source_repo_id TEXT,repo_path TEXT,observed_path TEXT,created_at INTEGER DEFAULT 1);
     CREATE TABLE project_artifact_associations(id TEXT PRIMARY KEY,project_id TEXT,target_type TEXT,target_id TEXT,association_kind TEXT,role TEXT,status TEXT,source TEXT,created_at INTEGER,updated_at INTEGER);
     INSERT INTO ledger_projects VALUES ('p','repo','repo');
-    INSERT INTO artifact VALUES ('one','one','tracked_repo',NULL,'repo','a','{}',1),('two','two','tracked_repo',NULL,'repo','a','{}',1),('mixed','mixed','mixed',NULL,'repo','c','{}',1);
+    INSERT INTO artifact VALUES ('one','one','tracked_repo',NULL,'repo','a','{}',1),('two','two','tracked_repo',NULL,'repo','a','{}',1),('mixed','mixed','mixed',NULL,'repo','c','{}',1),('unknown','unknown','external',NULL,NULL,NULL,'{}',1),('managed','managed','managed',NULL,NULL,NULL,'{}',1);
     INSERT INTO artifact_version(id,artifact_id,source_kind,source_project_id,source_repo_id,repo_path,observed_path) VALUES ('v1','one','tracked_repo',NULL,'repo','a',NULL),('v2','two','tracked_repo',NULL,'repo','a',NULL),('v3','mixed','tracked_repo',NULL,'repo','b',NULL),('v4','mixed','tracked_repo',NULL,'repo','c',NULL);`);
   const ids=legacy.prepare('SELECT id FROM artifact_version ORDER BY id').all();
   legacy.transaction(()=>{for(const sql of [...ARTIFACT_SOURCE_SCHEMA_SQL,...ARTIFACT_SOURCE_BACKFILL_SQL])legacy.exec(sql);})();
   expect(legacy.prepare('SELECT id FROM artifact_version ORDER BY id').all()).toEqual(ids);
   expect(legacy.prepare('SELECT reconciliation_reason FROM artifact_source ORDER BY artifact_id').all()).toEqual([
-    {reconciliation_reason:'historical_source_ambiguous'},{reconciliation_reason:'duplicate_current_source'},{reconciliation_reason:'duplicate_current_source'}]);
+    {reconciliation_reason:null},{reconciliation_reason:'historical_source_ambiguous'},{reconciliation_reason:'duplicate_current_source'},{reconciliation_reason:'duplicate_current_source'},{reconciliation_reason:'historical_source_ambiguous'}]);
+  const repair={artifact_id:'mixed',expected_revision:1,source:{kind:'managed' as const,key:'reconciled'},actor:'operator'};
+  expect(planArtifactSourceMove(legacy,repair)).toMatchObject({ok:false,error:{code:'reconciliation_required'}});
+  const plan=ok(planArtifactSourceMove(legacy,{...repair,reconcile:true}));
+  expect(plan.required_project_ids).toEqual(['p']);
+  expect(ok(commitArtifactSourceMove(legacy,plan))).toMatchObject({revision:2,reconciliation_reason:null});
+  expect(commitArtifactSourceMove(legacy,plan)).toMatchObject({ok:false,error:{code:'stale_plan'}});
+  expect(legacy.prepare('SELECT id FROM artifact_version ORDER BY id').all()).toEqual(ids);
   expect(legacy.pragma('foreign_key_check')).toEqual([]);legacy.close();
+});
+
+it('explicit copy custody keeps registered repo identity but reads frozen bytes after repository deletion',()=>{
+  const a=repo('a');const first=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});const id=identity(first.series.id);
+  const copy=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,custody_mode:'copy'});
+  expect(copy.series.id).toBe(first.series.id);expect(copy.version.custody_mode).toBe('copy');
+  expect(getArtifactCurrentSource(db,id)?.source).toEqual({kind:'repo',project_id:a.project,path:'report.md'});
+  fs.rmSync(a.root,{recursive:true});
+  expect(readArtifactBytesFull(db,copy.version.id)).toMatchObject({ok:true,bytes:Buffer.from('same bytes')});
 });

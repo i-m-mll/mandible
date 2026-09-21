@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { insertRawLedgerProject } from "../helpers/ledger-fixtures.js";
 import { getArtifactContent } from "../../src/artifact-content.js";
 import { openDb, type Db } from "../../src/db.js";
 import {
@@ -324,6 +325,8 @@ describe("canonical artifact compatibility consumers", () => {
   });
 
   it("isolates logical projections for a shared blob and applies q, repo, location, and same-row link filters", () => {
+    insertRawLedgerProject(db, { name: "repo-a" });
+    insertRawLedgerProject(db, { name: "repo-b" });
     const first = recordManaged("projection-a", "shared projection\n", 3500, "repo-a");
     const second = recordManaged("projection-b", "shared projection\n", 3501, "repo-b");
     const firstRefs = canonicalRefs(first);

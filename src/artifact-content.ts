@@ -817,6 +817,7 @@ function readCommitPinnedRepoArtifactBytes(
   actual_sha256: string;
   hash_matches: boolean | null;
 } | { ok: false; reason: string } | null {
+  if (artifact.custody_mode === "managed" || artifact.custody_mode === "copy") return null;
   const commit = stringValue(artifact.repo_locator.commit);
   if (!commit || !/^[a-f0-9]{40,64}$/i.test(commit)) return null;
 
@@ -1170,7 +1171,7 @@ export function readArtifactBytesFull(
   // Prefer commit-pinned repo bytes so an old version reads its exact snapshot
   // rather than the current working-tree state.
   const commit = stringValue(artifact.repo_locator.commit);
-  if (commit && /^[a-f0-9]{40,64}$/i.test(commit)) {
+  if (artifact.custody_mode === "link" && commit && /^[a-f0-9]{40,64}$/i.test(commit)) {
     const repo = readCommitPinnedRepoArtifactBytes(db, artifact);
     if (!repo || !repo.ok) {
       return { ok: false, reason: repo?.reason ?? "artifact commit-pinned repo bytes are not available" };
