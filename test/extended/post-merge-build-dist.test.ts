@@ -57,7 +57,7 @@ fs.appendFileSync(process.env.MANDIBLE_TEST_TRACE, "gateway\\n");
 if (process.env.MANDIBLE_TEST_GATEWAY_FAIL === "1") process.exit(23);
 `);
   copyCliFile("instructions.sh", cliDir);
-  copyCliFile("instructions-contract.json", cliDir);
+  copyCliFile("instructions-contract.md", cliDir);
   // instructions.sh's settings helper requires two shared modules from the same
   // cli/ directory: the production-DB guard (issue 07edc0d) and the durable-root
   // path resolver (issue 24f0316). Ship both into the temp repo.
@@ -152,7 +152,7 @@ describe("post-merge build hook", () => {
   it(
     "skips the build but installs instructions after an instruction-only merge",
     () => {
-      const result = runHookAfterMerge("cli/instructions-contract.json");
+      const result = runHookAfterMerge("cli/instructions-contract.md");
 
       expect(result.status).toBe(0);
       expect(result.stderr).toContain("[post-merge-build] no Mandible source changes detected; skipping build");

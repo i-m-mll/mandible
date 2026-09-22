@@ -298,14 +298,10 @@ describe("comment edit file-RPC allowlist", () => {
 
 describe("comment edit instructions contract", () => {
   it("lists comment edit in the instructions contract", () => {
-    const contractPath = path.join(process.cwd(), "cli", "instructions-contract.json");
-    const contract = JSON.parse(fs.readFileSync(contractPath, "utf8")) as {
-      commands: Array<{ name: string; description: string }>;
-    };
-    const entry = contract.commands.find((c) => c.name.includes("comment edit"));
-    expect(entry).toBeDefined();
-    expect(entry?.name).toContain("--base-revision");
-    expect(entry?.name).toContain("--base-body-hash");
+    const contract = fs.readFileSync(path.join(process.cwd(), "cli", "instructions-contract.md"), "utf8");
+    const entry = contract.split("\n").find((line) => line.startsWith("- `mandible issue comment edit "));
+    expect(entry).toContain("--base-revision");
+    expect(entry).toContain("--base-body-hash");
   });
 
   it("includes comment edit in installed instructions output", async () => {
