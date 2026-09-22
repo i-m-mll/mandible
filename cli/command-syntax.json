@@ -1,0 +1,827 @@
+{
+  "schema_version": 1,
+  "commands": {
+    "changes": {
+      "route": [
+        "changes"
+      ],
+      "syntax": "mandible changes --project <ref> [--cursor <cursor>] [--limit <1-200>] [--schema mandible-ledger-change-feed@1] [--json]"
+    },
+    "issue.report": {
+      "route": [
+        "issue",
+        "report"
+      ],
+      "syntax": "mandible issue report <id> [--json]"
+    },
+    "issue.title": {
+      "route": [
+        "issue",
+        "title"
+      ],
+      "syntax": "mandible issue title <id> [--json] [--graceful]"
+    },
+    "umbrella.status": {
+      "route": [
+        "umbrella",
+        "status"
+      ],
+      "syntax": "mandible umbrella status <id> [--deep] [--json]"
+    },
+    "umbrella.adopt": {
+      "route": [
+        "umbrella",
+        "adopt"
+      ],
+      "syntax": "mandible umbrella adopt <umbrella> <children...> [--json]"
+    },
+    "umbrella.manifest.refresh": {
+      "route": [
+        "umbrella",
+        "manifest",
+        "refresh"
+      ],
+      "syntax": "mandible umbrella manifest refresh <umbrella> [--json]"
+    },
+    "issue.parent-role.status-or-assume": {
+      "route": [
+        "issue",
+        "parent-role",
+        "status|assume"
+      ],
+      "syntax": "mandible issue parent-role status|assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]"
+    },
+    "issue.heads": {
+      "route": [
+        "issue",
+        "heads"
+      ],
+      "syntax": "mandible issue heads <id>... [--json]"
+    },
+    "issue.changed.since-manifest": {
+      "route": [
+        "issue",
+        "changed"
+      ],
+      "syntax": "mandible issue changed --since-manifest <file> [--json]"
+    },
+    "issue.changed.since-issue": {
+      "route": [
+        "issue",
+        "changed"
+      ],
+      "syntax": "mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--checkpoint <id>] [--json]"
+    },
+    "issue.checkpoint.add": {
+      "route": [
+        "issue",
+        "checkpoint",
+        "add"
+      ],
+      "syntax": "mandible issue checkpoint add <issue-ref> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]"
+    },
+    "issue.checkpoint.show": {
+      "route": [
+        "issue",
+        "checkpoint",
+        "show"
+      ],
+      "syntax": "mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]"
+    },
+    "issue.status": {
+      "route": [
+        "issue",
+        "status"
+      ],
+      "syntax": "mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>"
+    },
+    "issue.branch.add": {
+      "route": [
+        "issue",
+        "branch",
+        "add"
+      ],
+      "syntax": "mandible issue branch add <id> <branch> [--role primary|superseded]"
+    },
+    "issue.link": {
+      "route": [
+        "issue",
+        "link"
+      ],
+      "syntax": "mandible issue link <src> <target...> [--type t] [--note n]"
+    },
+    "issue.unlink": {
+      "route": [
+        "issue",
+        "unlink"
+      ],
+      "syntax": "mandible issue unlink <src> <target...> [--type t]"
+    },
+    "issue.close": {
+      "route": [
+        "issue",
+        "close"
+      ],
+      "syntax": "mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]"
+    },
+    "issue.comment.add": {
+      "route": [
+        "issue",
+        "comment",
+        "add"
+      ],
+      "syntax": "mandible issue comment add <issue-ref> -m <text> [--reopen]"
+    },
+    "issue.comment.edit": {
+      "route": [
+        "issue",
+        "comment",
+        "edit"
+      ],
+      "syntax": "mandible issue comment edit <comment-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]"
+    },
+    "issue.description.edit": {
+      "route": [
+        "issue",
+        "description",
+        "edit"
+      ],
+      "syntax": "mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]"
+    },
+    "issue.new": {
+      "route": [
+        "issue",
+        "new"
+      ],
+      "syntax": "mandible issue new -t <title> -m <body> --kind <kind> [--label <label>] [--project <ref>]..."
+    },
+    "issue.work-notes.show-or-edit-or-clear-or-history": {
+      "route": [
+        "issue",
+        "work-notes",
+        "show|edit|clear|history"
+      ],
+      "syntax": "mandible issue work-notes show|edit|clear|history <issue-ref> [opts]"
+    },
+    "issue.kind.set": {
+      "route": [
+        "issue",
+        "kind",
+        "set"
+      ],
+      "syntax": "mandible issue kind set <issue-ref> <bug|feature|umbrella|maintenance|experiment|tracker|unknown>"
+    },
+    "issue.label.add-or-rm": {
+      "route": [
+        "issue",
+        "label",
+        "add|rm"
+      ],
+      "syntax": "mandible issue label add|rm <id> <label>"
+    },
+    "auth.list": {
+      "route": [
+        "auth",
+        "list"
+      ],
+      "syntax": "mandible auth list [--repo <repo>] [--head <branch>] [--base <branch>] [--status <status>] [--json]"
+    },
+    "auth.check": {
+      "route": [
+        "auth",
+        "check"
+      ],
+      "syntax": "mandible auth check [--branch <branch>] [--repo <repo>] [--target <branch>] [--cwd <path>] [--json]"
+    },
+    "auth.clearance.create-or-list-or-show-or-revoke-or-execute": {
+      "route": [
+        "auth",
+        "clearance",
+        "create|list|show|revoke|execute"
+      ],
+      "syntax": "mandible auth clearance create|list|show|revoke|execute"
+    },
+    "auth.request": {
+      "route": [
+        "auth",
+        "request"
+      ],
+      "syntax": "mandible auth request <branch> --title <text> --issue <id> [--closes-issue <id>] [--supersedes <request> --expected-revision <n> --expected-custody-generation <n>] [--drop-superseded-action <ordinal>:<reason>] [--promote-briefing <group> <expected-base> <proposal>] [--message <text> | --message-file <file>] [--verification <text>] [--spec <text> | --spec-file <file>] [--depends-on <request>] [--no-watch]"
+    },
+    "auth.withdraw": {
+      "route": [
+        "auth",
+        "withdraw"
+      ],
+      "syntax": "mandible auth withdraw <request-id> --reason <text> --expected-revision <n> --expected-custody-generation <n> [--json]"
+    },
+    "auth.candidate-repair.inspect-or-apply": {
+      "route": [
+        "auth",
+        "candidate-repair",
+        "inspect|apply"
+      ],
+      "syntax": "mandible auth candidate-repair inspect|apply <request-id> [--expected-revision <n> --expected-custody-generation <n> --expected-current-snapshot-sha256 <sha256>] [--operator-recovery] [--json]"
+    },
+    "auth.replay-archives": {
+      "route": [
+        "auth",
+        "replay-archives"
+      ],
+      "syntax": "mandible auth replay-archives <request-id> [--json]"
+    },
+    "work-unit.claim": {
+      "route": [
+        "work-unit",
+        "claim"
+      ],
+      "syntax": "mandible work-unit claim --issue <id> --repo <repo> [--branch <branch>] [--parent-branch <branch>] [--kind solo|partition|integration] [--session <id>] [--graceful]"
+    },
+    "work-unit.activate": {
+      "route": [
+        "work-unit",
+        "activate"
+      ],
+      "syntax": "mandible work-unit activate --issue <id> --repo <repo> [--branch <branch>] [--session <id>] [--worker] [--graceful]"
+    },
+    "work-unit.find": {
+      "route": [
+        "work-unit",
+        "find"
+      ],
+      "syntax": "mandible work-unit find --repo <repo> (--issue <id> | --branch <branch>) [--state <state>] [--graceful]"
+    },
+    "work-unit.resolve": {
+      "route": [
+        "work-unit",
+        "resolve"
+      ],
+      "syntax": "mandible work-unit resolve --id <work-unit-id> [--auth-request-id <id>] [--graceful]"
+    },
+    "work-unit.release": {
+      "route": [
+        "work-unit",
+        "release"
+      ],
+      "syntax": "mandible work-unit release --issue <id> --repo <repo> [--graceful]"
+    },
+    "work-unit.custody-assume": {
+      "route": [
+        "work-unit",
+        "custody-assume"
+      ],
+      "syntax": "mandible work-unit custody-assume --id <work-unit-id> --expected-generation <n> --reason <text> [--parent-role-checkpoint <id>] [--graceful]"
+    },
+    "trash.list-or-create-or-restore-or-gc": {
+      "route": [
+        "trash",
+        "list|create|restore|gc"
+      ],
+      "syntax": "mandible trash list|create|restore|gc"
+    },
+    "issue-file.path": {
+      "route": [
+        "issue-file",
+        "path"
+      ],
+      "syntax": "mandible issue-file path [cwd]"
+    },
+    "issue-file.read": {
+      "route": [
+        "issue-file",
+        "read"
+      ],
+      "syntax": "mandible issue-file read [cwd]"
+    },
+    "issue-file.write": {
+      "route": [
+        "issue-file",
+        "write"
+      ],
+      "syntax": "mandible issue-file write [--cwd <path>] <issue>..."
+    },
+    "commit.trailer": {
+      "route": [
+        "commit",
+        "trailer"
+      ],
+      "syntax": "mandible commit trailer [issue...]"
+    },
+    "session.link-issue": {
+      "route": [
+        "session",
+        "link-issue"
+      ],
+      "syntax": "mandible session link-issue <session-id> --issue <id> --repo <repo> [--repo-name <name>] [--graceful]"
+    },
+    "conversations.star": {
+      "route": [
+        "conversations",
+        "star"
+      ],
+      "syntax": "mandible conversations star <conversation-ref|--current> [--json]"
+    },
+    "conversations.unstar": {
+      "route": [
+        "conversations",
+        "unstar"
+      ],
+      "syntax": "mandible conversations unstar <conversation-ref|--current> [--json]"
+    },
+    "conversations.tag.add": {
+      "route": [
+        "conversations",
+        "tag",
+        "add"
+      ],
+      "syntax": "mandible conversations tag add <conversation-ref|--current> <tag...> [--json]"
+    },
+    "conversations.tag.rm": {
+      "route": [
+        "conversations",
+        "tag",
+        "rm"
+      ],
+      "syntax": "mandible conversations tag rm <conversation-ref|--current> <tag...> [--json]"
+    },
+    "conversations.comment": {
+      "route": [
+        "conversations",
+        "comment"
+      ],
+      "syntax": "mandible conversations comment <conversation-ref|--current> -m <markdown> [--json]"
+    },
+    "db.query": {
+      "route": [
+        "db",
+        "query"
+      ],
+      "syntax": "mandible db query <sql> [--limit N] [--json]"
+    },
+    "db.tables-or-schema": {
+      "route": [
+        "db",
+        "tables|schema"
+      ],
+      "syntax": "mandible db tables|schema [table]|info [--json]"
+    },
+    "artifact.ingest": {
+      "route": [
+        "artifact",
+        "ingest"
+      ],
+      "syntax": "mandible artifact ingest <path...> [--project <project>] [--commit <git-ref>] [--artifact <artifact-ref>] [--issue <id>] [--role <role>] [--managed|--git] [--upload] [--blob-only] [--dry-run] [--json]"
+    },
+    "artifact.move": {
+      "route": [
+        "artifact",
+        "move"
+      ],
+      "syntax": "mandible artifact move <artifact-ref> [--project <project>] [--path <path>] [--if-revision <n>] [--reconcile] [--json]"
+    },
+    "artifact.source.show": {
+      "route": [
+        "artifact",
+        "source",
+        "show"
+      ],
+      "syntax": "mandible artifact source show <artifact-ref> [--json]"
+    },
+    "artifact.source.move": {
+      "route": [
+        "artifact",
+        "source",
+        "move"
+      ],
+      "syntax": "mandible artifact source move <artifact-ref> --expected-revision <n> --source <json> [--reconcile] [--json]"
+    },
+    "artifact.format": {
+      "route": [
+        "artifact",
+        "format"
+      ],
+      "syntax": "mandible artifact format <ref> [--as id|url|markdown|full] [--label <text>] [--json]"
+    },
+    "briefing.create": {
+      "route": [
+        "briefing",
+        "create"
+      ],
+      "syntax": "mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--briefing <briefing-ref> | --reason <text>] [--json]"
+    },
+    "briefing.rename": {
+      "route": [
+        "briefing",
+        "rename"
+      ],
+      "syntax": "mandible briefing rename <briefing-ref> --title <text> [--json]"
+    },
+    "briefing.describe": {
+      "route": [
+        "briefing",
+        "describe"
+      ],
+      "syntax": "mandible briefing describe <briefing-ref> (--description <text>|--clear) [--json]"
+    },
+    "briefing.archive": {
+      "route": [
+        "briefing",
+        "archive"
+      ],
+      "syntax": "mandible briefing archive <briefing-ref> [--json]"
+    },
+    "briefing.restore": {
+      "route": [
+        "briefing",
+        "restore"
+      ],
+      "syntax": "mandible briefing restore <briefing-ref> [--json]"
+    },
+    "briefing.bundle.create": {
+      "route": [
+        "briefing",
+        "bundle",
+        "create"
+      ],
+      "syntax": "mandible briefing bundle create --name <name> [<briefing-ref>...] [--sharing-reason <text>] [--json]"
+    },
+    "briefing.bundle.add": {
+      "route": [
+        "briefing",
+        "bundle",
+        "add"
+      ],
+      "syntax": "mandible briefing bundle add <bundle-ref> <briefing-ref> [--sharing-reason <text>] [--json]"
+    },
+    "briefing.bundle.replace": {
+      "route": [
+        "briefing",
+        "bundle",
+        "replace"
+      ],
+      "syntax": "mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--layout <json>] [--sharing-reason <text>] [--json]"
+    },
+    "briefing.bundle.rename": {
+      "route": [
+        "briefing",
+        "bundle",
+        "rename"
+      ],
+      "syntax": "mandible briefing bundle rename <bundle-ref> --name <text> [--json]"
+    },
+    "briefing.bundle.delete": {
+      "route": [
+        "briefing",
+        "bundle",
+        "delete"
+      ],
+      "syntax": "mandible briefing bundle delete <bundle-ref> [--json]"
+    },
+    "briefing.bundle.show": {
+      "route": [
+        "briefing",
+        "bundle",
+        "show"
+      ],
+      "syntax": "mandible briefing bundle show <bundle-ref> [--json]"
+    },
+    "briefing.group.create": {
+      "route": [
+        "briefing",
+        "group",
+        "create"
+      ],
+      "syntax": "mandible briefing group create --key <key> --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]"
+    },
+    "briefing.group.add": {
+      "route": [
+        "briefing",
+        "group",
+        "add"
+      ],
+      "syntax": "mandible briefing group add <group-ref> <bundle-ref> [--sharing-reason <text>] [--json]"
+    },
+    "briefing.group.configure": {
+      "route": [
+        "briefing",
+        "group",
+        "configure"
+      ],
+      "syntax": "mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]"
+    },
+    "briefing.group.archive": {
+      "route": [
+        "briefing",
+        "group",
+        "archive"
+      ],
+      "syntax": "mandible briefing group archive <group-ref> [--json]"
+    },
+    "briefing.group.restore": {
+      "route": [
+        "briefing",
+        "group",
+        "restore"
+      ],
+      "syntax": "mandible briefing group restore <group-ref> [--json]"
+    },
+    "briefing.group.promote": {
+      "route": [
+        "briefing",
+        "group",
+        "promote"
+      ],
+      "syntax": "mandible briefing group promote <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --auth-request <request-ref> --merge-head <sha> [--json]"
+    },
+    "briefing.group.review": {
+      "route": [
+        "briefing",
+        "group",
+        "review"
+      ],
+      "syntax": "mandible briefing group review <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> [--destination-changes <json>] [--json]"
+    },
+    "briefing.group.accept": {
+      "route": [
+        "briefing",
+        "group",
+        "accept"
+      ],
+      "syntax": "mandible briefing group accept <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]"
+    },
+    "briefing.group.reject": {
+      "route": [
+        "briefing",
+        "group",
+        "reject"
+      ],
+      "syntax": "mandible briefing group reject <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]"
+    },
+    "briefing.group.destination.bind": {
+      "route": [
+        "briefing",
+        "group",
+        "destination",
+        "bind"
+      ],
+      "syntax": "mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]"
+    },
+    "briefing.group.destination.place": {
+      "route": [
+        "briefing",
+        "group",
+        "destination",
+        "place"
+      ],
+      "syntax": "mandible briefing group destination place <group-ref> <logical-artifact-ref> --briefing <briefing-ref> --operation-key <key> --expected-owner <group-ref|none> --expected-target-base <bundle-ref|none> [--expected-source-base <bundle-ref|none>] [--route-file <manifest.json>] [--json]"
+    },
+    "briefing.report.update": {
+      "route": [
+        "briefing",
+        "report",
+        "update"
+      ],
+      "syntax": "mandible briefing report update <briefing-ref> <artifact-version-ref> --operation-key <key> --expected-round <round-id> --expected-version <artifact-version-ref> [--json]"
+    },
+    "briefing.group.rename": {
+      "route": [
+        "briefing",
+        "group",
+        "rename"
+      ],
+      "syntax": "mandible briefing group rename <group-ref> --name <text> [--json]"
+    },
+    "briefing.group.show": {
+      "route": [
+        "briefing",
+        "group",
+        "show"
+      ],
+      "syntax": "mandible briefing group show <group-ref> [--json]"
+    },
+    "briefing.route.inspect": {
+      "route": [
+        "briefing",
+        "route",
+        "inspect"
+      ],
+      "syntax": "mandible briefing route inspect [<route-key>] [--json]"
+    },
+    "briefing.route.plan": {
+      "route": [
+        "briefing",
+        "route",
+        "plan"
+      ],
+      "syntax": "mandible briefing route plan <manifest.json|-> [--json]"
+    },
+    "briefing.route.apply": {
+      "route": [
+        "briefing",
+        "route",
+        "apply"
+      ],
+      "syntax": "mandible briefing route apply <manifest.json|-> [--json]"
+    },
+    "instructions.install": {
+      "route": [
+        "instructions",
+        "install"
+      ],
+      "syntax": "mandible instructions install [--target <file>] [--worktree <path>] [--force]"
+    },
+    "instructions.targets.list-or-add-or-rm": {
+      "route": [
+        "instructions",
+        "targets",
+        "list|add|rm"
+      ],
+      "syntax": "mandible instructions targets list|add|rm <path> [--mode managed-block|standalone]"
+    },
+    "instructions.post-export.get-or-set-or-clear": {
+      "route": [
+        "instructions",
+        "post-export",
+        "get|set|clear"
+      ],
+      "syntax": "mandible instructions post-export get|set|clear <command>"
+    },
+    "project.list": {
+      "route": [
+        "project",
+        "list"
+      ],
+      "syntax": "mandible project list [--json]"
+    },
+    "project.show": {
+      "route": [
+        "project",
+        "show"
+      ],
+      "syntax": "mandible project show <ref> [--json]"
+    },
+    "project.add": {
+      "route": [
+        "project",
+        "add"
+      ],
+      "syntax": "mandible project add --key <k> [--display <name>] [--remote <url>] [--namespace remote|upstream|local] [--root <path>] [--json]"
+    },
+    "project.update": {
+      "route": [
+        "project",
+        "update"
+      ],
+      "syntax": "mandible project update <ref> [--key <k>] [--display <name>] [--remote <url>] [--namespace <p>] [--json]"
+    },
+    "project.add-checkout": {
+      "route": [
+        "project",
+        "add-checkout"
+      ],
+      "syntax": "mandible project add-checkout <ref> --root <path> [--work-repo-id <id>] [--default-branch <b>] [--name <n>] [--json]"
+    },
+    "project.update-checkout": {
+      "route": [
+        "project",
+        "update-checkout"
+      ],
+      "syntax": "mandible project update-checkout --root <path> --project <ref> [--work-repo-id <id>] [--default-branch <b>] [--name <n>] [--json]"
+    },
+    "project.audit": {
+      "route": [
+        "project",
+        "audit"
+      ],
+      "syntax": "mandible project audit [--json]"
+    },
+    "project.repair": {
+      "route": [
+        "project",
+        "repair"
+      ],
+      "syntax": "mandible project repair [--apply] [--force] [--merge <src> <dst>] [--json]"
+    },
+    "user.setup": {
+      "route": [
+        "user",
+        "setup"
+      ],
+      "syntax": "mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--agents] [--json]"
+    },
+    "user.whoami": {
+      "route": [
+        "user",
+        "whoami"
+      ],
+      "syntax": "mandible user whoami [--json]"
+    },
+    "user.list": {
+      "route": [
+        "user",
+        "list"
+      ],
+      "syntax": "mandible user list [--kind <k>] [--status <s>] [--json]"
+    },
+    "user.show": {
+      "route": [
+        "user",
+        "show"
+      ],
+      "syntax": "mandible user show <ref> [--json]"
+    },
+    "user.update": {
+      "route": [
+        "user",
+        "update"
+      ],
+      "syntax": "mandible user update <ref> [--name <n>] [--email <e>] [--status active|retired] [--json]"
+    },
+    "user.credential.add": {
+      "route": [
+        "user",
+        "credential",
+        "add"
+      ],
+      "syntax": "mandible user credential add <ref> (--type <t> --fingerprint <f> [--public-material <m>] | --from-git-signingkey) [--label <l>] [--json]"
+    },
+    "user.credential.revoke": {
+      "route": [
+        "user",
+        "credential",
+        "revoke"
+      ],
+      "syntax": "mandible user credential revoke <id> [--json]"
+    },
+    "user.credential.list": {
+      "route": [
+        "user",
+        "credential",
+        "list"
+      ],
+      "syntax": "mandible user credential list <ref> [--all] [--json]"
+    },
+    "user.token.mint": {
+      "route": [
+        "user",
+        "token",
+        "mint"
+      ],
+      "syntax": "mandible user token mint <ref> [--label <l>] [--store [--service <name>]] [--json]"
+    },
+    "user.binding.add": {
+      "route": [
+        "user",
+        "binding",
+        "add"
+      ],
+      "syntax": "mandible user binding add <ref> --type <t> --value <v> [--scope <s>] [--json]"
+    },
+    "user.binding.rm": {
+      "route": [
+        "user",
+        "binding",
+        "rm"
+      ],
+      "syntax": "mandible user binding rm <id> [--json]"
+    },
+    "user.binding.list": {
+      "route": [
+        "user",
+        "binding",
+        "list"
+      ],
+      "syntax": "mandible user binding list <ref> [--json]"
+    },
+    "user.group.add-or-rm-or-members": {
+      "route": [
+        "user",
+        "group",
+        "add|rm|members"
+      ],
+      "syntax": "mandible user group add|rm|members"
+    },
+    "user.grant.add-or-rm-or-list": {
+      "route": [
+        "user",
+        "grant",
+        "add|rm|list"
+      ],
+      "syntax": "mandible user grant add|rm|list"
+    },
+    "user.access": {
+      "route": [
+        "user",
+        "access"
+      ],
+      "syntax": "mandible user access <user> <project> [--json]"
+    },
+    "auth.request.command": {
+      "route": [
+        "auth",
+        "request"
+      ],
+      "syntax": "mandible auth request --type <commit|force-push|branch-delete|config-change|data-delete> --command <command> --cwd <path> --repo <ref> --title <text> --issue <id> [--spec <text>|--spec-file <file>] [--no-watch]"
+    }
+  }
+}

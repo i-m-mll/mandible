@@ -2,8 +2,8 @@
 # mandible auth request: Submit an auth request to Mandible and poll until resolved.
 # Combines submission + watching into a single command for use as a background task.
 #
-# Usage: mandible auth request <branch> --title <text> [options]
-#        mandible auth request --type <type> --command <command> --cwd <path> --repo <ref> --title <text> --issue <ref> [options]
+# Usage: {{command auth.request}}
+#        {{command auth.request.command}}
 #
 # Required:
 #   <branch>                Source branch (merge requests only)
@@ -94,6 +94,7 @@
 # being merged, submit the request from the main worktree instead — the stored
 # command must exist on the target branch at merge time.
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 set -euo pipefail
 
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher
@@ -108,7 +109,7 @@ MANDIBLE_CLI_DIR="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 # --- Usage ---
 
 usage() {
-  sed -n '2,/^$/{ s/^# //; s/^#$//; p; }' "$0"
+  sed -n '2,/^$/{ s/^# //; s/^#$//; p; }' "$0" | mandible_render_commands
 }
 
 # --- Argument parsing ---

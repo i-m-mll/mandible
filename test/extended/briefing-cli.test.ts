@@ -1,3 +1,4 @@
+import { renderMandibleInstructionsFragment } from "../../src/instructions/fragment.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -86,7 +87,7 @@ describe("briefing CLI", () => {
       .toContain("mutually exclusive");
     expect(runOffline(["briefing", "create", "artifact-version:exact", "--title", "Review",
       "--reason", "  "]).stderr).toContain("nonblank");
-    const contract = fs.readFileSync(path.join(process.cwd(), "cli", "instructions-contract.md"), "utf8");
+    const contract = renderMandibleInstructionsFragment();
     const command = (name: string) => contract.split("\n").find((line) => line.startsWith(`- \`mandible ${name} `));
     expect(command("briefing create")).toContain("--briefing <briefing-ref> | --reason <text>");
     expect(command("briefing create")).toContain("Active Briefings for the same logical Artifact block default creation");

@@ -55,7 +55,7 @@ if [[ -n "$merge_base_sha" && -n "$merge_head_sha" ]]; then
   instruction_install_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
     package.json package-lock.json tsconfig.json \
     src channel-server ui/src ui/index.html ui/esbuild.config.js \
-    cli/instructions.sh cli/instructions-contract.md)"
+    cli/instructions.sh cli/instructions-contract.md cli/command-syntax.json cli/command-syntax.cjs cli/command-syntax.sh)"
   if [[ -n "$instruction_install_changes" ]]; then
     instruction_install_needed=true
   fi

@@ -1,3 +1,4 @@
+import { renderMandibleInstructionsFragment } from "../../src/instructions/fragment.js";
 import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
@@ -298,7 +299,7 @@ describe("comment edit file-RPC allowlist", () => {
 
 describe("comment edit instructions contract", () => {
   it("lists comment edit in the instructions contract", () => {
-    const contract = fs.readFileSync(path.join(process.cwd(), "cli", "instructions-contract.md"), "utf8");
+    const contract = renderMandibleInstructionsFragment();
     const entry = contract.split("\n").find((line) => line.startsWith("- `mandible issue comment edit "));
     expect(entry).toContain("--base-revision");
     expect(entry).toContain("--base-body-hash");

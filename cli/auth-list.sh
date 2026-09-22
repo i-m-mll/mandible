@@ -2,6 +2,7 @@
 # mandible auth list: List active Mandible auth requests.
 #
 # Usage: mandible auth list [options]
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -u
 set -o pipefail
@@ -18,8 +19,8 @@ status_filter=""
 type_filter=""
 
 usage() {
-  cat <<'EOF'
-Usage: mandible auth list [options]
+  cat <<'EOF' | mandible_render_commands
+Usage: {{command auth.list}}
 
 List active auth requests from the Mandible daemon. The active queue includes
 pending, approved, executing, expired, failed, and recently resolved requests.

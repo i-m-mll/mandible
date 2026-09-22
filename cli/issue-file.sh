@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -u
 set -o pipefail
@@ -7,11 +8,11 @@ CLIENT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/ledger-client
 source "$CLIENT_HELPER"
 
 usage() {
-  cat <<'USAGE'
+  cat <<'USAGE' | mandible_render_commands
 Usage:
-  mandible issue-file path [cwd]
-  mandible issue-file read [cwd]
-  mandible issue-file write [--cwd <path>] <issue>...
+  {{command issue-file.path}}
+  {{command issue-file.read}}
+  {{command issue-file.write}}
 USAGE
 }
 

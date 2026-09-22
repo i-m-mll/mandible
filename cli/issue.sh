@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -u
 set -o pipefail
@@ -50,34 +51,34 @@ ISSUE_CLOSE_RESOLUTIONS=(delivered duplicate wontfix)
 ACCEPTED_ISSUE_CLOSE_RESOLUTIONS="delivered, duplicate, wontfix"
 
 usage_link() {
-  cat <<'LINK_USAGE'
+  cat <<'LINK_USAGE' | mandible_render_commands
 Usage:
-  mandible issue link <src> <target...> [--type t] [--note n]
+  {{command issue.link}}
 
 Accepted relationship types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests
 LINK_USAGE
 }
 
 usage_unlink() {
-  cat <<'UNLINK_USAGE'
+  cat <<'UNLINK_USAGE' | mandible_render_commands
 Usage:
-  mandible issue unlink <src> <target...> [--type t]
+  {{command issue.unlink}}
 
 Accepted relationship types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests
 UNLINK_USAGE
 }
 
 usage_checkpoint_add() {
-  cat <<'CHECKPOINT_ADD_USAGE'
+  cat <<'CHECKPOINT_ADD_USAGE' | mandible_render_commands
 Usage:
-  mandible issue checkpoint add <issue-ref> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]
+  {{command issue.checkpoint.add}}
 CHECKPOINT_ADD_USAGE
 }
 
 usage_checkpoint_show() {
-  cat <<'CHECKPOINT_SHOW_USAGE'
+  cat <<'CHECKPOINT_SHOW_USAGE' | mandible_render_commands
 Usage:
-  mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]
+  {{command issue.checkpoint.show}}
 CHECKPOINT_SHOW_USAGE
 }
 
@@ -178,33 +179,33 @@ die_api_status() {
 }
 
 usage() {
-  cat <<'USAGE'
+  cat <<'USAGE' | mandible_render_commands
 Usage:
-  mandible issue new -t <title> -m <body> --kind <kind> [--label <label>]...   Create a new issue
+  {{command issue.new}}  Create a new issue
   mandible issue list [--status open|closed|all] [--repo <repo>]   List issues (default: open)
   mandible issue show <id>                                        Show issue details
-  mandible issue title <id> [--json] [--graceful]                 Print issue title
-  mandible issue report <id> [--json]                             Print deterministic issue context
+  {{command issue.title}}  Print issue title
+  {{command issue.report}}  Print deterministic issue context
   mandible issue triage [--status open|closed|all] [--resolution <resolution>] [--kind <kind>] [--priority <priority>] [--label <label>] [opts] [--json]
                                                                   Filter issues for review
-  mandible issue heads <id>... [--json]                            Print issue state digests
-  mandible issue changed --since-manifest <file> [--json]          Compare issue digests to a manifest
-  mandible issue changed --since-issue <id> [--kind <kind>] [--checkpoint <id>] [--json]
+  {{command issue.heads}}  Print issue state digests
+  {{command issue.changed.since-manifest}}  Compare issue digests to a manifest
+  {{command issue.changed.since-issue}}
                                                                   Compare issue digests to a checkpoint payload and the issue's own head
-  mandible issue checkpoint add <id> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]
+  {{command issue.checkpoint.add}}
                                                                   Add an issue-scoped structured checkpoint
-  mandible issue checkpoint show <id> --kind <kind> [--latest|--all] [--json]
+  {{command issue.checkpoint.show}}
                                                                   Show issue-scoped structured checkpoints
-  mandible issue status <id> <value>                               Set worker status
-  mandible issue branch add <id> <branch> [--role primary|superseded]
+  {{command issue.status}}  Set worker status
+  {{command issue.branch.add}}
                                                                   Link a branch to an issue
-  mandible issue link <src> <target...> [--type t] [--note n]     Add structured issue/comment links
-  mandible issue unlink <src> <target...> [--type t]              Remove structured issue/comment links
-  mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]
+  {{command issue.link}}  Add structured issue/comment links
+  {{command issue.unlink}}  Remove structured issue/comment links
+  {{command issue.close}}
                                                                   Close issue with an explicit resolution; --commit is only for delivered
   mandible issue open <id>                                        Reopen a closed issue
   mandible issue description show <issue-ref> [--json]            Show only the issue description
-  mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
+  {{command issue.description.edit}}
                                                                   Edit the issue description
   mandible issue description history <issue-ref> [--json] [--with-body]
                                                                   Show issue description revision history
@@ -215,9 +216,9 @@ Usage:
                                                                   Clear current working notes
   mandible issue work-notes history <issue-ref> [--json] [--with-body]
                                                                   Show working-notes revision history
-  mandible issue kind set <issue-ref> <kind>                       Set the canonical issue kind
-  mandible issue comment add <issue-ref> -m <text> [--reopen]      Add a comment
-  mandible issue comment edit <comment-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
+  {{command issue.kind.set}}  Set the canonical issue kind
+  {{command issue.comment.add}}  Add a comment
+  {{command issue.comment.edit}}
                                                                   Edit a comment
   mandible issue parent-role <status|assume> <umbrella> [opts]     Inspect or record parent-role holder state
   mandible issue comment show <comment-ref> [--json]               Show one comment
@@ -344,7 +345,7 @@ cmd_close() {
   done
 
   if [[ -z "$id" ]]; then
-    die "Usage: mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]" 2
+    die "Usage: $(mandible_command_syntax issue.close)" 2
   fi
 
   if [[ -z "$resolution" ]]; then
@@ -414,7 +415,7 @@ cmd_comment_add() {
   done
 
   if [[ -z "$id" || -z "$message" ]]; then
-    die "Usage: mandible issue comment add <issue-ref> -m <text> [--reopen]" 2
+    die "Usage: $(mandible_command_syntax issue.comment.add)" 2
   fi
 
   require_tools
@@ -472,7 +473,7 @@ cmd_comment_edit() {
   done
 
   if [[ -z "$comment_ref" || -z "$message" ]]; then
-    die "Usage: mandible issue comment edit <comment-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]" 2
+    die "Usage: $(mandible_command_syntax issue.comment.edit)" 2
   fi
 
   require_tools
@@ -536,7 +537,7 @@ cmd_report() {
   done
 
   if [[ -z "$id" ]]; then
-    die "Usage: mandible issue report <id> [--json]" 2
+    die "Usage: $(mandible_command_syntax issue.report)" 2
   fi
 
   require_tools
@@ -705,7 +706,7 @@ cmd_status() {
   local worker_status="${2:-}"
 
   if [[ -z "$id" || -z "$worker_status" ]]; then
-    die "Usage: mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>" 2
+    die "Usage: $(mandible_command_syntax issue.status)" 2
   fi
 
   case "$worker_status" in
@@ -728,9 +729,9 @@ cmd_branch() {
   case "$action" in
     add) cmd_branch_add "$@" ;;
     ""|-h|--help)
-      cat <<'BRANCH_USAGE'
+      cat <<'BRANCH_USAGE' | mandible_render_commands
 Usage:
-  mandible issue branch add <id> <branch> [--role primary|superseded]
+  {{command issue.branch.add}}
 BRANCH_USAGE
       ;;
     *)
@@ -768,7 +769,7 @@ cmd_branch_add() {
   done
 
   if [[ -z "$id" || -z "$branch" ]]; then
-    die "Usage: mandible issue branch add <id> <branch> [--role primary|superseded]" 2
+    die "Usage: $(mandible_command_syntax issue.branch.add)" 2
   fi
   case "$role" in
     primary|superseded) ;;
@@ -931,7 +932,7 @@ cmd_heads() {
   done
 
   if (( ${#ids[@]} == 0 )); then
-    die "Usage: mandible issue heads <id>... [--json]" 2
+    die "Usage: $(mandible_command_syntax issue.heads)" 2
   fi
 
   require_tools
@@ -1373,10 +1374,10 @@ cmd_checkpoint() {
       fi
       ;;
     ""|-h|--help)
-      cat <<'CHECKPOINT_USAGE'
+      cat <<'CHECKPOINT_USAGE' | mandible_render_commands
 Usage:
-  mandible issue checkpoint add <issue-ref> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]
-  mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]
+  {{command issue.checkpoint.add}}
+  {{command issue.checkpoint.show}}
 CHECKPOINT_USAGE
       ;;
     *)
@@ -1439,7 +1440,7 @@ cmd_new() {
   done
 
   if [[ -z "$title" || -z "$body" || -z "$kind" ]]; then
-    die "Usage: mandible issue new -t <title> -m <body> --kind <kind> [--label <label>] [--project <ref>]..." 2
+    die "Usage: $(mandible_command_syntax issue.new)" 2
   fi
   require_creation_kind "$kind"
 
@@ -1676,7 +1677,7 @@ cmd_label_set() {
   local present="$1"
   shift
   if (( $# < 2 )); then
-    die "Usage: mandible issue label add|rm <id> <label>" 2
+    die "Usage: $(mandible_command_syntax issue.label.add-or-rm)" 2
   fi
 
   local id="$1"
@@ -1848,7 +1849,7 @@ cmd_description_edit() {
   done
 
   if [[ -z "$issue_ref" || -z "$message" ]]; then
-    die "Usage: mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]" 2
+    die "Usage: $(mandible_command_syntax issue.description.edit)" 2
   fi
 
   require_tools
@@ -1878,10 +1879,10 @@ cmd_description() {
     edit) cmd_description_edit "$@" ;;
     history) cmd_description_history "$@" ;;
     ""|-h|--help)
-      cat <<'DESCRIPTION_USAGE'
+      cat <<'DESCRIPTION_USAGE' | mandible_render_commands
 Usage:
   mandible issue description show <issue-ref> [--json]
-  mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
+  {{command issue.description.edit}}
   mandible issue description history <issue-ref> [--json] [--with-body]
 DESCRIPTION_USAGE
       ;;
@@ -2027,9 +2028,9 @@ cmd_kind() {
   shift || true
   if [[ "$action" != set ]]; then
     if [[ -z "$action" || "$action" == -h || "$action" == --help ]]; then
-      cat <<'KIND_USAGE'
+      cat <<'KIND_USAGE' | mandible_render_commands
 Usage:
-  mandible issue kind set <issue-ref> <kind>
+  {{command issue.kind.set}}
 KIND_USAGE
       return 0
     fi
@@ -2039,7 +2040,7 @@ KIND_USAGE
   local issue_ref="${1:-}"
   local kind="${2:-}"
   if [[ -z "$issue_ref" || -z "$kind" || $# -gt 2 ]]; then
-    die "Usage: mandible issue kind set <issue-ref> <kind>" 2
+    die "Usage: $(mandible_command_syntax issue.kind.set)" 2
   fi
   require_issue_kind "$kind"
   require_tools
@@ -2190,10 +2191,10 @@ cmd_comment() {
       cmd_comment_history "$@"
       ;;
     ""|-h|--help)
-      cat <<'COMMENT_USAGE'
+      cat <<'COMMENT_USAGE' | mandible_render_commands
 Usage:
-  mandible issue comment add <issue-ref> -m <text>
-  mandible issue comment edit <comment-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
+  {{command issue.comment.add}}
+  {{command issue.comment.edit}}
   mandible issue comment show <comment-ref> [--json]
   mandible issue comment history <comment-ref> [--json] [--with-body]
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -euo pipefail
 
@@ -17,10 +18,10 @@ CONTRACT_PATH="$CLI_DIR/instructions-contract.md"
 NODE_BIN="${NODE_BIN:-node}"
 
 usage() {
-  cat <<'EOF'
+  cat <<'EOF' | mandible_render_commands
 Usage:
   mandible instructions diff [--target <file>]
-  mandible instructions install [--target <file>] [--worktree <path>] [--force]
+  {{command instructions.install}}
   mandible instructions cleanup --target <file> --mode managed-block|standalone [--force]
   mandible instructions targets list
   mandible instructions targets add <path> [--mode managed-block|standalone]
@@ -36,7 +37,7 @@ default_target() {
 }
 
 render_fragment() {
-  cat "$CONTRACT_PATH"
+  "$NODE_BIN" "$CLI_DIR/command-syntax.cjs" render "$CONTRACT_PATH"
 }
 
 render_block() {

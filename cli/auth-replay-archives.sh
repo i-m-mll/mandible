@@ -2,6 +2,7 @@
 # mandible auth replay-archives: Replay Codex thread archive attempts for a completed auth request.
 #
 # Usage: mandible auth replay-archives <request-id> [--json]
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -euo pipefail
 
@@ -12,8 +13,8 @@ request_id=""
 json=0
 
 usage() {
-  cat <<'EOF'
-Usage: mandible auth replay-archives <request-id> [--json]
+  cat <<'EOF' | mandible_render_commands
+Usage: {{command auth.replay-archives}}
 
 Replay Codex thread archive attempts for a completed successful merge auth
 request. This does not rerun the protected merge or deferred issue actions.

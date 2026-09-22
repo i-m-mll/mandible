@@ -1,12 +1,13 @@
 #!/usr/bin/env zsh
 # Read-only, cursor-based ledger change feed for recurring agents.
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 set -euo pipefail
 
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 
 usage() {
-  cat <<'EOF'
-Usage: mandible changes --project <ref> [--cursor <cursor>] [--limit <1-200>]
+  cat <<'EOF' | mandible_render_commands
+Usage: {{command changes}}
                         [--schema mandible-ledger-change-feed@1] [--json]
 
 Omit --cursor to establish a controlled resync point at the current high-water

@@ -10,6 +10,7 @@
 #   POST /api/projects/checkouts         update-checkout (by root)
 #   GET  /api/projects/audit             audit
 #   POST /api/projects/repair            repair
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -euo pipefail
 
@@ -30,16 +31,16 @@ die() {
 }
 
 usage() {
-  cat <<'EOF'
+  cat <<'EOF' | mandible_render_commands
 Usage:
-  mandible project list [--json]
-  mandible project show <ref> [--json]
-  mandible project add --key <k> [--display <name>] [--remote <url>] [--namespace remote|upstream|local] [--root <path>] [--json]
-  mandible project update <ref> [--key <k>] [--display <name>] [--remote <url>] [--namespace <p>] [--json]
-  mandible project add-checkout <ref> --root <path> [--work-repo-id <id>] [--default-branch <b>] [--name <n>] [--json]
-  mandible project update-checkout --root <path> --project <ref> [--work-repo-id <id>] [--default-branch <b>] [--name <n>] [--json]
-  mandible project audit [--json]
-  mandible project repair [--apply] [--force] [--merge <src> <dst>] [--json]
+  {{command project.list}}
+  {{command project.show}}
+  {{command project.add}}
+  {{command project.update}}
+  {{command project.add-checkout}}
+  {{command project.update-checkout}}
+  {{command project.audit}}
+  {{command project.repair}}
 EOF
 }
 
@@ -83,7 +84,7 @@ cmd_show() {
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" ]] || die "Usage: mandible project show <ref> [--json]" 2
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax project.show)" 2
   require_tools
   local tmp_response status_code response
   tmp_response=$(mktemp)
@@ -120,7 +121,7 @@ cmd_add() {
       *) die "Unexpected argument: $1" 2 ;;
     esac
   done
-  [[ -n "$key" ]] || die "Usage: mandible project add --key <k> [--display <name>] [--remote <url>] [--namespace remote|upstream|local] [--root <path>] [--json]" 2
+  [[ -n "$key" ]] || die "Usage: $(mandible_command_syntax project.add)" 2
   require_tools
   local payload response
   payload="$(jq -n \
@@ -157,7 +158,7 @@ cmd_update() {
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" ]] || die "Usage: mandible project update <ref> [--key <k>] [--display <name>] [--remote <url>] [--namespace <p>] [--json]" 2
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax project.update)" 2
   require_tools
   local payload response
   payload="$(jq -n \
@@ -184,7 +185,7 @@ cmd_add_checkout() {
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" && -n "$root" ]] || die "Usage: mandible project add-checkout <ref> --root <path> [--work-repo-id <id>] [--default-branch <b>] [--name <n>] [--json]" 2
+  [[ -n "$ref" && -n "$root" ]] || die "Usage: $(mandible_command_syntax project.add-checkout)" 2
   require_tools
   local payload response
   payload="$(jq -n \
@@ -213,7 +214,7 @@ cmd_update_checkout() {
       *) die "Unexpected argument: $1" 2 ;;
     esac
   done
-  [[ -n "$root" && -n "$project" ]] || die "Usage: mandible project update-checkout --root <path> --project <ref> [--work-repo-id <id>] [--default-branch <b>] [--name <n>] [--json]" 2
+  [[ -n "$root" && -n "$project" ]] || die "Usage: $(mandible_command_syntax project.update-checkout)" 2
   require_tools
   local payload response
   payload="$(jq -n \

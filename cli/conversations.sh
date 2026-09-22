@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # mandible conversations: inspect DB-backed normalized conversations.
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -euo pipefail
 
@@ -9,18 +10,18 @@ source "$SCRIPT_DIR/api.sh"
 MANDIBLE_DB="$(api_live_db_path)"
 
 usage() {
-  cat <<'EOF'
+  cat <<'EOF' | mandible_render_commands
 Usage:
   mandible conversations list [--provider claude|codex|gemini|all] [--tag TAG] [--since Nd] [--limit N] [--json]
   mandible conversations show <id|session-id> [--json] [--blocks]
   mandible conversations blocks <id|session-id> [filters] [--json]
   mandible conversations export <id|session-id> [--format json|markdown]
   mandible conversations search "<query>" [search options...]
-  mandible conversations star <conversation-ref|--current> [--json]
-  mandible conversations unstar <conversation-ref|--current> [--json]
-  mandible conversations tag add <conversation-ref|--current> <tag...> [--json]
-  mandible conversations tag rm <conversation-ref|--current> <tag...> [--json]
-  mandible conversations comment <conversation-ref|--current> -m <markdown> [--json]
+  {{command conversations.star}}
+  {{command conversations.unstar}}
+  {{command conversations.tag.add}}
+  {{command conversations.tag.rm}}
+  {{command conversations.comment}}
   mandible conversations spawn --provider <claude|codex|gemini> --message <text> [--label <name>] [--project-id <id> --checkout-id <id>] [--topology <top-level|autonomous|child|sibling|successor> --target <conversation-id>] [--idempotency-key <key>] [--json]
   mandible conversations storage prepare [--apply] [--limit N] [--json]
   mandible conversations custody status <id|session-id> [--json]
