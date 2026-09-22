@@ -46,6 +46,26 @@ afterEach(() => {
 });
 
 describe("instructions CLI", () => {
+  it("leaves the target unchanged when an authored directive cannot be resolved", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-invalid-insert-"));
+    tempRoots.push(root);
+    const cli = path.join(root, "cli");
+    fs.cpSync(path.join(process.cwd(), "cli"), cli, { recursive: true });
+    const authored = "# Authored\n{{command absent.command}}\n";
+    fs.writeFileSync(path.join(cli, "instructions-contract.md"), authored);
+    const target = path.join(root, "AGENTS.md");
+    fs.writeFileSync(target, "preserve my policy\n");
+    const result = spawnSync("bash", [path.join(cli, "instructions.sh"), "install", "--target", target], {
+      encoding: "utf8", timeout: 10_000,
+      env: { ...process.env, HOME: root, MANDIBLE_CLI_DIR: cli,
+        MANDIBLE_DB: path.join(root, "fixture.db"), NODE_PATH: path.join(process.cwd(), "node_modules") },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Unknown command insertion");
+    expect(fs.readFileSync(target, "utf8")).toBe("preserve my policy\n");
+    expect(fs.readFileSync(path.join(cli, "instructions-contract.md"), "utf8")).toBe(authored);
+  });
+
   it("uses NODE_BIN for embedded Node helpers when node is not on PATH", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-node-bin-"));
     tempRoots.push(home);
@@ -163,7 +183,7 @@ describe("instructions CLI", () => {
     const installed = fs.readFileSync(target, "utf8");
     expect(installed).toContain("Mandible Interface Contract");
     expect(installed).not.toContain("<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->");
-    expect(installed.trimEnd()).toBe(fs.readFileSync(path.join(process.cwd(), "cli/instructions-contract.md"), "utf8").trimEnd());
+    expect(installed).not.toContain("{{command");
     expect(installed.trimEnd()).toBe(renderMandibleInstructionsFragment().trimEnd());
     expect(fs.readFileSync(hookOut, "utf8")).toBe("ran");
   });

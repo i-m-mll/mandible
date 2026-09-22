@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # mandible auth check: Check whether a branch is independent from the auth queue.
 #
-# Usage: mandible auth check [--branch <branch>] [--repo <name>] [--target <branch>] [--cwd <path>] [--json]
+# Usage: {{command auth.check}}
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -euo pipefail
 
@@ -18,7 +20,7 @@ cwd_override=""
 json=0
 
 usage() {
-  sed -n '2,/^$/{ s/^# //; s/^#$//; p; }' "$0"
+  sed -n '2,/^$/{ s/^# //; s/^#$//; p; }' "$0" | mandible_render_commands
 }
 
 while [[ $# -gt 0 ]]; do

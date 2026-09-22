@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +40,22 @@ describe("Cowork CLI cache materializer", () => {
       path.join("docs", "cli-reference.md"),
     ]);
     expect(JSON.parse(fs.readFileSync(path.join(targetDir, "manifest.json"), "utf8")).files).toHaveLength(3);
+  });
+
+  it("ships command renderer dependencies for cached shell callers", () => {
+    const targetDir = path.join(tempDir, "complete-cli");
+    materializeCoworkCliCache({ sourceRoot: process.cwd(), targetDir });
+    const result = spawnSync("bash", [path.join(targetDir, "issue.sh"), "report"], {
+      encoding: "utf8", env: { ...process.env, MANDIBLE_CLI_DIR: targetDir },
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Usage: mandible issue report <id> [--json]");
+    expect(result.stderr).not.toContain("Cannot find module");
+    const rendered = spawnSync(process.execPath, [path.join(targetDir, "command-syntax.cjs"),
+      "render", path.join(targetDir, "instructions-contract.md")], { encoding: "utf8" });
+    expect(rendered.status).toBe(0);
+    expect(rendered.stdout).toContain("`mandible issue report <id> [--json]`");
+    expect(rendered.stdout).not.toContain("{{");
   });
 
   it("materializes generated route metadata into the cache manifest", () => {

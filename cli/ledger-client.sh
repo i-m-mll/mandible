@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 # Sourceable policy-free client for Mandible ledger mechanism operations.
 
@@ -374,7 +375,7 @@ mandible_issue_title() {
     esac
   done
 
-  [[ -n "$issue_id" ]] || mandible_ledger_die "Usage: mandible issue title <id> [--json] [--graceful]" 2 || return $?
+  [[ -n "$issue_id" ]] || mandible_ledger_die "Usage: $(mandible_command_syntax issue.title)" 2 || return $?
   mandible_ledger_require_tools || return $?
 
   local response
@@ -451,7 +452,7 @@ mandible_issue_file_write() {
     shift 2
   fi
   if (( $# == 0 )); then
-    mandible_ledger_die "Usage: mandible issue-file write [--cwd <path>] <issue>..." 2
+    mandible_ledger_die "Usage: $(mandible_command_syntax issue-file.write)" 2
     return $?
   fi
   local path

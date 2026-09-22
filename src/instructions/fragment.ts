@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,7 +12,10 @@ export interface InstallResult {
 }
 
 export function renderMandibleInstructionsFragment(): string {
-  return fs.readFileSync(findRepoFile("cli/instructions-contract.md"), "utf8");
+  const { renderCommands } = createRequire(import.meta.url)(findRepoFile("cli/command-syntax.cjs")) as {
+    renderCommands(source: string): string;
+  };
+  return renderCommands(fs.readFileSync(findRepoFile("cli/instructions-contract.md"), "utf8"));
 }
 
 export function renderManagedInstructionsBlock(fragment = renderMandibleInstructionsFragment()): string {

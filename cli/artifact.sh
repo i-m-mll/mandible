@@ -1,5 +1,6 @@
 #!/usr/bin/env zsh
 # mandible artifact: custody-aware artifact CLI over the Mandible daemon API.
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -euo pipefail
 
@@ -68,22 +69,22 @@ artifact_api_request() {
 }
 
 usage() {
-  cat <<'EOF'
+  cat <<'EOF' | mandible_render_commands
 Usage:
-  mandible artifact ingest <path...> [--project <project>] [--commit <git-ref>] [--artifact <artifact-ref>] [--issue <id>] [--role <role>] [--managed|--git] [--upload] [--blob-only] [--dry-run] [--json]
+  {{command artifact.ingest}}
   mandible artifact ref <uri...> [--issue <id>] [--role <role>] [--json]
   mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--pinned|--living] [--json]
   mandible artifact resolve <ref> [--json]
-  mandible artifact format <ref> [--as id|url|markdown|full] [--label <text>] [--json]
+  {{command artifact.format}}
   mandible artifact list [--repo <repo>] [--issue <id>] [--role <role>] [--custody <mode>] [--json]
   mandible artifact associate <ref> --project <project> [--canonical] [--role <role>] [--title <title>] [--json]
   mandible artifact associations [--project <project>] [--canonical] [--json]
   mandible artifact show <ref> [--json]
   mandible artifact content <ref> [--output <path>] [--json]
   mandible artifact check <ref...> [--json]
-  mandible artifact move <artifact-ref> [--project <project>] [--path <path>] [--if-revision <n>] [--reconcile] [--json]
-  mandible artifact source show <artifact-ref> [--json]
-  mandible artifact source move <artifact-ref> --expected-revision <n> --source <json> [--reconcile] [--json]
+  {{command artifact.move}}
+  {{command artifact.source.show}}
+  {{command artifact.source.move}}
   mandible artifact versions <ref> [--json]
   mandible artifact diff <refA> <refB> [--json]
   mandible artifact record <path> --kind tracked_repo|local_only|managed [--artifact <artifact-ref>] [--series-key <key>] [--logical-name <name>] [--provider <id>] [--repo <id>] [--issue <id>] [--label <label>] [--note <note>] [--role <role>] [--title <title>] [--json]
@@ -887,7 +888,7 @@ cmd_format() {
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" ]] || die "Usage: mandible artifact format <ref> [--as id|url|markdown|full] [--label <text>] [--json]" 2
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.format)" 2
   case "$format" in id|ref|url|markdown|full) ;; *) die "Unknown --as format: $format" 2 ;; esac
   require_tools
   local response identity full_id encoded_ref web_base url markdown result target_type series_ref version_no
@@ -1197,7 +1198,7 @@ cmd_diff() {
 # require a guarded move. Ordinary ingest resolves the registered source.
 cmd_move() {
   local ref="${1:-}" project="" target_path="" revision="" reconcile=0 json=0
-  [[ -n "$ref" ]] || die "Usage: mandible artifact move <artifact> [--project P] [--path PATH] [--if-revision N]" 2
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.move)" 2
   shift
   while (( $# > 0 )); do
     case "$1" in

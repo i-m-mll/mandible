@@ -2,7 +2,7 @@
 # mandible auth request: Submit an auth request to Mandible and poll until resolved.
 # Combines submission + watching into a single command for use as a background task.
 #
-# Usage: mandible auth request <branch> --title <text> [options]
+# Usage: {{command auth.request}}
 #
 # Required:
 #   <branch>                Branch to merge into protected branch
@@ -92,6 +92,7 @@
 # being merged, submit the request from the main worktree instead — the stored
 # command must exist on the target branch at merge time.
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 set -euo pipefail
 
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher
@@ -107,7 +108,7 @@ source "$AUTH_PREFLIGHT_HELPER"
 # --- Usage ---
 
 usage() {
-  sed -n '2,/^$/{ s/^# //; s/^#$//; p; }' "$0"
+  sed -n '2,/^$/{ s/^# //; s/^#$//; p; }' "$0" | mandible_render_commands
 }
 
 # --- Argument parsing ---
@@ -202,7 +203,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$branch" ]]; then
-  echo "Usage: mandible auth request <branch> --title <text> [options]" >&2
+  echo "Usage: $(mandible_command_syntax auth.request)" >&2
   exit 2
 fi
 if [[ "$branch" == integration/mandible-iab-preview-* ]]; then

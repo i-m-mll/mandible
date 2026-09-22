@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -u
 set -o pipefail
@@ -7,14 +8,14 @@ CLIENT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/ledger-client
 source "$CLIENT_HELPER"
 
 usage() {
-  cat <<'USAGE'
+  cat <<'USAGE' | mandible_render_commands
 Usage:
-  mandible work-unit claim --issue <id> --repo <repo> [--branch <branch>] [--parent-branch <branch>] [--kind solo|partition|integration] [--session <id>] [--graceful]
-  mandible work-unit activate --issue <id> --repo <repo> [--branch <branch>] [--session <id>] [--worker] [--graceful]
-  mandible work-unit find --repo <repo> (--issue <id> | --branch <branch>) [--state <state>] [--graceful]
-  mandible work-unit resolve --id <work-unit-id> [--auth-request-id <id>] [--graceful]
-  mandible work-unit release --issue <id> --repo <repo> [--graceful]
-  mandible work-unit custody-assume --id <work-unit-id> --expected-generation <n> --reason <text> [--parent-role-checkpoint <id>] [--graceful]
+  {{command work-unit.claim}}
+  {{command work-unit.activate}}
+  {{command work-unit.find}}
+  {{command work-unit.resolve}}
+  {{command work-unit.release}}
+  {{command work-unit.custody-assume}}
 USAGE
 }
 

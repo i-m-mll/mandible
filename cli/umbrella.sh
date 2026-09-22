@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -u
 set -o pipefail
@@ -19,11 +20,11 @@ require_tools() {
 }
 
 usage() {
-  cat <<'USAGE'
+  cat <<'USAGE' | mandible_render_commands
 Usage:
-  mandible umbrella status <id> [--deep] [--json]
-  mandible umbrella adopt <umbrella> <children...> [--json]
-  mandible umbrella manifest refresh <umbrella> [--json]
+  {{command umbrella.status}}
+  {{command umbrella.adopt}}
+  {{command umbrella.manifest.refresh}}
 USAGE
 }
 
@@ -68,7 +69,7 @@ cmd_status() {
   done
 
   if [[ -z "$issue_ref" ]]; then
-    die "Usage: mandible umbrella status <id> [--deep] [--json]" 2
+    die "Usage: $(mandible_command_syntax umbrella.status)" 2
   fi
 
   require_tools
@@ -104,7 +105,7 @@ cmd_adopt() {
   done
 
   if [[ -z "$issue_ref" || ${#children[@]} -eq 0 ]]; then
-    die "Usage: mandible umbrella adopt <umbrella> <children...> [--json]" 2
+    die "Usage: $(mandible_command_syntax umbrella.adopt)" 2
   fi
 
   require_tools
@@ -118,7 +119,7 @@ cmd_adopt() {
 cmd_manifest() {
   local action="${1:-}"
   if [[ "$action" != "refresh" ]]; then
-    die "Usage: mandible umbrella manifest refresh <umbrella> [--json]" 2
+    die "Usage: $(mandible_command_syntax umbrella.manifest.refresh)" 2
   fi
   shift
 
@@ -142,7 +143,7 @@ cmd_manifest() {
   done
 
   if [[ -z "$issue_ref" ]]; then
-    die "Usage: mandible umbrella manifest refresh <umbrella> [--json]" 2
+    die "Usage: $(mandible_command_syntax umbrella.manifest.refresh)" 2
   fi
 
   require_tools

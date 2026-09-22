@@ -15,6 +15,7 @@
 #   GET  /api/users/<ref>/bindings           list bindings
 #   POST /api/users/<ref>/bindings           add binding
 #   DELETE /api/users/bindings/<id>          remove binding
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -euo pipefail
 
@@ -30,30 +31,30 @@ err() { printf "%b\n" "$*" >&2; }
 die() { err "$1"; exit "${2:-1}"; }
 
 usage() {
-  cat <<'EOF'
+  cat <<'EOF' | mandible_render_commands
 Usage:
-  mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--agents] [--json]
+  {{command user.setup}}
   mandible user pair <reference> [--json]
-  mandible user whoami [--json]
-  mandible user list [--kind <k>] [--status <s>] [--json]
-  mandible user show <ref> [--json]
-  mandible user update <ref> [--name <n>] [--email <e>] [--status active|retired] [--json]
-  mandible user credential add <ref> (--type <t> --fingerprint <f> [--public-material <m>] | --from-git-signingkey) [--label <l>] [--json]
-  mandible user credential revoke <id> [--json]
-  mandible user credential list <ref> [--all] [--json]
-  mandible user token mint <ref> [--label <l>] [--store [--service <name>]] [--json]
+  {{command user.whoami}}
+  {{command user.list}}
+  {{command user.show}}
+  {{command user.update}}
+  {{command user.credential.add}}
+  {{command user.credential.revoke}}
+  {{command user.credential.list}}
+  {{command user.token.mint}}
   mandible user token list <ref> [--all] [--json]
   mandible user token revoke <credential-id> [--json]
-  mandible user binding add <ref> --type <t> --value <v> [--scope <s>] [--json]
-  mandible user binding rm <id> [--json]
-  mandible user binding list <ref> [--json]
+  {{command user.binding.add}}
+  {{command user.binding.rm}}
+  {{command user.binding.list}}
   mandible user group add <slug> [--name <n>] [--json]
   mandible user group rm <ref> [--json]
   mandible user group members <ref> [--add <user>|--rm <user>] [--json]
   mandible user grant add --subject-type user|group --subject <ref> (--project <ref> --role read|write|admin | --global <capability>) [--json]
   mandible user grant rm <id> [--json]
   mandible user grant list [--resource-type project|global] [--resource-id <id>] [--json]
-  mandible user access <user> <project> [--json]
+  {{command user.access}}
 
 Setup is idempotent and is the only way the local human operator is created.
 --agents deliberately provisions the claude-code, codex, and gemini users,
@@ -389,7 +390,7 @@ cmd_show() {
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" ]] || die "Usage: mandible user show <ref> [--json]" 2
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.show)" 2
   require_tools
   local response
   response="$(api_read "/api/users/$(urlencode "$ref")" "user")" || exit 1
@@ -411,7 +412,7 @@ cmd_update() {
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" ]] || die "Usage: mandible user update <ref> [...]" 2
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.update)" 2
   require_tools
   local payload response
   payload="$(jq -n \
@@ -450,7 +451,7 @@ credential_add() {
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" ]] || die "Usage: mandible user credential add <ref> (...)" 2
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.credential.add)" 2
   if (( from_git )); then
     [[ -z "$ctype" && -z "$fingerprint" && $material_set -eq 0 ]] \
       || die "--from-git-signingkey cannot be combined with --type, --fingerprint, or --public-material." 2
@@ -471,7 +472,7 @@ credential_add() {
     material_set=1
   fi
   [[ -n "$ctype" && -n "$fingerprint" ]] \
-    || die "Usage: mandible user credential add <ref> (--type <t> --fingerprint <f> | --from-git-signingkey) [...]" 2
+    || die "Usage: $(mandible_command_syntax user.credential.add)" 2
   require_tools
   local payload response
   payload="$(jq -n \
@@ -495,7 +496,7 @@ credential_revoke() {
       *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
     esac
   done
-  [[ -n "$id" ]] || die "Usage: mandible user credential revoke <id> [--json]" 2
+  [[ -n "$id" ]] || die "Usage: $(mandible_command_syntax user.credential.revoke)" 2
   require_tools
   local response
   response="$(api_send POST "/api/users/credentials/$(urlencode "$id")/revoke" "{}")" \
@@ -513,7 +514,7 @@ credential_list() {
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" ]] || die "Usage: mandible user credential list <ref> [--all] [--json]" 2
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.credential.list)" 2
   require_tools
   local query="" response
   (( all )) && query="?all=1"
@@ -571,7 +572,7 @@ token_mint() {
     esac
   done
   [[ -n "$ref" ]] \
-    || die "Usage: mandible user token mint <ref> [--label <l>] [--store [--service <name>]] [--json]" 2
+    || die "Usage: $(mandible_command_syntax user.token.mint)" 2
   (( service_set == 0 || store == 1 )) || die "--service requires --store." 2
   if (( service_set )); then
     [[ -n "${service//[[:space:]]/}" ]] || die "--service must name a service; it cannot be empty." 2
@@ -740,7 +741,7 @@ binding_add() {
     esac
   done
   [[ -n "$ref" && -n "$btype" && -n "$value" ]] \
-    || die "Usage: mandible user binding add <ref> --type <t> --value <v> [--scope <s>]" 2
+    || die "Usage: $(mandible_command_syntax user.binding.add)" 2
   require_tools
   local payload response
   payload="$(jq -n \
@@ -762,7 +763,7 @@ binding_rm() {
       *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
     esac
   done
-  [[ -n "$id" ]] || die "Usage: mandible user binding rm <id> [--json]" 2
+  [[ -n "$id" ]] || die "Usage: $(mandible_command_syntax user.binding.rm)" 2
   require_tools
   local response
   response="$(api_send DELETE "/api/users/bindings/$(urlencode "$id")" "")" \
@@ -779,7 +780,7 @@ binding_list() {
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" ]] || die "Usage: mandible user binding list <ref> [--json]" 2
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.binding.list)" 2
   require_tools
   local response
   response="$(api_read "/api/users/$(urlencode "$ref")/bindings" "bindings")" || exit 1
@@ -937,7 +938,7 @@ cmd_access() {
       *) if [[ -z "$user" ]]; then user="$1"; elif [[ -z "$project" ]]; then project="$1"; else die "Unexpected argument: $1" 2; fi; shift ;;
     esac
   done
-  [[ -n "$user" && -n "$project" ]] || die "Usage: mandible user access <user> <project> [--json]" 2
+  [[ -n "$user" && -n "$project" ]] || die "Usage: $(mandible_command_syntax user.access)" 2
   require_tools
   response="$(api_read "/api/users/$(urlencode "$user")/access?project=$(urlencode "$project")" "access")" || exit 1
   emit "$response" "$json" '.access | "allowed: \(.allowed)\nrole: \(.effective_role // "-")\nreason: \(.reason)"'

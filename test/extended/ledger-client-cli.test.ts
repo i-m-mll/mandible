@@ -55,15 +55,15 @@ function runBash(
   cwd = process.cwd(),
   extraEnv: Record<string, string> = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  // Drop any leaked dev-shell MANDIBLE_BASE so it cannot route the CLI invoked
-  // by the bash script to a real daemon; call sites supply MANDIBLE_PORT or an
-  // explicit MANDIBLE_BASE via extraEnv when they need one.
+  // Pin a dead loopback endpoint. Clearing MANDIBLE_BASE alone falls back to
+  // the production canonical origin, even when MANDIBLE_PORT is a test port.
   const { MANDIBLE_BASE: _leakedBase, ...baseEnv } = process.env;
   return new Promise((resolve) => {
     const child = spawn("bash", ["-c", script], {
       cwd,
       env: {
         ...baseEnv,
+        MANDIBLE_BASE: `http://127.0.0.1:${extraEnv.MANDIBLE_PORT || "9"}`,
         ZELLIJ: "",
         TMUX: "",
         ...extraEnv,

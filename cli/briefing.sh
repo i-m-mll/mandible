@@ -1,5 +1,6 @@
 #!/usr/bin/env zsh
 # mandible briefing: supported Briefing creation over the authenticated daemon API.
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -euo pipefail
 
@@ -12,36 +13,36 @@ die() {
 }
 
 usage() {
-  cat <<'EOF'
+  cat <<'EOF' | mandible_render_commands
 Usage:
-  mandible briefing create <artifact-version-ref> --title <text> [--description <text>] [--comparison-base <artifact-version-ref>] [--briefing <briefing-ref> | --reason <text>] [--json]
-  mandible briefing rename <briefing-ref> --title <text> [--json]
-  mandible briefing describe <briefing-ref> (--description <text>|--clear) [--json]
-  mandible briefing archive <briefing-ref> [--json]
-  mandible briefing restore <briefing-ref> [--json]
-  mandible briefing bundle create --name <name> [<briefing-ref>...] [--sharing-reason <text>] [--json]
-  mandible briefing bundle add <bundle-ref> <briefing-ref> [--sharing-reason <text>] [--json]
-  mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--layout <json>] [--sharing-reason <text>] [--json]
-  mandible briefing bundle rename <bundle-ref> --name <text> [--json]
-  mandible briefing bundle delete <bundle-ref> [--json]
-  mandible briefing bundle show <bundle-ref> [--json]
-  mandible briefing group create --key <key> --name <name> [--current <bundle-ref>] [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]
-  mandible briefing group add <group-ref> <bundle-ref> [--sharing-reason <text>] [--json]
-  mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--sharing-reason <text>] [--json]
-  mandible briefing group archive <group-ref> [--json]
-  mandible briefing group restore <group-ref> [--json]
-  mandible briefing group promote <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --auth-request <request-ref> --merge-head <sha> [--json]
-  mandible briefing group review <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> [--destination-changes <json>] [--json]
-  mandible briefing group accept <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]
-  mandible briefing group reject <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--destination-changes <json>] [--json]
-  mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]
-  mandible briefing group destination place <group-ref> <logical-artifact-ref> --briefing <briefing-ref> --operation-key <key> --expected-owner <group-ref|none> --expected-target-base <bundle-ref|none> [--expected-source-base <bundle-ref|none>] [--route-file <manifest.json>] [--json]
-  mandible briefing report update <briefing-ref> <artifact-version-ref> --operation-key <key> --expected-round <round-id> --expected-version <artifact-version-ref> [--json]
-  mandible briefing group rename <group-ref> --name <text> [--json]
-  mandible briefing group show <group-ref> [--json]
-  mandible briefing route inspect [<route-key>] [--json]
-  mandible briefing route plan <manifest.json|-> [--json]
-  mandible briefing route apply <manifest.json|-> [--json]
+  {{command briefing.create}}
+  {{command briefing.rename}}
+  {{command briefing.describe}}
+  {{command briefing.archive}}
+  {{command briefing.restore}}
+  {{command briefing.bundle.create}}
+  {{command briefing.bundle.add}}
+  {{command briefing.bundle.replace}}
+  {{command briefing.bundle.rename}}
+  {{command briefing.bundle.delete}}
+  {{command briefing.bundle.show}}
+  {{command briefing.group.create}}
+  {{command briefing.group.add}}
+  {{command briefing.group.configure}}
+  {{command briefing.group.archive}}
+  {{command briefing.group.restore}}
+  {{command briefing.group.promote}}
+  {{command briefing.group.review}}
+  {{command briefing.group.accept}}
+  {{command briefing.group.reject}}
+  {{command briefing.group.destination.bind}}
+  {{command briefing.group.destination.place}}
+  {{command briefing.report.update}}
+  {{command briefing.group.rename}}
+  {{command briefing.group.show}}
+  {{command briefing.route.inspect}}
+  {{command briefing.route.plan}}
+  {{command briefing.route.apply}}
 
 Creates a Briefing whose round is bound to exactly the named artifact version.
 If an active Briefing already owns that logical Artifact, the command reports
@@ -100,7 +101,7 @@ cmd_rename() {
     esac
   done
   [[ -n "$briefing_ref" && -n "${title//[[:space:]]/}" ]] \
-    || die "Usage: mandible briefing rename <briefing-ref> --title <text> [--json]" 2
+    || die "Usage: $(mandible_command_syntax briefing.rename)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg title "$title" '{title:$title}')"
   response="$(api_send PATCH "/api/briefings/$(urlencode "$briefing_ref")" "$payload")" \
@@ -125,7 +126,7 @@ cmd_describe() {
     esac
   done
   [[ -n "$briefing_ref" && $((has_description + clear)) -eq 1 ]] \
-    || die "Usage: mandible briefing describe <briefing-ref> (--description <text>|--clear) [--json]" 2
+    || die "Usage: $(mandible_command_syntax briefing.describe)" 2
   [[ $clear -eq 1 || -n "${description//[[:space:]]/}" ]] \
     || die "--description requires nonblank text" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
@@ -240,7 +241,7 @@ cmd_bundle_add() {
     esac
   done
   [[ -n "$bundle_ref" && -n "$briefing_ref" ]] \
-    || die "Usage: mandible briefing bundle add <bundle-ref> <briefing-ref> [--json]" 2
+    || die "Usage: $(mandible_command_syntax briefing.bundle.add)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg briefing_ref "$briefing_ref" --arg reason "$sharing_reason" \
     '{briefing_ref:$briefing_ref} + (if $reason == "" then {} else {sharing_reason:$reason} end)')"
@@ -267,7 +268,7 @@ cmd_bundle_replace() {
     esac
   done
   [[ -n "$bundle_ref" ]] \
-    || die "Usage: mandible briefing bundle replace <bundle-ref> [<briefing-ref>...] [--layout <json>] [--json]" 2
+    || die "Usage: $(mandible_command_syntax briefing.bundle.replace)" 2
   [[ -z "$layout" || ${#briefing_refs[@]} -eq 0 ]] \
     || die "bundle replace accepts either flat Briefing refs or --layout, not both" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
@@ -334,7 +335,7 @@ cmd_group_configure() {
     esac
   done
   [[ -n "$group_ref" && $current_set -eq 1 ]] \
-    || die "Usage: mandible briefing group configure <group-ref> --current <bundle-ref|none> [<proposal-bundle-ref>...] [--json]" 2
+    || die "Usage: $(mandible_command_syntax briefing.group.configure)" 2
   [[ -n "${current_bundle_ref//[[:space:]]/}" ]] || die "--current requires a nonblank bundle ref or none" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg current "$current_bundle_ref" --arg reason "$sharing_reason" --args \
@@ -357,7 +358,7 @@ cmd_group_add() {
          else die "Unexpected argument: $1" 2; fi; shift ;;
     esac
   done
-  [[ -n "$group_ref" && -n "$bundle_ref" ]] || die "Usage: mandible briefing group add <group-ref> <bundle-ref> [--json]" 2
+  [[ -n "$group_ref" && -n "$bundle_ref" ]] || die "Usage: $(mandible_command_syntax briefing.group.add)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg bundle_ref "$bundle_ref" --arg reason "$sharing_reason" \
     '{bundle_ref:$bundle_ref} + (if $reason == "" then {} else {sharing_reason:$reason} end)')"
@@ -376,7 +377,7 @@ cmd_group_rename() {
       *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
     esac
   done
-  [[ -n "$group_ref" && -n "${name//[[:space:]]/}" ]] || die "Usage: mandible briefing group rename <group-ref> --name <text> [--json]" 2
+  [[ -n "$group_ref" && -n "${name//[[:space:]]/}" ]] || die "Usage: $(mandible_command_syntax briefing.group.rename)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg name "$name" '{name:$name}')"
   response="$(api_send PATCH "/api/briefing-groups/$(urlencode "$group_ref")" "$payload")" \
@@ -398,7 +399,7 @@ cmd_group_promote() {
     esac
   done
   [[ -n "$group_ref" && -n "$expected_base" && -n "$proposal" && -n "$auth_request" ]] \
-    || die "Usage: mandible briefing group promote <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --auth-request <request-ref> --merge-head <sha> [--json]" 2
+    || die "Usage: $(mandible_command_syntax briefing.group.promote)" 2
   [[ "$merge_head" =~ '^[0-9a-fA-F]{40}$' ]] \
     || die "--merge-head requires one exact 40-character Git commit id" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
@@ -466,7 +467,7 @@ cmd_group_review() {
     esac
   done
   [[ -n "$group_ref" && -n "$expected_base" && -n "$proposal" ]] \
-    || die "Usage: mandible briefing group review <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> [--destination-changes <json>] [--json]" 2
+    || die "Usage: $(mandible_command_syntax briefing.group.review)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   printf '%s' "$destination_changes" | jq -e 'type == "array"' >/dev/null \
     || die "--destination-changes must be a JSON array" 2
@@ -494,7 +495,7 @@ cmd_group_destination() {
     esac
   done
   [[ -n "$group_ref" && -n "$artifact_ref" ]] \
-    || die "Usage: mandible briefing group destination bind <group-ref> <logical-artifact-ref> [--json]" 2
+    || die "Usage: $(mandible_command_syntax briefing.group.destination.bind)" 2
   payload="$(jq -n --arg artifact "$artifact_ref" '{logical_artifact_ref:$artifact}')"
   response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/destinations" "$payload")" \
     || die "Failed to bind Briefing destination owner." 1
@@ -574,7 +575,7 @@ cmd_group_show() {
       *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
     esac
   done
-  [[ -n "$group_ref" ]] || die "Usage: mandible briefing group show <group-ref> [--json]" 2
+  [[ -n "$group_ref" ]] || die "Usage: $(mandible_command_syntax briefing.group.show)" 2
   response="$(api_get "/api/briefing-groups/$(urlencode "$group_ref")")" || die "Failed to show Briefing group." 1
   emit_group "$response" "$json"
 }
@@ -707,7 +708,7 @@ cmd_bundle_show() {
       *) [[ -z "$bundle_ref" ]] || die "Unexpected argument: $1" 2; bundle_ref="$1"; shift ;;
     esac
   done
-  [[ -n "$bundle_ref" ]] || die "Usage: mandible briefing bundle show <bundle-ref> [--json]" 2
+  [[ -n "$bundle_ref" ]] || die "Usage: $(mandible_command_syntax briefing.bundle.show)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   response="$(api_get "/api/briefing-bundles/$(urlencode "$bundle_ref")")" \
     || die "Failed to show Briefing bundle." 1
@@ -725,7 +726,7 @@ cmd_bundle_rename() {
     esac
   done
   [[ -n "$bundle_ref" && -n "${name//[[:space:]]/}" ]] \
-    || die "Usage: mandible briefing bundle rename <bundle-ref> --name <text> [--json]" 2
+    || die "Usage: $(mandible_command_syntax briefing.bundle.rename)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg name "$name" '{name:$name}')"
   response="$(api_send PATCH "/api/briefing-bundles/$(urlencode "$bundle_ref")" "$payload")" \
@@ -742,7 +743,7 @@ cmd_bundle_delete() {
       *) [[ -z "$bundle_ref" ]] || die "Unexpected argument: $1" 2; bundle_ref="$1"; shift ;;
     esac
   done
-  [[ -n "$bundle_ref" ]] || die "Usage: mandible briefing bundle delete <bundle-ref> [--json]" 2
+  [[ -n "$bundle_ref" ]] || die "Usage: $(mandible_command_syntax briefing.bundle.delete)" 2
   response="$(api_send DELETE "/api/briefing-bundles/$(urlencode "$bundle_ref")" '{}')" \
     || die "Failed to delete empty standalone Briefing bundle." 1
   if (( json )); then
@@ -787,6 +788,6 @@ case "$subcommand" in
   bundle) cmd_bundle "$@" ;;
   group) cmd_group "$@" ;;
   route) cmd_route "$@" ;;
-  report) [[ "${1:-}" == "update" ]] || die "Usage: mandible briefing report update ..." 2; shift; cmd_report_update "$@" ;;
+  report) [[ "${1:-}" == "update" ]] || die "Usage: $(mandible_command_syntax briefing.report.update)" 2; shift; cmd_report_update "$@" ;;
   *) die "Unknown briefing subcommand: $subcommand" 2 ;;
 esac

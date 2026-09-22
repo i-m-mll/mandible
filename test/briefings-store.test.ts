@@ -285,6 +285,16 @@ describe("artifact-backed Briefing rounds", () => {
       'complete', 1, 3, 0, '', '[]', 1, 2, 1, 2)`)
       .run(authId, digest("c"));
     const roundsBefore = db.prepare("SELECT * FROM briefing_rounds ORDER BY id").all();
+    // A successful Git merge alone must not advance reviewed policy. Exercise
+    // the failed-installation state, then the same action after convergence.
+    db.prepare("UPDATE auth_hook_executions SET state = 'failed', exit_code = 1 WHERE id = 'hook-run'").run();
+    expect(() => promoteBriefingGroupProposal(db, {
+      groupRef: group.id, expectedBaseBundleRef: base.id, proposalBundleRef: promoted.id,
+      authRequestRef: authId, mergeHeadSha: mergeHead,
+    }, viewer, 1_250)).toThrow();
+    expect(readBriefingGroup(db, group.id, viewer).current?.id).toBe(base.id);
+    db.prepare("UPDATE auth_hook_executions SET state = 'complete', exit_code = 0 WHERE id = 'hook-run'").run();
+
 
     const applied = promoteBriefingGroupProposal(db, {
       groupRef: group.id,

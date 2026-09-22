@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 set -u
 set -o pipefail
@@ -12,9 +13,9 @@ source "$CLIENT_HELPER"
 export GIT_OPTIONAL_LOCKS=0
 
 usage() {
-  cat <<'USAGE'
+  cat <<'USAGE' | mandible_render_commands
 Usage:
-  mandible commit trailer [issue...]
+  {{command commit.trailer}}
   mandible commit linked --issue <id> [--issue <id> ...] -m <message> [opts]
 
 `commit linked` is the linked-commit surface used by the Spaces export-and-track
