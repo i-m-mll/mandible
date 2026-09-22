@@ -1,3 +1,4 @@
+import { AUTH_REQUEST_TYPES } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { accessSync, constants as fsConstants, existsSync, realpathSync } from "node:fs";
@@ -292,10 +293,6 @@ class FinalizerQueue {
     }
   }
 }
-// Bug: dd21c1e — valid auth request types
-const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
-  "merge", "commit", "force-push", "branch-delete", "config-change", "data-delete"
-];
 const VALID_WORKER_STATUSES = ["none", "in_progress", "done", "blocked", "pivot-needed"];
 const VALID_RELATIONSHIP_TYPES = [
   "parent_child",
@@ -7702,7 +7699,7 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
 
   // Bug: dd21c1e — parse type column, default to 'merge' for backward compat
   const rawType = row.type == null ? "merge" : String(row.type);
-  const type: AuthRequestType = VALID_AUTH_REQUEST_TYPES.includes(rawType as AuthRequestType)
+  const type: AuthRequestType = AUTH_REQUEST_TYPES.includes(rawType as AuthRequestType)
     ? (rawType as AuthRequestType)
     : "merge";
 

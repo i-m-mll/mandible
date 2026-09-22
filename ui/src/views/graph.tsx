@@ -102,7 +102,7 @@ const NODE_LEGEND_FALLBACKS: Record<string, { label: string; description: string
     description: 'Issues in the current lens. The Issues lens starts here, so other node families stay hidden unless another lens or filter includes them.',
   },
   auth_request: {
-    label: 'Auth requests',
+    label: 'Approval requests',
     description: 'Merge approval requests and their current review state.',
   },
   session: {
@@ -149,11 +149,11 @@ const EDGE_LEGEND_FALLBACKS: Record<string, { label: string; description: string
     description: 'Manually curated non-structural relationship between issues.',
   },
   auth_issue: {
-    label: 'Auth evidence',
-    description: 'Auth requests attached to the issues they reference.',
+    label: 'Approval evidence',
+    description: 'Approval requests attached to the issues they reference.',
   },
   auth_request_references_issue: {
-    label: 'Auth references',
+    label: 'Approval references',
     description: 'Operational auth request references to issues.',
   },
   session_issue: {

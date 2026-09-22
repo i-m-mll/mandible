@@ -1,3 +1,4 @@
+import { AUTH_REQUEST_TYPES } from "../contracts.js";
 /**
  * Auth hooks CRUD routes.
  * Bug: 4afab83
@@ -16,10 +17,6 @@ import { globalCapabilityRoute } from "../permissions/routes.js";
 import type { RouteRegistrar } from "../server.js";
 import type { AuthHookInput, AuthRequestType } from "../types.js";
 import { readBody } from "./http.js";
-
-const VALID_AUTH_TYPES: AuthRequestType[] = [
-  "merge", "commit", "force-push", "branch-delete", "config-change", "data-delete"
-];
 
 export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookManager): AuthHookManager {
   const hookManager = manager ?? new AuthHookManager();
@@ -101,11 +98,11 @@ function parseHookInput(body: Record<string, unknown>): { ok: true; input: AuthH
     return { ok: false, error: "label is required (string)" };
   }
 
-  const authType = typeof body.auth_type === "string" && VALID_AUTH_TYPES.includes(body.auth_type as AuthRequestType)
+  const authType = typeof body.auth_type === "string" && AUTH_REQUEST_TYPES.includes(body.auth_type as AuthRequestType)
     ? (body.auth_type as AuthRequestType)
     : null;
   if (!authType) {
-    return { ok: false, error: `auth_type is required — must be one of: ${VALID_AUTH_TYPES.join(", ")}` };
+    return { ok: false, error: `auth_type is required — must be one of: ${AUTH_REQUEST_TYPES.join(", ")}` };
   }
 
   return {
@@ -126,7 +123,7 @@ function parseHookUpdateFields(body: Record<string, unknown>): Partial<AuthHookI
   const fields: Partial<AuthHookInput> & { enabled?: boolean } = {};
 
   if (typeof body.repo_pattern === "string") fields.repo_pattern = body.repo_pattern;
-  if (typeof body.auth_type === "string" && VALID_AUTH_TYPES.includes(body.auth_type as AuthRequestType)) {
+  if (typeof body.auth_type === "string" && AUTH_REQUEST_TYPES.includes(body.auth_type as AuthRequestType)) {
     fields.auth_type = body.auth_type as AuthRequestType;
   }
   if (typeof body.command === "string") fields.command = body.command;

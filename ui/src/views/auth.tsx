@@ -43,6 +43,8 @@ import {
 } from '../api';
 import { exhausted } from '../../../src/exhaustive';
 import {
+  AUTH_REQUEST_TYPES,
+  type AuthRequestType,
   isAuthDependencyReady,
   type AuthChangeReport,
   type AuthDependencyProjection,
@@ -62,13 +64,7 @@ type AuthActionError = {
   retry: AuthActionRetry;
 };
 
-export type AuthRequestType =
-  | 'merge'
-  | 'commit'
-  | 'force-push'
-  | 'branch-delete'
-  | 'config-change'
-  | 'data-delete';
+export type { AuthRequestType } from '../../../src/contracts';
 
 export type AuthRequest = {
   id?: string;
@@ -174,7 +170,7 @@ function getAuthId(request: AuthRequest): string {
 }
 
 function getAuthTitle(request: AuthRequest): string {
-  return request.title || request.summary || 'Auth Request';
+  return request.title || request.summary || 'Approval Request';
 }
 
 function getAuthStatus(request: AuthRequest): string {
@@ -945,7 +941,7 @@ function AuthRequestDetail({
     <>
       <div className="auth-detail__aux-left">
         <IconTabList
-          ariaLabel="Auth request view"
+          ariaLabel="Approval request view"
           tabs={modeTabs}
           activeTab={viewMode}
           onActiveTabChange={(tab) => setViewMode(tab as typeof viewMode)}
@@ -964,7 +960,7 @@ function AuthRequestDetail({
       open={metadataOpen}
       onClose={() => setMetadataOpen(false)}
       titleId="auth-metadata-title"
-      title="Auth metadata"
+      title="Approval metadata"
       closeLabel="Close auth metadata"
       excludeAboveRef={headerRef}
       scrollOwnerSelector=".auth-detail"
@@ -1063,10 +1059,10 @@ function AuthRequestDetail({
                 ref={actionsTriggerRef}
                 type="button"
                 className={`auth-detail__actions-trigger${actionsOpen ? ' auth-detail__actions-trigger--active' : ''}`}
-                aria-label="Auth actions"
+                aria-label="Approval actions"
                 aria-haspopup="menu"
                 aria-expanded={actionsOpen}
-                title="Auth actions"
+                title="Approval actions"
                 onClick={() => setActionsOpen((open) => !open)}
               >
                 <HorizontalDotsIcon />
@@ -1091,7 +1087,7 @@ function AuthRequestDetail({
               )}
             </div>
           )}
-          actionsLabel="Auth header actions"
+          actionsLabel="Approval header actions"
           secondaryMetadata={(
             <div className="auth-detail__secondary-metadata">
               <div className="auth-detail__subtitle">
@@ -1115,7 +1111,7 @@ function AuthRequestDetail({
                 </span>
               </div>
               {(approver || signatureClaim.state !== 'none') && (
-                <div className="auth-detail__attribution" aria-label="Auth attribution">
+                <div className="auth-detail__attribution" aria-label="Approval attribution">
                   {approver && (
                     <div>
                       Approved by{' '}
@@ -1203,7 +1199,7 @@ function AuthRequestDetail({
             diffText={diffRaw}
             mode={diffMode}
             onModeChange={setDiffMode}
-            ariaLabel="Auth request changes"
+            ariaLabel="Approval request changes"
             emptyMessage="No diff available for this request."
             className="auth-detail__diff-view"
             classNames={AUTH_DIFF_VIEW_CLASS_NAMES}
@@ -1459,7 +1455,7 @@ export function AuthHooksPanel({
 
   const handleSave = async () => {
     if (!mutationsAllowed) {
-      setError('Auth hook mutations are disabled on this Mandible preview instance.');
+      setError('Approval hook mutations are disabled on this Mandible preview instance.');
       return;
     }
     try {
@@ -1518,7 +1514,7 @@ export function AuthHooksPanel({
   return (
     <div className="auth-hooks-panel">
       <div className="auth-hooks-panel__header">
-        <h2 className="auth-hooks-panel__title">Auth Hooks</h2>
+        <h2 className="auth-hooks-panel__title">Approval Hooks</h2>
         <div className="auth-hooks-panel__actions">
           <button
             type="button"
@@ -1541,13 +1537,13 @@ export function AuthHooksPanel({
       </div>
 
       {error && (
-        <DetailPaneNotice severity="error" density="compact" title="Auth Hooks action failed" actions={
+        <DetailPaneNotice severity="error" density="compact" title="Approval Hooks action failed" actions={
           <button type="button" className="btn btn--ghost btn--sm" onClick={() => { void loadHooks(); }}>Retry loading</button>
         }>{error}</DetailPaneNotice>
       )}
       {!mutationsAllowed && (
         <DetailPaneNotice severity="info" density="compact" title="Preview is read-only">
-          Auth hook mutations are disabled on this Mandible preview instance.
+          Approval hook mutations are disabled on this Mandible preview instance.
         </DetailPaneNotice>
       )}
 
@@ -1574,7 +1570,7 @@ export function AuthHooksPanel({
             />
           </div>
           <div className="auth-hooks-panel__form-row">
-            <label>Auth type</label>
+            <label>Approval type</label>
             <select
               value={formType}
               onChange={(e) => setFormType((e.target as HTMLSelectElement).value as AuthRequestType)}
@@ -1685,12 +1681,7 @@ export function AuthHooksPanel({
 
 const AUTH_TYPE_OPTIONS: { value: AuthRequestType | 'all'; label: string }[] = [
   { value: 'all', label: 'All types' },
-  { value: 'merge', label: 'Merge' },
-  { value: 'commit', label: 'Commit' },
-  { value: 'force-push', label: 'Force Push' },
-  { value: 'branch-delete', label: 'Delete' },
-  { value: 'config-change', label: 'Config' },
-  { value: 'data-delete', label: 'Delete Data' },
+  ...AUTH_REQUEST_TYPES.map(value => ({ value, label: AUTH_TYPE_META[value].label })),
 ];
 
 type AuthFilterMode = 'active' | 'all' | 'historical';
@@ -2063,7 +2054,7 @@ export function AuthQueueView({
       title={`${instanceLabel} instance`}
     >
       <>
-        Auth actions are disabled for this copied preview queue
+        Approval actions are disabled for this copied preview queue
         {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
         {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
       </>
@@ -2725,7 +2716,7 @@ export function AuthQueueView({
       <ViewSidebar
         {...VIEW_SIDEBAR_GEOMETRY.auth}
         className="auth-sidebar"
-        ariaLabel="Auth requests"
+        ariaLabel="Approval requests"
         hidden={sidebarHidden}
         header={
           <SidebarSearchFilterHeader
@@ -2751,7 +2742,7 @@ export function AuthQueueView({
             panel={filterMenuOpen ? {
               id: 'auth-filter-panel',
               variant: 'popover',
-              ariaLabel: 'Auth filter and sort controls',
+              ariaLabel: 'Approval filter and sort controls',
               onDismiss: () => setFilterMenuOpen(false),
               children: (
                 <>
@@ -2919,9 +2910,9 @@ export function AuthQueueView({
           <div className="auth-detail__empty">
             <p className="text-muted">
               {selectedId && selectedNotFound
-                ? `Auth request ${selectedId.slice(0, 8)} was not found — it may have been deleted or expired.`
+                ? `Approval request ${selectedId.slice(0, 8)} was not found — it may have been deleted or expired.`
                 : selectedId && selectedAmbiguous
-                  ? `Auth request reference ${selectedId.slice(0, 8)} is ambiguous — it matches multiple requests. Use a longer id.`
+                  ? `Approval request reference ${selectedId.slice(0, 8)} is ambiguous — it matches multiple requests. Use a longer id.`
                   : selectedId && selectedFetchFailed
                     ? `Failed to load auth request ${selectedId.slice(0, 8)} — the daemon may be unavailable.`
                     : selectedId && !selectedListRequest
@@ -2958,7 +2949,7 @@ export function AuthQueueView({
                 <DetailPaneNotice
                   severity="error"
                   density="compact"
-                  title="Auth action failed"
+                  title="Approval action failed"
                   actions={(
                     <>
                       <button

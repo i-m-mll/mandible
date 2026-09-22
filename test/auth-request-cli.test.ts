@@ -228,6 +228,56 @@ afterEach(() => {
   fs.rmSync(homeDir, { recursive: true, force: true });
 });
 
+describe("action-specific request preparation", () => {
+  it("queues exact non-merge bytes outside Git without preparing or executing a merge", async () => {
+    const server = await listenForAuthRequest();
+    const executionDir = path.join(homeDir, "operation");
+    fs.mkdirSync(executionDir);
+    const command = "printf '%s\\n' 'reviewed $value `literal`' > should-not-exist";
+    try {
+      const result = await runAsync([
+        "auth", "request", "--type", "config-change", "--command", command,
+        "--cwd", executionDir, "--repo", "example", "--title", "Apply reviewed settings",
+        "--issue", "settings123", "--spec", "Review these exact settings.", "--no-watch",
+      ], executionDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
+      expect(result.status, result.stderr).toBe(0);
+      expect(server.checkBodies).toEqual([]);
+      expect(server.bodies).toHaveLength(1);
+      expect(server.bodies[0]).toMatchObject({
+        type: "config-change", command, repo: "example", base_branch: null,
+        head_branch: null, target_repo_root: null, protected_root_dirty_action: null,
+        canonical_message: false, issue_references: ["settings123"], actions: [],
+      });
+      expect(fs.realpathSync(String(server.bodies[0].cwd))).toBe(fs.realpathSync(executionDir));
+      expect(fs.existsSync(path.join(executionDir, "should-not-exist"))).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it.each([
+    { args: ["--type", "data-delete"], error: "requires an explicit non-empty --command" },
+    { args: ["--type", "merge", "feature/demo", "--command", "echo override"], error: "--command cannot override a merge" },
+    { args: ["--type", "commit", "--command", "echo review", "--target", "main"], error: "require --type merge" },
+    { args: ["--type", "merge commit", "--command", "echo review"], error: "invalid --type" },
+  ])("refuses ambiguous operation inputs: $error", ({ args, error }) => {
+    const result = run(["auth", "request", ...args, "--title", "Review", "--issue", "example", "--no-watch"]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(error);
+    expect(result.stderr).not.toContain("merge preflight");
+  });
+
+  it("never executes a command when queue submission is unavailable", () => {
+    const result = run([
+      "auth", "request", "--type", "data-delete", "--command", "touch should-not-exist",
+      "--cwd", homeDir, "--repo", "example", "--title", "Review", "--issue", "example", "--no-watch",
+    ]);
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toContain("request submitted");
+    expect(fs.existsSync(path.join(homeDir, "should-not-exist"))).toBe(false);
+  });
+});
+
 describe("auth request repo context validation", () => {
   it("rejects explicit repo mismatches before request submission", () => {
     const result = run([

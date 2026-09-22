@@ -1590,7 +1590,7 @@ describe('app shell', () => {
     await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 3)
       .map((link) => link.dataset.railItem)).toEqual(['work', 'auth', 'console']));
 
-    fireEvent.click(screen.getByRole('link', { name: 'Auth' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Approvals' }));
     await waitFor(() => expect(window.location.hash).toBe('#/auth'));
     expect(railGroupLinks(mounted.container, 'primary').slice(0, 3)
       .map((link) => link.dataset.railItem)).toEqual(['work', 'auth', 'console']);
@@ -1663,7 +1663,7 @@ describe('app shell', () => {
       },
     });
 
-    fireEvent.click(screen.getByRole('link', { name: 'Auth' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Approvals' }));
     await waitFor(() => expect(window.location.hash).toBe('#/auth'));
     expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
       .map((link) => link.dataset.railItem)).toEqual(['auth', 'console']);
@@ -2736,9 +2736,9 @@ describe('AuthQueueView', () => {
       }),
     );
 
-    expect(screen.queryByLabelText('Auth request changes')).toBeNull();
+    expect(screen.queryByLabelText('Approval request changes')).toBeNull();
     fireEvent.click(screen.getByRole('tab', { name: 'Diff' }));
-    expect(screen.getByLabelText('Auth request changes')).toBeTruthy();
+    expect(screen.getByLabelText('Approval request changes')).toBeTruthy();
     expect(screen.getByText('No diff available for this request.')).toBeTruthy();
     expect(document.querySelector('.auth-detail__panels')).toBeNull();
   });
@@ -4867,7 +4867,7 @@ describe('LedgerIssueDetail', () => {
 
     render(h(LedgerIssueDetail, { detail }));
 
-    expect(screen.queryByRole('heading', { name: 'Auth Evidence' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Approval Evidence' })).toBeNull();
     expect(screen.getByText('resolved by')).toBeTruthy();
     expect(screen.getByText('Merge feature/x')).toBeTruthy();
     expect(screen.queryByText('Timeline')).toBeNull();
