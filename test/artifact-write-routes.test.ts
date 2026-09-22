@@ -207,7 +207,7 @@ describe("artifact write authorization", () => {
     const filename = path.join(root, "blob.md"); fs.writeFileSync(filename, "blob bytes");
     const before = snapshot();
     const result = await invoke("POST", "/api/artifacts/ingest", {
-      path: filename, custody_mode: "copy", identity_mode: "blob_only",
+      path: filename, custody_mode: "managed", identity_mode: "blob_only",
     });
     expect(result.status, JSON.stringify(result.body)).toBe(200);
     const after = snapshot();
@@ -252,18 +252,18 @@ describe("artifact write authorization", () => {
     db.prepare('UPDATE artifact SET source_project_id=? WHERE id=?').run(project.id, owned.series.id.replace('artifact-series:', 'artifact:'));
     fs.writeFileSync(second, 'changed');
     const before = snapshot();
-    expect((await invoke('POST', '/api/artifacts/ingest', { paths: [first, second], custody_mode: 'copy' })).status).toBe(403);
+    expect((await invoke('POST', '/api/artifacts/ingest', { paths: [first, second], custody_mode: 'managed' })).status).toBe(403);
     expect(snapshot()).toEqual(before);
     grant(project.id);
     for (const paths of [[first, path.join(root, 'missing.md')], [first, first]]) {
-      expect((await invoke('POST', '/api/artifacts/ingest', { paths, custody_mode: 'copy' })).status).toBe(400);
+      expect((await invoke('POST', '/api/artifacts/ingest', { paths, custody_mode: 'managed' })).status).toBe(400);
       expect(snapshot()).toEqual(before);
     }
-    const result = await invoke('POST', '/api/artifacts/ingest', { paths: [first, second], custody_mode: 'copy' });
+    const result = await invoke('POST', '/api/artifacts/ingest', { paths: [first, second], custody_mode: 'managed' });
     expect(result.status).toBe(200);
     expect((result.body as any).registered.map((r: any) => r.status)).toEqual(['created', 'updated']);
     const after = snapshot();
-    const repeated = await invoke('POST', '/api/artifacts/ingest', { paths: [first, second], custody_mode: 'copy' });
+    const repeated = await invoke('POST', '/api/artifacts/ingest', { paths: [first, second], custody_mode: 'managed' });
     expect((repeated.body as any).registered.map((r: any) => r.status)).toEqual(['unchanged', 'unchanged']);
     expect(snapshot()).toEqual(after);
   });
@@ -297,10 +297,10 @@ describe("artifact write authorization", () => {
     try {
       const oldPath = path.join(root, "old.md"), newPath = path.join(root, "new.md");
       fs.writeFileSync(oldPath, "original\n");
-      const first = await cli(["ingest", oldPath, "--copy"]);
+      const first = await cli(["ingest", oldPath, "--managed"]);
       const version = first.registered[0].version;
       const id = first.registered[0].series.id.replace(/^artifact-series:/, "artifact:");
-      const uploaded = await cli(["ingest", oldPath, "--copy", "--upload"]);
+      const uploaded = await cli(["ingest", oldPath, "--managed", "--upload"]);
       expect(uploaded.registered[0].series.id).toBe(first.registered[0].series.id);
       expect(uploaded.registered[0].version.commit_sha).toBeNull();
       fs.renameSync(oldPath, newPath);
@@ -313,10 +313,10 @@ describe("artifact write authorization", () => {
       await expect(cli(['move', id, '--path', oldPath, '--if-revision', String(moved.source.revision - 1)])).rejects.toThrow(/revision changed/);
       expect(snapshot()).toEqual(stableMove);
       fs.writeFileSync(newPath, "updated\n");
-      const second = await cli(["ingest", newPath, "--copy", "--artifact", id]);
+      const second = await cli(["ingest", newPath, "--managed", "--artifact", id]);
       expect(second.registered[0].series.id).toBe(first.registered[0].series.id);
       fs.writeFileSync(oldPath, "different document\n");
-      const reused = await cli(["ingest", oldPath, "--copy"]);
+      const reused = await cli(["ingest", oldPath, "--managed"]);
       expect(reused.registered[0].series.id).not.toBe(first.registered[0].series.id);
       const bytes = readArtifactBytesFull(db, version.id);
       expect(bytes.ok && bytes.bytes.toString()).toBe("original\n");
@@ -332,12 +332,12 @@ describe("artifact write authorization", () => {
       addOrUpdateCheckout(db, project.id, { root: fs.realpathSync(repo), work_repo_id: "tracked-repo" });
       const linked = await cli(["ingest", tracked]);
       const trackedId = linked.registered[0].series.id.replace(/^artifact-series:/, "artifact:");
-      const copied = await cli(["ingest", tracked, "--copy"]);
+      const copied = await cli(["ingest", tracked, "--managed"]);
       expect(copied.registered[0].series.id).toBe(linked.registered[0].series.id);
-      expect(copied.registered[0].version.custody_mode).toBe("copy");
+      expect(copied.registered[0].version.custody_mode).toBe("managed");
       expect(getArtifactCurrentSource(db, trackedId)?.source).toEqual({ kind: "repo", project_id: project.id, path: "tracked.md" });
       fs.writeFileSync(tracked, "dirty\n");
-      const dirty = await cli(["ingest", tracked, "--copy"]);
+      const dirty = await cli(["ingest", tracked, "--managed"]);
       expect(dirty.registered[0].series.id).toBe(linked.registered[0].series.id);
       expect(dirty.registered[0].version.commit_sha).toBeNull();
       const historical = readArtifactBytesFull(db, linked.registered[0].version.id);
@@ -373,23 +373,23 @@ describe("artifact write authorization", () => {
       expect(projectOnly.source.source).toEqual({ kind: 'repo', project_id: other.id, path: 'renamed.md' });
       setProjectRestricted(db, other.id, true);
       const deniedHistory = snapshot();
-      await expect(cli(['ingest', 'tracked.md', '--project', 'tracked-repo', '--commit', commit, '--artifact', trackedId, '--copy'])).rejects.toThrow(/403/);
+      await expect(cli(['ingest', 'tracked.md', '--project', 'tracked-repo', '--commit', commit, '--artifact', trackedId, '--managed'])).rejects.toThrow(/403/);
       expect(snapshot()).toEqual(deniedHistory);
       grant(other.id);
       const both = await cli(['move', trackedId, '--project', 'tracked-repo', '--path', 'final.md']);
       expect(both.source.source).toEqual({ kind: 'repo', project_id: project.id, path: 'final.md' });
       expect(db.prepare('SELECT source_project_id FROM artifact WHERE id=?').get(trackedId)).toEqual({ source_project_id: project.id });
       const transportStart = requests.length;
-      const uploadedBatch = await cli(['ingest', oldPath, newPath, '--copy', '--upload']);
+      const uploadedBatch = await cli(['ingest', oldPath, newPath, '--managed', '--upload']);
       expect(uploadedBatch.registered).toHaveLength(2);
       expect(uploadedBatch.failed).toEqual([]);
       expect(requests.slice(transportStart)).toEqual(['POST /api/artifacts/versions', 'POST /api/artifacts/versions']);
       expect(uploadedBatch.atomic).toBeUndefined();
       const unsupportedStart = requests.length;
-      await expect(cli(['ingest', oldPath, '--commit', commit, '--copy', '--upload'])).rejects.toThrow(/requires daemon-visible repository paths/);
+      await expect(cli(['ingest', oldPath, '--commit', commit, '--managed', '--upload'])).rejects.toThrow(/requires daemon-visible repository paths/);
       expect(requests).toHaveLength(unsupportedStart);
       const batchStart = requests.length, batchTime = performance.now();
-      const batch = await cli(['ingest', oldPath, newPath, '--copy']);
+      const batch = await cli(['ingest', oldPath, newPath, '--managed']);
       expect(batch.registered).toHaveLength(2);
       expect(requests.slice(batchStart)).toEqual(['POST /api/artifacts/ingest']);
       console.log(`two-path CLI: ${Math.round(performance.now() - batchTime)}ms, 1 request`);

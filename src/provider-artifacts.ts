@@ -1,3 +1,5 @@
+import { artifactDescriptiveMetadata as descriptiveArtifactMetadata } from './artifact-metadata.js';
+import { fileURLToPath } from "node:url";
 import { artifactFailure, artifactSourceLineage, artifactRequiredProjects, getArtifactCurrentSource, lookupArtifactCurrentSource, sourceKey, validateArtifactSource, type ArtifactSource, type ArtifactLifecycleResult } from './artifact-source.js';
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -8,7 +10,7 @@ import type { Db } from "./db.js";
 import { columnExists, tableExists } from "./db-introspection.js";
 import { mediaTypeForPath } from "./artifact-media-type.js";
 import {
-  readCommittedArtifactFiles, type CommittedArtifactFile,
+  readCommittedArtifactFiles, retainArtifactCommit, type CommittedArtifactFile,
   resolveCanonicalArtifactRepoForRoot,
   resolveCanonicalArtifactRepoRef,
 } from "./artifact-repo-resolution.js";
@@ -20,7 +22,7 @@ import {
   emptyArtifactIdentityPayload,
   failedArtifactIdentity,
   formatCompactArtifactId,
-  projectLegacyArtifactResolution,
+  projectArtifactResolution,
   resolvedArtifactIdentity,
   type ArtifactIdentityKind,
   type ArtifactIdentityResolution,
@@ -82,6 +84,7 @@ const MODE_ENTITY_TYPES: Record<GraphMode, string[] | null> = {
     "model",
     "dataset",
     "artifact",
+    "external_reference",
     "report",
   ],
   "artifact-lineage": [
@@ -91,12 +94,13 @@ const MODE_ENTITY_TYPES: Record<GraphMode, string[] | null> = {
     "model",
     "dataset",
     "artifact",
+    "external_reference",
     "report",
   ],
 };
 
 type JsonRecord = Record<string, unknown>;
-type ArtifactCustodyMode = "link" | "copy" | "managed" | "external";
+type ArtifactCustodyMode = "git" | "managed";
 type ArtifactAvailability = "present" | "missing" | "stale" | "unchecked" | "remote_only" | "pinned";
 
 const RECOVERABILITY_VALUES = new Set<ArtifactRecoverability>([
@@ -123,7 +127,10 @@ interface ProviderInput {
   source?: string;
 }
 
+const VERIFIED_GIT_DESCRIPTOR = Symbol("verified-git-descriptor");
+
 interface ArtifactInput {
+  [VERIFIED_GIT_DESCRIPTOR]?: true;
   artifact_id?: string;
   provider_id?: string;
   manifest_id?: string;
@@ -177,8 +184,6 @@ export interface LocalArtifactPathInput {
   issue_project?: string;
   link_type?: string;
   link_role?: string;
-  allow_dirty_link?: boolean;
-  allow_local_only?: boolean;
   recoverability?: ArtifactRecoverability | string;
   regenerable_from?: string;
   metadata?: JsonRecord;
@@ -233,7 +238,7 @@ export interface ArtifactSnapshotInput {
   // JSON-serializable; only used within the same process.
   content_buffer?: Buffer;
   json?: unknown;
-  custody_mode?: "copy" | "managed" | string;
+  custody_mode?: "managed" | string;
   media_type?: string;
   role?: string;
   filename?: string;
@@ -248,8 +253,6 @@ export interface ArtifactBundleMemberInput {
   path?: string;
   role?: string;
   custody_mode?: ArtifactCustodyMode | string;
-  allow_local_only?: boolean;
-  allow_dirty_link?: boolean;
   metadata?: JsonRecord;
 }
 
@@ -418,17 +421,11 @@ function normalizeArtifactRoot(value: string): string {
 }
 
 function asCustodyMode(value: unknown, fallback: ArtifactCustodyMode): ArtifactCustodyMode {
-  return value === "link" || value === "copy" || value === "managed" || value === "external"
-    ? value
-    : fallback;
+  if (value === undefined || value === null) return fallback;
+  if (value === "git" || value === "managed") return value;
+  throw new Error("custody_mode must be git or managed");
 }
 
-function asAvailability(value: unknown, fallback: ArtifactAvailability): ArtifactAvailability {
-  return value === "present" || value === "missing" || value === "stale" || value === "unchecked"
-    || value === "remote_only" || value === "pinned"
-    ? value
-    : fallback;
-}
 
 function jsonStringify(value: unknown): string {
   return JSON.stringify(value ?? {});
@@ -527,10 +524,6 @@ function hashBuffer(buffer: Buffer): string {
   return crypto.createHash("sha256").update(buffer).digest("hex");
 }
 
-function hashString(value: string): string {
-  return hashBuffer(Buffer.from(value, "utf8"));
-}
-
 function isSha256(value: string | undefined): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
 }
@@ -543,10 +536,7 @@ function artifactPathForHash(hash: string, root = getArtifactRoot()): string {
   return path.join(root, "sha256", hash.slice(0, 2), hash);
 }
 
-// The content-addressed storage path for a sha256 hash. Exposed so materializers
-// can fall back to a durable CAS copy (e.g. one written by an explicit managed
-// snapshot) when an artifact's registered location is gone — the bytes are
-// hash-verified by construction.
+// Deterministic storage location for managed bytes; never a Git read fallback.
 export function artifactCasPath(db: Db, hash: string): string {
   return artifactPathForHash(hash, getArtifactRoot(db));
 }
@@ -703,10 +693,6 @@ function repoLocatorUri(locator: JsonRecord): string | undefined {
 
 function artifactRegistryId(prefix: string, parts: unknown[]): string {
   return `${prefix}:${hashBuffer(Buffer.from(stableJsonStringify(parts), "utf8")).slice(0, 32)}`;
-}
-
-function referenceArtifactId(normalizedRef: string): string {
-  return `artifact:ref:${hashString(normalizedRef)}`;
 }
 
 function uriSizeBytes(uri: string | undefined): number | undefined {
@@ -1662,7 +1648,7 @@ export function registerArtifactLink(
     repo_id: asString(input.repo_id) ?? null,
     provider_id: asString(input.provider_id) ?? null,
     source: asString(input.source) ?? "artifact_registry",
-    metadata_json: jsonStringify(input.metadata ?? {}),
+    metadata_json: jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})),
     link_kind: linkKind,
     series_ref: seriesRef,
     target_type: targetType,
@@ -1679,6 +1665,7 @@ function asRecoverability(value: unknown, fallback: ArtifactRecoverability): Art
     ? value as ArtifactRecoverability
     : fallback;
 }
+
 
 function mergeJsonRecords(...records: Array<JsonRecord | undefined>): JsonRecord {
   return Object.assign({}, ...records.filter(Boolean));
@@ -1758,7 +1745,7 @@ function recoverabilityForLocalPath(
   custodyMode: ArtifactCustodyMode,
 ): { recoverability: ArtifactRecoverability; warnings: string[] } {
   const warnings: string[] = [];
-  if (custodyMode === "copy" || custodyMode === "managed") {
+  if (custodyMode === "managed") {
     return { recoverability: "mandible_cas", warnings };
   }
   if (asRecoverability(input.recoverability, "local_only") === "regenerable" || input.regenerable_from) {
@@ -1878,7 +1865,7 @@ function classifyLocalSymlink(
       worktree_substitution: false,
       decision_warnings: ["outside_repo_symlink"],
       reason:
-        "input traverses a symlink whose target is outside any git repo; link custody is non-durable, use --copy/--managed",
+        "input traverses a symlink whose target is outside any git repo; Git custody requires committed repository bytes; use --managed",
     };
   }
   const realRoot = gitState.repo_root ? path.resolve(gitState.repo_root) : null;
@@ -1961,17 +1948,11 @@ function computeLocalArtifactPlanCore(
   const lexicalPath = path.resolve(expandHomePath(input.path));
   const resolvedPath = safeRealpathSync(lexicalPath);
   const gitState = classifyLocalArtifactPath(db, lexicalPath);
-  const requestedCustody = asCustodyMode(input.custody_mode, "link");
+  const requestedCustody = asCustodyMode(input.custody_mode, "git");
   let { recoverability, warnings } = recoverabilityForLocalPath(gitState, input, requestedCustody);
   if (gitState.inside_worktree && !gitState.repo_id && recoverability.startsWith("repo_")) {
     recoverability = "local_only";
     warnings.push("unknown_repo_identity");
-  }
-  if (recoverability === "repo_worktree" && !input.allow_dirty_link && requestedCustody === "link") {
-    warnings.push("dirty_link_requires_override_for_issue_evidence");
-  }
-  if (recoverability === "local_only" && !input.allow_local_only && requestedCustody === "link") {
-    warnings.push("local_only_link_requires_override_for_issue_evidence");
   }
   const decisionBase = classifyLocalSymlink(lexicalPath, resolvedPath, gitState);
   for (const code of decisionBase.decision_warnings) {
@@ -2049,7 +2030,7 @@ export function planLocalArtifactPath(db: Db, input: LocalArtifactPathInput): Lo
   if (!stat.isFile()) {
     throw new Error("artifact path must point to a regular file");
   }
-  const core = computeLocalArtifactPlanCore(db, input);
+  const core = computeLocalArtifactPlanCore(db, { ...input, custody_mode: input.custody_mode ?? "managed" });
   const hash = hashBuffer(fs.readFileSync(core.resolvedPath));
   return buildLocalArtifactPlan(input, core, hash, stat.size);
 }
@@ -2066,15 +2047,15 @@ export async function planLocalArtifactPathAsync(db: Db, input: LocalArtifactPat
   if (!stat.isFile()) {
     throw new Error("artifact path must point to a regular file");
   }
-  const core = computeLocalArtifactPlanCore(db, input);
+  const core = computeLocalArtifactPlanCore(db, { ...input, custody_mode: input.custody_mode ?? "managed" });
   const materialized = await readAndHashArtifactFile(core.resolvedPath);
   return buildLocalArtifactPlan(input, core, materialized.hash, stat.size);
 }
 
 // Shared tail for the sync/async local-path registration paths. `delivery`
 // selects how the bytes reach ingestArtifact: an in-memory buffer (sync path,
-// managed/copy custody), a CAS blob the ingest pool already wrote (async path,
-// managed/copy custody), or nothing at all (link custody keeps only the hash).
+// managed custody), a CAS blob the ingest pool already wrote (async path,
+// managed custody), or nothing at all (Git custody keeps the exact committed locator).
 type LocalArtifactBytesDelivery =
   | { kind: "buffer"; buffer: Buffer }
   | { kind: "cas" }
@@ -2161,8 +2142,8 @@ export function registerLocalArtifactPath(
   if (!stat.isFile()) {
     throw new Error("artifact path must point to a regular file");
   }
-  const core = computeLocalArtifactPlanCore(db, input);
-  const needsBytes = core.requestedCustody === "copy" || core.requestedCustody === "managed";
+  const core = computeLocalArtifactPlanCore(db, { ...input, custody_mode: input.custody_mode ?? "managed" });
+  const needsBytes = core.requestedCustody === "managed";
   // Read bytes through the realpath so a deleted worktree symlink can never make
   // the read race the URI we store.
   const fileBuffer = fs.readFileSync(core.resolvedPath);
@@ -2172,7 +2153,7 @@ export function registerLocalArtifactPath(
 }
 
 // Off-thread twin of registerLocalArtifactPath (issue aadf45e). The read, hash,
-// and (for managed/copy custody) content-addressed write all happen in the
+// and (for managed custody) content-addressed write all happen in the
 // bounded ingest pool, which also re-stats the source to guard against a
 // mid-read mutation, so this route never blocks the daemon event loop.
 export async function registerLocalArtifactPathAsync(
@@ -2189,8 +2170,8 @@ export async function registerLocalArtifactPathAsync(
   if (!stat.isFile()) {
     throw new Error("artifact path must point to a regular file");
   }
-  const core = computeLocalArtifactPlanCore(db, input);
-  const needsBytes = core.requestedCustody === "copy" || core.requestedCustody === "managed";
+  const core = computeLocalArtifactPlanCore(db, { ...input, custody_mode: input.custody_mode ?? "managed" });
+  const needsBytes = core.requestedCustody === "managed";
   const materialized = needsBytes
     ? await materializeArtifactFileIntoCas(core.resolvedPath, artifactRoot)
     : await readAndHashArtifactFile(core.resolvedPath);
@@ -2276,8 +2257,7 @@ export function resolveAndLinkArtifact(
   let seriesRef: string | undefined;
   let canonicalArtifact = resolution.logical_artifact
     ?? (resolution.artifact_version ? getLogicalArtifact(db, resolution.artifact_version.artifact_id) : null);
-  let canonicalVersion = resolution.artifact_version
-    ?? (resolution.version ? getCanonicalArtifactVersion(db, resolution.version.id) : null);
+  let canonicalVersion = resolution.artifact_version;
   if (!canonicalArtifact && canonicalVersion) canonicalArtifact = getLogicalArtifact(db, canonicalVersion.artifact_id);
   if (!canonicalVersion && canonicalArtifact?.latest_version_id) {
     canonicalVersion = getCanonicalArtifactVersion(db, canonicalArtifact.latest_version_id);
@@ -2361,9 +2341,9 @@ export function snapshotArtifactBytes(
     }
   }
 
-  const custodyMode = asCustodyMode(input.custody_mode, "copy");
-  if (custodyMode !== "copy" && custodyMode !== "managed") {
-    throw new Error("snapshot custody_mode must be copy or managed");
+  const custodyMode = asCustodyMode(input.custody_mode, "managed");
+  if (custodyMode !== "managed") {
+    throw new Error("snapshot custody_mode must be managed");
   }
   const filePath = artifactPathForHash(hash, artifactRoot);
   ensureDir(path.dirname(filePath));
@@ -2419,9 +2399,9 @@ export async function snapshotArtifactBytesAsync(
   if (!pathInput) {
     return snapshotArtifactBytes(db, input, now, artifactRoot);
   }
-  const custodyMode = asCustodyMode(input.custody_mode, "copy");
-  if (custodyMode !== "copy" && custodyMode !== "managed") {
-    throw new Error("snapshot custody_mode must be copy or managed");
+  const custodyMode = asCustodyMode(input.custody_mode, "managed");
+  if (custodyMode !== "managed") {
+    throw new Error("snapshot custody_mode must be managed");
   }
   const resolved = path.resolve(expandHomePath(pathInput));
   const materialized = await materializeArtifactFileIntoCas(resolved, artifactRoot);
@@ -2512,8 +2492,6 @@ function resolveBundleMemberArtifact(
       path: member.path as string,
       role: member.role,
       custody_mode: member.custody_mode,
-      allow_local_only: member.allow_local_only,
-      allow_dirty_link: member.allow_dirty_link,
       metadata: member.metadata,
     }, now).artifact;
   }
@@ -2546,8 +2524,6 @@ async function resolveBundleMemberArtifactAsync(
       path: member.path as string,
       role: member.role,
       custody_mode: member.custody_mode,
-      allow_local_only: member.allow_local_only,
-      allow_dirty_link: member.allow_dirty_link,
       metadata: member.metadata,
     }, now)).artifact;
   }
@@ -2579,7 +2555,7 @@ function finalizeArtifactBundle(
       ...(input.members[index].path ? { input_path: input.members[index].path } : {}),
       role: input.members[index].role ?? artifact.role ?? null,
       order: index,
-      recoverability: artifact.metadata.recoverability ?? artifact.reference.recoverability ?? null,
+      recoverability: artifact.custody_mode === 'git' ? 'repo_commit' : 'mandible_cas',
     })),
   };
   const bundle = ingestArtifact(db, {
@@ -2740,124 +2716,11 @@ function getArtifactAlias(db: Db, scheme: string, normalizedRef: string): Artifa
   return row ? artifactAliasFromRow(db, row) : null;
 }
 
-function compatibilityArtifactForAlias(db: Db, alias: ArtifactAliasRecord): ArtifactRecord | null {
-  const row = db.prepare("SELECT blob_id FROM artifact_aliases WHERE id = ?").get(alias.id) as
-    | { blob_id: string | null }
-    | undefined;
-  const blob = row?.blob_id ? getArtifactBlob(db, row.blob_id) : null;
-  return blob ? projectCanonicalArtifactRecord(blob) : null;
-}
-
 function getArtifactLink(db: Db, id: string): ArtifactLinkRecord | null {
   const row = db.prepare(
     `SELECT ${ARTIFACT_LINK_COLUMNS} FROM artifact_links WHERE id = ?`
   ).get(id) as Record<string, unknown> | undefined;
   return row ? artifactLinkFromRow(db, row) : null;
-}
-
-function materializeReferenceArtifact(
-  db: Db,
-  ref: string,
-  now = Date.now(),
-): { artifact: ArtifactRecord; alias: ArtifactAliasRecord } {
-  const normalized = normalizeRef(ref, { db, validateRepo: true });
-  if (normalized.invalidReason) {
-    throw new Error(`invalid repo artifact ref: ${normalized.invalidReason}`);
-  }
-  const id = referenceArtifactId(normalized.normalizedRef);
-  const identityHash = hashString(normalized.normalizedRef);
-  const repoId = asString(normalized.locator.repo_id) ?? null;
-  const custodyMode: ArtifactCustodyMode = normalized.scheme === "repo" ? "link" : "external";
-  const availability: ArtifactAvailability = normalized.scheme === "repo" ? "unchecked" : "remote_only";
-  const role = normalized.scheme === "repo" ? "repo_artifact" : "external_reference";
-  const metadata = {
-    title: normalized.normalizedRef,
-    source_ref: ref,
-    normalized_ref: normalized.normalizedRef,
-    scheme: normalized.scheme,
-    identity_kind: "reference",
-    locator: normalized.locator,
-    compatibility_artifact_id: id,
-    home_repo_id: repoId,
-    repo_locator: normalized.scheme === "repo" ? normalized.locator : {},
-  };
-  const reference = {
-    owner_system: normalized.scheme,
-    identity_kind: "reference",
-    normalized_ref: normalized.normalizedRef,
-    locator: normalized.locator,
-    content_identity: null,
-  };
-  const repoLocator = normalized.scheme === "repo" ? normalized.locator : {};
-
-  const blob = upsertCanonicalArtifactBlob(db, {
-    id,
-    algorithm: "ref-sha256",
-    content_hash: identityHash,
-    uri: normalized.normalizedRef,
-    media_type: null,
-    role,
-    size_bytes: 0,
-    provider_id: null,
-    manifest_id: null,
-    metadata,
-    pinned: false,
-    custody_mode: custodyMode,
-    home_repo_id: repoId,
-    repo_locator: repoLocator,
-    availability,
-    retention: { pinned: false },
-    reference,
-    created_at: now,
-  }, now);
-  if (!blob) throw new Error("canonical artifact blob tables are unavailable");
-
-  upsertGraphEntity(db, {
-    id,
-    entity_type: "artifact",
-    repo_id: repoId,
-    external_id: normalized.normalizedRef,
-    title: normalized.normalizedRef,
-    status: availability,
-    summary: {
-      role,
-      media_type: null,
-      size_bytes: 0,
-      custody_mode: custodyMode,
-      home_repo_id: repoId,
-      availability,
-      scheme: normalized.scheme,
-      identity_kind: "reference",
-    },
-    detail: {
-      uri: normalized.normalizedRef,
-      content_hash: null,
-      metadata,
-      artifact_id: id,
-      custody: {
-        mode: custodyMode,
-        home_repo_id: repoId,
-        repo_locator: repoLocator,
-        availability,
-        retention: { pinned: false },
-        reference,
-      },
-    },
-    visual: { icon: "artifact", shape: "document" },
-    created_at: now,
-    updated_at: now,
-    observed_at: now,
-    source: "artifact_references",
-  });
-
-  const alias = registerArtifactAlias(db, {
-    artifactId: blob.id,
-    ref,
-    locator: normalized.locator,
-    source: "artifact_resolver",
-    now,
-  });
-  return { artifact: projectCanonicalArtifactRecord(blob), alias };
 }
 
 export function registerProvider(db: Db, input: ProviderInput, now = Date.now()): ProviderRecord {
@@ -2956,6 +2819,9 @@ export function ingestArtifact(
   if (declaredHash && preHash && declaredHash !== hash) {
     throw new Error("artifact sha256 does not match supplied content");
   }
+  if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error('artifact requires a SHA-256 content hash');
+  const custodyMode = asCustodyMode(input.custody_mode, 'managed');
+  if (custodyMode === 'git' && (!input[VERIFIED_GIT_DESCRIPTOR] || bytes || casMaterialized)) throw new Error('Git custody must be registered as a verified logical version');
   const hasBytes = bytes != null || casMaterialized;
   const id = `artifact:sha256:${hash}`;
   const filePath = artifactPathForHash(hash, artifactRoot);
@@ -2974,36 +2840,21 @@ export function ingestArtifact(
     }
     uri = `file://${filePath}`;
   }
-  const defaultCustody: ArtifactCustodyMode = hasBytes ? "managed" : (input.storage_backend === "external" ? "external" : "link");
-  const custodyMode = asCustodyMode(input.custody_mode, defaultCustody);
-  const availability = asAvailability(input.availability, hasBytes ? "present" : "unchecked");
+  if (custodyMode === 'git') {
+    const locator = input.repo_locator;
+    if (hasBytes || !locator || typeof locator.repo_id !== 'string' || typeof locator.path !== 'string' || typeof locator.commit !== 'string') throw new Error('Git custody requires only a canonical committed source');
+    retainArtifactCommit(db,{project:locator.repo_id,commit:locator.commit,path:locator.path,sha256:hash});
+  } else {
+    if (!hasBytes && !fs.existsSync(filePath)) throw new Error('Managed custody requires stored bytes');
+    if (hashBuffer(fs.readFileSync(filePath)) !== hash) throw new Error('Stored bytes do not match sha256');
+    uri = `file://${filePath}`;
+  }
+  const availability = "present" as const;
   const repoLocator = input.repo_locator ?? asRecord(input.metadata?.repo_locator);
   const homeRepoId = input.home_repo_id ?? asString(input.metadata?.home_repo_id) ?? asString(input.metadata?.repo_id) ?? null;
-  const retention = {
-    ...(input.retention ?? {}),
-    pinned: input.pinned !== false,
-  };
-  const reference = {
-    ...(input.reference ?? {}),
-    artifact_id: input.artifact_id,
-    logical_name: input.logical_name,
-    storage_backend: input.storage_backend,
-    uri,
-    content_identity: {
-      algorithm: "sha256",
-      hash,
-      artifact_uri: id,
-    },
-  };
-  const metadata = {
-    ...(input.metadata ?? {}),
-    filename: input.filename,
-    logical_name: input.logical_name,
-    artifact_id: input.artifact_id,
-    storage_backend: input.storage_backend,
-    custody_mode: custodyMode,
-    availability,
-  };
+  const metadata = descriptiveArtifactMetadata({
+    ...(input.metadata ?? {}), filename: input.filename, logical_name: input.logical_name,
+  });
   const blob = upsertCanonicalArtifactBlob(db, {
     id,
     algorithm: "sha256",
@@ -3020,8 +2871,8 @@ export function ingestArtifact(
     home_repo_id: homeRepoId,
     repo_locator: repoLocator,
     availability,
-    retention,
-    reference,
+    retention: {},
+    reference: {},
     created_at: now,
   }, now);
   if (!blob) throw new Error("canonical artifact blob tables are unavailable");
@@ -3041,25 +2892,8 @@ export function ingestArtifact(
       role: input.role ?? null,
       media_type: input.media_type ?? null,
       size_bytes: sizeBytes,
-      storage_backend: input.storage_backend ?? null,
-      custody_mode: custodyMode,
-      home_repo_id: homeRepoId,
-      availability,
     },
-    detail: {
-      uri,
-      content_hash: hash,
-      metadata,
-      artifact_id: input.artifact_id ?? null,
-      custody: {
-        mode: custodyMode,
-        home_repo_id: homeRepoId,
-        repo_locator: repoLocator,
-        availability,
-        retention,
-        reference,
-      },
-    },
+    detail: { content_hash: hash, metadata },
     visual: { icon: "artifact", shape: "document" },
     created_at: now,
     updated_at: now,
@@ -3154,6 +2988,19 @@ export async function ingestArtifactAsync(
     cas_materialized: true,
     size_bytes: input.size_bytes ?? materialized.size,
   }, now, artifactRoot);
+}
+
+/** A provider's declaration is provenance, not evidence that Mandible owns its bytes. */
+function registerManifestArtifactReference(db: Db,input:ArtifactInput,now:number): {id:string;home_repo_id:string|null;registered:boolean} {
+  const ref=input.artifact_id ?? (input.sha256 ? `artifact-blob:${input.sha256}` : input.uri);
+  const existing=ref ? resolveArtifactRefReadonly(db,ref) : null;
+  if (existing) return {...existing,registered:true};
+  const id=artifactRegistryId('provider-reference',[input.provider_id,input.manifest_id,ref,input.logical_name]);
+  upsertGraphEntity(db,{id,entity_type:'external_reference',provider_id:input.provider_id ?? null,
+    external_id:ref ?? input.logical_name ?? id,title:input.logical_name ?? input.role ?? ref ?? id,status:'referenced',
+    summary:{role:input.role,materializable:false},detail:{manifest_id:input.manifest_id,reference:ref,metadata:input.metadata},
+    created_at:now,updated_at:now,observed_at:now,source:'provider_manifest'});
+  return {id,home_repo_id:null,registered:false};
 }
 
 export function ingestProviderManifest(
@@ -3282,7 +3129,7 @@ export function ingestProviderManifest(
     for (const item of artifacts) {
       if (isNativeArtifactRef(asRecord(item))) {
         const ref = asRecord(item);
-        const artifactRecord = ingestArtifact(db, {
+        const artifactRecord = registerManifestArtifactReference(db, {
           provider_id: provider.id,
           manifest_id: manifestId,
           artifact_id: asString(ref.artifact_id),
@@ -3304,7 +3151,7 @@ export function ingestProviderManifest(
             source_field: "artifacts",
           },
           metadata: asRecord(ref.metadata),
-        }, now, artifactRoot);
+        }, now);
         const refKeys = [
           asString(ref.artifact_id),
           asString(ref.sha256),
@@ -3335,7 +3182,7 @@ export function ingestProviderManifest(
             observed_at: now,
             source: "provider_manifest",
           });
-          if (artifactAliasTablesExist(db)) {
+          if (artifactRecord.registered && artifactAliasTablesExist(db)) {
             registerArtifactLink(db, artifactRecord.id, {
               entity_type: nativeSubjectType(manifest) ?? "provider_entity",
               entity_id: nativeSubjectId,
@@ -3385,7 +3232,7 @@ export function ingestProviderManifest(
 
     for (const { field, ref } of modelStoreRefs(manifest)) {
       const role = asString(ref.role) ?? field;
-      const artifactRecord = ingestArtifact(db, {
+      const artifactRecord = registerManifestArtifactReference(db, {
         provider_id: provider.id,
         manifest_id: manifestId,
         artifact_id: asString(ref.artifact_id),
@@ -3411,7 +3258,7 @@ export function ingestProviderManifest(
           store_field: field,
           array_roles: Array.isArray(ref.array_roles) ? ref.array_roles : asArray<string>(ref.roles),
         },
-      }, now, artifactRoot);
+      }, now);
       idMap.set(field, artifactRecord.id);
       if (asString(ref.artifact_id)) idMap.set(asString(ref.artifact_id)!, artifactRecord.id);
       if (asString(ref.sha256)) idMap.set(asString(ref.sha256)!, artifactRecord.id);
@@ -3438,7 +3285,7 @@ export function ingestProviderManifest(
           observed_at: now,
           source: "provider_manifest",
         });
-        if (artifactAliasTablesExist(db)) {
+        if (artifactRecord.registered && artifactAliasTablesExist(db)) {
           registerArtifactLink(db, artifactRecord.id, {
             entity_type: nativeSubjectType(manifest) ?? "provider_entity",
             entity_id: nativeSubjectId,
@@ -3709,7 +3556,11 @@ function listCanonicalArtifactCompatibility(db: Db, options: ArtifactListOptions
     bindings.repo = options.repo;
     where.push(`(
       EXISTS (SELECT 1 FROM artifact_version cv JOIN artifact ca ON ca.id = cv.artifact_id
-        WHERE cv.blob_id = b.id AND (cv.source_repo_id = @repo OR (SELECT p.project_key FROM artifact_source s JOIN ledger_projects p ON p.id=json_extract(s.source_json,'$.project_id') WHERE s.artifact_id=ca.id) = @repo))
+        WHERE cv.blob_id = b.id AND (cv.source_project_id = @repo OR ca.source_project_id = @repo OR (SELECT p.project_key FROM ledger_projects p WHERE p.id=ca.source_project_id) = @repo OR (SELECT p.project_key FROM artifact_source s JOIN ledger_projects p ON p.id=json_extract(s.source_json,'$.project_id') WHERE s.artifact_id=ca.id) = @repo))
+      OR EXISTS (SELECT 1 FROM artifact_version pv JOIN project_artifact_associations pa
+        ON (pa.target_type='artifact' AND pa.target_id=pv.artifact_id) OR (pa.target_type='artifact_version' AND pa.target_id=pv.id)
+        JOIN ledger_projects pp ON pp.id=pa.project_id
+        WHERE pv.blob_id=b.id AND (pp.id=@repo OR pp.project_key=@repo))
       OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.blob_id = b.id AND al.repo_id = @repo)
       OR json_extract(b.metadata_json, '$.home_repo_id') = @repo
     )`);
@@ -3726,11 +3577,11 @@ function listCanonicalArtifactCompatibility(db: Db, options: ArtifactListOptions
   }
   if (asString(options.custody)) {
     bindings.custody = options.custody;
-    where.push("b.custody_mode = @custody");
+    where.push("((@custody='managed' AND b.storage_uri IS NOT NULL) OR EXISTS (SELECT 1 FROM artifact_version custody_v WHERE custody_v.blob_id=b.id AND custody_v.custody_mode=@custody))");
   }
   if (asString(options.availability)) {
     bindings.availability = options.availability;
-    where.push("b.availability = @availability");
+    where.push("CASE WHEN b.storage_uri IS NULL THEN 'unchecked' ELSE 'present' END = @availability");
   }
   if (asString(options.scheme)) {
     bindings.scheme = options.scheme!.toLowerCase();
@@ -3739,10 +3590,10 @@ function listCanonicalArtifactCompatibility(db: Db, options: ArtifactListOptions
   if (asString(options.location)) {
     bindings.location = `%${escapeLike(options.location!.trim())}%`;
     where.push(`(
-      b.storage_uri LIKE @location ESCAPE '\\' OR b.reference_json LIKE @location ESCAPE '\\'
+      b.storage_uri LIKE @location ESCAPE '\\' OR b.metadata_json LIKE @location ESCAPE '\\'
       OR EXISTS (SELECT 1 FROM artifact_version cv WHERE cv.blob_id = b.id
         AND (cv.repo_path LIKE @location ESCAPE '\\' OR cv.observed_path LIKE @location ESCAPE '\\'
-          OR cv.source_locator_json LIKE @location ESCAPE '\\'))
+          OR cv.parent_version_id LIKE @location ESCAPE '\\'))
       OR EXISTS (SELECT 1 FROM artifact_aliases aa WHERE aa.blob_id = b.id
         AND (aa.alias LIKE @location ESCAPE '\\' OR aa.normalized_ref LIKE @location ESCAPE '\\'))
       OR json_extract(b.metadata_json, '$.repo_locator') LIKE @location ESCAPE '\\'
@@ -3852,7 +3703,7 @@ function listCanonicalArtifactSeriesCompatibility(
   }
   if (asString(options.repo)) {
     bindings.repo = options.repo;
-    where.push(`(v.source_repo_id = @repo OR (SELECT p.project_key FROM artifact_source s JOIN ledger_projects p ON p.id=json_extract(s.source_json,'$.project_id') WHERE s.artifact_id=a.id) = @repo
+    where.push(`(v.source_project_id = @repo OR (SELECT p.project_key FROM artifact_source s JOIN ledger_projects p ON p.id=json_extract(s.source_json,'$.project_id') WHERE s.artifact_id=a.id) = @repo
       OR json_extract(b.metadata_json, '$.home_repo_id') = @repo
       OR EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScope} AND al.repo_id = @repo))`);
   }
@@ -3868,11 +3719,11 @@ function listCanonicalArtifactSeriesCompatibility(
   }
   if (asString(options.custody)) {
     bindings.custody = options.custody;
-    where.push("b.custody_mode = @custody");
+    where.push("v.custody_mode = @custody");
   }
   if (asString(options.availability)) {
     bindings.availability = options.availability;
-    where.push("b.availability = @availability");
+    where.push("CASE WHEN b.storage_uri IS NULL THEN 'unchecked' ELSE 'present' END = @availability");
   }
   if (asString(options.scheme)) {
     bindings.scheme = options.scheme!.toLowerCase();
@@ -3881,9 +3732,9 @@ function listCanonicalArtifactSeriesCompatibility(
   if (asString(options.location)) {
     bindings.location = `%${escapeLike(options.location!.trim())}%`;
     where.push(`(b.storage_uri LIKE @location ESCAPE '\\'
-      OR b.reference_json LIKE @location ESCAPE '\\'
+      OR b.metadata_json LIKE @location ESCAPE '\\'
       OR v.repo_path LIKE @location ESCAPE '\\' OR v.observed_path LIKE @location ESCAPE '\\'
-      OR v.source_locator_json LIKE @location ESCAPE '\\'
+      OR v.parent_version_id LIKE @location ESCAPE '\\'
       OR EXISTS (SELECT 1 FROM artifact_aliases aa WHERE aa.blob_id = b.id
         AND (aa.alias LIKE @location ESCAPE '\\' OR aa.normalized_ref LIKE @location ESCAPE '\\')))`);
   }
@@ -4062,10 +3913,6 @@ function getArtifactBlobPrefix(db: Db, ref: string): PrefixLookupResult<Artifact
   return { status: rows.length > 1 ? "ambiguous" : "unresolved", value: null };
 }
 
-function compatibilityArtifactId(blob: ArtifactBlobRecord): string {
-  return `artifact:sha256:${blob.content_hash}`;
-}
-
 export function canonicalArtifactShortRef(db: Db, hash: string): string {
   const normalized = hash.trim().toLowerCase();
   if (!isSha256(normalized)) throw new Error("artifact hash must be 64 hexadecimal characters");
@@ -4147,67 +3994,21 @@ export function projectArtifactPublicValue(db: Db, value: unknown): unknown {
   return value;
 }
 
-/**
- * Project canonical blob/identity/version state through the historical
- * ArtifactRecord contract.
- *
- * `id` is the blob's recorded `compatibility_artifact_id` when it has one (the
- * `artifact:ref:<hash>` locators) and otherwise the derived
- * `artifact:sha256:<hash>`. Callers derive link and alias identities from that
- * string, so it must stay stable.
- */
-export function projectCanonicalArtifactRecord(
-  blob: ArtifactBlobRecord,
-  logical: ArtifactIdentityRecord | null = null,
-  version: CanonicalArtifactVersionRecord | null = null,
-): ArtifactRecord {
-  // A blob may belong to multiple logical artifacts. Generic blob/list
-  // projections must not borrow an arbitrary logical/version context; callers
-  // resolving a specific logical artifact/version pass that context explicitly.
-  const canonicalLogical = logical;
-  const canonicalVersion = version;
-  const sourceLocator = canonicalVersion?.source_locator ?? {};
-  const compatibilityId = asString(blob.metadata.compatibility_artifact_id)
-    ?? compatibilityArtifactId(blob);
-  const repoLocator = {
-    ...(!canonicalVersion ? asRecord(blob.metadata.repo_locator) : {}),
-    ...sourceLocator,
-    ...(canonicalVersion?.source_project_id || canonicalVersion?.source_repo_id
-      ? { repo_id: canonicalVersion.source_project_id ?? canonicalVersion.source_repo_id } : {}),
-    ...(canonicalVersion?.repo_path ? { path: canonicalVersion.repo_path } : {}),
-    ...(canonicalVersion?.commit_sha ? { commit: canonicalVersion.commit_sha } : {}),
-    ...(canonicalVersion?.observed_path ? { observed_path: canonicalVersion.observed_path } : {}),
-  };
+/** Project the selected version and its shared content descriptor. */
+export function projectCanonicalArtifactRecord(blob: ArtifactBlobRecord, logical: ArtifactIdentityRecord | null = null,
+  version: CanonicalArtifactVersionRecord | null = null): ArtifactRecord {
+  const git = version?.custody_mode === 'git';
+  const locator = git ? {repo_id: version.source_project_id, path: version.repo_path, commit: version.commit_sha} : {};
   return {
-    id: compatibilityId,
-    algorithm: blob.algorithm,
-    content_hash: blob.content_hash,
-    uri: blob.storage_uri ?? asString(blob.reference.uri) ?? blob.id,
-    media_type: blob.media_type,
-    role: blob.role,
-    size_bytes: blob.size_bytes,
-    provider_id: blob.provider_id,
-    manifest_id: blob.manifest_id,
-    metadata: mergeJsonRecords(
-      blob.metadata,
-      canonicalLogical?.metadata,
-      canonicalVersion?.metadata,
-    ),
-    pinned: typeof blob.retention.pinned === "boolean"
-      ? blob.retention.pinned
-      : blob.availability === "pinned",
-    custody_mode: canonicalVersion?.custody_mode ?? blob.custody_mode,
-    home_repo_id: canonicalVersion ? canonicalVersion.source_project_id ?? canonicalVersion.source_repo_id
-      : asString(blob.metadata.home_repo_id) ?? null,
-    repo_locator: repoLocator,
-    availability: blob.availability,
-    retention: blob.retention,
-    reference: mergeJsonRecords(blob.reference, {
-      canonical_blob_id: blob.id,
-      canonical_artifact_id: canonicalLogical?.id ?? null,
-      canonical_version_id: canonicalVersion?.id ?? null,
-    }),
-    created_at: blob.created_at,
+    id: version?.id ?? blob.id, algorithm: blob.algorithm, content_hash: blob.content_hash,
+    uri: git ? `repo://${version.source_project_id}@${version.commit_sha}/${version.repo_path}` : blob.storage_uri ?? blob.id,
+    media_type: blob.media_type, role: blob.role, size_bytes: blob.size_bytes,
+    provider_id: blob.provider_id, manifest_id: blob.manifest_id,
+    metadata: mergeJsonRecords(blob.metadata, logical?.metadata, version?.metadata),
+    pinned: true, custody_mode: version?.custody_mode ?? (blob.storage_uri ? 'managed' : null), home_repo_id: git ? version.source_project_id : null,
+    repo_locator: locator, availability: blob.storage_uri || git ? 'present' : 'missing', retention: {},
+    reference: {canonical_blob_id:blob.id,canonical_artifact_id:logical?.id ?? null,canonical_version_id:version?.id ?? null},
+    created_at:version?.created_at ?? blob.created_at,
   };
 }
 
@@ -4585,11 +4386,11 @@ export function listArtifactBlobs(db: Db, options: ArtifactBlobListOptions = {})
   }
   if (asString(options.custody)) {
     bindings.custody = options.custody;
-    where.push("custody_mode = @custody");
+    where.push("EXISTS (SELECT 1 FROM artifact_version v WHERE v.blob_id=artifact_blob.id AND v.custody_mode=@custody)");
   }
   if (asString(options.availability)) {
     bindings.availability = options.availability;
-    where.push("availability = @availability");
+    where.push("CASE WHEN storage_uri IS NULL THEN 'unchecked' ELSE 'present' END = @availability");
   }
   bindings.limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
   bindings.offset = Math.max(options.offset ?? 0, 0);
@@ -4637,86 +4438,21 @@ function canonicalVersionIdForVersionRef(versionId: string): string {
   return /^artifact-version:/i.test(trimmed) ? trimmed : `artifact-version:${trimmed}`;
 }
 
-function upsertCanonicalArtifactBlob(db: Db, artifact: ArtifactRecord, now = Date.now()): ArtifactBlobRecord | null {
-  if (!artifactIdentityTablesExist(db)) return null;
+function upsertCanonicalArtifactBlob(db: Db, artifact: ArtifactRecord, now = Date.now()): ArtifactBlobRecord {
   const blobId = artifactBlobIdFromHash(artifact.content_hash);
-  db.prepare(
-    `INSERT INTO artifact_blob (
-      id, algorithm, content_hash, storage_uri, media_type, role, size_bytes,
-      provider_id, manifest_id, metadata_json, custody_mode, availability,
-      retention_json, reference_json, created_at
-    ) VALUES (
-      @id, @algorithm, @content_hash, @storage_uri, @media_type, @role, @size_bytes,
-      @provider_id, @manifest_id, @metadata_json, @custody_mode, @availability,
-      @retention_json, @reference_json, @created_at
-    )
-    ON CONFLICT(algorithm, content_hash) DO UPDATE SET
-      storage_uri = CASE
-        WHEN artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
-         AND excluded.availability = 'present' THEN excluded.storage_uri
-        WHEN artifact_blob.custody_mode IN ('link', 'external')
-         AND excluded.custody_mode IN ('copy', 'managed') THEN excluded.storage_uri
-        ELSE COALESCE(artifact_blob.storage_uri, excluded.storage_uri)
-      END,
-      media_type = COALESCE(excluded.media_type, artifact_blob.media_type),
-      role = COALESCE(excluded.role, artifact_blob.role),
-      size_bytes = CASE WHEN artifact_blob.size_bytes = 0 THEN excluded.size_bytes ELSE artifact_blob.size_bytes END,
-      provider_id = COALESCE(excluded.provider_id, artifact_blob.provider_id),
-      manifest_id = COALESCE(excluded.manifest_id, artifact_blob.manifest_id),
-      metadata_json = CASE
-        WHEN artifact_blob.metadata_json = '{}'
-          OR (artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
-            AND excluded.availability = 'present')
-          OR (artifact_blob.custody_mode IN ('link', 'external')
-            AND excluded.custody_mode IN ('copy', 'managed')) THEN excluded.metadata_json
-        ELSE artifact_blob.metadata_json
-      END,
-      custody_mode = CASE
-        WHEN artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
-         AND excluded.availability = 'present' THEN excluded.custody_mode
-        WHEN artifact_blob.custody_mode IN ('link', 'external')
-         AND excluded.custody_mode IN ('copy', 'managed') THEN excluded.custody_mode
-        ELSE artifact_blob.custody_mode
-      END,
-      availability = CASE
-        WHEN artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
-         AND excluded.availability = 'present' THEN excluded.availability
-        ELSE artifact_blob.availability
-      END,
-      retention_json = CASE
-        WHEN artifact_blob.retention_json = '{}'
-          OR (artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
-            AND excluded.availability = 'present')
-          OR (artifact_blob.custody_mode IN ('link', 'external')
-            AND excluded.custody_mode IN ('copy', 'managed')) THEN excluded.retention_json
-        ELSE artifact_blob.retention_json
-      END,
-      reference_json = CASE
-        WHEN artifact_blob.reference_json = '{}'
-          OR (artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
-            AND excluded.availability = 'present')
-          OR (artifact_blob.custody_mode IN ('link', 'external')
-            AND excluded.custody_mode IN ('copy', 'managed')) THEN excluded.reference_json
-        ELSE artifact_blob.reference_json
-      END`,
-  ).run({
-    id: blobId,
-    algorithm: artifact.algorithm,
-    content_hash: artifact.content_hash,
-    storage_uri: artifact.uri?.startsWith("repo://") ? null : artifact.uri,
-    media_type: artifact.media_type,
-    role: artifact.role,
-    size_bytes: artifact.size_bytes,
-    provider_id: artifact.provider_id,
-    manifest_id: artifact.manifest_id,
-    metadata_json: jsonStringify(artifact.metadata),
-    custody_mode: artifact.custody_mode,
-    availability: artifact.availability,
-    retention_json: jsonStringify(artifact.retention),
-    reference_json: jsonStringify(artifact.reference),
-    created_at: artifact.created_at || now,
-  });
-  return getArtifactBlob(db, blobId);
+  db.prepare(`INSERT INTO artifact_blob
+    (id,algorithm,content_hash,storage_uri,media_type,role,size_bytes,provider_id,manifest_id,metadata_json,created_at)
+    VALUES (@id,@algorithm,@content_hash,@storage_uri,@media_type,@role,@size_bytes,@provider_id,@manifest_id,@metadata_json,@created_at)
+    ON CONFLICT(algorithm,content_hash) DO UPDATE SET
+      storage_uri=COALESCE(artifact_blob.storage_uri,excluded.storage_uri),
+      media_type=COALESCE(artifact_blob.media_type,excluded.media_type),
+      role=COALESCE(artifact_blob.role,excluded.role)
+  `).run({id:blobId,algorithm:artifact.algorithm,content_hash:artifact.content_hash,
+    storage_uri:artifact.custody_mode === 'managed' ? artifact.uri : null,
+    media_type:artifact.media_type,role:artifact.role,size_bytes:artifact.size_bytes,
+    provider_id:artifact.provider_id,manifest_id:artifact.manifest_id,
+    metadata_json:jsonStringify(descriptiveArtifactMetadata(artifact.metadata)),created_at:artifact.created_at || now});
+  return getArtifactBlob(db,blobId)!;
 }
 
 export interface ProjectArtifactAssociationInput {
@@ -4819,7 +4555,7 @@ export function associateProjectArtifact(
     source: input.source ?? "agent_explicit",
     source_ref_type: input.source_ref_type ?? null,
     source_ref_id: input.source_ref_id ?? null,
-    metadata_json: jsonStringify(input.metadata ?? {}),
+    metadata_json: jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})),
     created_at: now,
     updated_at: now,
   });
@@ -4910,16 +4646,15 @@ function projectCanonicalSeriesRecord(logical: ArtifactIdentityRecord): Artifact
 }
 
 function projectCanonicalVersionRecord(
-  db: Db,
+  _db: Db,
   version: CanonicalArtifactVersionRecord,
 ): ArtifactVersionRecord {
-  const blob = getArtifactBlob(db, version.blob_id);
   return {
     id: version.id,
     series_id: legacySeriesIdFromCanonicalArtifact(version.artifact_id),
-    artifact_id: blob ? projectCanonicalArtifactRecord(blob).id : `artifact:sha256:${version.content_hash}`,
+    artifact_id: version.id,
     version_no: version.version_no,
-    parent_version_id: asString(version.source_locator.parent_version_id) ?? null,
+    parent_version_id: version.parent_version_id,
     source_kind: version.source_kind as ArtifactVersionSourceKind,
     content_hash: version.content_hash,
     commit_sha: version.commit_sha,
@@ -5154,6 +4889,13 @@ export function appendArtifactVersion(
     if (input.source_kind === 'tracked_repo') {
       if (!input.commit_sha || !/^[a-f0-9]{40,64}$/i.test(input.commit_sha) || !input.repo_path || !input.source_project_id) throw new Error('Tracked versions require canonical repository, commit and path');
     }
+    const custody = asCustodyMode(input.custody_mode, 'managed');
+    if (custody === 'git') {
+      if (!input.source_project_id || !input.repo_path || !input.commit_sha) throw new Error('Git custody requires canonical project, commit and path');
+      retainArtifactCommit(db,{project:input.source_project_id,commit:input.commit_sha,path:input.repo_path,sha256:input.content_hash});
+    } else {
+      if (!blob.storage_uri?.startsWith('file://') || hashBuffer(fs.readFileSync(fileURLToPath(blob.storage_uri))) !== input.content_hash) throw new Error('Managed version requires verified stored bytes');
+    }
     const versionId = artifactEvidenceVersionId(series.id, input);
     const existing = findRepeatedArtifactVersion(db, series.id, input);
     if (existing) return { version: projectCanonicalVersionRecord(db, existing), created: false };
@@ -5164,12 +4906,12 @@ export function appendArtifactVersion(
     const result = db.prepare(
       `INSERT INTO artifact_version (
         id, artifact_id, version_no, blob_id, source_kind, content_hash,
-        source_project_id, source_repo_id, repo_path, commit_sha, observed_path,
-        source_locator_json, custody_mode, label, note, metadata_json, created_at
+        source_project_id, repo_path, commit_sha, observed_path,
+        parent_version_id, custody_mode, label, note, metadata_json, created_at
       ) VALUES (
         @id, @artifact_id, @version_no, @blob_id, @source_kind, @content_hash,
-        @source_project_id, @source_repo_id, @repo_path, @commit_sha, @observed_path,
-        @source_locator_json, @custody_mode, @label, @note, @metadata_json, @created_at
+        @source_project_id, @repo_path, @commit_sha, @observed_path,
+        @parent_version_id, @custody_mode, @label, @note, @metadata_json, @created_at
       ) ON CONFLICT(id) DO NOTHING`,
     ).run({
       id: versionId,
@@ -5178,16 +4920,15 @@ export function appendArtifactVersion(
       blob_id: blob.id,
       source_kind: input.source_kind,
       content_hash: input.content_hash,
-      source_project_id: input.source_project_id ?? null,
-      source_repo_id: input.source_repo_id ?? null,
-      repo_path: input.repo_path ?? null,
-      commit_sha: input.commit_sha ?? null,
+      source_project_id: input.custody_mode === "git" ? input.source_project_id : null,
+      repo_path: input.custody_mode === "git" ? input.repo_path : null,
+      commit_sha: input.custody_mode === "git" ? input.commit_sha : null,
       observed_path: input.observed_path ?? null,
-      source_locator_json: jsonStringify({ parent_version_id: parentVersionId }),
-      custody_mode: input.custody_mode ?? null,
+      parent_version_id: parentVersionId,
+      custody_mode: input.custody_mode ?? "managed",
       label: input.label ?? null,
       note: input.note ?? null,
-      metadata_json: jsonStringify(input.metadata ?? {}),
+      metadata_json: jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})),
       created_at: now,
     });
     const created = result.changes > 0;
@@ -5210,6 +4951,10 @@ export function appendArtifactVersion(
         now,
         artifact_id: logicalId,
       });
+    }
+    if (created && input.source_project_id && custody === 'managed') {
+      associateProjectArtifact(db,{project_ref:input.source_project_id,target_type:'artifact_version',target_id:versionId,
+        role:'historical-source-access',source:'system'},now);
     }
     return {
       version: projectCanonicalVersionRecord(
@@ -5259,7 +5004,7 @@ export interface ArtifactVersionPlan {
   expected_source_revision: number | null;
   required_project_ids: string[];
   content_hash: string;
-  custody_mode: "link" | "copy" | "managed";
+  custody_mode: "git" | "managed";
   source_kind: ArtifactVersionSourceKind;
   commit_sha: string | null;
   repo_path: string | null;
@@ -5333,7 +5078,7 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
     let mediaType = input.media_type;
     let seriesKey = input.series_key;
     const warnings: string[] = [];
-    if (input.custody_mode && !['link','copy','managed'].includes(input.custody_mode)) return artifactFailure('invalid_input', 'Unsupported version custody mode');
+    if (input.custody_mode && !['git','managed'].includes(input.custody_mode)) return artifactFailure('invalid_input', 'Unsupported version custody mode');
     const named = input.artifact_id ? getLogicalArtifactPrefix(db, input.artifact_id) : null;
     if (named && named.status !== 'resolved') return artifactFailure('unknown_artifact', 'Canonical artifact ID did not resolve unambiguously');
     const explicit = named?.value ?? null;
@@ -5342,7 +5087,7 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
       logicalName ??= path.posix.basename(committed.path);
       mediaType ??= mediaTypeForPath(committed.path);
     } else if (input.path) {
-      local = planLocalArtifactPath(db, { path: input.path, custody_mode: 'link' });
+      local = planLocalArtifactPath(db, { path: input.path, custody_mode: 'git' });
       bytes = fs.readFileSync(local.resolved_path);
       if (hashBuffer(bytes) !== local.sha256) return artifactFailure('stale_plan', 'File changed while planning');
       observed = local.resolved_path;
@@ -5365,7 +5110,7 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
       repoPath = committed.path; commit = committed.commit;
       source = { kind: 'repo', project_id: projectId, path: repoPath };
       seriesKey ??= `repo:${repoId}:${repoPath}`;
-      kind = input.custody_mode === 'copy' || input.custody_mode === 'managed' ? 'managed' : 'tracked_repo';
+      kind = input.custody_mode === 'managed' ? 'managed' : 'tracked_repo';
       if (input.source && sourceKey(input.source) !== sourceKey(source)) return artifactFailure('source_mismatch', 'Declared source differs from committed source');
     } else if (local) {
       const git = local.git_state;
@@ -5390,9 +5135,9 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
       if (kind === 'tracked_repo') {
         if (source.kind !== 'repo') return artifactFailure('invalid_input', 'tracked_repo version requires a file inside a registered repo');
         if (commit) {
-          if (input.custody_mode === 'copy' || input.custody_mode === 'managed') kind = 'managed';
+          if (input.custody_mode === 'managed') kind = 'managed';
         } else {
-          kind = 'local_only';
+          kind = 'managed';
           warnings.push('tracked_repo_dirty_recorded_as_local_only', ...local.warnings);
         }
       }
@@ -5408,6 +5153,7 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
       seriesKey ??= explicit?.identity_key ?? `source:${sourceKey(source)}`;
       observed = null;
     }
+    if (input.custody_mode === 'git' && (!commit || !projectId || !repoPath)) return artifactFailure('invalid_input', 'Git custody requires exact committed bytes; commit the file or use managed custody');
     const valid = validateArtifactSource(db, source);
     if (!valid.ok) return valid;
     if (input.project) {
@@ -5438,17 +5184,18 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
     else ownerProject ??= projectId ?? (source.kind === 'repo' ? source.project_id : null);
     const required = artifactRequiredProjects(db, target?.id ?? null, state?.source ?? null, source);
     if (ownerProject && !required.includes(ownerProject)) required.push(ownerProject);
+    if (input.custody_mode === 'managed' || kind === 'local_only') kind = 'managed';
     const plan: ArtifactVersionPlan = {
       artifact_id: target?.id ?? null, source, expected_source_revision: state?.revision ?? null,
       required_project_ids: required.sort(), content_hash: hashBuffer(bytes), source_kind: kind,
-      custody_mode: input.custody_mode === 'copy' || input.custody_mode === 'managed' ? input.custody_mode
-        : kind === 'tracked_repo' ? 'link' : kind === 'managed' ? 'managed' : 'copy',
+      custody_mode: input.custody_mode === 'managed' ? input.custody_mode
+        : kind === 'tracked_repo' ? 'git' : 'managed',
       commit_sha: commit, repo_path: repoPath, source_project_id: projectId, source_repo_id: repoId,
       observed_path: observed, warnings: Array.from(new Set(warnings)),
     };
     versionPlans.set(plan, { db, input: structuredClone(input), bytes, committed, frozen: JSON.stringify(plan),
       series_key: seriesKey!, logical_name: logicalName, media_type: mediaType, owner_project_id: ownerProject,
-      metadata: mergeJsonRecords(input.metadata, input.source_kind === "tracked_repo" && kind === "local_only"
+      metadata: mergeJsonRecords(input.metadata, input.source_kind === "tracked_repo" && kind === "managed"
         ? { head_commit: local?.git_state.commit, dirty_at_commit: local?.git_state.commit } : {}) });
     return { ok: true, value: plan };
   } catch (error) { return artifactFailure('invalid_input', String(error)); }
@@ -5503,10 +5250,10 @@ function commitPreparedArtifactVersion(db: Db, plan: ArtifactVersionPlan, prepar
         db.prepare(`INSERT INTO artifact (id,identity_key,source_kind,title,source_project_id,
           logical_name,version_count,metadata_json,created_at,updated_at)
           VALUES (?,?,?,?,?,?,0,?,?,?)`).run(logicalId, identityKey, plan.source_kind, input.title ?? null,
-            prepared.owner_project_id, prepared.logical_name ?? null, jsonStringify(input.metadata ?? {}), now, now);
+            prepared.owner_project_id, prepared.logical_name ?? null, jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})), now, now);
         db.prepare('INSERT INTO artifact_source VALUES (?,?,1,NULL,?)').run(logicalId, sourceKey(plan.source), now);
       }
-      const linked = plan.custody_mode === 'link';
+      const linked = plan.custody_mode === 'git';
       const custody = plan.custody_mode;
       const locator = linked ? { repo_id: plan.source_project_id, path: plan.repo_path, commit: plan.commit_sha } : {};
       const evidence = {
@@ -5523,7 +5270,7 @@ function commitPreparedArtifactVersion(db: Db, plan: ArtifactVersionPlan, prepar
         artifact: projectCanonicalArtifactRecord(getArtifactBlob(db, repeated.content_hash)!, getLogicalArtifact(db, logicalId), repeated),
         version: projectCanonicalVersionRecord(db, repeated), created: false, warnings: plan.warnings } };
       const artifact = ingestArtifact(db, {
-        ...(linked ? { sha256: plan.content_hash, uri: `repo://${plan.source_repo_id}@${plan.commit_sha}/${plan.repo_path}` }
+        ...(linked ? { [VERIFIED_GIT_DESCRIPTOR]: true as const, sha256: plan.content_hash, uri: `repo://${plan.source_repo_id}@${plan.commit_sha}/${plan.repo_path}` }
           : { content_buffer: prepared.bytes }),
         custody_mode: custody, role: input.role, media_type: prepared.media_type,
         logical_name: prepared.logical_name, size_bytes: prepared.bytes.length,
@@ -5679,7 +5426,7 @@ export function saveArtifactDraft(
     media_type: input.media_type ?? null,
     label: input.label ?? null,
     note: input.note ?? null,
-    metadata_json: jsonStringify(input.metadata ?? {}),
+    metadata_json: jsonStringify(descriptiveArtifactMetadata(input.metadata ?? {})),
     created_at: now,
     updated_at: now,
   });
@@ -5918,48 +5665,6 @@ function resolveRegisteredArtifactRef(db: Db, ref: string): ArtifactResolveResul
 }
 
 /**
- * Materializing read: as above, but an unregistered external ref is registered
- * as a reference artifact and alias. Only the explicit materializing mode may
- * write.
- */
-function resolveOrMaterializeArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
-  const trimmed = ref.trim();
-  const identityResolution = resolveArtifactIdentityRef(db, trimmed);
-  if (identityResolution) return identityResolution;
-  const normalized = normalizeRef(ref, { db, validateRepo: true });
-  if (normalized.invalidReason || !isRegisterableArtifactRef(ref)) {
-    return {
-      ...makeResolutionBase(ref),
-      status: "unsupported",
-      scheme: normalized.scheme,
-      normalized_ref: normalized.normalizedRef,
-    };
-  }
-  const existing = tableExists(db, "artifact_aliases")
-    ? getArtifactAlias(db, normalized.scheme, normalized.normalizedRef)
-    : null;
-  let artifact = existing ? compatibilityArtifactForAlias(db, existing) : null;
-  let alias = existing;
-  if (!artifact) {
-    const materialized = materializeReferenceArtifact(db, ref, now);
-    artifact = materialized.artifact;
-    alias = materialized.alias;
-  }
-  const blob = canonicalBlobForCompatibilityRef(db, artifact.id);
-  return {
-    ...makeResolutionBase(ref),
-    status: alias?.resolution_status ?? "resolved",
-    scheme: normalized.scheme,
-    normalized_ref: normalized.normalizedRef,
-    artifact,
-    alias: alias as ArtifactAliasRecord,
-    target_type: "artifact_blob",
-    target_id: blob?.id ?? null,
-    artifact_blob: blob,
-  };
-}
-
-/**
  * The retired content-hash spellings (`artifact:sha256:<hash>`, `sha256:<hash>`,
  * a bare hash) are not accepted by the strict identity resolver, but the
  * surface and link boundaries still resolve them for existing clients and
@@ -5988,12 +5693,9 @@ function resolveArtifactSurfaceRef(db: Db, ref: string): ArtifactResolveResult {
   return resolutionForRetiredContentHashRef(db, ref) ?? resolveRegisteredArtifactRef(db, ref);
 }
 
-/**
- * Link mode: the retired content-hash spellings, then the materializing path so
- * a new external ref becomes a registered alias.
- */
-function resolveArtifactLinkRefCompat(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
-  return resolutionForRetiredContentHashRef(db, ref) ?? resolveOrMaterializeArtifactRef(db, ref, now);
+/** Resolve existing authored aliases without creating custody from references. */
+function resolveArtifactLinkRefCompat(db: Db, ref: string, _now = Date.now()): ArtifactResolveResult {
+  return resolutionForRetiredContentHashRef(db, ref) ?? resolveRegisteredArtifactRef(db, ref);
 }
 
 
@@ -6087,7 +5789,7 @@ function discriminatedArtifactResolution(
 
 /**
  * Shared strict artifact identity contract. Read modes never write; only the
- * explicit materializing mode may register an external alias/reference.
+ * all modes resolve existing identities without creating custody from references.
  */
 export function resolveArtifactIdentity(
   db: Db,
@@ -6099,52 +5801,28 @@ export function resolveArtifactIdentity(
     ? resolveArtifactSurfaceRef(db, ref)
     : mode === "link"
       ? resolveArtifactLinkRefCompat(db, ref, now)
-      : mode === "materializing"
-        ? resolveOrMaterializeArtifactRef(db, ref, now)
-        : resolveRegisteredArtifactRef(db, ref);
+      : resolveRegisteredArtifactRef(db, ref);
   return discriminatedArtifactResolution(db, resolved);
 }
 
-/**
- * Preserve the historical public shape at compatibility boundaries only.
- *
- * `series` and `version` are deprecated projections of the canonical records,
- * computed here rather than resolved. They exist for one compatibility window
- * on `/api/artifacts/resolve` and its CLI reader; nothing inside the canonical
- * model reads them back.
- */
-export function resolveArtifactIdentityCompat(
-  db: Db,
-  ref: string,
-  mode: ArtifactResolutionMode = "strict-read",
-  now = Date.now(),
-): ArtifactResolveResult {
-  const resolution = resolveArtifactIdentity(db, ref, mode, now);
-  return {
-    ...projectLegacyArtifactResolution(resolution),
-    series: resolution.logical_artifact
-      ? projectCanonicalSeriesRecord(resolution.logical_artifact)
-      : null,
-    version: resolution.artifact_version
-      ? projectCanonicalVersionRecord(db, resolution.artifact_version)
-      : null,
-  };
+function resolveArtifactResult(db: Db, ref: string, mode: ArtifactResolutionMode = "strict-read", now = Date.now()): ArtifactResolveResult {
+  return projectArtifactResolution(resolveArtifactIdentity(db,ref,mode,now));
 }
 
 export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
-  return resolveArtifactIdentityCompat(db, ref, "strict-read");
+  return resolveArtifactResult(db, ref, "strict-read");
 }
 
 export function resolveArtifactSurfaceRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
-  return resolveArtifactIdentityCompat(db, ref, "surface");
+  return resolveArtifactResult(db, ref, "surface");
 }
 
 export function resolveArtifactLinkRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
-  return resolveArtifactIdentityCompat(db, ref, "link", now);
+  return resolveArtifactResult(db, ref, "link", now);
 }
 
 export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
-  return resolveArtifactIdentityCompat(db, ref, "materializing", now);
+  return resolveArtifactResult(db, ref, "strict-read", now);
 }
 
 export function getProviderManifest(db: Db, id: string): ProviderManifestRecord | null {
@@ -6217,10 +5895,6 @@ function artifactBlobFromRow(row: Record<string, unknown>): ArtifactBlobRecord {
     provider_id: nullableString(row.provider_id),
     manifest_id: nullableString(row.manifest_id),
     metadata: parseJsonRecord(row.metadata_json as string),
-    custody_mode: asCustodyMode(row.custody_mode, "managed"),
-    availability: asAvailability(row.availability, "unchecked"),
-    retention: parseJsonRecord(row.retention_json as string),
-    reference: parseJsonRecord(row.reference_json as string),
     created_at: Number(row.created_at),
   };
 }
@@ -6255,12 +5929,11 @@ function canonicalArtifactVersionFromRow(row: Record<string, unknown>): Canonica
     source_kind: asCanonicalVersionSourceKind(row.source_kind),
     content_hash: String(row.content_hash),
     source_project_id: nullableString(row.source_project_id),
-    source_repo_id: nullableString(row.source_repo_id),
     repo_path: nullableString(row.repo_path),
     commit_sha: nullableString(row.commit_sha),
     observed_path: nullableString(row.observed_path),
-    source_locator: parseJsonRecord(row.source_locator_json as string),
-    custody_mode: custodyMode === null ? null : asCustodyMode(custodyMode, "managed"),
+    parent_version_id: nullableString(row.parent_version_id),
+    custody_mode: asCustodyMode(custodyMode, "managed"),
     label: nullableString(row.label),
     note: nullableString(row.note),
     metadata: parseJsonRecord(row.metadata_json as string),

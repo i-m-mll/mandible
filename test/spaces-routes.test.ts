@@ -45,8 +45,8 @@ function createIssue(projectId: string, title: string, opts: { labels?: string[]
 
 function insertArtifact(_id: string, hash: string): string {
   db.prepare(
-    `INSERT INTO artifact_blob (id, algorithm, content_hash, storage_uri, custody_mode, availability, created_at)
-     VALUES (?, 'sha256', ?, ?, 'managed', 'present', ?)`,
+    `INSERT INTO artifact_blob (id, algorithm, content_hash, storage_uri, created_at)
+     VALUES (?, 'sha256', ?, ?, ?)`,
   ).run(`artifact-blob:${hash}`, hash, `artifact:sha256:${hash}`, Date.now());
   return `artifact:sha256:${hash}`;
 }
@@ -462,7 +462,7 @@ describe("seed-from-filter", () => {
     createIssue(PROJECT_ID, "Charlie"); // no label → excluded
     createIssue(OTHER_PROJECT_ID, "Delta", { labels: ["seed-me"] }); // other project → excluded
 
-    const artId = insertArtifact("art-1", "aaaa1111");
+    const artId = insertArtifact("art-1", "aaaa1111".repeat(8));
     linkArtifactToIssue(artId, matchA);
 
     const seed = await call("POST", `/api/spaces/${spaceId}/seed`, {
@@ -499,7 +499,7 @@ describe("seed-from-filter", () => {
   it("accepts the `scope` alias and can skip artifacts", async () => {
     const spaceId = await makeSpace();
     const match = createIssue(PROJECT_ID, "Echo", { labels: ["x"] });
-    const artId = insertArtifact("art-2", "bbbb2222");
+    const artId = insertArtifact("art-2", "bbbb2222".repeat(8));
     linkArtifactToIssue(artId, match);
 
     const seed = await call("POST", `/api/spaces/${spaceId}/seed`, {

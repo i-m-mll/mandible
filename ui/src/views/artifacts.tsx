@@ -275,11 +275,11 @@ export function ArtifactsView({
       setSelectedArtifact(null);
       return;
     }
-    const nextSeriesRef = next.series ? seriesRecordRef(next.series) : null;
+    const nextSeriesRef = next.logical_artifact ? canonicalArtifactSeriesRef(next.logical_artifact.id) : null;
     const latestTracking = next.warnings?.includes('series_latest_not_pinned') && !options?.forcePinned;
     setSelectedSeriesRef(nextSeriesRef);
-    setSelectedVersionNo(next.version && !latestTracking ? next.version.version_no : null);
-    setSelectedArtifactId(next.artifact?.id ?? next.version?.artifact_id ?? null);
+    setSelectedVersionNo(next.artifact_version && !latestTracking ? next.artifact_version.version_no : null);
+    setSelectedArtifactId(next.artifact?.id ?? next.artifact_version?.id ?? null);
     setSelectedArtifact(next.artifact);
   }, []);
 
@@ -287,7 +287,7 @@ export function ArtifactsView({
     next: ArtifactResolveResult,
     isCancelled: () => boolean,
   ) => {
-    if (next.artifact && !next.series && !next.version) {
+    if (next.artifact && !next.logical_artifact && !next.artifact_version) {
       try {
         const history = sortedVersionHistory(await getArtifactVersions(next.artifact.id));
         if (isCancelled()) return;
@@ -1010,7 +1010,7 @@ export function ArtifactDetail({
     ['Resolved from', resolution?.ref ?? ''],
   ].filter(([, value]) => Boolean(value)) as MetadataRow[];
   const custodyRows: MetadataRow[] = [
-    ['Mode', artifact.custody_mode],
+    ['Mode', artifact.custody_mode ?? 'Unstored blob'],
     ['Role', artifact.role ?? ''],
     ['Media type', artifact.media_type ?? ''],
     ['Size', formatBytes(artifact.size_bytes)],
@@ -1750,15 +1750,6 @@ function artifactEditableState(
   content: ArtifactContentResult | null,
 ): ArtifactEditableState {
   const mediaType = content?.media_type ?? artifact.media_type ?? null;
-  if (artifact.custody_mode === 'external') {
-    return {
-      editable: false,
-      reason: 'Editing unavailable: external custody cannot be safely snapshotted.',
-      showBodyHint: true,
-      sourceText: '',
-      mediaType,
-    };
-  }
   if (!content || content.status !== 'available' || !content.preview) {
     return {
       editable: false,
@@ -1788,7 +1779,7 @@ function artifactEditableState(
   }
   return {
     editable: true,
-    reason: artifact.custody_mode === 'link'
+    reason: artifact.custody_mode === 'git'
       ? 'Publishing will snapshot the edited text as a managed artifact version.'
       : 'Editable text artifact.',
     showBodyHint: false,
@@ -2201,7 +2192,7 @@ function buildFacetOptions(series: ArtifactSeriesSummary[]): {
       if (entry.repo_id) repos.add(entry.repo_id);
       continue;
     }
-    custodies.add(artifact.custody_mode);
+    if (artifact.custody_mode) custodies.add(artifact.custody_mode);
     availabilities.add(artifact.availability);
     if (artifact.home_repo_id) repos.add(artifact.home_repo_id);
     if (artifact.provider_id) providers.add(artifact.provider_id);

@@ -49,7 +49,7 @@ function createFloorDatabase(dbPath: string): void {
 }
 
 function migrateFixtureThrough(db: Database.Database, targetVersion: number): void {
-  for (const migration of MIGRATIONS.filter((candidate) => candidate.version <= targetVersion)) {
+  for (const migration of MIGRATIONS.filter((candidate) => candidate.version > Number(schemaVersion(db)) && candidate.version <= targetVersion)) {
     db.transaction(() => {
       for (const statement of migration.statements) db.exec(statement);
       db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(migration.version));
@@ -375,7 +375,9 @@ describe.sequential("schema convergence", () => {
     const before = seedBriefingLineage(validSeed, false);
     validSeed.close();
 
-    const migrated = openDb(validPath);
+    // This fixture tests the v161 lineage transition; its synthetic blobs have no recoverable bytes.
+    const migrated = new Database(validPath);
+    migrateFixtureThrough(migrated, 161);
     expect(migrated.prepare("SELECT logical_artifact_id FROM briefings WHERE id = 'briefing-lineage'").get())
       .toEqual({ logical_artifact_id: "artifact:a" });
     expect(migrated.prepare("SELECT * FROM briefing_rounds ORDER BY ordinal").all()).toEqual(before.rounds);

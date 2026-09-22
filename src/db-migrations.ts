@@ -1,3 +1,8 @@
+import { reconcileRecoveredArtifactSources } from './artifact-source-recovery.js';
+import { recoverArtifactCustody } from './artifact-recovery.js';
+import { retainArtifactCommit } from './artifact-repo-resolution.js';
+import { artifactDescriptiveMetadataJson } from './artifact-metadata.js';
+import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from './artifact-custody-schema.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
   BASELINE_SCHEMA_VERSION,
@@ -1712,6 +1717,7 @@ export const MIGRATIONS: readonly Migration[] = [
     ],
   },
   { version: 184, name: "artifact_registered_sources", statements: [...ARTIFACT_SOURCE_SCHEMA_SQL, ...ARTIFACT_SOURCE_BACKFILL_SQL] },
+  { version: 185, name: "artifact_two_custodies", statements: [...ARTIFACT_CUSTODY_MIGRATION_SQL, ...ARTIFACT_CUSTODY_TRIGGERS_SQL], requires_foreign_keys_off: true },
 ];
 
 /**
@@ -1893,6 +1899,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
 }
 
 export function migrate(db: Db): void {
+  db.function("mandible_artifact_metadata", { deterministic: true }, artifactDescriptiveMetadataJson);
   db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
     createHash("sha256").update(String(value)).digest("hex"));
   assertMigrationSequence();
@@ -1917,5 +1924,12 @@ export function migrate(db: Db): void {
 
   found = reconcileCollidedChatPreviewSchema(db, found);
 
+  if (found < 185) {
+    applySchemaMigrations(db, MIGRATIONS.filter(migration => migration.version > found && migration.version <= 184));
+    const recovery = recoverArtifactCustody(db, { retain_git_commit: retainArtifactCommit });
+    if (!recovery.recovery_receipt_path) throw new Error('Artifact recovery did not preserve its audit receipt');
+    reconcileRecoveredArtifactSources(db, { collisions: 'managed', receipt_path: `${recovery.recovery_receipt_path}.sources.json` });
+    found = 184;
+  }
   applySchemaMigrations(db, MIGRATIONS.filter((migration) => migration.version > found));
 }

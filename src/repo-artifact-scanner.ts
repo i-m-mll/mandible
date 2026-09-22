@@ -8,10 +8,9 @@ import {
   resolveCanonicalArtifactRepoForRoot,
   resolveCanonicalArtifactRepoRef,
 } from "./artifact-repo-resolution.js";
-import { ingestArtifact } from "./provider-artifacts.js";
+import { recordArtifactVersion, registerArtifactLink, getArtifact } from "./provider-artifacts.js";
 import type { ArtifactRecord } from "./types.js";
 
-type ArtifactAvailability = ArtifactRecord["availability"];
 
 export interface RepoArtifactRoot {
   root: string;
@@ -302,44 +301,6 @@ function resolveIssueId(db: Db, repoId: string, root: string, issueRef: string):
   return ids.length === 1 ? ids[0] : null;
 }
 
-function artifactInputForDiscovery(discovery: DiscoveredRepoArtifact, now: number): Record<string, unknown> {
-  const repoUri = `repo://${discovery.repo_id}${discovery.default_branch ? `@${discovery.default_branch}` : ""}/${discovery.relative_path}`;
-  const links = discovery.issue_id
-    ? [{
-        entity_type: "issue",
-        entity_id: discovery.issue_id,
-        link_type: "references",
-        role: "repo_path_inferred",
-        repo_id: discovery.repo_id,
-        source: "repo_artifact_scanner",
-        metadata: { issue_ref: discovery.issue_ref, relative_path: discovery.relative_path },
-      }]
-    : [];
-  return {
-    sha256: discovery.sha256,
-    uri: repoUri,
-    filename: discovery.filename,
-    logical_name: discovery.relative_path,
-    media_type: discovery.media_type,
-    role: discovery.role,
-    size_bytes: discovery.size_bytes,
-    custody_mode: "link",
-    home_repo_id: discovery.repo_id,
-    repo_locator: discovery.repo_locator,
-    availability: "present" satisfies ArtifactAvailability,
-    links,
-    metadata: {
-      source: "repo_artifact_scanner",
-      repo_id: discovery.repo_id,
-      repo_root: discovery.repo_root,
-      repo_name: discovery.repo_name,
-      relative_path: discovery.relative_path,
-      discovered_at: now,
-      issue_ref: discovery.issue_ref ?? null,
-    },
-  };
-}
-
 export function discoverRepoArtifacts(
   db: Db,
   options: RepoArtifactScannerOptions = {},
@@ -454,7 +415,16 @@ export function scanRepoArtifacts(db: Db, options: RepoArtifactScannerOptions = 
       artifacts: [],
     };
   }
-  const artifacts = discovered.artifacts.map((artifact) => ingestArtifact(db, artifactInputForDiscovery(artifact, now), now));
+  const artifacts: ArtifactRecord[] = [];
+  for (const artifact of discovered.artifacts) {
+    try {
+      const recorded = recordArtifactVersion(db, {source_kind:'tracked_repo',path:artifact.absolute_path,
+        role:artifact.role,logical_name:artifact.relative_path,media_type:artifact.media_type,
+        issue:artifact.issue_id,metadata:{source:'repo_artifact_scanner'}},now);
+      if (artifact.issue_id) registerArtifactLink(db,recorded.version.id,{entity_type:'issue',entity_id:artifact.issue_id,link_type:'references',role:'repo_path_inferred',repo_id:artifact.repo_id,source:'repo_artifact_scanner'},now);
+      artifacts.push(getArtifact(db,recorded.version.id)!);
+    } catch(error) { discovered.errors.push({path:artifact.absolute_path,error:String(error)}); }
+  }
   return {
     scanned_repos: discovered.scanned_repos,
     discovered: discovered.discovered,

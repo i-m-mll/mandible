@@ -468,8 +468,7 @@ describe("restricted project route enforcement", () => {
     expect(granted.status).toBe(200);
     const { resolution } = (granted.body as { resolution: ArtifactResolveResult });
     expect(resolution.logical_artifact?.id).toBe(logicalId);
-    expect(resolution.series?.id).toBe(recorded.series.id);
-    expect(resolution.version?.id).toBe(recorded.version.id);
+    expect(resolution.artifact_version?.id).toBe(recorded.version.id);
   });
 });
 

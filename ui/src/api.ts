@@ -1512,7 +1512,7 @@ export type LedgerIssueDetailAssociatedArtifact = {
   role: string | null;
   provider_id: string | null;
   manifest_id: string | null;
-  custody_mode: 'link' | 'copy' | 'managed' | 'external';
+  custody_mode: 'git' | 'managed';
   availability: 'present' | 'missing' | 'stale' | 'unchecked' | 'remote_only' | 'pinned';
   created_at: number;
   refs: string[];

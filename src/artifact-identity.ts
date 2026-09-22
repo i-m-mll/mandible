@@ -10,7 +10,7 @@ import type {
 export const MIN_ARTIFACT_ID_PREFIX_LENGTH = 7;
 export const DEFAULT_ARTIFACT_ID_PREFIX_LENGTH = 12;
 
-export type ArtifactResolutionMode = "strict-read" | "surface" | "link" | "materializing";
+export type ArtifactResolutionMode = "strict-read" | "surface" | "link";
 export type CanonicalArtifactTargetType = "artifact" | "artifact_version" | "artifact_blob";
 export type ArtifactIdentityKind = "logical" | "pinned-version" | "blob" | "alias";
 export type ArtifactRequestedKind = ArtifactIdentityKind | "series" | "unknown";
@@ -113,7 +113,7 @@ export function failedArtifactIdentity(
  * they are computed from canonical records by the caller that owns the HTTP
  * boundary, so no canonical code path can read them back as domain facts.
  */
-export function projectLegacyArtifactResolution(
+export function projectArtifactResolution(
   resolution: ArtifactIdentityResolution,
 ): ArtifactResolveResult {
   return {

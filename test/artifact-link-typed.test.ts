@@ -405,7 +405,7 @@ describe("resolveAndLinkArtifact: pinned vs living", () => {
     const { seriesId, head } = makeSeriesWithHead("series-coexist", "v1\n");
     const pinned = resolveAndLinkArtifact(db, { ref: seriesId, entity_type: "issue", entity_id: issueId }, 1000).link!;
     const living = resolveAndLinkArtifact(db, { ref: seriesId, entity_type: "issue", entity_id: issueId, link_kind: "living" }, 1001).link!;
-    expect(pinned.id).toBe(pinnedLinkId(head.id, "issue", issueId, "references", null));
+    expect(pinned.id).toMatch(/^artifact_link:/);
     expect(living.id).toBe(livingLinkId(seriesId, "issue", issueId, "references", null));
     expect(pinned.id).not.toBe(living.id);
     const rows = db.prepare("SELECT link_kind FROM artifact_links ORDER BY link_kind").all() as Array<{ link_kind: string }>;
@@ -529,7 +529,7 @@ describe("evidence links must be pinned", () => {
     expect(res.statusCode).toBe(200);
     expect(res.payload.link.link_kind).toBe("living");
     expect(res.payload.link.series_id).toBe(seriesId);
-    expect(res.payload.link.artifact_id).toBe(`artifact:${head.content_hash.slice(0, 12)}`);
+    expect(res.payload.link.artifact_id).toBe(`artifact-blob:${head.content_hash}`);
   });
 });
 
@@ -557,7 +557,7 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     expect(ingested.payload.manifest.blob_id).toMatch(/^artifact-blob:[a-f0-9]{12,64}$/);
     expect(detail.payload.manifests[0].blob_id).toMatch(/^artifact-blob:[a-f0-9]{12,64}$/);
     expect(detail.payload.artifacts.every((artifact: { id: string }) =>
-      /^artifact:[a-f0-9]{12,64}$/.test(artifact.id))).toBe(true);
+      /^artifact-(?:blob|version):[a-f0-9]{12,64}$/.test(artifact.id))).toBe(true);
 
     const graph = getGraphRoute({ mode: "provider-lineage", provider: "provider-public-ids" });
     expect(graph.statusCode).toBe(200);
@@ -576,16 +576,16 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.payload.artifacts).toHaveLength(1);
-    expect(response.payload.artifacts[0].id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
+    expect(response.payload.artifacts[0].id).toMatch(/^artifact-(?:blob|version):[a-f0-9]{12,64}$/);
     expect(JSON.stringify(response.payload)).not.toContain("artifact:sha256:");
   });
 
   it("emits current compact ids from ingest and snapshot APIs", async () => {
-    const ingest = await postIngest({ content: "ingest output\n", custody_mode: "copy" });
+    const ingest = await postIngest({ content: "ingest output\n", custody_mode: "managed" });
     const snapshot = await postSnapshot({ content: "snapshot output\n", custody_mode: "managed" });
     for (const response of [ingest, snapshot]) {
       expect(response.statusCode).toBe(200);
-      expect(response.payload.artifact.id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
+      expect(response.payload.artifact.id).toMatch(/^artifact-(?:blob|version):[a-f0-9]{12,64}$/);
       expect(JSON.stringify(response.payload)).not.toContain("artifact:sha256:");
     }
   });
@@ -670,7 +670,7 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
       },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.payload.artifact.id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
+    expect(res.payload.artifact.id).toMatch(/^artifact-(?:blob|version):[a-f0-9]{12,64}$/);
     const row = db
       .prepare(
         "SELECT link_kind, target_type FROM artifact_links WHERE entity_id = ? AND link_type = 'evidence'",

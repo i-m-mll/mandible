@@ -1,24 +1,18 @@
+import { hashFileSha256OffThread } from "./artifact-content-worker.js";
+import os from "node:os";
 import crypto from "node:crypto";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "./db.js";
-import { tableExists } from "./db-introspection.js";
-import { checkoutRootForCanonicalArtifactRepo } from "./artifact-repo-resolution.js";
-import {
-  ARTIFACT_CONTENT_WORKER_MIN_BYTES,
-  formatJsonPreviewOffThread,
-  hashFileSha256OffThread,
-} from "./artifact-content-worker.js";
-import { artifactCasPath, getArtifact, resolveArtifactRefReadonly } from "./provider-artifacts.js";
-import type { ArtifactMaterializationCheck, ArtifactRecord, ArtifactRecoverability } from "./types.js";
+import { readCommittedArtifactFiles } from "./artifact-repo-resolution.js";
+import { getArtifact, resolveArtifactRefReadonly } from "./provider-artifacts.js";
+import type { ArtifactMaterializationCheck, ArtifactRecord } from "./types.js";
 
 const DEFAULT_PREVIEW_BYTES = 128 * 1024;
 const HTML_PREVIEW_BYTES = 8 * 1024 * 1024;
 const JSON_COMPLETE_PREVIEW_BYTES = 1 * 1024 * 1024;
 const JSON_PARTIAL_PREVIEW_BYTES = 256 * 1024;
-const EAGER_HASH_VALIDATION_BYTES = JSON_COMPLETE_PREVIEW_BYTES;
 
 export type ArtifactContentKind = "text" | "markdown" | "json" | "html" | "binary" | "unavailable";
 export type ArtifactContentSourceKind = "managed_file" | "repo_locator" | "local_file";
@@ -63,413 +57,103 @@ export type ArtifactOpenFileResult =
   | { ok: true; artifact_id: string; path: string; source_kind: ArtifactContentSourceKind }
   | { ok: false; reason: string };
 
-/** Resolve and validate the regular file backing a registered artifact. */
-export async function resolveArtifactOpenFile(db: Db, id: string): Promise<ArtifactOpenFileResult | null> {
-  const artifact = getArtifact(db, id);
-  if (!artifact) return null;
-  const resolved = resolveRegisteredArtifactPath(db, artifact);
-  if (!resolved.ok) return resolved;
-  const stat = safeStat(resolved.path);
-  if (!stat) return { ok: false, reason: "artifact bytes are not available on disk" };
-  if (!stat.isFile()) return { ok: false, reason: "artifact locator does not point to a regular file" };
-  const hashCheck = await validateContentHashAsync(
-    artifact,
-    resolved.path,
-    recoverabilityForArtifact(artifact),
-    stat.size,
-  );
-  if (!hashCheck.ok) return hashCheck;
-  return {
-    ok: true,
-    artifact_id: artifact.id,
-    path: fs.realpathSync(resolved.path),
-    source_kind: resolved.source?.kind ?? "local_file",
-  };
+/** One read path: a version's custody is never changed by blob dedup or source relocation. */
+export function readArtifactBytesFull(db: Db, id: string, maxBytes = MAX_DIFF_BYTES):
+  {ok:true;bytes:Buffer;source:string} | {ok:false;reason:string} {
+  const artifact = getArtifact(db,id);
+  if (!artifact) return {ok:false,reason:'artifact not found'};
+  if (artifact.custody_mode === null) return {ok:false,reason:'Select a saved version to read its Git authority; this blob has no stored bytes'};
+  try {
+    let bytes: Buffer;
+    let source: string;
+    if (artifact.custody_mode === 'git') {
+      const locator = artifact.repo_locator;
+      if (!artifact.home_repo_id || typeof locator.commit !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(locator.commit) || typeof locator.path !== 'string') {
+        return {ok:false,reason:'invalid Git custody'};
+      }
+      const file = readCommittedArtifactFiles(db,{project:artifact.home_repo_id,commit:locator.commit,paths:[locator.path]})[0];
+      bytes = file.bytes; source = artifact.uri;
+    } else {
+      if (!artifact.uri.startsWith('file://')) return {ok:false,reason:'stored artifact bytes are unavailable'};
+      const filename = fileURLToPath(artifact.uri);
+      const stat = fs.statSync(filename);
+      if (!stat.isFile()) return {ok:false,reason:'stored artifact is not a regular file'};
+      if (stat.size > maxBytes) return {ok:false,reason:'artifact exceeds size limit'};
+      bytes = fs.readFileSync(filename); source = artifact.uri;
+    }
+    if (bytes.length > maxBytes) return {ok:false,reason:'artifact exceeds size limit'};
+    if (crypto.createHash('sha256').update(bytes).digest('hex') !== artifact.content_hash) return {ok:false,reason:'artifact bytes do not match registered sha256'};
+    return {ok:true,bytes,source};
+  } catch(error) { return {ok:false,reason:String(error)}; }
 }
 
-export function checkArtifactMaterialization(
-  db: Db,
-  id: string,
-  options: { ref?: string } = {},
-): ArtifactMaterializationCheck | null {
-  const artifact = getArtifact(db, id);
+export function checkArtifactMaterialization(db: Db,id:string,options:{ref?:string}={}): ArtifactMaterializationCheck | null {
+  const artifact = getArtifact(db,id);
   if (!artifact) return null;
-
-  const recoverability = recoverabilityForArtifact(artifact);
-  const expected = artifact.algorithm === "sha256" && /^[a-f0-9]{64}$/i.test(artifact.content_hash)
-    ? artifact.content_hash.toLowerCase()
-    : null;
-  const warnings: string[] = [];
-  const reasons: string[] = [];
-
-  const managedPath = resolveManagedFileArtifact(artifact);
-  if (managedPath.ok) {
-    return checkResolvedFile(artifact, managedPath.path, "managed_file", expected, recoverability, options.ref);
-  }
-  if (artifact.custody_mode === "copy" || artifact.custody_mode === "managed") {
-    reasons.push(reasonCode(managedPath.reason));
-  }
-
-  const localPath = resolveLinkFileArtifact(artifact);
-  if (isMutableLocalFileLink(artifact) && localPath.ok) {
-    return checkResolvedFile(artifact, localPath.path, "local_file", expected, recoverability, options.ref);
-  }
-  const aliasPath = isMutableLocalFileLink(artifact)
-    ? resolveLocalFileAliasArtifact(db, artifact)
-    : { ok: false as const, reason: "artifact has no resolved local file alias" };
-  if (isMutableLocalFileLink(artifact) && aliasPath.ok) {
-    return checkResolvedFile(artifact, aliasPath.path, "local_file", expected, recoverability, options.ref);
-  }
-  if (isMutableLocalFileLink(artifact)) {
-    reasons.push(reasonCode(aliasPath.ok ? "no_materializable_location" : aliasPath.reason));
-    if (artifact.availability === "remote_only") reasons.push("remote_only");
-    if (artifact.availability === "missing") reasons.push("missing");
-    warnings.push("local_only");
-    return {
-      artifact_id: artifact.id,
-      ref: options.ref,
-      materializable: false,
-      hash_matches: expected ? null : true,
-      expected_sha256: expected,
-      actual_sha256: null,
-      source: null,
-      recoverability,
-      reasons: Array.from(new Set(reasons)),
-      warnings: Array.from(new Set(warnings)),
-    };
-  }
-
-  const commitRepoBytes = readCommitPinnedRepoArtifactBytes(db, artifact);
-  if (commitRepoBytes) {
-    if (!commitRepoBytes.ok) {
-      return {
-        artifact_id: artifact.id,
-        ref: options.ref,
-        materializable: false,
-        hash_matches: expected ? null : true,
-        expected_sha256: expected,
-        actual_sha256: null,
-        source: null,
-        recoverability,
-        reasons: [commitRepoBytes.reason],
-        warnings: [],
-      };
-    }
-    return {
-      artifact_id: artifact.id,
-      ref: options.ref,
-      materializable: true,
-      hash_matches: commitRepoBytes.hash_matches,
-      expected_sha256: expected,
-      actual_sha256: commitRepoBytes.actual_sha256,
-      source: commitRepoBytes.source,
-      recoverability,
-      reasons: commitRepoBytes.hash_matches === false ? ["hash_mismatch"] : [],
-      warnings: [],
-    };
-  }
-
-  const repoBytes = readRepoArtifactBytes(db, artifact);
-  if (repoBytes.ok) {
-    const actual = crypto.createHash("sha256").update(repoBytes.bytes).digest("hex");
-    const mismatch = expected && actual !== expected;
-    const drift = mismatch && isMutableLocalDrift(recoverability);
-    const repoWarnings = repoBytes.warning ? [repoBytes.warning] : [];
-    return {
-      artifact_id: artifact.id,
-      ref: options.ref,
-      materializable: true,
-      hash_matches: expected ? actual === expected : null,
-      expected_sha256: expected,
-      actual_sha256: actual,
-      source: repoBytes.source,
-      recoverability,
-      reasons: mismatch ? [drift ? "local_file_drift" : "hash_mismatch"] : [],
-      warnings: drift
-        ? [...repoWarnings, "local_only artifact bytes differ from the registered sha256"]
-        : repoWarnings,
-    };
-  }
-  if (artifact.home_repo_id || Object.keys(artifact.repo_locator ?? {}).length > 0) {
-    reasons.push(repoBytes.reason);
-  }
-
-  if (localPath.ok) {
-    return checkResolvedFile(artifact, localPath.path, "local_file", expected, recoverability, options.ref);
-  }
-  if (artifact.uri.startsWith("file://")) {
-    reasons.push(reasonCode(localPath.reason));
-  }
-
-  if (artifact.availability === "remote_only") reasons.push("remote_only");
-  if (artifact.availability === "missing") reasons.push("missing");
-  if (recoverability === "local_only") warnings.push("local_only");
-  if (recoverability === "provider_store") warnings.push("provider_store_not_materialized_locally");
-  if (recoverability === "external_remote") warnings.push("external_remote_not_materialized_locally");
-  if (reasons.length === 0) reasons.push("no_materializable_location");
-
-  return {
-    artifact_id: artifact.id,
-    ref: options.ref,
-    materializable: false,
-    hash_matches: expected ? null : true,
-    expected_sha256: expected,
-    actual_sha256: null,
-    source: null,
-    recoverability,
-    reasons: Array.from(new Set(reasons)),
-    warnings: Array.from(new Set(warnings)),
-  };
+  const read = readArtifactBytesFull(db,id,Number.MAX_SAFE_INTEGER);
+  return {artifact_id:artifact.id,ref:options.ref,materializable:read.ok,
+    hash_matches:read.ok ? true : read.reason.includes("do not match registered sha256") ? false : null,expected_sha256:artifact.content_hash,
+    actual_sha256:read.ok ? artifact.content_hash : null,source:read.ok ? read.source : null,
+    recoverability:artifact.custody_mode === 'git' ? 'repo_commit' : artifact.custody_mode === 'managed' ? 'mandible_cas' : null,
+    reasons:read.ok ? [] : [read.reason],warnings:[]};
 }
 
-export function getArtifactContent(
-  db: Db,
-  id: string,
-  options: { previewBytes?: number } = {},
-): ArtifactContentResult | null {
-  const artifact = getArtifact(db, id);
+export function getArtifactContent(db:Db,id:string,options:{previewBytes?:number}={}):ArtifactContentResult|null {
+  const artifact=getArtifact(db,id);
   if (!artifact) return null;
-
-  const previewBytes = options.previewBytes ?? DEFAULT_PREVIEW_BYTES;
-  const mediaType = artifact.media_type ?? inferMediaType(artifact);
-  const filename = artifactFilename(artifact);
-  const unresolvedDownload = (reason: string): ArtifactContentResult => ({
-    artifact_id: artifact.id,
-    status: "unavailable",
-    kind: "unavailable",
-    media_type: mediaType,
-    size_bytes: artifact.size_bytes,
-    source: null,
-    preview: null,
-    download: {
-      available: false,
-      media_type: mediaType,
-      size_bytes: artifact.size_bytes,
-      filename,
-      reason,
-    },
-    reason,
-  });
-
-  const commitBytes = readCommitPinnedRepoArtifactBytes(db, artifact);
-  if (commitBytes) {
-    if (!commitBytes.ok) return unresolvedDownload(commitBytes.reason);
-    if (commitBytes.hash_matches === false) {
-      return unresolvedDownload("artifact bytes do not match registered sha256");
-    }
-    return artifactContentFromBytes(artifact, commitBytes.bytes, {
-      kind: "repo_locator",
-      locator: commitBytes.source,
-    }, previewBytes);
-  }
-
-  const resolved = resolveRegisteredArtifactPath(db, artifact);
-  if (!resolved.ok) {
-    return unresolvedDownload(resolved.reason);
-  }
-
-  const stat = safeStat(resolved.path);
-  if (!stat) {
-    return unresolvedDownload("artifact bytes are not available on disk");
-  }
-  if (!stat.isFile()) {
-    return unresolvedDownload("artifact locator does not point to a regular file");
-  }
-
-  const sizeBytes = stat.size;
-  const hashCheck = validateContentHash(
-    artifact,
-    resolved.path,
-    recoverabilityForArtifact(artifact),
-    sizeBytes,
-  );
-  if (!hashCheck.ok) {
-    return unresolvedDownload(hashCheck.reason);
-  }
-
-  const base = {
-    artifact_id: artifact.id,
-    status: "available" as const,
-    media_type: mediaType,
-    size_bytes: sizeBytes,
-    source: resolved.source,
-    download: {
-      available: true,
-      media_type: mediaType,
-      size_bytes: sizeBytes,
-      filename,
-    },
-    warnings: hashCheck.warnings,
-  };
-
-  const kind = previewKind(mediaType, filename);
-  if (kind === "binary") {
-    return {
-      ...base,
-      kind,
-      preview: null,
-    };
-  }
-
-  const textPreviewBytes = kind === "html"
-    ? Math.max(previewBytes, HTML_PREVIEW_BYTES)
-    : kind === "json"
-      ? sizeBytes <= JSON_COMPLETE_PREVIEW_BYTES
-        ? Math.max(previewBytes, JSON_COMPLETE_PREVIEW_BYTES)
-        : Math.max(previewBytes, JSON_PARTIAL_PREVIEW_BYTES)
-      : previewBytes;
-  const preview = readTextPreview(resolved.path, textPreviewBytes);
-  if (!preview) {
-    return {
-      ...base,
-      kind: "binary",
-      preview: null,
-    };
-  }
-  if (kind === "json") {
-    const formatted = preview.truncated ? null : prettyJson(preview.text);
-    return {
-      ...base,
-      kind,
-      preview: {
-        ...preview,
-        ...(formatted && formatted !== preview.text ? { raw_text: preview.text, formatted: "json" as const } : {}),
-        ...(preview.truncated ? { format_skipped: "partial_preview" as const } : {}),
-        text: formatted ?? preview.text,
-      },
-    };
-  }
-
-  return {
-    ...base,
-    kind,
-    preview,
-  };
+  const read=readArtifactBytesFull(db,id,Number.MAX_SAFE_INTEGER);
+  if (read.ok) return artifactContentFromBytes(artifact,read.bytes,{kind:artifact.custody_mode === 'git' ? 'repo_locator' : 'managed_file',locator:read.source},options.previewBytes ?? DEFAULT_PREVIEW_BYTES);
+  const media=artifact.media_type ?? inferMediaType(artifact);
+  return {artifact_id:artifact.id,status:'unavailable',kind:'unavailable',media_type:media,size_bytes:artifact.size_bytes,
+    source:null,preview:null,reason:read.reason,download:{available:false,media_type:media,size_bytes:artifact.size_bytes,filename:artifactFilename(artifact),reason:read.reason}};
 }
 
-export async function getArtifactContentAsync(
-  db: Db,
-  id: string,
-  options: { previewBytes?: number } = {},
-): Promise<ArtifactContentResult | null> {
-  const artifact = getArtifact(db, id);
+export async function getArtifactContentAsync(db:Db,id:string,options:{previewBytes?:number}={}):Promise<ArtifactContentResult|null> {
+  const artifact = getArtifact(db,id);
+  if (!artifact || artifact.custody_mode === 'git') return getArtifactContent(db,id,options);
+  try {
+    if (!artifact.uri.startsWith('file://')) return getArtifactContent(db,id,options);
+    const filename = fileURLToPath(artifact.uri);
+    const before = await fs.promises.stat(filename);
+    if (!before.isFile() || await hashFileSha256OffThread(filename) !== artifact.content_hash) throw new Error('stored artifact bytes do not match registered sha256');
+    const limit = Math.max(options.previewBytes ?? DEFAULT_PREVIEW_BYTES, HTML_PREVIEW_BYTES);
+    const file = await fs.promises.open(filename,'r');
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.alloc(Math.min(before.size,limit));
+      const read = await file.read(bytes,0,bytes.length,0);
+      bytes = bytes.subarray(0,read.bytesRead);
+      const after = await file.stat();
+      if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ino !== after.ino) throw new Error('stored artifact changed during preview');
+    } finally { await file.close(); }
+    return artifactContentFromBytes(artifact,bytes,{kind:'managed_file',locator:artifact.uri},options.previewBytes ?? DEFAULT_PREVIEW_BYTES,before.size);
+  } catch(error) {
+    const media = artifact.media_type ?? inferMediaType(artifact), reason = String(error);
+    return {artifact_id:artifact.id,status:'unavailable',kind:'unavailable',media_type:media,size_bytes:artifact.size_bytes,source:null,preview:null,reason,
+      download:{available:false,media_type:media,size_bytes:artifact.size_bytes,filename:artifactFilename(artifact),reason}};
+  }
+}
+
+export async function resolveArtifactOpenFile(db:Db,id:string):Promise<ArtifactOpenFileResult|null> {
+  const artifact=getArtifact(db,id);
   if (!artifact) return null;
-
-  const previewBytes = options.previewBytes ?? DEFAULT_PREVIEW_BYTES;
-  const mediaType = artifact.media_type ?? inferMediaType(artifact);
-  const filename = artifactFilename(artifact);
-  const unresolvedDownload = (reason: string): ArtifactContentResult => ({
-    artifact_id: artifact.id,
-    status: "unavailable",
-    kind: "unavailable",
-    media_type: mediaType,
-    size_bytes: artifact.size_bytes,
-    source: null,
-    preview: null,
-    download: {
-      available: false,
-      media_type: mediaType,
-      size_bytes: artifact.size_bytes,
-      filename,
-      reason,
-    },
-    reason,
-  });
-
-  const commitBytes = readCommitPinnedRepoArtifactBytes(db, artifact);
-  if (commitBytes) {
-    if (!commitBytes.ok) return unresolvedDownload(commitBytes.reason);
-    if (commitBytes.hash_matches === false) {
-      return unresolvedDownload("artifact bytes do not match registered sha256");
-    }
-    return artifactContentFromBytes(artifact, commitBytes.bytes, {
-      kind: "repo_locator",
-      locator: commitBytes.source,
-    }, previewBytes);
+  const read=readArtifactBytesFull(db,id,Number.MAX_SAFE_INTEGER);
+  if (!read.ok) return read;
+  if (artifact.custody_mode === 'managed') return {ok:true,artifact_id:artifact.id,path:fileURLToPath(artifact.uri),source_kind:'managed_file'};
+  // Metadata may suggest a filename, but cannot choose a directory or existing file.
+  const suggested=path.win32.basename(path.basename(artifactFilename(artifact) ?? 'artifact')).replace(/\0/g,'');
+  const basename=!suggested || suggested === '.' || suggested === '..' ? 'artifact' : suggested;
+  let directory: string | undefined;
+  try {
+    directory=fs.mkdtempSync(path.join(os.tmpdir(),'mandible-artifact-open-'));
+    const filename=path.join(directory,basename);
+    const fd=fs.openSync(filename,fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,0o600);
+    try { fs.writeFileSync(fd,read.bytes); } finally { fs.closeSync(fd); }
+    return {ok:true,artifact_id:artifact.id,path:filename,source_kind:'repo_locator'};
+  } catch(error) {
+    if (directory) fs.rmSync(directory,{recursive:true,force:true});
+    return {ok:false,reason:`Could not materialize Git artifact: ${String(error)}`};
   }
-
-  const resolved = resolveRegisteredArtifactPath(db, artifact);
-  if (!resolved.ok) {
-    return unresolvedDownload(resolved.reason);
-  }
-
-  const stat = safeStat(resolved.path);
-  if (!stat) {
-    return unresolvedDownload("artifact bytes are not available on disk");
-  }
-  if (!stat.isFile()) {
-    return unresolvedDownload("artifact locator does not point to a regular file");
-  }
-
-  const sizeBytes = stat.size;
-  const hashCheck = await validateContentHashAsync(
-    artifact,
-    resolved.path,
-    recoverabilityForArtifact(artifact),
-    sizeBytes,
-  );
-  if (!hashCheck.ok) {
-    return unresolvedDownload(hashCheck.reason);
-  }
-
-  const base = {
-    artifact_id: artifact.id,
-    status: "available" as const,
-    media_type: mediaType,
-    size_bytes: sizeBytes,
-    source: resolved.source,
-    download: {
-      available: true,
-      media_type: mediaType,
-      size_bytes: sizeBytes,
-      filename,
-    },
-    warnings: hashCheck.warnings,
-  };
-
-  const kind = previewKind(mediaType, filename);
-  if (kind === "binary") {
-    return {
-      ...base,
-      kind,
-      preview: null,
-    };
-  }
-
-  const textPreviewBytes = kind === "html"
-    ? Math.max(previewBytes, HTML_PREVIEW_BYTES)
-    : kind === "json"
-      ? sizeBytes <= JSON_COMPLETE_PREVIEW_BYTES
-        ? Math.max(previewBytes, JSON_COMPLETE_PREVIEW_BYTES)
-        : Math.max(previewBytes, JSON_PARTIAL_PREVIEW_BYTES)
-      : previewBytes;
-  const preview = readTextPreview(resolved.path, textPreviewBytes);
-  if (!preview) {
-    return {
-      ...base,
-      kind: "binary",
-      preview: null,
-    };
-  }
-  if (kind === "json") {
-    const formatted = preview.truncated ? null : await prettyJsonAsync(preview.text);
-    return {
-      ...base,
-      kind,
-      preview: {
-        ...preview,
-        ...(formatted && formatted !== preview.text ? { raw_text: preview.text, formatted: "json" as const } : {}),
-        ...(preview.truncated ? { format_skipped: "partial_preview" as const } : {}),
-        text: formatted ?? preview.text,
-      },
-    };
-  }
-
-  return {
-    ...base,
-    kind,
-    preview,
-  };
 }
 
 function artifactContentFromBytes(
@@ -477,10 +161,11 @@ function artifactContentFromBytes(
   bytes: Buffer,
   source: NonNullable<ArtifactContentResult["source"]>,
   previewBytes: number,
+  totalBytes = bytes.byteLength,
 ): ArtifactContentResult {
   const mediaType = artifact.media_type ?? inferMediaType(artifact);
   const filename = artifactFilename(artifact);
-  const sizeBytes = bytes.byteLength;
+  const sizeBytes = totalBytes;
   const base = {
     artifact_id: artifact.id,
     status: "available" as const,
@@ -507,6 +192,9 @@ function artifactContentFromBytes(
       : previewBytes;
   const preview = readTextPreviewBytes(bytes, textPreviewBytes);
   if (!preview) return { ...base, kind: "binary", preview: null };
+  preview.total_bytes = sizeBytes;
+  preview.omitted_bytes = Math.max(0,sizeBytes-preview.preview_bytes);
+  preview.truncated = preview.omitted_bytes > 0;
   if (kind === "json") {
     const formatted = preview.truncated ? null : prettyJson(preview.text);
     return {
@@ -523,451 +211,6 @@ function artifactContentFromBytes(
   return { ...base, kind, preview };
 }
 
-function resolveRegisteredArtifactPath(
-  db: Db,
-  artifact: ArtifactRecord,
-): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
-  const managedPath = resolveManagedFileArtifact(artifact);
-  if (managedPath.ok) return managedPath;
-
-  const linkPath = resolveLinkFileArtifact(artifact);
-  if (isMutableLocalFileLink(artifact) && linkPath.ok) return linkPath;
-  if (isMutableLocalFileLink(artifact)) {
-    const aliasPath = resolveLocalFileAliasArtifact(db, artifact);
-    if (aliasPath.ok) return aliasPath;
-    const cas = resolveCasArtifact(db, artifact);
-    if (cas.ok) return cas;
-    return linkPath;
-  }
-
-  const repoPath = resolveRepoArtifact(db, artifact);
-  if (repoPath.ok) return repoPath;
-
-  if (linkPath.ok) return linkPath;
-
-  // Durable CAS fallback: if Mandible ever snapshotted these exact bytes (e.g. an
-  // explicit managed record of a ref that deduped to a link/repo row), the
-  // hash-addressed CAS copy still materializes them after the registered
-  // location is gone.
-  const cas = resolveCasArtifact(db, artifact);
-  if (cas.ok) return cas;
-
-  return { ok: false, reason: artifact.uri.startsWith("file://") ? managedPath.reason : repoPath.reason };
-}
-
-function resolveCasArtifact(
-  db: Db,
-  artifact: ArtifactRecord,
-): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
-  if (artifact.algorithm !== "sha256" || !/^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
-    return { ok: false, reason: "artifact has no verifiable sha256 for CAS lookup" };
-  }
-  const casPath = artifactCasPath(db, artifact.content_hash.toLowerCase());
-  const real = safeRealpath(casPath);
-  if (!real) {
-    return { ok: false, reason: "no CAS copy on disk" };
-  }
-  return { ok: true, path: real, source: { kind: "managed_file", locator: "artifact-storage-cas" } };
-}
-
-function resolveManagedFileArtifact(
-  artifact: ArtifactRecord,
-): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
-  if (!artifact.uri.startsWith("file://")) {
-    return { ok: false, reason: "artifact has no registered local file URI" };
-  }
-  if (artifact.custody_mode !== "managed" && artifact.custody_mode !== "copy") {
-    return { ok: false, reason: "local file URI is not managed by Mandible" };
-  }
-  if (artifact.algorithm !== "sha256" || !/^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
-    return { ok: false, reason: "managed local artifact has no verifiable sha256" };
-  }
-
-  let filePath: string;
-  try {
-    filePath = fileURLToPath(new URL(artifact.uri));
-  } catch {
-    return { ok: false, reason: "artifact file URI is invalid" };
-  }
-
-  const realPath = safeRealpath(filePath);
-  if (!realPath) {
-    return { ok: false, reason: "artifact bytes are not available on disk" };
-  }
-
-  return {
-    ok: true,
-    path: realPath,
-    source: { kind: "managed_file", locator: "artifact-storage" },
-  };
-}
-
-function resolveLinkFileArtifact(
-  artifact: ArtifactRecord,
-): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
-  if (!artifact.uri.startsWith("file://")) {
-    return { ok: false, reason: "artifact has no registered local file URI" };
-  }
-  if (artifact.custody_mode !== "link") {
-    return { ok: false, reason: "local file URI is not link custody" };
-  }
-
-  let filePath: string;
-  try {
-    filePath = fileURLToPath(new URL(artifact.uri));
-  } catch {
-    return { ok: false, reason: "artifact file URI is invalid" };
-  }
-
-  const realPath = safeRealpath(filePath);
-  if (!realPath) {
-    return { ok: false, reason: "artifact bytes are not available on disk" };
-  }
-
-  return {
-    ok: true,
-    path: realPath,
-    source: { kind: "local_file", locator: artifact.uri },
-  };
-}
-
-function resolveLocalFileAliasArtifact(
-  db: Db,
-  artifact: ArtifactRecord,
-): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
-  if (!tableExists(db, "artifact_aliases")) {
-    return { ok: false, reason: "artifact has no resolved local file alias" };
-  }
-  const rows = db.prepare(
-    `SELECT normalized_ref
-       FROM artifact_aliases
-      WHERE blob_id = ?
-        AND scheme = 'file'
-        AND resolution_status = 'resolved'
-      ORDER BY CASE WHEN normalized_ref = ? THEN 1 ELSE 0 END, updated_at DESC, normalized_ref`,
-  ).all(
-    `artifact-blob:${artifact.content_hash.toLowerCase()}`,
-    artifact.uri,
-  ) as Array<{
-    normalized_ref: string;
-  }>;
-
-  for (const row of rows) {
-    const resolved = resolveFileUriPath(row.normalized_ref, row.normalized_ref);
-    if (resolved.ok) return resolved;
-  }
-  return { ok: false, reason: "artifact bytes are not available on disk" };
-}
-
-function resolveFileUriPath(
-  uri: string,
-  locator: string,
-): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
-  if (!uri.startsWith("file://")) {
-    return { ok: false, reason: "artifact has no registered local file URI" };
-  }
-
-  let filePath: string;
-  try {
-    filePath = fileURLToPath(new URL(uri));
-  } catch {
-    return { ok: false, reason: "artifact file URI is invalid" };
-  }
-
-  const realPath = safeRealpath(filePath);
-  if (!realPath) {
-    return { ok: false, reason: "artifact bytes are not available on disk" };
-  }
-
-  return {
-    ok: true,
-    path: realPath,
-    source: { kind: "local_file", locator },
-  };
-}
-
-function resolveRepoArtifact(
-  db: Db,
-  artifact: ArtifactRecord,
-): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
-  const repoId = stringValue(artifact.repo_locator.repo_id) ?? stringValue(artifact.repo_locator.repo);
-  const relativePath = stringValue(artifact.repo_locator.path) ?? stringValue(artifact.repo_locator.relative_path);
-  if (!repoId || !relativePath) {
-    return { ok: false, reason: "artifact has no registered repo locator" };
-  }
-  if (path.isAbsolute(relativePath)) {
-    return { ok: false, reason: "artifact repo locator path must be relative" };
-  }
-
-  const root = checkoutRootForRepo(db, repoId);
-  if (!root) {
-    return { ok: false, reason: "artifact repo locator has no registered checkout" };
-  }
-
-  const realRoot = safeRealpath(root);
-  if (!realRoot) {
-    return { ok: false, reason: "registered repo checkout is not available on disk" };
-  }
-  const candidate = path.resolve(realRoot, relativePath);
-  if (!isPathInside(candidate, realRoot)) {
-    return { ok: false, reason: "artifact repo locator path is outside the registered checkout" };
-  }
-  if (!fs.existsSync(candidate)) {
-    return { ok: false, reason: "artifact bytes are not available on disk" };
-  }
-  const realPath = safeRealpath(candidate);
-  if (!realPath || !isPathInside(realPath, realRoot)) {
-    return { ok: false, reason: "artifact repo locator path is outside the registered checkout" };
-  }
-
-  return {
-    ok: true,
-    path: realPath,
-    source: { kind: "repo_locator", locator: `repo://${repoId}/${relativePath.replace(/^\/+/, "")}` },
-  };
-}
-
-function checkResolvedFile(
-  artifact: ArtifactRecord,
-  filePath: string,
-  source: string,
-  expected: string | null,
-  recoverability: ArtifactRecoverability | null,
-  ref?: string,
-): ArtifactMaterializationCheck {
-  const stat = safeStat(filePath);
-  if (!stat || !stat.isFile()) {
-    return {
-      artifact_id: artifact.id,
-      ref,
-      materializable: false,
-      hash_matches: expected ? null : true,
-      expected_sha256: expected,
-      actual_sha256: null,
-      source,
-      recoverability,
-      reasons: ["missing_bytes"],
-      warnings: [],
-    };
-  }
-  const actual = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-  const mismatch = expected && actual !== expected;
-  const drift = mismatch && isMutableLocalDrift(recoverability);
-  return {
-    artifact_id: artifact.id,
-    ref,
-    materializable: true,
-    hash_matches: expected ? actual === expected : null,
-    expected_sha256: expected,
-    actual_sha256: actual,
-    source,
-    recoverability,
-    reasons: mismatch ? [drift ? "local_file_drift" : "hash_mismatch"] : [],
-    warnings: drift ? ["local_only artifact bytes differ from the registered sha256"] : [],
-  };
-}
-
-function readRepoArtifactBytes(
-  db: Db,
-  artifact: ArtifactRecord,
-): { ok: true; bytes: Buffer; source: string; warning?: string } | { ok: false; reason: string } {
-  const repoId = stringValue(artifact.repo_locator.repo_id) ?? stringValue(artifact.repo_locator.repo);
-  const relativePath = stringValue(artifact.repo_locator.path) ?? stringValue(artifact.repo_locator.relative_path);
-  if (!repoId || !relativePath || path.isAbsolute(relativePath)) return { ok: false, reason: "no_repo_locator" };
-  const root = checkoutRootForRepo(db, repoId);
-  if (!root) return { ok: false, reason: "repo_checkout_unavailable" };
-  const realRoot = safeRealpath(root);
-  if (!realRoot) return { ok: false, reason: "repo_checkout_missing" };
-
-  const ref = stringValue(artifact.repo_locator.commit) ?? stringValue(artifact.repo_locator.ref);
-  if (ref && /^[a-f0-9]{40,64}$/i.test(ref)) {
-    try {
-      const bytes = execFileSync("git", ["-C", realRoot, "show", `${ref}:${relativePath}`], {
-        stdio: ["ignore", "pipe", "ignore"],
-        maxBuffer: Math.max(1024 * 1024, artifact.size_bytes + 1024),
-      });
-      return { ok: true, bytes, source: `repo_commit:${repoId}@${ref}:${relativePath}` };
-    } catch {
-      return { ok: false, reason: "repo_commit_unavailable" };
-    }
-  }
-
-  const candidate = path.resolve(realRoot, relativePath);
-  const realPath = safeRealpath(candidate);
-  if (!realPath || !isPathInside(realPath, realRoot)) return { ok: false, reason: "repo_locator_outside_checkout" };
-  try {
-    return {
-      ok: true,
-      bytes: fs.readFileSync(realPath),
-      source: `repo_worktree:${repoId}:${relativePath}`,
-      warning: ref ? "mutable_repo_ref" : "repo_worktree_fallback",
-    };
-  } catch {
-    return { ok: false, reason: "missing_bytes" };
-  }
-}
-
-function readCommitPinnedRepoArtifactBytes(
-  db: Db,
-  artifact: ArtifactRecord,
-): {
-  ok: true;
-  bytes: Buffer;
-  source: string;
-  actual_sha256: string;
-  hash_matches: boolean | null;
-} | { ok: false; reason: string } | null {
-  if (artifact.custody_mode === "managed" || artifact.custody_mode === "copy") return null;
-  const commit = stringValue(artifact.repo_locator.commit);
-  if (!commit || !/^[a-f0-9]{40,64}$/i.test(commit)) return null;
-
-  const repo = readRepoArtifactBytes(db, artifact);
-  if (!repo.ok) {
-    return { ok: false, reason: "artifact commit-pinned repo bytes are not available" };
-  }
-  const actual = crypto.createHash("sha256").update(repo.bytes).digest("hex");
-  let hashMatches: boolean | null = null;
-  if (artifact.algorithm === "sha256" && /^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
-    hashMatches = actual === artifact.content_hash.toLowerCase();
-  }
-  return {
-    ok: true,
-    bytes: repo.bytes,
-    source: repo.source,
-    actual_sha256: actual,
-    hash_matches: hashMatches,
-  };
-}
-
-function recoverabilityForArtifact(artifact: ArtifactRecord): ArtifactRecoverability | null {
-  const raw = artifact.metadata.recoverability ?? artifact.reference.recoverability ?? artifact.retention.recoverability;
-  switch (raw) {
-    case "repo_commit":
-    case "repo_worktree":
-    case "local_only":
-    case "mandible_cas":
-    case "provider_store":
-    case "external_remote":
-    case "regenerable":
-      return raw;
-    default:
-      break;
-  }
-  if (artifact.custody_mode === "copy" || artifact.custody_mode === "managed") return "mandible_cas";
-  if (isMutableLocalFileLink(artifact)) return "local_only";
-  if (artifact.provider_id && artifact.custody_mode === "external") return "provider_store";
-  if (artifact.custody_mode === "external") return "external_remote";
-  if (artifact.home_repo_id && stringValue(artifact.repo_locator.commit)) return "repo_commit";
-  if (artifact.home_repo_id) return "repo_worktree";
-  return null;
-}
-
-function isMutableLocalFileLink(artifact: ArtifactRecord): boolean {
-  return artifact.custody_mode === "link"
-    && artifact.uri.startsWith("file://")
-    && !stringValue(artifact.repo_locator?.commit);
-}
-
-function reasonCode(reason: string): string {
-  if (reason.includes("sha256")) return "missing_sha256";
-  if (reason.includes("not managed")) return "not_managed_file";
-  if (reason.includes("invalid")) return "invalid_file_uri";
-  if (reason.includes("no registered local file")) return "no_local_file_uri";
-  if (reason.includes("not available")) return "missing_bytes";
-  return reason.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-}
-
-function checkoutRootForRepo(db: Db, repoId: string): string | null {
-  return checkoutRootForCanonicalArtifactRepo(db, repoId);
-}
-
-function validateContentHash(
-  artifact: ArtifactRecord,
-  filePath: string,
-  recoverability: ArtifactRecoverability | null,
-  sizeBytes: number,
-): { ok: true; warnings: string[] } | { ok: false; reason: string } {
-  if (artifact.algorithm !== "sha256" || !/^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
-    return { ok: true, warnings: [] };
-  }
-  if (sizeBytes > EAGER_HASH_VALIDATION_BYTES) {
-    return {
-      ok: true,
-      warnings: ["large artifact preview defers full sha256 validation"],
-    };
-  }
-  const actual = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-  if (actual === artifact.content_hash.toLowerCase()) {
-    return { ok: true, warnings: [] };
-  }
-  if (isMutableLocalDrift(recoverability)) {
-    return {
-      ok: true,
-      warnings: ["local_only artifact bytes differ from the registered sha256; previewing current local bytes"],
-    };
-  }
-  return { ok: false, reason: "artifact bytes do not match registered sha256" };
-}
-
-async function validateContentHashAsync(
-  artifact: ArtifactRecord,
-  filePath: string,
-  recoverability: ArtifactRecoverability | null,
-  sizeBytes: number,
-): Promise<{ ok: true; warnings: string[] } | { ok: false; reason: string }> {
-  if (artifact.algorithm !== "sha256" || !/^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
-    return { ok: true, warnings: [] };
-  }
-  if (sizeBytes > EAGER_HASH_VALIDATION_BYTES) {
-    return {
-      ok: true,
-      warnings: ["large artifact preview defers full sha256 validation"],
-    };
-  }
-  const actual = sizeBytes >= ARTIFACT_CONTENT_WORKER_MIN_BYTES
-    ? await hashFileSha256OffThread(filePath).catch(() => hashFileSha256(filePath))
-    : hashFileSha256(filePath);
-  if (actual === artifact.content_hash.toLowerCase()) {
-    return { ok: true, warnings: [] };
-  }
-  if (isMutableLocalDrift(recoverability)) {
-    return {
-      ok: true,
-      warnings: ["local_only artifact bytes differ from the registered sha256; previewing current local bytes"],
-    };
-  }
-  return { ok: false, reason: "artifact bytes do not match registered sha256" };
-}
-
-function hashFileSha256(filePath: string): string {
-  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-}
-
-function isMutableLocalDrift(recoverability: ArtifactRecoverability | null): boolean {
-  return recoverability === "local_only";
-}
-
-function safeStat(filePath: string): fs.Stats | null {
-  try {
-    return fs.statSync(filePath);
-  } catch {
-    return null;
-  }
-}
-
-function safeRealpath(filePath: string): string | null {
-  try {
-    return fs.realpathSync(filePath);
-  } catch {
-    return null;
-  }
-}
-
-function isPathInside(candidate: string, root: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative === "" || Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
-}
-
 function previewKind(mediaType: string, filename: string | null): Exclude<ArtifactContentKind, "unavailable"> {
   const lowerMediaType = mediaType.toLowerCase();
   const lowerName = (filename ?? "").toLowerCase();
@@ -981,31 +224,6 @@ function previewKind(mediaType: string, filename: string | null): Exclude<Artifa
   }
   if (isSourceLikeFilename(lowerName)) return "text";
   return "binary";
-}
-
-function readTextPreview(filePath: string, maxBytes: number): ArtifactContentPreview | null {
-  const fd = fs.openSync(filePath, "r");
-  try {
-    const stat = fs.fstatSync(fd);
-    const limit = Math.max(0, maxBytes);
-    const bytesToRead = Math.min(stat.size, limit + 1);
-    const buffer = Buffer.alloc(bytesToRead);
-    const read = fs.readSync(fd, buffer, 0, bytesToRead, 0);
-    const truncated = read > limit;
-    const previewBytes = buffer.subarray(0, truncated ? limit : read);
-    const decoded = decodeUtf8Preview(previewBytes, truncated);
-    if (decoded === null) return null;
-    return {
-      encoding: "utf-8",
-      text: decoded,
-      truncated,
-      preview_bytes: previewBytes.byteLength,
-      total_bytes: stat.size,
-      omitted_bytes: Math.max(0, stat.size - previewBytes.byteLength),
-    };
-  } finally {
-    fs.closeSync(fd);
-  }
 }
 
 function readTextPreviewBytes(bytes: Buffer, maxBytes: number): ArtifactContentPreview | null {
@@ -1031,13 +249,6 @@ function prettyJson(text: string): string | null {
   } catch {
     return null;
   }
-}
-
-async function prettyJsonAsync(text: string): Promise<string | null> {
-  if (Buffer.byteLength(text, "utf8") < ARTIFACT_CONTENT_WORKER_MIN_BYTES) {
-    return prettyJson(text);
-  }
-  return await formatJsonPreviewOffThread(text).catch(() => prettyJson(text));
 }
 
 function inferMediaType(artifact: ArtifactRecord): string {
@@ -1158,65 +369,6 @@ export interface ArtifactDiffResult {
   unified: string | null;
   stats: { added: number; removed: number } | null;
   reason?: string;
-}
-
-export function readArtifactBytesFull(
-  db: Db,
-  id: string,
-  maxBytes = MAX_DIFF_BYTES,
-): { ok: true; bytes: Buffer; source: string } | { ok: false; reason: string } {
-  const artifact = getArtifact(db, id);
-  if (!artifact) return { ok: false, reason: "artifact not found" };
-
-  // Prefer commit-pinned repo bytes so an old version reads its exact snapshot
-  // rather than the current working-tree state.
-  const commit = stringValue(artifact.repo_locator.commit);
-  if (artifact.custody_mode === "link" && commit && /^[a-f0-9]{40,64}$/i.test(commit)) {
-    const repo = readCommitPinnedRepoArtifactBytes(db, artifact);
-    if (!repo || !repo.ok) {
-      return { ok: false, reason: repo?.reason ?? "artifact commit-pinned repo bytes are not available" };
-    }
-    if (repo.hash_matches === false) {
-      return { ok: false, reason: "artifact bytes do not match registered sha256" };
-    }
-    if (repo.bytes.byteLength > maxBytes) return { ok: false, reason: "artifact exceeds diff size limit" };
-    return { ok: true, bytes: repo.bytes, source: repo.source };
-  }
-
-  const resolved = resolveRegisteredArtifactPath(db, artifact);
-  if (resolved.ok) {
-    const stat = safeStat(resolved.path);
-    if (stat?.isFile()) {
-      if (stat.size > maxBytes) return { ok: false, reason: "artifact exceeds diff size limit" };
-      const bytes = fs.readFileSync(resolved.path);
-      // If these bytes came from the content-addressed store (resolved directly,
-      // via a file alias to the CAS blob, or via the CAS fallback), they MUST
-      // hash to content_hash. Verify so a corrupted/tampered CAS blob can never
-      // silently feed wrong bytes into a diff or a managed re-snapshot — this is
-      // the durability-critical path (e.g. the registered location is gone).
-      if (artifact.algorithm === "sha256" && /^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
-        const expected = artifact.content_hash.toLowerCase();
-        const casReal = safeRealpath(artifactCasPath(db, expected));
-        const fromCas = resolved.source?.locator === "artifact-storage-cas"
-          || (casReal !== null && resolved.path === casReal);
-        if (fromCas) {
-          const actual = crypto.createHash("sha256").update(bytes).digest("hex");
-          if (actual !== expected) {
-            return { ok: false, reason: `cas blob hash mismatch (expected ${expected}, got ${actual})` };
-          }
-        }
-      }
-      return { ok: true, bytes, source: resolved.source?.kind ?? "file" };
-    }
-  }
-
-  const repo = readRepoArtifactBytes(db, artifact);
-  if (repo.ok) {
-    if (repo.bytes.byteLength > maxBytes) return { ok: false, reason: "artifact exceeds diff size limit" };
-    return { ok: true, bytes: repo.bytes, source: repo.source };
-  }
-
-  return { ok: false, reason: resolved.ok ? "artifact bytes are not available on disk" : resolved.reason };
 }
 
 function diffSideMeta(artifact: ArtifactRecord | null, ref: string): ArtifactDiffSide {

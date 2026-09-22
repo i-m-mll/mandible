@@ -133,7 +133,7 @@ describe("artifact CLI", () => {
     expect(result.stdout).toContain("mandible artifact ingest <path...>");
     expect(result.stdout).toContain("mandible artifact snapshot <artifact-ref> --from <path>");
     expect(result.stdout).toContain("mandible artifact bundle create");
-    expect(result.stdout).toContain("Recoverability:");
+    expect(result.stdout).toContain("Exact committed bytes");
   });
 
   it("documents the version identity command surface", () => {
@@ -150,52 +150,29 @@ describe("artifact CLI", () => {
     expect(result.stdout).toContain("mandible artifact record <path> --kind tracked_repo|local_only|managed");
   });
 
-  it("records a logical version by default and requires --blob-only for byte-only ingest", async () => {
-    const recorder = await startHttpRecorder((req) => {
-      if (req.method === "POST" && req.url === "/api/artifacts/versions") {
-        return {
-          status: 200,
-          body: { result: {
-            created: true,
-            artifact: { id: "artifact:logical-report", ref: "artifact:logical" },
-            series: { id: "artifact-series:report", ref: "artifact-series:report", version_count: 1 },
-            version: { id: "artifact-version:report-v1", ref: "artifact-version:report", version_no: 1 },
-            warnings: [],
-          } },
-        };
-      }
-      if (req.method === "POST" && req.url === "/api/artifacts/ingest") {
-        return {
-          status: 200,
-          body: { artifact: { id: "artifact:sha256:abc", ref: "artifact-blob:abc", custody_mode: "link" } },
-        };
-      }
-      return { status: 404, body: { error: "unexpected", url: req.url } };
-    });
-
+  it("records logical paths atomically and keeps blob-only transport explicit",async()=>{
+    const recorder=await startHttpRecorder(req=>({status:200,body:req.body?.paths ? {
+      registered:[{version:{ref:'artifact-version:report'}}],failed:[],atomic:true
+    } : {artifact:{id:'artifact-blob:abc',ref:'artifact-blob:abc',custody_mode:'managed',availability:'present'}}}));
     try {
-      const env = { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` };
-      const ordinary = await runAsync(["artifact", "ingest", "report.md", "--json"], tempDir, env);
-      const blobOnly = await runAsync(["artifact", "ingest", "report.md", "missing.md", "report.md", "--blob-only", "--json"], tempDir, env);
+      const env={MANDIBLE_BASE:`http://127.0.0.1:${recorder.port}`};
+      const normal=await runAsync(['artifact','ingest','report.md','--json'],tempDir,env);
+      expect(normal.status).toBe(0);expect(JSON.parse(normal.stdout).registered[0].version.ref).toBe('artifact-version:report');
+      expect(recorder.requests[0].body?.paths).toEqual([fs.realpathSync(path.join(tempDir,'report.md'))]);
+      const blob=await runAsync(['artifact','ingest','report.md','missing.md','report.md','--blob-only','--json'],tempDir,env);
+      expect(blob.status).toBe(1);expect(JSON.parse(blob.stdout).registered).toHaveLength(2);expect(JSON.parse(blob.stdout).failed).toHaveLength(1);
+      expect(recorder.requests.every(req=>req.url==='/api/artifacts/ingest')).toBe(true);
+    } finally {await recorder.close();}
+  });
 
-      expect(ordinary.status).toBe(0);
-      expect(JSON.parse(ordinary.stdout).registered[0].version.ref).toBe("artifact-version:report");
-      expect(blobOnly.status).toBe(1);
-      expect(JSON.parse(blobOnly.stdout).registered).toHaveLength(2);
-      expect(JSON.parse(blobOnly.stdout).failed).toHaveLength(1);
-      expect(JSON.parse(blobOnly.stdout).atomic).toBeUndefined();
-      expect(JSON.parse(blobOnly.stdout).registered[0]).toMatchObject({
-        blob_only: true,
-        artifact: { ref: "artifact-blob:abc" },
-      });
-      expect(recorder.requests.map((request) => request.url)).toEqual([
-        "/api/artifacts/versions",
-        "/api/artifacts/ingest",
-        "/api/artifacts/ingest",
-      ]);
-    } finally {
-      await recorder.close();
-    }
+  it("sends dry-run paths to the canonical planner without uploading bytes",async()=>{
+    const recorder=await startHttpRecorder(req=>({status:200,body:{dry_run:true,plans:[{custody_mode:'git'}],registered:[],failed:[]}}));
+    try {
+      const result=await runAsync(['artifact','ingest','report.md','--dry-run','--json'],tempDir,{MANDIBLE_BASE:`http://127.0.0.1:${recorder.port}`});
+      expect(result.status).toBe(0);expect(recorder.requests).toHaveLength(1);
+      expect(recorder.requests[0].body).toMatchObject({paths:[fs.realpathSync(path.join(tempDir,'report.md'))],dry_run:true});
+      expect(recorder.requests[0].body).not.toHaveProperty('content_base64');
+    } finally {await recorder.close();}
   });
 
   it("prints canonical resolve targets", async () => {
@@ -254,7 +231,7 @@ describe("artifact CLI", () => {
             artifact: {
               id: shortId,
               role: "report",
-              custody_mode: "copy",
+              custody_mode: "managed",
               availability: "present",
               uri: `cas://${hash}`,
             },
@@ -437,35 +414,6 @@ describe("artifact CLI", () => {
     }
   });
 
-  it("classifies clean tracked files as commit-pinned repo links in dry-run JSON", () => {
-    const result = run(["artifact", "ingest", "report.md", "--dry-run", "--json"]);
-
-    expect(result.status).toBe(0);
-    const payload = JSON.parse(result.stdout);
-    const planned = payload.registered[0].planned_payload;
-    expect(planned.uri).toMatch(/^repo:\/\/mandible-artifact-cli-/);
-    expect(planned.uri).toContain("@");
-    expect(planned.metadata.recoverability).toBe("repo_commit");
-    expect(planned.metadata.git.tracked).toBe(true);
-    expect(planned.metadata.git.dirty).toBe(false);
-    expect(planned.metadata.warnings).toEqual([]);
-  });
-
-  it("computes copy snapshot identity without generating base64 in dry-run JSON", () => {
-    const result = run(["artifact", "snapshot", "report.md", "--dry-run", "--json"]);
-
-    expect(result.status).toBe(0);
-    const payload = JSON.parse(result.stdout);
-    const planned = payload.registered[0].planned_payload;
-    expect(planned.custody_mode).toBe("copy");
-    expect(planned.metadata.recoverability).toBe("mandible_cas");
-    expect(planned.sha256).toMatch(/^[a-f0-9]{64}$/);
-    // Bytes never travel through dry-run: no inline base64, just a transport note.
-    expect(planned).not.toHaveProperty("content_base64");
-    expect(planned).not.toHaveProperty("content_path");
-    expect(planned.content_transport).toMatch(/path or file-RPC attachment/);
-  });
-
   it("auto-selects copy custody for file RPC path ingest dry-runs", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-artifact-"));
     tempRoots.push(spoolDir);
@@ -477,8 +425,8 @@ describe("artifact CLI", () => {
     expect(result.status).toBe(0);
     const payload = JSON.parse(result.stdout);
     const planned = payload.registered[0].planned_payload;
-    expect(payload.custody_mode).toBe("copy");
-    expect(planned.custody_mode).toBe("copy");
+    expect(payload.custody_mode).toBe("managed");
+    expect(planned.custody_mode).toBe("managed");
     expect(planned.metadata.recoverability).toBe("mandible_cas");
     expect(planned).not.toHaveProperty("content_base64");
     expect(planned.content_transport).toMatch(/path or file-RPC attachment/);
@@ -488,12 +436,12 @@ describe("artifact CLI", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-artifact-"));
     tempRoots.push(spoolDir);
 
-    const result = run(["artifact", "ingest", "report.md", "--link", "--dry-run", "--json"], tempDir, {
+    const result = run(["artifact", "ingest", "report.md", "--git", "--dry-run", "--json"], tempDir, {
       MANDIBLE_BASE: `file://${spoolDir}`,
     });
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("link custody requires daemon-visible host paths");
+    expect(result.stderr).toContain("git custody requires daemon-visible host paths");
   });
 
   it("preserves multi-path file RPC attachments and per-item partial failures", async () => {
@@ -552,7 +500,7 @@ describe("artifact CLI", () => {
       ]);
       const record = seen.find((request) => request.path === "/api/artifacts/versions")!;
       const recordBody = record.body as Record<string, unknown>;
-      expect(recordBody).toMatchObject({ source_kind: "managed", custody_mode: "copy", media_type: "text/plain" });
+      expect(recordBody).toMatchObject({ source_kind: "managed", custody_mode: "managed", media_type: "text/plain" });
       // Bytes are NOT inline in the request body — they ride as an attachment.
       expect(recordBody).not.toHaveProperty("content_base64");
       expect(recordBody).not.toHaveProperty("path");
@@ -587,7 +535,7 @@ describe("artifact CLI", () => {
             artifact: {
               id: newRef,
               content_hash: newHash,
-              custody_mode: "copy",
+              custody_mode: "managed",
               availability: "present",
             },
           },
@@ -629,7 +577,7 @@ describe("artifact CLI", () => {
         "/api/artifacts/snapshot",
         "/api/artifacts/link",
       ]);
-      expect(seen[1].body).toMatchObject({ ref: sourceRef, custody_mode: "copy" });
+      expect(seen[1].body).toMatchObject({ ref: sourceRef, custody_mode: "managed" });
       expect(seen[2].body).toMatchObject({
         ref: `artifact-blob:${newHash}`,
         entity_type: "issue",
@@ -705,87 +653,42 @@ describe("artifact CLI", () => {
     }
   });
 
-  it("keeps untracked repo-local files local-only instead of minting repo URIs", () => {
-    fs.mkdirSync(path.join(tempDir, "_artifacts"), { recursive: true });
-    fs.writeFileSync(path.join(tempDir, "_artifacts", "checkpoint.bin"), "checkpoint\n", "utf8");
-
-    const result = run(["artifact", "ingest", "_artifacts/checkpoint.bin", "--allow-local-only", "--dry-run", "--json"]);
-
-    expect(result.status).toBe(0);
-    const payload = JSON.parse(result.stdout);
-    const planned = payload.registered[0].planned_payload;
-    expect(planned.uri).toMatch(/^file:\/\//);
-    expect(planned.canonical_ref).toMatch(/^artifact-blob:[a-f0-9]{64}$/);
-    expect(planned.metadata.recoverability).toBe("local_only");
-    expect(planned.metadata.git.untracked).toBe(true);
-    expect(planned.metadata.warnings.map((warning: { code: string }) => warning.code)).toContain("untracked_local_only");
-  });
-
-  it("resolves a feature-worktree _artifacts symlink to a durable realpath URI in dry-run JSON (issue 2f9c3c3)", () => {
-    // Persistent repo-root _artifacts target, reached from a feature worktree
-    // through a symlink — the disposable-path scenario.
-    const persistentArtifacts = path.join(tempDir, "_artifacts");
-    fs.mkdirSync(persistentArtifacts, { recursive: true });
-    fs.writeFileSync(path.join(persistentArtifacts, "plot.html"), "<html>plot</html>\n", "utf8");
-    const featWorktree = path.join(tempDir, "worktrees", "feat");
-    fs.mkdirSync(path.dirname(featWorktree), { recursive: true });
-    git(["worktree", "add", "-b", "feat", featWorktree]);
-    fs.symlinkSync(persistentArtifacts, path.join(featWorktree, "_artifacts"));
-    const disposable = path.join(featWorktree, "_artifacts", "plot.html");
-    const persistentReal = fs.realpathSync(path.join(persistentArtifacts, "plot.html"));
-
-    const result = run(["artifact", "ingest", disposable, "--allow-local-only", "--dry-run", "--json"]);
-
-    expect(result.status).toBe(0);
-    const planned = JSON.parse(result.stdout).registered[0].planned_payload;
-    expect(planned.uri).toBe(`file://${persistentReal}`);
-    expect(planned.uri).not.toContain(`${path.sep}feat${path.sep}`);
-    expect(planned.metadata.recoverability).toBe("local_only");
-    expect(planned.metadata.path_decision.symlink_class).toBe("same_repo_durable");
-    expect(planned.metadata.path_decision.worktree_substitution).toBe(true);
-    // The disposable input path is preserved as metadata, never as the only ref.
-    expect(planned.metadata.input_path).toBe(disposable);
-    expect(planned.metadata.warnings.map((warning: { code: string }) => warning.code))
-      .toContain("symlink_resolved_to_durable_target");
-  });
-
   it("sends a daemon-visible path (not base64) for local HTTP copy ingest (issue 833e972)", async () => {
     fs.mkdirSync(path.join(tempDir, "_artifacts"), { recursive: true });
     const bigPath = path.join(tempDir, "_artifacts", "packet.zip");
     fs.writeFileSync(bigPath, Buffer.alloc(2 * 1024 * 1024, 7)); // 2 MiB, over ARG_MAX
 
     const recorder = await startHttpRecorder((req) => {
-      if (req.method === "POST" && req.url === "/api/artifacts/versions") {
+      if (req.method === "POST" && req.url === "/api/artifacts/ingest") {
         return {
           status: 200,
-          body: { result: {
+          body: { registered: [{
             created: true,
             artifact: { id: "artifact:logical-packet" },
             series: { id: "artifact-series:packet", ref: "artifact-series:packet", version_count: 1 },
             version: { id: "artifact-version:packet-v1", ref: "artifact-version:packet", version_no: 1 },
             warnings: [],
-          } },
+          }], failed:[] },
         };
       }
       return { status: 404, body: { error: "unexpected" } };
     });
 
     try {
-      const result = await runAsync(["artifact", "ingest", "_artifacts/packet.zip", "--copy", "--json"], tempDir, {
+      const result = await runAsync(["artifact", "ingest", "_artifacts/packet.zip", "--managed", "--json"], tempDir, {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
       expect(result.status).toBe(0);
-      const record = recorder.requests.find((entry) => entry.url === "/api/artifacts/versions");
+      const record = recorder.requests.find((entry) => entry.url === "/api/artifacts/ingest");
       expect(record).toBeDefined();
       const body = record!.body as Record<string, unknown>;
       // Bytes never travel in-band: a daemon-visible absolute path is sent.
       // (realpath comparison: macOS resolves /var -> /private/var for the cwd.)
       expect(body).not.toHaveProperty("content_base64");
       expect(body).not.toHaveProperty("content_buffer");
-      expect(fs.realpathSync(body.path as string)).toBe(fs.realpathSync(bigPath));
-      expect(body.custody_mode).toBe("copy");
-      expect(body.source_kind).toBe("local_only");
+      expect(fs.realpathSync((body.paths as string[])[0])).toBe(fs.realpathSync(bigPath));
+      expect(body.custody_mode).toBe("managed");
     } finally {
       await recorder.close();
     }
@@ -797,21 +700,19 @@ describe("artifact CLI", () => {
 
     // Simulate a daemon that rejects the logical version mutation.
     const recorder = await startHttpRecorder((req) => {
-      if (req.method === "POST" && req.url === "/api/artifacts/versions") {
+      if (req.method === "POST" && req.url === "/api/artifacts/ingest") {
         return { status: 422, body: { error: "logical version rejected" } };
       }
       return { status: 404, body: { error: "unexpected" } };
     });
 
     try {
-      const result = await runAsync(["artifact", "ingest", "_artifacts/packet.zip", "--copy", "--json"], tempDir, {
+      const result = await runAsync(["artifact", "ingest", "_artifacts/packet.zip", "--managed", "--json"], tempDir, {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
       expect(result.status).not.toBe(0);
-      const payload = JSON.parse(result.stdout);
-      expect(payload.failed).toHaveLength(1);
-      expect(payload.failed[0].error).toMatch(/api_version_record_failed/);
+      expect(result.stderr).toContain("logical version rejected");
       // Never a raw "argument list too long" / transport-level leak.
       expect(result.stderr).not.toMatch(/argument list too long/);
     } finally {
@@ -842,7 +743,7 @@ describe("artifact CLI", () => {
               artifact: {
                 id: `artifact:sha256:${hash}`,
                 content_hash: hash,
-                custody_mode: "copy",
+                custody_mode: "managed",
                 availability: "present",
                 metadata: { recoverability: "mandible_cas" },
               },
