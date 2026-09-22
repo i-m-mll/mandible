@@ -1,4 +1,22 @@
-# Auth Workflow: End to End
+# Approvals: End to End
+
+The Approvals view holds reviewed operations. The `auth` CLI namespace, API routes,
+and stored identifiers stay stable. Merge requests prepare their Git context and
+reviewed merge command; other request types require an explicit command and execution
+context. Submission never runs the operation, including when the daemon is unavailable.
+
+```bash
+mandible auth request --type config-change \
+  --command './apply-reviewed-settings.sh' --cwd /absolute/project \
+  --repo example --title 'Apply reviewed settings' --issue <id> --no-watch
+```
+
+Non-merge requests share submission, approval, output, and history with merges. Their
+type is a review category, not a command generator. Dedicated operation-specific
+builders for commits, force-pushes, branch deletion, configuration changes, and data
+deletion are not supplied. Merge-only flags are refused on this path, and `--command`
+cannot override a merge request. Existing approval and execution permissions still apply.
+
 
 This guide walks through the complete lifecycle of an authenticated operation, from the moment an agent finishes work on a feature branch to the result being delivered back to the agent's inbox.
 
@@ -20,7 +38,7 @@ mandible auth request feature/add-dark-mode \
   --no-watch
 ```
 
-The `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, runs Mandible's read-only merge preflight, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close. To replace reviewed bytes, pass `--supersedes <request>` and carry every staged action identically or dispose it with repeatable `--drop-superseded-action <ordinal>:<reason>`.
+For merges, the `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, runs Mandible's read-only merge preflight, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close. To replace reviewed bytes, pass `--supersedes <request>` and carry every staged action identically or dispose it with repeatable `--drop-superseded-action <ordinal>:<reason>`.
 
 The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results are delivered asynchronously via the inbox.
 
@@ -32,7 +50,7 @@ preserves supplied spec text as opaque bytes rather than rewriting it.
 
 ### Protected-Root Dirty Policy
 
-Before submitting, `mandible auth request` checks the protected-branch worktree.
+Before submitting a merge, `mandible auth request` checks the protected-branch worktree.
 It never restores, checks out, cleans, or otherwise discards dirty files. The
 default policy is `block`: tracked, staged, or untracked dirtiness causes the
 request to fail with the exact file list.

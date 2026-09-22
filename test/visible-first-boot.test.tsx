@@ -96,7 +96,7 @@ describe("visible-first dashboard boot", () => {
 
     render(h(App, {}));
     await waitFor(() => expect(requests).toContain("/api/dashboard/badges"));
-    await waitFor(() => expect(screen.getByLabelText("Auth").textContent).toContain("3"));
+    await waitFor(() => expect(screen.getByLabelText("Approvals").textContent).toContain("3"));
     expect(screen.getByLabelText("Inbox").textContent).toContain("2");
     expect(screen.getByLabelText("Projects").textContent).toContain("1");
 

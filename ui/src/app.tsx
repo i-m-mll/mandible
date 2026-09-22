@@ -2022,8 +2022,8 @@ function App(): JSX.Element {
     {
       tab: 'auth',
       href: '#/auth',
-      label: 'Auth',
-      title: 'Auth',
+      label: 'Approvals',
+      title: 'Approvals',
       badge: badges.auth,
       badgeClass: 'tab-badge--auth',
       icon: AuthIcon,

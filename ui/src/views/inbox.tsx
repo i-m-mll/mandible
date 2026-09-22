@@ -220,7 +220,7 @@ function buildUnifiedItems(data: InboxData): UnifiedItem[] {
     items.push({
       id: `auth_result:${ar.id}`,
       type: 'auth_result',
-      title: ar.title || ar.head_branch || 'Auth Request',
+      title: ar.title || ar.head_branch || 'Approval Request',
       repo: ar.repo ?? null,
       branch: ar.head_branch ?? null,
       time: ar.resolved_at,
@@ -556,7 +556,7 @@ function AuthResultDetail({
         >
           {statusLabel}
         </span>
-        <h2 className="inbox-detail__title">{item.title || 'Auth Request'}</h2>
+        <h2 className="inbox-detail__title">{item.title || 'Approval Request'}</h2>
       </div>
       <div className="inbox-detail__meta">
         {item.repo && (
@@ -603,7 +603,7 @@ function AuthResultDetail({
           href="#/auth"
           style={{ fontSize: '13px', color: 'var(--accent-blue)', textDecoration: 'underline' }}
         >
-          View in Auth
+          View in Approvals
         </a>
         <button
           type="button"
