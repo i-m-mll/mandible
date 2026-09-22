@@ -13,7 +13,7 @@ BEGIN_MARKER="<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->"
 END_MARKER="<!-- END MANDIBLE MANAGED INSTRUCTIONS -->"
 CLI_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 MANDIBLE_ROOT="$(cd "$CLI_DIR/.." && pwd -P)"
-MANIFEST_PATH="$CLI_DIR/instructions-contract.json"
+CONTRACT_PATH="$CLI_DIR/instructions-contract.md"
 NODE_BIN="${NODE_BIN:-node}"
 
 usage() {
@@ -36,40 +36,7 @@ default_target() {
 }
 
 render_fragment() {
-  jq -r '
-    def bullets(xs): xs[] | "- " + .;
-    [
-      "# " + .title,
-      "",
-      "Version: " + (.version | tostring),
-      "",
-      "This section is Mandible'\''s interface contract. It describes daemon and CLI behavior that is the same for every install. It deliberately excludes user policy such as signing key names, branch naming schemes, editor preferences, and worktree tooling.",
-      "",
-      "## Commands",
-      "",
-      (.commands[] | "- `" + .name + "` - " + .description),
-      "",
-      "## Commit Trailers",
-      "",
-      (bullets(.trailers)),
-      "",
-      "## Authored Markdown References",
-      "",
-      (bullets(.markdownReferences)),
-      "",
-      "## Auth Requests",
-      "",
-      (bullets(.authLifecycle)),
-      "",
-      "## Coordination",
-      "",
-      (bullets(.coordination)),
-      "",
-      "## Transports",
-      "",
-      (bullets(.transports))
-    ] | join("\n")
-  ' "$MANIFEST_PATH"
+  cat "$CONTRACT_PATH"
 }
 
 render_block() {

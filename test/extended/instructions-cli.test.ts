@@ -4,6 +4,8 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { renderMandibleInstructionsFragment } from "../../src/instructions/fragment.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 const tempRoots: string[] = [];
 
@@ -161,6 +163,8 @@ describe("instructions CLI", () => {
     const installed = fs.readFileSync(target, "utf8");
     expect(installed).toContain("Mandible Interface Contract");
     expect(installed).not.toContain("<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->");
+    expect(installed.trimEnd()).toBe(fs.readFileSync(path.join(process.cwd(), "cli/instructions-contract.md"), "utf8").trimEnd());
+    expect(installed.trimEnd()).toBe(renderMandibleInstructionsFragment().trimEnd());
     expect(fs.readFileSync(hookOut, "utf8")).toBe("ran");
   });
 

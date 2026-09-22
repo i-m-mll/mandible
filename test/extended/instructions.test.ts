@@ -10,7 +10,7 @@ import {
 } from "../../src/instructions/fragment.js";
 
 describe("Mandible instructions fragment", () => {
-  it("renders the contract-only interface fragment from the shared manifest", () => {
+  it("renders the contract-only interface fragment from the authored Markdown", () => {
     const fragment = renderMandibleInstructionsFragment();
 
     expect(fragment).toContain("# Mandible Interface Contract");

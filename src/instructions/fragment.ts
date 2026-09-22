@@ -5,69 +5,13 @@ import { fileURLToPath } from "node:url";
 export const MANDIBLE_INSTRUCTIONS_BEGIN = "<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->";
 export const MANDIBLE_INSTRUCTIONS_END = "<!-- END MANDIBLE MANAGED INSTRUCTIONS -->";
 
-interface CommandEntry {
-  name: string;
-  description: string;
-}
-
-interface InstructionsManifest {
-  title: string;
-  version: number;
-  commands: CommandEntry[];
-  trailers: string[];
-  markdownReferences: string[];
-  authLifecycle: string[];
-  coordination: string[];
-  transports: string[];
-}
-
 export interface InstallResult {
   changed: boolean;
   content: string;
 }
 
-export function loadInstructionsManifest(): InstructionsManifest {
-  const manifestPath = findRepoFile("cli/instructions-contract.json");
-  return JSON.parse(fs.readFileSync(manifestPath, "utf8")) as InstructionsManifest;
-}
-
-export function renderMandibleInstructionsFragment(
-  manifest: InstructionsManifest = loadInstructionsManifest(),
-): string {
-  const lines = [
-    `# ${manifest.title}`,
-    "",
-    `Version: ${manifest.version}`,
-    "",
-    "This section is Mandible's interface contract. It describes daemon and CLI behavior that is the same for every install. It deliberately excludes user policy such as signing key names, branch naming schemes, editor preferences, and worktree tooling.",
-    "",
-    "## Commands",
-    "",
-    ...manifest.commands.flatMap((command) => [
-      `- \`${command.name}\` - ${command.description}`,
-    ]),
-    "",
-    "## Commit Trailers",
-    "",
-    ...manifest.trailers.map((item) => `- ${item}`),
-    "",
-    "## Authored Markdown References",
-    "",
-    ...manifest.markdownReferences.map((item) => `- ${item}`),
-    "",
-    "## Auth Requests",
-    "",
-    ...manifest.authLifecycle.map((item) => `- ${item}`),
-    "",
-    "## Coordination",
-    "",
-    ...manifest.coordination.map((item) => `- ${item}`),
-    "",
-    "## Transports",
-    "",
-    ...manifest.transports.map((item) => `- ${item}`),
-  ];
-  return `${lines.join("\n").trim()}\n`;
+export function renderMandibleInstructionsFragment(): string {
+  return fs.readFileSync(findRepoFile("cli/instructions-contract.md"), "utf8");
 }
 
 export function renderManagedInstructionsBlock(fragment = renderMandibleInstructionsFragment()): string {

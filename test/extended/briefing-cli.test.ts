@@ -86,20 +86,13 @@ describe("briefing CLI", () => {
       .toContain("mutually exclusive");
     expect(runOffline(["briefing", "create", "artifact-version:exact", "--title", "Review",
       "--reason", "  "]).stderr).toContain("nonblank");
-    const contract = JSON.parse(fs.readFileSync(path.join(process.cwd(), "cli", "instructions-contract.json"), "utf8")) as {
-      commands: Array<{ name: string; description: string }>;
-    };
-    const create = contract.commands.find((command) => command.name.startsWith("mandible briefing create "));
-    expect(create).toMatchObject({
-      name: expect.stringContaining("--briefing <briefing-ref> | --reason <text>"),
-      description: expect.stringContaining("Active Briefings for the same logical Artifact block default creation"),
-    });
-    expect(contract.commands.find((command) => command.name.startsWith("mandible briefing group accept ")))
-      .toMatchObject({ description: expect.stringContaining("configured human operator") });
-    expect(contract.commands.find((command) => command.name.startsWith("mandible briefing group reject ")))
-      .toMatchObject({ description: expect.stringContaining("preserving Base") });
-    expect(contract.commands.find((command) => command.name.startsWith("mandible briefing route apply ")))
-      .toMatchObject({ description: expect.stringContaining("Exact replay is idempotent") });
+    const contract = fs.readFileSync(path.join(process.cwd(), "cli", "instructions-contract.md"), "utf8");
+    const command = (name: string) => contract.split("\n").find((line) => line.startsWith(`- \`mandible ${name} `));
+    expect(command("briefing create")).toContain("--briefing <briefing-ref> | --reason <text>");
+    expect(command("briefing create")).toContain("Active Briefings for the same logical Artifact block default creation");
+    expect(command("briefing group accept")).toContain("configured human operator");
+    expect(command("briefing group reject")).toContain("preserving Base");
+    expect(command("briefing route apply")).toContain("Exact replay is idempotent");
   });
 
   it("sends direct report placement and Current update through their ordinary API routes", async () => {
