@@ -2301,7 +2301,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell section={SETTINGS_SECTIONS.authHooks}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.authHooks}
-          description="Repo-specific post-auth hook configuration."
+          description="Repo-specific post-approval hook configuration."
         />
         <div className="settings-view__section-body">
           <AuthHooksPanel mutationsAllowed={operationalMutationsAllowed} />

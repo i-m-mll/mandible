@@ -572,7 +572,7 @@ function AuthActionBundle({
   };
 
   return (
-    <section className="auth-action-bundle" aria-label="Deferred auth actions">
+    <section className="auth-action-bundle" aria-label="Deferred approval actions">
       <div className="auth-action-bundle__header">
         <span className="auth-action-bundle__title">On merge...</span>
         <span className="auth-action-bundle__count">{actions.length}</span>
@@ -1587,7 +1587,7 @@ export function AuthHooksPanel({
           <div className="auth-hooks-panel__form-row">
             <label>Command</label>
             <textarea
-              placeholder="Shell command to run after auth action"
+              placeholder="Shell command to run after approval action"
               value={formCommand}
               rows={3}
               onInput={(e) => setFormCommand((e.target as HTMLTextAreaElement).value)}
@@ -2722,8 +2722,8 @@ export function AuthQueueView({
           <SidebarSearchFilterHeader
             value={authSearch}
             onValueChange={setAuthSearch}
-            placeholder="Search auth requests..."
-            searchAriaLabel="Search auth requests"
+            placeholder="Search approval requests..."
+            searchAriaLabel="Search approval requests"
             clearAriaLabel="Clear auth search"
             inputType="text"
             onBlurWithin={(event) => {
@@ -2732,8 +2732,8 @@ export function AuthQueueView({
                 }
               }}
             filterTrigger={{
-              ariaLabel: 'Advanced auth filters',
-              title: 'Advanced auth filters',
+              ariaLabel: 'Advanced approval filters',
+              title: 'Advanced approval filters',
               open: filterMenuOpen,
               active: Boolean(activeFilterSummary),
               onToggle: () => setFilterMenuOpen((prev) => !prev),
@@ -2886,7 +2886,7 @@ export function AuthQueueView({
                             ? 'No active requests.'
                             : filterMode === 'historical'
                               ? 'No historical requests.'
-                              : 'No auth requests.'}
+                              : 'No approval requests.'}
                 </div>
               ) : (
                 filteredSidebarItems.map((request) => (
@@ -2914,7 +2914,7 @@ export function AuthQueueView({
                 : selectedId && selectedAmbiguous
                   ? `Approval request reference ${selectedId.slice(0, 8)} is ambiguous — it matches multiple requests. Use a longer id.`
                   : selectedId && selectedFetchFailed
-                    ? `Failed to load auth request ${selectedId.slice(0, 8)} — the daemon may be unavailable.`
+                    ? `Failed to load approval request ${selectedId.slice(0, 8)} — the daemon may be unavailable.`
                     : selectedId && !selectedListRequest
                       ? 'Loading request…'
                       : 'No requests in this view'}

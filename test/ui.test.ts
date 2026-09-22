@@ -3068,14 +3068,14 @@ describe('AuthQueueView', () => {
     }));
     await waitFor(() => expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBe(finalized.id));
 
-    fireEvent.input(screen.getByLabelText('Search auth requests'), {
+    fireEvent.input(screen.getByLabelText('Search approval requests'), {
       target: { value: 'Filter next' },
     });
     await waitFor(() => expect(document.querySelector('[data-request-id="req-filter-next"]')?.classList.contains('auth-sidebar-item--selected')).toBe(true));
     expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBeNull();
 
-    fireEvent.input(screen.getByLabelText('Search auth requests'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Advanced auth filters' }));
+    fireEvent.input(screen.getByLabelText('Search approval requests'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced approval filters' }));
     fireEvent.click(screen.getByRole('button', { name: 'all' }));
     await waitFor(() => expect(document.querySelector('[data-request-id="req-filter-final"]')).toBeTruthy());
   });
@@ -3122,7 +3122,7 @@ describe('AuthQueueView', () => {
     );
 
     expect(screen.getByTitle('4 deferred actions')).toBeTruthy();
-    expect(screen.getByLabelText('Deferred auth actions')).toBeTruthy();
+    expect(screen.getByLabelText('Deferred approval actions')).toBeTruthy();
     expect(screen.getByText('On merge...')).toBeTruthy();
     expect(screen.queryByText('On merge, this request will also')).toBeNull();
     const panels = document.querySelector('.auth-detail__panels') as HTMLElement | null;
@@ -3308,7 +3308,7 @@ describe('AuthQueueView', () => {
     expect(screen.getByText('Vetoed')).toBeTruthy();
     expect(document.querySelector('.auth-action-row--failed')).toBeTruthy();
     fireEvent.click(screen.getByText('Plain auth'));
-    expect(screen.queryByLabelText('Deferred auth actions')).toBeNull();
+    expect(screen.queryByLabelText('Deferred approval actions')).toBeNull();
   });
 });
 
