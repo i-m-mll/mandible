@@ -1,5 +1,5 @@
 import type { Dispatch, StateUpdater } from 'preact/hooks';
-import { useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useState } from 'preact/hooks';
 
 import { ViewSidebar } from '../../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
@@ -19,7 +19,7 @@ import {
   orderFeedbackCollections,
   type FeedbackCollection,
 } from './collection-model';
-import type { BriefingCollectionViewState } from './collection-view-state';
+import { briefingSubgroupKey, migrateBriefingSubgroupKeys, type BriefingCollectionViewState } from './collection-view-state';
 import type { BriefingBundle, BriefingBundleLayoutEntry, BriefingGroup } from '../../api';
 import { indexBriefingGroupBundleOwners, resolveBriefingGroupProjection } from './briefing-group-projection';
 import { mergeSidebarSubsetOrder, reconcileSidebarOrder, type SidebarReorderBinding } from '../../components/shared/sidebar-order';
@@ -176,14 +176,23 @@ export function CollectionsSidebar({
   });
   const collapsedBundles = useMemo(() => new Set(viewState.collapsedBundleIds), [viewState.collapsedBundleIds]);
   const collapsedGroups = useMemo(() => new Set(viewState.collapsedGroupIds), [viewState.collapsedGroupIds]);
-  const collapsedSubgroups = useMemo(() => new Set(viewState.collapsedGroupSubgroupKeys), [viewState.collapsedGroupSubgroupKeys]);
+  const subgroupKeys = useMemo(() => confirmedLoaded
+    ? migrateBriefingSubgroupKeys(viewState.collapsedGroupSubgroupKeys, groups)
+    : viewState.collapsedGroupSubgroupKeys, [confirmedLoaded, groups, viewState.collapsedGroupSubgroupKeys]);
+  useEffect(() => {
+    if (subgroupKeys === viewState.collapsedGroupSubgroupKeys) return;
+    setViewState((current) => ({ ...current,
+      collapsedGroupSubgroupKeys: migrateBriefingSubgroupKeys(current.collapsedGroupSubgroupKeys, groups),
+    }));
+  }, [subgroupKeys, viewState.collapsedGroupSubgroupKeys, groups, setViewState]);
+  const collapsedSubgroups = useMemo(() => new Set(subgroupKeys), [subgroupKeys]);
   const bundleExpanded = (bundleId: string) => Boolean(viewState.collectionSourceFilter.trim()) || !collapsedBundles.has(bundleId);
   const groupExpanded = (groupId: string) => Boolean(viewState.collectionSourceFilter.trim()) || !collapsedGroups.has(groupId);
   const navigationRows = useMemo(() => topLevel.flatMap((top) => top.kind === 'group'
     ? (() => { const { group, projection, layout } = top.entry; return groupExpanded(group.id)
       ? layout.flatMap((entry, index) => entry.kind === 'briefing'
         ? [{ key: `group:${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}:${entry.briefing.id}`, collection: entry.briefing }]
-        : collapsedSubgroups.has(`${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}`) && !viewState.collectionSourceFilter.trim()
+        : collapsedSubgroups.has(briefingSubgroupKey(group.id, entry.name)) && !viewState.collectionSourceFilter.trim()
           ? []
           : entry.briefings.map((briefing) => ({ key: `group:${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}:${briefing.id}`, collection: briefing })))
       : []; })()
@@ -223,12 +232,11 @@ export function CollectionsSidebar({
   };
 
   const toggleSubgroup = (subgroupKey: string) => {
-    setViewState((current) => ({
-      ...current,
-      collapsedGroupSubgroupKeys: current.collapsedGroupSubgroupKeys.includes(subgroupKey)
-        ? current.collapsedGroupSubgroupKeys.filter((key) => key !== subgroupKey)
-        : [...current.collapsedGroupSubgroupKeys, subgroupKey],
-    }));
+    setViewState((current) => {
+      const keys = migrateBriefingSubgroupKeys(current.collapsedGroupSubgroupKeys, groups);
+      return { ...current, collapsedGroupSubgroupKeys: keys.includes(subgroupKey)
+        ? keys.filter((key) => key !== subgroupKey) : [...keys, subgroupKey] };
+    });
   };
 
   const copyBriefingLink = (briefingId: string) => {
@@ -433,7 +441,7 @@ export function CollectionsSidebar({
                         </ul>
                       );
                     }
-                    const subgroupKey = `${projection.ownerGroupId}:${projection.layoutSource?.id ?? 'empty'}:${index}`;
+                    const subgroupKey = briefingSubgroupKey(group.id, entry.name);
                     const subgroupExpanded = Boolean(viewState.collectionSourceFilter.trim()) || !collapsedSubgroups.has(subgroupKey);
                     return (
                       <SidebarGroupNode
