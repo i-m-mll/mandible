@@ -850,7 +850,7 @@ function IssueActionsMenu({
               disabled={busy}
               onClick={() => closeAfter(onShowAuthEvidence)}
             >
-              Auth Evidence
+              Approval Evidence
             </button>
           )}
           {onSetStatus && detail.status === 'open' && !closeResolutionOpen && (
@@ -1404,11 +1404,11 @@ function AuthEvidenceModal({
         className="ledger-issue-modal__panel"
         role="dialog"
         aria-modal="true"
-        aria-label="Auth evidence"
+        aria-label="Approval evidence"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="ledger-issue-modal__header">
-          <h3>Auth Evidence</h3>
+          <h3>Approval Evidence</h3>
           <button type="button" className="ledger-icon-button" aria-label="Close auth evidence" onClick={onClose}>
             <CloseIcon />
           </button>

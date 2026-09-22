@@ -233,13 +233,10 @@ export function computeAuthRequestOutcome(
 }
 
 export type AuthExecutionMode = "daemon" | "remote";
-export type AuthRequestType =
-  | "merge"
-  | "commit"
-  | "force-push"
-  | "branch-delete"
-  | "config-change"
-  | "data-delete";
+export const AUTH_REQUEST_TYPES = [
+  "merge", "commit", "force-push", "branch-delete", "config-change", "data-delete",
+] as const;
+export type AuthRequestType = (typeof AUTH_REQUEST_TYPES)[number];
 
 export const AUTH_CHANGE_REPORT_FILE_ROLE_PRECEDENCE = [
   "fixtures_data",

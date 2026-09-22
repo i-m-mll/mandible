@@ -139,8 +139,8 @@ const SETTINGS_SECTIONS = {
   workQueue: { id: 'settings-work-queue', title: 'Work Queue' },
   issues: { id: 'settings-issues', title: 'Issues' },
   appearance: { id: 'settings-appearance', title: 'Appearance' },
-  auth: { id: 'auth-settings', title: 'Auth' },
-  authHooks: { id: 'settings-auth-hooks', title: 'Auth Hooks' },
+  auth: { id: 'auth-settings', title: 'Approvals' },
+  authHooks: { id: 'settings-auth-hooks', title: 'Approval Hooks' },
   versionControl: { id: 'settings-version-control', title: 'Version Control' },
   maintenance: { id: 'settings-maintenance', title: 'Maintenance' },
   backup: { id: 'settings-backup', title: 'Backup' },
@@ -2301,7 +2301,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell section={SETTINGS_SECTIONS.authHooks}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.authHooks}
-          description="Repo-specific post-auth hook configuration."
+          description="Repo-specific post-approval hook configuration."
         />
         <div className="settings-view__section-body">
           <AuthHooksPanel mutationsAllowed={operationalMutationsAllowed} />

@@ -815,6 +815,13 @@
         "access"
       ],
       "syntax": "mandible user access <user> <project> [--json]"
+    },
+    "auth.request.command": {
+      "route": [
+        "auth",
+        "request"
+      ],
+      "syntax": "mandible auth request --type <commit|force-push|branch-delete|config-change|data-delete> --command <command> --cwd <path> --repo <ref> --title <text> --issue <id> [--spec <text>|--spec-file <file>] [--no-watch]"
     }
   }
 }

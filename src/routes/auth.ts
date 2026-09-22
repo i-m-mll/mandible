@@ -1,3 +1,4 @@
+import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthActionValidationError } from "../auth-actions.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
@@ -497,7 +498,7 @@ export function registerAuthRoutes(
   app.get("/api/auth/queue", (req, res) => {
     const query = req.query ?? {};
     // Bug: dd21c1e — optional ?type=X filter
-    const typeFilter = typeof query.type === "string" && VALID_AUTH_REQUEST_TYPES.includes(query.type as AuthRequestType)
+    const typeFilter = typeof query.type === "string" && AUTH_REQUEST_TYPES.includes(query.type as AuthRequestType)
       ? (query.type as AuthRequestType)
       : undefined;
     let requests = authQueue.listActive();
@@ -521,7 +522,7 @@ export function registerAuthRoutes(
   app.get("/api/auth/history", (req, res) => {
     const query = req.query ?? {};
     // Bug: dd21c1e — optional ?type=X filter
-    const typeFilter = typeof query.type === "string" && VALID_AUTH_REQUEST_TYPES.includes(query.type as AuthRequestType)
+    const typeFilter = typeof query.type === "string" && AUTH_REQUEST_TYPES.includes(query.type as AuthRequestType)
       ? (query.type as AuthRequestType)
       : undefined;
     const limitRaw = typeof query.limit === "string" ? Number(query.limit) : undefined;
@@ -814,11 +815,6 @@ function resolveAuthRequester(
   };
 }
 
-// Bug: dd21c1e — valid auth request types for input validation
-const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
-  "merge", "commit", "force-push", "branch-delete", "config-change", "data-delete"
-];
-
 function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInput | null {
   if (typeof body.command !== "string" || typeof body.title !== "string") {
     return null;
@@ -826,7 +822,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
 
   // Bug: dd21c1e — parse type, default to 'merge'
   const type: AuthRequestType | undefined =
-    typeof body.type === "string" && VALID_AUTH_REQUEST_TYPES.includes(body.type as AuthRequestType)
+    typeof body.type === "string" && AUTH_REQUEST_TYPES.includes(body.type as AuthRequestType)
       ? (body.type as AuthRequestType)
       : undefined;
 
@@ -1059,8 +1055,8 @@ function parseAuthRequestUpdatePayload(
 
   // Bug: dd21c1e — allow updating type
   if (hasKey("type")) {
-    if (typeof body.type !== "string" || !VALID_AUTH_REQUEST_TYPES.includes(body.type as AuthRequestType)) {
-      return { ok: false, error: `Invalid 'type' — must be one of: ${VALID_AUTH_REQUEST_TYPES.join(", ")}` };
+    if (typeof body.type !== "string" || !AUTH_REQUEST_TYPES.includes(body.type as AuthRequestType)) {
+      return { ok: false, error: `Invalid 'type' — must be one of: ${AUTH_REQUEST_TYPES.join(", ")}` };
     }
     payload.type = body.type as AuthRequestType;
   }

@@ -1590,7 +1590,7 @@ describe('app shell', () => {
     await waitFor(() => expect(railGroupLinks(mounted.container, 'primary').slice(0, 3)
       .map((link) => link.dataset.railItem)).toEqual(['work', 'auth', 'console']));
 
-    fireEvent.click(screen.getByRole('link', { name: 'Auth' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Approvals' }));
     await waitFor(() => expect(window.location.hash).toBe('#/auth'));
     expect(railGroupLinks(mounted.container, 'primary').slice(0, 3)
       .map((link) => link.dataset.railItem)).toEqual(['work', 'auth', 'console']);
@@ -1663,7 +1663,7 @@ describe('app shell', () => {
       },
     });
 
-    fireEvent.click(screen.getByRole('link', { name: 'Auth' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Approvals' }));
     await waitFor(() => expect(window.location.hash).toBe('#/auth'));
     expect(railGroupLinks(mounted.container, 'primary').slice(0, 2)
       .map((link) => link.dataset.railItem)).toEqual(['auth', 'console']);
@@ -2736,9 +2736,9 @@ describe('AuthQueueView', () => {
       }),
     );
 
-    expect(screen.queryByLabelText('Auth request changes')).toBeNull();
+    expect(screen.queryByLabelText('Approval request changes')).toBeNull();
     fireEvent.click(screen.getByRole('tab', { name: 'Diff' }));
-    expect(screen.getByLabelText('Auth request changes')).toBeTruthy();
+    expect(screen.getByLabelText('Approval request changes')).toBeTruthy();
     expect(screen.getByText('No diff available for this request.')).toBeTruthy();
     expect(document.querySelector('.auth-detail__panels')).toBeNull();
   });
@@ -3068,14 +3068,14 @@ describe('AuthQueueView', () => {
     }));
     await waitFor(() => expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBe(finalized.id));
 
-    fireEvent.input(screen.getByLabelText('Search auth requests'), {
+    fireEvent.input(screen.getByLabelText('Search approval requests'), {
       target: { value: 'Filter next' },
     });
     await waitFor(() => expect(document.querySelector('[data-request-id="req-filter-next"]')?.classList.contains('auth-sidebar-item--selected')).toBe(true));
     expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBeNull();
 
-    fireEvent.input(screen.getByLabelText('Search auth requests'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Advanced auth filters' }));
+    fireEvent.input(screen.getByLabelText('Search approval requests'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced approval filters' }));
     fireEvent.click(screen.getByRole('button', { name: 'all' }));
     await waitFor(() => expect(document.querySelector('[data-request-id="req-filter-final"]')).toBeTruthy());
   });
@@ -3122,7 +3122,7 @@ describe('AuthQueueView', () => {
     );
 
     expect(screen.getByTitle('4 deferred actions')).toBeTruthy();
-    expect(screen.getByLabelText('Deferred auth actions')).toBeTruthy();
+    expect(screen.getByLabelText('Deferred approval actions')).toBeTruthy();
     expect(screen.getByText('On merge...')).toBeTruthy();
     expect(screen.queryByText('On merge, this request will also')).toBeNull();
     const panels = document.querySelector('.auth-detail__panels') as HTMLElement | null;
@@ -3308,7 +3308,7 @@ describe('AuthQueueView', () => {
     expect(screen.getByText('Vetoed')).toBeTruthy();
     expect(document.querySelector('.auth-action-row--failed')).toBeTruthy();
     fireEvent.click(screen.getByText('Plain auth'));
-    expect(screen.queryByLabelText('Deferred auth actions')).toBeNull();
+    expect(screen.queryByLabelText('Deferred approval actions')).toBeNull();
   });
 });
 
@@ -4867,7 +4867,7 @@ describe('LedgerIssueDetail', () => {
 
     render(h(LedgerIssueDetail, { detail }));
 
-    expect(screen.queryByRole('heading', { name: 'Auth Evidence' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Approval Evidence' })).toBeNull();
     expect(screen.getByText('resolved by')).toBeTruthy();
     expect(screen.getByText('Merge feature/x')).toBeTruthy();
     expect(screen.queryByText('Timeline')).toBeNull();
