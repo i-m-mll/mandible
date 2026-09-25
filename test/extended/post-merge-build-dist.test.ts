@@ -31,7 +31,6 @@ function runHookAfterMerge(
   changedPath: string,
   failGitDiff = false,
   replayAfterUnrelatedMerge = false,
-  failGatewayReload = false,
 ): HookResult {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-post-merge-hook-"));
   tempRoots.push(tempDir);
@@ -132,7 +131,6 @@ exec "$REAL_GIT" "$@"
       MANDIBLE_POST_MERGE_DESKTOP_COMMAND:
         'printf "desktop\\n" >> "$MANDIBLE_TEST_DESKTOP_TRACE"',
       MANDIBLE_TEST_TRACE: tracePath,
-      MANDIBLE_TEST_GATEWAY_FAIL: failGatewayReload ? "1" : "0",
       MANDIBLE_TEST_DESKTOP_TRACE: desktopTracePath,
       MANDIBLE_AUTH_MERGE_BASE_SHA: replayAfterUnrelatedMerge ? mergeBaseSha : "",
       MANDIBLE_AUTH_MERGE_HEAD_SHA: replayAfterUnrelatedMerge ? mergeHeadSha : "",
@@ -229,13 +227,12 @@ describe("post-merge build hook", () => {
     expect(fs.existsSync(path.join(result.home, ".claude", "CLAUDE.md"))).toBe(false);
   });
 
-  it("replays gateway convergence from the reviewed range and propagates reload failure", () => {
-    const replay = runHookAfterMerge("scripts/local-front-door.mjs", false, true);
+  it("replays supervised runtime changes through the desktop build after HEAD advances", () => {
+    const replay = runHookAfterMerge("scripts/local-runtime.mjs", false, true);
     expect(replay.status, replay.stderr).toBe(0);
-    expect(fs.readFileSync(replay.tracePath, "utf8")).toBe("gateway\n");
-    const failed = runHookAfterMerge("scripts/local-front-door.mjs", false, false, true);
-    expect(failed.status).toBe(23);
-    expect(failed.stderr).not.toContain("gateway configuration converged");
+    expect(replay.stderr).toContain("supervised runtime convergence skipped");
+    expect(fs.readFileSync(replay.desktopTracePath, "utf8")).toBe("desktop\n");
+    expect(fs.existsSync(replay.tracePath)).toBe(false);
   });
 
   it("exits nonzero when git diff fails", () => {

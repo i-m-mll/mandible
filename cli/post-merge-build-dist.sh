@@ -23,7 +23,6 @@ desktop_command="${MANDIBLE_POST_MERGE_DESKTOP_COMMAND:-bash cli/install-desktop
 build_needed=false
 desktop_build_needed=false
 instruction_install_needed=false
-gateway_reload_needed=false
 merge_base_sha="${MANDIBLE_AUTH_MERGE_BASE_SHA:-}"
 merge_head_sha="${MANDIBLE_AUTH_MERGE_HEAD_SHA:-}"
 if [[ -n "$merge_base_sha" || -n "$merge_head_sha" ]]; then
@@ -48,7 +47,9 @@ if [[ -n "$merge_base_sha" && -n "$merge_head_sha" ]]; then
   fi
   desktop_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
     package.json package-lock.json \
-    src-tauri scripts/make-dist.sh cli/install-desktop-app.sh)"
+    src-tauri scripts/make-dist.sh scripts/local-runtime.mjs scripts/canonical-origin.mjs \
+    scripts/local-front-door.mjs scripts/local-ca-trust.mjs scripts/pinned-caddy.mjs \
+    cli/install-desktop-app.sh)"
   if [[ -n "$desktop_changes" ]]; then
     desktop_build_needed=true
   fi
@@ -59,16 +60,10 @@ if [[ -n "$merge_base_sha" && -n "$merge_head_sha" ]]; then
   if [[ -n "$instruction_install_changes" ]]; then
     instruction_install_needed=true
   fi
-  gateway_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
-    scripts/local-front-door.mjs scripts/local-ca-trust.mjs scripts/pinned-caddy.mjs)"
-  if [[ -n "$gateway_changes" ]]; then
-    gateway_reload_needed=true
-  fi
 else
   build_needed=true
   desktop_build_needed=true
   instruction_install_needed=true
-  gateway_reload_needed=true
 fi
 
 if [[ "$build_needed" == "true" ]]; then
@@ -94,12 +89,18 @@ if [[ "$instruction_install_needed" == "true" ]]; then
   err "[post-merge-build] installed managed instruction fragments"
 fi
 
-if [[ "$gateway_reload_needed" == "true" ]]; then
-  node scripts/local-front-door.mjs reload --if-configured
-  err "[post-merge-build] local HTTPS gateway configuration converged"
-fi
-
 # A completed local-session cutover runs behind launchd from a stable runner.
 # Only publish the protected checkout as runnable after every build/install
 # step above succeeds; the daemon's self-merge exit then loads these bytes.
 node scripts/local-session-production-runner.mjs mark-ready
+runtime_home="${MANDIBLE_HOME:-$HOME/.mandible}"
+case "$runtime_home" in
+  "~") runtime_home="$HOME" ;;
+  "~/"*) runtime_home="$HOME/${runtime_home#\~/}" ;;
+esac
+if [[ -f "$runtime_home/config/local-sessions/cutover.json" ]]; then
+  node scripts/local-runtime.mjs converge
+  err "[post-merge-build] supervised daemon and HTTPS gateway converged"
+else
+  err "[post-merge-build] no local-session production record; supervised runtime convergence skipped"
+fi

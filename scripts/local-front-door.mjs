@@ -6,8 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
+import { fileURLToPath } from "node:url";
 import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
-import { assertLocalCaIdentity, localCaPaths } from "./local-ca-trust.mjs";
+import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
 
 const home = path.resolve(process.env.MANDIBLE_HOME || path.join(os.homedir(), ".mandible"));
 const caPaths = localCaPaths(home);
@@ -113,7 +114,7 @@ function install() {
 }
 
 function configure() {
-  requireTrustedCa();
+  requireTrustedCa({ verifyNative: false });
   fs.mkdirSync(authorityDir, { recursive: true, mode: 0o700 });
   const config = caddyfile(readInstances());
   if (fs.existsSync(binary)) {
@@ -126,10 +127,22 @@ function configure() {
   fs.chmodSync(configPath, 0o600);
 }
 
-function requireTrustedCa() {
+function requireTrustedCa({ verifyNative = true } = {}) {
   let ca;
   try { ca = assertLocalCaIdentity(caPaths); } catch (error) { fail(error.message); }
   if (ca.state !== "trusted") fail("Secure local connections are not set up. Choose the desktop Connections setup action or run node scripts/local-ca-trust.mjs setup before starting the front door.");
+  if (verifyNative) {
+    try { probeCurrentMacOsTrust(caPaths); } catch (error) { fail(error.message); }
+  }
+}
+
+function runRuntimeCommand(commandName, args = []) {
+  const script = fileURLToPath(new URL("./local-runtime.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, [script, commandName, ...args], {
+    env: process.env, encoding: "utf8", timeout: 45_000, maxBuffer: 2 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) fail((result.stderr || result.error?.message || "local runtime command failed").trim());
+  if (result.stdout) process.stdout.write(result.stdout);
 }
 
 if (command === "initialize") {
@@ -139,23 +152,10 @@ if (command === "initialize") {
 } else if (command === "configure") {
   configure();
 } else if (command === "reload") {
-  if (!fs.existsSync(configPath) && process.argv[3] === "--if-configured") {
-    process.stderr.write("Local HTTPS gateway is not configured; no reload needed.\n");
-  } else {
-    if (!fs.existsSync(binary)) fail("The configured local HTTPS gateway binary is missing.");
-    configure();
-    const result = spawnSync(binary, ["reload", "--config", configPath, "--adapter", "caddyfile"], {
-      stdio: "inherit", timeout: 30_000,
-    });
-    if (result.error) fail(`Local HTTPS gateway reload failed: ${result.error.message}`);
-    process.exit(result.status ?? 1);
-  }
+  runRuntimeCommand("reload-gateway", process.argv.slice(3));
 } else if (command === "run") {
   requireTrustedCa();
-  install();
-  configure();
-  const result = spawnSync(binary, ["run", "--config", configPath, "--adapter", "caddyfile"], { stdio: "inherit" });
-  process.exit(result.status ?? 1);
+  runRuntimeCommand("start");
 } else if (command === "status") {
   let ca;
   try { ca = assertLocalCaIdentity(caPaths); } catch (error) { fail(error.message); }

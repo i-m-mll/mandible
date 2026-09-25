@@ -6,7 +6,13 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const runtimeDir = path.join(os.homedir(), ".mandible", "config", "local-sessions");
+const configuredMandibleHome = process.env.MANDIBLE_HOME?.trim();
+const mandibleHome = configuredMandibleHome === "~"
+  ? os.homedir()
+  : configuredMandibleHome?.startsWith("~/")
+    ? path.join(os.homedir(), configuredMandibleHome.slice(2))
+    : path.resolve(configuredMandibleHome || path.join(os.homedir(), ".mandible"));
+const runtimeDir = path.join(mandibleHome, "config", "local-sessions");
 const journalPath = path.join(runtimeDir, "cutover.json");
 const installedRunnerPath = path.join(runtimeDir, "production-runner.mjs");
 const readyPath = path.join(runtimeDir, "production-ready.json");
