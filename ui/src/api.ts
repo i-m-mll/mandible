@@ -2838,6 +2838,17 @@ export function isDesktopShell(): boolean {
   return hasTauriRuntime();
 }
 
+export type NativeWindowCapabilities = {
+  liquidGlassClear: boolean;
+};
+
+export async function getNativeWindowCapabilities(): Promise<NativeWindowCapabilities> {
+  if (!hasTauriRuntime()) {
+    return { liquidGlassClear: false };
+  }
+  return invokeDesktop<NativeWindowCapabilities>('native_window_capabilities');
+}
+
 async function invokeDesktop<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const invoke = tauriInvoke();
   if (!invoke) {

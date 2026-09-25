@@ -13,6 +13,7 @@ import {
   getConsoleSessions,
   getDashboardBadges,
   getAppThemePreference,
+  getNativeWindowCapabilities,
   getInboxGlobal,
   getIssueRepos,
   getRepoBranches,
@@ -967,6 +968,24 @@ function App(): JSX.Element {
     if (typeof window !== 'undefined' && '__TAURI__' in window) {
       document.body.classList.add('tauri-window');
     }
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    getNativeWindowCapabilities()
+      .then(({ liquidGlassClear }) => {
+        if (!disposed && liquidGlassClear) {
+          document.documentElement.dataset.nativeGlass = 'clear';
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to read native window capabilities:', error);
+      });
+
+    return () => {
+      disposed = true;
+      document.documentElement.removeAttribute('data-native-glass');
+    };
   }, []);
 
   // Keyboard shortcuts for top-level tabs (Ctrl+1–9).

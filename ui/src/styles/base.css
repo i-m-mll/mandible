@@ -126,7 +126,10 @@ a {
 }
 
 .tauri-window .app-shell {
-  --app-header-height: max(48px, env(titlebar-area-height, 48px));
+  /* Overlay titlebars put web content behind the native controls. Reserve a
+     safe 44px strip (or the reported native height) before app header content. */
+  --app-titlebar-height: max(44px, env(titlebar-area-height, 44px));
+  --app-header-height: calc(var(--app-titlebar-height) + 48px);
 }
 
 .app-header {
@@ -526,7 +529,7 @@ a {
   flex-direction: column;
   gap: 14px;
   padding: calc(var(--app-header-height) + 18px) var(--app-rail-inline-padding) 18px;
-  background: var(--surface-chrome);
+  background: var(--surface-rail);
   border-right: none;
   box-shadow: none;
   /* The nav remains the vertical scroll owner. Keep the rail itself visible so
@@ -1102,7 +1105,7 @@ a {
   flex-direction: column;
   min-height: 0;
   height: 100%;
-  background: var(--surface-chrome);
+  background: var(--surface-sidebar);
 }
 
 .app-layout--view-sidebar-open .view-sidebar {
@@ -1197,6 +1200,31 @@ a {
 
 .app-layout--view-sidebar-open .view-sidebar.spaces-tree {
   box-shadow: none;
+}
+
+/* Native Clear glass is enabled only after Tauri confirms that the native
+   effect and transparent window backing were both configured. Shared rail and
+   sidebar tokens reveal the effect, while the split content surface paints an
+   opaque workspace beside the visible sidebar. */
+:root[data-native-glass='clear'] {
+  --surface-rail: var(--surface-glass-clear);
+  --surface-sidebar: var(--surface-glass-clear);
+  background: var(--surface-glass-clear);
+}
+
+:root[data-native-glass='clear'] body,
+:root[data-native-glass='clear'] #app,
+:root[data-native-glass='clear'] .app-shell,
+:root[data-native-glass='clear'] .app-layout {
+  background: var(--surface-glass-clear);
+}
+
+:root[data-native-glass='clear'] .app-layout--view-sidebar-open .app-content--view-sidebar {
+  background: linear-gradient(
+    to right,
+    var(--surface-glass-clear) 0 var(--app-view-sidebar-outer-width),
+    var(--surface-main) var(--app-view-sidebar-outer-width) 100%
+  );
 }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */

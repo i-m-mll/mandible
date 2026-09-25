@@ -16,11 +16,15 @@
         "height": 900,
         "resizable": true,
         "fullscreen": false,
-        "titleBarStyle": "Transparent",
+        "decorations": true,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
         "hiddenTitle": true,
+        "trafficLightPosition": { "x": 20, "y": 22 },
         "backgroundColor": "#0b0f14"
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }

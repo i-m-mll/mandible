@@ -14,6 +14,65 @@ mod canonical_origin;
 use canonical_origin::PRODUCTION_ORIGIN;
 
 const DEFAULT_PORT: u16 = 29420;
+
+#[derive(Default)]
+struct NativeWindowCapabilityState {
+    liquid_glass_clear: Arc<AtomicBool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeWindowCapabilities {
+    liquid_glass_clear: bool,
+}
+
+#[command]
+fn native_window_capabilities(
+    state: tauri::State<'_, NativeWindowCapabilityState>,
+) -> NativeWindowCapabilities {
+    NativeWindowCapabilities {
+        liquid_glass_clear: state.liquid_glass_clear.load(Ordering::Acquire),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn configure_clear_liquid_glass(window: tauri::WebviewWindow, enabled: Arc<AtomicBool>) {
+    let effect_window = window.clone();
+    let setup_result = window.with_webview(move |webview| {
+        use objc2_app_kit::NSView;
+        use window_vibrancy::{
+            apply_liquid_glass, clear_liquid_glass, LiquidGlassOptions, NSGlassEffectViewStyle,
+        };
+
+        // Put Tauri's webview inside the native glass view. Shared shell
+        // surfaces decide which parts of it expose the Clear effect.
+        let content_view: &NSView = unsafe { &*webview.inner().cast::<NSView>() };
+        let options = LiquidGlassOptions::new(NSGlassEffectViewStyle::Clear)
+            .opaque(false)
+            .content_view(content_view);
+
+        if let Err(error) = apply_liquid_glass(&effect_window, options) {
+            eprintln!("Could not enable native Clear glass: {error}");
+            return;
+        }
+
+        if let Err(error) =
+            effect_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)))
+        {
+            let _ = clear_liquid_glass(&effect_window);
+            let _ = effect_window.set_background_color(Some(tauri::window::Color(11, 15, 20, 255)));
+            eprintln!("Could not make the native Clear glass backing transparent: {error}");
+            return;
+        }
+
+        enabled.store(true, Ordering::Release);
+    });
+
+    if let Err(error) = setup_result {
+        eprintln!("Could not configure native Clear glass: {error}");
+    }
+}
+
 fn admits_native_command_origin(origin: &str) -> bool {
     origin == PRODUCTION_ORIGIN
 }
@@ -719,6 +778,7 @@ pub fn run() {
         }
     }
     tauri::Builder::default()
+        .manage(NativeWindowCapabilityState::default())
         .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
             if let Some(identifier) = isolated_store_identifier {
@@ -742,6 +802,13 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let dark = tauri::window::Color(11, 15, 20, 255);
                 let _ = window.set_background_color(Some(dark));
+                #[cfg(target_os = "macos")]
+                configure_clear_liquid_glass(
+                    window,
+                    app.state::<NativeWindowCapabilityState>()
+                        .liquid_glass_clear
+                        .clone(),
+                );
             }
             let setup_item = MenuItemBuilder::with_id(
                 "secure_local_connections_setup",
@@ -788,7 +855,8 @@ pub fn run() {
             secure_local_connections_status,
             secure_local_connections_setup,
             zone2_status,
-            zone2_bootstrap
+            zone2_bootstrap,
+            native_window_capabilities
         ])
         .run(context)
         .expect("error while running Mandible app");
