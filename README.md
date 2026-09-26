@@ -143,7 +143,7 @@ npm run build
 ### Running
 
 ```bash
-# Start the daemon (default port: 19420)
+# Start the daemon (default backend port: 29420)
 npm start
 
 # Or run directly
@@ -262,7 +262,7 @@ Mandible interacts with agents at four integration tiers:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MANDIBLE_PORT` | `19420` | Daemon HTTP/SSE port |
+| `MANDIBLE_PORT` | `29420` | Daemon HTTP/SSE backend port |
 | `MANDIBLE_DB` | `~/.mandible/mandible.db` | SQLite database path |
 | `MANDIBLE_HOME` | `~/.mandible` | Durable-state root (database, backups, config, artifacts) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |

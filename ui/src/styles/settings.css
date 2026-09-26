@@ -548,7 +548,8 @@
   color: #76e0b4;
 }
 
-.settings-view__daemon-badge--starting {
+.settings-view__daemon-badge--starting,
+.settings-view__daemon-badge--gateway_unavailable {
   background: rgba(245, 194, 92, 0.16);
   color: #f5c25c;
 }

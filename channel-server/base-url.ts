@@ -7,7 +7,9 @@
 // the internal transport contract: an explicit HTTP MANDIBLE_BASE wins,
 // otherwise the backend listener selected by MANDIBLE_PORT is used.
 
-const DEFAULT_PORT = "29420";
+import { DEFAULT_BACKEND_PORT } from "./canonical-origin.js";
+
+const DEFAULT_PORT = String(DEFAULT_BACKEND_PORT);
 const DEFAULT_HOST = "http://127.0.0.1";
 
 /**
