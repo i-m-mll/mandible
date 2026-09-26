@@ -4,7 +4,7 @@ import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { classifyRuntimeStatus, healthDocumentError, healthEndpointUrl, probeJson, renderLaunchAgent } from "../scripts/local-runtime.mjs";
+import { classifyRuntimeStatus, healthDocumentError, healthEndpointUrl, launchModeFromAgent, probeJson, renderLaunchAgent } from "../scripts/local-runtime.mjs";
 
 const servers: Array<http.Server | https.Server> = [];
 
@@ -50,6 +50,13 @@ function health(overrides: Record<string, unknown> = {}) {
 }
 
 describe("supervised runtime readiness", () => {
+  it("preserves the installed login mode and reads legacy RunAtLoad settings", () => {
+    expect(launchModeFromAgent({ EnvironmentVariables: { MANDIBLE_LAUNCH_MODE: "manual" }, RunAtLoad: true })).toBe("manual");
+    expect(launchModeFromAgent({ EnvironmentVariables: { MANDIBLE_LAUNCH_MODE: "on_demand" }, RunAtLoad: false })).toBe("on_demand");
+    expect(launchModeFromAgent({ EnvironmentVariables: {}, RunAtLoad: false })).toBe("manual");
+    expect(launchModeFromAgent({ EnvironmentVariables: {}, RunAtLoad: true })).toBe("on_demand");
+  });
+
   it("probes Mandible's health endpoint at both production origins", () => {
     expect(healthEndpointUrl("http://127.0.0.1:29420/old-path?stale=1#fragment").href)
       .toBe("http://127.0.0.1:29420/api/health");
@@ -78,6 +85,20 @@ describe("supervised runtime readiness", () => {
     expect(status.healthy).toBe(true);
     expect(status.dashboard_ready).toBe(false);
     expect(status.gateway_state).toBe("starting");
+  });
+
+  it("reports the shared gateway listener independently from its stopped backend", () => {
+    const status = classifyRuntimeStatus({
+      backend: { ok: false, error: "The service is not accepting connections." },
+      gateway: { ok: false, error: "The service is not accepting connections." },
+      backendPortOpen: false,
+      gatewayPortOpen: true,
+      backendJob: { loaded: false, pid: null },
+      gatewayJob: { loaded: true, pid: 202 },
+    });
+    expect(status.healthy).toBe(false);
+    expect(status.dashboard_ready).toBe(false);
+    expect(status.gateway_state).toBe("running");
   });
 
   it("reports an occupied unowned dashboard port as a conflict while preserving a healthy backend", () => {
@@ -119,7 +140,7 @@ describe("supervised runtime readiness", () => {
     if (!result.ok) expect(result.error).toContain("120 ms deadline");
   });
 
-  it("renders launchd-owned services that start on demand and recover exited processes", () => {
+  it("renders launchd-owned services with preserved login and recovery behavior", () => {
     const backend = renderLaunchAgent({
       label: "bio.mll.mandible.local-session-production",
       programArguments: ["/opt/node", "/path/with & spaces/production-runner.mjs", "run"],
@@ -127,6 +148,15 @@ describe("supervised runtime readiness", () => {
       environment: { HOME: "/operator home", MANDIBLE_HOME: "/operator home/.mandible" },
       stdoutPath: "/logs/backend.log",
       stderrPath: "/logs/backend-error.log",
+    });
+    const manualBackend = renderLaunchAgent({
+      label: "bio.mll.mandible.local-session-production",
+      programArguments: ["/opt/node", "/path/with & spaces/production-runner.mjs", "run"],
+      workingDirectory: "/path/with spaces",
+      environment: { HOME: "/operator home", MANDIBLE_HOME: "/operator home/.mandible" },
+      stdoutPath: "/logs/backend.log",
+      stderrPath: "/logs/backend-error.log",
+      runAtLoad: false,
     });
     const gateway = renderLaunchAgent({
       label: "bio.mll.mandible.local-front-door",
@@ -138,9 +168,11 @@ describe("supervised runtime readiness", () => {
     });
     for (const plist of [backend, gateway]) {
       expect(plist.match(/<plist version=/g)).toHaveLength(1);
-      expect(plist).toContain("<key>RunAtLoad</key><false/>");
+      expect(plist).toContain("<key>RunAtLoad</key><true/>");
       expect(plist).toContain("<key>KeepAlive</key><true/>");
     }
+    expect(manualBackend).toContain("<key>RunAtLoad</key><false/>");
+    expect(manualBackend).toContain("<key>KeepAlive</key><true/>");
     expect(backend).toContain("/path/with &amp; spaces/production-runner.mjs");
     expect(backend).toContain("<string>run</string>");
     expect(gateway).toContain("<string>run</string>");

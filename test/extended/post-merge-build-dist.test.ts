@@ -12,6 +12,7 @@ type HookResult = {
   home: string;
   tracePath: string;
   desktopTracePath: string;
+  runtimeTracePath: string;
 };
 
 function copyCliFile(name: string, destDir: string): void {
@@ -31,6 +32,7 @@ function runHookAfterMerge(
   changedPath: string,
   failGitDiff = false,
   replayAfterUnrelatedMerge = false,
+  withCutover = false,
 ): HookResult {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-post-merge-hook-"));
   tempRoots.push(tempDir);
@@ -40,6 +42,7 @@ function runHookAfterMerge(
   const cliDir = path.join(repo, "cli");
   const tracePath = path.join(tempDir, "trace");
   const desktopTracePath = path.join(tempDir, "desktop-trace");
+  const runtimeTracePath = path.join(tempDir, "runtime-trace");
   fs.mkdirSync(cliDir, { recursive: true });
   fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
   fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
@@ -55,6 +58,14 @@ import fs from "node:fs";
 fs.appendFileSync(process.env.MANDIBLE_TEST_TRACE, "gateway\\n");
 if (process.env.MANDIBLE_TEST_GATEWAY_FAIL === "1") process.exit(23);
 `);
+  fs.writeFileSync(path.join(repo, "scripts", "local-runtime.mjs"), `
+import fs from "node:fs";
+fs.appendFileSync(process.env.MANDIBLE_TEST_RUNTIME_TRACE, "runtime\\n");
+`);
+  if (withCutover) {
+    fs.mkdirSync(path.join(home, ".mandible", "config", "local-sessions"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".mandible", "config", "local-sessions", "cutover.json"), "{}\n");
+  }
   copyCliFile("instructions.sh", cliDir);
   copyCliFile("instructions-contract.md", cliDir);
   for (const file of ["command-syntax.sh", "command-syntax.cjs", "command-syntax.json"]) copyCliFile(file, cliDir);
@@ -132,13 +143,14 @@ exec "$REAL_GIT" "$@"
         'printf "desktop\\n" >> "$MANDIBLE_TEST_DESKTOP_TRACE"',
       MANDIBLE_TEST_TRACE: tracePath,
       MANDIBLE_TEST_DESKTOP_TRACE: desktopTracePath,
+      MANDIBLE_TEST_RUNTIME_TRACE: runtimeTracePath,
       MANDIBLE_AUTH_MERGE_BASE_SHA: replayAfterUnrelatedMerge ? mergeBaseSha : "",
       MANDIBLE_AUTH_MERGE_HEAD_SHA: replayAfterUnrelatedMerge ? mergeHeadSha : "",
       NODE_PATH: path.join(process.cwd(), "node_modules"),
     },
   });
 
-  return { status: result.status, stderr: result.stderr, home, tracePath, desktopTracePath };
+  return { status: result.status, stderr: result.stderr, home, tracePath, desktopTracePath, runtimeTracePath };
 }
 
 afterEach(() => {
@@ -227,12 +239,14 @@ describe("post-merge build hook", () => {
     expect(fs.existsSync(path.join(result.home, ".claude", "CLAUDE.md"))).toBe(false);
   });
 
-  it("replays supervised runtime changes through the desktop build after HEAD advances", () => {
-    const replay = runHookAfterMerge("scripts/local-runtime.mjs", false, true);
+  it("leaves the production runtime with launchd even when a historical cutover record exists", () => {
+    const replay = runHookAfterMerge("scripts/local-runtime.mjs", false, true, true);
     expect(replay.status, replay.stderr).toBe(0);
-    expect(replay.stderr).toContain("supervised runtime convergence skipped");
+    expect(replay.stderr).toContain("runtime restart remains with the production LaunchAgent");
     expect(fs.readFileSync(replay.desktopTracePath, "utf8")).toBe("desktop\n");
     expect(fs.existsSync(replay.tracePath)).toBe(false);
+    expect(fs.existsSync(replay.runtimeTracePath)).toBe(false);
+    expect(replay.stderr).not.toContain("converged");
   });
 
   it("exits nonzero when git diff fails", () => {

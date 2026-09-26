@@ -37,7 +37,7 @@ Mandible is three things: a Node.js daemon, a browser-based SPA, and optionally 
 
 ## The daemon
 
-The daemon is a Node.js process that serves the HTTP API, the SSE event stream, the WebSocket terminal connections, and the static SPA files --- all from a single `http.Server` on port 19420 (configurable via `MANDIBLE_PORT`).
+The daemon is a Node.js process that serves the HTTP API, the SSE event stream, the WebSocket terminal connections, and the static SPA files from one `http.Server`. Its default loopback backend port is 29420 (`MANDIBLE_PORT`); the desktop and browser use the trusted HTTPS gateway at `https://app.mandible.localhost:19420`.
 
 ### No framework
 

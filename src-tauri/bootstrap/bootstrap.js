@@ -9,7 +9,9 @@
   const gatewayLogFile = document.getElementById("gateway-log-file");
   const startBtn = document.getElementById("start-btn");
   const retryBtn = document.getElementById("retry-btn");
-  const skipAutoStart = new URLSearchParams(window.location.search).get("skip_autostart") === "1";
+  const query = new URLSearchParams(window.location.search);
+  const skipAutoStart = query.get("skip_autostart") === "1";
+  let navigationFailed = query.get("dashboard_navigation_failed") === "1";
 
   let pollTimer = null;
   let autoStartAttempted = skipAutoStart;
@@ -71,14 +73,10 @@
       await invoke("navigate_to_desktop_dashboard");
     } catch (error) {
       navigationPending = false;
+      navigationFailed = true;
       statusCopy.textContent = `The dashboard could not be opened: ${String(error)}`;
-      schedulePoll();
       return;
     }
-    window.setTimeout(() => {
-      navigationPending = false;
-      void refreshStatus();
-    }, 900);
   }
 
   async function refreshStatus() {
@@ -93,6 +91,11 @@
     try {
       const status = await invoke("daemon_status");
       updateStatus(status);
+      if (navigationFailed) {
+        statusCopy.textContent = "The dashboard page did not finish loading. Check the connection, then choose Retry to open it again.";
+        setBusy(false);
+        return;
+      }
       if (status.dashboard_ready) {
         await openDashboard();
         return;
@@ -154,6 +157,7 @@
     void handleStart();
   });
   retryBtn.addEventListener("click", () => {
+    navigationFailed = false;
     void refreshStatus();
   });
 

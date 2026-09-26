@@ -75,10 +75,13 @@ function runInstaller(
   const backups = path.join(root, "backups");
   const buildTrace = path.join(root, "build-trace");
   const relaunchTrace = path.join(root, "relaunch-trace");
+  const runtimeTrace = path.join(root, "runtime-trace");
   const codesignCount = path.join(root, "codesign-count");
   makeBundle(built, "new", options.signed ?? true);
   if (options.installed !== false) makeBundle(installed, "old");
   const tools = makeTooling(root);
+  const nodeCommand = path.join(root, "bin", "node-runtime-setup");
+  fs.writeFileSync(nodeCommand, '#!/bin/bash\nprintf "%s\\n" "$@" > "$MANDIBLE_TEST_RUNTIME_TRACE"\n', { mode: 0o755 });
   const terminated = path.join(root, "terminated");
   const relaunchPgrep = path.join(root, "bin", "relaunch-pgrep");
   const relaunchPs = path.join(root, "bin", "relaunch-ps");
@@ -125,6 +128,8 @@ function runInstaller(
       MANDIBLE_DESKTOP_CODESIGN: tools.codesign,
       MANDIBLE_DESKTOP_DITTO: tools.ditto,
       MANDIBLE_DESKTOP_PLISTBUDDY: tools.plist,
+      MANDIBLE_DESKTOP_NODE: nodeCommand,
+      MANDIBLE_TEST_RUNTIME_TRACE: runtimeTrace,
       MANDIBLE_DESKTOP_ASSUME_RUNNING: options.running ? "1" : "0",
       MANDIBLE_DESKTOP_RELAUNCH_COMMAND: options.defaultRelaunch
         ? ""
@@ -142,7 +147,7 @@ function runInstaller(
     },
   });
 
-  return { result, installed, backups, buildTrace, relaunchTrace };
+  return { result, installed, backups, buildTrace, relaunchTrace, runtimeTrace };
 }
 
 afterEach(() => {
@@ -219,10 +224,12 @@ fi
   });
 
   it("validates, backs up, installs, and requests relaunch for a running app", () => {
-    const { result, installed, backups, buildTrace, relaunchTrace } = runInstaller({ running: true });
+    const { result, installed, backups, buildTrace, relaunchTrace, runtimeTrace } = runInstaller({ running: true });
 
     expect(result.status, result.stderr).toBe(0);
     expect(fs.readFileSync(buildTrace, "utf8")).toBe("build\n");
+    expect(fs.readFileSync(runtimeTrace, "utf8")).toContain("scripts/local-runtime.mjs\ninstall\n--root\n");
+    expect(fs.readFileSync(runtimeTrace, "utf8")).toContain(`${process.cwd()}\n`);
     expect(fs.readFileSync(path.join(installed, "Contents", "marker"), "utf8")).toBe("new");
     const backup = fs.readdirSync(backups).find((entry) => entry.endsWith(".app"));
     expect(backup).toBeTruthy();
@@ -255,13 +262,14 @@ fi
   });
 
   it("leaves the installed app untouched when the built signature is invalid", () => {
-    const { result, installed, backups, relaunchTrace } = runInstaller({ signed: false });
+    const { result, installed, backups, relaunchTrace, runtimeTrace } = runInstaller({ signed: false });
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("failed code-signature verification");
     expect(fs.readFileSync(path.join(installed, "Contents", "marker"), "utf8")).toBe("old");
     expect(fs.existsSync(backups)).toBe(false);
     expect(fs.existsSync(relaunchTrace)).toBe(false);
+    expect(fs.existsSync(runtimeTrace)).toBe(false);
   });
 
   it("restores the previous app when installed-bundle validation fails after the swap", () => {

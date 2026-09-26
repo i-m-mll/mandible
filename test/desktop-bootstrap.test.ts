@@ -92,4 +92,17 @@ describe("desktop bootstrap navigation", () => {
     expect(result.calls).toEqual(["daemon_status"]);
     expect(result.elements.get("status-copy")?.textContent).toContain("can start it on demand");
   });
+
+  it("keeps the bootstrap visible after a failed dashboard load and retries only on user action", async () => {
+    const result = await bootBootstrap({
+      search: "?skip_autostart=1&dashboard_navigation_failed=1",
+      status: status(),
+    });
+    expect(result.calls).toEqual(["daemon_status"]);
+    expect(result.elements.get("status-copy")?.textContent).toContain("did not finish loading");
+
+    result.listeners.get("retry-btn:click")?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(result.calls).toEqual(["daemon_status", "daemon_status", "navigate_to_desktop_dashboard"]);
+  });
 });

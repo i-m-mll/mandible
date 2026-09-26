@@ -5,24 +5,26 @@ description: Running Mandible as a native macOS application with Tauri.
 
 # Desktop App
 
-Mandible ships as a Tauri 2 native application. The desktop shell wraps the same web dashboard in a native macOS window and adds daemon lifecycle management — you can start, stop, and restart the Mandible daemon directly from the app without touching the terminal.
+Mandible ships as a Tauri 2 native application. The desktop shell opens the web dashboard in a native macOS window and controls the same per-user launchd services used by local runtime operations.
 
 ## Architecture
 
 The desktop app has two components:
 
-1. **Tauri shell** (Rust) — a thin native wrapper that provides a transparent-titlebar window, daemon process management commands, and Zone 2 runtime resolution. It connects through the registered HTTPS production origin and installs opaque HttpOnly sessions directly into the webview.
+1. **Tauri shell** (Rust) — a thin native wrapper with a transparent title bar. It connects through the registered HTTPS production origin and installs opaque HttpOnly sessions directly into the webview.
 
-2. **Mandible daemon** (Node.js) — the same server process that runs when you do `npm start`. The Tauri shell can launch it as a child process, monitor its health, and restart it.
+2. **Local services** — launchd owns the Mandible backend and shared HTTPS gateway. The backend's login behavior follows the saved launch mode; configured services restart if their process exits.
 
 ## Daemon lifecycle
 
-When the desktop app opens, it checks whether the daemon is already running by hitting `GET /api/health` on port 19420. The behavior depends on the **launch mode** setting:
+The desktop checks the backend at `http://127.0.0.1:29420/api/health` and the trusted dashboard at `https://app.mandible.localhost:19420/api/health`. It opens the dashboard only when both report the expected production instance and build and the HTTPS certificate is trusted. Backend health and dashboard availability remain separate status facts.
+
+The behavior depends on the **launch mode** setting:
 
 | Mode | Behavior |
 |------|----------|
-| **on_demand** (default) | If the daemon isn't running, the app starts it automatically and waits for the health check to pass. |
-| **manual** | The app shows a bootstrap screen with a Start button. You control when the daemon starts. |
+| **on_demand** (default) | The backend LaunchAgent starts at login. If the backend is stopped while opening the app, Mandible starts it and waits for readiness. |
+| **manual** | The backend LaunchAgent does not start at login. The bootstrap screen offers a Start button. |
 
 The launch mode is stored in `~/Library/Application Support/bio.mll.mandible/desktop.json` and can be changed from Settings > Mandible Daemon.
 
@@ -32,19 +34,19 @@ The daemon status indicator in Settings shows one of:
 
 | State | Meaning |
 |-------|---------|
-| **Running** | Health check passes. Everything is normal. |
-| **Starting** | The daemon process exists but hasn't reported healthy yet. |
-| **Stopped** | No PID file and no process listening on the port. |
-| **Stale PID** | A PID file exists but the process is gone. Typically means the daemon crashed. Starting will clean up the stale file. |
-| **Port conflict** | Something is listening on port 19420, but it's not responding as a Mandible daemon. |
+| **Running** | The backend and trusted dashboard are ready. |
+| **Gateway unavailable** | The backend is healthy, but the HTTPS dashboard cannot be reached or verified. The error identifies the gateway issue. |
+| **Starting** | An owned service is starting but has not reported ready. |
+| **Stopped** | The production backend is not ready. |
+| **Port conflict** | A required port is held by an unrecognized process. Mandible preserves that process. |
 
 ### Controls
 
 From Settings > Mandible Daemon:
 
-- **Start** — launch the daemon (disabled if already running).
-- **Restart** — stop, then start. Navigates to the bootstrap screen during the restart.
-- **Stop** — send SIGTERM and wait up to 4 seconds for shutdown.
+- **Start** — load the backend service and wait for readiness.
+- **Restart** — restart the owned backend, then return to the dashboard when navigation finishes.
+- **Stop** — stop the production backend. The shared HTTPS gateway remains available when previews use it.
 - **View logs** — navigate to the Logs tab.
 
 ## Zone 2: Mutable runtime

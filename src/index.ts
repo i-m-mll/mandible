@@ -104,8 +104,8 @@ import {
   RestartAvailabilityStore,
   restartAvailabilityInstanceKey,
 } from "./restart-availability.js";
+import { DEFAULT_BACKEND_PORT } from "./canonical-origin.js";
 
-const DEFAULT_PORT = 29420;
 const STARTUP_DISCOVERY_DELAY_MS = 1_000;
 
 let startupInfo: StartupCommitInfo | null = null;
@@ -761,10 +761,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 function getPort(): number {
   const raw = process.env.MANDIBLE_PORT;
   if (!raw) {
-    return DEFAULT_PORT;
+    return DEFAULT_BACKEND_PORT;
   }
   const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : DEFAULT_PORT;
+  return Number.isFinite(parsed) ? parsed : DEFAULT_BACKEND_PORT;
 }
 
 function resolveVersion(): string {

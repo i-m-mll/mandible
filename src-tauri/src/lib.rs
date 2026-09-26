@@ -4,16 +4,62 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::webview::PageLoadEvent;
 use tauri::{command, AppHandle, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 mod canonical_origin;
 use canonical_origin::PRODUCTION_ORIGIN;
 
 const RUNTIME_COMMAND_TIMEOUT: Duration = Duration::from_secs(40);
+const DASHBOARD_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(12);
+
+struct PendingDashboardNavigation {
+    id: u64,
+    origin: String,
+    started: bool,
+    completion: Sender<()>,
+}
+
+static DASHBOARD_NAVIGATION: Mutex<Option<PendingDashboardNavigation>> = Mutex::new(None);
+static NEXT_DASHBOARD_NAVIGATION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn is_dashboard_origin(url: &tauri::Url) -> bool {
+    url.origin().ascii_serialization() == PRODUCTION_ORIGIN
+}
+
+fn note_dashboard_page_load(label: &str, url: &tauri::Url, event: PageLoadEvent) {
+    if label != "main" || !is_dashboard_origin(url) {
+        return;
+    }
+    let mut pending = DASHBOARD_NAVIGATION.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(pending) = pending.as_mut() {
+        if pending.origin != url.origin().ascii_serialization() {
+            return;
+        }
+        match event {
+            PageLoadEvent::Started => pending.started = true,
+            PageLoadEvent::Finished if pending.started => {
+                let _ = pending.completion.send(());
+            }
+            PageLoadEvent::Finished => {}
+        }
+    }
+}
+
+fn return_to_bootstrap_after_navigation_failure(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(mut url) = tauri::Url::parse("tauri://localhost/index.html") {
+            url.set_query(Some("skip_autostart=1&dashboard_navigation_failed=1"));
+            let _ = window.navigate(url);
+        }
+    }
+}
+
 fn admits_native_command_origin(origin: &str) -> bool {
     origin == PRODUCTION_ORIGIN
 }
@@ -209,7 +255,7 @@ fn daemon_set_launch_mode(app: AppHandle, launch_mode: String) -> Result<DaemonS
     let mut config = read_desktop_config(&app)?;
     config.daemon_launch_mode = launch_mode;
     write_desktop_config(&app, &config)?;
-    run_local_runtime(&app, "status", &config)
+    run_local_runtime(&app, "configure-launch-mode", &config)
 }
 
 #[command]
@@ -255,7 +301,7 @@ fn navigate_to_desktop_bootstrap(app: AppHandle, skip_auto_start: bool) -> Resul
 }
 
 #[command]
-fn navigate_to_desktop_dashboard(app: AppHandle) -> Result<(), String> {
+async fn navigate_to_desktop_dashboard(app: AppHandle) -> Result<(), String> {
     let status = run_local_runtime(&app, "status", &read_desktop_config(&app)?)?;
     if !status.dashboard_ready || !admits_native_command_origin(&status.dashboard_origin) {
         return Err(status
@@ -267,9 +313,50 @@ fn navigate_to_desktop_dashboard(app: AppHandle) -> Result<(), String> {
         .ok_or_else(|| "desktop main window is unavailable".to_string())?;
     let url = tauri::Url::parse(PRODUCTION_ORIGIN)
         .map_err(|error| format!("invalid canonical dashboard origin: {error}"))?;
-    window
-        .navigate(url)
-        .map_err(|error| format!("failed to navigate to the trusted dashboard: {error}"))
+    let operation_id = NEXT_DASHBOARD_NAVIGATION_ID.fetch_add(1, Ordering::Relaxed);
+    let (completion, completed) = mpsc::channel();
+    {
+        let mut pending = DASHBOARD_NAVIGATION.lock().unwrap_or_else(|error| error.into_inner());
+        if pending.is_some() {
+            return Err("a dashboard navigation is already in progress".to_string());
+        }
+        *pending = Some(PendingDashboardNavigation {
+            id: operation_id,
+            origin: url.origin().ascii_serialization(),
+            started: false,
+            completion,
+        });
+    }
+    if let Err(error) = window.navigate(url) {
+        clear_dashboard_navigation(operation_id);
+        return_to_bootstrap_after_navigation_failure(&app);
+        return Err(format!("failed to navigate to the trusted dashboard: {error}"));
+    }
+
+    let waited = tauri::async_runtime::spawn_blocking(move || completed.recv_timeout(DASHBOARD_NAVIGATION_TIMEOUT)).await;
+    clear_dashboard_navigation(operation_id);
+    let wait = waited.map_err(|error| format!("dashboard navigation monitor failed: {error}"))?;
+    match wait {
+        Ok(()) => Ok(()),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return_to_bootstrap_after_navigation_failure(&app);
+            Err(format!(
+                "the trusted dashboard did not finish loading within {} seconds",
+                DASHBOARD_NAVIGATION_TIMEOUT.as_secs()
+            ))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return_to_bootstrap_after_navigation_failure(&app);
+            Err("the dashboard navigation completion monitor closed unexpectedly".to_string())
+        }
+    }
+}
+
+fn clear_dashboard_navigation(operation_id: u64) {
+    let mut pending = DASHBOARD_NAVIGATION.lock().unwrap_or_else(|error| error.into_inner());
+    if pending.as_ref().is_some_and(|operation| operation.id == operation_id) {
+        *pending = None;
+    }
 }
 
 /// Issue 24f0316 — Mandible config lives under the durable root `~/.mandible`
@@ -563,6 +650,9 @@ pub fn run() {
         }
     }
     tauri::Builder::default()
+        .on_page_load(|webview, payload| {
+            note_dashboard_page_load(webview.label(), payload.url(), payload.event());
+        })
         .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
             if let Some(identifier) = isolated_store_identifier {
@@ -668,9 +758,15 @@ fn isolated_webkit_store_identifier(home: &Path) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::{
-        admits_native_command_origin, is_secure_connections_setup_link, resolve_user_path_from,
+        admits_native_command_origin, is_dashboard_origin, is_secure_connections_setup_link, resolve_user_path_from,
         PRODUCTION_ORIGIN,
     };
+
+    #[test]
+    fn dashboard_load_completion_accepts_only_the_canonical_origin() {
+        assert!(is_dashboard_origin(&tauri::Url::parse("https://app.mandible.localhost:19420/inbox").unwrap()));
+        assert!(!is_dashboard_origin(&tauri::Url::parse("https://app.mandible.localhost:19421/inbox").unwrap()));
+    }
     #[test]
     fn native_ca_setup_deep_link_has_one_exact_target() {
         assert!(is_secure_connections_setup_link(

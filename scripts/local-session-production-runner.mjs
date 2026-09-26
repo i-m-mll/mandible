@@ -1,105 +1,113 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
+import { DEFAULT_BACKEND_PORT, PRODUCTION_ORIGIN } from "./canonical-origin.mjs";
+import { readBuildRevision } from "./build-revision.mjs";
 
-const configuredMandibleHome = process.env.MANDIBLE_HOME?.trim();
-const mandibleHome = configuredMandibleHome === "~"
-  ? os.homedir()
-  : configuredMandibleHome?.startsWith("~/")
-    ? path.join(os.homedir(), configuredMandibleHome.slice(2))
-    : path.resolve(configuredMandibleHome || path.join(os.homedir(), ".mandible"));
+function expandHome(value) {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
+  return path.resolve(value);
+}
+
+const mandibleHome = expandHome(process.env.MANDIBLE_HOME?.trim() || path.join(os.homedir(), ".mandible"));
 const runtimeDir = path.join(mandibleHome, "config", "local-sessions");
-const journalPath = path.join(runtimeDir, "cutover.json");
-const installedRunnerPath = path.join(runtimeDir, "production-runner.mjs");
-const readyPath = path.join(runtimeDir, "production-ready.json");
+const installationAuthorityPath = path.join(mandibleHome, "config", "client-auth", "authority-id");
+const defaultHome = path.join(os.homedir(), ".mandible");
+const suffix = mandibleHome === defaultHome ? "" : `.${createHash("sha256").update(mandibleHome).digest("hex").slice(0, 8)}`;
+const backendLabel = `bio.mll.mandible.local-session-production${suffix}`;
+const launchAgentPath = path.join(os.homedir(), "Library", "LaunchAgents", `${backendLabel}.plist`);
 
-function readCompletedProduction() {
-  const journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
-  if (journal.state !== "complete") throw new Error("Local-session production cutover is not complete.");
-  const main = journal.manifest.instances.find((instance) => instance.role === "main");
-  if (!main?.candidate?.process?.cwd || main.candidate.process.env?.MANDIBLE_INSTANCE_ROLE !== "main") {
-    throw new Error("Completed cutover has no pinned production process.");
-  }
-  return main;
-}
-
-function git(cwd, ...args) {
-  const result = spawnSync("git", args, {
-    cwd,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-    encoding: "utf8",
+function launchAgentRecord() {
+  const result = spawnSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", launchAgentPath], {
+    encoding: "utf8", timeout: 1500,
   });
-  if (result.status !== 0) throw new Error(`Cannot verify production checkout: ${result.stderr.trim()}`);
-  return result.stdout.trim();
-}
-
-function installRunner() {
-  readCompletedProduction();
-  const source = fileURLToPath(import.meta.url);
-  if (path.resolve(source) === path.resolve(installedRunnerPath)) return;
-  const temporary = `${installedRunnerPath}.${process.pid}.tmp`;
-  fs.copyFileSync(source, temporary);
-  fs.chmodSync(temporary, 0o700);
-  fs.renameSync(temporary, installedRunnerPath);
-}
-
-function markReady() {
-  if (!fs.existsSync(journalPath)) return { skipped: "no local-session cutover" };
-  const journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
-  if (journal.state !== "complete") return { skipped: "local-session cutover is not complete" };
-  const main = readCompletedProduction();
-  const root = git(process.cwd(), "rev-parse", "--show-toplevel");
-  const expectedRoot = fs.existsSync(readyPath)
-    ? JSON.parse(fs.readFileSync(readyPath, "utf8")).root
-    : path.dirname(git(main.candidate.process.cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"));
-  if (root !== expectedRoot) return { skipped: "not the protected production checkout" };
-  const commit = git(root, "rev-parse", "HEAD");
-  const ancestor = spawnSync("git", ["merge-base", "--is-ancestor", main.candidate.commit, commit], {
-    cwd: root,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  });
-  if (ancestor.status !== 0 || !fs.existsSync(path.join(root, "dist", "index.js"))) {
-    throw new Error("Protected checkout does not contain the cutover candidate and built daemon.");
+  if (result.error || result.status !== 0) {
+    throw new Error(`Could not read Mandible's production LaunchAgent ${launchAgentPath}: ${(result.stderr || result.error?.message || "unknown failure").trim()}`);
   }
-  installRunner();
-  const temporary = `${readyPath}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify({ root, commit })}\n`, { mode: 0o600 });
-  fs.renameSync(temporary, readyPath);
-  return { root, commit };
+  try { return JSON.parse(result.stdout); }
+  catch { throw new Error(`Mandible's production LaunchAgent is malformed: ${launchAgentPath}`); }
+}
+
+function configuredRoot() {
+  const record = launchAgentRecord();
+  if (record.Label !== backendLabel) throw new Error("The production LaunchAgent label does not match this Mandible installation.");
+  const args = record.ProgramArguments ?? [];
+  if (args.length !== 3 || path.resolve(args[1]) !== path.join(runtimeDir, "production-runner.mjs") || args[2] !== "run") {
+    throw new Error("The production LaunchAgent does not use Mandible's managed runner.");
+  }
+  const root = record.EnvironmentVariables?.MANDIBLE_PRODUCTION_ROOT;
+  if (!path.isAbsolute(root ?? "") || !fs.existsSync(path.join(root, "package.json"))) {
+    throw new Error("The production LaunchAgent does not name a Mandible checkout.");
+  }
+  return { root: path.resolve(root), environment: record.EnvironmentVariables ?? {} };
+}
+
+function mainRegistration(root) {
+  const requireFromProject = createRequire(path.join(root, "package.json"));
+  const Database = requireFromProject("better-sqlite3");
+  const db = new Database(path.join(runtimeDir, "sessions.db"), { readonly: true, fileMustExist: true });
+  try {
+    const rows = db.prepare(`SELECT instance_id, installation_id, role, public_origin, backend_origin,
+      effect_ceiling_json, writable_roots_json FROM instance_registrations WHERE role = 'main'`).all();
+    if (rows.length !== 1) throw new Error(`Expected one registered production instance, found ${rows.length}.`);
+    const main = rows[0];
+    const authorityId = fs.readFileSync(installationAuthorityPath, "utf8").trim();
+    if (main.instance_id !== "production" || main.installation_id !== authorityId || main.public_origin !== PRODUCTION_ORIGIN) {
+      throw new Error("The registered production instance does not match this installation's canonical identity.");
+    }
+    const backend = new URL(main.backend_origin);
+    if (backend.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(backend.hostname)
+      || !backend.port || Number(backend.port) === Number(new URL(PRODUCTION_ORIGIN).port)) {
+      throw new Error("The registered production backend is not an isolated loopback HTTP listener.");
+    }
+    return {
+      ...main,
+      backendUrl: backend,
+      effectCeiling: JSON.parse(main.effect_ceiling_json),
+      writableRoots: JSON.parse(main.writable_roots_json),
+    };
+  } finally {
+    db.close();
+  }
 }
 
 async function run() {
-  const main = readCompletedProduction();
-  const candidate = main.candidate.process;
-  let cwd = candidate.cwd;
-  let generation = candidate.env.MANDIBLE_BACKEND_GENERATION;
-  if (fs.existsSync(readyPath)) {
-    const ready = JSON.parse(fs.readFileSync(readyPath, "utf8"));
-    if (!path.isAbsolute(ready.root) || !/^[a-f0-9]{40}$/.test(ready.commit)
-      || git(ready.root, "rev-parse", "HEAD") !== ready.commit
-      || !fs.existsSync(path.join(ready.root, "dist", "index.js"))) {
-      throw new Error("Protected production build marker drifted; refusing a stale backend.");
-    }
-    cwd = ready.root;
-    generation = ready.commit;
-  }
-  for (const [key, value] of Object.entries(candidate.env)) process.env[key] = value;
-  process.env.MANDIBLE_BASE = candidate.env.MANDIBLE_PUBLIC_ORIGIN;
+  const configured = configuredRoot();
+  const root = configured.root;
+  const generation = readBuildRevision(root);
+  const main = mainRegistration(root);
+  const entry = path.join(root, "dist", "index.js");
+
+  process.env.HOME = os.homedir();
+  process.env.MANDIBLE_HOME = mandibleHome;
+  process.env.MANDIBLE_PRODUCTION_ROOT = root;
+  process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = runtimeDir;
+  process.env.MANDIBLE_CLIENT_AUTH_DIR = path.join(mandibleHome, "config", "client-auth");
+  process.env.MANDIBLE_CONTEXT_VERIFICATION_KEY = path.join(runtimeDir, "context-verification-key.pem");
+  process.env.MANDIBLE_INSTANCE_ROLE = "main";
+  process.env.MANDIBLE_INSTANCE_ID = main.instance_id;
+  process.env.MANDIBLE_INSTALLATION_ID = main.installation_id;
+  process.env.MANDIBLE_PUBLIC_ORIGIN = main.public_origin;
   process.env.MANDIBLE_BACKEND_GENERATION = generation;
+  process.env.MANDIBLE_ALLOWED_EFFECTS = JSON.stringify(main.effectCeiling);
+  process.env.MANDIBLE_WRITABLE_ROOTS = JSON.stringify(main.writableRoots);
+  process.env.MANDIBLE_BASE = PRODUCTION_ORIGIN;
+  process.env.MANDIBLE_PORT = String(Number(main.backendUrl.port) || DEFAULT_BACKEND_PORT);
   process.env.GIT_OPTIONAL_LOCKS = "0";
-  process.chdir(cwd);
-  const entry = path.join(cwd, "dist", "index.js");
+
+  process.chdir(root);
   process.argv[1] = entry;
-  process.stderr.write(`[production-runner] starting ${cwd} generation ${generation}\n`);
+  process.stderr.write(`[production-runner] starting ${root} build ${generation}\n`);
   await import(pathToFileURL(entry).href);
 }
 
 const command = process.argv[2];
-if (command === "install-runner") installRunner();
-else if (command === "mark-ready") console.log(JSON.stringify(markReady()));
-else if (command === "run") await run();
-else throw new Error("Usage: local-session-production-runner.mjs install-runner|mark-ready|run");
+if (command !== "run") throw new Error("Usage: local-session-production-runner.mjs run");
+await run();
