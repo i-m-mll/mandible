@@ -15,6 +15,93 @@ use tauri_plugin_deep_link::DeepLinkExt;
 mod canonical_origin;
 use canonical_origin::PRODUCTION_ORIGIN;
 
+#[derive(Default)]
+struct NativeWindowCapabilityState {
+    liquid_glass_regular: Arc<AtomicBool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeWindowCapabilities {
+    liquid_glass_regular: bool,
+}
+
+#[command]
+fn native_window_capabilities(
+    state: tauri::State<'_, NativeWindowCapabilityState>,
+) -> NativeWindowCapabilities {
+    NativeWindowCapabilities {
+        liquid_glass_regular: state.liquid_glass_regular.load(Ordering::Acquire),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn configure_regular_liquid_glass(window: tauri::WebviewWindow, enabled: Arc<AtomicBool>) {
+    use window_vibrancy::{
+        apply_liquid_glass, clear_liquid_glass, LiquidGlassOptions, NSGlassEffectViewStyle,
+    };
+
+    let glass_applied = Arc::new(AtomicBool::new(false));
+    let callback_glass_applied = glass_applied.clone();
+    let effect_window = window.clone();
+    // Called from Builder::setup on the macOS main thread. The locked Wry
+    // runtime handles same-thread with_webview messages synchronously, so the
+    // callback has returned before this function continues. Keep Tauri window
+    // dispatches below, outside the callback, to avoid re-entering its lock.
+    let setup_result = window.with_webview(move |webview| {
+        use objc2_app_kit::NSView;
+
+        // Put Tauri's webview inside the native glass view. Shared shell
+        // surfaces decide which parts of it expose the Regular effect.
+        let content_view: &NSView = unsafe { &*webview.inner().cast::<NSView>() };
+        let options = LiquidGlassOptions::new(NSGlassEffectViewStyle::Regular)
+            .opaque(false)
+            .content_view(content_view);
+
+        if let Err(error) = apply_liquid_glass(&effect_window, options) {
+            eprintln!("Could not enable native Regular glass: {error}");
+        } else {
+            callback_glass_applied.store(true, Ordering::Release);
+        }
+    });
+
+    if let Err(error) = setup_result {
+        eprintln!("Could not configure native Regular glass: {error}");
+        if glass_applied.load(Ordering::Acquire) {
+            if let Err(clear_error) = clear_liquid_glass(&window) {
+                eprintln!(
+                    "Could not clear native Regular glass after setup failure: {clear_error}"
+                );
+            }
+        }
+        restore_dark_window_background(&window);
+        return;
+    }
+
+    if !glass_applied.load(Ordering::Acquire) {
+        restore_dark_window_background(&window);
+        return;
+    }
+
+    if let Err(error) = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0))) {
+        if let Err(clear_error) = clear_liquid_glass(&window) {
+            eprintln!("Could not clear native Regular glass after backing failure: {clear_error}");
+        }
+        restore_dark_window_background(&window);
+        eprintln!("Could not make the native Regular glass backing transparent: {error}");
+        return;
+    }
+
+    enabled.store(true, Ordering::Release);
+}
+
+#[cfg(target_os = "macos")]
+fn restore_dark_window_background(window: &tauri::WebviewWindow) {
+    if let Err(error) = window.set_background_color(Some(tauri::window::Color(11, 15, 20, 255))) {
+        eprintln!("Could not restore the dark native window background: {error}");
+    }
+}
+
 const RUNTIME_COMMAND_TIMEOUT: Duration = Duration::from_secs(40);
 const DASHBOARD_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(12);
 
@@ -36,7 +123,9 @@ fn note_dashboard_page_load(label: &str, url: &tauri::Url, event: PageLoadEvent)
     if label != "main" || !is_dashboard_origin(url) {
         return;
     }
-    let mut pending = DASHBOARD_NAVIGATION.lock().unwrap_or_else(|error| error.into_inner());
+    let mut pending = DASHBOARD_NAVIGATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     if let Some(pending) = pending.as_mut() {
         if pending.origin != url.origin().ascii_serialization() {
             return;
@@ -316,7 +405,9 @@ async fn navigate_to_desktop_dashboard(app: AppHandle) -> Result<(), String> {
     let operation_id = NEXT_DASHBOARD_NAVIGATION_ID.fetch_add(1, Ordering::Relaxed);
     let (completion, completed) = mpsc::channel();
     {
-        let mut pending = DASHBOARD_NAVIGATION.lock().unwrap_or_else(|error| error.into_inner());
+        let mut pending = DASHBOARD_NAVIGATION
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if pending.is_some() {
             return Err("a dashboard navigation is already in progress".to_string());
         }
@@ -330,10 +421,15 @@ async fn navigate_to_desktop_dashboard(app: AppHandle) -> Result<(), String> {
     if let Err(error) = window.navigate(url) {
         clear_dashboard_navigation(operation_id);
         return_to_bootstrap_after_navigation_failure(&app);
-        return Err(format!("failed to navigate to the trusted dashboard: {error}"));
+        return Err(format!(
+            "failed to navigate to the trusted dashboard: {error}"
+        ));
     }
 
-    let waited = tauri::async_runtime::spawn_blocking(move || completed.recv_timeout(DASHBOARD_NAVIGATION_TIMEOUT)).await;
+    let waited = tauri::async_runtime::spawn_blocking(move || {
+        completed.recv_timeout(DASHBOARD_NAVIGATION_TIMEOUT)
+    })
+    .await;
     clear_dashboard_navigation(operation_id);
     let wait = waited.map_err(|error| format!("dashboard navigation monitor failed: {error}"))?;
     match wait {
@@ -353,8 +449,13 @@ async fn navigate_to_desktop_dashboard(app: AppHandle) -> Result<(), String> {
 }
 
 fn clear_dashboard_navigation(operation_id: u64) {
-    let mut pending = DASHBOARD_NAVIGATION.lock().unwrap_or_else(|error| error.into_inner());
-    if pending.as_ref().is_some_and(|operation| operation.id == operation_id) {
+    let mut pending = DASHBOARD_NAVIGATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if pending
+        .as_ref()
+        .is_some_and(|operation| operation.id == operation_id)
+    {
         *pending = None;
     }
 }
@@ -650,6 +751,7 @@ pub fn run() {
         }
     }
     tauri::Builder::default()
+        .manage(NativeWindowCapabilityState::default())
         .on_page_load(|webview, payload| {
             note_dashboard_page_load(webview.label(), payload.url(), payload.event());
         })
@@ -670,12 +772,19 @@ pub fn run() {
             }
             // Set the window and webview background to match the app's dark theme (#0b0f14).
             // This prevents a white flash in the title-bar area on macOS when using
-            // titleBarStyle: "Transparent" — the native window chrome would otherwise
+            // titleBarStyle: "Overlay" — the native window chrome would otherwise
             // default to the system light color before the webview paints.
             // Bug: d41755b — white title bar in Tauri app on macOS
             if let Some(window) = app.get_webview_window("main") {
                 let dark = tauri::window::Color(11, 15, 20, 255);
                 let _ = window.set_background_color(Some(dark));
+                #[cfg(target_os = "macos")]
+                configure_regular_liquid_glass(
+                    window,
+                    app.state::<NativeWindowCapabilityState>()
+                        .liquid_glass_regular
+                        .clone(),
+                );
             }
             let setup_item = MenuItemBuilder::with_id(
                 "secure_local_connections_setup",
@@ -724,7 +833,8 @@ pub fn run() {
             secure_local_connections_status,
             secure_local_connections_setup,
             zone2_status,
-            zone2_bootstrap
+            zone2_bootstrap,
+            native_window_capabilities
         ])
         .run(context)
         .expect("error while running Mandible app");
@@ -758,14 +868,18 @@ fn isolated_webkit_store_identifier(home: &Path) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::{
-        admits_native_command_origin, is_dashboard_origin, is_secure_connections_setup_link, resolve_user_path_from,
-        PRODUCTION_ORIGIN,
+        admits_native_command_origin, is_dashboard_origin, is_secure_connections_setup_link,
+        resolve_user_path_from, PRODUCTION_ORIGIN,
     };
 
     #[test]
     fn dashboard_load_completion_accepts_only_the_canonical_origin() {
-        assert!(is_dashboard_origin(&tauri::Url::parse("https://app.mandible.localhost:19420/inbox").unwrap()));
-        assert!(!is_dashboard_origin(&tauri::Url::parse("https://app.mandible.localhost:19421/inbox").unwrap()));
+        assert!(is_dashboard_origin(
+            &tauri::Url::parse("https://app.mandible.localhost:19420/inbox").unwrap()
+        ));
+        assert!(!is_dashboard_origin(
+            &tauri::Url::parse("https://app.mandible.localhost:19421/inbox").unwrap()
+        ));
     }
     #[test]
     fn native_ca_setup_deep_link_has_one_exact_target() {

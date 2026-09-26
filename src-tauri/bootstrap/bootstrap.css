@@ -27,6 +27,15 @@ body {
     linear-gradient(160deg, #0a1018, var(--bg));
 }
 
+.bootstrap-titlebar-drag-region {
+  position: fixed;
+  z-index: 10;
+  top: 0;
+  right: 0;
+  left: 84px;
+  height: 44px;
+}
+
 .bootstrap-shell {
   min-height: 100vh;
   display: grid;

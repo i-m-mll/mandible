@@ -2804,10 +2804,13 @@ export type DesktopDaemonStatus = {
  * `__TAURI_INTERNALS__.invoke` that `@tauri-apps/api/core` wraps.
  */
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+type DesktopWindowTheme = 'light' | 'dark' | null;
+type TauriDesktopWindow = { setTheme: (theme: DesktopWindowTheme) => Promise<void> };
 
 type TauriGlobalWindow = Window & {
   __TAURI__?: {
     core?: { invoke?: TauriInvoke };
+    window?: { getCurrentWindow?: () => TauriDesktopWindow };
   };
   __TAURI_INTERNALS__?: { invoke?: TauriInvoke };
 };
@@ -2838,6 +2841,28 @@ function tauriInvoke(): TauriInvoke | null {
 
 export function isDesktopShell(): boolean {
   return hasTauriRuntime();
+}
+
+export type NativeWindowCapabilities = {
+  liquidGlassRegular: boolean;
+};
+
+export async function getNativeWindowCapabilities(): Promise<NativeWindowCapabilities> {
+  if (!hasTauriRuntime()) {
+    return { liquidGlassRegular: false };
+  }
+  return invokeDesktop<NativeWindowCapabilities>('native_window_capabilities');
+}
+
+export async function setDesktopWindowTheme(theme: DesktopWindowTheme): Promise<void> {
+  if (!hasTauriRuntime()) {
+    return;
+  }
+  const currentWindow = tauriGlobalWindow()?.__TAURI__?.window?.getCurrentWindow?.();
+  if (!currentWindow) {
+    throw new Error('The Tauri window API is not available in this desktop runtime.');
+  }
+  await currentWindow.setTheme(theme);
 }
 
 async function invokeDesktop<T>(command: string, args?: Record<string, unknown>): Promise<T> {

@@ -13,6 +13,8 @@ import {
   getConsoleSessions,
   getDashboardBadges,
   getAppThemePreference,
+  getNativeWindowCapabilities,
+  setDesktopWindowTheme,
   getInboxGlobal,
   getIssueRepos,
   getRepoBranches,
@@ -390,6 +392,9 @@ function updateRootAppTheme(settings: Record<string, string>): () => void {
     return () => undefined;
   }
   const mode = normalizeAppThemeMode(settings.app_theme);
+  void setDesktopWindowTheme(mode === 'system' ? null : mode).catch((error) => {
+    console.error('Failed to update native window theme:', error);
+  });
   const query = window.matchMedia('(prefers-color-scheme: dark)');
   const metaThemeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
   const apply = () => {
@@ -580,6 +585,7 @@ function MandibleHeaderLogo(): JSX.Element {
       className="app-header__logo"
       style={{ '--app-header-logo-image': 'url("/header-logo.svg")' } as JSX.CSSProperties}
       aria-hidden="true"
+      data-tauri-drag-region
     />
   );
 }
@@ -967,6 +973,24 @@ function App(): JSX.Element {
     if (typeof window !== 'undefined' && '__TAURI__' in window) {
       document.body.classList.add('tauri-window');
     }
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    getNativeWindowCapabilities()
+      .then(({ liquidGlassRegular }) => {
+        if (!disposed && liquidGlassRegular) {
+          document.documentElement.dataset.nativeGlass = 'regular';
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to read native window capabilities:', error);
+      });
+
+    return () => {
+      disposed = true;
+      document.documentElement.removeAttribute('data-native-glass');
+    };
   }, []);
 
   // Keyboard shortcuts for top-level tabs (Ctrl+1–9).
@@ -2514,16 +2538,16 @@ function App(): JSX.Element {
         data-app-surface="chrome"
         data-tauri-drag-region
       >
-        <div className="app-header__identity" title={viewSidebarOpen ? undefined : 'Mandible'}>
-          <span className="app-header__mark" aria-hidden="true">
+        <div className="app-header__identity" title={viewSidebarOpen ? undefined : 'Mandible'} data-tauri-drag-region>
+          <span className="app-header__mark" aria-hidden="true" data-tauri-drag-region>
             <MandibleHeaderLogo />
           </span>
           {viewSidebarOpen ? (
-            <div className="app-header__text">
-              <div className="app-header__brand">
-                <span className="app-header__brand-text">Mandible</span>
+            <div className="app-header__text" data-tauri-drag-region>
+              <div className="app-header__brand" data-tauri-drag-region>
+                <span className="app-header__brand-text" data-tauri-drag-region>Mandible</span>
               </div>
-              <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
+              <div className="app-header__route" aria-live="polite" data-tauri-drag-region>{currentRouteTitle}</div>
             </div>
           ) : null}
         </div>

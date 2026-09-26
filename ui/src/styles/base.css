@@ -126,7 +126,10 @@ a {
 }
 
 .tauri-window .app-shell {
-  --app-header-height: max(48px, env(titlebar-area-height, 48px));
+  /* Overlay titlebars put web content behind the native controls. Reserve a
+     safe 44px strip (or the reported native height) before app header content. */
+  --app-titlebar-height: max(44px, env(titlebar-area-height, 44px));
+  --app-header-height: calc(var(--app-titlebar-height) + 48px);
 }
 
 .app-header {
@@ -143,6 +146,11 @@ a {
   border-right: none;
   border-bottom: 1px solid var(--neutral-alpha-06);
   z-index: 60;
+}
+
+.tauri-window .app-header {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .app-right-sidebar-toggle {
@@ -526,7 +534,7 @@ a {
   flex-direction: column;
   gap: 14px;
   padding: calc(var(--app-header-height) + 18px) var(--app-rail-inline-padding) 18px;
-  background: var(--surface-chrome);
+  background: var(--surface-rail);
   border-right: none;
   box-shadow: none;
   /* The nav remains the vertical scroll owner. Keep the rail itself visible so
@@ -1102,7 +1110,7 @@ a {
   flex-direction: column;
   min-height: 0;
   height: 100%;
-  background: var(--surface-chrome);
+  background: var(--surface-sidebar);
 }
 
 .app-layout--view-sidebar-open .view-sidebar {
@@ -1197,6 +1205,35 @@ a {
 
 .app-layout--view-sidebar-open .view-sidebar.spaces-tree {
   box-shadow: none;
+}
+
+/* Native Regular glass is enabled only after Tauri confirms that the native
+   effect and transparent window backing were both configured. The left app
+   header, rail, and sidebar reveal that material; the main workspace stays
+   opaque beside the visible sidebar. */
+:root[data-native-glass='regular'] {
+  --surface-rail: var(--surface-glass-regular);
+  --surface-sidebar: var(--surface-glass-regular);
+  background: var(--surface-glass-regular);
+}
+
+:root[data-native-glass='regular'] body,
+:root[data-native-glass='regular'] #app,
+:root[data-native-glass='regular'] .app-shell,
+:root[data-native-glass='regular'] .app-layout {
+  background: var(--surface-glass-regular);
+}
+
+:root[data-native-glass='regular'] .app-header {
+  background: var(--surface-glass-regular);
+}
+
+:root[data-native-glass='regular'] .app-layout--view-sidebar-open .app-content--view-sidebar {
+  background: linear-gradient(
+    to right,
+    var(--surface-glass-regular) 0 var(--app-view-sidebar-outer-width),
+    var(--surface-main) var(--app-view-sidebar-outer-width) 100%
+  );
 }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
