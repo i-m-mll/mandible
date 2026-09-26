@@ -17,13 +17,13 @@ const DEFAULT_PORT: u16 = 29420;
 
 #[derive(Default)]
 struct NativeWindowCapabilityState {
-    liquid_glass_clear: Arc<AtomicBool>,
+    liquid_glass_regular: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeWindowCapabilities {
-    liquid_glass_clear: bool,
+    liquid_glass_regular: bool,
 }
 
 #[command]
@@ -31,12 +31,12 @@ fn native_window_capabilities(
     state: tauri::State<'_, NativeWindowCapabilityState>,
 ) -> NativeWindowCapabilities {
     NativeWindowCapabilities {
-        liquid_glass_clear: state.liquid_glass_clear.load(Ordering::Acquire),
+        liquid_glass_regular: state.liquid_glass_regular.load(Ordering::Acquire),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn configure_clear_liquid_glass(window: tauri::WebviewWindow, enabled: Arc<AtomicBool>) {
+fn configure_regular_liquid_glass(window: tauri::WebviewWindow, enabled: Arc<AtomicBool>) {
     use window_vibrancy::{
         apply_liquid_glass, clear_liquid_glass, LiquidGlassOptions, NSGlassEffectViewStyle,
     };
@@ -52,24 +52,26 @@ fn configure_clear_liquid_glass(window: tauri::WebviewWindow, enabled: Arc<Atomi
         use objc2_app_kit::NSView;
 
         // Put Tauri's webview inside the native glass view. Shared shell
-        // surfaces decide which parts of it expose the Clear effect.
+        // surfaces decide which parts of it expose the Regular effect.
         let content_view: &NSView = unsafe { &*webview.inner().cast::<NSView>() };
-        let options = LiquidGlassOptions::new(NSGlassEffectViewStyle::Clear)
+        let options = LiquidGlassOptions::new(NSGlassEffectViewStyle::Regular)
             .opaque(false)
             .content_view(content_view);
 
         if let Err(error) = apply_liquid_glass(&effect_window, options) {
-            eprintln!("Could not enable native Clear glass: {error}");
+            eprintln!("Could not enable native Regular glass: {error}");
         } else {
             callback_glass_applied.store(true, Ordering::Release);
         }
     });
 
     if let Err(error) = setup_result {
-        eprintln!("Could not configure native Clear glass: {error}");
+        eprintln!("Could not configure native Regular glass: {error}");
         if glass_applied.load(Ordering::Acquire) {
             if let Err(clear_error) = clear_liquid_glass(&window) {
-                eprintln!("Could not clear native Clear glass after setup failure: {clear_error}");
+                eprintln!(
+                    "Could not clear native Regular glass after setup failure: {clear_error}"
+                );
             }
         }
         restore_dark_window_background(&window);
@@ -83,10 +85,10 @@ fn configure_clear_liquid_glass(window: tauri::WebviewWindow, enabled: Arc<Atomi
 
     if let Err(error) = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0))) {
         if let Err(clear_error) = clear_liquid_glass(&window) {
-            eprintln!("Could not clear native Clear glass after backing failure: {clear_error}");
+            eprintln!("Could not clear native Regular glass after backing failure: {clear_error}");
         }
         restore_dark_window_background(&window);
-        eprintln!("Could not make the native Clear glass backing transparent: {error}");
+        eprintln!("Could not make the native Regular glass backing transparent: {error}");
         return;
     }
 
@@ -830,10 +832,10 @@ pub fn run() {
                 let dark = tauri::window::Color(11, 15, 20, 255);
                 let _ = window.set_background_color(Some(dark));
                 #[cfg(target_os = "macos")]
-                configure_clear_liquid_glass(
+                configure_regular_liquid_glass(
                     window,
                     app.state::<NativeWindowCapabilityState>()
-                        .liquid_glass_clear
+                        .liquid_glass_regular
                         .clone(),
                 );
             }

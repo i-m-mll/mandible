@@ -148,6 +148,11 @@ a {
   z-index: 60;
 }
 
+.tauri-window .app-header {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .app-right-sidebar-toggle {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1202,27 +1207,31 @@ a {
   box-shadow: none;
 }
 
-/* Native Clear glass is enabled only after Tauri confirms that the native
-   effect and transparent window backing were both configured. Shared rail and
-   sidebar tokens reveal the effect, while the split content surface paints an
-   opaque workspace beside the visible sidebar. */
-:root[data-native-glass='clear'] {
-  --surface-rail: var(--surface-glass-clear);
-  --surface-sidebar: var(--surface-glass-clear);
-  background: var(--surface-glass-clear);
+/* Native Regular glass is enabled only after Tauri confirms that the native
+   effect and transparent window backing were both configured. The left app
+   header, rail, and sidebar reveal that material; the main workspace stays
+   opaque beside the visible sidebar. */
+:root[data-native-glass='regular'] {
+  --surface-rail: var(--surface-glass-regular);
+  --surface-sidebar: var(--surface-glass-regular);
+  background: var(--surface-glass-regular);
 }
 
-:root[data-native-glass='clear'] body,
-:root[data-native-glass='clear'] #app,
-:root[data-native-glass='clear'] .app-shell,
-:root[data-native-glass='clear'] .app-layout {
-  background: var(--surface-glass-clear);
+:root[data-native-glass='regular'] body,
+:root[data-native-glass='regular'] #app,
+:root[data-native-glass='regular'] .app-shell,
+:root[data-native-glass='regular'] .app-layout {
+  background: var(--surface-glass-regular);
 }
 
-:root[data-native-glass='clear'] .app-layout--view-sidebar-open .app-content--view-sidebar {
+:root[data-native-glass='regular'] .app-header {
+  background: var(--surface-glass-regular);
+}
+
+:root[data-native-glass='regular'] .app-layout--view-sidebar-open .app-content--view-sidebar {
   background: linear-gradient(
     to right,
-    var(--surface-glass-clear) 0 var(--app-view-sidebar-outer-width),
+    var(--surface-glass-regular) 0 var(--app-view-sidebar-outer-width),
     var(--surface-main) var(--app-view-sidebar-outer-width) 100%
   );
 }

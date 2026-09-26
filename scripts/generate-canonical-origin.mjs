@@ -22,7 +22,13 @@ const files = new Map([
     description: "Default capability for Mandible",
     windows: ["main"],
     remote: { urls: [origin.origin] },
-    permissions: ["core:default", "deep-link:default", "allow-desktop-commands"],
+    permissions: [
+      "core:default",
+      "core:window:allow-set-theme",
+      "core:window:allow-start-dragging",
+      "deep-link:default",
+      "allow-desktop-commands",
+    ],
   }, null, 2)}\n`],
 ]);
 const inlineTargets = [
