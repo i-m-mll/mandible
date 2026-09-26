@@ -97,6 +97,7 @@ install_app="${MANDIBLE_DESKTOP_INSTALL_PATH:-/Applications/Mandible.app}"
 backup_dir="${MANDIBLE_DESKTOP_BACKUP_DIR:-${MANDIBLE_HOME:-${HOME}/.mandible}/app-backups}"
 expected_bundle_id="${MANDIBLE_DESKTOP_BUNDLE_ID:-bio.mll.mandible}"
 expected_executable="${MANDIBLE_DESKTOP_EXECUTABLE:-mandible-app}"
+node_command="${MANDIBLE_DESKTOP_NODE:-node}"
 codesign_command="${MANDIBLE_DESKTOP_CODESIGN:-/usr/bin/codesign}"
 ditto_command="${MANDIBLE_DESKTOP_DITTO:-/usr/bin/ditto}"
 plist_command="${MANDIBLE_DESKTOP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
@@ -208,6 +209,11 @@ if [[ -n "$backup_app" ]]; then
 else
   err "[desktop-install] installed ${install_app}"
 fi
+
+# Register the built checkout as the source named by the user's persistent
+# LaunchAgents. This prepares ownership without restarting a healthy service.
+"$node_command" "$repo_root/scripts/local-runtime.mjs" install --root "$repo_root"
+err "[desktop-install] installed persistent Mandible runtime LaunchAgents"
 
 if [[ "$was_running" == "true" ]]; then
   if [[ -n "${MANDIBLE_DESKTOP_RELAUNCH_COMMAND:-}" ]]; then

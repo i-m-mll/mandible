@@ -4,16 +4,16 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::webview::PageLoadEvent;
 use tauri::{command, AppHandle, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 mod canonical_origin;
 use canonical_origin::PRODUCTION_ORIGIN;
-
-const DEFAULT_PORT: u16 = 29420;
 
 #[derive(Default)]
 struct NativeWindowCapabilityState {
@@ -102,6 +102,53 @@ fn restore_dark_window_background(window: &tauri::WebviewWindow) {
     }
 }
 
+const RUNTIME_COMMAND_TIMEOUT: Duration = Duration::from_secs(40);
+const DASHBOARD_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(12);
+
+struct PendingDashboardNavigation {
+    id: u64,
+    origin: String,
+    started: bool,
+    completion: Sender<()>,
+}
+
+static DASHBOARD_NAVIGATION: Mutex<Option<PendingDashboardNavigation>> = Mutex::new(None);
+static NEXT_DASHBOARD_NAVIGATION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn is_dashboard_origin(url: &tauri::Url) -> bool {
+    url.origin().ascii_serialization() == PRODUCTION_ORIGIN
+}
+
+fn note_dashboard_page_load(label: &str, url: &tauri::Url, event: PageLoadEvent) {
+    if label != "main" || !is_dashboard_origin(url) {
+        return;
+    }
+    let mut pending = DASHBOARD_NAVIGATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(pending) = pending.as_mut() {
+        if pending.origin != url.origin().ascii_serialization() {
+            return;
+        }
+        match event {
+            PageLoadEvent::Started => pending.started = true,
+            PageLoadEvent::Finished if pending.started => {
+                let _ = pending.completion.send(());
+            }
+            PageLoadEvent::Finished => {}
+        }
+    }
+}
+
+fn return_to_bootstrap_after_navigation_failure(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(mut url) = tauri::Url::parse("tauri://localhost/index.html") {
+            url.set_query(Some("skip_autostart=1&dashboard_navigation_failed=1"));
+            let _ = window.navigate(url);
+        }
+    }
+}
+
 fn admits_native_command_origin(origin: &str) -> bool {
     origin == PRODUCTION_ORIGIN
 }
@@ -121,7 +168,7 @@ impl Default for DesktopConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct DaemonStatus {
     state: String,
@@ -132,8 +179,14 @@ struct DaemonStatus {
     log_file: String,
     detail: Option<String>,
     healthy: bool,
+    dashboard_ready: bool,
     dashboard_origin: String,
+    gateway_state: String,
+    gateway_error: Option<String>,
+    gateway_log_file: String,
 }
+
+static DAEMON_CONTROL_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -276,7 +329,8 @@ fn launch_native_ca_setup(handle: AppHandle, active: Arc<AtomicBool>) {
 
 #[command]
 fn daemon_status(app: AppHandle) -> Result<DaemonStatus, String> {
-    get_daemon_status(&app)
+    let config = read_desktop_config(&app)?;
+    run_local_runtime(&app, "status", &config)
 }
 
 #[command]
@@ -287,69 +341,123 @@ fn daemon_get_launch_mode(app: AppHandle) -> Result<String, String> {
 #[command]
 fn daemon_set_launch_mode(app: AppHandle, launch_mode: String) -> Result<DaemonStatus, String> {
     validate_launch_mode(&launch_mode)?;
-    let mut config = read_desktop_config(&app).unwrap_or_default();
+    let mut config = read_desktop_config(&app)?;
     config.daemon_launch_mode = launch_mode;
     write_desktop_config(&app, &config)?;
-    get_daemon_status(&app)
+    run_local_runtime(&app, "configure-launch-mode", &config)
 }
 
 #[command]
 fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
-    let status = get_daemon_status(&app)?;
-    if status.healthy || status.state == "starting" {
-        return Ok(status);
-    }
-    if status.state == "port_conflict" {
-        return Ok(status);
-    }
-
-    let node = resolve_node_binary(&app)?;
-    let entry = resolve_daemon_entry(&app)?;
-    let repo_root = entry
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| "failed to resolve daemon working directory".to_string())?;
-    let repo_root = repo_root.to_path_buf();
-    let port = daemon_port();
-    let log_file = log_file_path()?;
-    let pid_file = pid_file_path()?;
-    let (log_stdout, log_stderr) = open_daemon_log(&log_file)?;
-
-    let mut command = Command::new(node);
-    command
-        .arg(&entry)
-        .current_dir(repo_root)
-        .env("MANDIBLE_PORT", port.to_string())
-        .env("MANDIBLE_PID_FILE", pid_file)
-        // The daemon rotates this file on a timer. Naming it explicitly makes
-        // the rotation target and the actual stderr destination the same path
-        // by construction rather than by both defaulting to the same constant.
-        .env("MANDIBLE_STDERR_LOG_PATH", &log_file)
-        .stdin(Stdio::null())
-        .stdout(log_stdout)
-        .stderr(log_stderr);
-
-    command
-        .spawn()
-        .map_err(|error| format!("failed to start daemon: {error}"))?;
-
-    wait_for_health(port, Duration::from_secs(4));
-    get_daemon_status(&app)
+    let _guard = DAEMON_CONTROL_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let config = read_desktop_config(&app)?;
+    run_local_runtime(&app, "start", &config)
 }
 
 #[command]
 fn daemon_stop(app: AppHandle) -> Result<DaemonStatus, String> {
-    if let Some(pid) = read_pid_file(pid_file_path()?) {
-        signal_process(pid, "TERM")?;
-        wait_for_shutdown(daemon_port(), Duration::from_secs(4));
-    }
-    get_daemon_status(&app)
+    let _guard = DAEMON_CONTROL_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let config = read_desktop_config(&app)?;
+    run_local_runtime(&app, "stop", &config)
 }
 
 #[command]
 fn daemon_restart(app: AppHandle) -> Result<DaemonStatus, String> {
-    let _ = daemon_stop(app.clone());
-    daemon_start(app)
+    let _guard = DAEMON_CONTROL_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let config = read_desktop_config(&app)?;
+    run_local_runtime(&app, "restart", &config)
+}
+
+#[command]
+fn navigate_to_desktop_bootstrap(app: AppHandle, skip_auto_start: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "desktop main window is unavailable".to_string())?;
+    let mut url = tauri::Url::parse("tauri://localhost/index.html")
+        .map_err(|error| format!("failed to resolve the desktop bootstrap URL: {error}"))?;
+    if skip_auto_start {
+        url.set_query(Some("skip_autostart=1"));
+    }
+    window
+        .navigate(url)
+        .map_err(|error| format!("failed to navigate to the desktop bootstrap: {error}"))
+}
+
+#[command]
+async fn navigate_to_desktop_dashboard(app: AppHandle) -> Result<(), String> {
+    let status = run_local_runtime(&app, "status", &read_desktop_config(&app)?)?;
+    if !status.dashboard_ready || !admits_native_command_origin(&status.dashboard_origin) {
+        return Err(status
+            .detail
+            .unwrap_or_else(|| "The trusted local dashboard is not ready.".to_string()));
+    }
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "desktop main window is unavailable".to_string())?;
+    let url = tauri::Url::parse(PRODUCTION_ORIGIN)
+        .map_err(|error| format!("invalid canonical dashboard origin: {error}"))?;
+    let operation_id = NEXT_DASHBOARD_NAVIGATION_ID.fetch_add(1, Ordering::Relaxed);
+    let (completion, completed) = mpsc::channel();
+    {
+        let mut pending = DASHBOARD_NAVIGATION
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if pending.is_some() {
+            return Err("a dashboard navigation is already in progress".to_string());
+        }
+        *pending = Some(PendingDashboardNavigation {
+            id: operation_id,
+            origin: url.origin().ascii_serialization(),
+            started: false,
+            completion,
+        });
+    }
+    if let Err(error) = window.navigate(url) {
+        clear_dashboard_navigation(operation_id);
+        return_to_bootstrap_after_navigation_failure(&app);
+        return Err(format!(
+            "failed to navigate to the trusted dashboard: {error}"
+        ));
+    }
+
+    let waited = tauri::async_runtime::spawn_blocking(move || {
+        completed.recv_timeout(DASHBOARD_NAVIGATION_TIMEOUT)
+    })
+    .await;
+    clear_dashboard_navigation(operation_id);
+    let wait = waited.map_err(|error| format!("dashboard navigation monitor failed: {error}"))?;
+    match wait {
+        Ok(()) => Ok(()),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return_to_bootstrap_after_navigation_failure(&app);
+            Err(format!(
+                "the trusted dashboard did not finish loading within {} seconds",
+                DASHBOARD_NAVIGATION_TIMEOUT.as_secs()
+            ))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return_to_bootstrap_after_navigation_failure(&app);
+            Err("the dashboard navigation completion monitor closed unexpectedly".to_string())
+        }
+    }
+}
+
+fn clear_dashboard_navigation(operation_id: u64) {
+    let mut pending = DASHBOARD_NAVIGATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if pending
+        .as_ref()
+        .is_some_and(|operation| operation.id == operation_id)
+    {
+        *pending = None;
+    }
 }
 
 /// Issue 24f0316 — Mandible config lives under the durable root `~/.mandible`
@@ -410,58 +518,82 @@ fn resolve_user_path_from(raw: &str, home: &std::path::Path) -> PathBuf {
     }
 }
 
-fn get_daemon_status(app: &AppHandle) -> Result<DaemonStatus, String> {
-    let config = read_desktop_config(app).unwrap_or_default();
-    let dashboard_origin = PRODUCTION_ORIGIN;
-    let port = daemon_port();
-    let pid_file = pid_file_path()?;
-    let log_file = log_file_path()?;
-    let pid = read_pid_file(pid_file.clone());
-    let pid_alive = pid.map(process_alive).unwrap_or(false);
-    let healthy = check_health(port);
-    let port_open = tcp_port_open(port);
-
-    let (state, detail) = if healthy {
-        ("running".to_string(), None)
-    } else if port_open && !pid_alive {
-        (
-            "port_conflict".to_string(),
-            Some(format!(
-                "Port {port} is accepting connections, but it is not responding as a Mandible daemon."
-            )),
-        )
-    } else if pid.is_some() && !pid_alive {
-        (
-            "stale_pid".to_string(),
-            Some("The daemon pid file exists, but that process is no longer running.".to_string()),
-        )
-    } else if pid_alive {
-        (
-            "starting".to_string(),
-            Some("The daemon process is running but has not reported healthy yet.".to_string()),
-        )
-    } else {
-        ("stopped".to_string(), None)
+fn run_local_runtime(
+    app: &AppHandle,
+    operation: &str,
+    config: &DesktopConfig,
+) -> Result<DaemonStatus, String> {
+    let script = resolve_local_runtime_script(app)?;
+    let node = resolve_node_binary(app)?;
+    let mut child = Command::new(node)
+        .arg(script)
+        .arg(operation)
+        .arg(format!("--launch-mode={}", config.daemon_launch_mode))
+        .env("MANDIBLE_HOME", mandible_home())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to start the Mandible runtime controller: {error}"))?;
+    let deadline = Instant::now() + RUNTIME_COMMAND_TIMEOUT;
+    let exit = loop {
+        match child.try_wait().map_err(|error| {
+            format!("failed to inspect the Mandible runtime controller: {error}")
+        })? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Mandible runtime operation '{operation}' exceeded its {} second deadline.",
+                    RUNTIME_COMMAND_TIMEOUT.as_secs()
+                ));
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
     };
-
-    Ok(DaemonStatus {
-        state,
-        launch_mode: config.daemon_launch_mode,
-        port,
-        pid,
-        pid_file: pid_file.display().to_string(),
-        log_file: log_file.display().to_string(),
-        detail,
-        healthy,
-        dashboard_origin: dashboard_origin.to_string(),
-    })
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut stream) = child.stdout.take() {
+        stream
+            .read_to_string(&mut stdout)
+            .map_err(|error| format!("failed to read runtime status: {error}"))?;
+    }
+    if let Some(mut stream) = child.stderr.take() {
+        stream
+            .read_to_string(&mut stderr)
+            .map_err(|error| format!("failed to read runtime error: {error}"))?;
+    }
+    if !exit.success() {
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            format!("Mandible runtime operation '{operation}' failed with {exit}.")
+        } else {
+            detail.to_string()
+        });
+    }
+    let mut status: DaemonStatus = serde_json::from_str(&stdout)
+        .map_err(|error| format!("Mandible runtime controller returned invalid status: {error}"))?;
+    status.launch_mode = config.daemon_launch_mode.clone();
+    Ok(status)
 }
 
-fn daemon_port() -> u16 {
-    std::env::var("MANDIBLE_PORT")
-        .ok()
-        .and_then(|raw| raw.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT)
+fn resolve_local_runtime_script(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(resources) = app.path().resource_dir() {
+        let bundled = resources.join("local-runtime.mjs");
+        if bundled.is_file() {
+            return Ok(bundled);
+        }
+    }
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| "failed to resolve Mandible source root".to_string())?
+        .join("scripts")
+        .join("local-runtime.mjs");
+    if repo.is_file() {
+        return Ok(repo);
+    }
+    Err("the shared Mandible runtime controller is missing from the desktop app".to_string())
 }
 
 fn read_desktop_config(app: &AppHandle) -> Result<DesktopConfig, String> {
@@ -498,40 +630,6 @@ fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("desktop.json"))
 }
 
-fn resolve_daemon_entry(app: &AppHandle) -> Result<PathBuf, String> {
-    // 1. Check Zone 2 mutable runtime (Bug: cc4688b)
-    //    Zone 2 takes priority over everything — it may contain user patches
-    //    that override the bundled or dev builds.
-    let zone2_entry = zone2_runtime_path().join("dist").join("index.js");
-    if zone2_entry.exists() {
-        return Ok(zone2_entry);
-    }
-
-    // 2. Check bundled sidecar (Tauri resource bundle)
-    let bundled = app
-        .path()
-        .resource_dir()
-        .ok()
-        .map(|dir| dir.join("mandible-server").join("index.js"));
-    if let Some(path) = bundled {
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-
-    // 3. Check dev path (repo root)
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "failed to resolve repo root".to_string())?
-        .to_path_buf();
-    let dist_entry = repo_root.join("dist").join("index.js");
-    if dist_entry.exists() {
-        return Ok(dist_entry);
-    }
-
-    Err("dist/index.js not found; build the daemon before launching the desktop shell".to_string())
-}
-
 /// The Zone 2 runtime path: `~/.mandible/runtime/`.
 /// Bug: cc4688b — Zone 2 mutable runtime infrastructure
 /// Issue 24f0316 — Zone 2 holds agent-authored patches, which is durable
@@ -561,8 +659,17 @@ fn zone2_status() -> Zone2Status {
 
 /// Bug: cc4688b — trigger Zone 2 bootstrap by calling the daemon API
 #[command]
-async fn zone2_bootstrap() -> Result<String, String> {
-    let port = daemon_port();
+async fn zone2_bootstrap(app: AppHandle) -> Result<String, String> {
+    let status = run_local_runtime(&app, "status", &read_desktop_config(&app)?)?;
+    if !status.healthy {
+        return Err(status
+            .detail
+            .unwrap_or_else(|| "The local Mandible backend is not ready.".to_string()));
+    }
+    let port = status.port;
+    if port == 0 {
+        return Err("The runtime controller did not report a backend port.".to_string());
+    }
 
     // Use a simple TCP-based HTTP POST (no external HTTP crate dependency)
     let addr = format!("127.0.0.1:{port}");
@@ -606,111 +713,9 @@ fn resolve_node_binary(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(PathBuf::from("node"))
 }
 
-fn pid_file_path() -> Result<PathBuf, String> {
-    runtime_file_path(
-        std::env::var("MANDIBLE_PID_FILE").ok().as_deref(),
-        isolated_home_selected().then(mandible_home),
-        "daemon.pid",
-    )
-}
-
-fn log_file_path() -> Result<PathBuf, String> {
-    runtime_file_path(
-        std::env::var("MANDIBLE_STDERR_LOG_PATH").ok().as_deref(),
-        isolated_home_selected().then(mandible_home),
-        "launchd-stderr.log",
-    )
-}
-
-/// Open the daemon log for an app-launched daemon and return append handles for
-/// its stdout and stderr.
-///
-/// Both handles are `O_APPEND`. That is load-bearing twice over: two handles on
-/// one file only interleave safely when every write seeks to end-of-file first,
-/// and the daemon's own rotation truncates this file in place, which an
-/// append-mode writer follows back to offset 0 while a fixed-offset writer would
-/// turn into a sparse hole.
-///
-/// A log that cannot be opened is a hard error rather than a fall back to
-/// `Stdio::null()`. A daemon nobody can diagnose is the defect this path exists
-/// to fix, and the same unwritable directory would fail the daemon's pid file
-/// moments later anyway — so failing here reports the real cause instead of
-/// hiding it behind a silent, logless start.
-fn open_daemon_log(path: &Path) -> Result<(Stdio, Stdio), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "failed to create daemon log directory {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-    let stdout = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| format!("failed to open daemon log {}: {error}", path.display()))?;
-    let stderr = stdout
-        .try_clone()
-        .map_err(|error| format!("failed to open daemon log {}: {error}", path.display()))?;
-    Ok((Stdio::from(stdout), Stdio::from(stderr)))
-}
-
 fn isolated_home_selected() -> bool {
     std::env::var("MANDIBLE_HOME")
         .is_ok_and(|value| !value.trim().is_empty() && mandible_home() != default_mandible_home())
-}
-
-fn runtime_file_path(
-    explicit: Option<&str>,
-    isolated_home: Option<PathBuf>,
-    filename: &str,
-) -> Result<PathBuf, String> {
-    if let Some(value) = explicit {
-        let path = PathBuf::from(value);
-        if !path.is_absolute() {
-            return Err(format!("{filename} override must be an absolute path"));
-        }
-        return Ok(path);
-    }
-    let base = isolated_home.unwrap_or_else(|| {
-        std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."))
-    });
-    Ok(base.join(".cache").join("mandible").join(filename))
-}
-
-fn read_pid_file(path: PathBuf) -> Option<u32> {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u32>().ok())
-}
-
-fn process_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-fn signal_process(pid: u32, signal: &str) -> Result<(), String> {
-    let status = Command::new("kill")
-        .arg(format!("-{signal}"))
-        .arg(pid.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|error| format!("failed to signal daemon: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("failed to signal daemon process {pid}"))
-    }
 }
 
 fn validate_launch_mode(launch_mode: &str) -> Result<(), String> {
@@ -718,67 +723,6 @@ fn validate_launch_mode(launch_mode: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("unsupported launch mode: {launch_mode}"))
-    }
-}
-
-fn tcp_port_open(port: u16) -> bool {
-    ("127.0.0.1", port)
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut addrs| addrs.next())
-        .and_then(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(300)).ok())
-        .is_some()
-}
-
-fn check_health(port: u16) -> bool {
-    let addr = match ("127.0.0.1", port)
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut addrs| addrs.next())
-    {
-        Some(addr) => addr,
-        None => return false,
-    };
-
-    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(400)) {
-        Ok(stream) => stream,
-        Err(_) => return false,
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(400)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(400)));
-
-    if stream
-        .write_all(b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-        .is_err()
-    {
-        return false;
-    }
-
-    let mut response = String::new();
-    if stream.read_to_string(&mut response).is_err() {
-        return false;
-    }
-
-    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
-}
-
-fn wait_for_health(port: u16, timeout: Duration) {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        if check_health(port) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-}
-
-fn wait_for_shutdown(port: u16, timeout: Duration) {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        if !tcp_port_open(port) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(200));
     }
 }
 
@@ -808,6 +752,9 @@ pub fn run() {
     }
     tauri::Builder::default()
         .manage(NativeWindowCapabilityState::default())
+        .on_page_load(|webview, payload| {
+            note_dashboard_page_load(webview.label(), payload.url(), payload.event());
+        })
         .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
             if let Some(identifier) = isolated_store_identifier {
@@ -825,7 +772,7 @@ pub fn run() {
             }
             // Set the window and webview background to match the app's dark theme (#0b0f14).
             // This prevents a white flash in the title-bar area on macOS when using
-            // titleBarStyle: "Transparent" — the native window chrome would otherwise
+            // titleBarStyle: "Overlay" — the native window chrome would otherwise
             // default to the system light color before the webview paints.
             // Bug: d41755b — white title bar in Tauri app on macOS
             if let Some(window) = app.get_webview_window("main") {
@@ -881,6 +828,8 @@ pub fn run() {
             daemon_start,
             daemon_stop,
             daemon_restart,
+            navigate_to_desktop_bootstrap,
+            navigate_to_desktop_dashboard,
             secure_local_connections_status,
             secure_local_connections_setup,
             zone2_status,
@@ -919,9 +868,19 @@ fn isolated_webkit_store_identifier(home: &Path) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::{
-        admits_native_command_origin, is_secure_connections_setup_link, resolve_user_path_from,
-        PRODUCTION_ORIGIN,
+        admits_native_command_origin, is_dashboard_origin, is_secure_connections_setup_link,
+        resolve_user_path_from, PRODUCTION_ORIGIN,
     };
+
+    #[test]
+    fn dashboard_load_completion_accepts_only_the_canonical_origin() {
+        assert!(is_dashboard_origin(
+            &tauri::Url::parse("https://app.mandible.localhost:19420/inbox").unwrap()
+        ));
+        assert!(!is_dashboard_origin(
+            &tauri::Url::parse("https://app.mandible.localhost:19421/inbox").unwrap()
+        ));
+    }
     #[test]
     fn native_ca_setup_deep_link_has_one_exact_target() {
         assert!(is_secure_connections_setup_link(
@@ -967,30 +926,6 @@ mod tests {
                 "unexpected native admission: {denied}"
             );
         }
-    }
-
-    #[test]
-    fn isolated_runtime_paths_never_resolve_to_the_installed_daemon_pid() {
-        let isolated = std::path::PathBuf::from("/tmp/mandible-candidate/.mandible");
-        let pid = super::runtime_file_path(None, Some(isolated.clone()), "daemon.pid").unwrap();
-        let log =
-            super::runtime_file_path(None, Some(isolated.clone()), "launchd-stderr.log").unwrap();
-        assert_eq!(pid, isolated.join(".cache/mandible/daemon.pid"));
-        assert_eq!(log, isolated.join(".cache/mandible/launchd-stderr.log"));
-        assert_ne!(
-            pid,
-            super::runtime_file_path(None, None, "daemon.pid").unwrap()
-        );
-        assert_eq!(
-            super::runtime_file_path(
-                Some("/tmp/explicit-candidate.pid"),
-                Some(isolated),
-                "daemon.pid"
-            )
-            .unwrap(),
-            std::path::PathBuf::from("/tmp/explicit-candidate.pid"),
-        );
-        assert!(super::runtime_file_path(Some("relative.pid"), None, "daemon.pid").is_err());
     }
 
     #[cfg(target_os = "macos")]

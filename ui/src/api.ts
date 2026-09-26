@@ -2777,7 +2777,7 @@ export async function getLogs(params?: {
 }
 
 export type DesktopDaemonLaunchMode = 'on_demand' | 'manual';
-export type DesktopDaemonState = 'running' | 'starting' | 'stopped' | 'stale_pid' | 'port_conflict';
+export type DesktopDaemonState = 'running' | 'starting' | 'gateway_unavailable' | 'stopped' | 'port_conflict';
 
 export type DesktopDaemonStatus = {
   state: DesktopDaemonState;
@@ -2788,6 +2788,11 @@ export type DesktopDaemonStatus = {
   log_file: string;
   detail: string | null;
   healthy: boolean;
+  dashboard_ready: boolean;
+  dashboard_origin: string;
+  gateway_state: 'running' | 'starting' | 'stopped';
+  gateway_error: string | null;
+  gateway_log_file: string;
 };
 
 /**
@@ -2799,15 +2804,12 @@ export type DesktopDaemonStatus = {
  * `__TAURI_INTERNALS__.invoke` that `@tauri-apps/api/core` wraps.
  */
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-
-type TauriWebview = { navigate: (url: string) => Promise<void> };
 type DesktopWindowTheme = 'light' | 'dark' | null;
 type TauriDesktopWindow = { setTheme: (theme: DesktopWindowTheme) => Promise<void> };
 
 type TauriGlobalWindow = Window & {
   __TAURI__?: {
     core?: { invoke?: TauriInvoke };
-    webview?: { getCurrentWebview?: () => TauriWebview };
     window?: { getCurrentWindow?: () => TauriDesktopWindow };
   };
   __TAURI_INTERNALS__?: { invoke?: TauriInvoke };
@@ -2911,15 +2913,15 @@ export async function setupSecureLocalConnections(): Promise<SecureLocalConnecti
   return invokeDesktop<SecureLocalConnectionsStatus>('secure_local_connections_setup');
 }
 
-export async function navigateToDesktopBootstrap(): Promise<void> {
+export async function navigateToDesktopBootstrap(skipAutoStart = false): Promise<void> {
   if (!hasTauriRuntime()) {
     return;
   }
-  const getCurrentWebview = tauriGlobalWindow()?.__TAURI__?.webview?.getCurrentWebview;
-  if (typeof getCurrentWebview !== 'function') {
-    throw new Error('Desktop webview navigation is only available in the Tauri app.');
-  }
-  await getCurrentWebview().navigate('/index.html');
+  await invokeDesktop<void>('navigate_to_desktop_bootstrap', { skipAutoStart });
+}
+
+export async function navigateToDesktopDashboard(): Promise<void> {
+  await invokeDesktop<void>('navigate_to_desktop_dashboard');
 }
 
 // ── Conversation types ──

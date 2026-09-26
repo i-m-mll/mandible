@@ -70,10 +70,10 @@ export function assertLocalCaIdentity(paths) {
   return { state: record.state, storage_root: paths.storageRoot, root_digest: record.root_digest, verified_at: record.verified_at ?? null };
 }
 
-export function probeCurrentMacOsTrust(paths) {
+export function probeCurrentMacOsTrust(paths, { timeoutMs = 5000 } = {}) {
   if (assertLocalCaIdentity(paths).state !== "trusted") throw new Error("The installation-owned Caddy root has not passed explicit secure-local-connections setup.");
   if (process.platform !== "darwin") throw new Error("Current local CA trust verification requires macOS.");
-  const result = spawnSync("/usr/bin/security", ["verify-cert", "-c", paths.rootCert, "-p", "ssl", "-l", "-L", "-q"], { encoding: "utf8" });
+  const result = spawnSync("/usr/bin/security", ["verify-cert", "-c", paths.rootCert, "-p", "ssl", "-l", "-L", "-q"], { encoding: "utf8", timeout: timeoutMs });
   if (result.status !== 0) throw new Error(`macOS no longer trusts the pinned local CA for HTTPS; no public listener was stopped. Reopen the explicit secure-local-connections setup action. ${(result.stderr || result.stdout).trim()}`);
   assertLocalCaIdentity(paths);
   return true;

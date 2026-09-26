@@ -22,7 +22,7 @@ export function installPinnedCaddy(home) {
   const archive = path.join(os.tmpdir(), `mandible-caddy-${randomUUID()}.tar.gz`);
   try {
     const url = `https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/${release.name}`;
-    const fetched = spawnSync("curl", ["--fail", "--location", "--silent", "--show-error", "--output", archive, url], { encoding: "utf8" });
+    const fetched = spawnSync("curl", ["--fail", "--location", "--silent", "--show-error", "--connect-timeout", "5", "--max-time", "30", "--output", archive, url], { encoding: "utf8", timeout: 35_000 });
     if (fetched.status !== 0) throw new Error(`Failed to download pinned Caddy: ${fetched.stderr.trim()}`);
     const actual = createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
     if (actual !== release.sha256) throw new Error(`Caddy archive digest mismatch: ${actual}`);

@@ -870,8 +870,8 @@ function formatDaemonState(state: DesktopDaemonStatus['state']): string {
       return 'Running';
     case 'starting':
       return 'Starting';
-    case 'stale_pid':
-      return 'Stale PID';
+    case 'gateway_unavailable':
+      return 'Dashboard unavailable';
     case 'port_conflict':
       return 'Port conflict';
     default:
@@ -994,7 +994,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
     setAction('stop');
     try {
       await stopDesktopDaemon();
-      await navigateToDesktopBootstrap();
+      await navigateToDesktopBootstrap(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to stop daemon');
       setAction(null);
@@ -1005,7 +1005,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
     setAction('restart');
     try {
       await restartDesktopDaemon();
-      await navigateToDesktopBootstrap();
+      await navigateToDesktopBootstrap(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to restart daemon');
       setAction(null);
@@ -1032,7 +1032,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
     <SettingsSectionShell section={props.section}>
       <SettingsSectionHeader
         section={props.section}
-        description="Desktop shell lifecycle controls for the local Mandible daemon."
+        description="Desktop controls for the local Mandible backend and trusted dashboard gateway."
       />
       {(error || caError) && (
         <DetailPaneNotice severity="error" density="compact" title="Local connections need attention">
@@ -1075,7 +1075,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
                 )}
               </div>
               <div className="settings-view__daemon-meta">
-                {loading ? 'Checking daemon health…' : `Port ${status?.port ?? 19420}`}
+                {loading ? 'Checking local services…' : `${status?.healthy ? 'Backend healthy' : 'Backend unavailable'} · port ${status?.port ?? 0}`}
                 {status?.pid ? ` • PID ${status.pid}` : ''}
               </div>
             </div>
@@ -1084,7 +1084,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
                 type="button"
                 className="btn btn--active btn--sm"
                 onClick={handleStart}
-                disabled={loading || action != null || status?.healthy === true}
+                disabled={loading || action != null || status?.dashboard_ready === true || status?.state === 'port_conflict'}
               >
                 {action === 'start' ? '...' : 'Start'}
               </button>
@@ -1100,7 +1100,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
                 type="button"
                 className="btn btn--sm"
                 onClick={handleStop}
-                disabled={loading || action != null || !status || status.state === 'stopped'}
+                disabled={loading || action != null || !status || (status.state === 'stopped' && status.gateway_state !== 'running')}
               >
                 {action === 'stop' ? '...' : 'Stop'}
               </button>
@@ -1113,15 +1113,22 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
             <div className="settings-view__daemon-detail">{status.detail}</div>
           )}
           {status && (
+            <div className="settings-view__daemon-detail">
+              Dashboard: {status.dashboard_ready ? `ready at ${status.dashboard_origin}` : `unavailable (${status.gateway_state})`}
+              {status.gateway_error ? ` — ${status.gateway_error}` : ''}
+            </div>
+          )}
+          {status && (
             <div className="settings-view__daemon-paths">
               <span>PID file: {status.pid_file}</span>
               <span>Log file: {status.log_file}</span>
+              <span>Gateway log: {status.gateway_log_file}</span>
             </div>
           )}
           <div className="settings-view__daemon-footer">
             {status?.launch_mode === 'manual'
-              ? 'Manual mode leaves the daemon stopped until you start it explicitly from the desktop shell.'
-              : 'On-demand mode starts Mandible automatically when the desktop shell opens and the daemon is absent.'}
+              ? 'Manual mode leaves stopped services alone until you start Mandible from the desktop shell.'
+              : 'On-demand mode starts or recovers Mandible when the desktop shell opens and the backend or dashboard is unavailable.'}
           </div>
           <button type="button" className="btn btn--sm" onClick={refreshStatus} disabled={loading || action != null}>
             Check status
