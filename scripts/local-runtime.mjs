@@ -26,6 +26,8 @@ const RUNTIME_DIR = path.join(HOME, "config", "local-sessions");
 const AUTHORITY_DB = path.join(RUNTIME_DIR, "sessions.db");
 const INSTALLATION_AUTHORITY = path.join(HOME, "config", "client-auth", "authority-id");
 const SERVICE_DIR = path.join(os.homedir(), "Library", "LaunchAgents");
+const PRIVATE_SERVICE_DIR = path.join(RUNTIME_DIR, "launch-agents");
+const GATEWAY_CONFIG = path.join(RUNTIME_DIR, "Caddyfile");
 const LOG_DIR = path.join(HOME_DIR, ".cache", "mandible");
 const DOMAIN = `gui/${process.getuid?.() ?? 0}`;
 const IS_DEFAULT_INSTALL = HOME === DEFAULT_HOME;
@@ -37,10 +39,9 @@ const OPERATION_TIMEOUT_MS = 4500;
 const BODY_LIMIT = 256 * 1024;
 
 function readProductionRecord() {
-  const file = plistPath(BACKEND_LABEL);
-  if (!fs.existsSync(file)) throw new Error(`Mandible's production LaunchAgent is not installed: ${file}`);
-  const record = parsePlist(file);
-  if (record.Label !== BACKEND_LABEL) throw new Error(`The production LaunchAgent has the wrong label: ${file}`);
+  const installed = locateLaunchAgent(BACKEND_LABEL);
+  if (!installed) throw new Error("Mandible's production LaunchAgent is not installed.");
+  const { file, record } = installed;
   const args = record.ProgramArguments ?? [];
   if (args.length !== 3 || path.resolve(args[1]) !== path.join(RUNTIME_DIR, "production-runner.mjs") || args[2] !== "run") {
     throw new Error(`The production LaunchAgent does not point to Mandible's managed runner: ${file}`);
@@ -291,7 +292,7 @@ function escapeXml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }
 
-export function renderLaunchAgent({ label, programArguments, workingDirectory, environment, stdoutPath, stderrPath, runAtLoad = true }) {
+export function renderLaunchAgent({ label, programArguments, workingDirectory, environment, stdoutPath, stderrPath }) {
   const strings = (values) => values.map((value) => `<string>${escapeXml(value)}</string>`).join("");
   const env = Object.entries(environment).sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `<key>${escapeXml(key)}</key><string>${escapeXml(value)}</string>`).join("");
@@ -303,7 +304,6 @@ export function renderLaunchAgent({ label, programArguments, workingDirectory, e
     `<key>ProgramArguments</key><array>${strings(programArguments)}</array>`,
     `<key>WorkingDirectory</key><string>${escapeXml(workingDirectory)}</string>`,
     `<key>EnvironmentVariables</key><dict>${env}</dict>`,
-    `<key>RunAtLoad</key><${runAtLoad ? "true" : "false"}/>`,
     '<key>KeepAlive</key><true/>',
     '<key>ThrottleInterval</key><integer>10</integer>',
     `<key>StandardOutPath</key><string>${escapeXml(stdoutPath)}</string>`,
@@ -318,8 +318,30 @@ function nodeBinary() {
   return process.execPath;
 }
 
-function plistPath(label) {
+function standardPlistPath(label) {
   return path.join(SERVICE_DIR, `${label}.plist`);
+}
+
+function privatePlistPath(label) {
+  return path.join(PRIVATE_SERVICE_DIR, `${label}.plist`);
+}
+
+function locateLaunchAgent(label) {
+  const files = [standardPlistPath(label), privatePlistPath(label)].filter((file) => fs.existsSync(file));
+  if (files.length > 1) throw new Error(`Multiple Mandible LaunchAgents use label ${label}; preserving both and refusing to guess.`);
+  if (files.length === 0) return null;
+  const file = files[0];
+  const record = parsePlist(file);
+  if (record.Label !== label) throw new Error(`LaunchAgent ${file} has an unexpected label; preserving it.`);
+  return { file, record };
+}
+
+function targetPlistPath(label, launchMode) {
+  // KeepAlive implies RunAtLoad, so manual jobs stay outside the login-scanned directory until Start.
+  if (label === BACKEND_LABEL) {
+    return launchMode === "manual" ? privatePlistPath(label) : standardPlistPath(label);
+  }
+  return fs.existsSync(GATEWAY_CONFIG) ? standardPlistPath(label) : privatePlistPath(label);
 }
 
 function archiveLaunchAgent(file, label, bytes) {
@@ -343,18 +365,37 @@ function writeOwnedPlist(file, contents, { label, recognizesLegacy = () => false
     if (existing === contents) return false;
     const managedMarker = "<key>Comment</key><string>Mandible runtime agent mandible-launch-agent@1</string>";
     const existingRecord = parsePlist(file);
-    if (existingRecord.Label !== label) {
-      throw new Error(`LaunchAgent ${file} has an unexpected label; preserving it and reporting an ownership conflict.`);
-    }
-    if (!existing.includes(managedMarker) && !recognizesLegacy(existingRecord)) {
-      throw new Error(`A launchd configuration already exists at ${file} and is not managed by Mandible; preserving it.`);
-    }
+    assertOwnedLaunchAgent(file, existingRecord, existing.includes(managedMarker), label, recognizesLegacy);
     if (!existing.includes(managedMarker)) archiveLaunchAgent(file, label, fs.readFileSync(file));
   }
   const temporary = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, contents, { flag: "w", mode: 0o600 });
   fs.renameSync(temporary, file);
   fs.chmodSync(file, 0o600);
+  return true;
+}
+
+function assertOwnedLaunchAgent(file, record, managed, label, recognizesLegacy) {
+  if (record.Label !== label) {
+    throw new Error(`LaunchAgent ${file} has an unexpected label; preserving it and reporting an ownership conflict.`);
+  }
+  if (!managed && !recognizesLegacy(record)) {
+    throw new Error(`A launchd configuration already exists at ${file} and is not managed by Mandible; preserving it.`);
+  }
+}
+
+function writeServicePlist(label, file, contents, { recognizesLegacy = () => false } = {}) {
+  const existing = locateLaunchAgent(label);
+  if (!existing || existing.file === file) {
+    return writeOwnedPlist(file, contents, { label, recognizesLegacy });
+  }
+
+  const bytes = fs.readFileSync(existing.file);
+  const managedMarker = bytes.toString("utf8").includes("<key>Comment</key><string>Mandible runtime agent mandible-launch-agent@1</string>");
+  assertOwnedLaunchAgent(existing.file, existing.record, managedMarker, label, recognizesLegacy);
+  archiveLaunchAgent(existing.file, label, bytes);
+  writeOwnedPlist(file, contents, { label, recognizesLegacy });
+  fs.unlinkSync(existing.file);
   return true;
 }
 
@@ -390,10 +431,9 @@ const PRESERVED_BACKEND_ENVIRONMENT = new Set([
 ]);
 
 function existingBackendEnvironment() {
-  const file = plistPath(BACKEND_LABEL);
-  if (!fs.existsSync(file)) return {};
-  const record = parsePlist(file);
-  if (record.Label !== BACKEND_LABEL) throw new Error(`The production LaunchAgent has the wrong label: ${file}`);
+  const existing = locateLaunchAgent(BACKEND_LABEL);
+  if (!existing) return {};
+  const { record } = existing;
   const env = record.EnvironmentVariables ?? {};
   return Object.fromEntries(Object.entries(env).filter(([key]) => PRESERVED_BACKEND_ENVIRONMENT.has(key)));
 }
@@ -401,15 +441,12 @@ function existingBackendEnvironment() {
 export function launchModeFromAgent(record) {
   const configured = record.EnvironmentVariables?.MANDIBLE_LAUNCH_MODE;
   if (configured === "manual" || configured === "on_demand") return configured;
-  return record.RunAtLoad === false ? "manual" : "on_demand";
+  return "on_demand";
 }
 
 function installedLaunchMode() {
-  const file = plistPath(BACKEND_LABEL);
-  if (!fs.existsSync(file)) return "on_demand";
-  const record = parsePlist(file);
-  if (record.Label !== BACKEND_LABEL) throw new Error(`The production LaunchAgent has the wrong label: ${file}`);
-  return launchModeFromAgent(record);
+  const installed = locateLaunchAgent(BACKEND_LABEL);
+  return installed ? launchModeFromAgent(installed.record) : "on_demand";
 }
 
 function prepareServicePlists(production, main, launchMode) {
@@ -430,8 +467,8 @@ function prepareServicePlists(production, main, launchMode) {
     GIT_OPTIONAL_LOCKS: "0",
   };
   const gatewayEnvironment = { HOME: os.homedir(), MANDIBLE_HOME: HOME, PATH: pathValue, GIT_OPTIONAL_LOCKS: "0" };
-  const backendFile = plistPath(BACKEND_LABEL);
-  const gatewayFile = plistPath(GATEWAY_LABEL);
+  const backendFile = targetPlistPath(BACKEND_LABEL, launchMode);
+  const gatewayFile = targetPlistPath(GATEWAY_LABEL, launchMode);
   const oldBackendRunner = path.join(RUNTIME_DIR, "production-runner.mjs");
   const oldGatewayRunner = path.join(production.root, "scripts", "local-front-door.mjs");
   const backendContents = renderLaunchAgent({
@@ -441,7 +478,6 @@ function prepareServicePlists(production, main, launchMode) {
     environment: backendEnvironment,
     stdoutPath: path.join(LOG_DIR, "production-stdout.log"),
     stderrPath: path.join(LOG_DIR, "production-stderr.log"),
-    runAtLoad: launchMode === "on_demand",
   });
   const gatewayContents = renderLaunchAgent({
     label: GATEWAY_LABEL,
@@ -450,18 +486,15 @@ function prepareServicePlists(production, main, launchMode) {
     environment: gatewayEnvironment,
     stdoutPath: path.join(LOG_DIR, "local-front-door-stdout.log"),
     stderrPath: path.join(LOG_DIR, "local-front-door-stderr.log"),
-    runAtLoad: fs.existsSync(path.join(RUNTIME_DIR, "Caddyfile")),
   });
   return {
-    backendChanged: writeOwnedPlist(backendFile, backendContents, {
-      label: BACKEND_LABEL,
+    backendChanged: writeServicePlist(BACKEND_LABEL, backendFile, backendContents, {
       recognizesLegacy: (record) => {
         const args = record.ProgramArguments ?? [];
         return args.length === 3 && path.resolve(args[1]) === oldBackendRunner && args[2] === "run";
       },
     }),
-    gatewayChanged: writeOwnedPlist(gatewayFile, gatewayContents, {
-      label: GATEWAY_LABEL,
+    gatewayChanged: writeServicePlist(GATEWAY_LABEL, gatewayFile, gatewayContents, {
       recognizesLegacy: (record) => {
         const args = record.ProgramArguments ?? [];
         return args.length === 3 && path.resolve(args[1]) === oldGatewayRunner
@@ -485,7 +518,9 @@ function ensureEnabledAndLoaded(label) {
   if (current.loaded) return false;
   const enabled = runLaunchctl(["enable", `${DOMAIN}/${label}`]);
   if (enabled.status !== 0) throw new Error(`Could not enable Mandible service ${label}: ${enabled.stderr.trim()}`);
-  const loaded = runLaunchctl(["bootstrap", DOMAIN, plistPath(label)]);
+  const installed = locateLaunchAgent(label);
+  if (!installed) throw new Error(`Mandible service ${label} has no installed LaunchAgent.`);
+  const loaded = runLaunchctl(["bootstrap", DOMAIN, installed.file]);
   if (loaded.status !== 0 && !inspectJob(label).loaded) {
     throw new Error(`Could not start Mandible service ${label}: ${(loaded.stderr || loaded.stdout).trim()}`);
   }

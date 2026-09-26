@@ -22,31 +22,43 @@ const installationAuthorityPath = path.join(mandibleHome, "config", "client-auth
 const defaultHome = path.join(os.homedir(), ".mandible");
 const suffix = mandibleHome === defaultHome ? "" : `.${createHash("sha256").update(mandibleHome).digest("hex").slice(0, 8)}`;
 const backendLabel = `bio.mll.mandible.local-session-production${suffix}`;
-const launchAgentPath = path.join(os.homedir(), "Library", "LaunchAgents", `${backendLabel}.plist`);
+const launchAgentPaths = [
+  path.join(os.homedir(), "Library", "LaunchAgents", `${backendLabel}.plist`),
+  path.join(runtimeDir, "launch-agents", `${backendLabel}.plist`),
+];
 
 function launchAgentRecord() {
-  const result = spawnSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", launchAgentPath], {
+  const files = launchAgentPaths.filter((file) => fs.existsSync(file));
+  if (files.length !== 1) {
+    throw new Error(files.length === 0
+      ? "Mandible's production LaunchAgent is not installed."
+      : "Multiple Mandible production LaunchAgents are installed; refusing to guess.");
+  }
+  const [file] = files;
+  const result = spawnSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", file], {
     encoding: "utf8", timeout: 1500,
   });
   if (result.error || result.status !== 0) {
-    throw new Error(`Could not read Mandible's production LaunchAgent ${launchAgentPath}: ${(result.stderr || result.error?.message || "unknown failure").trim()}`);
+    throw new Error(`Could not read Mandible's production LaunchAgent ${file}: ${(result.stderr || result.error?.message || "unknown failure").trim()}`);
   }
-  try { return JSON.parse(result.stdout); }
-  catch { throw new Error(`Mandible's production LaunchAgent is malformed: ${launchAgentPath}`); }
-}
-
-function configuredRoot() {
-  const record = launchAgentRecord();
+  let record;
+  try { record = JSON.parse(result.stdout); }
+  catch { throw new Error(`Mandible's production LaunchAgent is malformed: ${file}`); }
   if (record.Label !== backendLabel) throw new Error("The production LaunchAgent label does not match this Mandible installation.");
   const args = record.ProgramArguments ?? [];
   if (args.length !== 3 || path.resolve(args[1]) !== path.join(runtimeDir, "production-runner.mjs") || args[2] !== "run") {
     throw new Error("The production LaunchAgent does not use Mandible's managed runner.");
   }
-  const root = record.EnvironmentVariables?.MANDIBLE_PRODUCTION_ROOT;
-  if (!path.isAbsolute(root ?? "") || !fs.existsSync(path.join(root, "package.json"))) {
-    throw new Error("The production LaunchAgent does not name a Mandible checkout.");
+  return record;
+}
+
+function configuredRoot() {
+  const root = launchAgentRecord().EnvironmentVariables?.MANDIBLE_PRODUCTION_ROOT;
+  if (!path.isAbsolute(root ?? "") || !fs.existsSync(path.join(root, "package.json"))
+    || !fs.existsSync(path.join(root, "dist", "index.js"))) {
+    throw new Error("The production LaunchAgent does not provide a built Mandible checkout.");
   }
-  return { root: path.resolve(root), environment: record.EnvironmentVariables ?? {} };
+  return path.resolve(root);
 }
 
 function mainRegistration(root) {
@@ -79,8 +91,7 @@ function mainRegistration(root) {
 }
 
 async function run() {
-  const configured = configuredRoot();
-  const root = configured.root;
+  const root = configuredRoot();
   const generation = readBuildRevision(root);
   const main = mainRegistration(root);
   const entry = path.join(root, "dist", "index.js");
