@@ -118,6 +118,7 @@
       statusBadge.dataset.state = "error";
       statusCopy.textContent = String(error);
       setBusy(false);
+      schedulePoll();
     }
   }
 
@@ -135,6 +136,7 @@
     } catch (error) {
       statusCopy.textContent = String(error);
       setBusy(false);
+      schedulePoll();
     }
   }
 

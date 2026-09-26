@@ -600,12 +600,11 @@ async function startRuntime({ launchMode = "on_demand" } = {}) {
     if (current.backendPortOpen && !current.backendJob.loaded) return current.status;
     if (!current.backendJob.loaded) ensureEnabledAndLoaded(BACKEND_LABEL);
   }
-  if (!current.gateway.ok && !current.trusted.error) {
-    if (current.gatewayPortOpen && !current.gatewayJob.loaded) return current.status;
+  if (!current.gatewayJob.loaded && !current.gateway.ok && !current.trusted.error) {
+    if (current.gatewayPortOpen) return current.status;
     prepareGateway(current.production);
     ensureInstalled(current.production, current.main, launchMode);
-    if (current.gatewayJob.loaded) restartOwnedJob(GATEWAY_LABEL);
-    else ensureEnabledAndLoaded(GATEWAY_LABEL);
+    ensureEnabledAndLoaded(GATEWAY_LABEL);
   }
   return (await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode)).status;
 }
@@ -645,11 +644,10 @@ async function restartRuntime({ launchMode = "on_demand" } = {}) {
   if (current.backendJob.loaded) restartOwnedJob(BACKEND_LABEL);
   else if (current.backend.ok) throw new Error("The production backend is healthy but is not owned by Mandible's launchd service; preserving the running process.");
   else restartOwnedJob(BACKEND_LABEL);
-  if (!current.gateway.ok && !current.trusted.error) {
+  if (!current.gatewayJob.loaded && !current.gateway.ok && !current.trusted.error) {
     prepareGateway(current.production);
     ensureInstalled(current.production, current.main, launchMode);
-    if (current.gatewayJob.loaded) restartOwnedJob(GATEWAY_LABEL);
-    else if (!current.gatewayPortOpen) ensureEnabledAndLoaded(GATEWAY_LABEL);
+    if (!current.gatewayPortOpen) ensureEnabledAndLoaded(GATEWAY_LABEL);
   }
   current = await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode);
   if (current.backend.ok && beforeEpoch && current.backend.document?.startup_epoch === beforeEpoch) {
