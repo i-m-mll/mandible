@@ -37,12 +37,19 @@ fn native_window_capabilities(
 
 #[cfg(target_os = "macos")]
 fn configure_clear_liquid_glass(window: tauri::WebviewWindow, enabled: Arc<AtomicBool>) {
+    use window_vibrancy::{
+        apply_liquid_glass, clear_liquid_glass, LiquidGlassOptions, NSGlassEffectViewStyle,
+    };
+
+    let glass_applied = Arc::new(AtomicBool::new(false));
+    let callback_glass_applied = glass_applied.clone();
     let effect_window = window.clone();
+    // Called from Builder::setup on the macOS main thread. The locked Wry
+    // runtime handles same-thread with_webview messages synchronously, so the
+    // callback has returned before this function continues. Keep Tauri window
+    // dispatches below, outside the callback, to avoid re-entering its lock.
     let setup_result = window.with_webview(move |webview| {
         use objc2_app_kit::NSView;
-        use window_vibrancy::{
-            apply_liquid_glass, clear_liquid_glass, LiquidGlassOptions, NSGlassEffectViewStyle,
-        };
 
         // Put Tauri's webview inside the native glass view. Shared shell
         // surfaces decide which parts of it expose the Clear effect.
@@ -53,23 +60,43 @@ fn configure_clear_liquid_glass(window: tauri::WebviewWindow, enabled: Arc<Atomi
 
         if let Err(error) = apply_liquid_glass(&effect_window, options) {
             eprintln!("Could not enable native Clear glass: {error}");
-            return;
+        } else {
+            callback_glass_applied.store(true, Ordering::Release);
         }
-
-        if let Err(error) =
-            effect_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)))
-        {
-            let _ = clear_liquid_glass(&effect_window);
-            let _ = effect_window.set_background_color(Some(tauri::window::Color(11, 15, 20, 255)));
-            eprintln!("Could not make the native Clear glass backing transparent: {error}");
-            return;
-        }
-
-        enabled.store(true, Ordering::Release);
     });
 
     if let Err(error) = setup_result {
         eprintln!("Could not configure native Clear glass: {error}");
+        if glass_applied.load(Ordering::Acquire) {
+            if let Err(clear_error) = clear_liquid_glass(&window) {
+                eprintln!("Could not clear native Clear glass after setup failure: {clear_error}");
+            }
+        }
+        restore_dark_window_background(&window);
+        return;
+    }
+
+    if !glass_applied.load(Ordering::Acquire) {
+        restore_dark_window_background(&window);
+        return;
+    }
+
+    if let Err(error) = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0))) {
+        if let Err(clear_error) = clear_liquid_glass(&window) {
+            eprintln!("Could not clear native Clear glass after backing failure: {clear_error}");
+        }
+        restore_dark_window_background(&window);
+        eprintln!("Could not make the native Clear glass backing transparent: {error}");
+        return;
+    }
+
+    enabled.store(true, Ordering::Release);
+}
+
+#[cfg(target_os = "macos")]
+fn restore_dark_window_background(window: &tauri::WebviewWindow) {
+    if let Err(error) = window.set_background_color(Some(tauri::window::Color(11, 15, 20, 255))) {
+        eprintln!("Could not restore the dark native window background: {error}");
     }
 }
 
