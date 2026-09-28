@@ -121,6 +121,72 @@ describe.sequential("WorkScanner", () => {
     expect(columnNames).toContain("last_commit_date");
   });
 
+  it("serves only the persisted repo projection without discovering or scanning on GET", async () => {
+    const db = createMigratedDb();
+    const scanner = new WorkScanner({
+      db,
+      repo_roots: [repoRoot],
+      config_path: path.join(tempRoot, "preview", "repos.json"),
+    });
+    const scan = vi.spyOn(scanner, "scanAllAsync");
+    const router = new Router();
+    registerWorkRoutes(router, scanner);
+
+    const empty = await router.invoke({ method: "GET", url: "/api/work/repos" });
+    expect(empty.status).toBe(200);
+    expect(empty.body).toEqual([]);
+    expect(scan).not.toHaveBeenCalled();
+
+    db.prepare(
+      `INSERT INTO work_repos (
+         id, root, name, default_branch, dir_exists, excluded,
+         user_modified, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, 1, 0, 0, datetime('now'), datetime('now'))`,
+    ).run("cached-repo", repoRoot, "Cached repo", "main");
+    const cached = await router.invoke({ method: "GET", url: "/api/work/repos" });
+    expect(cached.status).toBe(200);
+    expect(cached.body).toEqual([expect.objectContaining({
+      id: "cached-repo",
+      root: repoRoot,
+      name: "Cached repo",
+    })]);
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it("removes repos through a preview-owned roots file and rejects symlink escapes", () => {
+    const db = createMigratedDb();
+    const previewRoot = path.join(tempRoot, "preview-work-copy");
+    const configPath = path.join(previewRoot, "work", "repos.json");
+    fs.mkdirSync(previewRoot, { recursive: true });
+    db.prepare(
+      `INSERT INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
+       VALUES (?, ?, ?, ?, 1, 0), (?, ?, ?, ?, 1, 0)`,
+    ).run("remove-one", repoRoot, "one", "main", "keep-two", remoteRoot, "two", "main");
+
+    const scanner = new WorkScanner({ db, config_path: configPath, config_root: previewRoot });
+    expect(scanner.removeRepo("remove-one")).toBe(true);
+    expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toEqual({ repos: [remoteRoot] });
+    expect(db.prepare("SELECT id FROM work_repos ORDER BY id").all()).toEqual([{ id: "keep-two" }]);
+
+    const escapedRoot = path.join(tempRoot, "preview-work-symlink");
+    const outside = path.join(tempRoot, "preview-work-outside");
+    fs.mkdirSync(escapedRoot, { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.symlinkSync(outside, path.join(escapedRoot, "work"), "dir");
+    db.prepare(
+      `INSERT INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
+       VALUES (?, ?, ?, ?, 1, 0)`,
+    ).run("escape-one", repoRoot, "one", "main");
+    const escapedScanner = new WorkScanner({
+      db,
+      config_path: path.join(escapedRoot, "work", "repos.json"),
+      config_root: escapedRoot,
+    });
+    expect(() => escapedScanner.removeRepo("escape-one")).toThrow("escapes its instance-owned root");
+    expect(db.prepare("SELECT id FROM work_repos WHERE id = ?").get("escape-one")).toEqual({ id: "escape-one" });
+    expect(fs.existsSync(path.join(outside, "repos.json"))).toBe(false);
+  });
+
   it("scans a repo with known branch state", () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });

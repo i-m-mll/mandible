@@ -276,6 +276,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   });
   registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
+    config_path: instance.role === "preview"
+      ? path.join(instance.preview_root!, "work", "repos.json")
+      : undefined,
+    config_root: instance.role === "preview" ? instance.preview_root! : undefined,
     on_event: (event) => {
       broadcast(event);
       if (event.type === "work:scan:completed") {
@@ -290,7 +294,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerIssueRoutes(router, workScanner, issueDeps);
   registerLedgerChangeRoutes(router, db);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
-  registerSettingsRoutes(router);
+  registerSettingsRoutes(router, instance.role);
   registerUserSettingsRoutes(router, db);
   registerHostUserPreferencesRoutes(router, new HostUserPreferencesStore(instance.user_preferences_root));
   registerSystemRoutes(router, workScanner, operationalLogStore?.db ?? db);

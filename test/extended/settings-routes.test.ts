@@ -276,4 +276,66 @@ describe("settings routes", () => {
 
     db.close();
   });
+
+  it("saves preview instruction settings without exporting or writing shared config", async () => {
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-settings-preview-"));
+    process.env.HOME = tempHome;
+    const cliLog = path.join(tempHome, "instructions-cli.log");
+    const fakeCli = path.join(tempHome, "instructions.sh");
+    fs.writeFileSync(fakeCli, "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$MANDIBLE_TEST_CLI_LOG\"\n", "utf8");
+    fs.chmodSync(fakeCli, 0o755);
+    process.env.MANDIBLE_INSTRUCTIONS_CLI = fakeCli;
+    process.env.MANDIBLE_TEST_CLI_LOG = cliLog;
+    vi.resetModules();
+
+    const db = createSettingsDb();
+    const identity = testIdentity(db);
+    const { setDb } = await import("../../src/db.js");
+    const { registerSettingsRoutes } = await import("../../src/routes/settings.js");
+    setDb(db);
+    const routes = new TestRoutes();
+    registerSettingsRoutes(routes, "preview");
+
+    const target = path.join(tempHome, "custom", "AGENTS.md");
+    const response = createResponse();
+    await routes.handler("PUT", "/api/settings/instructions-delivery")({
+      method: "PUT",
+      url: "/api/settings/instructions-delivery",
+      params: {},
+      query: {},
+      body: {
+        targets: [{ path: target, mode: "standalone" }],
+        postExport: "bin/compile-agent-instructions",
+        cleanupRemovedTargets: true,
+      },
+      client_identity: identity,
+    }, response);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.payload).toMatchObject({
+      preview_only: true,
+      configuration_saved: true,
+      targets: [{ path: target, mode: "standalone" }],
+      export: { ok: false, stderr: expect.stringContaining("not installed") },
+      cleanup: [],
+    });
+    expect(fs.existsSync(cliLog)).toBe(false);
+    expect(fs.existsSync(path.join(tempHome, ".config", "dotfiles.conf"))).toBe(false);
+    expect(db.prepare("SELECT value FROM settings WHERE key = ?").get("instructions.targets")).toEqual({
+      value: JSON.stringify([{ path: target, mode: "standalone" }]),
+    });
+
+    const theme = createResponse();
+    await routes.handler("PUT", "/api/settings/:key")({
+      method: "PUT",
+      url: "/api/settings/theme",
+      params: { key: "theme" },
+      query: {},
+      body: { value: "dark" },
+      client_identity: identity,
+    }, theme);
+    expect(theme.statusCode).toBe(200);
+    expect(fs.existsSync(path.join(tempHome, ".config", "dotfiles.conf"))).toBe(false);
+    db.close();
+  });
 });

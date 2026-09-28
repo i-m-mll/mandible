@@ -560,7 +560,7 @@ export class Router implements RouteRegistrar {
       // credential effect ceilings; treating an omitted test/internal
       // transport as file-RPC would invent a remote caller that does not exist.
       if (gate && transport !== "in-process") {
-        const operation = operationForRequest(normalizedMethod, pathname);
+        const operation = operationForRequest(normalizedMethod, pathname, this.instance.role);
         const effectDecision = authorizeEffects(this.instance, clientIdentity, operation);
         if (!effectDecision.allowed) {
           response.status(effectDecision.code === "authentication_required" ? 401 : 403).json({
@@ -821,7 +821,11 @@ export function createServer(options: ServerOptions): http.Server {
         });
         return;
       }
-      const eventDecision = authorizeEffects(instance, identity, operationForRequest(method, pathname));
+      const eventDecision = authorizeEffects(
+        instance,
+        identity,
+        operationForRequest(method, pathname, instance.role),
+      );
       if (!eventDecision.allowed) {
         writeJsonResponse(res, 403, { error: eventDecision.code, missing_effects: eventDecision.missing });
         return;
