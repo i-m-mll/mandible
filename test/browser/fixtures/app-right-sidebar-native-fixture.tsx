@@ -11,7 +11,7 @@ import {
   resolveAppRightSidebarLayout,
   type AppRightSidebarDescriptor,
 } from '../../../ui/src/app-shell';
-import { ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRightSidebar';
+import { ChatActivity, ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRightSidebar';
 import { MessageInfoPanel } from '../../../ui/src/components/console/MessageInfoPanel';
 import { SessionControls } from '../../../ui/src/components/console/SessionControls';
 import { VerticalArrowIcon } from '../../../ui/src/components/icons/VerticalArrowIcon';
@@ -157,7 +157,7 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
       tabs: [
         { id: 'overview', label: 'Session Overview', tooltip: 'Session Overview', icon: <TestIcon kind="overview" />, scrollOwner: 'detail', content: <ChatSessionOverview providerSessionId={null} conversationId="native" /> },
         { id: 'preview', label: 'Preview', tooltip: 'Preview', icon: <TestIcon kind="preview" />, scrollOwner: 'detail', content: <ChatPreview target={null} /> },
-        { id: 'activity', label: 'Activity', tooltip: 'Subagents and workflow runs', icon: <TestIcon kind="activity" />, scrollOwner: 'detail', content: <ScrollFill /> },
+        { id: 'activity', label: 'Activity', tooltip: 'Activity', icon: <TestIcon kind="activity" />, scrollOwner: 'detail', content: <ChatActivity items={[]} /> },
       ],
     };
     if (surface === 'graph') return {

@@ -89,9 +89,12 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark'): R
         const initial={toggleCount:toggles().length,pressed:toggles()[0].getAttribute('aria-pressed'),sidebar:rect(sidebar),header:rect(header),body:rect(body),scrollMoved:scrollOwner.scrollTop>scrollBefore,
           bodyOverflow:getComputedStyle(body).overflowY, nestedVerticalScroll:Array.from(body.querySelectorAll('*')).filter(n=>['auto','scroll'].includes(getComputedStyle(n).overflowY)).length,
           presentation:sidebar.dataset.presentation,mainInert:document.querySelector('main').hasAttribute('inert'),railInert:document.querySelector('.app-rail').hasAttribute('inert')};
+        const overviewPanel=document.querySelector('#app-right-sidebar-panel-overview');
+        const overviewContent=overviewPanel?.querySelector('.chat-right-sidebar__empty');
+        const overviewScrollTop=scrollOwner.scrollTop;
         const tabs=Array.from(document.querySelectorAll('[role=tab]'));
         let tabResult=null;
-        if(tabs.length){ tabs[0].focus(); tabs[0].dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); await wait(); tabResult={selected:document.querySelector('[role=tab][aria-selected=true]').getAttribute('aria-label'),focused:document.activeElement.getAttribute('aria-label'),tooltips:tabs.map(n=>n.title),text:tabs.map(n=>n.textContent.trim())}; }
+        if(tabs.length){ tabs[0].focus(); tabs[0].dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); await wait(); const switched={selected:document.querySelector('[role=tab][aria-selected=true]').getAttribute('aria-label'),focused:document.activeElement.getAttribute('aria-label')}; const contentRetainedWhileHidden=overviewContent===document.querySelector('#app-right-sidebar-panel-overview .chat-right-sidebar__empty'); tabs[0].click(); await wait(); const overviewScrollPreserved=overviewScrollTop===scrollOwner.scrollTop; const overviewContentRetained=contentRetainedWhileHidden&&overviewContent===document.querySelector('#app-right-sidebar-panel-overview .chat-right-sidebar__empty'); tabs[1].click(); await wait(); tabResult={...switched,accessibleNames:tabs.map(n=>n.getAttribute('aria-label')),tooltips:tabs.map(n=>n.title),text:tabs.map(n=>n.textContent.trim()),titleRows:document.querySelectorAll('.chat-right-sidebar__detail .detail-pane-shell__header').length,overviewContentRetained,overviewScrollPreserved}; }
         const separator=document.querySelector('[role=separator]'); separator.focus(); separator.dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true})); await wait();
         const keyboardWidth=parseFloat(getComputedStyle(root.querySelector('.app-layout')).getPropertyValue('--app-right-sidebar-width'));
         separator.setPointerCapture=()=>{}; separator.hasPointerCapture=()=>false;
@@ -201,6 +204,15 @@ describe('production app right sidebar geometry and interaction', () => {
     if (result.tabResult) {
       expect(result.tabResult).toMatchObject({ focused: result.surface === 'chat' ? 'Preview' : 'Message Info', selected: result.surface === 'chat' ? 'Preview' : 'Message Info' });
       expect((result.tabResult as { text: string[] }).text).toEqual(result.surface === 'chat' ? ['', '', ''] : ['', '']);
+      if (result.surface === 'chat') {
+        expect(result.tabResult).toMatchObject({
+          accessibleNames: ['Session Overview', 'Preview', 'Activity'],
+          tooltips: ['Session Overview', 'Preview', 'Activity'],
+          titleRows: 0,
+          overviewContentRetained: true,
+          overviewScrollPreserved: true,
+        });
+      }
     }
     if (result.surface === 'console') expect(result.afterStream).toBe(result.beforeStream);
     if (result.surface === 'chat') {
