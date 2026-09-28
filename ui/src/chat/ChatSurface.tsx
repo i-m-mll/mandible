@@ -310,7 +310,7 @@ export function ChatSurface({
     observeElementRect: observeChatElementRect,
     rangeExtractor: extractVirtualRows,
     overscan: 4,
-    anchorTo: 'end',
+    anchorTo: followingTail ? 'end' : 'start',
     followOnAppend: followingTail ? 'auto' : false,
     scrollEndThreshold: FOLLOW_THRESHOLD_PX,
   });
