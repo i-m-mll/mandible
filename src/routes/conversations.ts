@@ -36,6 +36,7 @@ import type { SourceBackedConversationBlock } from "../conversations/source-type
 import {
   ConversationFreshnessError,
   ensureExactConversationFresh,
+  type ExactConversationFreshnessOptions,
 } from "../conversations/freshness.js";
 import type { ResponseLike } from "../server.js";
 import type { ConversationExternalNavigation } from "../contracts.js";
@@ -494,9 +495,17 @@ function exportToJson(
 
 // --- Route registration ---
 
-export function registerConversationRoutes(server: RouteRegistrar, sessionRegistry?: SessionRegistry): void {
+export function registerConversationRoutes(
+  server: RouteRegistrar,
+  sessionRegistry?: SessionRegistry,
+  sourceFreshness: Pick<ExactConversationFreshnessOptions, "ingest" | "scheduleReparse"> = {},
+): void {
   const db = getDb();
   const sourceReader = new ConversationSourceReader(db);
+  const ensureFresh = (ref: string, waitForFresh?: boolean) => ensureExactConversationFresh(db, ref, {
+    ...sourceFreshness,
+    ...(waitForFresh === undefined ? {} : { waitForFresh }),
+  });
 
   // --- Static routes MUST be registered before parameterized :id routes ---
 
@@ -1191,7 +1200,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
 
     let id: string;
     try {
-      id = (await ensureExactConversationFresh(db, requestedRef, { waitForFresh: false })).conversationId;
+      id = (await ensureFresh(requestedRef, false)).conversationId;
     } catch (error) {
       if (sendFreshnessError(res, error)) return;
       sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
@@ -1320,7 +1329,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
           // that race through the same exact-path freshness boundary instead
           // of exposing a raw reader 409 for a normal active Chat.
           try {
-            await ensureExactConversationFresh(db, id, { waitForFresh: false });
+            await ensureFresh(id, false);
             // An exact-path actor may finish between the failed page read and
             // this check. The request's window/anchor was computed against the
             // prior version, so let the client retry the whole selected read.
@@ -1744,7 +1753,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
 
     let id: string;
     try {
-      id = (await ensureExactConversationFresh(db, requestedRef)).conversationId;
+      id = (await ensureFresh(requestedRef)).conversationId;
     } catch (error) {
       if (sendFreshnessError(res, error)) return;
       sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
@@ -1937,7 +1946,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionRegist
 
     let id: string;
     try {
-      id = (await ensureExactConversationFresh(db, requestedRef)).conversationId;
+      id = (await ensureFresh(requestedRef)).conversationId;
     } catch (error) {
       if (sendFreshnessError(res, error)) return;
       sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });

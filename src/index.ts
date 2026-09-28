@@ -49,6 +49,7 @@ import { registerHostUserPreferencesRoutes } from "./routes/host-user-preference
 import { HostUserPreferencesStore } from "./host-user-preferences.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
+import { SelectedSourceRefresher } from "./conversations/selected-source-refresh.js";
 import { registerConversationControlRoutes } from "./routes/conversation-control.js";
 import { registerConversationSpawnRoutes } from "./routes/conversation-spawn.js";
 import { ConversationControlService } from "./conversation-control/service.js";
@@ -243,6 +244,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   });
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });
+  const selectedSourceRefresher = instance.role === "preview"
+    ? new SelectedSourceRefresher({ db, dbPath, logger, publish: broadcast })
+    : null;
   const sessionRegistry = new SessionRegistry(db, logger);
   // Bug: 4e32923 — capture the auth queue so the inbox route can mark
   // auth_requests as delivered when the channel server forwards the event.
@@ -367,7 +371,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerClientAuthRoutes(router, clientAuth);
   registerWorkflowRoutes(router);
   registerRedirectRoutes(router);
-  registerConversationRoutes(router, sessionRegistry);
+  registerConversationRoutes(router, sessionRegistry, selectedSourceRefresher ?? {});
   registerConversationControlRoutes(router, conversationControl, { db, instance });
   registerConversationCustodyRoutes(router, db);
 
@@ -706,6 +710,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
 
     try { sessionManager.close(); } catch { /* best effort */ }
+    await selectedSourceRefresher?.close();
     try {
       await conversationControl.close();
     } catch (error) {
