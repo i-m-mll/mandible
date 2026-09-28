@@ -1876,10 +1876,8 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     targets: [],
     cleanupRemovedTargets: false,
   });
-  const exportRunsOnSave = canPerformOperation(instance, 'PUT', '/api/settings/instructions-delivery', {
-    targets: [],
-    cleanupRemovedTargets: true,
-  });
+  // Preview accepts these copied-setting writes but deliberately skips the host export.
+  const exportRunsOnSave = instance?.role !== 'preview';
   const [protectedBranches, setProtectedBranches] = useState('');
   const [quietHours, setQuietHours] = useState('');
   const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');
