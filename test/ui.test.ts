@@ -2272,7 +2272,7 @@ describe('app shell', () => {
     const graphPanel = screen.getByLabelText('Graph detail');
     const detailShell = graphPanel.querySelector('.detail-pane-shell');
     expect(Array.from(detailShell?.children ?? []).map((element) => element.getAttribute('data-detail-pane-slot')))
-      .toEqual(['header', 'body', 'overlay-host']);
+      .toEqual(['header', 'notice', 'body', 'overlay-host']);
     const copyIdentity = within(graphPanel).getByRole('button', { name: 'Copy Repo reference' });
     expect(copyIdentity.closest('.detail-pane-shell__header')).toBeTruthy();
     expect(copyIdentity.closest('.detail-pane-shell__body')).toBeNull();
@@ -2380,8 +2380,12 @@ describe('app shell', () => {
 
     const notice = (await screen.findByText('Saving disabled in copied preview instance.')).closest('.detail-pane-notice')!;
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
-    expect(notice.parentElement?.id).toBe('app-operational-notices');
-    expect(document.querySelector('.spaces-shell__main .detail-pane-notice')).toBeNull();
+    const spacesHeader = document.querySelector('.spaces-shell__header');
+    const spacesNoticeOutlet = document.querySelector('.spaces-shell__main .app-operational-notice-slot');
+    expect(spacesHeader?.nextElementSibling).toBe(spacesNoticeOutlet);
+    expect(spacesNoticeOutlet?.contains(notice)).toBe(true);
+    expect(document.querySelectorAll('.spaces-shell__main .detail-pane-notice')).toHaveLength(1);
+    expect(document.querySelector('#app-operational-notices .detail-pane-notice')).toBeNull();
   });
 });
 
@@ -4743,6 +4747,7 @@ describe('LedgerIssueDetail', () => {
     expect(toplineChildren.indexOf(controls as Element)).toBe(toplineChildren.indexOf(identity as Element) + 1);
     const detailPane = document.querySelector('.ledger-issue-detail');
     const header = document.querySelector('.ledger-issue-detail__header');
+    const notice = document.querySelector('.ledger-issue-detail [data-detail-pane-slot="notice"]');
     const body = document.querySelector('.ledger-issue-detail__body');
     expect(detailPane?.classList.contains('detail-pane-shell')).toBe(true);
     expect(header?.classList.contains('detail-pane-shell__header')).toBe(true);
@@ -4750,7 +4755,8 @@ describe('LedgerIssueDetail', () => {
     expect(header?.querySelector('.detail-pane-shell__header-primary.ledger-issue-detail__header-primary')).toBeTruthy();
     expect(detailPane?.contains(header as Node)).toBe(true);
     expect(detailPane?.contains(body as Node)).toBe(true);
-    expect(header?.nextElementSibling).toBe(body);
+    expect(header?.nextElementSibling).toBe(notice);
+    expect(notice?.nextElementSibling).toBe(body);
     expect(body?.contains(header as Node)).toBe(false);
     const overflowAction = screen.getByRole('button', { name: 'Issue actions' });
     expect(canonicalHeader?.querySelector('.detail-pane-header__actions')?.contains(overflowAction)).toBe(true);

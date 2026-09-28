@@ -1,5 +1,6 @@
 import { createContext, type ComponentChildren, type Ref } from 'preact';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { AppOperationalNoticeOutlet } from '../../app-shell';
 
 type DetailPaneShellAs = 'article' | 'section' | 'div' | 'aside';
 export type DetailPaneShellVariant = 'default' | 'compact';
@@ -29,8 +30,8 @@ export type DetailPaneShellProps = {
   footerClassName?: string;
   headerRef?: Ref<HTMLElement>;
   bodyRef?: Ref<HTMLDivElement>;
-  /** One anchored header composition. Prefer DetailPaneHeader for data views. */
-  header: ComponentChildren;
+  /** One anchored header composition. Omit for a headerless detail view. */
+  header?: ComponentChildren;
   subheader?: ComponentChildren;
   /** One anchored notice boundary between the header region and scrolling body. */
   notice?: ComponentChildren;
@@ -189,25 +190,31 @@ export function DetailPaneShell({
         data-detail-pane-presentation={presentation}
         aria-busy={ariaBusy === undefined ? undefined : ariaBusy ? 'true' : 'false'}
       >
-        <header
-          className={classNames('detail-pane-shell__header', headerClassName)}
-          data-detail-pane-slot="header"
-          ref={headerRef}
+        {(header !== undefined && header !== null) || (subheader !== undefined && subheader !== null) ? (
+          <header
+            className={classNames('detail-pane-shell__header', headerClassName)}
+            data-detail-pane-slot="header"
+            ref={headerRef}
+          >
+            {header !== undefined && header !== null ? (
+              <div className={classNames('detail-pane-shell__header-primary', headerPrimaryClassName)}>
+                {header}
+              </div>
+            ) : null}
+            {subheader !== undefined && subheader !== null ? (
+              <div className={classNames('detail-pane-shell__subheader', subheaderClassName)}>
+                {subheader}
+              </div>
+            ) : null}
+          </header>
+        ) : null}
+        <AppOperationalNoticeOutlet
+          className="detail-pane-shell__notice"
+          detailPaneSlot
+          registerAsMain={presentation === 'main'}
         >
-          <div className={classNames('detail-pane-shell__header-primary', headerPrimaryClassName)}>
-            {header}
-          </div>
-          {subheader && (
-            <div className={classNames('detail-pane-shell__subheader', subheaderClassName)}>
-              {subheader}
-            </div>
-          )}
-        </header>
-        {notice !== undefined && notice !== null && (
-          <div className="detail-pane-shell__notice" data-detail-pane-slot="notice">
-            {notice}
-          </div>
-        )}
+          {notice}
+        </AppOperationalNoticeOutlet>
         <div
           className={classNames('detail-pane-shell__body', bodyClassName)}
           data-detail-pane-slot="body"

@@ -238,6 +238,7 @@ describe('AuthQueueView', () => {
     expect(screen.getByRole('heading', { name: 'Structured auth detail' })).toBeTruthy();
     const authPane = document.querySelector('.auth-detail-pane');
     const authHeader = document.querySelector('.auth-detail__header');
+    const authNotice = document.querySelector('.auth-detail-pane [data-detail-pane-slot="notice"]');
     const authBody = document.querySelector('.auth-detail__body');
     const canonicalHeaders = authHeader?.querySelectorAll('[data-detail-pane-header-variant="standard"]');
     const canonicalHeader = canonicalHeaders?.[0] as HTMLElement | undefined;
@@ -250,7 +251,8 @@ describe('AuthQueueView', () => {
     expect(canonicalHeader?.classList.contains('detail-pane-header')).toBe(true);
     expect(authPane?.contains(authHeader as Node)).toBe(true);
     expect(authPane?.contains(authBody as Node)).toBe(true);
-    expect(authHeader?.nextElementSibling).toBe(authBody);
+    expect(authHeader?.nextElementSibling).toBe(authNotice);
+    expect(authNotice?.nextElementSibling).toBe(authBody);
     expect(authBody?.contains(authHeader as Node)).toBe(false);
     expect(document.querySelector('.auth-detail-surface')).toBeNull();
     expect(document.querySelector('.auth-card--expanded')).toBeNull();

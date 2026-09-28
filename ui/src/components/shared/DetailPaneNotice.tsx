@@ -72,7 +72,7 @@ export function DetailPaneNotice({
     </div>
   );
   if (!active) return null;
-  if (severity === 'error' || severity === 'warning') {
+  if (source !== undefined || severity === 'error' || severity === 'warning') {
     return noticeHost ? createPortal(notice, noticeHost) : null;
   }
   return notice;

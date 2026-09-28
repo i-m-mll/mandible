@@ -85,6 +85,17 @@
   min-width: 0;
 }
 
+.detail-pane-shell__notice:empty,
+.app-operational-notice-slot:empty {
+  display: none;
+}
+
+.app-operational-notice-slot {
+  flex: none;
+  width: 100%;
+  min-width: 0;
+}
+
 .detail-pane-shell__footer {
   flex: none;
   width: 100%;
