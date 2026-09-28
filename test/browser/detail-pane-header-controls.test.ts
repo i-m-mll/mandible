@@ -16,6 +16,7 @@ type HeaderCase = {
 type Result = {
   native: boolean;
   cases: HeaderCase[];
+  edgeInsets: { main: number; rightSidebar: number };
 };
 
 const chrome = [
@@ -31,6 +32,7 @@ const styles = [
   'ui/src/styles/tokens.css',
   'ui/src/styles/base.css',
   'ui/src/styles/detail-pane-shell.css',
+  'ui/src/styles/icon-tab-list.css',
   'ui/src/styles/conversations.css',
   'ui/src/styles/ledger.css',
   'ui/src/styles/issues.css',
@@ -77,7 +79,12 @@ function renderCase(native: boolean): Result {
           const visibleControl=variant==='compact' ? (open ? trigger : toggle) : (open ? header.querySelector('[data-header-control]') : toggle);
           return {variant,open,toggle:Boolean(toggle),visibleControlGap:contentRight-rect(visibleControl).right,menuGap:contentRight-rect(trigger).right};
         });
-        document.title=btoa(JSON.stringify({native:${native},cases}));
+        const mainHeader=document.querySelector('.header-case[data-variant="compact"][data-open="false"] .detail-pane-header');
+        const mainToggle=mainHeader?.querySelector('.app-right-sidebar-toggle');
+        const rightHeader=document.querySelector('.app-right-sidebar__header');
+        const rightToggle=rightHeader?.querySelector('.app-right-sidebar__toggle');
+        const edgeInsets={main:rect(mainHeader).right-rect(mainToggle).right,rightSidebar:rect(rightHeader).right-rect(rightToggle).right};
+        document.title=btoa(JSON.stringify({native:${native},cases,edgeInsets}));
       })();
     `;
     const path = join(directory, 'fixture.html');
@@ -85,6 +92,7 @@ function renderCase(native: boolean): Result {
       *{box-sizing:border-box}html,body{margin:0;padding:0;width:820px;min-height:900px;overflow:visible}
       .header-controls-fixture{display:flex;flex-direction:column;align-items:flex-start;gap:8px;width:820px}
       .header-case{flex:none;width:760px;height:132px}
+      .header-controls-sidebar{flex:none;width:360px;height:132px}
       .tauri-window{--header-fixture-native:1}
     </style></head><body${native ? ' class="tauri-window"' : ''}><script>${bundle}</script><script>${measure}</script></body></html>`);
     const rendered = spawnSync(chrome, [
@@ -118,6 +126,7 @@ describe('shared detail header controls', () => {
         }
         expect(header.toggle).toBe(!header.open);
       }
+      expect(Math.abs(result.edgeInsets.main - result.edgeInsets.rightSidebar), `${result.native ? 'native' : 'browser'} main and right-sidebar control edge padding`).toBeLessThanOrEqual(1);
     }
 
     expect(native.cases).toEqual(browser.cases);

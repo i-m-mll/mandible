@@ -442,7 +442,7 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 8px 0 14px;
+  padding-inline: var(--app-header-inline-inset);
   border-bottom: 1px solid var(--neutral-alpha-06);
   background: var(--surface-header);
 }

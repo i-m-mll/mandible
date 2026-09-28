@@ -136,7 +136,7 @@
 .detail-pane-header {
   width: 100%;
   min-width: 0;
-  padding: 20px var(--detail-content-inline-inset);
+  padding: 20px var(--app-header-inline-inset);
   border-bottom: 1px solid var(--neutral-alpha-06);
 }
 
@@ -305,7 +305,7 @@
 .detail-pane-header--compact {
   height: var(--app-header-height);
   min-height: var(--app-header-height);
-  padding: 0 18px;
+  padding: 0 var(--app-header-inline-inset);
   border-bottom: 0;
 }
 
@@ -447,7 +447,7 @@
   justify-content: space-between;
   gap: 12px;
   min-height: 48px;
-  padding: 8px 18px;
+  padding: 8px var(--app-header-inline-inset);
 }
 
 .detail-pane-shell--compact
