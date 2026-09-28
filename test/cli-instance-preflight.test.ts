@@ -87,6 +87,7 @@ function listenForInstancePreflight(options: {
   healthInstance?: Record<string, unknown> | null;
   instanceResponses?: StubResponse[];
   healthResponses?: StubResponse[];
+  routeResponses?: Array<{ method: string; url: string; response: StubResponse }>;
 } = {}) {
   const instance = options.instance === undefined ? {
     role: "preview",
@@ -117,6 +118,12 @@ function listenForInstancePreflight(options: {
     });
     req.on("end", () => {
       requests.push({ method: req.method ?? "GET", url: req.url ?? "/", body: raw });
+      const routeResponse = options.routeResponses?.find((candidate) =>
+        candidate.method === (req.method ?? "GET") && candidate.url === (req.url ?? "/"));
+      if (routeResponse) {
+        sendResponse(res, routeResponse.response);
+        return;
+      }
       if (req.method === "GET" && req.url === "/api/instance") {
         const response = options.instanceResponses?.[instanceRequestIndex++];
         if (response) {
@@ -170,6 +177,11 @@ function listenForInstancePreflight(options: {
       if (req.method === "POST" && req.url === "/api/projects") {
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ project: { project_key: "demo" } }));
+        return;
+      }
+      if (req.method === "PUT" && req.url === "/api/settings/app_theme") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
         return;
       }
       if (req.method === "GET" && req.url?.startsWith("/api/sessions/by-pid/")) {
@@ -641,7 +653,7 @@ describe("CLI instance mutation preflight", () => {
     ]);
   });
 
-  it("refuses operational mutations against preview instances before sending POST", async () => {
+  it("forwards preview writes to the selected daemon after validating instance metadata", async () => {
     const target = await listenForInstancePreflight();
     try {
       const result = await runBash([
@@ -654,11 +666,68 @@ describe("CLI instance mutation preflight", () => {
       ].join("\n"), target.port);
 
       expect(result.status).toBe(0);
-      expect(result.stdout).toContain("403\n");
-      expect(result.stdout).toContain("cli_instance_mutation_forbidden");
-      expect(result.stderr).toContain("Refusing ledger mutation against Mandible preview instance");
+      expect(result.stdout).toBe("200\n{\"id\":\"comment-1\"}");
+      expect(result.stderr).toBe("");
       expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
         "GET /api/instance",
+        "POST /api/ledger/issues/abc/comments",
+      ]);
+    } finally {
+      await target.close();
+    }
+  });
+
+  it("forwards copied settings writes to the selected preview daemon", async () => {
+    const target = await listenForInstancePreflight();
+    try {
+      const result = await runBash([
+        "set -euo pipefail",
+        "source cli/api.sh",
+        "tmp_response=$(mktemp)",
+        "status=$(api_send_capture PUT /api/settings/app_theme '{}' \"$tmp_response\")",
+        "printf '%s\\n' \"$status\"",
+        "cat \"$tmp_response\"",
+      ].join("\n"), target.port);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("200");
+      expect(result.stdout).toContain('"ok":true');
+      expect(result.stderr).toBe("");
+      expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "GET /api/instance",
+        "PUT /api/settings/app_theme",
+      ]);
+    } finally {
+      await target.close();
+    }
+  });
+
+  it.each([
+    ["external effects", "/api/work/scan", { error: "effect_forbidden", missing_effects: ["files:production"] }],
+    ["unknown operations", "/api/not-registered", { error: "unknown_operation", missing_effects: [] }],
+  ] as const)("preserves the selected daemon's 403 response for %s", async (_label, requestPath, body) => {
+    const target = await listenForInstancePreflight({
+      routeResponses: [{ method: "POST", url: requestPath, response: { status: 403, body } }],
+    });
+    try {
+      const result = await runBash([
+        "set -euo pipefail",
+        "source cli/api.sh",
+        "tmp_response=$(mktemp)",
+        `status=$(api_send_capture POST ${requestPath} '{}' "$tmp_response")`,
+        "printf '%s\\n' \"$status\"",
+        "cat \"$tmp_response\"",
+      ].join("\n"), target.port, {
+        MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout.startsWith("403\n")).toBe(true);
+      expect(JSON.parse(result.stdout.slice(result.stdout.indexOf("\n") + 1))).toEqual(body);
+      expect(result.stderr).toBe("");
+      expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "GET /api/instance",
+        `POST ${requestPath}`,
       ]);
     } finally {
       await target.close();
@@ -681,30 +750,6 @@ describe("CLI instance mutation preflight", () => {
       expect(result.stdout).toBe("200\n{\"check\":{\"status\":\"clean\"}}");
       expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
         "POST /api/auth/check",
-      ]);
-    } finally {
-      await target.close();
-    }
-  });
-
-  it("allows operational mutations only with the explicit test override", async () => {
-    const target = await listenForInstancePreflight();
-    try {
-      const result = await runBash([
-        "set -euo pipefail",
-        "source cli/api.sh",
-        "tmp_response=$(mktemp)",
-        "status=$(api_send_capture POST /api/ledger/issues/abc/comments '{\"message\":\"New comment\"}' \"$tmp_response\")",
-        "printf '%s\\n' \"$status\"",
-        "cat \"$tmp_response\"",
-      ].join("\n"), target.port, {
-        MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
-      });
-
-      expect(result.status).toBe(0);
-      expect(result.stdout).toBe("200\n{\"id\":\"comment-1\"}");
-      expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
-        "POST /api/ledger/issues/abc/comments",
       ]);
     } finally {
       await target.close();
@@ -809,34 +854,6 @@ describe("CLI instance mutation preflight", () => {
     }
   });
 
-  it.each([
-    ["main", ["ledger:read", "maintenance:shared"], true],
-    ["preview", ["ledger:read", "ledger:write", "files:preview"], false],
-  ] as const)("checks canonical effects before %s operational mutations", async (role, allowedEffects, allowed) => {
-    const target = await listenForInstancePreflight({ instance: {
-      role,
-      allowed_effects: allowedEffects,
-      db_path: role === "main" ? "/tmp/mandible-main.db" : "/tmp/mandible-preview.db",
-      source_db_path: role === "preview" ? "/tmp/mandible-main.db" : null,
-    } });
-    try {
-      const result = await runBash([
-        "set -euo pipefail",
-        "source cli/api.sh",
-        "tmp_response=$(mktemp)",
-        "status=$(api_send_capture POST /api/ledger/issues/abc/comments '{\"message\":\"Check\"}' \"$tmp_response\")",
-        "printf '%s\\n' \"$status\"",
-        "cat \"$tmp_response\"",
-      ].join("\n"), target.port);
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain(allowed ? "200\n" : "403\n");
-      expect(target.requests.some((request) => request.method === "POST" && request.url === "/api/ledger/issues/abc/comments"))
-        .toBe(allowed);
-    } finally {
-      await target.close();
-    }
-  });
-
   it("reports exhausted transient metadata unavailability as retryable without sending the mutation", async () => {
     const busyResponses = Array.from({ length: 2 }, () => ({
       status: 503,
@@ -875,7 +892,7 @@ describe("CLI instance mutation preflight", () => {
     }
   });
 
-  it("fails closed when operational mutation target metadata is unavailable", async () => {
+  it("fails closed when target metadata is unavailable even with the test override", async () => {
     const target = await listenForInstancePreflight({ instance: null });
     try {
       const result = await runBash([
@@ -885,13 +902,14 @@ describe("CLI instance mutation preflight", () => {
         "status=$(api_send_capture POST /api/ledger/issues/abc/comments '{\"message\":\"New comment\"}' \"$tmp_response\")",
         "printf '%s\\n' \"$status\"",
         "cat \"$tmp_response\"",
-      ].join("\n"), target.port);
+      ].join("\n"), target.port, {
+        MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
+      });
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("403\n");
       expect(result.stdout).toContain("cli_instance_metadata_unknown");
       expect(result.stderr).toContain("instance metadata is unavailable");
-      expect(result.stderr).toContain("isolated test/dev environments");
       expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
         "GET /api/instance",
         "GET /api/health",
@@ -933,23 +951,29 @@ describe("CLI instance mutation preflight", () => {
     }
   });
 
-  it("refuses project mutations against preview instances before sending POST", async () => {
+  it("forwards copied project mutations to the preview daemon", async () => {
     const target = await listenForInstancePreflight();
     try {
       const result = await runMandible(["project", "add", "--key", "demo"], target.port);
 
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("Refusing projects mutation against Mandible preview instance");
+      expect(result.status).toBe(0);
       expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
         "GET /api/instance",
+        "POST /api/projects",
       ]);
     } finally {
       await target.close();
     }
   });
 
-  it("refuses session link mutations against preview instances before sending POST", async () => {
-    const target = await listenForInstancePreflight();
+  it("surfaces the server effect denial for a preview session link", async () => {
+    const target = await listenForInstancePreflight({
+      routeResponses: [{
+        method: "POST",
+        url: "/api/sessions/session-1/issues",
+        response: { status: 403, body: { error: "effect_forbidden", missing_effects: ["process:external"] } },
+      }],
+    });
     try {
       const result = await runMandible([
         "session",
@@ -962,62 +986,46 @@ describe("CLI instance mutation preflight", () => {
       ], target.port);
 
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("Refusing sessions mutation against Mandible preview instance");
       expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
         "GET /api/instance",
+        "POST /api/sessions/session-1/issues",
       ]);
     } finally {
       await target.close();
     }
   });
 
-  it("refuses inbox ack mutations from the direct inbox script before sending POST", async () => {
+  it("forwards copied inbox acknowledgements to the preview daemon", async () => {
     const target = await listenForInstancePreflight();
     try {
       const result = await runMandible(["inbox", "ack", "auth_result", "item-1"], target.port);
 
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("Refusing inbox mutation against Mandible preview instance");
+      expect(result.status).toBe(0);
       expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
         "GET /api/instance",
+        "POST /api/inbox/auth_result/item-1/ack",
       ]);
     } finally {
       await target.close();
     }
   });
 
-  it("refuses session registration from wrap before sending POST", async () => {
-    const target = await listenForInstancePreflight();
-    try {
-      const result = await runMandible([
-        "wrap",
-        "--app",
-        "test",
-        "--id",
-        "session-1",
-        "--",
-        "true",
-      ], target.port);
-
-      expect(result.status).toBe(0);
-      expect(target.requests.some((request) => request.url === "/api/instance")).toBe(true);
-      expect(target.requests.some((request) => request.method === "POST")).toBe(false);
-      expect(target.requests.some((request) => request.method === "PATCH")).toBe(false);
-    } finally {
-      await target.close();
-    }
-  });
-
-  it("refuses task session updates before sending PATCH", async () => {
-    const target = await listenForInstancePreflight();
+  it("surfaces the server effect denial for a preview task-session update", async () => {
+    const target = await listenForInstancePreflight({
+      routeResponses: [{
+        method: "PATCH",
+        url: "/api/sessions/session-1",
+        response: { status: 403, body: { error: "effect_forbidden", missing_effects: ["process:external"] } },
+      }],
+    });
     try {
       const result = await runMandible(["task", "Fixing preview guard"], target.port);
 
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("Refusing sessions mutation against Mandible preview instance");
       expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
         expect.stringMatching(/^GET \/api\/sessions\/by-pid\/\d+$/),
         "GET /api/instance",
+        "PATCH /api/sessions/session-1",
       ]);
     } finally {
       await target.close();
