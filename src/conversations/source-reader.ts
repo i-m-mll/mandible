@@ -10,6 +10,7 @@ import type { ConversationBlock, ConversationSource } from "../parsers/types.js"
 import { ConversationSourceStore } from "./source-store.js";
 import {
   observeStableSourceAlias,
+  observeStableSourceAliasExtent,
   observeStableSourceAliasRanges,
   sameSourceFilesystemIdentity,
   SourceObservationError,
@@ -61,6 +62,7 @@ interface StructuralRow {
 
 interface VersionRow {
   id: string;
+  source_id: string;
   content_sha256: string;
   byte_length: number;
   parser_format: string;
@@ -675,19 +677,22 @@ export class ConversationSourceReader {
     rows: readonly StructuralRow[],
   ): Promise<SnapshotResult> {
     const source = this.store.resolveConversation(conversationId);
-    if (!source || source.currentVersionId !== versionId) {
-      return { ok: false, kind: "stale", reason: "source version is not current" };
+    if (!source) {
+      return { ok: false, kind: "stale", reason: "conversation source is unavailable" };
     }
     if (source.availability !== "available") {
       return { ok: false, kind: "unavailable", reason: source.unavailableReason ?? source.availability };
     }
     const version = this.db.prepare(`
-      SELECT id, content_sha256, byte_length, parser_format, parser_version,
+      SELECT id, source_id, content_sha256, byte_length, parser_format, parser_version,
              normalization_version, redaction_epoch, filesystem_device,
              filesystem_inode, filesystem_ctime_ns
         FROM conversation_source_versions WHERE id = ? AND availability = 'available'
     `).get(versionId) as VersionRow | undefined;
     if (!version) return { ok: false, kind: "unavailable", reason: "source version is unavailable" };
+    if (version.source_id !== source.sourceId) {
+      return { ok: false, kind: "stale", reason: "source version belongs to a different source" };
+    }
     if (!version.filesystem_device || !version.filesystem_inode || !version.filesystem_ctime_ns) {
       return { ok: false, kind: "stale", reason: "source version predates exact filesystem identity" };
     }
@@ -700,35 +705,91 @@ export class ConversationSourceReader {
     for (const alias of this.store.listAliases(source.sourceId)) {
       if (alias.availability !== "available") continue;
       try {
-        const observed = await observeStableSourceAliasRanges(alias, uniqueRanges, {
-          maxRangeBytes: MAX_SOURCE_RECORD_BYTES,
-          maxTotalBytes: this.maxSourceBytes,
-        });
-        if (observed.byteLength !== version.byte_length) continue;
-        const exactIdentity = sameSourceFilesystemIdentity(observed.filesystemIdentity, {
-          device: version.filesystem_device,
-          inode: version.filesystem_inode,
-          ctimeNs: version.filesystem_ctime_ns,
-        });
-        if (!exactIdentity) {
-          // A restored or relocated small file can have new inode/ctime facts
-          // while retaining the exact sealed bytes. Re-hash it once; large
-          // sources wait for freshness ingestion to refresh their identity.
-          if (version.byte_length > this.maxSourceBytes) continue;
-          const full = await observeStableSourceAlias(alias, { captureBytes: false, maxBytes: this.maxSourceBytes });
-          if (full.contentSha256 !== version.content_sha256) continue;
+        let observedExtent: Awaited<ReturnType<typeof observeStableSourceAliasExtent>> | undefined;
+        try {
+          observedExtent = await observeStableSourceAliasExtent(alias);
+        } catch (error) {
+          if (!(error instanceof SourceObservationError) || error.kind !== "changed") throw error;
         }
-        return {
-          ok: true,
-          records: new Map(uniqueRanges.map((range, index) => [
+        const exactIdentity = observedExtent !== undefined
+          && sameSourceFilesystemIdentity(observedExtent.filesystemIdentity, {
+            device: version.filesystem_device,
+            inode: version.filesystem_inode,
+            ctimeNs: version.filesystem_ctime_ns,
+          });
+        let records: Map<string, Buffer> | null = null;
+        if (observedExtent !== undefined && exactIdentity
+            && observedExtent.byteLength === version.byte_length) {
+          try {
+            const observed = await observeStableSourceAliasRanges(alias, uniqueRanges, {
+              maxRangeBytes: MAX_SOURCE_RECORD_BYTES,
+              maxTotalBytes: this.maxSourceBytes,
+            });
+            if (sameSourceFilesystemIdentity(observed.filesystemIdentity, observedExtent.filesystemIdentity)
+                && observed.byteLength === version.byte_length) {
+              records = new Map(uniqueRanges.map((range, index) => [
+                `${range.offset}:${range.length}`,
+                observed.ranges[index],
+              ]));
+            }
+          } catch (error) {
+            if (!(error instanceof SourceObservationError) || error.kind !== "changed") throw error;
+            // The source may have appended between the exact-extent probe and
+            // range read. Retry by proving the sealed prefix and capturing the
+            // same requested ranges in one pass.
+          }
+        }
+
+        const sameFile = observedExtent !== undefined
+          && observedExtent.filesystemIdentity.device === version.filesystem_device
+          && observedExtent.filesystemIdentity.inode === version.filesystem_inode;
+        const canVerifyPrefix = observedExtent === undefined
+          || (sameFile && observedExtent.byteLength >= version.byte_length);
+        if (!records && canVerifyPrefix) {
+          const observed = await observeStableSourceAliasRanges(alias, uniqueRanges, {
+            maxRangeBytes: MAX_SOURCE_RECORD_BYTES,
+            maxTotalBytes: this.maxSourceBytes,
+            prefix: {
+              byteLength: version.byte_length,
+              contentSha256: version.content_sha256,
+              filesystemIdentity: {
+                device: version.filesystem_device,
+                inode: version.filesystem_inode,
+              },
+            },
+          });
+          records = new Map(uniqueRanges.map((range, index) => [
             `${range.offset}:${range.length}`,
             observed.ranges[index],
-          ])),
-          version,
-          provider: source.provider,
-          nativeSessionId: source.nativeSessionId,
-          aliasPath: alias.path,
-        };
+          ]));
+        }
+
+        if (!records && version.byte_length <= this.maxSourceBytes) {
+          const full = await observeStableSourceAlias(alias, { captureBytes: false, maxBytes: this.maxSourceBytes });
+          if (full.byteLength !== version.byte_length || full.contentSha256 !== version.content_sha256) continue;
+          const observed = await observeStableSourceAliasRanges(alias, uniqueRanges, {
+            maxRangeBytes: MAX_SOURCE_RECORD_BYTES,
+            maxTotalBytes: this.maxSourceBytes,
+          });
+          if (observed.byteLength !== version.byte_length) continue;
+          const exactIdentityAfterHash = sameSourceFilesystemIdentity(full.filesystemIdentity, observed.filesystemIdentity);
+          if (!exactIdentityAfterHash) continue;
+          records = new Map(uniqueRanges.map((range, index) => [
+            `${range.offset}:${range.length}`,
+            observed.ranges[index],
+          ]));
+        }
+
+        if (records) {
+          return {
+            ok: true,
+            records,
+            version,
+            provider: source.provider,
+            nativeSessionId: source.nativeSessionId,
+            aliasPath: alias.path,
+          };
+        }
       } catch (error) {
         if (error instanceof SourceObservationError && error.kind === "unsupported") {
           return { ok: false, kind: "unsupported", reason: error.message };
