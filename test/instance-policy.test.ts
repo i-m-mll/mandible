@@ -402,6 +402,50 @@ describe("instance effect policy", () => {
     });
   });
 
+  it("allows only unambiguous inline managed artifact bytes in preview", () => {
+    const instance = preview();
+    const identity = { effect_ceiling: STANDARD_PREVIEW_EFFECTS };
+    const safeBodies = [
+      { content: "inline bytes", media_type: "text/plain" },
+      { content_base64: "aW5saW5lIGJ5dGVz", custody_mode: "managed" },
+      { json: { value: 1 }, role: "evidence" },
+    ];
+    for (const pathname of ["/api/artifacts/ingest", "/api/artifacts/snapshot"]) {
+      for (const body of safeBodies) {
+        const operation = operationForRequest("POST", pathname, "preview", body);
+        expect(operation).toEqual({ id: "artifacts.bytes", effects: ["ledger:write", "files:preview"] });
+        expect(authorizeEffects(instance, identity, operation)).toEqual({ allowed: true });
+        expect(operationForRequest("POST", pathname, "main", body)?.effects).toEqual(["files:production"]);
+      }
+    }
+
+    for (const [pathname, body] of [
+      ["/api/artifacts/ingest", { path: "/source/report.md" }],
+      ["/api/artifacts/ingest", { content: "bytes", path: "/source/report.md" }],
+      ["/api/artifacts/ingest", { content: "bytes", paths: ["/source/report.md"] }],
+      ["/api/artifacts/ingest", { content: "bytes", commit: "a".repeat(40) }],
+      ["/api/artifacts/ingest", { content: "bytes", content_path: "/source/report.md" }],
+      ["/api/artifacts/ingest", { content: "bytes", custody_mode: "git" }],
+      ["/api/artifacts/ingest", { content: "bytes", content_base64: "Ynl0ZXM=" }],
+      ["/api/artifacts/snapshot", { path: "/source/report.md" }],
+      ["/api/artifacts/snapshot", { content: "bytes", path: "/source/report.md" }],
+      ["/api/artifacts/snapshot", { content: "bytes", content_path: "/source/report.md" }],
+      ["/api/artifacts/snapshot", { content: "bytes", unclassified_mode: true }],
+    ] as const) {
+      const operation = operationForRequest("POST", pathname, "preview", body);
+      expect(operation?.effects).toEqual(["files:production"]);
+      expect(authorizeEffects(instance, identity, operation)).toMatchObject({ allowed: false });
+      expect(operationForRequest("POST", pathname, "main", body)?.effects).toEqual(["files:production"]);
+    }
+
+    for (const pathname of ["/api/artifacts/drafts/publish", "/api/artifacts/drafts/rebase"]) {
+      const operation = operationForRequest("POST", pathname, "preview", { ref: "artifact:test" });
+      expect(operation?.effects).toEqual(["ledger:write", "files:preview"]);
+      expect(authorizeEffects(instance, identity, operation)).toEqual({ allowed: true });
+      expect(operationForRequest("POST", pathname, "main")?.effects).toEqual(["files:production"]);
+    }
+  });
+
   it("proves preview artifact custody is a distinct directory below the preview root", () => {
     const instance = preview();
     const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-production-artifacts-"));
