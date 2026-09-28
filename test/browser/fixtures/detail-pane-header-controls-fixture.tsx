@@ -1,6 +1,6 @@
 import { render } from 'preact';
 
-import { AppShellProvider, type AppRightSidebarDescriptor } from '../../../ui/src/app-shell';
+import { AppRightSidebarSurface, AppShellProvider, type AppRightSidebarDescriptor } from '../../../ui/src/app-shell';
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
 import { DetailPaneMenuTrigger } from '../../../ui/src/components/shared/DetailPaneMenuTrigger';
 
@@ -71,17 +71,34 @@ function HeaderCase({ variant, open }: { variant: Variant; open: boolean }): JSX
   );
 }
 
-function TriggerSamples({ expanded }: { expanded: boolean }): JSX.Element {
+function RightSidebarHeader(): JSX.Element {
+  const sidebar: AppRightSidebarDescriptor = {
+    id: 'header-controls-preview',
+    kind: 'tabs',
+    ariaLabel: 'Details',
+    open: true,
+    width: 360,
+    tabs: [{
+      id: 'graph',
+      label: 'Graph',
+      tooltip: 'Graph',
+      icon: <span aria-hidden="true">G</span>,
+      content: null,
+    }],
+    activeTab: 'graph',
+    onActiveTabChange: () => undefined,
+    onOpenChange: () => undefined,
+    onWidthChange: () => undefined,
+  };
+
   return (
-    <div className="trigger-samples" data-expanded={String(expanded)}>
-      {['Conversation', 'Issue', 'Artifact', 'Approval', 'Briefing'].map((label) => (
-        <DetailPaneMenuTrigger
-          key={label}
-          label={`${label} actions`}
-          expanded={expanded}
-          onClick={() => undefined}
-        />
-      ))}
+    <div className="header-controls-sidebar">
+      <AppRightSidebarSurface
+        descriptor={sidebar}
+        open
+        onOpenChange={() => undefined}
+        layout={{ presentation: 'dock', effectiveWidth: 360, minWidth: 300, maxWidth: 720 }}
+      />
     </div>
   );
 }
@@ -91,8 +108,7 @@ function Fixture(): JSX.Element {
   return (
     <main className="header-controls-fixture">
       {cases.map(({ variant, open }) => <HeaderCase key={`${variant}-${open}`} variant={variant} open={open} />)}
-      <TriggerSamples expanded={false} />
-      <TriggerSamples expanded />
+      <RightSidebarHeader />
     </main>
   );
 }

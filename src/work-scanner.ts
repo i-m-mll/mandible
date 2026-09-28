@@ -1370,11 +1370,7 @@ export class WorkScanner {
       if (!config.repos.includes(resolved)) {
         config.repos.push(resolved);
       }
-      const dir = path.dirname(this.configPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2), "utf8");
+      this.writeRepoConfig(JSON.stringify(config, null, 2));
     } catch (err) {
       workScannerLog("error", "work_scanner_repo_config_write_failed", {
         subsystem: "work-scanner",
@@ -1427,26 +1423,16 @@ export class WorkScanner {
     if (!row) return false;
 
     const { root } = row;
-    this.assertRepoConfigPathWithinRoot();
-    let originalConfig: string | null;
+    let previousConfig: string | null = null;
     try {
-      originalConfig = fs.readFileSync(this.configPath, "utf8");
+      previousConfig = fs.readFileSync(this.configPath, "utf8");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        originalConfig = null;
-      } else {
-        throw error;
-      }
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
 
-    let nextConfig = originalConfig;
-    if (originalConfig === null) {
-      const remaining = this.db.prepare(
-        "SELECT root FROM work_repos WHERE id <> ? AND dir_exists = 1 ORDER BY root",
-      ).all(id) as Array<{ root: string }>;
-      nextConfig = JSON.stringify({ repos: remaining.map((repo) => repo.root) }, null, 2);
-    } else {
-      const config = JSON.parse(originalConfig) as { repos?: unknown };
+    let nextConfig: string | null = null;
+    if (previousConfig !== null) {
+      const config = JSON.parse(previousConfig) as { repos?: unknown };
       if (Array.isArray(config.repos)) {
         config.repos = config.repos.filter(
           (repo): repo is string => typeof repo === "string" && path.resolve(resolveHome(repo)) !== root,
@@ -1455,26 +1441,32 @@ export class WorkScanner {
       }
     }
 
-    let configWritten = false;
+    let configChanged = false;
+    let transactionActive = false;
     try {
-      if (nextConfig !== null && nextConfig !== originalConfig) {
-        this.writeRepoConfig(nextConfig);
-        configWritten = true;
-      }
       this.db.exec("BEGIN IMMEDIATE");
-      try {
-        this.db.prepare("DELETE FROM work_repos WHERE id = ?").run(id);
-        this.db.prepare("DELETE FROM branches WHERE repo_root = ?").run(root);
-        this.db.exec("COMMIT");
-      } catch (error) {
-        this.db.exec("ROLLBACK");
-        throw error;
+      transactionActive = true;
+      this.db.prepare("DELETE FROM work_repos WHERE id = ?").run(id);
+      this.db.prepare("DELETE FROM branches WHERE repo_root = ?").run(root);
+      if (nextConfig !== null && nextConfig !== previousConfig) {
+        this.writeRepoConfig(nextConfig);
+        configChanged = true;
       }
+      this.db.exec("COMMIT");
+      transactionActive = false;
     } catch (error) {
-      if (configWritten) {
+      if (transactionActive) {
+        try { this.db.exec("ROLLBACK"); } catch (rollbackError) {
+          workScannerLog("error", "work_scanner_repo_delete_rollback_failed", {
+            subsystem: "work-scanner",
+            repo_id: id,
+            error: String(rollbackError),
+          });
+        }
+      }
+      if (configChanged) {
         try {
-          if (originalConfig === null) fs.rmSync(this.configPath, { force: true });
-          else this.writeRepoConfig(originalConfig);
+          if (previousConfig !== null) this.writeRepoConfig(previousConfig);
         } catch (restoreError) {
           workScannerLog("error", "work_scanner_repo_config_restore_failed", {
             subsystem: "work-scanner",

@@ -2383,49 +2383,24 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
-    const notice = (await screen.findByText('Saving disabled in copied preview instance.')).closest('.detail-pane-notice')!;
     const copyNotice = await screen.findByTestId('preview-copy-notice');
-    expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
-    expect(copyNotice.textContent).toBe('Preview copy — edits stay here and do not change the main instance.');
-    const spacesHeader = document.querySelector('.spaces-shell__header');
-    const spacesNoticeOutlet = document.querySelector('.spaces-shell__main .app-operational-notice-slot');
-    expect(spacesHeader?.nextElementSibling).toBe(spacesNoticeOutlet);
-    expect(spacesNoticeOutlet?.contains(notice)).toBe(true);
-    expect(spacesNoticeOutlet?.contains(copyNotice)).toBe(true);
-    expect(document.querySelectorAll('.spaces-shell__main .detail-pane-notice')).toHaveLength(2);
-    expect(document.querySelector('#app-operational-notices .detail-pane-notice')).toBeNull();
-  });
-
-  it('routes the copied-preview notice into the active Inbox notice outlet', async () => {
-    stubEventSource();
-    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
-      instance: preferenceWritablePreviewInstance,
-    };
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === '/api/health') return new Promise<Response>(() => undefined);
-      if (url === '/api/inbox/global') {
-        return Promise.resolve(new Response(JSON.stringify({
-          continuations: [], auth_results: [], open_issues: [], total: 0,
-        }), { headers: { 'Content-Type': 'application/json' } }));
-      }
-      if (url === '/api/settings') {
-        return Promise.resolve(new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } }));
-      }
-      return Promise.resolve(new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } }));
-    }));
-    window.history.replaceState(null, '', '#/inbox');
-
-    const mounted = render(h(App, {}));
-
-    const outlet = await waitFor(() => {
-      const element = mounted.container.querySelector('.inbox-detail > .app-operational-notice-slot[data-app-operational-notice-outlet="main"]');
-      expect(element).toBeTruthy();
-      return element as HTMLElement;
+    const spacesNoticeOutlet = await waitFor(() => {
+      const outlet = document.querySelector('.spaces-shell__main .app-operational-notice-slot');
+      expect(outlet).toBeTruthy();
+      return outlet as HTMLElement;
     });
-    const notice = await within(outlet).findByTestId('preview-copy-notice');
-    expect(notice.textContent).toBe('Preview copy — edits stay here and do not change the main instance.');
-    expect(mounted.container.querySelector('#app-operational-notices .detail-pane-notice')).toBeNull();
+    const notice = spacesNoticeOutlet.querySelector('.detail-pane-notice');
+    const spacesHeader = document.querySelector('.spaces-shell__header');
+    const appShell = copyNotice.parentElement;
+    expect(appShell?.classList.contains('app-shell')).toBe(true);
+    expect(appShell?.firstElementChild).toBe(copyNotice);
+    expect(copyNotice.closest('.app-layout')).toBeNull();
+    expect(spacesHeader?.nextElementSibling).toBe(spacesNoticeOutlet);
+    expect(notice).toBeTruthy();
+    expect(spacesNoticeOutlet?.contains(notice)).toBe(true);
+    expect(spacesNoticeOutlet?.contains(copyNotice)).toBe(false);
+    expect(document.querySelectorAll('.spaces-shell__main .detail-pane-notice')).toHaveLength(1);
+    expect(document.querySelector('#app-operational-notices .detail-pane-notice')).toBeNull();
   });
 });
 
@@ -6822,7 +6797,7 @@ describe('ArtifactsView', () => {
 
   it('keeps auth detail surfaces visually separated by the app subdivision contract', () => {
     const css = readResolvedStylesheet();
-    const rightEdge = ruleBody(css, '.app-shell::after');
+    const rightEdge = ruleBody(css, '.app-shell__workspace::after');
     const leftEdge = ruleBody(css, '.app-shell--left-shadow::before');
 
     expect(rightEdge).toContain('inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width))');

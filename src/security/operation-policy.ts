@@ -197,20 +197,14 @@ export function operationForRequest(
   // Work projections backed by the copied work_repos/branches tables are
   // ordinary ledger reads. Audit, commit history, and compare routes spawn
   // Git to inspect live repositories, so their actual effect is process use.
-  if (normalizedMethod === "GET" || normalizedMethod === "HEAD") {
-    if (pathname === "/api/work/repos"
-        || /^\/api\/work\/repos\/[^/]+\/(?:branches|worktrees)$/.test(pathname)
-        || /^\/api\/work\/repos\/[^/]+\/branch\/[^/]+$/.test(pathname)
-        || pathname === "/api/work/push/status") {
-      return READ_OPERATION;
-    }
-    if (/^\/api\/work\/repos\/[^/]+\/audit$/.test(pathname)
-        || /^\/api\/work\/repos\/[^/]+\/branches\/[^/]+\/commits$/.test(pathname)
-        || /^\/api\/work\/repos\/[^/]+\/compare$/.test(pathname)) {
-      return pathname.endsWith("/audit")
-        ? { id: "work.repository.audit", effects: ["ledger:write", "process:external"] }
-        : { id: "work.repository.inspect", effects: ["process:external"] };
-    }
+  if ((normalizedMethod === "GET" || normalizedMethod === "HEAD") && (
+    /^\/api\/work\/repos\/[^/]+\/audit$/.test(pathname)
+    || /^\/api\/work\/repos\/[^/]+\/branches\/[^/]+\/commits$/.test(pathname)
+    || /^\/api\/work\/repos\/[^/]+\/compare$/.test(pathname)
+  )) {
+    return pathname.endsWith("/audit")
+      ? { id: "work.repository.audit", effects: ["ledger:write", "process:external"] }
+      : { id: "work.repository.inspect", effects: ["process:external"] };
   }
 
   if (/^\/api\/work\/repos\/[^/]+\/push$/.test(pathname)

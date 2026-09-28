@@ -17,7 +17,6 @@ import type { ConversationTranscriptConsumer } from '../../ui/src/query/conversa
 import { plainActivityHeader, presentActivityItems } from '../../ui/src/components/message-blocks/ActivityBlock';
 import { MessageActions } from '../../ui/src/components/shared/MessageActions';
 import { DetailPaneOverlayContext, DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell';
-import { TextBlock } from '../../ui/src/components/message-blocks/TextBlock';
 import type { StreamEvent, ToolResultContentBlock } from '../../ui/src/components/stream-renderer/types';
 import type { ActivityItem, ChatItem } from '../../src/parsers/types';
 
@@ -144,16 +143,63 @@ afterEach(() => {
 });
 
 describe('chat message stream render model', () => {
-  it('renders provider memory citations as a folded semantic activity row', () => {
-    render(<TextBlock content={`Done.\n\n<oai-mem-citation>\n<citation_entries>\nMEMORY.md:10-12|note=[prior decision]\n</citation_entries>\n<rollout_ids>\n01a01212-fbc2-7480-a434-5f2ff69aca7b\n</rollout_ids>\n</oai-mem-citation>`} />);
+  it('lifts mixed provider directives into ordered activity groups with their source identity', () => {
+    const directiveText = `Before.\n\n<oai-mem-citation>\n<citation_entries>\nMEMORY.md:10-12|note=[prior decision]\n</citation_entries>\n<rollout_ids>\n01a01212-fbc2-7480-a434-5f2ff69aca7b\n</rollout_ids>\n</oai-mem-citation>\n\nMiddle.\n\n::created-thread{threadId="thread-identity"}\n\n::created-thread{clientThreadId="client-identity"}\n\nAfter.\n\nLiteral ::created-thread{threadId="prose-example"} and \`::created-thread{threadId="inline-example"}\`.\n\n\`\`\`\n::created-thread{threadId="fenced-example"}\n\`\`\``;
+    const event = assistantText(directiveText, 'directive-turn') as Extract<StreamEvent, { type: 'assistant' }>;
+    event.message.content[0] = { type: 'text', text: directiveText, source: { blockId: 'answer-block' } };
+    const state = buildStreamState([event]);
+    const group = groupMessagesForDisplay(state.nodes)[0];
+    const entries = groupActivityItemsForDisplay(group.nodes);
+    const entryLabels = entries.map((entry) => {
+      if (entry.kind === 'activity-group') return entry.nodes.map((node) => node.item.type === 'provider-directive' ? node.item.directive.kind : node.item.activity_kind);
+      if (entry.node.kind === 'activity') return entry.node.item.type === 'provider-directive' ? entry.node.item.directive.kind : entry.node.item.activity_kind;
+      if (entry.node.kind === 'assistant_turn') return entry.node.turn.assistantEvent.message.content.map((block) => block.type === 'text' ? block.text : block.type).join('');
+      return entry.node.kind;
+    });
+    expect(entryLabels.slice(0, 4)).toEqual([
+      'Before.\n\n',
+      'memory-citation',
+      '\n\nMiddle.\n\n',
+      ['created-thread', 'created-thread'],
+    ]);
+    expect(entryLabels[4]).toContain('\n\nAfter.');
 
-    expect(screen.getByText('Done.')).toBeTruthy();
-    const summary = screen.getByRole('button', { name: /Used memory/i });
-    expect(summary.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByText('prior decision')).toBeNull();
-    fireEvent.click(summary);
-    expect(screen.getByText(/prior decision/)).toBeTruthy();
-    expect(screen.queryByText(/oai-mem-citation/)).toBeNull();
+    const activityItems = entries.flatMap((entry) => entry.kind === 'activity-group'
+      ? entry.nodes.map((node) => node.item)
+      : entry.kind === 'node' && entry.node.kind === 'activity' ? [entry.node.item] : []);
+    expect(activityItems).toMatchObject([
+      { type: 'provider-directive', directive: { kind: 'memory-citation', citations: [{ ref: 'MEMORY.md:10-12', note: 'prior decision' }] }, blockId: 'answer-block' },
+      { type: 'provider-directive', directive: { kind: 'created-thread', identity: 'threadId', providerSessionId: 'thread-identity' }, blockId: 'answer-block' },
+      { type: 'provider-directive', directive: { kind: 'created-thread', identity: 'clientThreadId', providerSessionId: 'client-identity' }, blockId: 'answer-block' },
+    ]);
+    const retainedProse = entries.flatMap((entry) => entry.kind === 'node' && entry.node.kind === 'assistant_turn'
+      ? entry.node.turn.assistantEvent.message.content.filter((block) => block.type === 'text').map((block) => block.text)
+      : []).join('');
+    expect(retainedProse).toContain('Literal ::created-thread{threadId="prose-example"}');
+    expect(retainedProse).toContain('`::created-thread{threadId="inline-example"}`');
+    expect(retainedProse).toContain('::created-thread{threadId="fenced-example"}');
+
+    const navigate = vi.fn();
+    const view = render(
+      <ChatSurface
+        events={[event]}
+        streaming={false}
+        sessionInfo={{ sessionId: 'provider-directives' }}
+        onCreatedTaskNavigate={navigate}
+      />,
+    );
+    const renderedFlow = view.container.querySelector('.turn-group__body')!.textContent ?? '';
+    const flowOrder = ['Before.', 'Used memory', 'Middle.', 'Created task', 'After.'];
+    const flowPositions = flowOrder.map((text) => renderedFlow.indexOf(text));
+    expect(flowPositions.every((position) => position >= 0)).toBe(true);
+    expect(flowPositions).toEqual([...flowPositions].sort((left, right) => left - right));
+    fireEvent.click(screen.getByRole('button', { name: /Created task/i }));
+    const links = screen.getAllByRole('button', { name: /Open created task/ });
+    expect(links.map((link) => link.getAttribute('data-provider-session-id'))).toEqual(['thread-identity', 'client-identity']);
+    expect(links.map((link) => link.getAttribute('data-provider-session-identity'))).toEqual(['threadId', 'clientThreadId']);
+    fireEvent.click(links[0]);
+    fireEvent.click(links[1]);
+    expect(navigate.mock.calls).toEqual([['thread-identity'], ['client-identity']]);
   });
 
   it('preserves the stable logical turn id when a bounded window starts mid-turn', () => {

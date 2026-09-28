@@ -31,7 +31,6 @@ import {
   type SpaceExportSettings,
   type SpaceExport,
   type ExportAndTrackResult,
-  type InstanceInfo,
 } from '../../api';
 import {
   readExportDialogState,
@@ -47,8 +46,6 @@ export type SpaceExportDialogProps = {
   projectId: string;
   /** Explicit project-checkout id; defaults to the Space's project checkout. */
   repoId?: string;
-  /** Current effect capabilities for the instance showing this dialog. */
-  instance?: InstanceInfo | null;
   /**
    * Issue refs for the docs-commit `Mandible-Issue:` trailer. At least one is
    * required for a tracked export's linked commit (custody-doc §3 step 3).
@@ -69,7 +66,6 @@ export function SpaceExportDialog({
   spaceId,
   projectId,
   repoId,
-  instance = null,
   issues = [],
   onExported,
   onClose,
@@ -89,11 +85,6 @@ export function SpaceExportDialog({
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [settingsSaved, setSettingsSaved] = useState(false);
-
-  const canWriteLedger = !instance || instance.allowed_effects.includes('ledger:write');
-  const canWriteProductionFiles = !instance || instance.allowed_effects.includes('files:production');
-  const previewCanSaveSettings = Boolean(instance && canWriteLedger && !canWriteProductionFiles);
 
   // Persist the user's confirmable intent so re-opening the dialog restores it
   // rather than silently resetting (Dataful-UX persistence AC #2).
@@ -161,35 +152,12 @@ export function SpaceExportDialog({
     setView((current) => ({ ...current, saveAsRepoDefault: next }));
   }, []);
 
-  const canExport = canWriteLedger && canWriteProductionFiles
-    && Boolean(effectivePath) && issues.length > 0 && !submitting && !loading;
-  const canSaveDefault = canWriteLedger && view.saveAsRepoDefault && usingOverride
-    && Boolean(resolvedRepoId) && Boolean(effectivePath) && !submitting && !loading;
-
-  const handleSaveDefault = useCallback(async () => {
-    if (!canSaveDefault || !resolvedRepoId) return;
-    setSubmitting(true);
-    setSubmitError(null);
-    setSettingsSaved(false);
-    try {
-      await setSpaceExportSettings({ repo_id: resolvedRepoId, path: effectivePath });
-      setSettings((current) => current
-        ? { ...current, path: effectivePath, overridden: true }
-        : current);
-      setView((current) => ({ ...current, saveAsRepoDefault: false }));
-      setSettingsSaved(true);
-    } catch (error: unknown) {
-      setSubmitError(error instanceof Error ? error.message : 'Could not save export settings');
-    } finally {
-      setSubmitting(false);
-    }
-  }, [canSaveDefault, resolvedRepoId, effectivePath]);
+  const canExport = Boolean(effectivePath) && issues.length > 0 && !submitting && !loading;
 
   const handleExport = useCallback(async () => {
     if (!canExport) return;
     setSubmitting(true);
     setSubmitError(null);
-    setSettingsSaved(false);
     try {
       // If the user asked to persist the chosen path as the per-repo default,
       // do that explicit settings write FIRST (custody-doc §5.1, per-repo
@@ -257,18 +225,6 @@ export function SpaceExportDialog({
           {loadError ?? submitError}
         </DetailPaneNotice>
       )}
-
-      {previewCanSaveSettings ? (
-        <DetailPaneNotice severity="warning" density="compact" title="Repository export unavailable" testId="export-preview-disabled">
-          This copied preview can save the path setting here, but it cannot write to the configured repository.
-        </DetailPaneNotice>
-      ) : null}
-
-      {settingsSaved ? (
-        <p role="status" data-testid="export-settings-saved">
-          The repository path was saved in this instance.
-        </p>
-      ) : null}
 
       {loading ? (
         <p className="space-export-dialog__hint" data-testid="export-loading">
@@ -360,16 +316,6 @@ export function SpaceExportDialog({
         {onClose ? (
           <button type="button" onClick={onClose}>
             Cancel
-          </button>
-        ) : null}
-        {previewCanSaveSettings && view.saveAsRepoDefault && usingOverride ? (
-          <button
-            type="button"
-            data-testid="export-save-default-submit"
-            disabled={!canSaveDefault}
-            onClick={handleSaveDefault}
-          >
-            {submitting ? 'Saving…' : 'Save path here'}
           </button>
         ) : null}
         <button

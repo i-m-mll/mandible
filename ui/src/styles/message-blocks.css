@@ -39,82 +39,6 @@
   max-width: var(--chat-max-width);
 }
 
-.provider-directive {
-  --tool-activity-background: #242424;
-  --tool-activity-border: #464646;
-  --tool-activity-box-text: #919191;
-  width: 100%;
-  margin-top: var(--space-2);
-  color: var(--tool-activity-text, var(--text-muted));
-}
-
-:root[data-theme='light'] .provider-directive {
-  --tool-activity-background: #F4F4F4;
-  --tool-activity-border: #DADADB;
-  --tool-activity-box-text: #88888A;
-}
-
-.provider-directive__summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 22px;
-  padding: 1px 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font: 400 var(--text-lg)/1.15 var(--font-sans);
-}
-
-.provider-directive__summary:hover,
-.provider-directive__summary:focus-visible {
-  color: var(--text-primary);
-}
-
-.provider-directive__icon,
-.provider-directive__chevron {
-  display: inline-flex;
-  width: 16px;
-  height: 16px;
-  align-items: center;
-  justify-content: center;
-}
-
-.provider-directive__icon svg {
-  width: 15px;
-  height: 15px;
-}
-
-.provider-directive__body {
-  margin-top: 3px;
-  padding: 7px 10px;
-  border: 1px solid var(--tool-activity-border);
-  border-radius: 6px;
-  background: var(--tool-activity-background);
-  color: var(--tool-activity-box-text);
-  font-size: var(--text-sm);
-  line-height: 1.45;
-}
-
-.provider-directive__body ul {
-  margin: 0;
-  padding-left: 18px;
-}
-
-.provider-directive__body code {
-  background: transparent;
-  color: inherit;
-  font-size: inherit;
-}
-
-.provider-directive__task-refs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 5px;
-}
-
 .msg-text-block {
   font-family: var(--font-sans);
   font-size: var(--text-lg);
@@ -122,11 +46,7 @@
   font-weight: 400;
 }
 
-/* TextBlock introduces a semantic segment wrapper between rendered-markdown
- * and its prose. End the final Markdown block inside that wrapper so its
- * bottom margin cannot collapse into the message-flow gap and make a
- * following tool row look farther away than the prose after it. */
-.provider-directive__prose > :last-child {
+.msg-text-block__prose > :last-child {
   margin-block-end: 0;
 }
 
@@ -293,6 +213,11 @@
   font: 400 var(--text-lg)/1.15 var(--font-sans);
   text-align: left;
   cursor: pointer;
+}
+
+.compact-activity__row:hover,
+.compact-activity__row:focus-visible {
+  color: var(--text-primary);
 }
 
 .compact-activity__row--inert {
@@ -464,6 +389,21 @@
   white-space: pre-wrap;
   word-break: break-word;
   font: 400 var(--text-lg)/1.5 var(--font-sans);
+}
+
+.activity-details__task-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.activity-details__task-link:hover,
+.activity-details__task-link:focus-visible {
+  color: var(--text-primary);
 }
 
 .thinking-block__body pre {

@@ -35,8 +35,6 @@ import {
   updateUserAppRailOrderSetting,
   updateUserTypographySetting,
   canEditUserPreferences,
-  canWriteLedger,
-  allowsInstanceEffect,
   type UserTypographySettingKey,
   type InstanceInfo,
   type DashboardBadgeCounts,
@@ -2522,23 +2520,30 @@ function App(): JSX.Element {
 
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
   // Bug: 645f8a8 — also covers the mid-startup / not-ready daemon case.
-  if (splashActive) {
-    return <RebuildingSplash
-      reason={rebuilding ? 'rebuilding' : 'starting'}
-      epochStalled={epochStalled}
-      stallEscape={stallEscape}
-      onContinue={continuePastStall}
-    />;
-  }
-
-  return (
+  const renderAppShell = (children: ComponentChildren): JSX.Element => (
     <div
-      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${leftShadowEnabled ? ' app-shell--left-shadow' : ''}`}
+      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${leftShadowEnabled ? ' app-shell--left-shadow' : ''}${instanceInfo?.role === 'preview' ? ' app-shell--preview' : ''}`}
       style={{
         '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
         ...typographyCssVariables(typography),
       } as JSX.CSSProperties}
     >
+      <PreviewCopyNotice instance={instanceInfo} />
+      <div className="app-shell__workspace">{children}</div>
+    </div>
+  );
+
+  if (splashActive) {
+    return renderAppShell(<RebuildingSplash
+      reason={rebuilding ? 'rebuilding' : 'starting'}
+      epochStalled={epochStalled}
+      stallEscape={stallEscape}
+      onContinue={continuePastStall}
+    />);
+  }
+
+  return renderAppShell(
+    <>
       {!daemonWarm && (
         <div className="daemon-warm-status" role="status" aria-live="polite">
           Still loading workspace data…
@@ -2690,7 +2695,6 @@ function App(): JSX.Element {
           data-app-operational-notice-fallback
           ref={setFallbackNoticeHost}
         />
-        <PreviewCopyNotice instance={instanceInfo} />
         {clientAccess.phase === 'initializing' || clientAccess.phase === 'recovering' ? (
           <DetailPaneNotice severity="info" source="local-access">
             {accessEverReady ? 'Reconnecting to Mandible…' : 'Connecting to Mandible…'}
@@ -2796,8 +2800,7 @@ function App(): JSX.Element {
               onAckManagedReminderOccurrence={handleAckManagedReminderOccurrence}
               onAckAll={handleAckAll}
               onRefresh={handleInboxRefresh}
-              mutationsAllowed={canWriteLedger(instanceInfo)}
-              externalActionsAllowed={allowsInstanceEffect(instanceInfo, 'process:external')}
+              instance={instanceInfo}
             />
           );
         })())}
@@ -2908,7 +2911,7 @@ function App(): JSX.Element {
           ) : null}
         </div>
       </AppShellProvider>
-    </div>
+    </>
   );
 }
 

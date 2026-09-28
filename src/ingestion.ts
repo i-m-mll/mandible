@@ -681,6 +681,7 @@ let logger: Logger = () => {};
 let eventPublisher: (event: string, data: unknown) => void = broadcast;
 let ingestionActive = false;
 let ingestionRunToken = 0;
+let backgroundIngestionEnabled = true;
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let ingestionActor: IngestionActor | null = null;
 let backgroundBackoffMs: () => number = () => 0;
@@ -859,6 +860,8 @@ type AppendReadResult =
 export interface StartIngestionOptions {
   dbPath?: string;
   getBackgroundBackoffMs?: () => number;
+  /** Start the exact-path actor without watchers or startup reconciliation. */
+  background?: boolean;
 }
 
 /**
@@ -882,6 +885,7 @@ export function startIngestion(log: Logger, options: StartIngestionOptions = {})
   requestedReparseFailures.clear();
   eventPublisher = broadcast;
   backgroundBackoffMs = options.getBackgroundBackoffMs ?? (() => 0);
+  backgroundIngestionEnabled = options.background !== false;
   ingestionActive = true;
   ingestionRunToken++;
   if (options.dbPath && canUseDefaultIngestionWorker()) {
@@ -893,9 +897,12 @@ export function startIngestion(log: Logger, options: StartIngestionOptions = {})
   } else if (options.dbPath) {
     logger("debug", "ingestion_worker_unavailable_in_source_runtime");
   }
-  logger("info", "ingestion_starting", {
-    watch_paths: WATCH_CONFIGS.map((c) => c.base),
-  });
+  if (!backgroundIngestionEnabled) {
+    logger("info", "ingestion_selected_source_only");
+    return;
+  }
+
+  logger("info", "ingestion_starting", { watch_paths: WATCH_CONFIGS.map((c) => c.base) });
 
   lastUnnamedEventReconcileAt = 0;
   conversationWatch = watchConversationRoots({
@@ -960,6 +967,9 @@ export async function stopIngestionGracefully(): Promise<void> {
 
 /** Manually trigger re-ingestion of all known sources. */
 export async function triggerFullIngest(): Promise<{ processed: number; errors: number }> {
+  if (!backgroundIngestionEnabled) {
+    throw new Error("full conversation ingestion is disabled for this instance");
+  }
   if (ingestionActor) {
     return ingestionActor.fullIngest();
   }

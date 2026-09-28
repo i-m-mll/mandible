@@ -156,6 +156,10 @@ export type ConversationLoadFailure = {
   retryable: boolean;
 };
 
+type ConversationHistoryRetry =
+  | { kind: 'edge'; direction: 'older' | 'newer' }
+  | { kind: 'around'; position: number };
+
 const TRANSIENT_CONVERSATION_CODES = new Set(['provider_metadata_unavailable', 'freshness_pending', 'freshness_error', 'source_unavailable']);
 
 function optimisticPromptItem(
@@ -718,6 +722,11 @@ export function ChatComposerSubmitIcon(): JSX.Element {
 
 // ── Detail View ──
 
+async function resolveProviderSessionConversation(providerSessionId: string): Promise<Conversation | null> {
+  const result = await getConversations({ session_id: providerSessionId, limit: 1 });
+  return result.conversations.find((candidate) => candidate.session_id === providerSessionId) ?? null;
+}
+
 function formatActivityDuration(seconds: number | null): string | null {
   if (seconds == null) return null;
   if (seconds < 60) return `${seconds}s`;
@@ -1104,6 +1113,7 @@ export function ConversationDetail({
   const navigateFromActivity = useCallback((id: string) => onNavigateRef.current(id), []);
   const [jumpingToLatest, setJumpingToLatest] = useState(false);
   const [edgeLoading, setEdgeLoading] = useState<'older' | 'newer' | null>(null);
+  const historyRetryRef = useRef<ConversationHistoryRetry | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [exportIntent, setExportIntent] = useState<'copy' | 'open' | null>(null);
   const [navigationError, setNavigationError] = useState<ConversationLoadFailure | null>(null);
@@ -1141,6 +1151,18 @@ export function ConversationDetail({
 
   // Fork/control state
   const [toast, setToast] = useState<ToastState>(null);
+  const navigateToCreatedTask = useCallback(async (providerSessionId: string) => {
+    try {
+      const target = await resolveProviderSessionConversation(providerSessionId);
+      if (target) onNavigateRef.current(target.id);
+      else setToast({ message: 'Created task conversation is not available yet.', type: 'info' });
+    } catch (error) {
+      setToast({
+        message: `Could not open created task: ${error instanceof Error ? error.message : String(error)}`,
+        type: 'error',
+      });
+    }
+  }, []);
   const [continueDraft, setContinueDraft] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
@@ -1255,8 +1277,16 @@ export function ConversationDetail({
     if (position < 0 || position >= aggregate.total) return;
     setEdgeLoading(direction);
     setNavigationError(null);
+    historyRetryRef.current = { kind: 'edge', direction };
     try {
       await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
+      const updated = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
+      const nextInterval = direction === 'older' ? updated?.loaded_intervals[0] : updated?.loaded_intervals.at(-1);
+      const advanced = direction === 'older'
+        ? Boolean(nextInterval && nextInterval.start < interval.start)
+        : Boolean(nextInterval && nextInterval.end > interval.end);
+      if (!advanced) throw new Error(`Conversation history did not advance ${direction === 'older' ? 'toward the beginning' : 'toward the end'}.`);
+      historyRetryRef.current = null;
     } catch (cause) {
       const failure = conversationLoadFailure(cause, true, direction === 'older' ? 'edge-older' : 'edge-newer');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
@@ -1268,11 +1298,20 @@ export function ConversationDetail({
   const loadTranscriptAround = useCallback(async (position: number) => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
     if (!aggregate || edgeLoading || !Number.isSafeInteger(position) || position < 0 || position >= aggregate.total) return;
-    if (aggregate.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) return;
+    if (aggregate.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) {
+      historyRetryRef.current = null;
+      return;
+    }
     setEdgeLoading('newer');
     setNavigationError(null);
+    historyRetryRef.current = { kind: 'around', position };
     try {
       await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
+      const updated = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
+      if (!updated?.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) {
+        throw new Error(`Conversation history did not include requested position ${position}.`);
+      }
+      historyRetryRef.current = null;
     } catch (cause) {
       const failure = conversationLoadFailure(cause, true, 'edge-newer');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
@@ -1966,6 +2005,15 @@ export function ConversationDetail({
 
   const retryLoad = useCallback(() => {
     if (error) setNavigationError(error);
+    const historyRetry = historyRetryRef.current;
+    if (historyRetry?.kind === 'edge') {
+      void loadTranscriptEdge(historyRetry.direction);
+      return;
+    }
+    if (historyRetry?.kind === 'around') {
+      void loadTranscriptAround(historyRetry.position);
+      return;
+    }
     const operation = error?.operation === 'source-unavailable' ? error.retryOperation : error?.operation;
     if (operation === 'edge-older') {
       void loadTranscriptEdge('older');
@@ -1980,7 +2028,7 @@ export function ConversationDetail({
       return;
     }
     void windowQuery.refetch();
-  }, [error, exportIntent, loadTranscriptEdge, runMarkdownAction, windowQuery]);
+  }, [error, exportIntent, loadTranscriptAround, loadTranscriptEdge, runMarkdownAction, windowQuery]);
 
   const loadErrorNotice = error ? (
     <DetailPaneNotice
@@ -2376,6 +2424,7 @@ export function ConversationDetail({
             navigationTarget={navigationTarget}
             onNavigationResult={handleNavigationResult}
             onFork={handleFork}
+            onCreatedTaskNavigate={navigateToCreatedTask}
             sessionInfo={{
               sessionId: conversation.session_id,
               backend: conversation.source,
@@ -2535,13 +2584,29 @@ function ChatEntryItem({
 function LiveSessionDetail({
   session,
   notice,
+  onNavigateConversation,
 }: {
   session: ConsoleSession;
   notice?: ComponentChildren;
+  onNavigateConversation: (conversationId: string) => void;
 }): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
   const [viewMode, setViewMode] = useState<ViewMode>('rich');
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
+  const [createdTaskError, setCreatedTaskError] = useState<string | null>(null);
+  const navigateToCreatedTask = useCallback(async (providerSessionId: string) => {
+    try {
+      const target = await resolveProviderSessionConversation(providerSessionId);
+      if (target) {
+        setCreatedTaskError(null);
+        onNavigateConversation(target.id);
+      } else {
+        setCreatedTaskError('Created task conversation is not available yet.');
+      }
+    } catch (error) {
+      setCreatedTaskError(error instanceof Error ? error.message : String(error));
+    }
+  }, [onNavigateConversation]);
   const providerSessionId = session.provider_session_id ?? '';
   const sessionConversationQuery = useQuery({
     queryKey: conversationKeys.bySession(providerSessionId),
@@ -2614,7 +2679,14 @@ function LiveSessionDetail({
       className="chat-live-detail"
       bodyClassName="chat-live-detail__pane"
       header={detailHeader}
-      notice={notice}
+      notice={notice || createdTaskError ? <>
+        {notice}
+        {createdTaskError ? (
+          <DetailPaneNotice severity="error" density="compact" title="Could not open created task">
+            {createdTaskError}
+          </DetailPaneNotice>
+        ) : null}
+      </> : null}
     >
       <TerminalPane
         sessionId={session.id}
@@ -2633,6 +2705,7 @@ function LiveSessionDetail({
         conversationControl={control}
         conversationMessageAnchor={messageAnchor}
         onConversationControlChange={setControl}
+        onCreatedTaskNavigate={navigateToCreatedTask}
         isVisible
         viewMode={viewMode}
         onViewModeChange={setViewMode}
@@ -4050,6 +4123,7 @@ export function ConversationsView({
           <LiveSessionDetail
             key={selectedLiveSession.id}
             session={selectedLiveSession}
+            onNavigateConversation={handleNavigateConversation}
           />
         ) : (
           <ChatDetailFrame

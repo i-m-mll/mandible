@@ -58,6 +58,7 @@ export type ChatSurfaceProps = StreamRendererProps & {
   onToggleBlockSelect?: (blockId: string, shiftKey: boolean) => void;
   onFork?: (dagUuid: string) => void;
   onResume?: (dagUuid: string) => void;
+  onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
@@ -66,7 +67,8 @@ const JUMP_RETURN_SECONDS = 2;
 const MANUAL_RETURN_PX_PER_SECOND = 600;
 const INITIAL_VIRTUAL_RECT = { width: 600, height: 720 };
 
-function estimateVirtualRow(): number {
+function estimateVirtualRow(index: number, items: VirtualItem[]): number {
+  if (items[index]?.kind === 'history') return 40;
   return ESTIMATED_ROW_HEIGHT;
 }
 
@@ -95,12 +97,8 @@ type VirtualItem =
   | { kind: 'live'; id: string }
   | { kind: 'permission'; id: string };
 
-type HistoryDirection = 'older' | 'newer';
 type HistoryLoadState = 'idle' | 'loading' | 'retry';
-type HistoryRowState =
-  | { kind: 'boundary'; direction: HistoryDirection }
-  | { kind: 'edge'; direction: HistoryDirection; loadState: HistoryLoadState }
-  | { kind: 'gap'; start: number; end: number; loadState: HistoryLoadState };
+type HistoryRowState = { kind: 'gap'; start: number; end: number; loadState: HistoryLoadState };
 
 type ReadingAnchor = {
   version: 1;
@@ -209,6 +207,7 @@ export function ChatSurface({
   onToggleBlockSelect,
   onFork,
   onResume,
+  onCreatedTaskNavigate,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -226,6 +225,7 @@ export function ChatSurface({
   const pendingFocusRef = useRef<{ key: string; blockId: string | null; itemId: string } | null>(null);
   const restoredScrollScopeRef = useRef<string | null>(null);
   const pendingReadingAnchorRef = useRef<ReadingAnchor | null>(null);
+  const readingAnchorRef = useRef<ReadingAnchor | null>(null);
   const itemIdentitySignatureRef = useRef<string | null>(null);
   const inFlightHistoryRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
   const transcriptRef = useRef(transcript);
@@ -248,13 +248,6 @@ export function ChatSurface({
     }));
     const groupedItems: VirtualItem[] = [];
     if (transcript) {
-      groupedItems.push(transcript.hasOlder
-        ? {
-          kind: 'history',
-          id: 'history:older',
-          state: { kind: 'edge', direction: 'older', loadState: historyLoadStates['edge:older'] ?? 'idle' },
-        }
-        : { kind: 'history', id: 'history:boundary:start', state: { kind: 'boundary', direction: 'older' } });
       const gaps: Array<Extract<VirtualItem, { kind: 'history' }>> = [];
       for (let index = 1; index < transcript.loadedIntervals.length; index += 1) {
         const previous = transcript.loadedIntervals[index - 1];
@@ -290,38 +283,23 @@ export function ChatSurface({
     if (activePermissionRequest && onPermissionRespond) {
       groupedItems.push({ kind: 'permission', id: `permission:${activePermissionRequest.id}` });
     }
-    if (transcript) {
-      groupedItems.push(transcript.hasNewer
-        ? {
-          kind: 'history',
-          id: 'history:newer',
-          state: { kind: 'edge', direction: 'newer', loadState: historyLoadStates['edge:newer'] ?? 'idle' },
-        }
-        : { kind: 'history', id: 'history:boundary:end', state: { kind: 'boundary', direction: 'newer' } });
-    }
     return groupedItems;
   }, [activePermissionRequest, groups, historyLoadStates, onPermissionRespond, streaming, transcript]);
 
   const getItemKey = useCallback((index: number) => items[index]?.id ?? index, [items]);
   const extractVirtualRows = useCallback((range: Range): number[] => {
     const indices = new Set(defaultRangeExtractor(range));
-    // Keep the two paging edges and one truthful discontinuity discoverable
-    // without letting a fragmented transcript make DOM size unbounded.
-    const historyIndices = [
-      0,
-      items.findIndex((item) => item.kind === 'history' && item.state.kind === 'gap'),
-      items.length - 1,
-    ];
-    historyIndices.forEach((index) => {
-      if (index >= 0 && items[index]?.kind === 'history') indices.add(index);
-    });
+    // Keep one truthful discontinuity discoverable without letting a fragmented
+    // transcript make the mounted DOM grow with the number of gaps.
+    const firstGap = items.findIndex((item) => item.kind === 'history');
+    if (firstGap >= 0) indices.add(firstGap);
     return [...indices].sort((left, right) => left - right);
   }, [items]);
   const getScrollElement = useCallback(() => scrollRef.current, []);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: items.length,
     getScrollElement,
-    estimateSize: estimateVirtualRow,
+    estimateSize: (index) => estimateVirtualRow(index, items),
     measureElement: measureVirtualRow,
     getItemKey,
     initialOffset: Math.max(0, items.length * ESTIMATED_ROW_HEIGHT - 720),
@@ -405,6 +383,7 @@ export function ChatSurface({
         : virtualItem.start - offset,
       followingTail: followingTailOverride ?? followingTail,
     };
+    readingAnchorRef.current = anchor;
     storageSet(scrollStorageKey, JSON.stringify(anchor));
     return anchor;
   }, [followingTail, items, scrollStorageKey, virtualizer]);
@@ -453,6 +432,7 @@ export function ChatSurface({
     setExpandedBlocks({});
     setHistoryLoadStates({});
     pendingReadingAnchorRef.current = null;
+    readingAnchorRef.current = null;
     inFlightHistoryRef.current = null;
   }, [storageScope]);
 
@@ -468,6 +448,7 @@ export function ChatSurface({
     const storedAnchor = parseReadingAnchor(storageGet(scrollStorageKey));
     if (navigationTarget) return;
     if (storedAnchor) {
+      readingAnchorRef.current = storedAnchor;
       pendingReadingAnchorRef.current = storedAnchor;
       setFollowingTail(storedAnchor.followingTail && !transcript?.hasNewer);
       restoreReadingAnchor(storedAnchor);
@@ -563,11 +544,11 @@ export function ChatSurface({
     const previous = itemIdentitySignatureRef.current;
     itemIdentitySignatureRef.current = signature;
     if (previous === null || previous === signature || navigationTarget) return;
-    const anchor = parseReadingAnchor(storageGet(scrollStorageKey));
+    const anchor = readingAnchorRef.current;
     if (!anchor || anchor.followingTail) return;
     pendingReadingAnchorRef.current = anchor;
     restoreReadingAnchor(anchor);
-  }, [items, navigationTarget, restoreReadingAnchor, scrollStorageKey]);
+  }, [items, navigationTarget, restoreReadingAnchor]);
 
   useEffect(() => {
     if (!transcript || inFlightHistoryRef.current) return;
@@ -577,22 +558,50 @@ export function ChatSurface({
     if (rendered.length === 0) return;
     const scrollStart = el.scrollTop;
     const scrollEnd = scrollStart + el.clientHeight;
-    const isAtRenderedEdge = (id: string): boolean => {
-      const row = rendered.find((candidate) => items[candidate.index]?.id === id);
-      if (!row) return false;
-      return row.end >= scrollStart - FOLLOW_THRESHOLD_PX
-        && row.start <= scrollEnd + FOLLOW_THRESHOLD_PX;
+    const prefetchDistance = Math.max(el.clientHeight * 1.5, 720);
+    const requestWithAnchor = (key: string, load: () => void | Promise<void>) => {
+      const anchor = captureReadingAnchor();
+      if (anchor && !anchor.followingTail) pendingReadingAnchorRef.current = anchor;
+      void requestHistory(key, load);
     };
     const olderState = historyLoadStates['edge:older'] ?? 'idle';
     const newerState = historyLoadStates['edge:newer'] ?? 'idle';
-    if (transcript.hasOlder && olderState === 'idle' && isAtRenderedEdge('history:older')) {
-      void requestHistory('edge:older', transcript.loadOlder);
+    if (transcript.hasOlder && olderState === 'idle' && scrollStart <= prefetchDistance) {
+      requestWithAnchor('edge:older', transcript.loadOlder);
       return;
     }
-    if (transcript.hasNewer && newerState === 'idle' && isAtRenderedEdge('history:newer')) {
-      void requestHistory('edge:newer', transcript.loadNewer);
+    if (transcript.hasNewer && newerState === 'idle'
+        && el.scrollHeight - scrollEnd <= prefetchDistance) {
+      requestWithAnchor('edge:newer', transcript.loadNewer);
+      return;
     }
-  }, [historyLoadStates, items, requestHistory, transcript, virtualItems, virtualizer]);
+    for (const item of items) {
+      if (item.kind !== 'history') continue;
+      const { start, end, loadState } = item.state;
+      const row = rendered.find((candidate) => items[candidate.index]?.id === item.id);
+      if (!row || loadState !== 'idle'
+          || row.end < scrollStart - prefetchDistance
+          || row.start > scrollEnd + prefetchDistance) continue;
+      const key = `gap:${start}:${end}`;
+      requestWithAnchor(key, () => transcript.loadAround(start));
+      return;
+    }
+  }, [captureReadingAnchor, historyLoadStates, items, requestHistory, transcript, virtualItems, virtualizer]);
+
+  function handleUserScrollIntent(): void {
+    // A wheel event is newer reading intent than a deferred virtual-row restore.
+    // The ensuing scroll event captures the new anchor before data can change.
+    pendingReadingAnchorRef.current = null;
+  }
+
+  function handleUserScrollKey(event: KeyboardEvent): void {
+    const target = event.target;
+    if (event.defaultPrevented || (target instanceof HTMLElement
+        && (target.isContentEditable || target.matches('input, textarea, select')))) return;
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
+      handleUserScrollIntent();
+    }
+  }
 
   function handleScroll(): void {
     const el = scrollRef.current;
@@ -635,10 +644,11 @@ export function ChatSurface({
     navigator.clipboard.writeText(text).catch(() => {});
   }
 
-  let lastAssistantKey: string | null = null;
+  let lastAssistantTurnId: string | null = null;
   for (let i = nodes.length - 1; i >= 0; i--) {
-    if (nodes[i].kind === 'assistant_turn') {
-      lastAssistantKey = nodes[i].key;
+    const node = nodes[i];
+    if (node.kind === 'assistant_turn') {
+      lastAssistantTurnId = node.turn.id;
       break;
     }
   }
@@ -704,13 +714,16 @@ export function ChatSurface({
 
       case 'activity': {
         const source = node.source;
+        const sourceBlockId = source?.blockId
+          ?? (node.item.type === 'provider-directive' ? node.item.blockId ?? undefined : undefined);
         const disclosureKey = `activity:${node.key}`;
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
+          <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId}>
             <ActivityRow
               item={node.item}
               expanded={expandedBlocks[disclosureKey] ?? false}
               onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+              onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
@@ -724,7 +737,7 @@ export function ChatSurface({
 
       case 'assistant_turn': {
         const { turn } = node;
-        const isLastStreamingTurn = streaming && node.key === lastAssistantKey;
+        const isLastStreamingTurn = streaming && node.turn.id === lastAssistantTurnId;
         const isThinking =
           isLastStreamingTurn &&
           turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
@@ -788,12 +801,15 @@ export function ChatSurface({
             <div
               key={entry.key}
               className="message-block-wrapper"
-              data-member-refs={entry.nodes.map((node) => node.source?.blockId ?? node.key).join(' ')}
+              data-member-refs={[...new Set(entry.nodes.map((node) => node.source?.blockId
+                ?? (node.item.type === 'provider-directive' ? node.item.blockId : null)
+                ?? node.key))].join(' ')}
             >
               <ActivityGroup
                 items={entry.nodes.map((node) => node.item)}
                 expanded={expandedBlocks[entry.key] ?? false}
                 onExpandedChange={(next) => setBlockExpanded(entry.key, next)}
+                onCreatedTaskNavigate={onCreatedTaskNavigate}
               />
             </div>
           );
@@ -822,38 +838,16 @@ export function ChatSurface({
   }
 
   function renderHistoryRow(state: HistoryRowState): JSX.Element {
-    if (state.kind === 'boundary') {
-      return (
-        <div className="stream-renderer__history-state" role="note">
-          {state.direction === 'older' ? 'Start of conversation' : 'End of conversation'}
-        </div>
-      );
+    if (state.loadState !== 'loading') {
+      return <div className="stream-renderer__history-state" aria-hidden="true" />;
     }
-    if (state.kind === 'gap') {
-      const key = `gap:${state.start}:${state.end}`;
-      const label = `Load missing history from positions ${state.start} to ${state.end}`;
-      return (
-        <div className="stream-renderer__history-state" role="status" aria-live="polite">
-          <button type="button" className="btn btn--ghost btn--sm" disabled={state.loadState === 'loading'} onClick={() => {
-            if (!transcript) return;
-            void requestHistory(key, () => transcript.loadAround(state.start));
-          }}>
-            {state.loadState === 'retry' ? `Retry: ${label}` : label}
-          </button>
-        </div>
-      );
-    }
-    const edgeKey = `edge:${state.direction}`;
-    const earlier = state.direction === 'older';
-    const label = earlier ? 'Load earlier history' : 'Load later history';
     return (
-      <div className="stream-renderer__history-state" role="status" aria-live="polite">
-        <button type="button" className="btn btn--ghost btn--sm" disabled={state.loadState === 'loading'} onClick={() => {
-          if (!transcript) return;
-          void requestHistory(edgeKey, earlier ? transcript.loadOlder : transcript.loadNewer);
-        }}>
-          {state.loadState === 'retry' ? `Retry: ${label}` : label}
-        </button>
+      <div
+        className="stream-renderer__history-state"
+        role="status"
+        aria-live="polite"
+      >
+        Loading history…
       </div>
     );
   }
@@ -875,6 +869,9 @@ export function ChatSurface({
         ref={setScrollNode}
         className="stream-renderer__scroll"
         onScroll={handleScroll}
+        onWheel={handleUserScrollIntent}
+        onTouchMove={handleUserScrollIntent}
+        onKeyDown={handleUserScrollKey}
       >
         <div className="stream-renderer__virtual-canvas" style={{ height: `${virtualizer.getTotalSize()}px` }}>
           {virtualItems.map((virtualItem) => {
