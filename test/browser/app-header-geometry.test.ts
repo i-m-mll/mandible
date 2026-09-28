@@ -58,6 +58,22 @@ const CHROME_CANDIDATES = [
 const chrome = CHROME_CANDIDATES.find(existsSync);
 const tokens = readFileSync(resolve('ui/src/styles/tokens.css'), 'utf8');
 const base = readFileSync(resolve('ui/src/styles/base.css'), 'utf8');
+const detailPaneShell = readFileSync(resolve('ui/src/styles/detail-pane-shell.css'), 'utf8');
+const iconTabList = readFileSync(resolve('ui/src/styles/icon-tab-list.css'), 'utf8');
+
+type NativeChromeGeometry = {
+  leftHeader: DOMRectSnapshot;
+  leftIdentity: DOMRectSnapshot;
+  leftMark: DOMRectSnapshot;
+  leftHeaderPaddingTop: string;
+  compactShellHeader: DOMRectSnapshot;
+  compactHeader: DOMRectSnapshot;
+  compactAction: DOMRectSnapshot;
+  rightHeader: DOMRectSnapshot;
+  rightTab: DOMRectSnapshot;
+  rightToggle: DOMRectSnapshot;
+  rightRows: string;
+};
 
 function normalizeFixture({
   width,
@@ -197,6 +213,85 @@ function renderHeaderSuite(fixtures: HeaderFixture[]): { geometries: Map<string,
   return { geometries, launchCount: scales.length };
 }
 
+function renderNativeChromeGeometry(): NativeChromeGeometry {
+  if (!chrome) throw new Error('A Chromium browser is required for the native header geometry regression.');
+
+  const styles = `${tokens}\n${base}\n${detailPaneShell}\n${iconTabList}`;
+  const html = `<!doctype html><html data-theme="light"><head><style>
+    html, body { width: 100%; height: 100%; margin: 0; }
+    #app { width: 100vw; height: 100vh; }
+    ${styles}
+  </style></head><body>
+    <div id="app" class="tauri-window">
+      <div class="app-shell" style="--app-right-sidebar-width: 320px">
+        <header class="app-header">
+          <div class="app-header__identity">
+            <span class="app-header__mark"><span class="app-header__logo"></span></span>
+          </div>
+        </header>
+        <div class="app-layout app-layout--right-sidebar-docked">
+          <aside class="app-rail"></aside>
+          <main class="app-content app-content--view-sidebar">
+            <section class="detail-pane-shell detail-pane-shell--compact">
+              <header class="detail-pane-shell__header">
+                <div class="detail-pane-shell__header-primary">
+                  <div class="detail-pane-header detail-pane-header--compact">
+                    <div class="detail-pane-header__main">
+                      <div class="detail-pane-header__title-row"><h2 class="detail-pane-header__title">Conversation</h2></div>
+                      <div class="detail-pane-header__actions" role="group">
+                        <button class="app-right-sidebar-toggle" aria-label="Open details">Details</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </header>
+            </section>
+          </main>
+          <aside class="app-right-sidebar">
+            <header class="app-right-sidebar__header">
+              <div class="icon-tab-list app-right-sidebar__tabs"><button aria-selected="true">Graph</button></div>
+              <button class="app-right-sidebar-toggle app-right-sidebar__toggle" aria-label="Hide details">Hide</button>
+            </header>
+            <div class="app-right-sidebar__body"></div>
+          </aside>
+        </div>
+      </div>
+    </div>
+    <script>
+      const snap = (selector) => {
+        const rect = document.querySelector(selector).getBoundingClientRect();
+        return Object.fromEntries(['left', 'top', 'right', 'bottom', 'width', 'height'].map((key) => [key, rect[key]]));
+      };
+      const geometry = {
+        leftHeader: snap('.app-header'),
+        leftIdentity: snap('.app-header__identity'),
+        leftMark: snap('.app-header__mark'),
+        leftHeaderPaddingTop: getComputedStyle(document.querySelector('.app-header')).paddingTop,
+        compactShellHeader: snap('.detail-pane-shell__header'),
+        compactHeader: snap('.detail-pane-header--compact'),
+        compactAction: snap('.detail-pane-header__actions button'),
+        rightHeader: snap('.app-right-sidebar__header'),
+        rightTab: snap('.app-right-sidebar__tabs > button'),
+        rightToggle: snap('.app-right-sidebar__toggle'),
+        rightRows: getComputedStyle(document.querySelector('.app-right-sidebar')).gridTemplateRows,
+      };
+      document.title = btoa(JSON.stringify(geometry));
+    </script>
+  </body></html>`;
+  const rendered = spawnSync(chrome, [
+    '--headless=new',
+    '--disable-gpu',
+    '--no-sandbox',
+    '--dump-dom',
+    '--window-size=1200,800',
+    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+  ], { encoding: 'utf8', maxBuffer: 2_000_000 });
+  if (rendered.status !== 0) throw new Error(`Chromium native-header fixture failed: ${rendered.stderr}`);
+  const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
+  if (!encoded) throw new Error('Chromium native-header fixture did not return measurements.');
+  return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as NativeChromeGeometry;
+}
+
 const fixtures = [
   ...([1100, 700] as const).flatMap((width) => (['dark', 'light'] as const).map((theme) =>
     normalizeFixture({ width, route: 'Timeline', theme }),
@@ -325,5 +420,29 @@ describe('shared AppHeader rendered geometry', () => {
     expect(geometry.mark).toMatchObject({ left: 27, right: 55, width: 28 });
     expect(geometry.brand!.left).toBe(235);
     expect(geometry.logo).toMatchObject({ width: 28, height: 28 });
+  });
+
+  it('confines the native titlebar inset to left chrome and centers 48px content actions', () => {
+    const geometry = renderNativeChromeGeometry();
+    const centerY = ({ top, height }: DOMRectSnapshot) => top + height / 2;
+    const expectCentered = (action: DOMRectSnapshot, row: DOMRectSnapshot) => {
+      expect(Math.abs(centerY(action) - centerY(row))).toBeLessThanOrEqual(0.5);
+    };
+
+    expect(geometry.leftHeader).toMatchObject({ top: 0, height: 92 });
+    expect(geometry.leftHeaderPaddingTop).toBe('44px');
+    expect(geometry.leftIdentity.top).toBeGreaterThanOrEqual(44);
+    expect(geometry.leftMark.top).toBeGreaterThanOrEqual(44);
+
+    expect(geometry.compactShellHeader).toMatchObject({ top: 0, height: 48 });
+    expect(geometry.compactHeader).toMatchObject({ top: 0, height: 48 });
+    expect(geometry.compactAction.height).toBe(34);
+    expectCentered(geometry.compactAction, geometry.compactHeader);
+
+    expect(geometry.rightRows.split(' ')[0]).toBe('48px');
+    expect(geometry.rightHeader).toMatchObject({ top: 0, height: 48 });
+    expect(geometry.rightTab).toMatchObject({ top: 0, height: 48 });
+    expect(geometry.rightToggle.height).toBe(34);
+    expectCentered(geometry.rightToggle, geometry.rightHeader);
   });
 });

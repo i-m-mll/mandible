@@ -27,7 +27,7 @@ import {
   type SpaceRenderer,
 } from '../../api';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
-import { useAppShell } from '../../app-shell';
+import { AppOperationalNoticeOutlet, useAppShell } from '../../app-shell';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
 import type { SpacesRouteTarget } from '../../routing';
@@ -354,6 +354,7 @@ export function SpacesViewShell({
             </span>
           )}
         </header>
+        <AppOperationalNoticeOutlet registerAsMain />
         {spaceLoadError && (
           <DetailPaneNotice severity="error" density="compact" title="Could not load space">
             {spaceLoadError}

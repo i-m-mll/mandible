@@ -1,5 +1,5 @@
 import { createContext, type ComponentChildren, type Ref } from 'preact';
-import { useCallback, useContext, useLayoutEffect, useRef } from 'preact/hooks';
+import { useCallback, useContext, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { IconTabList } from './components/shared/IconTabList';
 
 type AppRightSidebarCommon = {
@@ -92,6 +92,8 @@ export type AppShellContextValue = {
   active: boolean;
   /** The sole app-owned location for operational notices. */
   noticeHost?: HTMLElement | null;
+  /** Register an active main detail pane as the operational notice outlet. */
+  registerMainNoticeHost?(host: HTMLElement): () => void;
 };
 
 const noopContext: AppShellContextValue = {
@@ -108,13 +110,70 @@ const noopUpdateRightSidebar = () => undefined;
 
 export function AppShellProvider({ value, children }: { value: AppShellContextValue; children: ComponentChildren }): JSX.Element {
   const parent = useContext(AppShellContext);
-  return <AppShellContext.Provider value={value.noticeHost === undefined
-    ? { ...value, noticeHost: parent.noticeHost }
-    : value}>{children}</AppShellContext.Provider>;
+  return <AppShellContext.Provider value={{
+    ...value,
+    noticeHost: value.noticeHost === undefined ? parent.noticeHost : value.noticeHost,
+    registerMainNoticeHost: value.registerMainNoticeHost ?? parent.registerMainNoticeHost,
+  }}>{children}</AppShellContext.Provider>;
 }
 
 export function useAppShell(): AppShellContextValue {
   return useContext(AppShellContext);
+}
+
+/** One structural target for the shared DetailPaneNotice portal. */
+export function AppOperationalNoticeOutlet({
+  className = 'app-operational-notice-slot',
+  detailPaneSlot = false,
+  registerAsMain,
+  testId,
+  children,
+}: {
+  className?: string;
+  detailPaneSlot?: boolean;
+  /** Main-view registration is explicit so embedded surfaces cannot claim it by default. */
+  registerAsMain: boolean;
+  testId?: string;
+  children?: ComponentChildren;
+}): JSX.Element {
+  const { active, registerMainNoticeHost } = useAppShell();
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const [registeredAsMain, setRegisteredAsMain] = useState(false);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const setHostNode = useCallback((node: HTMLDivElement | null) => {
+    if (hostRef.current === node) return;
+    hostRef.current = node;
+    setHost(node);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!active || !registerAsMain || !host || !registerMainNoticeHost) {
+      setRegisteredAsMain(false);
+      return undefined;
+    }
+    const ownerShell = host.closest('.detail-pane-shell');
+    const nestedInDetailPane = Boolean(ownerShell?.parentElement?.closest('.detail-pane-shell'));
+    const forbiddenSurface = host.closest('#app-right-sidebar, .view-sidebar, [hidden]');
+    if (nestedInDetailPane || forbiddenSurface) {
+      setRegisteredAsMain(false);
+      return undefined;
+    }
+    const unregister = registerMainNoticeHost(host);
+    setRegisteredAsMain(true);
+    return unregister;
+  }, [active, host, registerAsMain, registerMainNoticeHost]);
+
+  return (
+    <div
+      className={className}
+      data-app-operational-notice-outlet={active && registeredAsMain ? 'main' : undefined}
+      data-detail-pane-slot={detailPaneSlot ? 'notice' : undefined}
+      data-testid={testId}
+      ref={setHostNode}
+    >
+      {children}
+    </div>
+  );
 }
 
 export function useRegisterAppRightSidebar(descriptor: AppRightSidebarDescriptor | null): void {

@@ -225,7 +225,10 @@ export function composeRunOptions(
       id: declared.id,
       label: provider.label,
       ...(provider.description ? { description: provider.description } : {}),
-      category: provider.category,
+      // A matched provider option inherits its semantic grouping from the
+      // backend declaration. ACP category metadata is optional, so provider
+      // inventory must not erase the typed category the UI and policy use.
+      category: declared.category,
       kind: provider.kind,
       nullable: declared.nullable,
       source: "composed",

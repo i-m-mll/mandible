@@ -9,6 +9,7 @@
 // display/navigation-only: it is never attached to a mutation request.
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { AppOperationalNoticeOutlet } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import {
   getProviderScopedOverview,
@@ -529,6 +530,7 @@ export function SessionOverviewView({
   return (
     <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
       {sharedHeader}
+      <AppOperationalNoticeOutlet registerAsMain={!embedded} />
       {(binding.kind === 'error' || providerOverviewError || overviewError || pickerError) ? (
         <DetailPaneNotice severity="error" density="compact" title="Session overview unavailable">
           {binding.kind === 'error' ? binding.message : providerOverviewError ?? overviewError ?? pickerError}

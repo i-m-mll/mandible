@@ -5,6 +5,7 @@ import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
 import { shortRouteId } from '../routing';
+import { AppOperationalNoticeOutlet } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -544,6 +545,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
           </label>
         </div>
       </div>
+      <AppOperationalNoticeOutlet registerAsMain />
 
       {(error || sseError) ? (
         <DetailPaneNotice severity="error" density="compact" title="Logs need attention">

@@ -30,7 +30,7 @@ import { appColors } from '../theme';
 import { browserSessionFetch } from '../client-auth-token';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
-import { useRegisterAppRightSidebar } from '../app-shell';
+import { AppOperationalNoticeOutlet, useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
@@ -1294,6 +1294,7 @@ export function GraphView({
 
       <div className="graph-workspace">
         <div className="graph-canvas-wrap">
+          <AppOperationalNoticeOutlet registerAsMain />
           {error ? <DetailPaneNotice severity="error" title="Graph could not be refreshed" className="graph-canvas-notice">{error}</DetailPaneNotice> : null}
           {loading && flowNodes.length === 0 && <LoadingSkeleton variant="canvas" label="Loading graph" />}
           {!loading && !error && flowNodes.length === 0 && (

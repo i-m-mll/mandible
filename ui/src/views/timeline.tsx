@@ -2,7 +2,7 @@ import { Fragment, type ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { getProjectTimeline } from '../api';
-import { useAppShell, useRegisterAppRightSidebar } from '../app-shell';
+import { AppOperationalNoticeOutlet, useAppShell, useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -1909,6 +1909,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
         </ViewSidebar>
 
         <div className={`timeline-canvas${error ? ' timeline-canvas--with-notice' : ''}`}>
+          <AppOperationalNoticeOutlet registerAsMain />
           {error ? (
             <DetailPaneNotice severity="error" density="compact">
               Timeline refresh failed. Showing the last loaded timeline. {error}

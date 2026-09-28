@@ -116,6 +116,13 @@ describe("instance effect policy", () => {
     const session = { effect_ceiling: ["ledger:read", "ledger:write", "files:preview", "auth:protected"] as const };
     expect(authorizeEffects(instance, session, operationForRequest("GET", "/api/issues"))).toEqual({ allowed: true });
     expect(authorizeEffects(instance, session, operationForRequest("POST", "/api/issues"))).toEqual({ allowed: true });
+    const runOptionsRead = operationForRequest("GET", "/api/console/run-options");
+    expect(runOptionsRead).toEqual({ id: "console.run_options.describe", effects: ["ledger:read"] });
+    expect(authorizeEffects(instance, session, runOptionsRead)).toEqual({ allowed: true });
+    expect(operationForRequest("POST", "/api/console/run-options")?.effects).toEqual(["process:external"]);
+    const sessionOptionsRead = operationForRequest("GET", "/api/console/sessions/session-id/options");
+    expect(sessionOptionsRead?.effects).toEqual(["process:external"]);
+    expect(authorizeEffects(instance, session, sessionOptionsRead)).toMatchObject({ allowed: false });
     expect(authorizeEffects(instance, session, operationForRequest("GET", "/api/auth/requests"))).toMatchObject({ allowed: false });
     for (const action of ["inspect", "apply"]) {
       const operation = operationForRequest("POST", `/api/auth/request/abc/candidate-snapshot-repair/${action}`);

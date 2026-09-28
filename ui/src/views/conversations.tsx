@@ -1143,6 +1143,7 @@ export function ConversationDetail({
   const [continueDraft, setContinueDraft] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
+  const [runOptionsError, setRunOptionsError] = useState<string | null>(null);
   const [controlFailure, setControlFailure] = useState<ChatFailureNoticeModel | null>(null);
   const [submitIntent, setSubmitIntent] = useState<{
     id: string;
@@ -1717,6 +1718,8 @@ export function ConversationDetail({
   const [sessionRunOptions, setSessionRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
   useEffect(() => {
     let active = true;
+    setSessionRunOptions(null);
+    setRunOptionsError(null);
     const runOptions = linkedConsoleSession
       ? getConsoleSessionOptions(linkedConsoleSession.id).then((result) => result.runOptions)
       : conversation?.source === 'codex'
@@ -1726,7 +1729,11 @@ export function ConversationDetail({
           : Promise.resolve(null);
     void runOptions.then((result) => {
       if (active) setSessionRunOptions(result);
-    }).catch(() => { if (active) setSessionRunOptions(null); });
+    }).catch((cause) => {
+      if (!active) return;
+      setSessionRunOptions(null);
+      setRunOptionsError(cause instanceof Error ? cause.message : String(cause));
+    });
     return () => { active = false; };
   }, [conversation?.source, linkedConsoleSession?.id]);
 
@@ -2290,14 +2297,14 @@ export function ConversationDetail({
     />
   ) : undefined;
 
-  const actionErrorNotice = toast?.type === 'error' || continueError ? (
+  const actionErrorNotice = toast?.type === 'error' || continueError || runOptionsError ? (
     <DetailPaneNotice
       severity="error"
       density="compact"
-      title="Chat action failed"
-      actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { setToast(null); setContinueError(null); }}>Dismiss</button>}
+      title={runOptionsError && toast?.type !== 'error' && !continueError ? 'Chat run options unavailable' : 'Chat action failed'}
+      actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { setToast(null); setContinueError(null); setRunOptionsError(null); }}>Dismiss</button>}
     >
-      {toast?.type === 'error' ? toast.message : continueError}
+      {toast?.type === 'error' ? toast.message : continueError ?? (runOptionsError ? `Run options could not be loaded: ${runOptionsError}` : null)}
     </DetailPaneNotice>
   ) : null;
 

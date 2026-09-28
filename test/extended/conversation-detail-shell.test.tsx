@@ -1152,6 +1152,16 @@ describe('compact detail pane shell', () => {
     expect(Array.from((effort as HTMLSelectElement).options, (option) => option.value)).toEqual(['medium', 'high']);
   });
 
+  it('surfaces run-option descriptor failures instead of hiding provider controls', async () => {
+    const scopedConversation = mockConversationDetail(defaultControl);
+    vi.spyOn(api, 'getConsoleRunOptions').mockRejectedValue(new Error('descriptor service unavailable'));
+
+    renderConversationDetail(scopedConversation);
+
+    const notice = await screen.findByRole('alert');
+    expect(notice.textContent).toContain('Run options could not be loaded: descriptor service unavailable');
+  });
+
   it('clamps the Chat header menu and dismisses with Escape, outside click, and focus restoration', async () => {
     vi.stubGlobal('innerWidth', 1024);
     vi.stubGlobal('innerHeight', 768);
