@@ -591,6 +591,11 @@ const writablePreviewInstance: InstanceInfo = {
   allowed_effects: ['ledger:read', 'ledger:write', 'maintenance:shared'],
 };
 
+const preferenceWritablePreviewInstance: InstanceInfo = {
+  ...previewInstance,
+  allowed_effects: ['ledger:read', 'ledger:write', 'files:preview', 'preferences:instance'],
+};
+
 describe('App routing', () => {
   it('routes legacy monitor hashes into console', () => {
     expect(parseRouteFromHash('#/sessions?session=s1')).toEqual({
@@ -2448,6 +2453,32 @@ describe('SettingsView', () => {
       .toBe(true);
     changeSelect(themeSelect, 'dark');
     expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('enables isolated theme and typography preferences without enabling shared settings', async () => {
+    const onSave = vi.fn(async () => undefined);
+    const onTypographySave = vi.fn(async () => undefined);
+
+    render(h(SettingsView, {
+      settings: { app_theme: 'system' },
+      onSave,
+      onTypographySave,
+      instance: preferenceWritablePreviewInstance,
+    }));
+
+    const theme = screen.getByRole('combobox', { name: 'App theme' }) as HTMLSelectElement;
+    const font = screen.getByRole('combobox', { name: 'UI font' }) as HTMLSelectElement;
+    const fontSize = screen.getByRole('spinbutton', { name: 'UI size' }) as HTMLInputElement;
+    const terminalTheme = screen.getByRole('combobox', { name: 'Light-mode terminal' }) as HTMLSelectElement;
+    expect(theme.disabled).toBe(false);
+    expect(font.disabled).toBe(false);
+    expect(fontSize.disabled).toBe(false);
+    expect(terminalTheme.disabled).toBe(true);
+
+    changeSelect(theme, 'dark');
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('app_theme', 'dark'));
+    changeSelect(font, 'space-grotesk');
+    await waitFor(() => expect(onTypographySave).toHaveBeenCalledWith('ui_font_face', 'space-grotesk'));
   });
 
   it('shows project restriction state and existing grants', async () => {

@@ -60,6 +60,11 @@ const tokens = readFileSync(resolve('ui/src/styles/tokens.css'), 'utf8');
 const base = readFileSync(resolve('ui/src/styles/base.css'), 'utf8');
 const detailPaneShell = readFileSync(resolve('ui/src/styles/detail-pane-shell.css'), 'utf8');
 const iconTabList = readFileSync(resolve('ui/src/styles/icon-tab-list.css'), 'utf8');
+const tauriConfig = JSON.parse(readFileSync(resolve('src-tauri/tauri.conf.json'), 'utf8')) as {
+  app: { windows: Array<{ trafficLightPosition: { y: number } }> };
+};
+const APPKIT_TRAFFIC_LIGHT_BUTTON_HEIGHT = 14;
+const APPKIT_TRAFFIC_LIGHT_BUTTON_BOTTOM_INSET = 9;
 
 type NativeChromeGeometry = {
   leftHeader: DOMRectSnapshot;
@@ -429,10 +434,18 @@ describe('shared AppHeader rendered geometry', () => {
       expect(Math.abs(centerY(action) - centerY(row))).toBeLessThanOrEqual(0.5);
     };
 
-    expect(geometry.leftHeader).toMatchObject({ top: 0, height: 92 });
-    expect(geometry.leftHeaderPaddingTop).toBe('44px');
-    expect(geometry.leftIdentity.top).toBeGreaterThanOrEqual(44);
-    expect(geometry.leftMark.top).toBeGreaterThanOrEqual(44);
+    const trafficLightBottom = tauriConfig.app.windows[0]!.trafficLightPosition.y
+      + APPKIT_TRAFFIC_LIGHT_BUTTON_HEIGHT
+      - APPKIT_TRAFFIC_LIGHT_BUTTON_BOTTOM_INSET;
+    const priorLogoTop = 44 + (48 - 1 - 28) / 2;
+    const priorGap = priorLogoTop - trafficLightBottom;
+    const currentGap = geometry.leftMark.top - trafficLightBottom;
+
+    expect(geometry.leftHeader).toMatchObject({ top: 0, height: 78.75 });
+    expect(geometry.leftHeaderPaddingTop).toBe('30.75px');
+    expect(geometry.leftIdentity.top).toBeCloseTo(40.25);
+    expect(geometry.leftMark.top).toBeCloseTo(40.25);
+    expect(currentGap).toBeCloseTo(priorGap / 2);
 
     expect(geometry.compactShellHeader).toMatchObject({ top: 0, height: 48 });
     expect(geometry.compactHeader).toMatchObject({ top: 0, height: 48 });

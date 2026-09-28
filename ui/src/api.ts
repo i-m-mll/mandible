@@ -118,6 +118,12 @@ export type InstanceInfo = {
   source_db_path_source?: string | null;
 };
 
+export function canEditUserPreferences(instance: InstanceInfo | null | undefined): boolean {
+  return !instance
+    || instance.allowed_effects.includes('preferences:instance')
+    || instance.allowed_effects.includes('maintenance:shared');
+}
+
 export function normalizeInstanceInfo(value: unknown): InstanceInfo | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Partial<InstanceInfo>;

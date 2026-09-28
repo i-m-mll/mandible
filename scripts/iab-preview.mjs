@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Issue 24f0316 — the ledger database lives under the durable root now.
@@ -38,6 +38,7 @@ const LEGACY_PREVIEW_CONTRACT_DRIFT = new Set([
   "MANDIBLE_CONTEXT_VERIFICATION_KEY",
   "MANDIBLE_ARTIFACT_DIR",
   "MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR",
+  "MANDIBLE_USER_PREFERENCES_DIR",
   "MANDIBLE_ALLOWED_EFFECTS",
   "MANDIBLE_WRITABLE_ROOTS",
 ]);
@@ -110,9 +111,11 @@ async function createOrReusePreview(options) {
     const existing = await healthyExistingPreview(branch, { worktree });
     if (existing) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
-      if (existing.legacyContractDrift) throw legacyPreviewRetirementRequired(existing);
+      if (existing.legacyContractDrift && !existing.userPreferencesIsolationUpgrade) {
+        throw legacyPreviewRetirementRequired(existing);
+      }
       const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
-      if (existing.health?.startup_commit?.hash !== currentHead) {
+      if (existing.userPreferencesIsolationUpgrade || existing.health?.startup_commit?.hash !== currentHead) {
         return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
       }
       return {
@@ -140,12 +143,14 @@ async function createOrReusePreview(options) {
       : null;
     if (existing && !options.dryRun) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
-      if (existing.legacyContractDrift) throw legacyPreviewRetirementRequired(existing);
+      if (existing.legacyContractDrift && !existing.userPreferencesIsolationUpgrade) {
+        throw legacyPreviewRetirementRequired(existing);
+      }
       if (!selectedWorktree) {
         throw new Error(`Healthy preview metadata exists for ${branch}, but its worktree is not registered.`);
       }
       const currentHead = git(["rev-parse", "HEAD"], { cwd: selectedWorktree }).stdout.trim();
-      if (existing.health?.startup_commit?.hash !== currentHead) {
+      if (existing.userPreferencesIsolationUpgrade || existing.health?.startup_commit?.hash !== currentHead) {
         return refreshExistingPreview(existing, {
           branch,
           worktree: selectedWorktree,
@@ -244,6 +249,10 @@ async function createOrReusePreview(options) {
   const pidFile = path.join(preview.root, "mandible.pid");
   const runScript = path.join(preview.root, "run.sh");
   const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
+  const userPreferencesSeed = seedPreviewUserPreferences({
+    previewRoot: preview.root,
+    sourceRoot: path.join(mandibleHome(), "settings", "users"),
+  });
   const instanceEnv = previewInstanceEnv({ port, dbCopy, sourceDb, pidFile, generation: currentHead });
   writeRunScript(runScript, {
     worktree,
@@ -310,6 +319,7 @@ async function createOrReusePreview(options) {
     db: dbCopy,
     sourceDb,
     projection,
+    userPreferencesSeed,
     agentsReview,
     preStartCleanup,
     instanceEnv,
@@ -967,8 +977,16 @@ export async function healthyExistingPreview(branch, expected = {}) {
   validatePreviewIdentity(metadata, preview, branch, expected.worktree);
   const drift = previewInstanceEnvDrift(metadata, preview.root);
   if (!hasExpectedPreviewPolicy(health) || drift.length > 0) {
-    if (!isExactLegacyPreview(metadata, health, preview.root, drift) && !isLegacyPreviewListener(health)) return null;
-    return { ...metadata, health, legacyContractDrift: drift };
+    const userPreferencesIsolationUpgrade = isUserPreferencesIsolationUpgrade(metadata, health, preview.root, drift);
+    if (!userPreferencesIsolationUpgrade
+        && !isExactLegacyPreview(metadata, health, preview.root, drift)
+        && !isLegacyPreviewListener(health)) return null;
+    return {
+      ...metadata,
+      health,
+      legacyContractDrift: drift,
+      userPreferencesIsolationUpgrade,
+    };
   }
 
   return {
@@ -1000,6 +1018,37 @@ function isExactLegacyPreview(metadata, health, previewRoot, drift) {
     drift.every((key) => LEGACY_PREVIEW_CONTRACT_DRIFT.has(key) && metadata.instanceEnv?.[key] === undefined);
 }
 
+function isUserPreferencesIsolationUpgrade(metadata, health, previewRoot, drift) {
+  const allowedDrift = ["MANDIBLE_ALLOWED_EFFECTS", "MANDIBLE_USER_PREFERENCES_DIR"];
+  if ([...drift].sort().join(",") !== [...allowedDrift].sort().join(",")) return false;
+  if (metadata.instanceEnv?.MANDIBLE_ALLOWED_EFFECTS !== JSON.stringify(["ledger:read", "ledger:write", "files:preview"])) {
+    return false;
+  }
+  if (metadata.instanceEnv?.MANDIBLE_USER_PREFERENCES_DIR !== undefined) return false;
+  if (health?.instance?.allowed_effects?.join(",") !== "ledger:read,ledger:write,files:preview") return false;
+  if (health?.ready !== true || health?.warm !== true || health?.instance?.role !== "preview"
+      || health?.instance?.db_path_source !== "iab-preview-copy") return false;
+  if (health.instance.instance_id !== metadata.instanceEnv?.MANDIBLE_INSTANCE_ID
+      || health.instance.installation_id !== metadata.instanceEnv?.MANDIBLE_INSTALLATION_ID
+      || health.instance.public_origin !== metadata.instanceEnv?.MANDIBLE_PUBLIC_ORIGIN) return false;
+  const currentDb = readSymlinkTarget(path.join(previewRoot, "current.db"));
+  if (!currentDb || !metadata.db || !metadata.sourceDb || !health.instance.db_path || !health.instance.source_db_path) return false;
+  try {
+    const root = canonicalPath(previewRoot);
+    const db = canonicalPath(metadata.db);
+    const sourceDb = canonicalPath(metadata.sourceDb);
+    if (db !== canonicalPath(currentDb)
+        || db !== canonicalPath(health.instance.db_path)
+        || sourceDb !== canonicalPath(health.instance.source_db_path)
+        || db === sourceDb
+        || !isPathWithin(root, db)
+        || isPathWithin(root, sourceDb)) return false;
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 function legacyPreviewRetirementRequired(existing) {
   return new Error(
     `Preview port ${existing.port} is a verified legacy public listener and cannot be replaced independently. ` +
@@ -1020,6 +1069,10 @@ async function refreshExistingPreview(existing, details) {
     previewRoot: preview.root,
     db: validated.dbCopy,
     sourceDb: validated.sourceDb,
+  });
+  const userPreferencesSeed = seedPreviewUserPreferences({
+    previewRoot: preview.root,
+    sourceRoot: path.join(mandibleHome(), "settings", "users"),
   });
 
   writeRunScript(validated.runScript, {
@@ -1083,6 +1136,7 @@ async function refreshExistingPreview(existing, details) {
     runScript: validated.runScript,
     instanceEnv: validated.instanceEnv,
     projection: { ...existing.projection, structureCache },
+    userPreferencesSeed,
     structureCache,
     briefingDemo,
     restartLifecycle,
@@ -1090,6 +1144,8 @@ async function refreshExistingPreview(existing, details) {
     refreshedAt: new Date().toISOString(),
     previousStartupCommit: existing.health.startup_commit,
   };
+  delete refreshed.legacyContractDrift;
+  delete refreshed.userPreferencesIsolationUpgrade;
   delete refreshed.freshUrl;
   delete refreshed.browserEnrollment;
   fs.writeFileSync(preview.metadata, `${JSON.stringify(refreshed, null, 2)}\n`);
@@ -1148,7 +1204,9 @@ function validateRefreshContract(existing, preview, details) {
   }
 
   const drift = previewInstanceEnvDrift(existing, preview.root);
-  if (drift.length > 0) {
+  const safePreferenceUpgrade = existing.userPreferencesIsolationUpgrade === true
+    && isUserPreferencesIsolationUpgrade(existing, existing.health, preview.root, drift);
+  if (drift.length > 0 && !safePreferenceUpgrade) {
     throw new Error(
       `Refusing preview refresh: persisted ${drift.join(", ")} does not match the required preview contract.`,
     );
@@ -1733,10 +1791,13 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     ),
     MANDIBLE_PREVIEW_ROOT: previewRoot,
     MANDIBLE_ARTIFACT_DIR: artifactRoot,
+    MANDIBLE_USER_PREFERENCES_DIR: path.join(previewRoot, "settings", "users"),
     MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.resolve(
       process.env.MANDIBLE_ARTIFACT_DIR?.trim() || path.join(mandibleHome(), "artifacts"),
     ),
-    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
+    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify([
+      "ledger:read", "ledger:write", "files:preview", "preferences:instance",
+    ]),
     MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
     // Recyclable writable state stays under the preview root. Client-auth is
     // the deliberate exception: its authority id, pepper, and bounded session
@@ -1776,6 +1837,94 @@ function mandibleHome() {
   return process.env.MANDIBLE_HOME?.trim()
     ? path.resolve(expandHome(process.env.MANDIBLE_HOME.trim()))
     : path.join(os.homedir(), ".mandible");
+}
+
+export function seedPreviewUserPreferences({ previewRoot, sourceRoot = path.join(mandibleHome(), "settings", "users") }) {
+  const resolvedPreviewRoot = path.resolve(previewRoot);
+  fs.mkdirSync(resolvedPreviewRoot, { recursive: true, mode: 0o700 });
+  const canonicalPreviewRoot = fs.realpathSync.native(resolvedPreviewRoot);
+  const settingsRoot = path.join(canonicalPreviewRoot, "settings");
+  if (fs.existsSync(settingsRoot) && fs.lstatSync(settingsRoot).isSymbolicLink()) {
+    throw new Error("Refusing preference seed: preview settings directory is a symlink.");
+  }
+  fs.mkdirSync(settingsRoot, { recursive: true, mode: 0o700 });
+  const targetRoot = path.join(settingsRoot, "users");
+  if (fs.existsSync(targetRoot) && fs.lstatSync(targetRoot).isSymbolicLink()) {
+    throw new Error("Refusing preference seed: preview user-preferences directory is a symlink.");
+  }
+  fs.mkdirSync(targetRoot, { recursive: true, mode: 0o700 });
+  fs.chmodSync(settingsRoot, 0o700);
+  fs.chmodSync(targetRoot, 0o700);
+  const canonicalTargetRoot = fs.realpathSync.native(targetRoot);
+  if (!isPathWithin(canonicalPreviewRoot, canonicalTargetRoot)) {
+    throw new Error("Refusing preference seed: preview user-preferences directory escapes its registered root.");
+  }
+
+  const resolvedSourceRoot = path.resolve(sourceRoot);
+  if (!fs.existsSync(resolvedSourceRoot)) {
+    return { sourceRoot: resolvedSourceRoot, targetRoot: canonicalTargetRoot, sourceMissing: true, copied: [], preserved: [] };
+  }
+  const canonicalSourceRoot = fs.realpathSync.native(resolvedSourceRoot);
+  if (!fs.statSync(canonicalSourceRoot).isDirectory()
+      || canonicalSourceRoot === canonicalPreviewRoot
+      || isPathWithin(canonicalSourceRoot, canonicalPreviewRoot)
+      || isPathWithin(canonicalPreviewRoot, canonicalSourceRoot)) {
+    throw new Error("Refusing preference seed: source preferences must be a directory outside preview custody.");
+  }
+
+  const copied = [];
+  const preserved = [];
+  for (const entry of fs.readdirSync(canonicalSourceRoot, { withFileTypes: true })) {
+    if (!entry.isFile() || !/^[A-Za-z0-9_-]{1,128}(?:\.sidebar-order)?\.json$/.test(entry.name)) continue;
+    const sourceFile = path.join(canonicalSourceRoot, entry.name);
+    const targetFile = path.join(canonicalTargetRoot, entry.name);
+    let existing;
+    try {
+      existing = fs.lstatSync(targetFile);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (existing) {
+      if (existing.isSymbolicLink() || !existing.isFile()) {
+        throw new Error(`Refusing preference seed: existing preview preference is not a regular file: ${entry.name}`);
+      }
+      preserved.push(entry.name);
+      continue;
+    }
+
+    const temporary = path.join(canonicalTargetRoot, `.${entry.name}.${process.pid}.${randomUUID()}.tmp`);
+    let fd;
+    try {
+      fd = fs.openSync(temporary, "wx", 0o600);
+      fs.writeFileSync(fd, fs.readFileSync(sourceFile));
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fd = undefined;
+      try {
+        fs.linkSync(temporary, targetFile);
+        copied.push(entry.name);
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        const raced = fs.lstatSync(targetFile);
+        if (raced.isSymbolicLink() || !raced.isFile()) {
+          throw new Error(`Refusing preference seed: concurrent preview preference is not a regular file: ${entry.name}`);
+        }
+        preserved.push(entry.name);
+      }
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+      fs.rmSync(temporary, { force: true });
+    }
+  }
+  const dirFd = fs.openSync(canonicalTargetRoot, "r");
+  try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+  return {
+    sourceRoot: canonicalSourceRoot,
+    targetRoot: canonicalTargetRoot,
+    sourceMissing: false,
+    copied: copied.sort(),
+    preserved: preserved.sort(),
+  };
 }
 
 function localSessionAuthorityDir() {
@@ -2115,7 +2264,7 @@ function readHealth(port) {
 function hasExpectedPreviewPolicy(health) {
   return health?.instance?.role === "preview" &&
     Array.isArray(health.instance.allowed_effects) &&
-    health.instance.allowed_effects.join(",") === "ledger:read,ledger:write,files:preview";
+    health.instance.allowed_effects.join(",") === "ledger:read,ledger:write,files:preview,preferences:instance";
 }
 
 function hasExpectedPreviewFileRpc(metadata, health, previewRoot) {

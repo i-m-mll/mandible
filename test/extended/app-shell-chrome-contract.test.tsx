@@ -91,12 +91,12 @@ describe('shared app-shell chrome contract', () => {
 
     expect(shell).toContain('--app-header-height: 48px');
     expect(shell).toContain('--app-left-chrome-height: var(--app-header-height)');
-    expect(nativeShell).toContain('--app-titlebar-height: max(44px, env(titlebar-area-height, 44px))');
-    expect(nativeShell).toContain('--app-left-chrome-height: calc(var(--app-titlebar-height) + var(--app-header-height))');
+    expect(nativeShell).toContain('--app-titlebar-inset: 30.75px');
+    expect(nativeShell).toContain('--app-left-chrome-height: calc(var(--app-titlebar-inset) + var(--app-header-height))');
     expect(nativeShell).not.toContain('--app-header-height:');
     expect(ruleBody(base, '.app-header')).toContain('height: var(--app-header-height)');
     expect(nativeHeader).toContain('height: var(--app-left-chrome-height)');
-    expect(nativeHeader).toContain('padding-top: var(--app-titlebar-height)');
+    expect(nativeHeader).toContain('padding-top: var(--app-titlebar-inset)');
     expect(ruleBody(base, '.app-right-sidebar')).toContain('grid-template-rows: var(--app-header-height) minmax(0, 1fr)');
     expect(rail).toContain('padding: calc(var(--app-left-chrome-height) + 18px)');
     expect(sidebar).toContain('padding-top: var(--app-left-chrome-height)');

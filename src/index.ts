@@ -46,6 +46,7 @@ import { registerInboxRoutes } from "./routes/inbox.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerUserSettingsRoutes } from "./routes/user-settings.js";
 import { registerHostUserPreferencesRoutes } from "./routes/host-user-preferences.js";
+import { HostUserPreferencesStore } from "./host-user-preferences.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerConversationControlRoutes } from "./routes/conversation-control.js";
@@ -286,7 +287,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
   registerUserSettingsRoutes(router, db);
-  registerHostUserPreferencesRoutes(router);
+  registerHostUserPreferencesRoutes(router, new HostUserPreferencesStore(instance.user_preferences_root));
   registerSystemRoutes(router, workScanner, operationalLogStore?.db ?? db);
   registerBackupRoutes(router);
 

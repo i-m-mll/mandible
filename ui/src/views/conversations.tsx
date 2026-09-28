@@ -1614,7 +1614,7 @@ export function ConversationDetail({
       {
         id: 'activity',
         label: 'Activity',
-        tooltip: 'Subagents and workflow runs',
+        tooltip: 'Activity',
         icon: <ActivityTabIcon />,
         scrollOwner: 'detail' as const,
         content: <ChatActivity items={activityItems} />,

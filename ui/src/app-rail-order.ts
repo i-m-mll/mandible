@@ -80,7 +80,7 @@ export function serializeAppRailOrderSetting(value: AppRailOrderPreference): str
   return JSON.stringify(normalizeAppRailOrderPreference(value));
 }
 
-type AppRailPreviewStorage = Pick<Storage, 'getItem' | 'setItem'>;
+type AppRailPreviewStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 export function readAppRailPreviewOrder(
   storage: Pick<AppRailPreviewStorage, 'getItem'>,
@@ -98,6 +98,17 @@ export function writeAppRailPreviewOrder(
 ): boolean {
   try {
     storage.setItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY, serializeAppRailOrderSetting(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearAppRailPreviewOrder(
+  storage: Pick<AppRailPreviewStorage, 'removeItem'>,
+): boolean {
+  try {
+    storage.removeItem(APP_RAIL_PREVIEW_ORDER_STORAGE_KEY);
     return true;
   } catch {
     return false;

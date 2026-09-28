@@ -34,6 +34,7 @@ import {
   updateSetting,
   updateUserAppRailOrderSetting,
   updateUserTypographySetting,
+  canEditUserPreferences,
   type UserTypographySettingKey,
   type InstanceInfo,
   type DashboardBadgeCounts,
@@ -162,6 +163,7 @@ import {
   moveAppRailItem,
   parseAppRailOrderSetting,
   readAppRailPreviewOrder,
+  clearAppRailPreviewOrder,
   reconcileAppRailOrder,
   serializeAppRailOrderSetting,
   writeAppRailPreviewOrder,
@@ -634,6 +636,7 @@ function App(): JSX.Element {
   });
   const railMutationRef = useRef(0);
   const railMutationPendingRef = useRef(false);
+  const previewOrderMigrationRef = useRef(false);
   const railRequestRef = useRef(0);
   const railRevisionRef = useRef(0);
   const [typography, setTypography] = useState(DEFAULT_TYPOGRAPHY_SETTINGS);
@@ -1102,13 +1105,26 @@ function App(): JSX.Element {
   loadVisibleRouteDataRef.current = loadVisibleRouteData;
 
   const refreshRailOrder = useCallback(async (): Promise<void> => {
-    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') !== true) return;
+    if (!instanceInfo || !canEditUserPreferences(instanceInfo)) return;
+    const legacyPreviewOrder = instanceInfo.role === 'preview'
+      && instanceInfo.allowed_effects.includes('preferences:instance')
+      && !instanceInfo.allowed_effects.includes('maintenance:shared')
+      ? readAppRailPreviewOrder(window.localStorage)
+      : null;
+    if (legacyPreviewOrder && previewOrderMigrationRef.current) return;
+    if (legacyPreviewOrder) previewOrderMigrationRef.current = true;
     const request = railRequestRef.current + 1;
     railRequestRef.current = request;
     const mutationAtStart = railMutationRef.current;
     setRailOrderReady(false);
     try {
-      const setting = await getUserAppRailOrderSetting();
+      let setting = await getUserAppRailOrderSetting();
+      if (legacyPreviewOrder) {
+        if (railRequestRef.current !== request || railMutationRef.current !== mutationAtStart) return;
+        setting = await updateUserAppRailOrderSetting(serializeAppRailOrderSetting(legacyPreviewOrder));
+        clearAppRailPreviewOrder(window.localStorage);
+        setPreviewRailOrder(null);
+      }
       if (
         railRequestRef.current !== request
         || railMutationRef.current !== mutationAtStart
@@ -1119,11 +1135,13 @@ function App(): JSX.Element {
       setRailOrderReady(true);
     } catch {
       if (railRequestRef.current === request) setRailOrderReady(false);
+    } finally {
+      if (legacyPreviewOrder) previewOrderMigrationRef.current = false;
     }
-  }, [instanceInfo?.allowed_effects]);
+  }, [instanceInfo?.allowed_effects, instanceInfo?.role]);
 
   const refreshTypography = useCallback(async (): Promise<void> => {
-    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') !== true) return;
+    if (!instanceInfo || !canEditUserPreferences(instanceInfo)) return;
     try {
       const snapshots = await Promise.all(TYPOGRAPHY_SETTING_KEYS.map(getUserTypographySetting));
       setTypography((current) => {
@@ -1137,8 +1155,8 @@ function App(): JSX.Element {
   }, [instanceInfo?.allowed_effects]);
 
   useEffect(() => {
-    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') === true) void refreshTypography();
-    if (instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true) {
+    if (instanceInfo && canEditUserPreferences(instanceInfo)) void refreshTypography();
+    if (instanceInfo && !canEditUserPreferences(instanceInfo)) {
       setTypography(DEFAULT_TYPOGRAPHY_SETTINGS);
     }
   }, [instanceInfo?.allowed_effects, refreshTypography]);
@@ -1147,7 +1165,7 @@ function App(): JSX.Element {
     key: UserTypographySettingKey,
     value: string,
   ): Promise<void> => {
-    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') !== true) {
+    if (!canEditUserPreferences(instanceInfo)) {
       throw new Error('Typography settings are unavailable in this instance');
     }
     const previousValue = typographySettingValue(typography, key);
@@ -1169,7 +1187,7 @@ function App(): JSX.Element {
 
   useEffect(() => {
     if (!accessReady) return;
-    if (instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true) {
+    if (instanceInfo && !canEditUserPreferences(instanceInfo)) {
       railRequestRef.current += 1;
       railMutationRef.current += 1;
       railMutationPendingRef.current = false;
@@ -1179,7 +1197,7 @@ function App(): JSX.Element {
       setRailOrderReady(true);
       return;
     }
-    if (instanceInfo?.allowed_effects?.includes('maintenance:shared') === true) {
+    if (canEditUserPreferences(instanceInfo)) {
       void refreshRailOrder();
       return;
     }
@@ -1188,7 +1206,7 @@ function App(): JSX.Element {
     railMutationPendingRef.current = false;
     setPendingRailOrder(null);
     setRailOrderReady(false);
-  }, [accessReady, instanceInfo?.allowed_effects, refreshRailOrder]);
+  }, [accessReady, instanceInfo?.allowed_effects, instanceInfo?.role, refreshRailOrder]);
 
   useEffect(() => {
     const reconcileVisibleRailOrder = () => {
@@ -2134,7 +2152,7 @@ function App(): JSX.Element {
   };
 
   const previewMutationsRejected = Boolean(instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true);
-  const railOrderPreference = previewMutationsRejected && previewRailOrder
+  const railOrderPreference = previewMutationsRejected && instanceInfo?.role === 'preview' && previewRailOrder
     ? previewRailOrder
     : parseAppRailOrderSetting(railOrderSetting);
 
@@ -2177,9 +2195,9 @@ function App(): JSX.Element {
   ) => {
     if (!railOrderReady || railMutationPendingRef.current) return;
     const capability = instanceInfo
-      ? instanceInfo.allowed_effects?.includes('maintenance:shared') === true
+      ? canEditUserPreferences(instanceInfo) || instanceInfo.role === 'preview'
       : null;
-    if (capability === null) {
+    if (capability !== true) {
       setRailAnnouncement('Navigation order is unavailable. The previous order has been retained.');
       return;
     }
@@ -2195,7 +2213,7 @@ function App(): JSX.Element {
     railMutationRef.current = mutation;
     railMutationPendingRef.current = true;
     setPendingRailOrder(order);
-    if (previewMutationsRejected) {
+    if (previewMutationsRejected && !canEditUserPreferences(instanceInfo)) {
       let stored = false;
       try {
         stored = writeAppRailPreviewOrder(window.localStorage, preference);
@@ -2226,6 +2244,12 @@ function App(): JSX.Element {
       } else {
         railRevisionRef.current = result.revision;
         setRailOrderSetting(result.value ?? undefined);
+        if (instanceInfo?.role === 'preview'
+            && instanceInfo.allowed_effects.includes('preferences:instance')
+            && !instanceInfo.allowed_effects.includes('maintenance:shared')) {
+          clearAppRailPreviewOrder(window.localStorage);
+          setPreviewRailOrder(null);
+        }
         setRailAnnouncement(successMessage);
       }
       if (focusItemId) focusRailItem(focusItemId);

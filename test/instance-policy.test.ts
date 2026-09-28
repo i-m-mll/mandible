@@ -4,8 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { HostUserPreferencesStore } from "../src/host-user-preferences.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { authorizeEffects, operationForRequest, STANDARD_PREVIEW_EFFECTS, validatePreviewWritableRoots } from "../src/security/effect-policy.js";
+import { openDb } from "../src/db.js";
+import { readUserSetting, writeUserSetting } from "../src/user-settings.js";
 
 const roots = new Set<string>();
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.clear(); });
@@ -20,8 +23,10 @@ function preview(overrides: NodeJS.ProcessEnv = {}) {
   fs.writeFileSync(source, "source");
   fs.copyFileSync(source, copy);
   const artifacts = path.join(root, "artifacts");
+  const userPreferences = path.join(root, "settings", "users");
   const sourceArtifacts = path.join(sourceRoot, "artifacts");
   fs.mkdirSync(artifacts);
+  fs.mkdirSync(userPreferences, { recursive: true });
   fs.mkdirSync(sourceArtifacts);
   return resolveInstanceInfo({
     env: {
@@ -33,6 +38,7 @@ function preview(overrides: NodeJS.ProcessEnv = {}) {
       MANDIBLE_PREVIEW_ROOT: root,
       MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS),
       MANDIBLE_ARTIFACT_DIR: artifacts,
+      MANDIBLE_USER_PREFERENCES_DIR: userPreferences,
       MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: sourceArtifacts,
       ...overrides,
     },
@@ -61,11 +67,14 @@ describe("instance effect policy", () => {
     roots.add(sourceRoot);
     const source = path.join(sourceRoot, "source.db");
     fs.writeFileSync(source, "source");
+    const userPreferences = path.join(root, "settings", "users");
+    fs.mkdirSync(userPreferences, { recursive: true });
     const env = {
       MANDIBLE_INSTANCE_ROLE: "preview", MANDIBLE_INSTANCE_ID: "preview-0123456789abcdef",
       MANDIBLE_INSTALLATION_ID: "install_test",
       MANDIBLE_PUBLIC_ORIGIN: "https://preview-0123456789abcdef.mandible.localhost:19421",
       MANDIBLE_BACKEND_GENERATION: "preview-1", MANDIBLE_PREVIEW_ROOT: root,
+      MANDIBLE_USER_PREFERENCES_DIR: userPreferences,
     };
     expect(() => resolveInstanceInfo({ env, dbPath: source, sourceDbPath: source })).toThrow("isolated copied database");
     const copy = path.join(root, "copy.db");
@@ -76,6 +85,100 @@ describe("instance effect policy", () => {
     expect(() => resolveInstanceInfo({ env, dbPath: copy, sourceDbPath: nestedSource })).toThrow("isolated copied database");
   });
 
+  it("rejects user-preference paths outside preview custody, including symlink escapes", () => {
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-user-preferences-outside-"));
+    roots.add(outsideRoot);
+    const outside = path.join(outsideRoot, "users");
+    fs.mkdirSync(outside);
+    expect(() => preview({ MANDIBLE_USER_PREFERENCES_DIR: outside }))
+      .toThrow("isolated user-preferences directory");
+
+    const instance = preview();
+    const link = path.join(instance.preview_root!, "settings", "users-link");
+    fs.symlinkSync(outside, link, "dir");
+    expect(() => validatePreviewWritableRoots({ ...instance, user_preferences_root: link }))
+      .toThrow("user-preferences directory escapes registered custody");
+  });
+
+  it("allows only the known isolated preference writes in a standard preview", () => {
+    const instance = preview();
+    const identity = { effect_ceiling: STANDARD_PREVIEW_EFFECTS };
+    for (const pathname of [
+      "/api/host-preferences/app-theme",
+      "/api/host-preferences/sidebar-order",
+      "/api/user-settings/app_rail_order",
+      "/api/user-settings/ui_font_face",
+      "/api/user-settings/detail_font_size",
+    ]) {
+      expect(authorizeEffects(instance, identity, operationForRequest("PUT", pathname)))
+        .toEqual({ allowed: true });
+    }
+    for (const pathname of [
+      "/api/settings/app_theme",
+      "/api/user-settings/unknown",
+      "/api/projects",
+    ]) {
+      expect(authorizeEffects(instance, identity, operationForRequest("PUT", pathname)))
+        .toMatchObject({ allowed: false, missing: ["maintenance:shared"] });
+    }
+  });
+
+  it("keeps preview theme, navigation, and font edits separate from production in both directions", async () => {
+    const instance = preview();
+    const productionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-production-user-preferences-"));
+    roots.add(productionRoot);
+    const productionPreferences = new HostUserPreferencesStore(productionRoot);
+    await productionPreferences.writeAppTheme("user-one", 0, "light");
+    await productionPreferences.writeChatShownProjects("user-one", 1, [
+      { projectId: "project-one", checkoutId: "checkout-main" },
+    ]);
+    await productionPreferences.writeSidebarOrder("user-one", 0, {
+      pinnedConversationIds: ["conversation-production"],
+      briefingTopLevelIds: null,
+    });
+    fs.cpSync(productionRoot, instance.user_preferences_root, { recursive: true });
+
+    const previewPreferences = new HostUserPreferencesStore(instance.user_preferences_root);
+    expect(await previewPreferences.readAppTheme("user-one")).toMatchObject({ value: "light", revision: 2 });
+    expect(await previewPreferences.readChatShownProjects("user-one")).toMatchObject({
+      value: [{ projectId: "project-one", checkoutId: "checkout-main" }], revision: 2,
+    });
+    await previewPreferences.writeAppTheme("user-one", 2, "dark");
+    await previewPreferences.writeSidebarOrder("user-one", 1, {
+      pinnedConversationIds: ["conversation-preview"],
+      briefingTopLevelIds: null,
+    });
+    expect(await productionPreferences.readAppTheme("user-one")).toMatchObject({ value: "light", revision: 2 });
+    expect(await productionPreferences.readSidebarOrder("user-one")).toMatchObject({
+      value: { pinnedConversationIds: ["conversation-production"], briefingTopLevelIds: null }, revision: 1,
+    });
+    await productionPreferences.writeAppTheme("user-one", 2, "system");
+    await productionPreferences.writeChatShownProjects("user-one", 3, []);
+    expect(await previewPreferences.readAppTheme("user-one")).toMatchObject({ value: "dark", revision: 3 });
+    expect(await previewPreferences.readChatShownProjects("user-one")).toMatchObject({
+      value: [{ projectId: "project-one", checkoutId: "checkout-main" }], revision: 3,
+    });
+
+    const sourceDb = path.join(path.dirname(instance.source_db_path!), "settings-source.db");
+    const previewDbPath = path.join(instance.preview_root!, "settings-copy.db");
+    const sourceDbHandle = openDb(sourceDb);
+    sourceDbHandle.prepare(
+      "INSERT INTO users (id, slug, kind, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("user-one", "user-one", "human", "User One", Date.now(), Date.now());
+    writeUserSetting(sourceDbHandle, "user-one", "ui_font_face", "space-grotesk");
+    writeUserSetting(sourceDbHandle, "user-one", "app_rail_order", '{"version":1,"groups":{"primary":["chat"],"secondary":[]}}');
+    sourceDbHandle.close();
+    fs.copyFileSync(sourceDb, previewDbPath);
+    const previewDb = openDb(previewDbPath);
+    writeUserSetting(previewDb, "user-one", "ui_font_face", "system-ui");
+    expect(readUserSetting(previewDb, "user-one", "ui_font_face").value).toBe("system-ui");
+    expect(readUserSetting(previewDb, "user-one", "app_rail_order").value).toContain("chat");
+    previewDb.close();
+    const productionDb = openDb(sourceDb);
+    expect(readUserSetting(productionDb, "user-one", "ui_font_face").value).toBe("space-grotesk");
+    productionDb.close();
+  });
+
   it("keeps a real copied-ledger edit inside preview custody", () => {
     const previewRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-ledger-"));
     const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-production-ledger-"));
@@ -83,6 +186,8 @@ describe("instance effect policy", () => {
     roots.add(sourceRoot);
     const source = path.join(sourceRoot, "production.db");
     const copy = path.join(previewRoot, "preview.db");
+    const userPreferences = path.join(previewRoot, "settings", "users");
+    fs.mkdirSync(userPreferences, { recursive: true });
     const production = new Database(source);
     production.exec("CREATE TABLE notes (value TEXT NOT NULL); INSERT INTO notes VALUES ('production')");
     production.close();
@@ -96,6 +201,7 @@ describe("instance effect policy", () => {
         MANDIBLE_PUBLIC_ORIGIN: "https://preview-0123456789abcdef.mandible.localhost:19421",
         MANDIBLE_BACKEND_GENERATION: "preview-1",
         MANDIBLE_PREVIEW_ROOT: previewRoot,
+        MANDIBLE_USER_PREFERENCES_DIR: userPreferences,
         MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS),
       },
       dbPath: copy,
@@ -108,7 +214,7 @@ describe("instance effect policy", () => {
     const unchanged = new Database(source, { readonly: true });
     expect(unchanged.prepare("SELECT value FROM notes ORDER BY rowid").pluck().all()).toEqual(["production"]);
     unchanged.close();
-    expect(authorizeEffects(instance, { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("PUT", "/api/host-preferences/app-theme"))).toMatchObject({ allowed: false });
+    expect(authorizeEffects(instance, { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("PUT", "/api/host-preferences/app-theme"))).toEqual({ allowed: true });
   });
 
   it("intersects request effects with both session and preview ceilings", () => {

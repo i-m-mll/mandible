@@ -619,10 +619,6 @@ export function SessionOverviewView({
           ) : null}
           {providerOverview ? (
             <>
-              {embedded ? <section className="session-overview__section" aria-label="Session">
-                <h3>{shortUuid(providerOverview.binding.provider_session_id)}</h3>
-              </section> : null}
-
               <SectionTable
                 label="Linked issues"
                 columns={['Issue', 'Title', 'Status', 'Work units']}
@@ -676,15 +672,15 @@ export function SessionOverviewView({
           {session ? (
             <>
               {embedded ? <section className="session-overview__section" aria-label="Session">
-                <h3>
-                  {shortUuid(String(session.id ?? selectedSessionId))}
-                  <span
-                    className={`session-overview-badge session-overview-badge--${String(session.status ?? 'unknown')}`}
-                  >
-                    {String(session.status ?? 'unknown')}
-                  </span>
-                </h3>
                 <dl className="session-overview__facts">
+                  <div>
+                    <dt>Status</dt>
+                    <dd>
+                      <span className={`session-overview-badge session-overview-badge--${String(session.status ?? 'unknown')}`}>
+                        {String(session.status ?? 'unknown')}
+                      </span>
+                    </dd>
+                  </div>
                   <div>
                     <dt>App</dt>
                     <dd>{sessionText(session, 'app') ?? '—'}</dd>

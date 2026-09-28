@@ -63,10 +63,11 @@ const LOCK_STALE_MS = 30_000;
 const LOCK_RETRY_MS = 10;
 
 function preferencesRoot(): string {
-  // Deliberately anchored on MANDIBLE_HOME rather than MANDIBLE_CONFIG_DIR.
-  // IAB previews isolate their config directory, but host/user view intent must
-  // be shared with the main daemon and remain outside the copied preview DB.
-  return getMandibleHomePath("settings", "users");
+  // Production keeps durable user intent under MANDIBLE_HOME. A registered
+  // preview supplies its separately validated instance-owned directory.
+  return process.env.MANDIBLE_USER_PREFERENCES_DIR?.trim()
+    ? path.resolve(process.env.MANDIBLE_USER_PREFERENCES_DIR)
+    : getMandibleHomePath("settings", "users");
 }
 
 function safeUserId(userId: string): string {
