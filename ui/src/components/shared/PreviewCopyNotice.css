@@ -1,0 +1,39 @@
+.app-shell__workspace {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell--preview .app-shell__workspace {
+  --app-left-chrome-height: var(--app-header-height);
+  --app-titlebar-inset: 0px;
+}
+
+.preview-copy-banner {
+  position: relative;
+  z-index: calc(var(--z-app-subdivision) + 1);
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.4rem;
+  margin-top: var(--app-titlebar-inset, 0px);
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid var(--status-warning-border);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.app-shell__workspace > .rebuilding-splash {
+  position: absolute;
+  inset: 0;
+}
