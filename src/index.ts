@@ -49,7 +49,6 @@ import { registerHostUserPreferencesRoutes } from "./routes/host-user-preference
 import { HostUserPreferencesStore } from "./host-user-preferences.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
-import { SelectedSourceRefresher } from "./conversations/selected-source-refresh.js";
 import { registerConversationControlRoutes } from "./routes/conversation-control.js";
 import { registerConversationSpawnRoutes } from "./routes/conversation-spawn.js";
 import { ConversationControlService } from "./conversation-control/service.js";
@@ -244,9 +243,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   });
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });
-  const selectedSourceRefresher = instance.role === "preview"
-    ? new SelectedSourceRefresher({ db, dbPath, logger, publish: broadcast })
-    : null;
   const sessionRegistry = new SessionRegistry(db, logger);
   // Bug: 4e32923 — capture the auth queue so the inbox route can mark
   // auth_requests as delivered when the channel server forwards the event.
@@ -376,7 +372,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerClientAuthRoutes(router, clientAuth);
   registerWorkflowRoutes(router);
   registerRedirectRoutes(router);
-  registerConversationRoutes(router, sessionRegistry, selectedSourceRefresher ?? {});
+  registerConversationRoutes(router, sessionRegistry);
   registerConversationControlRoutes(router, conversationControl, { db, instance });
   registerConversationCustodyRoutes(router, db);
 
@@ -542,18 +538,25 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const startupWorkScan = operationalMutationsAllowed
     ? workScanner.scanAllAsync({ skip_recent: true })
     : null;
-  const cancelStartupIngestion = startupWorkScan
-    ? startIngestionAfterStartupWorkScan(startupWorkScan, () => {
+  const startInstanceIngestion = () => {
+    try {
       startIngestion(logger, {
         dbPath,
+        background: instance.role !== "preview",
         // Read the last periodic sample so ingestion backoff does not reset the
         // shared lag histogram between batches. Issue: 0d81726.
         getBackgroundBackoffMs: () => eventLoopDiagnostics.snapshot().backgroundBackoffMs,
       });
-    }, logger)
+    } catch (error) {
+      logger("warn", "ingestion_start_failed", { error: String(error) });
+    }
+  };
+  const cancelStartupIngestion = startupWorkScan
+    ? startIngestionAfterStartupWorkScan(startupWorkScan, startInstanceIngestion, logger)
     : () => undefined;
   if (!startupWorkScan) {
     startupWorkScanComplete = true;
+    if (instance.role === "preview") startInstanceIngestion();
   }
 
   // Resolve the startup epoch after critical readiness. A slow git process must
@@ -715,7 +718,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
 
     try { sessionManager.close(); } catch { /* best effort */ }
-    await selectedSourceRefresher?.close();
     try {
       await conversationControl.close();
     } catch (error) {
