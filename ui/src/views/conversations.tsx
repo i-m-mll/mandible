@@ -1189,26 +1189,42 @@ export function ConversationDetail({
     () => conversationKeys.window(conversationId, windowTarget),
     [conversationId, windowTarget],
   );
+  const readAndReconcileWindow = useCallback(async (
+    target: ReturnType<typeof normalizeWindowTarget>,
+    read: () => Promise<ConversationPositionWindow>,
+  ): Promise<ConversationPositionWindow> => {
+    const aggregateKey = conversationKeys.aggregate(conversationId);
+    const aggregateAtStart = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+    const incoming = await read();
+    if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
+    const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+    const aggregateAdvanced = current !== undefined
+      && (aggregateAtStart === undefined || current.source_version_id !== aggregateAtStart.source_version_id);
+    if (aggregateAdvanced && current.source_version_id !== incoming.source_version_id) {
+      throw new CancelledError();
+    }
+    if (current && current.source_version_id !== incoming.source_version_id) {
+      const currentWindowKey = conversationKeys.window(conversationId, target);
+      const currentWindowHash = queryClient.getQueryCache().find({
+        queryKey: currentWindowKey,
+        exact: true,
+      })?.queryHash;
+      queryClient.removeQueries({
+        queryKey: conversationKeys.windows(conversationId),
+        type: 'inactive',
+        // Keep the window that supplied the accepted replacement.
+        predicate: (query) => currentWindowHash !== undefined && query.queryHash !== currentWindowHash,
+      });
+    }
+    queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
+    return incoming;
+  }, [conversationId, queryClient, selectionGeneration]);
   const fetchConversationDetail = useCallback(
-    async ({ signal }: { signal: AbortSignal }) => {
-      const incoming = await readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal));
-      if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
-      const aggregateKey = conversationKeys.aggregate(conversationId);
-      const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
-      const merged = reconcileConversationWindow(
-        current,
-        incoming,
-      );
-      if (current && current.source_version_id !== incoming.source_version_id) {
-        queryClient.removeQueries({
-          queryKey: conversationKeys.windows(conversationId),
-          type: 'inactive',
-        });
-      }
-      queryClient.setQueryData(aggregateKey, merged);
-      return incoming;
-    },
-    [conversationId, queryClient, selectionGeneration, windowTarget],
+    async ({ signal }: { signal: AbortSignal }) => readAndReconcileWindow(
+      windowTarget,
+      () => readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal)),
+    ),
+    [conversationId, readAndReconcileWindow, windowTarget],
   );
   const windowQuery = useQuery({
     queryKey: conversationRequestKey,
@@ -1223,20 +1239,12 @@ export function ConversationDetail({
     target: ReturnType<typeof normalizeWindowTarget>,
   ): Promise<ConversationPositionWindow> => {
     const key = conversationKeys.window(conversationId, target);
-    const incoming = await queryClient.fetchQuery({
+    return readAndReconcileWindow(target, () => queryClient.fetchQuery({
       queryKey: key,
       queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(target, signal)),
       staleTime: 0,
-    });
-    if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
-    const aggregateKey = conversationKeys.aggregate(conversationId);
-    const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
-    if (current && current.source_version_id !== incoming.source_version_id) {
-      queryClient.removeQueries({ queryKey: conversationKeys.windows(conversationId), type: 'inactive' });
-    }
-    queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
-    return incoming;
-  }, [conversationId, queryClient, selectionGeneration]);
+    }));
+  }, [conversationId, queryClient, readAndReconcileWindow]);
 
   useEffect(() => () => {
     void queryClient.cancelQueries({ queryKey: conversationKeys.conversation(conversationId) });
