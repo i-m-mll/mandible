@@ -7,11 +7,24 @@ import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import type { InstanceInfo } from "../src/types.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
-const CLI_TEST_ENV = {
-  MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
-};
+const MAIN_INSTANCE_RESPONSE = {
+  instance: {
+    role: "main",
+    instance_id: "production",
+    installation_id: "test-installation",
+    public_origin: "https://app.mandible.localhost:19420",
+    backend_generation: "production",
+    allowed_effects: PRODUCTION_EFFECTS,
+    writable_roots: [],
+    user_preferences_root: "/tmp/mandible-test-user-preferences",
+    db_path: "/tmp/mandible-main.db",
+    db_path_source: "env",
+  },
+} satisfies { instance: InstanceInfo };
 
 let tempDir = "";
 let tempRoots: string[] = [];
@@ -24,7 +37,7 @@ function run(
   const result = spawnSync(CLI, args, {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, MANDIBLE_PORT: "9", ...CLI_TEST_ENV, ...extraEnv },
+    env: { ...process.env, MANDIBLE_PORT: "9", ...extraEnv },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -37,7 +50,7 @@ function runAsync(
   return new Promise((resolve) => {
     const child = spawn(CLI, args, {
       cwd,
-      env: { ...process.env, MANDIBLE_PORT: "9", ...CLI_TEST_ENV, ...extraEnv },
+      env: { ...process.env, MANDIBLE_PORT: "9", ...extraEnv },
     });
     let stdout = "";
     let stderr = "";
@@ -77,6 +90,11 @@ function startHttpRecorder(
         body = undefined;
       }
       const recorded: RecordedRequest = { method: req.method ?? "GET", url: req.url ?? "/", body };
+      if (recorded.method === "GET" && recorded.url === "/api/instance") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(MAIN_INSTANCE_RESPONSE));
+        return;
+      }
       requests.push(recorded);
       const result = handler(recorded);
       res.writeHead(result.status, { "Content-Type": "application/json" });
