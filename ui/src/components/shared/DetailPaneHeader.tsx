@@ -150,14 +150,7 @@ export function DetailPaneHeader({
         />
       )
     : null;
-  const rightSidebarActionSlot = presentation === 'main' && active && rightSidebar
-    ? automaticRightSidebarAction ?? (
-      <span
-        className="detail-pane-header__right-sidebar-action-slot"
-        aria-hidden="true"
-      />
-    )
-    : null;
+  const rightSidebarAction = automaticRightSidebarAction;
   if (variant === 'compact') {
     return (
       <div
@@ -200,14 +193,14 @@ export function DetailPaneHeader({
               )}
             </div>
           )}
-          {(actions !== undefined && actions !== null) || rightSidebarActionSlot ? (
+          {(actions !== undefined && actions !== null) || rightSidebarAction ? (
             <div
               className="detail-pane-header__actions"
               role="group"
               aria-label={actionsLabel}
             >
               {actions}
-              {rightSidebarActionSlot}
+              {rightSidebarAction}
             </div>
           ) : null}
         </div>
@@ -227,10 +220,10 @@ export function DetailPaneHeader({
       data-detail-pane-presentation={presentation}
     >
       <div className="detail-pane-header__main">
-        {(identity || (toplineState !== undefined && toplineState !== null) || selector || rightSidebarActionSlot) && (
+        {(identity || (toplineState !== undefined && toplineState !== null) || selector || rightSidebarAction) && (
           <div className="detail-pane-header__topline">
             {identity && renderIdentity(identity)}
-            {((toplineState !== undefined && toplineState !== null) || selector || rightSidebarActionSlot) && (
+            {((toplineState !== undefined && toplineState !== null) || selector || rightSidebarAction) && (
               <div className="detail-pane-header__topline-controls">
                 {toplineState !== undefined && toplineState !== null && (
                   <div
@@ -259,7 +252,7 @@ export function DetailPaneHeader({
                     />
                   </div>
                 )}
-                {rightSidebarActionSlot}
+                {rightSidebarAction}
               </div>
             )}
           </div>

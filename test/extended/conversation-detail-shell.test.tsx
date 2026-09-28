@@ -947,7 +947,7 @@ describe('compact detail pane shell', () => {
     expect(getComputedStyle(main!).alignItems).toBe('center');
     expect(canonicalHeader?.querySelector('.detail-pane-header__title')?.getAttribute('title')).toBe(conversation.title);
     expect(compactMenu?.getAttribute('aria-label')).toBe('Conversation detail actions');
-    expect(canonicalHeader?.querySelector('.conv-actions__trigger')).toBeTruthy();
+    expect(canonicalHeader?.querySelector('.detail-pane-menu-trigger')).toBeTruthy();
     expect(canonicalHeader?.querySelector('.conv-info-button')).toBeNull();
     expect(body?.querySelector('.context-usage')).toBeNull();
     expect(shell?.querySelectorAll('.context-usage')).toHaveLength(1);
@@ -1167,7 +1167,7 @@ describe('compact detail pane shell', () => {
     vi.stubGlobal('innerWidth', 1024);
     vi.stubGlobal('innerHeight', 768);
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
-      if (this.classList.contains('conv-actions__trigger')) return domRect(1004, 730, 20, 22);
+      if (this.classList.contains('detail-pane-menu-trigger')) return domRect(1004, 730, 24, 24);
       if (this.classList.contains('conv-actions__menu')) return domRect(0, 0, 240, 280);
       return domRect(0, 0, 0, 0);
     });

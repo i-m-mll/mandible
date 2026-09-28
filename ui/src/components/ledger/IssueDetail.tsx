@@ -26,6 +26,7 @@ import { AgentDispatchDialog } from '../agent-dispatch/AgentDispatchDialog';
 import { LedgerRenderedBody } from './LedgerRenderedBody';
 import { AttributionIdentity } from '../shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../shared/DetailPaneHeader';
+import { DetailPaneMenuTrigger } from '../shared/DetailPaneMenuTrigger';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
 import { DetailPaneShell, type DetailPanePresentation } from '../shared/DetailPaneShell';
 import { CollapsiblePanel } from '../shared/CollapsiblePanel';
@@ -745,18 +746,12 @@ function IssueActionsMenu({
   }, [open]);
   return (
     <div className="ledger-issue-actions-menu">
-      <button
-        ref={triggerRef}
-        type="button"
-        className={`ledger-issue-actions-menu__trigger${open ? ' ledger-issue-actions-menu__trigger--active' : ''}`}
-        aria-label="Issue actions"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title="Issue actions"
+      <DetailPaneMenuTrigger
+        buttonRef={triggerRef}
+        label="Issue actions"
+        expanded={open}
         onClick={onToggle}
-      >
-        <HorizontalDotsIcon />
-      </button>
+      />
       {open && (
         <div
           ref={menuRef}
@@ -1644,16 +1639,6 @@ function MetadataIcon(): JSX.Element {
       <circle cx="12" cy="12" r="9" />
       <path d="M12 17v-5" />
       <path d="M12 8h.01" />
-    </svg>
-  );
-}
-
-function HorizontalDotsIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="5" cy="12" r="1.5" />
-      <circle cx="12" cy="12" r="1.5" />
-      <circle cx="19" cy="12" r="1.5" />
     </svg>
   );
 }

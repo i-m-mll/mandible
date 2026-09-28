@@ -261,36 +261,6 @@
   flex-shrink: 0;
 }
 
-.ledger-issue-actions-menu__trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  line-height: 1;
-}
-
-.ledger-issue-actions-menu__trigger--active {
-  background: var(--neutral-alpha-08);
-  color: var(--chrome-icon-hover-indirect);
-}
-
-.ledger-issue-actions-menu__trigger:is(:hover, :focus-visible) {
-  background: var(--neutral-alpha-08);
-  color: var(--chrome-icon-hover-direct);
-}
-
-.ledger-issue-actions-menu__trigger svg {
-  width: 18px;
-  height: 18px;
-  fill: currentColor;
-}
-
 .ledger-issue-actions-menu__dropdown {
   position: fixed;
   min-width: 170px;

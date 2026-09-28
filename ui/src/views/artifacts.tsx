@@ -66,6 +66,7 @@ import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigger';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -1461,20 +1462,12 @@ export function ArtifactDetail({
           }}
           actions={(
           <div className="artifact-detail__actions">
-            <button
-              ref={actionsTriggerRef}
-              type="button"
-              className={`artifact-detail__actions-trigger${actionsOpen ? ' artifact-detail__actions-trigger--active' : ''}`}
-              aria-label="Artifact actions"
-              aria-haspopup="menu"
-              aria-expanded={actionsOpen}
-              title="Artifact actions"
-              onClick={() => {
-                setActionsOpen((open) => !open);
-              }}
-            >
-              <HorizontalDotsIcon />
-            </button>
+            <DetailPaneMenuTrigger
+              buttonRef={actionsTriggerRef}
+              label="Artifact actions"
+              expanded={actionsOpen}
+              onClick={() => setActionsOpen((open) => !open)}
+            />
             {actionsOpen && (
               <div
                 ref={actionsMenuRef}
@@ -2591,16 +2584,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
-}
-
-function HorizontalDotsIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="5" cy="12" r="1.5" />
-      <circle cx="12" cy="12" r="1.5" />
-      <circle cx="19" cy="12" r="1.5" />
-    </svg>
-  );
 }
 
 function CloseIcon(): JSX.Element {
