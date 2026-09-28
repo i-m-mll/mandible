@@ -17,7 +17,7 @@ import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
-import type { SpaceItem, SpaceOccurrence } from '../../ui/src/api';
+import type { InstanceInfo, SpaceItem, SpaceOccurrence } from '../../ui/src/api';
 
 const canvasCss = readFileSync('ui/src/views/spaces/SpaceCanvas.css', 'utf8');
 
@@ -199,6 +199,20 @@ function item(id: string, title: string): SpaceItem {
     metadata: {},
     created_at: 0,
     updated_at: 0,
+  };
+}
+
+function previewInstance(allowedEffects: string[]): InstanceInfo {
+  return {
+    role: 'preview',
+    instance_id: 'preview-1',
+    installation_id: 'install-1',
+    public_origin: 'http://localhost:19420',
+    backend_generation: 'test-generation',
+    allowed_effects: allowedEffects,
+    writable_roots: ['/tmp/mandible-preview'],
+    db_path: '/tmp/mandible-preview/mandible.db',
+    db_path_source: 'iab-preview-copy',
   };
 }
 
@@ -809,13 +823,7 @@ describe('SpaceCanvas drag persistence + autosave', () => {
         initialModel: model,
         batchWrite,
         debounceMs: 50,
-        instance: {
-          role: 'preview',
-          operational_mutations: 'reject',
-          operational_mutations_overridden: false,
-          db_path: null,
-          db_path_source: null,
-        },
+        instance: previewInstance(['ledger:read']),
       }),
     );
 
@@ -830,6 +838,40 @@ describe('SpaceCanvas drag persistence + autosave', () => {
     expect(screen.getByTestId('space-canvas-autosave').getAttribute('data-status')).toBe('disabled');
     expect(screen.getByTestId('space-canvas-autosave').textContent).toBe('Saving disabled');
     expect(screen.queryByTestId('space-canvas-preview-disabled')).toBeNull();
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
+  });
+
+  it('persists canvas positions to the copied preview ledger when ledger writes are allowed', async () => {
+    vi.useFakeTimers();
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const batchWrite = vi.fn().mockResolvedValue({
+      occurrences: [occ('a', { x: 55, y: 66 })],
+    });
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        batchWrite,
+        debounceMs: 50,
+        instance: previewInstance(['ledger:read', 'ledger:write', 'files:preview']),
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+      await Promise.resolve();
+    });
+
+    expect(batchWrite).toHaveBeenCalledWith('sp1', [{ id: 'a', x: 55, y: 66 }]);
+    expect(screen.queryByText('Saving disabled')).toBeNull();
     expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
   });
 });
@@ -1077,13 +1119,7 @@ describe('SpaceCanvas SSE reconciliation', () => {
         loadModel,
         createSse: () => client,
         debounceMs: 50,
-        instance: {
-          role: 'preview',
-          operational_mutations: 'reject',
-          operational_mutations_overridden: false,
-          db_path: null,
-          db_path_source: null,
-        },
+        instance: previewInstance(['ledger:read']),
       }),
     );
 

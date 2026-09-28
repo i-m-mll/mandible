@@ -291,6 +291,7 @@ export function DocumentBlockEditor({
   projectId,
   spaceId,
   fetchImpl,
+  instance = null,
   onReimport,
   onFork,
   onEmbedDeleteDecision,
@@ -429,7 +430,8 @@ export function DocumentBlockEditor({
     () => resolveCustodyEditorUx(deriveDocumentCustody(exports)),
     [exports],
   );
-  const editable = custody.editable;
+  const canWriteLedger = !instance || instance.allowed_effects.includes('ledger:write');
+  const editable = custody.editable && canWriteLedger;
 
   const rendered = useMemo(
     () => (load.status === 'ready' ? renderSpaceBlocks(blocks, spaceId ?? undefined) : null),
