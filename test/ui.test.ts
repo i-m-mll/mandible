@@ -2465,39 +2465,6 @@ describe('SettingsView', () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  it('enables isolated theme and typography preferences without enabling shared settings', async () => {
-    const onSave = vi.fn(async () => undefined);
-    const onTypographySave = vi.fn(async () => undefined);
-
-    render(h(SettingsView, {
-      settings: { app_theme: 'system' },
-      onSave,
-      onTypographySave,
-      instance: preferenceWritablePreviewInstance,
-    }));
-
-    const theme = screen.getByRole('combobox', { name: 'App theme' }) as HTMLSelectElement;
-    const font = screen.getByRole('combobox', { name: 'UI font' }) as HTMLSelectElement;
-    const fontSize = screen.getByRole('spinbutton', { name: 'UI size' }) as HTMLInputElement;
-    const terminalTheme = screen.getByRole('combobox', { name: 'Light-mode terminal' }) as HTMLSelectElement;
-    expect(theme.disabled).toBe(false);
-    expect(font.disabled).toBe(false);
-    expect(fontSize.disabled).toBe(false);
-    expect(terminalTheme.disabled).toBe(false);
-    expect((screen.getByRole('button', { name: '+ Add Hook' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByRole('link', { name: 'Open macOS setup action' })).toBeNull();
-    expect(screen.getByText('Backup unavailable')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Run Now' })).toBeNull();
-    expect(screen.getByText('Runtime unavailable')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Initialize Runtime' })).toBeNull();
-    expect(screen.getByText('Approval Hooks unavailable')).toBeTruthy();
-
-    changeSelect(theme, 'dark');
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith('app_theme', 'dark'));
-    changeSelect(font, 'space-grotesk');
-    await waitFor(() => expect(onTypographySave).toHaveBeenCalledWith('ui_font_face', 'space-grotesk'));
-  });
-
   it('skips unavailable automatic reads while keeping copied Settings preferences editable', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -2513,22 +2480,32 @@ describe('SettingsView', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const onSave = vi.fn(async () => undefined);
-    const instance: InstanceInfo = {
-      ...previewInstance,
-      allowed_effects: ['ledger:read', 'preferences:instance'],
-    };
+    const onTypographySave = vi.fn(async () => undefined);
 
-    render(h(SettingsView, { settings: {}, onSave, instance }));
+    render(h(SettingsView, {
+      settings: { app_theme: 'system' },
+      onSave,
+      onTypographySave,
+      instance: preferenceWritablePreviewInstance,
+    }));
 
-    expect(screen.getByText('Backup unavailable')).toBeTruthy();
-    expect(screen.getByText('Runtime unavailable')).toBeTruthy();
-    expect(screen.getByText('Approval Hooks unavailable')).toBeTruthy();
-    expect(screen.queryByText('Loading backup status...')).toBeNull();
-    expect(screen.queryByText('Loading hooks...')).toBeNull();
-    expect(screen.queryByText('No hooks configured.')).toBeNull();
-    const forbiddenReads = ['/api/backup/status', '/api/runtime/status', '/api/auth/hooks'];
+    const forbiddenReads = [
+      '/api/backup/status',
+      '/api/runtime/status',
+      '/api/auth/hooks',
+      '/api/auth/clearances/signing',
+    ];
     const requestedUrls = fetchMock.mock.calls.map(([input]) => String(input));
     expect(requestedUrls.filter((url) => forbiddenReads.includes(url))).toEqual([]);
+
+    const theme = screen.getByRole('combobox', { name: 'App theme' }) as HTMLSelectElement;
+    const font = screen.getByRole('combobox', { name: 'UI font' }) as HTMLSelectElement;
+    expect(theme.disabled).toBe(false);
+    expect(font.disabled).toBe(false);
+    changeSelect(theme, 'dark');
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('app_theme', 'dark'));
+    changeSelect(font, 'space-grotesk');
+    await waitFor(() => expect(onTypographySave).toHaveBeenCalledWith('ui_font_face', 'space-grotesk'));
 
     const chatLimit = screen.getByRole('spinbutton', { name: 'Chats per group' }) as HTMLInputElement;
     expect(chatLimit.value).toBe('5');
@@ -2580,7 +2557,6 @@ describe('SettingsView', () => {
     }));
 
     expect(await screen.findByDisplayValue('/tmp/old-codex.md')).toBeTruthy();
-    expect(screen.getByText('Instruction settings are saved in this copy. Target files are not changed, and the post-export command is not run.')).toBeTruthy();
     const targetRow = screen.getByLabelText('Instruction target /tmp/old-codex.md').closest('.settings-view__instruction-target') as HTMLElement;
     fireEvent.click(within(targetRow).getByRole('button', { name: 'Remove' }));
 

@@ -8,7 +8,7 @@ import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { AppOperationalNoticeOutlet } from '../app-shell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { EntityPill } from '../components/shared/EntityPill';
-import { spawnIssueAgent } from '../api';
+import { canPerformOperation, spawnIssueAgent, type InstanceInfo } from '../api';
 import { formatRelativeTime } from '../lib/format';
 import { renderInlineMarkdown } from '../lib/markdown';
 import { appColors } from '../theme';
@@ -146,8 +146,7 @@ export interface InboxViewProps {
   onAckManagedReminderOccurrence: (occurrenceId: string) => Promise<void>;
   onAckAll: () => Promise<void>;
   onRefresh: () => void;
-  mutationsAllowed?: boolean;
-  externalActionsAllowed?: boolean;
+  instance?: InstanceInfo | null;
   error?: string | null;
 }
 
@@ -630,15 +629,17 @@ function AuthResultDetail({
 // Bug: cbbb3d9 — work-unit continuation detail with Resume button
 function WorkUnitContinuationDetail({
   item,
-  externalActionsAllowed,
+  instance,
 }: {
   item: import('../api').WorkUnitWithLiveness;
-  externalActionsAllowed: boolean;
+  instance?: InstanceInfo | null;
 }): JSX.Element {
   const [spawning, setSpawning] = useState(false);
+  const spawnPath = `/api/issues/${encodeURIComponent(item.repo_id)}/${encodeURIComponent(item.issue_id)}/spawn`;
+  const spawnAllowed = canPerformOperation(instance, 'POST', spawnPath, {});
 
   const handleResume = async () => {
-    if (!externalActionsAllowed || spawning) return;
+    if (!spawnAllowed || spawning) return;
     setSpawning(true);
     try {
       const result = await spawnIssueAgent(item.repo_id, item.issue_id);
@@ -691,8 +692,8 @@ function WorkUnitContinuationDetail({
           type="button"
           className="btn btn--active"
           onClick={() => void handleResume()}
-          disabled={!externalActionsAllowed || spawning}
-          title={externalActionsAllowed ? undefined : 'Starting an agent is unavailable in this instance'}
+          disabled={!spawnAllowed || spawning}
+          title={spawnAllowed ? undefined : 'Starting an agent is unavailable in this instance'}
         >
           {spawning ? 'Spawning...' : 'Resume'}
         </button>
@@ -952,8 +953,7 @@ export function InboxView({
   onAckManagedReminderOccurrence,
   onAckAll,
   onRefresh,
-  mutationsAllowed = true,
-  externalActionsAllowed = true,
+  instance = null,
   error = null,
 }: InboxViewProps): JSX.Element {
   const [chips, setChips] = useState<FilterChip[]>([]);
@@ -1004,9 +1004,18 @@ export function InboxView({
     setChips((prev) => prev.filter((c) => !(c.type === chip.type && c.value === chip.value)));
 
   const handleAckAll = async () => {
+    if (!canPerformOperation(instance, 'POST', '/api/inbox/ack-all')) return;
     await onAckAll();
     setActionsOpen(false);
   };
+
+  const acknowledge = (
+    type: 'continuation' | 'auth_result' | 'managed_reminder_occurrence',
+    id: string,
+    action: (itemId: string) => Promise<void>,
+  ) => canPerformOperation(instance, 'POST', `/api/inbox/${type}/${encodeURIComponent(id)}/ack`, {})
+    ? action(id)
+    : Promise.resolve();
 
   const acknowledgeableCount = (data?.continuations.length ?? 0)
     + (data?.auth_results.length ?? 0)
@@ -1076,8 +1085,10 @@ export function InboxView({
                       type="button"
                       role="menuitem"
                       onClick={() => void handleAckAll()}
-                      disabled={!mutationsAllowed || acknowledgeableCount === 0}
-                      title={mutationsAllowed ? 'Acknowledge all inbox items' : 'Disabled on preview instances'}
+                      disabled={!canPerformOperation(instance, 'POST', '/api/inbox/ack-all') || acknowledgeableCount === 0}
+                      title={canPerformOperation(instance, 'POST', '/api/inbox/ack-all')
+                        ? 'Acknowledge all inbox items'
+                        : 'This action is unavailable in this instance'}
                     >
                       Acknowledge All
                     </button>
@@ -1139,27 +1150,42 @@ export function InboxView({
         ) : selectedItem.type === 'continuation' ? (
           <ContinuationDetail
             item={selectedItem.raw as InboxContinuation}
-            onAck={onAckContinuation}
-            mutationsAllowed={mutationsAllowed}
+            onAck={(id) => acknowledge('continuation', id, onAckContinuation)}
+            mutationsAllowed={canPerformOperation(
+              instance,
+              'POST',
+              `/api/inbox/continuation/${encodeURIComponent((selectedItem.raw as InboxContinuation).session_id)}/ack`,
+              {},
+            )}
           />
         ) : selectedItem.type === 'auth_result' ? (
           <AuthResultDetail
             item={selectedItem.raw as InboxAuthResult}
-            onAck={onAckAuthResult}
-            mutationsAllowed={mutationsAllowed}
+            onAck={(id) => acknowledge('auth_result', id, onAckAuthResult)}
+            mutationsAllowed={canPerformOperation(
+              instance,
+              'POST',
+              `/api/inbox/auth_result/${encodeURIComponent((selectedItem.raw as InboxAuthResult).id)}/ack`,
+              {},
+            )}
           />
         ) : selectedItem.type === 'work_unit_continuation' ? (
           <WorkUnitContinuationDetail
             item={selectedItem.raw as import('../api').WorkUnitWithLiveness}
-            externalActionsAllowed={externalActionsAllowed}
+            instance={instance}
           />
         ) : selectedItem.type === 'credential_leak' ? (
           <CredentialLeakDetail item={selectedItem.raw as InboxWebhookEvent} />
         ) : selectedItem.type === 'managed_reminder_occurrence' ? (
           <ManagedReminderOccurrenceDetail
             item={selectedItem.raw as InboxManagedReminderOccurrence}
-            onAck={onAckManagedReminderOccurrence}
-            mutationsAllowed={mutationsAllowed}
+            onAck={(id) => acknowledge('managed_reminder_occurrence', id, onAckManagedReminderOccurrence)}
+            mutationsAllowed={canPerformOperation(
+              instance,
+              'POST',
+              `/api/inbox/managed_reminder_occurrence/${encodeURIComponent((selectedItem.raw as InboxManagedReminderOccurrence).id)}/ack`,
+              {},
+            )}
           />
         ) : (
           <IssueDetail item={selectedItem.raw as InboxIssue} />
