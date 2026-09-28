@@ -1,6 +1,6 @@
 import { render } from 'preact';
 
-import { AppShellProvider, type AppRightSidebarDescriptor } from '../../../ui/src/app-shell';
+import { AppRightSidebarSurface, AppShellProvider, type AppRightSidebarDescriptor } from '../../../ui/src/app-shell';
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
 import { DetailPaneMenuTrigger } from '../../../ui/src/components/shared/DetailPaneMenuTrigger';
 
@@ -71,11 +71,44 @@ function HeaderCase({ variant, open }: { variant: Variant; open: boolean }): JSX
   );
 }
 
+function RightSidebarHeader(): JSX.Element {
+  const sidebar: AppRightSidebarDescriptor = {
+    id: 'header-controls-preview',
+    kind: 'tabs',
+    ariaLabel: 'Details',
+    open: true,
+    width: 360,
+    tabs: [{
+      id: 'graph',
+      label: 'Graph',
+      tooltip: 'Graph',
+      icon: <span aria-hidden="true">G</span>,
+      content: null,
+    }],
+    activeTab: 'graph',
+    onActiveTabChange: () => undefined,
+    onOpenChange: () => undefined,
+    onWidthChange: () => undefined,
+  };
+
+  return (
+    <div className="header-controls-sidebar">
+      <AppRightSidebarSurface
+        descriptor={sidebar}
+        open
+        onOpenChange={() => undefined}
+        layout={{ presentation: 'dock', effectiveWidth: 360, minWidth: 300, maxWidth: 720 }}
+      />
+    </div>
+  );
+}
+
 function Fixture(): JSX.Element {
   const cases = (['standard', 'compact', 'versioned'] as const).flatMap((variant) => [false, true].map((open) => ({ variant, open })));
   return (
     <main className="header-controls-fixture">
       {cases.map(({ variant, open }) => <HeaderCase key={`${variant}-${open}`} variant={variant} open={open} />)}
+      <RightSidebarHeader />
     </main>
   );
 }
