@@ -16,6 +16,8 @@ import type {
   TranscriptSemanticEvent,
   UserEvent,
 } from '../components/stream-renderer/types';
+import type { ProviderDirectiveActivity } from '../components/stream-renderer/types';
+import { splitProviderDirectives } from '../components/message-blocks/providerDirectives';
 import type { ActivityItem, ChatItem, MessageItem, PlanItem, ToolCallItem } from '../../../src/parsers/types';
 
 export type StreamState = {
@@ -414,13 +416,107 @@ export type ActivityDisplayEntry =
   | { kind: 'node'; node: RenderNode }
   | { kind: 'activity-group'; key: string; nodes: Array<Extract<RenderNode, { kind: 'activity' }>> };
 
-function knownTurnBoundary(left: ActivityItem, right: ActivityItem): boolean {
+function expandProviderDirectiveActivities(nodes: readonly RenderNode[]): RenderNode[] {
+  const expanded: RenderNode[] = [];
+  for (const node of nodes) {
+    if (node.kind !== 'assistant_turn') {
+      expanded.push(node);
+      continue;
+    }
+
+    const blocks = node.turn.assistantEvent.message.content;
+    const hasDirective = blocks.some((block) => block.type === 'text'
+      && splitProviderDirectives(block.text).some((segment) => segment.kind === 'activity'));
+    if (!hasDirective) {
+      expanded.push(node);
+      continue;
+    }
+
+    let fragmentBlocks: ContentBlock[] = [];
+    let fragmentIndex = 0;
+    let directiveIndex = 0;
+    const flushFragment = (): void => {
+      if (fragmentBlocks.length === 0) return;
+      const fragment = fragmentBlocks;
+      fragmentBlocks = [];
+      expanded.push({
+        ...node,
+        key: `${node.key}:fragment:${fragmentIndex++}`,
+        turn: {
+          ...node.turn,
+          assistantEvent: {
+            ...node.turn.assistantEvent,
+            message: { ...node.turn.assistantEvent.message, content: fragment },
+          },
+        },
+      });
+    };
+
+    blocks.forEach((block, blockIndex) => {
+      if (block.type !== 'text') {
+        fragmentBlocks.push(block);
+        return;
+      }
+      const segments = splitProviderDirectives(block.text);
+      if (!segments.some((segment) => segment.kind === 'activity')) {
+        fragmentBlocks.push(block);
+        return;
+      }
+
+      let ownsSource = true;
+      for (const segment of segments) {
+        if (segment.kind === 'text') {
+          if (!segment.content.trim()) continue;
+          fragmentBlocks.push({
+            ...block,
+            text: segment.content,
+            source: ownsSource ? block.source : undefined,
+          });
+          ownsSource = false;
+          continue;
+        }
+        flushFragment();
+        const item: ProviderDirectiveActivity = {
+          type: 'provider-directive',
+          directive: segment.directive,
+          turnId: node.turn.id,
+          blockId: block.source?.blockId ?? null,
+          sequence: directiveIndex,
+        };
+        const source = ownsSource ? block.source : undefined;
+        ownsSource = false;
+        expanded.push({
+          kind: 'activity',
+          key: `provider-directive:${node.turn.id}:${block.source?.blockId ?? blockIndex}:${directiveIndex++}`,
+          entity: 'assistant',
+          item,
+          source,
+        });
+      }
+    });
+    flushFragment();
+  }
+  return expanded;
+}
+
+function knownTurnBoundary(left: ActivityItem | ProviderDirectiveActivity, right: ActivityItem | ProviderDirectiveActivity): boolean {
+  if (left.type === 'provider-directive' || right.type === 'provider-directive') {
+    return left.type === 'provider-directive'
+      && right.type === 'provider-directive'
+      && left.turnId !== right.turnId;
+  }
   const leftTurn = left.identity.native_turn_id;
   const rightTurn = right.identity.native_turn_id;
   return Boolean(leftTurn && rightTurn && leftTurn !== rightTurn);
 }
 
-function sameActivityBoundary(left: ActivityItem, right: ActivityItem): boolean {
+function sameActivityBoundary(left: ActivityItem | ProviderDirectiveActivity, right: ActivityItem | ProviderDirectiveActivity): boolean {
+  if (left.type === 'provider-directive' || right.type === 'provider-directive') {
+    return left.type === 'provider-directive'
+      && right.type === 'provider-directive'
+      && left.directive.kind === right.directive.kind
+      && !knownTurnBoundary(left, right);
+  }
   return left.identity.provider === right.identity.provider
     && left.identity.session_id === right.identity.session_id
     && left.role === right.role
@@ -430,6 +526,7 @@ function sameActivityBoundary(left: ActivityItem, right: ActivityItem): boolean 
 
 /** Groups only maximal same-kind activity runs; every other item is a boundary. */
 export function groupActivityItemsForDisplay(nodes: RenderNode[]): ActivityDisplayEntry[] {
+  nodes = expandProviderDirectiveActivities(nodes);
   const entries: ActivityDisplayEntry[] = [];
   let index = 0;
   while (index < nodes.length) {
@@ -506,6 +603,7 @@ export function renderNodeToMarkdown(node: RenderNode): string {
     return `## ${node.result.is_error ? 'Tool error' : 'Unmatched tool result'}\n\n${body}`;
   }
   if (node.kind === 'activity') {
+    if (node.item.type === 'provider-directive') return '';
     const body = chatItemText(node.item).trim();
     const status = [node.item.status, node.item.execution_outcome].filter(Boolean).join(' · ');
     return `## Activity: ${node.item.activity_kind}${status ? ` (${status})` : ''}\n\n${body}`;

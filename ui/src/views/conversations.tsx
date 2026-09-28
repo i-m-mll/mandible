@@ -718,6 +718,11 @@ export function ChatComposerSubmitIcon(): JSX.Element {
 
 // ── Detail View ──
 
+async function resolveProviderSessionConversation(providerSessionId: string): Promise<Conversation | null> {
+  const result = await getConversations({ session_id: providerSessionId, limit: 1 });
+  return result.conversations.find((candidate) => candidate.session_id === providerSessionId) ?? null;
+}
+
 function formatActivityDuration(seconds: number | null): string | null {
   if (seconds == null) return null;
   if (seconds < 60) return `${seconds}s`;
@@ -1141,6 +1146,18 @@ export function ConversationDetail({
 
   // Fork/control state
   const [toast, setToast] = useState<ToastState>(null);
+  const navigateToCreatedTask = useCallback(async (providerSessionId: string) => {
+    try {
+      const target = await resolveProviderSessionConversation(providerSessionId);
+      if (target) onNavigateRef.current(target.id);
+      else setToast({ message: 'Created task conversation is not available yet.', type: 'info' });
+    } catch (error) {
+      setToast({
+        message: `Could not open created task: ${error instanceof Error ? error.message : String(error)}`,
+        type: 'error',
+      });
+    }
+  }, []);
   const [continueDraft, setContinueDraft] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
@@ -2376,6 +2393,7 @@ export function ConversationDetail({
             navigationTarget={navigationTarget}
             onNavigationResult={handleNavigationResult}
             onFork={handleFork}
+            onCreatedTaskNavigate={navigateToCreatedTask}
             sessionInfo={{
               sessionId: conversation.session_id,
               backend: conversation.source,
@@ -2535,13 +2553,29 @@ function ChatEntryItem({
 function LiveSessionDetail({
   session,
   notice,
+  onNavigateConversation,
 }: {
   session: ConsoleSession;
   notice?: ComponentChildren;
+  onNavigateConversation: (conversationId: string) => void;
 }): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
   const [viewMode, setViewMode] = useState<ViewMode>('rich');
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
+  const [createdTaskError, setCreatedTaskError] = useState<string | null>(null);
+  const navigateToCreatedTask = useCallback(async (providerSessionId: string) => {
+    try {
+      const target = await resolveProviderSessionConversation(providerSessionId);
+      if (target) {
+        setCreatedTaskError(null);
+        onNavigateConversation(target.id);
+      } else {
+        setCreatedTaskError('Created task conversation is not available yet.');
+      }
+    } catch (error) {
+      setCreatedTaskError(error instanceof Error ? error.message : String(error));
+    }
+  }, [onNavigateConversation]);
   const providerSessionId = session.provider_session_id ?? '';
   const sessionConversationQuery = useQuery({
     queryKey: conversationKeys.bySession(providerSessionId),
@@ -2614,7 +2648,14 @@ function LiveSessionDetail({
       className="chat-live-detail"
       bodyClassName="chat-live-detail__pane"
       header={detailHeader}
-      notice={notice}
+      notice={notice || createdTaskError ? <>
+        {notice}
+        {createdTaskError ? (
+          <DetailPaneNotice severity="error" density="compact" title="Could not open created task">
+            {createdTaskError}
+          </DetailPaneNotice>
+        ) : null}
+      </> : null}
     >
       <TerminalPane
         sessionId={session.id}
@@ -2633,6 +2674,7 @@ function LiveSessionDetail({
         conversationControl={control}
         conversationMessageAnchor={messageAnchor}
         onConversationControlChange={setControl}
+        onCreatedTaskNavigate={navigateToCreatedTask}
         isVisible
         viewMode={viewMode}
         onViewModeChange={setViewMode}
@@ -4050,6 +4092,7 @@ export function ConversationsView({
           <LiveSessionDetail
             key={selectedLiveSession.id}
             session={selectedLiveSession}
+            onNavigateConversation={handleNavigateConversation}
           />
         ) : (
           <ChatDetailFrame

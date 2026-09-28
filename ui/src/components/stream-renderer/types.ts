@@ -1,6 +1,17 @@
 // Bug: aa35aeb — Console tab renderer: stream-json event parsing and rich HTML rendering
 
 import type { ActivityItem, ChatItem } from '../../../../src/parsers/types';
+import type { ProviderDirective } from '../message-blocks/providerDirectives';
+
+export type ProviderDirectiveActivity = {
+  type: 'provider-directive';
+  directive: ProviderDirective;
+  turnId: string;
+  blockId: string | null;
+  sequence: number;
+};
+
+export type DisplayActivityItem = ActivityItem | ProviderDirectiveActivity;
 
 // ---- Raw event types (as emitted by Claude Code --output-format stream-json) ----
 
@@ -212,7 +223,7 @@ export type RenderNodeActivity = {
   kind: 'activity';
   key: string;
   entity: 'assistant' | 'system';
-  item: ActivityItem;
+  item: DisplayActivityItem;
   source?: PersistedBlockSource;
 };
 

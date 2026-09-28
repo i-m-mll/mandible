@@ -54,6 +54,7 @@ type TerminalPaneProps = {
   conversationControl: ConversationControlSnapshot | null;
   conversationMessageAnchor: string | null;
   onConversationControlChange: (snapshot: ConversationControlSnapshot) => void;
+  onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
   isVisible: boolean;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
@@ -223,6 +224,7 @@ export function TerminalPane({
   conversationControl,
   conversationMessageAnchor,
   onConversationControlChange,
+  onCreatedTaskNavigate,
   isVisible,
   viewMode,
   onViewModeChange,
@@ -505,6 +507,7 @@ export function TerminalPane({
             allowedTools={optimisticAllowedTools}
             permissionRequest={permissionRequest}
             onPermissionRespond={handleRichPermissionResponse}
+            onCreatedTaskNavigate={onCreatedTaskNavigate}
             selectedMessageId={selectedMessageId}
             onSelectMessageInfo={handleSelectMessageInfo}
             usage={composerUsage}
