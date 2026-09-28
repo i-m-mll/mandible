@@ -188,7 +188,7 @@ a {
   position: absolute;
   z-index: 8;
   top: 7px;
-  right: 8px;
+  right: var(--app-header-inline-inset);
 }
 
 /* A shared detail header owns the collapsed toggle when one is present; the
