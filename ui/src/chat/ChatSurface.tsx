@@ -618,9 +618,13 @@ export function ChatSurface({
   }, [captureReadingAnchor, historyLoadStates, items, requestHistory, transcript, virtualItems, virtualizer]);
 
   function handleUserScrollIntent(): void {
-    // A wheel event is newer reading intent than a deferred virtual-row restore.
-    // The ensuing scroll event captures the new anchor before data can change.
+    // Direct scroll input supersedes a deferred virtual-row restore. The ensuing
+    // scroll event captures the new anchor before data can change.
     pendingReadingAnchorRef.current = null;
+  }
+
+  function handleUserScrollPointer(event: PointerEvent): void {
+    if (event.target === event.currentTarget) handleUserScrollIntent();
   }
 
   function handleUserScrollKey(event: KeyboardEvent): void {
@@ -899,6 +903,7 @@ export function ChatSurface({
         ref={setScrollNode}
         className="stream-renderer__scroll"
         onScroll={handleScroll}
+        onPointerDown={handleUserScrollPointer}
         onWheel={handleUserScrollIntent}
         onTouchMove={handleUserScrollIntent}
         onKeyDown={handleUserScrollKey}
