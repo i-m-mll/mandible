@@ -2064,6 +2064,7 @@ export function ConversationDetail({
     if (result.key !== navigationTarget?.key) return;
     if (result.status === 'revealed') {
       setNavigationError((current) => current?.operation === 'target' ? null : current);
+      setNavigationTarget((current) => current?.key === result.key ? null : current);
       return;
     }
     setNavigationError({
