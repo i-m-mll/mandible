@@ -121,9 +121,20 @@ describe('OS-owned local browser access', () => {
     expect((await request('GET', '/api/read', { Host: host })).status).toBe(401);
   });
 
-  it('signs only a preview-scoped context from the local human and keeps direct preview access closed', async () => {
-    const identity = auth.localBrowserIdentity()!;
-    const token = await auth.signPreviewContext(identity, 'preview-test');
+  it('reissues the current bounded preview capability for the existing local browser after daemon restart', async () => {
+    const beforeRestart = auth.localBrowserIdentity()!;
+    const restartedAuth = new ClientAuthenticator(db, {
+      instance: instance(), secretsDir: path.join(root, 'client-auth'),
+      sessionAuthorityDir: path.join(root, 'local-sessions'),
+    });
+    const identity = restartedAuth.localBrowserIdentity()!;
+    expect(identity).toMatchObject({
+      user_id: beforeRestart.user_id,
+      csrf_token: beforeRestart.csrf_token,
+      source: 'local_os_user',
+    });
+    expect(identity.effect_ceiling).toContain('preferences:instance');
+    const token = await restartedAuth.signPreviewContext(identity, 'preview-test');
     const preview = new ClientAuthenticator(db, {
       instance: { ...instance(), role: 'preview', instance_id: 'preview-test',
         public_origin: 'https://preview-test.mandible.localhost:19421',
