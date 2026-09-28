@@ -2384,13 +2384,48 @@ describe('app shell', () => {
     render(h(App, {}));
 
     const notice = (await screen.findByText('Saving disabled in copied preview instance.')).closest('.detail-pane-notice')!;
+    const copyNotice = await screen.findByTestId('preview-copy-notice');
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
+    expect(copyNotice.textContent).toBe('Preview copy — edits stay here and do not change the main instance.');
     const spacesHeader = document.querySelector('.spaces-shell__header');
     const spacesNoticeOutlet = document.querySelector('.spaces-shell__main .app-operational-notice-slot');
     expect(spacesHeader?.nextElementSibling).toBe(spacesNoticeOutlet);
     expect(spacesNoticeOutlet?.contains(notice)).toBe(true);
-    expect(document.querySelectorAll('.spaces-shell__main .detail-pane-notice')).toHaveLength(1);
+    expect(spacesNoticeOutlet?.contains(copyNotice)).toBe(true);
+    expect(document.querySelectorAll('.spaces-shell__main .detail-pane-notice')).toHaveLength(2);
     expect(document.querySelector('#app-operational-notices .detail-pane-notice')).toBeNull();
+  });
+
+  it('routes the copied-preview notice into the active Inbox notice outlet', async () => {
+    stubEventSource();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: preferenceWritablePreviewInstance,
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/health') return new Promise<Response>(() => undefined);
+      if (url === '/api/inbox/global') {
+        return Promise.resolve(new Response(JSON.stringify({
+          continuations: [], auth_results: [], open_issues: [], total: 0,
+        }), { headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url === '/api/settings') {
+        return Promise.resolve(new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } }));
+    }));
+    window.history.replaceState(null, '', '#/inbox');
+
+    const mounted = render(h(App, {}));
+
+    const outlet = await waitFor(() => {
+      const element = mounted.container.querySelector('.inbox-detail > .app-operational-notice-slot[data-app-operational-notice-outlet="main"]');
+      expect(element).toBeTruthy();
+      return element as HTMLElement;
+    });
+    const notice = await within(outlet).findByTestId('preview-copy-notice');
+    expect(notice.textContent).toBe('Preview copy — edits stay here and do not change the main instance.');
+    expect(mounted.container.querySelector('#app-operational-notices .detail-pane-notice')).toBeNull();
   });
 });
 
@@ -2473,12 +2508,75 @@ describe('SettingsView', () => {
     expect(theme.disabled).toBe(false);
     expect(font.disabled).toBe(false);
     expect(fontSize.disabled).toBe(false);
-    expect(terminalTheme.disabled).toBe(true);
+    expect(terminalTheme.disabled).toBe(false);
+    expect((screen.getByRole('button', { name: '+ Add Hook' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('link', { name: 'Open macOS setup action' })).toBeNull();
+    expect((screen.getByRole('button', { name: 'Run Now' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Initialize Runtime' }) as HTMLButtonElement).disabled).toBe(true);
 
     changeSelect(theme, 'dark');
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('app_theme', 'dark'));
     changeSelect(font, 'space-grotesk');
     await waitFor(() => expect(onTypographySave).toHaveBeenCalledWith('ui_font_face', 'space-grotesk'));
+  });
+
+  it('saves preview instruction settings locally without offering file cleanup', async () => {
+    const onSave = vi.fn(async () => undefined);
+    const targets = [
+      { path: '/tmp/old-codex.md', mode: 'managed-block' },
+      { path: '/tmp/old-claude.md', mode: 'managed-block' },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/settings/instructions-delivery' && init?.method !== 'PUT') {
+        return new Response(JSON.stringify({
+          targets,
+          postExport: 'bin/compile-agent-instructions',
+          configuredTargets: true,
+          preview_only: true,
+          export: { ok: false, stdout: '', stderr: 'not run in preview' },
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/settings/instructions-delivery' && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { targets: typeof targets; cleanupRemovedTargets: boolean };
+        return new Response(JSON.stringify({
+          targets: body.targets,
+          postExport: 'bin/compile-agent-instructions',
+          configuredTargets: true,
+          preview_only: true,
+          configuration_saved: true,
+          export: { ok: false, stdout: '', stderr: 'not installed in preview' },
+          cleanup: [],
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/projects') {
+        return new Response(JSON.stringify({ projects: [] }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(h(SettingsView, {
+      settings: {},
+      onSave,
+      instance: preferenceWritablePreviewInstance,
+    }));
+
+    expect(await screen.findByDisplayValue('/tmp/old-codex.md')).toBeTruthy();
+    expect(screen.getByText('Instruction settings are saved in this copy. Target files are not changed, and the post-export command is not run.')).toBeTruthy();
+    const targetRow = screen.getByLabelText('Instruction target /tmp/old-codex.md').closest('.settings-view__instruction-target') as HTMLElement;
+    fireEvent.click(within(targetRow).getByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/instructions-delivery',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ targets: [targets[1]], cleanupRemovedTargets: false }),
+      }),
+    ));
+    expect(screen.queryByRole('dialog', { name: 'Clean previous instruction target?' })).toBeNull();
+    await waitFor(() => expect(screen.getByText('Saved in this preview copy. Target files were not changed and the post-export hook was not run.')).toBeTruthy());
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.targets', JSON.stringify([targets[1]])));
   });
 
   it('shows project restriction state and existing grants', async () => {
