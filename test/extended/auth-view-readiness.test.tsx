@@ -351,7 +351,7 @@ describe('AuthQueueView daemon readiness gate', () => {
     render(<AuthHooksPanel mutationsAllowed={false} />);
 
     expect(await screen.findByText('Test Hook')).toBeTruthy();
-    expect(screen.getByText('Auth hook mutations are disabled on this Mandible preview instance.')).toBeTruthy();
+    expect(screen.getByText('This instance can read approval hooks, but cannot change their configuration.')).toBeTruthy();
 
     const addButton = screen.getByRole('button', { name: '+ Add Hook' }) as HTMLButtonElement;
     const toggleButton = screen.getByRole('button', { name: 'ON' }) as HTMLButtonElement;

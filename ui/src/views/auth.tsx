@@ -1412,16 +1412,20 @@ function AuthSidebarItem({
 /** Hooks management panel for auth hook settings. */
 export function AuthHooksPanel({
   onClose,
+  readAvailable = true,
   mutationsAllowed = true,
 }: {
   onClose?: () => void;
+  readAvailable?: boolean;
   mutationsAllowed?: boolean;
 }): JSX.Element {
   const [hooks, setHooks] = useState<AuthHook[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(readAvailable);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const changesAllowed = readAvailable && mutationsAllowed;
 
   // Form fields
   const [formRepo, setFormRepo] = useState('*');
@@ -1430,17 +1434,25 @@ export function AuthHooksPanel({
   const [formLabel, setFormLabel] = useState('');
 
   const loadHooks = useCallback(async () => {
+    if (!readAvailable) {
+      setHooks([]);
+      setLoadError(null);
+      setActionError(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setLoadError(null);
     try {
-      setLoading(true);
       const data = await fetchAuthHooks();
       setHooks(data);
-      setError(null);
+      setActionError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load hooks');
+      setLoadError(err instanceof Error ? err.message : 'Failed to load hooks');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [readAvailable]);
 
   useEffect(() => { void loadHooks(); }, [loadHooks]);
 
@@ -1454,10 +1466,11 @@ export function AuthHooksPanel({
   };
 
   const handleSave = async () => {
-    if (!mutationsAllowed) {
-      setError('Approval hook mutations are disabled on this Mandible preview instance.');
+    if (!changesAllowed) {
+      setActionError('Approval hook changes are unavailable in this instance.');
       return;
     }
+    setActionError(null);
     try {
       if (editId) {
         await updateAuthHook(editId, {
@@ -1477,12 +1490,12 @@ export function AuthHooksPanel({
       resetForm();
       await loadHooks();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save hook');
+      setActionError(err instanceof Error ? err.message : 'Failed to save hook');
     }
   };
 
   const handleEdit = (hook: AuthHook) => {
-    if (!mutationsAllowed) return;
+    if (!changesAllowed) return;
     setFormRepo(hook.repo_pattern);
     setFormType(hook.auth_type as AuthRequestType);
     setFormCommand(hook.command);
@@ -1492,22 +1505,24 @@ export function AuthHooksPanel({
   };
 
   const handleToggle = async (hook: AuthHook) => {
-    if (hook.builtin || !mutationsAllowed) return; // Built-in hooks cannot be toggled
+    if (hook.builtin || !changesAllowed) return; // Built-in hooks cannot be toggled
+    setActionError(null);
     try {
       await updateAuthHook(hook.id, { enabled: !hook.enabled });
       await loadHooks();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to toggle hook');
+      setActionError(err instanceof Error ? err.message : 'Failed to toggle hook');
     }
   };
 
   const handleDelete = async (hook: AuthHook) => {
-    if (hook.builtin || !mutationsAllowed) return;
+    if (hook.builtin || !changesAllowed) return;
+    setActionError(null);
     try {
       await deleteAuthHook(hook.id);
       await loadHooks();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete hook');
+      setActionError(err instanceof Error ? err.message : 'Failed to delete hook');
     }
   };
 
@@ -1520,7 +1535,7 @@ export function AuthHooksPanel({
             type="button"
             className="btn btn--sm btn--ghost"
             onClick={() => { resetForm(); setShowForm(true); }}
-            disabled={!mutationsAllowed}
+            disabled={!changesAllowed}
           >
             + Add Hook
           </button>
@@ -1536,14 +1551,20 @@ export function AuthHooksPanel({
         </div>
       </div>
 
-      {error && (
-        <DetailPaneNotice severity="error" density="compact" title="Approval Hooks action failed" actions={
+      {loadError && readAvailable && (
+        <DetailPaneNotice severity="error" density="compact" title="Approval Hooks could not be loaded" actions={
           <button type="button" className="btn btn--ghost btn--sm" onClick={() => { void loadHooks(); }}>Retry loading</button>
-        }>{error}</DetailPaneNotice>
+        }>{loadError}</DetailPaneNotice>
       )}
-      {!mutationsAllowed && (
-        <DetailPaneNotice severity="info" density="compact" title="Preview is read-only">
-          Approval hook mutations are disabled on this Mandible preview instance.
+      {actionError && <DetailPaneNotice severity="error" density="compact" title="Approval Hooks action failed">{actionError}</DetailPaneNotice>}
+      {!readAvailable && (
+        <DetailPaneNotice severity="info" density="compact" title="Approval Hooks unavailable">
+          This instance cannot read approval-hook configuration.
+        </DetailPaneNotice>
+      )}
+      {readAvailable && !mutationsAllowed && (
+        <DetailPaneNotice severity="info" density="compact" title="Approval-hook changes unavailable">
+          This instance can read approval hooks, but cannot change their configuration.
         </DetailPaneNotice>
       )}
 
@@ -1556,7 +1577,7 @@ export function AuthHooksPanel({
               placeholder="Hook description"
               value={formLabel}
               onInput={(e) => setFormLabel((e.target as HTMLInputElement).value)}
-              disabled={!mutationsAllowed}
+              disabled={!changesAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-row">
@@ -1566,7 +1587,7 @@ export function AuthHooksPanel({
               placeholder="* for all, or repo name"
               value={formRepo}
               onInput={(e) => setFormRepo((e.target as HTMLInputElement).value)}
-              disabled={!mutationsAllowed}
+              disabled={!changesAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-row">
@@ -1574,7 +1595,7 @@ export function AuthHooksPanel({
             <select
               value={formType}
               onChange={(e) => setFormType((e.target as HTMLSelectElement).value as AuthRequestType)}
-              disabled={!mutationsAllowed}
+              disabled={!changesAllowed}
             >
               <option value="merge">Merge</option>
               <option value="commit">Commit</option>
@@ -1591,7 +1612,7 @@ export function AuthHooksPanel({
               value={formCommand}
               rows={3}
               onInput={(e) => setFormCommand((e.target as HTMLTextAreaElement).value)}
-              disabled={!mutationsAllowed}
+              disabled={!changesAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-actions">
@@ -1599,7 +1620,7 @@ export function AuthHooksPanel({
               type="button"
               className="btn btn--sm btn--success"
               onClick={() => void handleSave()}
-              disabled={!mutationsAllowed || !formCommand.trim()}
+              disabled={!changesAllowed || !formCommand.trim()}
             >
               {editId ? 'Update' : 'Create'}
             </button>
@@ -1614,9 +1635,11 @@ export function AuthHooksPanel({
         </div>
       )}
 
-      {loading ? (
+      {!readAvailable ? (
+        <div className="auth-hooks-panel__empty">Approval hooks are unavailable in this instance.</div>
+      ) : loading ? (
         <div className="auth-hooks-panel__empty">Loading hooks...</div>
-      ) : hooks.length === 0 ? (
+      ) : loadError ? null : hooks.length === 0 ? (
         <div className="auth-hooks-panel__empty">No hooks configured.</div>
       ) : (
         <div className="auth-hooks-panel__list">
@@ -1630,8 +1653,8 @@ export function AuthHooksPanel({
                   type="button"
                   className={`auth-hooks-panel__toggle${hook.enabled ? ' auth-hooks-panel__toggle--on' : ''}`}
                   onClick={() => void handleToggle(hook)}
-                  disabled={hook.builtin || !mutationsAllowed}
-                  title={hook.builtin ? 'Built-in hooks are always enabled' : !mutationsAllowed ? 'Disabled on preview instances' : (hook.enabled ? 'Disable' : 'Enable')}
+                  disabled={hook.builtin || !changesAllowed}
+                  title={hook.builtin ? 'Built-in hooks are always enabled' : !changesAllowed ? 'Unavailable in this instance' : (hook.enabled ? 'Disable' : 'Enable')}
                 >
                   {hook.enabled ? 'ON' : 'OFF'}
                 </button>
@@ -1657,7 +1680,7 @@ export function AuthHooksPanel({
                     type="button"
                     className="btn btn--sm btn--ghost"
                     onClick={() => handleEdit(hook)}
-                    disabled={!mutationsAllowed}
+                    disabled={!changesAllowed}
                   >
                     Edit
                   </button>
@@ -1665,7 +1688,7 @@ export function AuthHooksPanel({
                     type="button"
                     className="btn btn--sm btn--danger"
                     onClick={() => void handleDelete(hook)}
-                    disabled={!mutationsAllowed}
+                    disabled={!changesAllowed}
                   >
                     Delete
                   </button>

@@ -2511,13 +2511,55 @@ describe('SettingsView', () => {
     expect(terminalTheme.disabled).toBe(false);
     expect((screen.getByRole('button', { name: '+ Add Hook' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole('link', { name: 'Open macOS setup action' })).toBeNull();
-    expect((screen.getByRole('button', { name: 'Run Now' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Initialize Runtime' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Backup unavailable')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Run Now' })).toBeNull();
+    expect(screen.getByText('Runtime unavailable')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Initialize Runtime' })).toBeNull();
+    expect(screen.getByText('Approval Hooks unavailable')).toBeTruthy();
 
     changeSelect(theme, 'dark');
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('app_theme', 'dark'));
     changeSelect(font, 'space-grotesk');
     await waitFor(() => expect(onTypographySave).toHaveBeenCalledWith('ui_font_face', 'space-grotesk'));
+  });
+
+  it('skips unavailable automatic reads while keeping copied Settings preferences editable', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/settings/instructions-delivery') {
+        return new Response(JSON.stringify({ targets: [], postExport: '', configuredTargets: false }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === '/api/projects') {
+        return new Response(JSON.stringify({ projects: [] }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const onSave = vi.fn(async () => undefined);
+    const instance: InstanceInfo = {
+      ...previewInstance,
+      allowed_effects: ['ledger:read', 'preferences:instance'],
+    };
+
+    render(h(SettingsView, { settings: {}, onSave, instance }));
+
+    expect(screen.getByText('Backup unavailable')).toBeTruthy();
+    expect(screen.getByText('Runtime unavailable')).toBeTruthy();
+    expect(screen.getByText('Approval Hooks unavailable')).toBeTruthy();
+    expect(screen.queryByText('Loading backup status...')).toBeNull();
+    expect(screen.queryByText('Loading hooks...')).toBeNull();
+    expect(screen.queryByText('No hooks configured.')).toBeNull();
+    const forbiddenReads = ['/api/backup/status', '/api/runtime/status', '/api/auth/hooks'];
+    const requestedUrls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(requestedUrls.filter((url) => forbiddenReads.includes(url))).toEqual([]);
+
+    const chatLimit = screen.getByRole('spinbutton', { name: 'Chats per group' }) as HTMLInputElement;
+    expect(chatLimit.value).toBe('5');
+    fireEvent.input(chatLimit, { target: { value: '6' } });
+    fireEvent.click(chatLimit.parentElement?.querySelector('button') as HTMLButtonElement);
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('conversations.sidebar_group_limit', '6'));
   });
 
   it('saves preview instruction settings locally without offering file cleanup', async () => {

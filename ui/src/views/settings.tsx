@@ -1227,8 +1227,11 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; actio
   );
 }
 
-function BackupSection(props: { section: SettingsSectionDefinition; mutationsAllowed: boolean }): JSX.Element {
+function BackupSection(props: { section: SettingsSectionDefinition; effectsAllowed: boolean }): JSX.Element {
   const [status, setStatus] = useState<BackupStatus | null>(null);
+  const [loading, setLoading] = useState(props.effectsAllowed);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [toggling, setToggling] = useState(false);
@@ -1236,9 +1239,28 @@ function BackupSection(props: { section: SettingsSectionDefinition; mutationsAll
   const [savingDestination, setSavingDestination] = useState(false);
   const [destinationFeedback, setDestinationFeedback] = useState<string | null>(null);
 
+  const refreshStatus = useCallback(async () => {
+    if (!props.effectsAllowed) {
+      setStatus(null);
+      setLoadError(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setLoadError(null);
+    try {
+      setStatus(await getBackupStatus());
+    } catch (err) {
+      setStatus(null);
+      setLoadError(err instanceof Error ? err.message : 'Failed to load backup status');
+    } finally {
+      setLoading(false);
+    }
+  }, [props.effectsAllowed]);
+
   useEffect(() => {
-    getBackupStatus().then(setStatus).catch(() => {});
-  }, []);
+    void refreshStatus();
+  }, [refreshStatus]);
 
   useEffect(() => {
     if (status?.destination) {
@@ -1247,39 +1269,42 @@ function BackupSection(props: { section: SettingsSectionDefinition; mutationsAll
   }, [status?.destination]);
 
   const handleToggle = useCallback(async () => {
-    if (!props.mutationsAllowed || !status) return;
+    if (!props.effectsAllowed || !status) return;
     setToggling(true);
+    setActionError(null);
     try {
       const newEnabled = !status.enabled;
       await updateBackupSettings({ enabled: newEnabled });
       setStatus((prev) => prev ? { ...prev, enabled: newEnabled } : prev);
-    } catch {
-      // ignore
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update backup schedule');
     } finally {
       setToggling(false);
     }
-  }, [props.mutationsAllowed, status]);
+  }, [props.effectsAllowed, status]);
 
   const handleIntervalChange = useCallback(async (e: Event) => {
-    if (!props.mutationsAllowed) return;
+    if (!props.effectsAllowed) return;
     const hours = parseInt((e.target as HTMLSelectElement).value, 10);
     if (!Number.isFinite(hours)) return;
+    setActionError(null);
     try {
       await updateBackupSettings({ interval_hours: hours });
       setStatus((prev) => prev ? { ...prev, interval_hours: hours } : prev);
-    } catch {
-      // ignore
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update backup interval');
     }
-  }, [props.mutationsAllowed]);
+  }, [props.effectsAllowed]);
 
   const handleDestinationSave = useCallback(async () => {
-    if (!props.mutationsAllowed) return;
+    if (!props.effectsAllowed) return;
     const destination = destinationInput.trim();
     if (!destination) {
       setDestinationFeedback('Destination is required');
       return;
     }
     setSavingDestination(true);
+    setActionError(null);
     setDestinationFeedback(null);
     try {
       await updateBackupSettings({ destination });
@@ -1290,18 +1315,16 @@ function BackupSection(props: { section: SettingsSectionDefinition; mutationsAll
     } finally {
       setSavingDestination(false);
     }
-  }, [destinationInput, props.mutationsAllowed]);
+  }, [destinationInput, props.effectsAllowed]);
 
   const handleRunNow = useCallback(async () => {
-    if (!props.mutationsAllowed) return;
+    if (!props.effectsAllowed) return;
     setRunning(true);
     setRunError(null);
     try {
       const result = await runBackupNow();
       if (result.ok) {
-        // Refresh status to get updated last_run_at / last_size_bytes
-        const updated = await getBackupStatus();
-        setStatus(updated);
+        await refreshStatus();
       } else {
         setRunError(result.error ?? 'Backup failed');
       }
@@ -1310,9 +1333,7 @@ function BackupSection(props: { section: SettingsSectionDefinition; mutationsAll
     } finally {
       setRunning(false);
     }
-  }, [props.mutationsAllowed]);
-
-  const enabled = status?.enabled ?? true;
+  }, [props.effectsAllowed, refreshStatus]);
 
   return (
     <SettingsSectionShell section={props.section}>
@@ -1320,13 +1341,23 @@ function BackupSection(props: { section: SettingsSectionDefinition; mutationsAll
         section={props.section}
         description="Automatic metadata dump to a configured Mandible backup file."
       />
-      {!props.mutationsAllowed ? (
-        <DetailPaneNotice severity="info" density="compact" title="Backup changes unavailable">
-          Backup schedules, destinations, and runs can change files outside this copy.
+      {!props.effectsAllowed ? (
+        <DetailPaneNotice severity="info" density="compact" title="Backup unavailable">
+          Backup status and controls access files outside this copy, so they are unavailable in this instance.
         </DetailPaneNotice>
       ) : null}
+      {loadError && props.effectsAllowed && (
+        <DetailPaneNotice severity="error" density="compact" title="Backup status could not be loaded" actions={
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => void refreshStatus()}>Retry</button>
+        }>{loadError}</DetailPaneNotice>
+      )}
+      {actionError && <DetailPaneNotice severity="error" density="compact" title="Backup settings update failed">{actionError}</DetailPaneNotice>}
       {runError && <DetailPaneNotice severity="error" density="compact" title="Backup run failed">{runError}</DetailPaneNotice>}
 
+      {props.effectsAllowed && loading && (
+        <div className="settings-view__section-body settings-view__empty">Loading backup status...</div>
+      )}
+      {props.effectsAllowed && !loading && !loadError && status && (
       <div className="settings-view__section-body">
         {/* Toggle row */}
         <div className="settings-view__toggle-row">
@@ -1335,24 +1366,23 @@ function BackupSection(props: { section: SettingsSectionDefinition; mutationsAll
             <p className="settings-view__section-desc">Run Mandible's metadata dump on a schedule.</p>
           </div>
           <Toggle
-            enabled={enabled}
+            enabled={status.enabled}
             onToggle={handleToggle}
-            disabled={!props.mutationsAllowed || toggling || status === null}
+            disabled={toggling}
             label="Toggle automatic backup"
           />
         </div>
 
         {/* Interval selector — only shown when enabled */}
-        {enabled && (
+        {status.enabled && (
           <div className="settings-view__select-row">
             <div className="settings-view__select-info">
               <span className="settings-view__select-label">Interval</span>
             </div>
             <select
               className="settings-view__select"
-              value={status?.interval_hours ?? 6}
+              value={status.interval_hours}
               onChange={handleIntervalChange}
-              disabled={!props.mutationsAllowed}
             >
               <option value={6}>6h</option>
               <option value={12}>12h</option>
@@ -1371,13 +1401,13 @@ function BackupSection(props: { section: SettingsSectionDefinition; mutationsAll
               type="text"
               value={destinationInput}
               onInput={(e) => setDestinationInput((e.target as HTMLInputElement).value)}
-              disabled={!props.mutationsAllowed || status === null || savingDestination}
+              disabled={savingDestination}
             />
             <button
               type="button"
               className="btn btn--sm"
               onClick={handleDestinationSave}
-              disabled={!props.mutationsAllowed || status === null || savingDestination || destinationInput.trim() === status?.destination}
+              disabled={savingDestination || destinationInput.trim() === status.destination}
             >
               {savingDestination ? '...' : 'Save'}
             </button>
@@ -1395,9 +1425,7 @@ function BackupSection(props: { section: SettingsSectionDefinition; mutationsAll
             <span className="settings-view__number-label">Last backup</span>
           </div>
           <div className="settings-view__number-controls">
-            {status === null ? (
-              <span className="text-muted">Loading...</span>
-            ) : status.last_run_at ? (
+            {status.last_run_at ? (
               <span>
                 {formatRelativeTime(status.last_run_at, { style: 'verbose' })}
                 {status.last_size_bytes != null && (
@@ -1425,44 +1453,58 @@ function BackupSection(props: { section: SettingsSectionDefinition; mutationsAll
               type="button"
               className="btn btn--active btn--sm"
               onClick={handleRunNow}
-              disabled={!props.mutationsAllowed || running || status === null}
+              disabled={running}
             >
               {running ? '...' : 'Run Now'}
             </button>
           </div>
         </div>
       </div>
+      )}
+      {props.effectsAllowed && !loading && !loadError && !status && (
+        <div className="settings-view__section-body settings-view__empty">Backup status is unavailable.</div>
+      )}
     </SettingsSectionShell>
   );
 }
 
 // Bug: cc4688b — Zone 2 mutable runtime section
-function RuntimeSection(props: { section: SettingsSectionDefinition; actionsAllowed: boolean }): JSX.Element {
+function RuntimeSection(props: { section: SettingsSectionDefinition; effectsAllowed: boolean }): JSX.Element {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(props.effectsAllowed);
   const [action, setAction] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
 
   const refreshStatus = useCallback(async () => {
+    if (!props.effectsAllowed) {
+      setStatus(null);
+      setStatusError(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setStatusError(null);
     try {
       const next = await getRuntimeStatus();
       setStatus(next);
-      setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load runtime status');
+      setStatus(null);
+      setStatusError(err instanceof Error ? err.message : 'Failed to load runtime status');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [props.effectsAllowed]);
 
   useEffect(() => {
     void refreshStatus();
   }, [refreshStatus]);
 
   const handleBootstrap = useCallback(async () => {
-    if (!props.actionsAllowed) return;
+    if (!props.effectsAllowed) return;
     setAction('bootstrap');
+    setActionError(null);
     setFeedback(null);
     try {
       await bootstrapRuntime();
@@ -1472,6 +1514,7 @@ function RuntimeSection(props: { section: SettingsSectionDefinition; actionsAllo
         try {
           const next = await getRuntimeStatus();
           setStatus(next);
+          setStatusError(null);
           if (next.available) {
             window.clearInterval(timer);
             setFeedback('Zone 2 runtime initialized successfully.');
@@ -1487,14 +1530,15 @@ function RuntimeSection(props: { section: SettingsSectionDefinition; actionsAllo
         setAction(null);
       }, 180_000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Bootstrap failed');
+      setActionError(err instanceof Error ? err.message : 'Bootstrap failed');
       setAction(null);
     }
-  }, [props.actionsAllowed]);
+  }, [props.effectsAllowed]);
 
   const handleUpdate = useCallback(async () => {
-    if (!props.actionsAllowed) return;
+    if (!props.effectsAllowed) return;
     setAction('update');
+    setActionError(null);
     setFeedback(null);
     try {
       const result = await updateRuntime();
@@ -1505,41 +1549,43 @@ function RuntimeSection(props: { section: SettingsSectionDefinition; actionsAllo
       }
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Update failed');
+      setActionError(err instanceof Error ? err.message : 'Update failed');
     } finally {
       setAction(null);
     }
-  }, [props.actionsAllowed, refreshStatus]);
+  }, [props.effectsAllowed, refreshStatus]);
 
   const handleRollback = useCallback(async () => {
-    if (!props.actionsAllowed) return;
+    if (!props.effectsAllowed) return;
     setAction('rollback');
+    setActionError(null);
     setFeedback(null);
     try {
       await rollbackRuntime();
       setFeedback('Last patch rolled back.');
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Rollback failed');
+      setActionError(err instanceof Error ? err.message : 'Rollback failed');
     } finally {
       setAction(null);
     }
-  }, [props.actionsAllowed, refreshStatus]);
+  }, [props.effectsAllowed, refreshStatus]);
 
   const handleReset = useCallback(async () => {
-    if (!props.actionsAllowed) return;
+    if (!props.effectsAllowed) return;
     setAction('reset');
+    setActionError(null);
     setFeedback(null);
     try {
       await resetRuntime();
       setFeedback('Reset to upstream complete.');
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Reset failed');
+      setActionError(err instanceof Error ? err.message : 'Reset failed');
     } finally {
       setAction(null);
     }
-  }, [props.actionsAllowed, refreshStatus]);
+  }, [props.effectsAllowed, refreshStatus]);
 
   return (
     <SettingsSectionShell section={props.section}>
@@ -1547,12 +1593,17 @@ function RuntimeSection(props: { section: SettingsSectionDefinition; actionsAllo
         section={props.section}
         description="Zone 2 mutable runtime for self-modification and patching."
       />
-      {!props.actionsAllowed ? (
-        <DetailPaneNotice severity="info" density="compact" title="Runtime changes unavailable">
-          Runtime installation, updates, rollback, and reset are disabled in this instance.
+      {!props.effectsAllowed ? (
+        <DetailPaneNotice severity="info" density="compact" title="Runtime unavailable">
+          Runtime status and controls require production-file access and external processes, which are unavailable in this instance.
         </DetailPaneNotice>
       ) : null}
-      {error && <DetailPaneNotice severity="error" density="compact" title="Runtime action failed">{error}</DetailPaneNotice>}
+      {statusError && props.effectsAllowed && (
+        <DetailPaneNotice severity="error" density="compact" title="Runtime status could not be loaded" actions={
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => void refreshStatus()}>Retry</button>
+        }>{statusError}</DetailPaneNotice>
+      )}
+      {actionError && <DetailPaneNotice severity="error" density="compact" title="Runtime action failed">{actionError}</DetailPaneNotice>}
 
       <div className="settings-view__section-body">
         {/* Install mode */}
@@ -1563,8 +1614,10 @@ function RuntimeSection(props: { section: SettingsSectionDefinition; actionsAllo
           <div className="settings-view__number-controls">
             {loading ? (
               <span className="text-muted">Loading...</span>
+            ) : !props.effectsAllowed || statusError ? (
+              <span className="text-muted">Unavailable in this instance</span>
             ) : (
-              <span>{status?.installMode ?? 'unknown'}</span>
+              <span>{status?.installMode ?? 'Unavailable'}</span>
             )}
           </div>
         </div>
@@ -1577,10 +1630,11 @@ function RuntimeSection(props: { section: SettingsSectionDefinition; actionsAllo
           <div className="settings-view__number-controls">
             {loading ? (
               <span className="text-muted">Loading...</span>
+            ) : !props.effectsAllowed || statusError ? (
+              <span className="text-muted">Unavailable in this instance</span>
             ) : (
               <span className="text-muted" style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>
-                {status?.zone2Path ?? 'N/A'}
-                {status?.available ? ' (active)' : ' (not initialized)'}
+                {status ? `${status.zone2Path ?? 'N/A'}${status.available ? ' (active)' : ' (not initialized)'}` : 'Unavailable'}
               </span>
             )}
           </div>
@@ -1622,23 +1676,25 @@ function RuntimeSection(props: { section: SettingsSectionDefinition; actionsAllo
             <span className="settings-view__number-label">Actions</span>
           </div>
           <div className="settings-view__number-controls" style={{ gap: '0.5rem', display: 'flex', flexWrap: 'wrap' }}>
-            {!status?.available && (
+            {!props.effectsAllowed ? (
+              <span className="text-muted">Unavailable in this instance</span>
+            ) : !statusError && !status?.available && (
               <button
                 type="button"
                 className="btn btn--active btn--sm"
                 onClick={handleBootstrap}
-                disabled={!props.actionsAllowed || loading || action != null}
+                disabled={loading || action != null}
               >
                 {action === 'bootstrap' ? '...' : 'Initialize Runtime'}
               </button>
             )}
-            {status?.available && (
+            {props.effectsAllowed && status?.available && (
               <>
                 <button
                   type="button"
                   className="btn btn--active btn--sm"
                   onClick={handleUpdate}
-                  disabled={!props.actionsAllowed || loading || action != null}
+                  disabled={loading || action != null}
                 >
                   {action === 'update' ? '...' : 'Check for Updates'}
                 </button>
@@ -1646,7 +1702,7 @@ function RuntimeSection(props: { section: SettingsSectionDefinition; actionsAllo
                   type="button"
                   className="btn btn--sm"
                   onClick={handleRollback}
-                  disabled={!props.actionsAllowed || loading || action != null || (status.patchCount ?? 0) === 0}
+                  disabled={loading || action != null || (status.patchCount ?? 0) === 0}
                 >
                   {action === 'rollback' ? '...' : 'Rollback Last Patch'}
                 </button>
@@ -1654,7 +1710,7 @@ function RuntimeSection(props: { section: SettingsSectionDefinition; actionsAllo
                   type="button"
                   className="btn btn--sm"
                   onClick={handleReset}
-                  disabled={!props.actionsAllowed || loading || action != null}
+                  disabled={loading || action != null}
                 >
                   {action === 'reset' ? '...' : 'Reset to Upstream'}
                 </button>
@@ -1785,9 +1841,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const sharedMaintenanceAllowed = allowsInstanceEffect(instance, 'maintenance:shared');
   const userPreferencesAllowed = canEditUserPreferences(instance);
   const instructionSettingsAllowed = canWriteLedger(instance);
-  const instructionExportAllowed = canWriteProductionFiles(instance);
+  const productionFilesAllowed = canWriteProductionFiles(instance);
+  const approvalHooksReadAllowed = allowsInstanceEffect(instance, 'auth:protected');
+  const approvalHooksChangeAllowed = sharedMaintenanceAllowed && approvalHooksReadAllowed;
   const credentialChangesAllowed = allowsInstanceEffect(instance, 'auth:credentials');
-  const hostActionsAllowed = instructionExportAllowed && allowsInstanceEffect(instance, 'process:external');
+  const hostActionsAllowed = productionFilesAllowed && allowsInstanceEffect(instance, 'process:external');
   const [protectedBranches, setProtectedBranches] = useState('');
   const [quietHours, setQuietHours] = useState('');
   const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');
@@ -2025,7 +2083,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         settings={settings}
         onSave={onSave}
         settingsAllowed={instructionSettingsAllowed}
-        exportAllowed={instructionExportAllowed}
+        exportAllowed={productionFilesAllowed}
       />
 
       <ProjectPermissionsSection section={SETTINGS_SECTIONS.projectPermissions} mutationsAllowed={instructionSettingsAllowed} />
@@ -2422,7 +2480,10 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           description="Repo-specific post-approval hook configuration."
         />
         <div className="settings-view__section-body">
-          <AuthHooksPanel mutationsAllowed={sharedMaintenanceAllowed} />
+          <AuthHooksPanel
+            readAvailable={approvalHooksReadAllowed}
+            mutationsAllowed={approvalHooksChangeAllowed}
+          />
         </div>
       </SettingsSectionShell>
 
@@ -2484,10 +2545,10 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       </SettingsSectionShell>
 
       {/* ── Section 7: Backup ── */}
-      <BackupSection section={SETTINGS_SECTIONS.backup} mutationsAllowed={instructionExportAllowed} />
+      <BackupSection section={SETTINGS_SECTIONS.backup} effectsAllowed={productionFilesAllowed} />
 
       {/* ── Section 8: Runtime ── Bug: cc4688b */}
-      <RuntimeSection section={SETTINGS_SECTIONS.runtime} actionsAllowed={hostActionsAllowed} />
+      <RuntimeSection section={SETTINGS_SECTIONS.runtime} effectsAllowed={hostActionsAllowed} />
         </div>
       </div>
     </div>
