@@ -202,6 +202,46 @@ describe("versioned conversation source reader", () => {
     db.close();
   });
 
+  it("serves the sealed sparse prefix during append growth and rejects an in-place rewrite", async () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    const parsed = await parse(filePath);
+    insertConversation(db, "conversation-a", filePath, parsed);
+    const versionId = await record(db, "conversation-a", filePath);
+    const cache = getConversationStructureCache(db);
+    expect(cache.captureDenseRows(db, "conversation-a", "replace")).toMatchObject({
+      cached: parsed.blocks.length,
+      sourceVersionId: versionId,
+    });
+    db.exec(`
+      DELETE FROM conversation_block_aliases;
+      DELETE FROM conversation_structural_blocks;
+      DELETE FROM conversation_blocks;
+      DELETE FROM conversation_normalization_checkpoints;
+    `);
+
+    fs.appendFileSync(filePath, `${JSON.stringify({
+      type: "response_item",
+      timestamp: "2026-08-17T00:00:04Z",
+      payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "new tail" }] },
+    })}\n`);
+    const reader = new ConversationSourceReader(db);
+    const appended = await reader.readPage("conversation-a", { offset: 0, limit: 3 });
+    expect(appended.status).toBe("source");
+    if (appended.status !== "source") throw new Error("expected verified sparse prefix read");
+    expect(appended.sourceVersionId).toBe(versionId);
+    expect(appended.value.total).toBe(parsed.blocks.length);
+    expect(appended.value.blocks.map((block) => block.content)).toEqual(parsed.blocks.map((block) => block.content));
+
+    const grownBytes = fs.readFileSync(filePath, "utf8");
+    fs.writeFileSync(filePath, grownBytes.replace("hello result", "jello result"));
+    const rewritten = await reader.readPage("conversation-a", { offset: 1, limit: 1 });
+    expect(rewritten.status).toBe("stale");
+    db.close();
+  });
+
   it("restores Codex model metadata from the durable conversation context for bounded reads", async () => {
     const db = new Database(":memory:");
     migrate(db);
