@@ -100,7 +100,7 @@ describe("instance effect policy", () => {
       .toThrow("user-preferences directory escapes registered custody");
   });
 
-  it("allows only the known isolated preference writes in a standard preview", () => {
+  it("allows copied-ledger and known isolated preference writes in a standard preview", () => {
     const instance = preview();
     const identity = { effect_ceiling: STANDARD_PREVIEW_EFFECTS };
     for (const pathname of [
@@ -113,13 +113,174 @@ describe("instance effect policy", () => {
       expect(authorizeEffects(instance, identity, operationForRequest("PUT", pathname)))
         .toEqual({ allowed: true });
     }
+    for (const pathname of ["/api/settings/app_theme", "/api/projects", "/api/work/repos/repo-1"]) {
+      expect(operationForRequest("PUT", pathname, "preview")).toEqual({
+        id: pathname.startsWith("/api/projects") ? "projects.registry.write"
+          : pathname.startsWith("/api/work") ? "ledger.write" : "settings.copy.write",
+        effects: ["ledger:write"],
+      });
+      expect(authorizeEffects(instance, identity, operationForRequest("PUT", pathname, "preview")))
+        .toEqual({ allowed: true });
+    }
+    expect(authorizeEffects(instance, identity, operationForRequest("PUT", "/api/user-settings/unknown", "preview")))
+      .toMatchObject({ allowed: false, missing: ["maintenance:shared"] });
+  });
+
+  it("allows copied work projections without starting Git scans and retains process gates", () => {
+    const identity = { effect_ceiling: STANDARD_PREVIEW_EFFECTS };
     for (const pathname of [
-      "/api/settings/app_theme",
-      "/api/user-settings/unknown",
-      "/api/projects",
+      "/api/work/repos",
+      "/api/work/repos/repo-1/branches",
+      "/api/work/repos/repo-1/worktrees",
+      "/api/work/repos/repo-1/branch/main",
+      "/api/work/push/status",
     ]) {
-      expect(authorizeEffects(instance, identity, operationForRequest("PUT", pathname)))
-        .toMatchObject({ allowed: false, missing: ["maintenance:shared"] });
+      const operation = operationForRequest("GET", pathname, "preview");
+      expect(operation?.effects).toEqual(["ledger:read"]);
+      expect(authorizeEffects(preview(), identity, operation)).toEqual({ allowed: true });
+    }
+    for (const [method, pathname, effects] of [
+      ["GET", "/api/work/repos/repo-1/audit", ["ledger:write", "process:external"]],
+      ["GET", "/api/work/repos/repo-1/branches/main/commits", ["process:external"]],
+      ["GET", "/api/work/repos/repo-1/compare", ["process:external"]],
+      ["POST", "/api/work/scan", ["ledger:write", "process:external"]],
+      ["POST", "/api/work/repos/repo-1/push", ["ledger:write", "files:production", "network:publish", "process:external"]],
+    ] as const) {
+      const operation = operationForRequest(method, pathname, "preview");
+      expect(operation?.effects).toEqual(effects);
+      expect(authorizeEffects(preview(), identity, operation)).toMatchObject({ allowed: false });
+    }
+  });
+
+  it("permits copied reminder, webhook, and console preference data while guarding delivery", () => {
+    const identity = { effect_ceiling: STANDARD_PREVIEW_EFFECTS };
+    for (const [method, pathname, effects] of [
+      ["GET", "/api/reminders", ["ledger:read"]],
+      ["GET", "/api/reminders/task-1", ["ledger:read"]],
+      ["GET", "/api/webhooks", ["ledger:read"]],
+      ["POST", "/api/webhooks/event-1/dismiss", ["ledger:write"]],
+      ["GET", "/api/console/pinned", ["ledger:read"]],
+      ["PUT", "/api/console/pinned", ["ledger:write"]],
+    ] as const) {
+      const operation = operationForRequest(method, pathname, "preview");
+      expect(operation?.effects).toEqual(effects);
+      expect(authorizeEffects(preview(), identity, operation)).toEqual({ allowed: true });
+    }
+    for (const [method, pathname] of [
+      ["POST", "/api/reminders"],
+      ["POST", "/api/reminders/task-1/cancel"],
+      ["POST", "/api/webhooks/ingest"],
+      ["POST", "/api/webhooks/event-1/deliver"],
+      ["GET", "/api/console/sessions"],
+    ]) {
+      expect(authorizeEffects(preview(), identity, operationForRequest(method, pathname, "preview")))
+        .toMatchObject({ allowed: false });
+    }
+  });
+
+  it("exposes copied auth queue review paths while keeping preparation and authority actions protected", () => {
+    const identity = { effect_ceiling: STANDARD_PREVIEW_EFFECTS };
+    for (const [method, pathname] of [
+      ["GET", "/api/auth/queue"],
+      ["GET", "/api/auth/history"],
+      ["GET", "/api/auth/request/request-1"],
+      ["GET", "/api/auth/request/request-1/actions"],
+      ["GET", "/api/auth/clearances"],
+      ["GET", "/api/auth/clearances/clearance-1"],
+      ["POST", "/api/auth/request"],
+      ["POST", "/api/auth/request/request-1/actions"],
+      ["PUT", "/api/auth/request/request-1/actions/action-1"],
+      ["DELETE", "/api/auth/request/request-1/actions/action-1"],
+      ["POST", "/api/auth/request/request-1/actions/action-1/veto"],
+      ["PUT", "/api/auth/request/request-1"],
+      ["POST", "/api/auth/request/request-1/withdraw"],
+      ["POST", "/api/auth/request/request-1/reject"],
+      ["POST", "/api/auth/request/request-1/skip"],
+      ["POST", "/api/auth/request/request-1/retry"],
+      ["POST", "/api/auth/request/request-1/requeue"],
+    ]) {
+      const operation = operationForRequest(method, pathname, "preview");
+      expect(operation?.effects).toEqual(method === "GET" ? ["ledger:read"] : ["ledger:write"]);
+      expect(authorizeEffects(preview(), identity, operation)).toEqual({ allowed: true });
+    }
+
+    for (const [method, pathname, effect] of [
+      ["POST", "/api/auth/check", "process:external"],
+      ["POST", "/api/users/setup", "auth:credentials"],
+      ["POST", "/api/auth/request/request-1/approve", "auth:protected"],
+      ["POST", "/api/auth/request/request-1/output", "auth:protected"],
+      ["POST", "/api/auth/request/request-1/result", "auth:protected"],
+      ["POST", "/api/auth/request/request-1/candidate-snapshot-repair/inspect", "auth:protected"],
+      ["GET", "/api/auth/clearances/signing", "auth:credentials"],
+      ["POST", "/api/auth/clearances", "auth:protected"],
+      ["GET", "/api/auth/hooks", "auth:protected"],
+    ] as const) {
+      expect(operationForRequest(method, pathname, "preview")?.effects).toEqual([effect]);
+      expect(authorizeEffects(preview(), identity, operationForRequest(method, pathname, "preview")))
+        .toMatchObject({ allowed: false });
+    }
+
+    const main = resolveInstanceInfo({ env: {} });
+    const ledgerOnlyIdentity = { effect_ceiling: ["ledger:read", "ledger:write"] as const };
+    for (const pathname of [
+      "/api/auth/queue",
+      "/api/auth/history",
+      "/api/auth/request/request-1",
+      "/api/auth/request/request-1/actions",
+    ]) {
+      const operation = operationForRequest("GET", pathname, "main");
+      expect(operation?.effects).toContain("auth:protected");
+      expect(authorizeEffects(main, ledgerOnlyIdentity, operation))
+        .toMatchObject({ allowed: false, missing: ["auth:protected"] });
+    }
+    for (const [method, pathname] of [
+      ["POST", "/api/auth/request"],
+      ["PUT", "/api/auth/request/request-1"],
+      ["POST", "/api/auth/request/request-1/reject"],
+      ["POST", "/api/auth/request/request-1/withdraw"],
+      ["POST", "/api/auth/request/request-1/requeue"],
+      ["POST", "/api/auth/request/request-1/skip"],
+      ["POST", "/api/auth/request/request-1/retry"],
+      ["POST", "/api/auth/request/request-1/actions/action-1/veto"],
+    ]) {
+      const operation = operationForRequest(method, pathname, "main");
+      expect(operation?.effects).toContain("auth:protected");
+      expect(authorizeEffects(main, ledgerOnlyIdentity, operation))
+        .toMatchObject({ allowed: false, missing: ["auth:protected"] });
+    }
+    for (const [method, pathname] of [
+      ["POST", "/api/auth/request"],
+      ["PUT", "/api/auth/request/request-1"],
+      ["POST", "/api/auth/request/request-1/reject"],
+      ["POST", "/api/auth/request/request-1/withdraw"],
+      ["POST", "/api/auth/request/request-1/requeue"],
+    ]) {
+      expect(operationForRequest(method, pathname, "preview")?.effects).toEqual(["ledger:write"]);
+    }
+  });
+
+  it("separates copied Space export rows from live export and drift operations", () => {
+    const identity = { effect_ceiling: STANDARD_PREVIEW_EFFECTS };
+    expect(operationForRequest("GET", "/api/spaces/space-1/exports", "preview")?.effects)
+      .toEqual(["ledger:read"]);
+    expect(authorizeEffects(preview(), identity,
+      operationForRequest("GET", "/api/spaces/space-1/exports", "preview")))
+      .toEqual({ allowed: true });
+    expect(operationForRequest("POST", "/api/spaces/exports/settings", "preview")?.effects)
+      .toEqual(["ledger:write"]);
+    for (const pathname of [
+      "/api/spaces/space-1/exports",
+      "/api/spaces/space-1/exports/untracked",
+    ]) {
+      expect(authorizeEffects(preview(), identity,
+        operationForRequest("POST", pathname, "preview"))).toMatchObject({ allowed: false });
+    }
+    for (const pathname of [
+      "/api/spaces/space-1/exports/drift",
+      "/api/spaces/space-1/exports/export-1/drift",
+    ]) {
+      expect(authorizeEffects(preview(), identity,
+        operationForRequest("GET", pathname, "preview"))).toMatchObject({ allowed: false });
     }
   });
 

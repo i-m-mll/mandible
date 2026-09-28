@@ -1,4 +1,5 @@
 import { execFile, spawnSync } from "child_process";
+import { randomUUID } from "node:crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -164,6 +165,7 @@ export interface WorkScannerOptions {
   repo_roots?: string[];
   default_repo_root?: string;
   config_path?: string;
+  config_root?: string;
   on_event?: (event: SseEvent) => void;
   scan_skip_window_ms?: number;
 }
@@ -240,6 +242,12 @@ function resolveHome(input: string): string {
     return path.join(os.homedir(), input.slice(1));
   }
   return input;
+}
+
+function pathIsWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === ""
+    || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function readRepoConfig(configPath: string): { repos: string[]; exists: boolean } {
@@ -725,6 +733,7 @@ export class WorkScanner {
   private readonly db: SqliteDatabase;
   private readonly defaultRepoRoot: string;
   private readonly configPath: string;
+  private readonly configRoot: string | null;
   private readonly repoRootsOverride: string[] | null;
   private readonly emit: (event: SseEvent) => void;
   private readonly scanSkipWindowMs: number;
@@ -739,6 +748,10 @@ export class WorkScanner {
     this.configPath = path.resolve(
       resolveHome(options.config_path ?? ensureMandibleConfigFile("repos.json")),
     );
+    this.configRoot = options.config_root ? path.resolve(options.config_root) : null;
+    if (this.configRoot && !pathIsWithin(this.configRoot, this.configPath)) {
+      throw new Error("Repository configuration path escapes its instance-owned root.");
+    }
     this.repoRootsOverride = options.repo_roots
       ? normalizeRoots(options.repo_roots)
       : null;
@@ -750,6 +763,16 @@ export class WorkScanner {
     if (this.repoInfos.length > 0) {
       return this.repoInfos;
     }
+    const cachedRepos = this.getCachedRepos();
+    if (cachedRepos.length > 0) return cachedRepos;
+    // Explicit scan/startup callers retain full discovery behavior. Request
+    // handlers that need a projection use getCachedRepos() and never fall
+    // through to host filesystem or Git discovery.
+    this.refreshRepoInfos();
+    return this.repoInfos;
+  }
+
+  getCachedRepos(): RepoInfo[] {
     // Phase 2: try DB cold-start
     const dbRows = this.db.prepare(
       "SELECT id, root, name, default_branch, dir_exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE dir_exists = 1"
@@ -770,8 +793,7 @@ export class WorkScanner {
       }));
       return this.repoInfos;
     }
-    // Phase 3: full discovery
-    this.refreshRepoInfos();
+    this.repoInfos = [];
     return this.repoInfos;
   }
 
@@ -1405,23 +1427,105 @@ export class WorkScanner {
     if (!row) return false;
 
     const { root } = row;
-    this.db.prepare("DELETE FROM work_repos WHERE id = ?").run(id);
-    this.db.prepare("DELETE FROM branches WHERE repo_root = ?").run(root);
-
-    // Remove from repos.json
+    this.assertRepoConfigPathWithinRoot();
+    let originalConfig: string | null;
     try {
-      const raw = fs.readFileSync(this.configPath, "utf8");
-      const config = JSON.parse(raw) as { repos: string[] };
-      if (Array.isArray(config.repos)) {
-        config.repos = config.repos.filter((r) => path.resolve(resolveHome(r)) !== root);
-        fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2), "utf8");
+      originalConfig = fs.readFileSync(this.configPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        originalConfig = null;
+      } else {
+        throw error;
       }
-    } catch {
-      // If file doesn't exist or parse error, ignore
+    }
+
+    let nextConfig = originalConfig;
+    if (originalConfig === null) {
+      const remaining = this.db.prepare(
+        "SELECT root FROM work_repos WHERE id <> ? AND dir_exists = 1 ORDER BY root",
+      ).all(id) as Array<{ root: string }>;
+      nextConfig = JSON.stringify({ repos: remaining.map((repo) => repo.root) }, null, 2);
+    } else {
+      const config = JSON.parse(originalConfig) as { repos?: unknown };
+      if (Array.isArray(config.repos)) {
+        config.repos = config.repos.filter(
+          (repo): repo is string => typeof repo === "string" && path.resolve(resolveHome(repo)) !== root,
+        );
+        nextConfig = JSON.stringify(config, null, 2);
+      }
+    }
+
+    let configWritten = false;
+    try {
+      if (nextConfig !== null && nextConfig !== originalConfig) {
+        this.writeRepoConfig(nextConfig);
+        configWritten = true;
+      }
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db.prepare("DELETE FROM work_repos WHERE id = ?").run(id);
+        this.db.prepare("DELETE FROM branches WHERE repo_root = ?").run(root);
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    } catch (error) {
+      if (configWritten) {
+        try {
+          if (originalConfig === null) fs.rmSync(this.configPath, { force: true });
+          else this.writeRepoConfig(originalConfig);
+        } catch (restoreError) {
+          workScannerLog("error", "work_scanner_repo_config_restore_failed", {
+            subsystem: "work-scanner",
+            path: this.configPath,
+            error: String(restoreError),
+          });
+        }
+      }
+      throw error;
     }
 
     this.repoInfos = this.repoInfos.filter((r) => r.id !== id);
     return true;
+  }
+
+  private writeRepoConfig(content: string): void {
+    const directory = path.dirname(this.configPath);
+    fs.mkdirSync(directory, { recursive: true });
+    this.assertRepoConfigPathWithinRoot();
+
+    const temporary = path.join(directory, `.repos-${randomUUID()}.tmp`);
+    try {
+      fs.writeFileSync(temporary, content, { encoding: "utf8", flag: "wx" });
+      fs.renameSync(temporary, this.configPath);
+    } catch (error) {
+      try { fs.rmSync(temporary, { force: true }); } catch { /* preserve the write error */ }
+      throw error;
+    }
+  }
+
+  private assertRepoConfigPathWithinRoot(): void {
+    if (!this.configRoot) return;
+    const root = fs.realpathSync.native(this.configRoot);
+    const directory = path.dirname(this.configPath);
+    if (fs.existsSync(directory)) {
+      const realDirectory = fs.realpathSync.native(directory);
+      if (!pathIsWithin(root, realDirectory)) {
+        throw new Error("Repository configuration directory escapes its instance-owned root.");
+      }
+    }
+    try {
+      const stats = fs.lstatSync(this.configPath);
+      if (stats.isSymbolicLink()) {
+        throw new Error("Repository configuration file cannot be a symlink in a preview instance.");
+      }
+      if (stats.nlink > 1 || !pathIsWithin(root, fs.realpathSync.native(this.configPath))) {
+        throw new Error("Repository configuration file escapes its instance-owned root.");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
 
   private isGitDirectory(candidate: string): boolean {

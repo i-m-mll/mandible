@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { InstanceInfo } from "../types.js";
+import type { InstanceInfo, InstanceRole } from "../types.js";
 
 export const EFFECTS = [
   "ledger:read",
@@ -34,15 +34,15 @@ export type Operation = {
 
 const READ_OPERATION: Operation = { id: "ledger.read", effects: ["ledger:read"] };
 const LOCAL_WRITE_OPERATION: Operation = { id: "ledger.write", effects: ["ledger:write"] };
+const AUTH_PROTECTED_OPERATION: Operation = { id: "auth.protected", effects: ["auth:protected"] };
 const PREVIEW_FILE_WRITE_OPERATION: Operation = { id: "artifacts.bytes", effects: ["ledger:write", "files:preview"] };
 
 const EXACT_OPERATIONS = new Map<string, Operation>([
   ["GET /api/health", { id: "health.read", effects: [] }],
   ["GET /api/instance", { id: "instance.read", effects: [] }],
   ["GET /api/client-auth/whoami", { id: "session.inspect", effects: [] }],
-  ["POST /api/users/setup", { id: "installation.setup", effects: [] }],
   ["GET /api/console/run-options", { id: "console.run_options.describe", effects: ["ledger:read"] }],
-  ["POST /api/auth/check", READ_OPERATION],
+  ["POST /api/auth/check", { id: "auth.check", effects: ["process:external"] }],
   ["POST /api/timeline/project", READ_OPERATION],
   ["POST /api/events/subscribe", READ_OPERATION],
   ["POST /api/briefing-destination-routes/plan", READ_OPERATION],
@@ -54,8 +54,8 @@ const EXACT_OPERATIONS = new Map<string, Operation>([
 
 const EXACT_WRITE_OPERATIONS = new Map<string, Operation>([
   ["POST /api/system/open-path", { id: "system.open_path", effects: ["process:external"] }],
-  ["POST /api/work/push", { id: "work.push", effects: ["files:production", "network:publish"] }],
-  ["POST /api/work/scan", { id: "work.scan", effects: ["files:production"] }],
+  ["POST /api/work/push", { id: "work.push", effects: ["ledger:write", "files:production", "network:publish", "process:external"] }],
+  ["POST /api/work/scan", { id: "work.scan", effects: ["ledger:write", "process:external"] }],
   ["POST /api/artifacts/scan-repos", { id: "artifacts.scan_repos", effects: ["files:production"] }],
   ["POST /api/artifacts/ingest", { id: "artifacts.ingest", effects: ["files:production"] }],
   ["POST /api/artifacts/snapshot", { id: "artifacts.snapshot", effects: ["files:production"] }],
@@ -72,7 +72,7 @@ const EXACT_WRITE_OPERATIONS = new Map<string, Operation>([
 ]);
 
 const RESTRICTED_PREFIXES: ReadonlyArray<[string, Operation]> = [
-  ["/api/auth", { id: "auth.protected", effects: ["auth:protected"] }],
+  ["/api/auth", AUTH_PROTECTED_OPERATION],
   ["/api/users", { id: "auth.credentials", effects: ["auth:credentials"] }],
   ["/api/client-auth", { id: "auth.credentials", effects: ["auth:credentials"] }],
   ["/api/admin", { id: "admin", effects: ["auth:protected", "maintenance:shared"] }],
@@ -83,8 +83,6 @@ const RESTRICTED_PREFIXES: ReadonlyArray<[string, Operation]> = [
   ["/api/webhooks", { id: "network.publish", effects: ["network:publish"] }],
   ["/api/runtime", { id: "runtime.files", effects: ["files:production", "process:external"] }],
   ["/api/backup", { id: "backup.production", effects: ["files:production"] }],
-  ["/api/settings/instructions", { id: "instructions.install", effects: ["files:production"] }],
-  ["/api/work", { id: "work.files", effects: ["files:production"] }],
   ["/api/v1/trash", { id: "trash.files", effects: ["files:production"] }],
   ["/api/conversation-custody", { id: "conversation.custody", effects: ["files:production"] }],
   ["/api/tasks/commands", { id: "tasks.command", effects: ["process:external"] }],
@@ -107,11 +105,143 @@ const LOCAL_WRITE_PREFIXES = [
   "/api/work-units",
 ] as const;
 
-export function operationForRequest(method: string, pathname: string): Operation | null {
+const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+export function operationForRequest(
+  method: string,
+  pathname: string,
+  instanceRole: InstanceRole = "main",
+): Operation | null {
   const normalizedMethod = method.toUpperCase();
+  if (normalizedMethod === "POST" && pathname === "/api/users/setup") {
+    return instanceRole === "preview"
+      ? { id: "user.setup.copy", effects: ["auth:credentials"] }
+      : { id: "installation.setup", effects: [] };
+  }
   const exact = EXACT_OPERATIONS.get(`${normalizedMethod} ${pathname}`);
   if (exact) return exact;
   if (!pathname.startsWith("/api/")) return null;
+
+  // Settings routes can save a copied database value without applying a
+  // system-wide effect. Preview instruction settings return an explicit
+  // saved-but-not-exported result; the handler does not run host commands.
+  if (pathname === "/api/settings/instructions-delivery") {
+    if (normalizedMethod === "GET") return READ_OPERATION;
+    if (normalizedMethod === "PUT") {
+      return instanceRole === "preview"
+        ? { id: "settings.instructions.copy", effects: ["ledger:write"] }
+        : { id: "instructions.install", effects: ["ledger:write", "files:production", "process:external"] };
+    }
+  }
+
+  // Auth queue getters and review edits can trigger maintenance or candidate
+  // cleanup on main. Preview disables that work in AuthQueue, so only its
+  // explicit copied-ledger subset uses ledger effects.
+  if (pathname === "/api/auth/clearances/signing") {
+    return { id: "auth.credentials", effects: ["auth:credentials"] };
+  }
+  if (normalizedMethod === "GET" && (
+    pathname === "/api/auth/queue"
+    || pathname === "/api/auth/history"
+    || /^\/api\/auth\/request\/[^/]+$/.test(pathname)
+    || /^\/api\/auth\/request\/[^/]+\/actions$/.test(pathname)
+    || pathname === "/api/auth/clearances"
+    || (/^\/api\/auth\/clearances\/[^/]+$/.test(pathname)
+      && pathname !== "/api/auth/clearances/signing")
+  )) {
+    return instanceRole === "preview" ? READ_OPERATION : AUTH_PROTECTED_OPERATION;
+  }
+  const previewAuthWrite = (
+    (pathname === "/api/auth/request" && normalizedMethod === "POST")
+    || (normalizedMethod === "POST" && /^\/api\/auth\/request\/[^/]+\/actions$/.test(pathname))
+    || ((normalizedMethod === "PUT" || normalizedMethod === "DELETE")
+      && /^\/api\/auth\/request\/[^/]+\/actions\/[^/]+$/.test(pathname))
+    || (normalizedMethod === "POST"
+      && /^\/api\/auth\/request\/[^/]+\/actions\/[^/]+\/veto$/.test(pathname))
+    || (normalizedMethod === "PUT" && /^\/api\/auth\/request\/[^/]+$/.test(pathname))
+    || (normalizedMethod === "POST"
+      && /^\/api\/auth\/request\/[^/]+\/(?:withdraw|reject|skip|retry|requeue)$/.test(pathname))
+  );
+  if (previewAuthWrite) {
+    return instanceRole === "preview" ? LOCAL_WRITE_OPERATION : AUTH_PROTECTED_OPERATION;
+  }
+
+  // Work projections backed by the copied work_repos/branches tables are
+  // ordinary ledger reads. Audit, commit history, and compare routes spawn
+  // Git to inspect live repositories, so their actual effect is process use.
+  if (normalizedMethod === "GET" || normalizedMethod === "HEAD") {
+    if (pathname === "/api/work/repos"
+        || /^\/api\/work\/repos\/[^/]+\/(?:branches|worktrees)$/.test(pathname)
+        || /^\/api\/work\/repos\/[^/]+\/branch\/[^/]+$/.test(pathname)
+        || pathname === "/api/work/push/status") {
+      return READ_OPERATION;
+    }
+    if (/^\/api\/work\/repos\/[^/]+\/audit$/.test(pathname)
+        || /^\/api\/work\/repos\/[^/]+\/branches\/[^/]+\/commits$/.test(pathname)
+        || /^\/api\/work\/repos\/[^/]+\/compare$/.test(pathname)) {
+      return pathname.endsWith("/audit")
+        ? { id: "work.repository.audit", effects: ["ledger:write", "process:external"] }
+        : { id: "work.repository.inspect", effects: ["process:external"] };
+    }
+  }
+
+  if (/^\/api\/work\/repos\/[^/]+\/push$/.test(pathname)
+      && normalizedMethod === "POST") {
+    return { id: "work.push", effects: ["ledger:write", "files:production", "network:publish", "process:external"] };
+  }
+
+  // Repository metadata edits stay in the instance database. Removing a repo
+  // also edits the configured roots file, whose location is instance-owned:
+  // production config for main and a private copy under preview custody.
+  if (/^\/api\/work\/repos\/[^/]+$/.test(pathname) && normalizedMethod === "PUT") {
+    return LOCAL_WRITE_OPERATION;
+  }
+  if (/^\/api\/work\/repos\/[^/]+$/.test(pathname) && normalizedMethod === "DELETE") {
+    return instanceRole === "preview"
+      ? { id: "work.repo.remove", effects: ["ledger:write", "files:preview"] }
+      : { id: "work.repo.remove", effects: ["ledger:write", "files:production"] };
+  }
+  if (pathname === "/api/work/repos/add" && normalizedMethod === "POST") {
+    return instanceRole === "preview"
+      ? { id: "work.repo.add", effects: ["ledger:write", "files:preview", "process:external"] }
+      : { id: "work.repo.add", effects: ["ledger:write", "files:production", "process:external"] };
+  }
+
+  if ((pathname === "/api/projects" || pathname.startsWith("/api/projects/"))
+      && new Set(["POST", "PUT", "PATCH", "DELETE"]).has(normalizedMethod)) {
+    return { id: "projects.registry.write", effects: ["ledger:write"] };
+  }
+
+  if (MUTATION_METHODS.has(normalizedMethod)
+      && /^\/api\/settings\/(?:theme|prompt|multiplexer)$/.test(pathname)) {
+    return instanceRole === "preview"
+      ? { id: "settings.copy.write", effects: ["ledger:write"] }
+      : { id: "settings.host_sync.write", effects: ["ledger:write", "files:production"] };
+  }
+  if ((pathname === "/api/settings" || pathname.startsWith("/api/settings/"))
+      && MUTATION_METHODS.has(normalizedMethod)) {
+    return { id: "settings.copy.write", effects: ["ledger:write"] };
+  }
+
+  // These reads touch only the current instance's copied ledger. Their
+  // delivery, process, credential, and host-file counterparts stay protected.
+  if ((normalizedMethod === "GET" || normalizedMethod === "HEAD") && (
+    pathname === "/api/reminders"
+    || /^\/api\/reminders\/[^/]+$/.test(pathname)
+    || pathname === "/api/webhooks"
+    || pathname === "/api/conversation-spawns"
+    || /^\/api\/conversation-spawns\/[^/]+$/.test(pathname)
+    || pathname === "/api/console/pinned"
+  )) {
+    return READ_OPERATION;
+  }
+  if (normalizedMethod === "PUT" && pathname === "/api/console/pinned") {
+    return LOCAL_WRITE_OPERATION;
+  }
+  if (normalizedMethod === "POST" && /^\/api\/webhooks\/[^/]+\/dismiss$/.test(pathname)) {
+    return LOCAL_WRITE_OPERATION;
+  }
+
   if (normalizedMethod === "POST"
       && /^\/api\/conversations\/[^/]+\/control\/(submit|stop)$/.test(pathname)) {
     return { id: "provider.send", effects: ["provider:send"] };
@@ -125,9 +255,6 @@ export function operationForRequest(method: string, pathname: string): Operation
         || /^\/api\/conversations\/[^/]+\/open-external$/.test(pathname))) {
     return { id: "external.open", effects: ["process:external"] };
   }
-  if (normalizedMethod === "POST" && /^\/api\/work\/repos\/[^/]+\/push$/.test(pathname)) {
-    return { id: "work.push", effects: ["files:production", "network:publish"] };
-  }
   if (normalizedMethod === "POST" && /^\/api\/conversations\/[^/]+\/(fork|export)$/.test(pathname)) {
     return pathname.endsWith("/fork")
       ? { id: "provider.send", effects: ["provider:send"] }
@@ -139,9 +266,21 @@ export function operationForRequest(method: string, pathname: string): Operation
   if (normalizedMethod === "POST" && /^\/api\/issues\/[^/]+\/[^/]+\/spawn$/.test(pathname)) {
     return { id: "issue.spawn", effects: ["process:external"] };
   }
-  if (pathname === "/api/spaces/exports/settings"
-      || /^\/api\/spaces\/[^/]+\/exports(?:\/|$)/.test(pathname)) {
-    return { id: "spaces.export", effects: ["files:production"] };
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports$/.test(pathname)) {
+    return READ_OPERATION;
+  }
+  if (normalizedMethod === "GET"
+      && /^\/api\/spaces\/[^/]+\/exports(?:\/[^/]+)?\/drift$/.test(pathname)) {
+    return { id: "spaces.export.drift", effects: ["ledger:write", "files:production", "process:external"] };
+  }
+  if (normalizedMethod === "POST" && pathname === "/api/spaces/exports/settings") {
+    return LOCAL_WRITE_OPERATION;
+  }
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/exports$/.test(pathname)) {
+    return { id: "spaces.export.track", effects: ["ledger:write", "files:production", "process:external"] };
+  }
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/exports\/untracked$/.test(pathname)) {
+    return { id: "spaces.export.copy", effects: ["files:production"] };
   }
   const explicitWrite = EXACT_WRITE_OPERATIONS.get(`${normalizedMethod} ${pathname}`);
   if (explicitWrite) return explicitWrite;
