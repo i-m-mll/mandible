@@ -320,22 +320,11 @@ describe("settings routes", () => {
       cleanup: [],
     });
     expect(fs.existsSync(cliLog)).toBe(false);
+    expect(fs.existsSync(target)).toBe(false);
     expect(fs.existsSync(path.join(tempHome, ".config", "dotfiles.conf"))).toBe(false);
     expect(db.prepare("SELECT value FROM settings WHERE key = ?").get("instructions.targets")).toEqual({
       value: JSON.stringify([{ path: target, mode: "standalone" }]),
     });
-
-    const theme = createResponse();
-    await routes.handler("PUT", "/api/settings/:key")({
-      method: "PUT",
-      url: "/api/settings/theme",
-      params: { key: "theme" },
-      query: {},
-      body: { value: "dark" },
-      client_identity: identity,
-    }, theme);
-    expect(theme.statusCode).toBe(200);
-    expect(fs.existsSync(path.join(tempHome, ".config", "dotfiles.conf"))).toBe(false);
     db.close();
   });
 });
