@@ -125,18 +125,20 @@ export function useAppShell(): AppShellContextValue {
 export function AppOperationalNoticeOutlet({
   className = 'app-operational-notice-slot',
   detailPaneSlot = false,
-  registerAsMain = true,
+  registerAsMain,
   testId,
   children,
 }: {
   className?: string;
   detailPaneSlot?: boolean;
-  registerAsMain?: boolean;
+  /** Main-view registration is explicit so embedded surfaces cannot claim it by default. */
+  registerAsMain: boolean;
   testId?: string;
   children?: ComponentChildren;
 }): JSX.Element {
   const { active, registerMainNoticeHost } = useAppShell();
   const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const [registeredAsMain, setRegisteredAsMain] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const setHostNode = useCallback((node: HTMLDivElement | null) => {
     if (hostRef.current === node) return;
@@ -145,16 +147,26 @@ export function AppOperationalNoticeOutlet({
   }, []);
 
   useLayoutEffect(() => {
-    if (!active || !registerAsMain || !host || !registerMainNoticeHost) return undefined;
+    if (!active || !registerAsMain || !host || !registerMainNoticeHost) {
+      setRegisteredAsMain(false);
+      return undefined;
+    }
     const ownerShell = host.closest('.detail-pane-shell');
-    if (ownerShell?.parentElement?.closest('.detail-pane-shell')) return undefined;
-    return registerMainNoticeHost(host);
+    const nestedInDetailPane = Boolean(ownerShell?.parentElement?.closest('.detail-pane-shell'));
+    const forbiddenSurface = host.closest('#app-right-sidebar, .view-sidebar, [hidden]');
+    if (nestedInDetailPane || forbiddenSurface) {
+      setRegisteredAsMain(false);
+      return undefined;
+    }
+    const unregister = registerMainNoticeHost(host);
+    setRegisteredAsMain(true);
+    return unregister;
   }, [active, host, registerAsMain, registerMainNoticeHost]);
 
   return (
     <div
       className={className}
-      data-app-operational-notice-outlet={registerAsMain ? 'main' : undefined}
+      data-app-operational-notice-outlet={active && registeredAsMain ? 'main' : undefined}
       data-detail-pane-slot={detailPaneSlot ? 'notice' : undefined}
       data-testid={testId}
       ref={setHostNode}

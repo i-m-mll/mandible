@@ -1807,7 +1807,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <div className="view-header">
         <h2>Settings</h2>
       </div>
-      <AppOperationalNoticeOutlet />
+      <AppOperationalNoticeOutlet registerAsMain />
 
       <div className="settings-view__layout">
         <nav className="settings-view__toc" aria-label="Settings sections">
