@@ -23,6 +23,8 @@ import {
 import { chatItemIdentityKey } from '../../src/conversation-control/provider-live.js';
 import type { ChatItem } from '../../src/parsers/types.js';
 import { queryClient } from '../../ui/src/query/client.js';
+import { conversationKeys } from '../../ui/src/query/conversationKeys.js';
+import type { ConversationTranscriptData } from '../../ui/src/query/conversationData.js';
 import { applyConversationSse } from '../../ui/src/query/conversationSse.js';
 
 
@@ -507,6 +509,48 @@ describe('compact detail pane shell', () => {
     expect(screen.queryByText('source pending')).toBeNull();
     expect(screen.queryByText('No messages yet')).toBeNull();
     expect(await screen.findByText('Message after refresh', {}, { timeout: 3_000 })).toBeTruthy();
+  });
+
+  it('discards an active window reply when an edge read has advanced the aggregate source', async () => {
+    const pinned = mockConversationDetail(defaultControl, []);
+    const staleRefresh = deferred<ConversationPositionWindow>();
+    const newSourceEdge = deferred<ConversationPositionWindow>();
+    const recent = makeTranscriptBlock({ id: 'recent-v1', position: 1, content: 'Recent source v1' });
+    const oldReply = makeTranscriptBlock({ id: 'stale-v1', position: 1, content: 'Stale active reply' });
+    const newSourceBlock = makeTranscriptBlock({ id: 'older-v2', position: 0, content: 'Older source v2' });
+    let initialReads = 0;
+    vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
+      if ('position' in request && request.position === 0) return newSourceEdge.promise;
+      if (++initialReads === 1) {
+        return { ...positionPayload(pinned, [recent], { revision: 2, hasBefore: true }), source_version_id: 'source-v1' };
+      }
+      return staleRefresh.promise;
+    });
+
+    renderConversationDetail(pinned);
+    expect(await screen.findByText('Recent source v1')).toBeTruthy();
+
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.getConversationWindow).mock.calls[1]?.[1]).toMatchObject({ position: 0 });
+    applyConversationSse(queryClient, 'conversation:updated', { id: pinned.id, block_count: 2 });
+    await waitFor(() => expect(initialReads).toBe(2));
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(3));
+
+    await act(async () => newSourceEdge.resolve({
+      ...positionPayload(pinned, [newSourceBlock], { kind: 'block', revision: 2, hasAfter: true }),
+      source_version_id: 'source-v2',
+    }));
+    expect(await screen.findByText('Older source v2')).toBeTruthy();
+
+    await act(async () => staleRefresh.resolve({
+      ...positionPayload(pinned, [oldReply], { revision: 2, hasBefore: true }),
+      source_version_id: 'source-v1',
+    }));
+    await waitFor(() => {
+      const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(pinned.id));
+      expect(aggregate?.source_version_id).toBe('source-v2');
+      expect(aggregate?.blocks.map((block) => block.id)).toEqual(['older-v2']);
+    });
   });
 
   it('keeps the current window visible while an older edge waits for source indexing', async () => {
