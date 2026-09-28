@@ -207,6 +207,10 @@ function renderNodeBlockIdAtPosition(node: RenderNode, position: number): string
   return result?.source?.blockId ?? null;
 }
 
+function hasMemberRef(element: HTMLElement, blockId: string): boolean {
+  return element.dataset.memberRefs?.split(/\s+/).includes(blockId) ?? false;
+}
+
 export function ChatSurface({
   events,
   streaming,
@@ -242,6 +246,8 @@ export function ChatSurface({
   const [viewportHeight, setViewportHeight] = useState(720);
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
   const [followingTail, setFollowingTail] = useState(false);
+  const userScrollIntentRef = useRef(false);
+  const scrollEndCleanupRef = useRef<(() => void) | null>(null);
   const [historyLoadStates, setHistoryLoadStates] = useState<Record<string, HistoryLoadState>>({});
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const handledNavigationKeyRef = useRef<string | null>(null);
@@ -407,9 +413,16 @@ export function ChatSurface({
     const row = Array.from(el.querySelectorAll<HTMLElement>('[data-virtual-key]'))
       .find((candidate) => candidate.dataset.virtualKey === item.id);
     const scrollRect = el.getBoundingClientRect();
-    const blocks = row ? Array.from(row.querySelectorAll<HTMLElement>('[data-block-id]')) : [];
-    const visibleBlock = blocks.find((block) => block.getBoundingClientRect().bottom > scrollRect.top) ?? blocks[0] ?? null;
-    const blockIdValue = visibleBlock?.dataset.blockId ?? null;
+    const blockCandidates = row
+      ? Array.from(row.querySelectorAll<HTMLElement>('[data-block-id], [data-member-refs]'))
+      : [];
+    const visibleBlock = blockCandidates.find((candidate) => {
+      const rect = candidate.getBoundingClientRect();
+      return rect.bottom > scrollRect.top && rect.top < scrollRect.bottom;
+    }) ?? blockCandidates[0] ?? null;
+    const blockIdValue = visibleBlock?.dataset.blockId
+      ?? visibleBlock?.dataset.memberRefs?.trim().split(/\s+/).find(Boolean)
+      ?? null;
     const node = item.kind === 'group'
       ? item.group.nodes.find((candidate) => !blockIdValue || renderNodeContainsBlock(candidate, blockIdValue))
       : undefined;
@@ -474,6 +487,8 @@ export function ChatSurface({
     const target = resolvedAnchor.blockId
       ? Array.from(row.querySelectorAll<HTMLElement>('[data-block-id]'))
         .find((candidate) => candidate.dataset.blockId === resolvedAnchor.blockId)
+        ?? Array.from(row.querySelectorAll<HTMLElement>('[data-member-refs]'))
+          .find((candidate) => hasMemberRef(candidate, resolvedAnchor.blockId!))
       : row;
     if (!target) return false;
     const currentOffset = resolvedAnchor.blockId
@@ -496,11 +511,14 @@ export function ChatSurface({
   // Chat disclosures are transient reading state. A new conversation or page
   // refresh starts from each block's declared default instead of reviving old
   // tool/thinking expansion choices from browser storage.
-  useEffect(() => {
+  // Reset scroll state before the stored-anchor layout effect below. A passive
+  // reset runs after that restoration and would erase the anchor it just read.
+  useLayoutEffect(() => {
     setExpandedBlocks({});
     setHistoryLoadStates({});
     pendingReadingAnchorRef.current = null;
     readingAnchorRef.current = null;
+    userScrollIntentRef.current = false;
     inFlightHistoryRef.current = null;
   }, [storageScope]);
 
@@ -511,9 +529,16 @@ export function ChatSurface({
   }, [historyScope]);
 
   const setScrollNode = useCallback((node: HTMLDivElement | null) => {
+    scrollEndCleanupRef.current?.();
+    scrollEndCleanupRef.current = null;
     scrollRef.current = node;
     registerScrollOwner?.(node);
-    if (node) setViewportHeight(node.clientHeight || 720);
+    if (node) {
+      const handleScrollEnd = () => { userScrollIntentRef.current = false; };
+      node.addEventListener('scrollend', handleScrollEnd);
+      scrollEndCleanupRef.current = () => node.removeEventListener('scrollend', handleScrollEnd);
+      setViewportHeight(node.clientHeight || 720);
+    }
   }, [registerScrollOwner]);
 
   useLayoutEffect(() => {
@@ -638,7 +663,7 @@ export function ChatSurface({
       key: string,
       load: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>,
     ) => {
-      const anchor = captureReadingAnchor();
+      const anchor = readingAnchorRef.current ?? captureReadingAnchor();
       if (anchor && !anchor.followingTail) pendingReadingAnchorRef.current = anchor;
       void requestHistory(key, load);
     };
@@ -679,6 +704,7 @@ export function ChatSurface({
   function handleUserScrollIntent(): void {
     // Direct scroll input supersedes a deferred virtual-row restore. The ensuing
     // scroll event captures the new anchor before data can change.
+    userScrollIntentRef.current = true;
     pendingReadingAnchorRef.current = null;
   }
 
@@ -702,9 +728,11 @@ export function ChatSurface({
     }
     const nextViewportHeight = el.clientHeight || viewportHeight;
     const nextDistance = Math.max(0, el.scrollHeight - el.scrollTop - nextViewportHeight);
+    const userScrollIntent = userScrollIntentRef.current;
     setViewportHeight(nextViewportHeight);
     setDistanceFromBottom(nextDistance);
     if (pendingReadingAnchorRef.current) return;
+    if (!userScrollIntent) return;
     const nextFollowingTail = nextDistance <= FOLLOW_THRESHOLD_PX
       && !transcript?.hasNewer
       && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;

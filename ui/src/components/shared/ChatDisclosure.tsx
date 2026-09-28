@@ -15,6 +15,7 @@ export type CompactActivityRowProps = {
   summary: string;
   disclosure?: CompactActivityDisclosure;
   className?: string;
+  memberRefs?: string;
 };
 
 /** The sole compact row geometry for tool and provider activity. */
@@ -23,6 +24,7 @@ export function CompactActivityRow({
   summary,
   disclosure,
   className = '',
+  memberRefs,
 }: CompactActivityRowProps): JSX.Element {
   const [localExpanded, setLocalExpanded] = useState(disclosure?.defaultExpanded ?? false);
   const isExpanded = disclosure?.expanded ?? localExpanded;
@@ -56,7 +58,7 @@ export function CompactActivityRow({
   );
 
   if (!disclosure) {
-    return <div className={rootClass}><div className={rowClass}>{rowContent}</div></div>;
+    return <div className={rootClass}><div className={rowClass} data-member-refs={memberRefs}>{rowContent}</div></div>;
   }
 
   const toggle = (): void => {
@@ -71,6 +73,7 @@ export function CompactActivityRow({
         ref={buttonRef}
         type="button"
         className={rowClass}
+        data-member-refs={memberRefs}
         aria-expanded={isExpanded}
         aria-controls={bodyId}
         onClick={toggle}
