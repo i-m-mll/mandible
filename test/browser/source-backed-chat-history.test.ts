@@ -348,6 +348,31 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     };
     const mountedVirtualIndexes = () => evaluate<number[]>(`[...document.querySelectorAll('.stream-renderer__virtual-row')]
       .map(row=>Number(row.getAttribute('data-index')))`);
+    const scheduleDelayedGroupMeasurement = (anchorBlockId: string) => evaluate<{
+      rowIndex: number;
+      beforeHeight: number;
+    } | null>(`(() => {
+      const scroll=document.querySelector('.stream-renderer__scroll');
+      const anchor=[...document.querySelectorAll('[data-block-id]')]
+        .find(el=>el.dataset.blockId===${JSON.stringify(anchorBlockId)});
+      const anchorRow=anchor?.closest('.stream-renderer__virtual-row');
+      if(!scroll||!anchorRow) return null;
+      const anchorIndex=Number(anchorRow.getAttribute('data-index'));
+      const viewport=scroll.getBoundingClientRect();
+      const row=[...document.querySelectorAll('.stream-renderer__virtual-row')]
+        .filter(candidate=>Number(candidate.getAttribute('data-index'))<anchorIndex)
+        .filter(candidate=>candidate.querySelector('.turn-group'))
+        .filter(candidate=>candidate.getBoundingClientRect().top<viewport.top)
+        .sort((left,right)=>Number(right.getAttribute('data-index'))-Number(left.getAttribute('data-index')))[0];
+      if(!row) return null;
+      const beforeHeight=row.getBoundingClientRect().height;
+      const probe=document.createElement('div');
+      probe.dataset.delayedGroupMeasurement='true';
+      probe.style.height='320px';
+      probe.style.minHeight='320px';
+      requestAnimationFrame(()=>requestAnimationFrame(()=>row.append(probe)));
+      return {rowIndex:Number(row.getAttribute('data-index')),beforeHeight};
+    })()`);
     const visibleAnchor = (blockId?: string, requireVisible = false) => evaluate<{ id: string; top: number; scrollTop: number; viewportTop: number } | null>(`(() => {
       const scroll=document.querySelector('.stream-renderer__scroll');
       const viewport=scroll.getBoundingClientRect();
@@ -437,11 +462,15 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       4_000,
     );
     const previousFetchedCount = afterGapFill.fetchedBlockIds.length;
+    const savedAnchorBeforePassiveScroll = beforeEdge.readingAnchor;
+    expect(savedAnchorBeforePassiveScroll).not.toBeNull();
     const mountedBeforeScroll = await mountedVirtualIndexes();
     const targetScrollTop = Math.max(0, beforePrepend.scrollTop - 2);
-    const scrollDelta = beforePrepend.scrollTop - targetScrollTop;
     await setScrollTop(targetScrollTop);
     expect(await mountedVirtualIndexes()).toEqual(mountedBeforeScroll);
+    expect((await snapshot()).readingAnchor).toEqual(savedAnchorBeforePassiveScroll);
+    const beforePrependRestore = await visibleAnchor(beforePrepend.id, true);
+    expect(beforePrependRestore).not.toBeNull();
     await waitFor('automatic older window request', async () => {
       const value = await snapshot();
       return value.requests.slice(anchorRequestStart)
@@ -454,8 +483,11 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     }, browser, profile);
     expect(afterPrepend.id).toBe(beforePrepend.id);
     expect(
-      Math.abs(afterPrepend.top - (beforePrepend.top + scrollDelta)),
-      JSON.stringify({ beforePrepend, afterPrepend }),
+      Math.abs(
+        (afterPrepend.top - afterPrepend.viewportTop)
+        - (beforePrependRestore!.top - beforePrependRestore!.viewportTop),
+      ),
+      JSON.stringify({ beforePrependRestore, afterPrepend }),
     ).toBeLessThan(5);
     process.stdout.write('SOURCE_BACKED_CHAT_STAGE prepend\n');
 
@@ -589,6 +621,19 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     }, browser, profile);
     expect(sourceRefreshAfterAnchor.id).not.toBe(sourceRefreshBeforeAnchor!.id);
     expect(Math.abs(sourceRefreshAfterAnchor.top - sourceRefreshBeforeAnchor!.top)).toBeLessThan(5);
+    const sourceRefreshRestoredState = await snapshot();
+    const measurement = await scheduleDelayedGroupMeasurement(sourceRefreshAfterAnchor.id);
+    expect(measurement, 'a mounted group above the reading anchor should be available for delayed measurement').not.toBeNull();
+    const afterDelayedMeasurement = await waitFor('delayed group measurement preserves the visible message', async () => {
+      const value = await snapshot();
+      const block = await visibleAnchor(sourceRefreshAfterAnchor.id, true);
+      if (!block || value.scrollHeight < sourceRefreshRestoredState.scrollHeight + 200) return null;
+      return { value, block };
+    }, browser, profile);
+    expect(afterDelayedMeasurement.block.id).toBe(sourceRefreshAfterAnchor.id);
+    expect(Math.abs(afterDelayedMeasurement.block.top - sourceRefreshAfterAnchor.top)).toBeLessThan(5);
+    expect(afterDelayedMeasurement.value.scrollTop).toBeGreaterThan(sourceRefreshRestoredState.scrollTop + 200);
+    expect(afterDelayedMeasurement.value.readingAnchor).toEqual(sourceRefreshRestoredState.readingAnchor);
     return {
       coldRequest: cold.requests.find((url) => url.includes('target=initial')),
       boundedWindowRequests: windowRequests,
@@ -601,6 +646,12 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
         position: sourceRefreshBeforeState!.readingAnchor!.position,
         before: sourceRefreshBeforeAnchor,
         after: sourceRefreshAfterAnchor,
+      },
+      delayedGroupMeasurement: {
+        rowIndex: measurement!.rowIndex,
+        beforeHeight: measurement!.beforeHeight,
+        scrollTopBefore: sourceRefreshRestoredState.scrollTop,
+        scrollTopAfter: afterDelayedMeasurement.value.scrollTop,
       },
       wheelAfterPrepend: { before: afterPrepend.scrollTop, after: afterWheel.scrollTop },
       gapTargets,
