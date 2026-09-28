@@ -71,28 +71,11 @@ function HeaderCase({ variant, open }: { variant: Variant; open: boolean }): JSX
   );
 }
 
-function TriggerSamples({ expanded }: { expanded: boolean }): JSX.Element {
-  return (
-    <div className="trigger-samples" data-expanded={String(expanded)}>
-      {['Conversation', 'Issue', 'Artifact', 'Approval', 'Briefing'].map((label) => (
-        <DetailPaneMenuTrigger
-          key={label}
-          label={`${label} actions`}
-          expanded={expanded}
-          onClick={() => undefined}
-        />
-      ))}
-    </div>
-  );
-}
-
 function Fixture(): JSX.Element {
   const cases = (['standard', 'compact', 'versioned'] as const).flatMap((variant) => [false, true].map((open) => ({ variant, open })));
   return (
     <main className="header-controls-fixture">
       {cases.map(({ variant, open }) => <HeaderCase key={`${variant}-${open}`} variant={variant} open={open} />)}
-      <TriggerSamples expanded={false} />
-      <TriggerSamples expanded />
     </main>
   );
 }

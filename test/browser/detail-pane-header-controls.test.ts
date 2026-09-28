@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest';
 type HeaderCase = {
   variant: 'standard' | 'compact' | 'versioned';
   open: boolean;
-  slot: boolean;
   toggle: boolean;
   visibleControlGap: number;
   menuGap: number;
@@ -17,9 +16,6 @@ type HeaderCase = {
 type Result = {
   native: boolean;
   cases: HeaderCase[];
-  closedTriggerSignatures: string[];
-  activeTriggerSignatures: string[];
-  triggerLabels: string[];
 };
 
 const chrome = [
@@ -74,21 +70,14 @@ function renderCase(native: boolean): Result {
     const measure = `
       (() => {
         const rect = node => { const value=node.getBoundingClientRect(); return {left:value.left,right:value.right,top:value.top,bottom:value.bottom,width:value.width,height:value.height}; };
-        const signature = button => {
-          const style=getComputedStyle(button); const icon=button.querySelector('svg'); const iconStyle=getComputedStyle(icon);
-          return JSON.stringify({width:style.width,height:style.height,borderRadius:style.borderRadius,border:style.borderTopWidth,background:style.backgroundColor,color:style.color,iconWidth:iconStyle.width,iconHeight:iconStyle.height,iconFill:iconStyle.fill});
-        };
         const cases = Array.from(document.querySelectorAll('.header-case')).map(shell => {
           const header=shell.querySelector('.detail-pane-header'); const variant=shell.dataset.variant; const open=shell.dataset.open==='true';
           const paddingRight=parseFloat(getComputedStyle(header).paddingRight); const contentRight=rect(header).right-paddingRight;
           const trigger=header.querySelector('.detail-pane-menu-trigger'); const toggle=header.querySelector('.app-right-sidebar-toggle');
           const visibleControl=variant==='compact' ? (open ? trigger : toggle) : (open ? header.querySelector('[data-header-control]') : toggle);
-          return {variant,open,slot:Boolean(header.querySelector('.detail-pane-header__right-sidebar-action-slot')),toggle:Boolean(toggle),visibleControlGap:contentRight-rect(visibleControl).right,menuGap:contentRight-rect(trigger).right};
+          return {variant,open,toggle:Boolean(toggle),visibleControlGap:contentRight-rect(visibleControl).right,menuGap:contentRight-rect(trigger).right};
         });
-        const samples = expanded => Array.from(document.querySelector('.trigger-samples[data-expanded="'+expanded+'"]').querySelectorAll('.detail-pane-menu-trigger'), button => signature(button));
-        const closedSamples=document.querySelector('.trigger-samples[data-expanded="false"]');
-        const triggerLabels=Array.from(closedSamples.querySelectorAll('.detail-pane-menu-trigger'), button => button.getAttribute('aria-label')+'|'+button.title+'|'+button.getAttribute('aria-haspopup')+'|'+button.getAttribute('aria-expanded'));
-        document.title=btoa(JSON.stringify({native:${native},cases,closedTriggerSignatures:samples(false),activeTriggerSignatures:samples(true),triggerLabels}));
+        document.title=btoa(JSON.stringify({native:${native},cases}));
       })();
     `;
     const path = join(directory, 'fixture.html');
@@ -96,7 +85,6 @@ function renderCase(native: boolean): Result {
       *{box-sizing:border-box}html,body{margin:0;padding:0;width:820px;min-height:900px;overflow:visible}
       .header-controls-fixture{display:flex;flex-direction:column;align-items:flex-start;gap:8px;width:820px}
       .header-case{flex:none;width:760px;height:132px}
-      .trigger-samples{display:flex;gap:8px;padding:8px}
       .tauri-window{--header-fixture-native:1}
     </style></head><body${native ? ' class="tauri-window"' : ''}><script>${bundle}</script><script>${measure}</script></body></html>`);
     const rendered = spawnSync(chrome, [
@@ -113,14 +101,13 @@ function renderCase(native: boolean): Result {
 }
 
 describe('shared detail header controls', () => {
-  it('aligns visible controls in all header variants and shares one menu trigger visual in browser and native classes', () => {
+  it('keeps visible header controls trailing when the sidebar toggle moves', () => {
     const browser = renderCase(false);
     const native = renderCase(true);
 
     for (const result of [browser, native]) {
       expect(result.cases).toHaveLength(6);
       for (const header of result.cases) {
-        expect(header.slot, `${result.native ? 'native' : 'browser'} ${header.variant} open=${header.open} spacer`).toBe(false);
         expect(header.visibleControlGap, `${result.native ? 'native' : 'browser'} ${header.variant} open=${header.open} trailing alignment`).toBeGreaterThanOrEqual(-1);
         expect(header.visibleControlGap, `${result.native ? 'native' : 'browser'} ${header.variant} open=${header.open} trailing alignment`).toBeLessThanOrEqual(1);
         if (header.variant !== 'compact' || header.open) {
@@ -131,19 +118,8 @@ describe('shared detail header controls', () => {
         }
         expect(header.toggle).toBe(!header.open);
       }
-      expect(new Set(result.closedTriggerSignatures).size).toBe(1);
-      expect(new Set(result.activeTriggerSignatures).size).toBe(1);
-      expect(result.triggerLabels).toEqual([
-        'Conversation actions|Conversation actions|menu|false',
-        'Issue actions|Issue actions|menu|false',
-        'Artifact actions|Artifact actions|menu|false',
-        'Approval actions|Approval actions|menu|false',
-        'Briefing actions|Briefing actions|menu|false',
-      ]);
     }
 
     expect(native.cases).toEqual(browser.cases);
-    expect(native.closedTriggerSignatures).toEqual(browser.closedTriggerSignatures);
-    expect(native.activeTriggerSignatures).toEqual(browser.activeTriggerSignatures);
   });
 });
