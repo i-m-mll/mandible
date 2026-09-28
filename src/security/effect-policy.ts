@@ -39,6 +39,7 @@ const EXACT_OPERATIONS = new Map<string, Operation>([
   ["GET /api/instance", { id: "instance.read", effects: [] }],
   ["GET /api/client-auth/whoami", { id: "session.inspect", effects: [] }],
   ["POST /api/users/setup", { id: "installation.setup", effects: [] }],
+  ["GET /api/console/run-options", { id: "console.run_options.describe", effects: ["ledger:read"] }],
   ["POST /api/auth/check", READ_OPERATION],
   ["POST /api/timeline/project", READ_OPERATION],
   ["POST /api/events/subscribe", READ_OPERATION],
