@@ -113,7 +113,7 @@ export interface RecordConversationSourceInput extends ConversationSourceEpochs 
   filePath: string;
   /** Full parser-observed SHA-256 when available; append markers are omitted. */
   expectedContentHash?: string;
-  /** Exact complete-record extent captured by a full JSONL parser read. */
+  /** Parser-captured full extent or incremental append range for JSONL sources. */
   sourceSnapshot?: ParserSourceSnapshot;
   /**
    * Parser output supplied by ingestion so source indexing does not depend on

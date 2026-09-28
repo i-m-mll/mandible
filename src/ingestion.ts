@@ -39,10 +39,15 @@ import {
   workflowSummaryPathForArtifact,
 } from "./workflows.js";
 import type { Logger } from "./types.js";
-import type { ConversationBlock, ParseResult } from "./parsers/types.js";
+import type {
+  AppendParserSourceSnapshot,
+  ConversationBlock,
+  ParseResult,
+} from "./parsers/types.js";
 import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.js";
 import { ConversationSourceChangedError, ConversationSourceStore } from "./conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./conversations/source-types.js";
+import { parseJsonObjectStrict } from "./row-coerce.js";
 import { getConversationStructureCache } from "./conversations/structure-cache.js";
 
 // --- Watch configuration ---
@@ -842,6 +847,7 @@ type AppendReadResult =
       sourceHash: string;
       tailHash: string;
       byteOffset: number;
+      sourceSnapshot: AppendParserSourceSnapshot;
       hasMore: boolean;
     }
   | {
@@ -854,6 +860,14 @@ type AppendReadResult =
     }
   | { kind: "blocked"; reason: string }
   | { kind: "fallback"; reason: string };
+
+type AppendParserSourceRange = AppendParserSourceSnapshot["appendRanges"][number];
+
+interface PendingAppendProof {
+  filesystemDevice: string | null;
+  filesystemInode: string | null;
+  ranges: AppendParserSourceRange[];
+}
 
 // --- Public API ---
 
@@ -2072,6 +2086,20 @@ async function readAppend(
   if (currentTailHash !== state.tail_hash) {
     return { kind: "fallback", reason: "tail_hash_mismatch" };
   }
+  const partialLineBytes = Buffer.byteLength(state.partial_line, "utf8");
+  if (partialLineBytes > 0) {
+    if (partialLineBytes > state.byte_offset) {
+      return { kind: "fallback", reason: "partial_line_outside_checkpoint" };
+    }
+    const persistedPartialLine = await readFileRange(
+      filePath,
+      state.byte_offset - partialLineBytes,
+      state.byte_offset,
+    );
+    if (persistedPartialLine !== state.partial_line) {
+      return { kind: "fallback", reason: "partial_line_changed" };
+    }
+  }
   const appendedBytes = stat.size - state.byte_offset;
   if (appendedBytes <= 0) {
     return {
@@ -2103,6 +2131,9 @@ async function readAppend(
   }
 
   const combined = `${state.partial_line}${appended}`;
+  if (Buffer.byteLength(appended, "utf8") !== readEnd - state.byte_offset) {
+    return { kind: "fallback", reason: "append_range_extent_mismatch" };
+  }
   const endedWithLineBreak = combined.endsWith("\n") || combined.endsWith("\r");
   const parts = combined.split(/\r?\n/);
   const completeLines = endedWithLineBreak ? parts.slice(0, -1) : parts.slice(0, -1);
@@ -2126,10 +2157,23 @@ async function readAppend(
     completeLineCount: completeLines.length,
     appendedBytes: readEnd - state.byte_offset,
     nextPartialLine,
-    sourceHash: `append:${readEnd}:${tailHash}`,
-    tailHash,
-    byteOffset: readEnd,
-    hasMore,
+      sourceHash: `append:${readEnd}:${tailHash}`,
+      tailHash,
+      byteOffset: readEnd,
+      sourceSnapshot: {
+        kind: "append",
+        byteLength: readEnd,
+        completeLineCount: state.line_count + completeLines.length,
+        tailHash,
+        filesystemDevice: String(stat.dev),
+        filesystemInode: String(stat.ino),
+        appendRanges: [{
+          byteStart: state.byte_offset,
+          byteEnd: readEnd,
+          contentHash: crypto.createHash("sha256").update(Buffer.from(appended, "utf8")).digest("hex"),
+        }],
+      },
+      hasMore,
   };
 }
 
@@ -2455,7 +2499,12 @@ type IngestFileOptions = {
 
 async function ingestFile(filePath: string, options: IngestFileOptions = {}): Promise<void> {
   let passOptions = options;
-  while (await ingestFilePass(filePath, passOptions)) {
+  const pendingAppendProof: PendingAppendProof = {
+    filesystemDevice: null,
+    filesystemInode: null,
+    ranges: [],
+  };
+  while (await ingestFilePass(filePath, passOptions, pendingAppendProof)) {
     passOptions = { bypassSameMtimeUnchanged: true, strictParseErrors: options.strictParseErrors };
   }
 }
@@ -2463,6 +2512,7 @@ async function ingestFile(filePath: string, options: IngestFileOptions = {}): Pr
 async function ingestFilePass(
   filePath: string,
   options: IngestFileOptions,
+  pendingAppendProof: PendingAppendProof,
 ): Promise<boolean | undefined> {
   const ingestStartedAt = Date.now();
   if (isWorkflowIngestArtifactPath(filePath)) {
@@ -2550,16 +2600,20 @@ async function ingestFilePass(
   let alreadyIngestedCount = 0;
   let structureCacheNeedsRebuild = false;
   let sourceEpochNeedsRebuild = false;
+  let appendCheckpointNeedsFullParse = false;
   if (existing) {
     const actualCount = existing.actual_count ?? 0;
     const expectedCount = existing.block_count ?? 0;
     alreadyIngestedCount = Math.max(actualCount, expectedCount);
     const currentSource = db.prepare(`
-      SELECT current_version_id, parser_format, parser_version,
-             normalization_version, redaction_epoch
-        FROM conversation_sources
-       WHERE conversation_id = ? AND current_version_id IS NOT NULL
-       ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC
+      SELECT source.current_version_id, source.parser_format, source.parser_version,
+             source.normalization_version, source.redaction_epoch,
+             version.byte_length AS source_byte_length
+        FROM conversation_sources source
+        JOIN conversation_source_versions version
+          ON version.id = source.current_version_id AND version.source_id = source.id
+       WHERE source.conversation_id = ? AND source.current_version_id IS NOT NULL
+       ORDER BY CASE source.availability WHEN 'available' THEN 0 ELSE 1 END, source.updated_at DESC
        LIMIT 1
     `).get(existing.id) as {
       current_version_id: string;
@@ -2567,6 +2621,7 @@ async function ingestFilePass(
       parser_version: string;
       normalization_version: string;
       redaction_epoch: number;
+      source_byte_length: number;
     } | undefined;
     sourceEpochNeedsRebuild = !currentSource || (
       currentSource.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
@@ -2574,6 +2629,28 @@ async function ingestFilePass(
       || currentSource.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
       || currentSource.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
     );
+    const pendingRangesContiguous = pendingAppendProof.ranges.every((range, index) =>
+      index === 0 || range.byteStart === pendingAppendProof.ranges[index - 1].byteEnd,
+    );
+    appendCheckpointNeedsFullParse = Boolean(currentSource && (
+      pendingAppendProof.ranges.length > 0
+        ? !appendState
+          || pendingAppendProof.filesystemDevice !== String(stat.dev)
+          || pendingAppendProof.filesystemInode !== String(stat.ino)
+          || pendingAppendProof.ranges[0].byteStart !== currentSource.source_byte_length
+          || pendingAppendProof.ranges.at(-1)?.byteEnd !== appendState.byte_offset
+          || !pendingRangesContiguous
+        : appendState && appendState.byte_offset !== currentSource.source_byte_length
+    ));
+    if (appendCheckpointNeedsFullParse && currentSource) {
+      logger("warn", "ingestion_append_fallback", {
+        file: filePath,
+        reason: "append_checkpoint_source_extent_mismatch",
+        append_byte_offset: appendState?.byte_offset,
+        source_byte_length: currentSource.source_byte_length,
+        pending_append_ranges: pendingAppendProof.ranges.length,
+      });
+    }
     const sparseComplete = Boolean(currentSource
       && getConversationStructureCache(db).hasCompleteConversation(
         existing.id,
@@ -2615,6 +2692,7 @@ async function ingestFilePass(
     && !options.bypassSameMtimeUnchanged
     && !structureCacheNeedsRebuild
     && !sourceEpochNeedsRebuild
+    && !appendCheckpointNeedsFullParse
     && sameMtimeAsExisting
     && parser.source === "codex"
     && appendState
@@ -2664,6 +2742,7 @@ async function ingestFilePass(
   let forceFullReingest = options.forceFull === true
     || structureCacheNeedsRebuild
     || sourceEpochNeedsRebuild
+    || appendCheckpointNeedsFullParse
     || (sameMtimeAsExisting && appendState?.byte_offset === stat.size);
 
   // Parse the file
@@ -2749,8 +2828,20 @@ async function ingestFilePass(
             });
             forceFullReingest = true;
             result = await parser.parse(filePath);
-          } else {
-            result = mergeAppendConversationMetadata(result, existing);
+          } else if (!forceFullReingest) {
+            const sourceSnapshot: AppendParserSourceSnapshot = {
+              ...append.sourceSnapshot,
+              appendRanges: [...pendingAppendProof.ranges, ...append.sourceSnapshot.appendRanges],
+            };
+            if (pendingAppendProof.ranges.length === 0) {
+              pendingAppendProof.filesystemDevice = append.sourceSnapshot.filesystemDevice;
+              pendingAppendProof.filesystemInode = append.sourceSnapshot.filesystemInode;
+            }
+            pendingAppendProof.ranges.push(...append.sourceSnapshot.appendRanges);
+            result = {
+              ...mergeAppendConversationMetadata(result, existing),
+              sourceSnapshot,
+            };
             ingestMode = "append";
             appendInfo = {
               completeLineCount: append.completeLineCount,
@@ -3642,6 +3733,38 @@ async function ingestFilePass(
   return appendInfo?.hasMore ?? false;
 }
 
+function unindexedConversationBlocksForCache(
+  db: ReturnType<typeof getDb>,
+  conversationId: string,
+): Array<Pick<ConversationBlock, "type" | "position" | "parent_id" | "metadata">> {
+  const rows = db.prepare(`
+    SELECT block.type, block.position, block.parent_id, block.metadata_json
+      FROM conversation_blocks block
+     WHERE block.conversation_id = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM conversation_structural_blocks structural
+          WHERE structural.conversation_id = block.conversation_id
+            AND structural.position = block.position
+            AND structural.status = 'current'
+       )
+     ORDER BY block.position
+  `).all(conversationId) as Array<{
+    type: ConversationBlock["type"];
+    position: number;
+    parent_id: string | null;
+    metadata_json: string | null;
+  }>;
+  return rows.map((row) => ({
+    type: row.type,
+    position: row.position,
+    parent_id: row.parent_id,
+    metadata: parseJsonObjectStrict(
+      row.metadata_json,
+      "conversation block metadata_json",
+    ) as ConversationBlock["metadata"],
+  }));
+}
+
 async function recordDurableConversationSource(
   db: ReturnType<typeof getDb>,
   conversationId: string,
@@ -3652,7 +3775,11 @@ async function recordDurableConversationSource(
   strict = false,
 ): Promise<void> {
   try {
-    const legacyIds = assignConversationBlockIds(
+    const usePersistedAppendBlocks = structuralMode === "append" && result.sourceSnapshot?.kind === "append";
+    const cacheBlocks = usePersistedAppendBlocks
+      ? unindexedConversationBlocksForCache(db, conversationId)
+      : blocks;
+    const legacyIds = usePersistedAppendBlocks ? [] : assignConversationBlockIds(
       blocks.map((block) => ({
         conversation_id: conversationId,
         type: block.type,
@@ -3670,7 +3797,9 @@ async function recordDurableConversationSource(
       expectedContentHash: result.conversation.source_hash,
       sourceSnapshot: result.sourceSnapshot,
       structuralMode,
-      blocks: blocks.map((block, index) => ({ ...block, legacyId: legacyIds[index] })),
+      ...(usePersistedAppendBlocks
+        ? {}
+        : { blocks: blocks.map((block, index) => ({ ...block, legacyId: legacyIds[index] })) }),
       ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     });
     const promotion = await store.promoteNativeConversationPayload(conversationId);
@@ -3685,13 +3814,13 @@ async function recordDurableConversationSource(
     if (promotion.promoted || promotion.reason === "no legacy payload is available for promotion") {
       const cache = getConversationStructureCache(db);
       const currentToolPositions = new Map<string, number>();
-      for (const block of blocks) {
+      for (const block of cacheBlocks) {
         const toolId = block.metadata.tool_id;
         if (block.type === "tool_use" && typeof toolId === "string" && toolId) {
           currentToolPositions.set(toolId, block.position);
         }
       }
-      const parentPositions = new Map(blocks.map((block) => {
+      const parentPositions = new Map(cacheBlocks.map((block) => {
         const explicit = block.parent_id !== null && /^\d+$/.test(block.parent_id)
           ? Number(block.parent_id)
           : null;

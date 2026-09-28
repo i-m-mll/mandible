@@ -167,9 +167,8 @@ export interface Conversation {
   updated_at: string;
 }
 
-/** Exact bytes parsed by a full JSONL read, through its last complete record. */
-export interface ParserSourceSnapshot {
-  contentHash: string;
+/** Source byte extent observed by one parser pass. */
+interface ParserSourceSnapshotBase {
   byteLength: number;
   completeLineCount: number;
   tailHash: string;
@@ -177,10 +176,28 @@ export interface ParserSourceSnapshot {
   filesystemInode: string;
 }
 
+/** Exact bytes parsed by a full JSONL read, through its last complete record. */
+export interface FullParserSourceSnapshot extends ParserSourceSnapshotBase {
+  kind: "full";
+  contentHash: string;
+}
+
+/** Exact appended bytes consumed by an incremental JSONL parse. */
+export interface AppendParserSourceSnapshot extends ParserSourceSnapshotBase {
+  kind: "append";
+  appendRanges: Array<{
+    byteStart: number;
+    byteEnd: number;
+    contentHash: string;
+  }>;
+}
+
+export type ParserSourceSnapshot = FullParserSourceSnapshot | AppendParserSourceSnapshot;
+
 export interface ParseResult {
   conversation: Omit<Conversation, "id" | "created_at" | "updated_at" | "starred" | "tags" | "notes">;
   blocks: Omit<ConversationBlock, "id" | "conversation_id">[];
-  /** Full-read JSONL extent used to keep source indexing aligned with parsing. */
+  /** Parser-captured JSONL boundary used to keep source indexing aligned. */
   sourceSnapshot?: ParserSourceSnapshot;
   /** Provider-authored title metadata present in this parse batch. */
   providerTitle?: string;

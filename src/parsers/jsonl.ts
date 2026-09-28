@@ -106,6 +106,7 @@ export async function readJsonlFileRecords<T>(filePath: string): Promise<JsonlFi
       records,
       sourceHash: sourceHashHex,
       sourceSnapshot: {
+        kind: "full",
         contentHash: snapshotHash,
         byteLength: completeByteLength,
         completeLineCount,

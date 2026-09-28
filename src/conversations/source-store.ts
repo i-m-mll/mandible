@@ -21,7 +21,7 @@ import {
   type SourceFilesystemIdentity,
 } from "./source-observer.js";
 export { ConversationSourceChangedError } from "./source-observer.js";
-import { parseJsonObject } from "../row-coerce.js";
+import { parseJsonObjectStrict } from "../row-coerce.js";
 
 interface RecordRange {
   ordinal: number;
@@ -144,6 +144,7 @@ function sourceRoot(provider: ConversationSource, filePath: string): AliasRoot {
 async function snapshotJsonl(
   filePath: string,
   expected: RecordConversationSourceInput["sourceSnapshot"] = undefined,
+  expectedPriorContentHash?: string,
 ): Promise<SourceSnapshot> {
   const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
@@ -157,6 +158,24 @@ async function snapshotJsonl(
     if (!Number.isSafeInteger(size) || size < 0 || observedSize < size) {
       throw new ConversationSourceChangedError("conversation source was truncated after parser snapshot");
     }
+    if (expected?.kind === "append") {
+      let rangeEnd = -1;
+      if (expected.appendRanges.length === 0) {
+        throw new ConversationSourceChangedError("conversation append parser snapshot has no byte ranges");
+      }
+      for (const range of expected.appendRanges) {
+        if (!Number.isSafeInteger(range.byteStart) || !Number.isSafeInteger(range.byteEnd)
+          || range.byteStart !== rangeEnd && rangeEnd !== -1
+          || range.byteStart < 0 || range.byteEnd < range.byteStart || range.byteEnd > size
+          || !isSha256(range.contentHash)) {
+          throw new ConversationSourceChangedError("conversation append parser snapshot has an invalid extent");
+        }
+        rangeEnd = range.byteEnd;
+      }
+      if (expected.appendRanges[0].byteStart > size || rangeEnd !== size) {
+        throw new ConversationSourceChangedError("conversation append parser snapshot does not cover its extent");
+      }
+    }
     const beforeIdentity = sourceFilesystemIdentity(before);
     if (expected && (beforeIdentity.device !== expected.filesystemDevice
       || beforeIdentity.inode !== expected.filesystemInode)) {
@@ -164,6 +183,10 @@ async function snapshotJsonl(
     }
 
     const contentHash = createHash("sha256");
+    const priorContentHash = expected?.kind === "append" ? createHash("sha256") : null;
+    const appendRangeHashes = expected?.kind === "append"
+      ? expected.appendRanges.map(() => createHash("sha256"))
+      : [];
     const records: RecordRange[] = [];
     let carry: Buffer = Buffer.alloc(0);
     let carryOffset = 0;
@@ -176,6 +199,17 @@ async function snapshotJsonl(
       for await (const rawChunk of stream) {
         const chunk = rawChunk as Buffer;
         contentHash.update(chunk);
+        if (expected?.kind === "append") {
+          const priorLength = Math.max(0, Math.min(chunk.length, expected.appendRanges[0].byteStart - total));
+          if (priorLength > 0) priorContentHash?.update(chunk.subarray(0, priorLength));
+          for (const [rangeIndex, range] of expected.appendRanges.entries()) {
+            const overlapStart = Math.max(total, range.byteStart);
+            const overlapEnd = Math.min(total + chunk.length, range.byteEnd);
+            if (overlapEnd > overlapStart) {
+              appendRangeHashes[rangeIndex].update(chunk.subarray(overlapStart - total, overlapEnd - total));
+            }
+          }
+        }
         const data = carry.length === 0 ? chunk : Buffer.concat([carry, chunk]);
         let start = 0;
         for (;;) {
@@ -228,8 +262,15 @@ async function snapshotJsonl(
       throw new ConversationSourceChangedError("conversation source changed while being indexed");
     }
     const snapshotHash = contentHash.digest("hex");
-    if (expected && snapshotHash !== expected.contentHash) {
+    if (expected?.kind === "full" && snapshotHash !== expected.contentHash) {
       throw new ConversationSourceChangedError("conversation source changed after parser snapshot");
+    }
+    if (expected?.kind === "append") {
+      if (!expectedPriorContentHash
+        || priorContentHash?.digest("hex") !== expectedPriorContentHash
+        || appendRangeHashes.some((hash, index) => hash.digest("hex") !== expected.appendRanges[index].contentHash)) {
+        throw new ConversationSourceChangedError("conversation source changed after append parser snapshot");
+      }
     }
     return {
       contentHash: snapshotHash,
@@ -741,15 +782,33 @@ export class ConversationSourceStore {
   }
 
   async recordConversation(input: RecordConversationSourceInput): Promise<string> {
-    const snapshot = await snapshotJsonl(input.filePath, input.sourceSnapshot);
-    if (!input.sourceSnapshot && input.expectedContentHash && isSha256(input.expectedContentHash)
-      && input.expectedContentHash !== snapshot.contentHash) {
-      throw new ConversationSourceChangedError("conversation source changed after parser snapshot");
-    }
     const existingSource = this.db.prepare(`
       SELECT id FROM conversation_sources WHERE conversation_id = ? AND provider = ?
     `).get(input.conversationId, input.provider) as { id: string } | undefined;
     const sourceId = existingSource?.id ?? stableId("csrc", input.conversationId, input.provider);
+    let expectedPriorContentHash: string | undefined;
+    if (input.sourceSnapshot?.kind === "append") {
+      const priorVersion = this.db.prepare(`
+        SELECT v.byte_length, v.content_sha256
+          FROM conversation_sources s
+          JOIN conversation_source_versions v ON v.id = s.current_version_id
+         WHERE s.id = ?
+      `).get(sourceId) as { byte_length: number; content_sha256: string } | undefined;
+      if (!priorVersion
+        || priorVersion.byte_length !== input.sourceSnapshot.appendRanges[0]?.byteStart) {
+        throw new ConversationSourceChangedError("conversation append checkpoint is outside the sealed source version");
+      }
+      expectedPriorContentHash = priorVersion.content_sha256;
+    }
+    const snapshot = await snapshotJsonl(
+      input.filePath,
+      input.sourceSnapshot,
+      expectedPriorContentHash,
+    );
+    if (!input.sourceSnapshot && input.expectedContentHash && isSha256(input.expectedContentHash)
+      && input.expectedContentHash !== snapshot.contentHash) {
+      throw new ConversationSourceChangedError("conversation source changed after parser snapshot");
+    }
     const existingVersion = this.db.prepare(`
       SELECT id
         FROM conversation_source_versions
@@ -783,11 +842,11 @@ export class ConversationSourceStore {
          WHERE conversation_id = ?
          ORDER BY position
       `).all(input.conversationId) as LegacyBlockRow[];
-    const structuralMode = input.blocks ? input.structuralMode ?? "replace" : "replace";
+    const structuralMode = input.structuralMode ?? "replace";
     const codexModelPositions = new Set(
       input.provider === "codex"
         ? blocks.filter((block) => {
-          const metadata = parseJsonObject(block.metadata_json);
+          const metadata = parseJsonObjectStrict(block.metadata_json, "conversation block metadata_json");
           return (block.type === "assistant_message" || block.type === "thinking")
             && typeof metadata.model === "string" && metadata.model.length > 0;
         }).map((block) => block.position)
@@ -979,7 +1038,7 @@ export class ConversationSourceStore {
         "UPDATE conversation_structural_blocks SET parent_block_id = ? WHERE id = ?",
       );
       for (const block of blocks) {
-        const metadata = parseJsonObject(block.metadata_json);
+        const metadata = parseJsonObjectStrict(block.metadata_json, "conversation block metadata_json");
         // Gemini's legacy JSON and JSONL parser normalizes the whole session at
         // once and does not expose per-message record ordinals. Its files are
         // bounded, so seal the complete provider file as one exact record.
