@@ -47,6 +47,34 @@ describe("session run options", () => {
     });
   });
 
+  it("keeps declared categories when matched ACP inventory has generic provider categories", () => {
+    const declaration = getAcpRunOptionDeclaration("codex");
+    const providerOptions = declaration.options
+      .filter((option) => option.id === "reasoning_effort" || option.id === "mode")
+      .map((option) => {
+        const discovery = option.discovery;
+        const choices = discovery.kind === "provider"
+          ? discovery.fallbackAllowedValues
+          : discovery.kind === "static_then_provider"
+            ? discovery.staticAllowedValues
+            : discovery.allowedValues;
+        const value = choices?.[0]?.value ?? null;
+        return {
+          id: discovery.kind === "static" ? option.id : discovery.providerOptionId,
+          label: option.label,
+          category: "other",
+          kind: option.kind as "select",
+          currentValue: value,
+          allowedValues: choices,
+        };
+      });
+
+    const snapshot = composeRunOptions(declaration, providerOptions);
+
+    expect(snapshot.options.find((option) => option.id === "reasoning_effort")?.category).toBe("thought_level");
+    expect(snapshot.options.find((option) => option.id === "mode")?.category).toBe("mode");
+  });
+
   it("rejects unknown options and unavailable values with backend and option identity", () => {
     const declared = declaredRunOptionsSnapshot(declaration);
     expect(() => validateRunOptionsPatch(declaration, declared, { values: { unknown: "x" } }))
