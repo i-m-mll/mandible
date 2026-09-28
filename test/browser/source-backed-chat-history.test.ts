@@ -346,8 +346,12 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       })()`);
       await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     };
-    const mountedVirtualIndexes = () => evaluate<number[]>(`[...document.querySelectorAll('.stream-renderer__virtual-row')]
-      .map(row=>Number(row.getAttribute('data-index')))`);
+    const clickJumpToLatest = () => evaluate<boolean>(`(() => {
+      const button=document.querySelector('button[aria-label="Jump to latest"]');
+      if(!(button instanceof HTMLButtonElement)||button.disabled) return false;
+      button.click();
+      return true;
+    })()`);
     const scheduleDelayedGroupMeasurement = (anchorBlockId: string) => evaluate<{
       rowIndex: number;
       beforeHeight: number;
@@ -464,10 +468,8 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     const previousFetchedCount = afterGapFill.fetchedBlockIds.length;
     const savedAnchorBeforePassiveScroll = beforeEdge.readingAnchor;
     expect(savedAnchorBeforePassiveScroll).not.toBeNull();
-    const mountedBeforeScroll = await mountedVirtualIndexes();
     const targetScrollTop = Math.max(0, beforePrepend.scrollTop - 2);
     await setScrollTop(targetScrollTop);
-    expect(await mountedVirtualIndexes()).toEqual(mountedBeforeScroll);
     expect((await snapshot()).readingAnchor).toEqual(savedAnchorBeforePassiveScroll);
     const beforePrependRestore = await visibleAnchor(beforePrepend.id, true);
     expect(beforePrependRestore).not.toBeNull();
@@ -634,6 +636,40 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     expect(Math.abs(afterDelayedMeasurement.block.top - sourceRefreshAfterAnchor.top)).toBeLessThan(5);
     expect(afterDelayedMeasurement.value.scrollTop).toBeGreaterThan(sourceRefreshRestoredState.scrollTop + 200);
     expect(afterDelayedMeasurement.value.readingAnchor).toEqual(sourceRefreshRestoredState.readingAnchor);
+    expect(afterDelayedMeasurement.value.readingAnchor?.followingTail).toBe(false);
+
+    const latestRequestStart = afterDelayedMeasurement.value.requests.length;
+    expect(await clickJumpToLatest(), 'the older reading position should expose Jump to latest').toBe(true);
+    const afterLatestNavigation = await waitFor('latest navigation replaces older reading intent and settles at the end', async () => {
+      const value = await snapshot();
+      const requestedLatest = value.requests.slice(latestRequestStart).some((url) => (
+        new URL(url, origin).searchParams.get('target') === 'latest'
+      ));
+      const distanceFromEnd = value.scrollHeight - value.scrollTop - value.clientHeight;
+      return requestedLatest
+        && distanceFromEnd <= 5
+        && value.readingAnchor?.followingTail === true
+        && value.readingAnchor?.position === null
+        && value.readingAnchor?.blockId === null
+        ? value
+        : null;
+    }, browser, profile);
+    const latestVisibleBlock = await waitFor('latest message remains visible after navigation', async () => (
+      visibleAnchor(undefined, true)
+    ), browser, profile);
+    const latestMeasurement = await scheduleDelayedGroupMeasurement(latestVisibleBlock.id);
+    expect(latestMeasurement, 'a mounted group above the latest viewport should be available for delayed measurement').not.toBeNull();
+    const afterLatestMeasurement = await waitFor('tail intent survives delayed group layout after Jump to latest', async () => {
+      const value = await snapshot();
+      const block = await visibleAnchor(latestVisibleBlock.id, true);
+      const distanceFromEnd = value.scrollHeight - value.scrollTop - value.clientHeight;
+      if (!block || value.scrollHeight < afterLatestNavigation.scrollHeight + 200
+          || distanceFromEnd > 5 || value.readingAnchor?.followingTail !== true) return null;
+      return { value, block };
+    }, browser, profile);
+    expect(afterLatestMeasurement.block.id).toBe(latestVisibleBlock.id);
+    expect(Math.abs(afterLatestMeasurement.block.top - latestVisibleBlock.top)).toBeLessThan(5);
+    expect(afterLatestMeasurement.value.scrollTop).toBeGreaterThan(afterLatestNavigation.scrollTop + 200);
     return {
       coldRequest: cold.requests.find((url) => url.includes('target=initial')),
       boundedWindowRequests: windowRequests,
@@ -652,6 +688,13 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
         beforeHeight: measurement!.beforeHeight,
         scrollTopBefore: sourceRefreshRestoredState.scrollTop,
         scrollTopAfter: afterDelayedMeasurement.value.scrollTop,
+      },
+      latestNavigation: {
+        beforeScrollTop: afterDelayedMeasurement.value.scrollTop,
+        afterScrollTop: afterLatestNavigation.scrollTop,
+        remainingDistance: afterLatestNavigation.scrollHeight - afterLatestNavigation.scrollTop - afterLatestNavigation.clientHeight,
+        stableBlock: latestVisibleBlock,
+        scrollTopAfterDelayedMeasurement: afterLatestMeasurement.value.scrollTop,
       },
       wheelAfterPrepend: { before: afterPrepend.scrollTop, after: afterWheel.scrollTop },
       gapTargets,

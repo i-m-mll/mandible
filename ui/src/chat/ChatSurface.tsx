@@ -144,6 +144,17 @@ function parseReadingAnchor(value: string | null): ReadingAnchor | null {
   }
 }
 
+function tailReadingAnchor(itemId: string): ReadingAnchor {
+  return {
+    version: 1,
+    itemId,
+    blockId: null,
+    position: null,
+    viewportOffset: 0,
+    followingTail: true,
+  };
+}
+
 function blockId(turnId: string, block: ContentBlock, index: number): string {
   if (block.type === 'tool_use') {
     return `${turnId}:tool:${block.id}`;
@@ -548,9 +559,15 @@ export function ChatSurface({
     if (navigationTarget) return;
     if (storedAnchor) {
       readingAnchorRef.current = storedAnchor;
-      pendingReadingAnchorRef.current = storedAnchor;
-      setFollowingTail(storedAnchor.followingTail && !transcript?.hasNewer);
-      restoreReadingAnchor(storedAnchor);
+      if (storedAnchor.followingTail) {
+        pendingReadingAnchorRef.current = null;
+        setFollowingTail(true);
+        virtualizer.scrollToEnd({ behavior: 'auto' });
+      } else {
+        pendingReadingAnchorRef.current = storedAnchor;
+        setFollowingTail(false);
+        restoreReadingAnchor(storedAnchor);
+      }
     } else if (!navigationTarget) {
       setFollowingTail(!transcript?.hasNewer);
       virtualizer.scrollToEnd({ behavior: 'auto' });
@@ -588,13 +605,18 @@ export function ChatSurface({
 
     const behavior = requestedScrollBehavior(navigationTarget.smooth);
     handledNavigationKeyRef.current = navigationTarget.key;
+    if (navigationTarget.kind === 'latest') {
+      pendingReadingAnchorRef.current = null;
+      userScrollIntentRef.current = false;
+      const tailAnchor = tailReadingAnchor(items.at(-1)?.id ?? 'tail');
+      readingAnchorRef.current = tailAnchor;
+      storageSet(scrollStorageKey, JSON.stringify(tailAnchor));
+    }
     pendingFocusRef.current = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest'
       ? null
       : { key: navigationTarget.key, blockId: navigationTarget.blockId ?? null, itemId: items[itemIndex].id };
-    setFollowingTail(
-      (navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest')
-      && !transcript?.hasNewer,
-    );
+    setFollowingTail(navigationTarget.kind === 'latest'
+      || (navigationTarget.kind === 'initial' && !transcript?.hasNewer));
     if (navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest') {
       virtualizer.scrollToEnd({ behavior });
       onNavigationResult?.({ key: navigationTarget.key, status: 'revealed' });
@@ -604,7 +626,7 @@ export function ChatSurface({
     setDistanceFromBottom(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest'
       ? 0
       : virtualizer.getDistanceFromEnd());
-  }, [items, navigationTarget, onNavigationResult, transcript?.hasNewer, virtualizer]);
+  }, [items, navigationTarget, onNavigationResult, scrollStorageKey, transcript?.hasNewer, virtualizer]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
