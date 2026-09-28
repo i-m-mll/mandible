@@ -27,6 +27,7 @@ function instance(): InstanceInfo {
     role: 'main', instance_id: 'production', installation_id: 'install-test',
     public_origin: PRODUCTION_ORIGIN, backend_generation: 'main-1',
     allowed_effects: PRODUCTION_EFFECTS, writable_roots: [root], preview_root: null,
+    user_preferences_root: path.join(root, 'settings', 'users'),
     db_path: path.join(root, 'mandible.db'), db_path_source: 'test',
     source_db_path: null, source_db_path_source: null,
   };

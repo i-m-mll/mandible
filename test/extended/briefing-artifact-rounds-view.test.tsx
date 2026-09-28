@@ -89,6 +89,7 @@ function createCopiedPreviewDatabase(root: string): {
   const previewRoot = path.join(root, 'preview');
   fs.mkdirSync(path.join(sourceRoot, 'artifacts'), { recursive: true });
   fs.mkdirSync(path.join(previewRoot, 'artifacts'), { recursive: true });
+  fs.mkdirSync(path.join(previewRoot, 'settings', 'users'), { recursive: true });
   const sourceDbPath = path.join(sourceRoot, 'source.db');
   const dbPath = path.join(previewRoot, 'copy.db');
   const sourceDb = new Database(sourceDbPath);
@@ -118,6 +119,7 @@ function exactTestInstanceEnv(role: 'test' | 'preview', details: {
       MANDIBLE_WRITABLE_ROOTS: JSON.stringify([details.previewRoot]),
       MANDIBLE_ARTIFACT_DIR: path.join(details.previewRoot, 'artifacts'),
       MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.join(details.sourceRoot!, 'artifacts'),
+      MANDIBLE_USER_PREFERENCES_DIR: path.join(details.previewRoot, 'settings', 'users'),
     } : {}),
   };
 }

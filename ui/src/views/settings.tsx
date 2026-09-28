@@ -29,6 +29,7 @@ import {
   getProjectAccessSettings,
   listProjectsForPicker,
   updateProjectAccessSettings,
+  canEditUserPreferences,
   type BackupStatus,
   type DelegatedSigningStatus,
   type DesktopDaemonLaunchMode,
@@ -1695,6 +1696,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     onTypographySave = async () => undefined,
   } = props;
   const operationalMutationsAllowed = !instance || instance.allowed_effects?.includes('maintenance:shared') === true;
+  const userPreferencesAllowed = canEditUserPreferences(instance);
   const [protectedBranches, setProtectedBranches] = useState('');
   const [quietHours, setQuietHours] = useState('');
   const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');
@@ -2108,7 +2110,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   className="settings-view__select"
                   aria-describedby={`settings-${key}-description`}
                   value={typographySettingValue(typography, key)}
-                  disabled={!operationalMutationsAllowed || saving === key}
+                  disabled={!userPreferencesAllowed || saving === key}
                   onChange={(event) => void handleTypographyField(key, (event.target as HTMLSelectElement).value)}
                 >
                   {options.map(([value, text]) => <option value={value} key={value}>{text}</option>)}
@@ -2117,7 +2119,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   type="button"
                   className="btn btn--sm"
                   aria-label={`Reset ${label}`}
-                  disabled={!operationalMutationsAllowed || saving === key}
+                  disabled={!userPreferencesAllowed || saving === key}
                   onClick={() => void handleTypographyField(key, typographySettingValue(DEFAULT_TYPOGRAPHY_SETTINGS, key))}
                 >Reset</button>
               </div>
@@ -2142,7 +2144,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   step="1"
                   aria-describedby={`settings-${key}-description`}
                   value={typographySettingValue(typography, key)}
-                  disabled={!operationalMutationsAllowed || saving === key}
+                  disabled={!userPreferencesAllowed || saving === key}
                   onChange={(event) => {
                     const value = (event.target as HTMLInputElement).value;
                     if (Number.isInteger(Number(value)) && Number(value) >= 10 && Number(value) <= 20) {
@@ -2154,7 +2156,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   type="button"
                   className="btn btn--sm"
                   aria-label={`Reset ${label}`}
-                  disabled={!operationalMutationsAllowed || saving === key}
+                  disabled={!userPreferencesAllowed || saving === key}
                   onClick={() => void handleTypographyField(key, typographySettingValue(DEFAULT_TYPOGRAPHY_SETTINGS, key))}
                 >Reset</button>
               </div>
@@ -2170,9 +2172,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               className="settings-view__select"
               aria-describedby="settings-app-theme-description"
               value={normalizeAppThemeMode(settings.app_theme)}
-              disabled={!operationalMutationsAllowed}
+              disabled={!userPreferencesAllowed}
               onChange={async (e) => {
-                if (!operationalMutationsAllowed) return;
+                if (!userPreferencesAllowed) return;
                 try {
                   await onSave('app_theme', normalizeAppThemeMode((e.target as HTMLSelectElement).value));
                 } catch { /* ignore */ }

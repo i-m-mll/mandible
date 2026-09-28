@@ -253,6 +253,8 @@ describe("restricted project route enforcement", () => {
     const sourceDb = path.join(tempDir, "source.db");
     fs.writeFileSync(previewDb, "preview");
     fs.writeFileSync(sourceDb, "source");
+    const userPreferencesRoot = path.join(previewRoot, "settings", "users");
+    fs.mkdirSync(userPreferencesRoot, { recursive: true });
     const instance = resolveInstanceInfo({
       env: {
         MANDIBLE_INSTANCE_ROLE: "preview",
@@ -264,6 +266,7 @@ describe("restricted project route enforcement", () => {
         MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
         MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
         MANDIBLE_PREVIEW_ROOT: previewRoot,
+        MANDIBLE_USER_PREFERENCES_DIR: userPreferencesRoot,
       },
       dbPath: previewDb,
       sourceDbPath: sourceDb,

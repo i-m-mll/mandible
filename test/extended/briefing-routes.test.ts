@@ -45,6 +45,8 @@ let humanId: string;
 
 function copiedPreviewInstance() {
   const previewRoot = path.join(root, "preview");
+  const userPreferencesRoot = path.join(previewRoot, "settings", "users");
+  fs.mkdirSync(userPreferencesRoot, { recursive: true });
   return resolveInstanceInfo({
     env: {
       MANDIBLE_INSTANCE_ROLE: "preview",
@@ -57,6 +59,7 @@ function copiedPreviewInstance() {
       MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
       MANDIBLE_ARTIFACT_DIR: path.join(previewRoot, "artifacts"),
       MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.join(root, "source", "artifacts"),
+      MANDIBLE_USER_PREFERENCES_DIR: userPreferencesRoot,
     },
     dbPath: path.join(previewRoot, "preview.db"),
     sourceDbPath: path.join(root, "source", "source.db"),

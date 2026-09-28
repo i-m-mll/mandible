@@ -14,11 +14,13 @@ import Database from "better-sqlite3";
 import { openDb } from "../../src/db.js";
 import { setSetting } from "../../src/client-auth/settings-kv.js";
 import { LocalSessionAuthority } from "../../src/client-auth/session-authority.js";
+import { localCaPaths } from "../../scripts/local-ca-trust.mjs";
 import { retireBriefingV1ToCustody } from "../../src/feedback/migrate-legacy.js";
 import { RICH_BRIEFING_DEMO } from "../../src/feedback/rich-briefing-demo.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
 import { createUser, setupOperator } from "../../src/users/store.js";
 import { insertRawLedgerCheckout, insertRawLedgerProject } from "../helpers/ledger-fixtures.js";
+import { seedPreviewUserPreferences } from "../../scripts/iab-preview.mjs";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "iab-preview.mjs");
 const execFileAsync = promisify(execFile);
@@ -58,6 +60,20 @@ function previewLauncherEnv(previewBase: string): NodeJS.ProcessEnv {
     writable_roots: [],
   });
   authority.close();
+  const ca = localCaPaths(mandibleHome);
+  fs.mkdirSync(path.dirname(ca.rootCert), { recursive: true });
+  fs.writeFileSync(ca.rootCert, "-----BEGIN CERTIFICATE-----\ntest-root\n-----END CERTIFICATE-----\n");
+  fs.writeFileSync(ca.rootKey, "test-key");
+  const digest = (file: string) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  fs.writeFileSync(ca.receipt, JSON.stringify({
+    schema: "mandible-local-ca-trust@1",
+    state: "trusted",
+    caddy_version: "2.11.3",
+    storage_root: ca.storageRoot,
+    installation_digest: digest(ca.installationAuthority),
+    root_digest: digest(ca.rootCert),
+    key_digest: digest(ca.rootKey),
+  }));
   const caddy = path.join(mandibleHome, "runtime", "caddy", "2.11.3", "caddy");
   fs.mkdirSync(path.dirname(caddy), { recursive: true });
   if (!fs.existsSync(caddy)) fs.writeFileSync(caddy, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -264,6 +280,7 @@ function createSeedFixture() {
   const previewRoot = path.join(previewBase, slugify(branch));
   fs.mkdirSync(previewRoot, { recursive: true });
   fs.mkdirSync(path.join(sourceRoot, "artifacts"), { recursive: true });
+  fs.mkdirSync(path.join(previewRoot, "settings", "users"), { recursive: true });
   const db = path.join(previewRoot, "mandible-20260818-120000.db");
   openDb(db).close();
   const sourceDb = path.join(sourceRoot, "source.db");
@@ -272,7 +289,7 @@ function createSeedFixture() {
   const instanceEnv = {
     MANDIBLE_DB: db,
     MANDIBLE_INSTANCE_ROLE: "preview",
-    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
+    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview", "preferences:instance"]),
     MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
     MANDIBLE_ARTIFACT_DIR: path.join(previewRoot, "artifacts"),
     MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.join(sourceRoot, "artifacts"),
@@ -282,7 +299,7 @@ function createSeedFixture() {
   const health = {
     instance: {
       role: "preview",
-      allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
+      allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"],
       operational_mutations: "reject",
       db_path_source: "iab-preview-copy",
       db_path: db,
@@ -759,14 +776,28 @@ function listenForHealth(
   });
 }
 
-function listenForDynamicHealth(healthPath: string, proofPath: string): Promise<number> {
+function listenForDynamicHealth(
+  healthPath: string,
+  proofPath: string,
+  restartHealthPath: string,
+  restartMarkerPath: string,
+  runScriptPath: string,
+): Promise<number> {
   return listenForHealth(JSON.parse(fs.readFileSync(healthPath, "utf8")), proofPath).then((port) => {
     const original = previewServer!.listeners("request")[0] as http.RequestListener;
     previewServer!.removeAllListeners("request");
+    let restartStarted = false;
     previewServer!.on("request", (req, res) => {
       if (req.method === "GET" && req.url === "/api/health") {
+        restartStarted ||= fs.readFileSync(runScriptPath, "utf8").startsWith("#!/bin/zsh");
+        if (restartStarted && !fs.existsSync(restartMarkerPath)) {
+          res.writeHead(503);
+          res.end();
+          return;
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(fs.readFileSync(healthPath, "utf8"));
+        const currentPath = restartStarted ? restartHealthPath : healthPath;
+        res.end(fs.readFileSync(currentPath, "utf8"));
         return;
       }
       original(req, res);
@@ -807,8 +838,9 @@ function previewContractEnv(details: {
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
     MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
     MANDIBLE_ARTIFACT_DIR: path.join(details.previewRoot, "artifacts"),
+    MANDIBLE_USER_PREFERENCES_DIR: path.join(details.previewRoot, "settings", "users"),
     MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.join(mandibleHome, "artifacts"),
-    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
+    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview", "preferences:instance"]),
     MANDIBLE_WRITABLE_ROOTS: JSON.stringify([details.previewRoot]),
     MANDIBLE_FILE_RPC_DIR: path.join(details.previewRoot, "agent-rpc"),
     MANDIBLE_CONFIG_DIR: path.join(details.previewRoot, "config"),
@@ -874,7 +906,7 @@ function installStandInDaemonDist(repo: string, details: {
   ].join("\n"), "utf8");
 }
 
-async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
+async function createRefreshFixture(options: { buildFails?: boolean; legacyUserPreferences?: boolean } = {}) {
   const repo = createRepo();
   git(["checkout", "-b", "integration/test-preview"], repo);
   fs.writeFileSync(path.join(repo, "README.md"), "new head\n", "utf8");
@@ -904,6 +936,10 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
   const proofPath = path.join(previewRoot, "preview-browser-enrollment.json");
   const startupEpoch = "preview-refresh-fixture";
   const fileRpcDir = path.join(previewRoot, "agent-rpc");
+  fs.mkdirSync(path.join(previewRoot, "settings", "users"), { recursive: true });
+  const instanceEnv = previewContractEnv({ port: 0, db, sourceDb, previewRoot, pidFile });
+  const oldEffects = ["ledger:read", "ledger:write", "files:preview"];
+  const newEffects = [...oldEffects, "preferences:instance"];
   const health = {
     ready: true,
     warm: true,
@@ -911,8 +947,10 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
     startup_commit: { hash: oldHead, summary: "old", date: "" },
     instance: {
       role: "preview",
-      allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
-      operational_mutations: "reject",
+      instance_id: instanceEnv.MANDIBLE_INSTANCE_ID,
+      installation_id: instanceEnv.MANDIBLE_INSTALLATION_ID,
+      public_origin: instanceEnv.MANDIBLE_PUBLIC_ORIGIN,
+      allowed_effects: options.legacyUserPreferences ? oldEffects : newEffects,
       preview_browser_enrollment: "allow",
       db_path: db,
       db_path_source: "iab-preview-copy",
@@ -924,11 +962,32 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
   fs.writeFileSync(refreshedHealthPath, JSON.stringify({
     ...health,
     startup_commit: { hash: currentHead, summary: "new", date: "" },
+    instance: { ...health.instance, allowed_effects: newEffects },
   }), "utf8");
-  const port = await listenForDynamicHealth(healthPath, proofPath);
+  const port = await listenForDynamicHealth(healthPath, proofPath, refreshedHealthPath, markerPidFile, runScript);
   installStandInDaemonDist(repo, {
     healthPath, refreshedHealthPath, markerPidFile, proofPath, startupEpoch,
   });
+  Object.assign(instanceEnv, previewContractEnv({ port, db, sourceDb, previewRoot, pidFile }));
+  const productionPreferencesRoot = path.join(previewBase, "mandible-home", "settings", "users");
+  const localPreferenceFile = path.join(previewRoot, "settings", "users", "user-one.json");
+  if (options.legacyUserPreferences) {
+    instanceEnv.MANDIBLE_ALLOWED_EFFECTS = JSON.stringify(oldEffects);
+    delete instanceEnv.MANDIBLE_USER_PREFERENCES_DIR;
+    fs.mkdirSync(productionPreferencesRoot, { recursive: true });
+    fs.writeFileSync(path.join(productionPreferencesRoot, "user-one.json"), JSON.stringify({
+      version: 1, userId: "user-one", revision: 1,
+      settings: { chatShownProjects: [], appTheme: "light" },
+    }), { mode: 0o600 });
+    fs.writeFileSync(path.join(productionPreferencesRoot, "user-two.json"), JSON.stringify({
+      version: 1, userId: "user-two", revision: 1,
+      settings: { chatShownProjects: [], appTheme: "system" },
+    }), { mode: 0o600 });
+    fs.writeFileSync(localPreferenceFile, JSON.stringify({
+      version: 1, userId: "user-one", revision: 3,
+      settings: { chatShownProjects: [], appTheme: "dark" },
+    }), { mode: 0o600 });
+  }
   const metadata = {
     ok: true,
     status: "started",
@@ -942,7 +1001,7 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
     stdoutLog: path.join(previewRoot, "stdout.log"),
     stderrLog: path.join(previewRoot, "stderr.log"),
     runScript,
-    instanceEnv: previewContractEnv({ port, db, sourceDb, previewRoot, pidFile }),
+    instanceEnv,
     health,
   };
   const metadataPath = path.join(previewRoot, "metadata.json");
@@ -966,6 +1025,8 @@ async function createRefreshFixture(options: { buildFails?: boolean } = {}) {
     runScript,
     metadata,
     metadataPath,
+    localPreferenceFile,
+    productionPreferencesRoot,
     healthPath,
     refreshedHealthPath,
     env: {
@@ -1434,6 +1495,7 @@ describe("iab-preview launcher", () => {
       MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
       MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
       MANDIBLE_ARTIFACT_DIR: path.join(previewRoot, "artifacts"),
+      MANDIBLE_USER_PREFERENCES_DIR: path.join(previewRoot, "settings", "users"),
       MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
       MANDIBLE_CONFIG_DIR: path.join(previewRoot, "config"),
       MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(previewConversations, "structure.db"),
@@ -1441,7 +1503,7 @@ describe("iab-preview launcher", () => {
       MANDIBLE_STDERR_LOG_PATH: path.join(previewRoot, "stderr.log"),
       MANDIBLE_CLI_CACHE_DIR: path.join(previewRoot, "cli"),
     });
-    // These five keys are the shared-resource leak this contract closes: a
+    // Preview writable state stays under this instance's root.
     // preview used to open the live conversations index read-write on the same
     // inode as the live daemon, rotate the live daemon's log file on its own
     // timer, and overwrite every file in the shared CLI cache. Every writable
@@ -1461,6 +1523,7 @@ describe("iab-preview launcher", () => {
       "MANDIBLE_STDERR_LOG_PATH",
       "MANDIBLE_CLI_CACHE_DIR",
       "MANDIBLE_ARTIFACT_DIR",
+      "MANDIBLE_USER_PREFERENCES_DIR",
     ]) {
       expect(String(payload.instanceEnv[key]).startsWith(`${previewRoot}${path.sep}`)).toBe(true);
     }
@@ -1472,6 +1535,64 @@ describe("iab-preview launcher", () => {
       conversations: expect.stringContaining("whole"),
       conversationTitleConvergence: expect.stringContaining("before daemon start"),
     });
+  });
+
+  it("seeds user preferences once, preserves preview edits, and rejects an unsafe target", () => {
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-preferences-"));
+    tempRoots.push(previewBase);
+    const sourceRoot = path.join(previewBase, "production", "settings", "users");
+    const previewRoot = path.join(previewBase, "integration-preview");
+    fs.mkdirSync(sourceRoot, { recursive: true });
+    const originalTheme = JSON.stringify({
+      version: 1, userId: "user-one", revision: 1,
+      settings: { chatShownProjects: [], appTheme: "light" },
+    });
+    const originalOrder = JSON.stringify({
+      version: 1, userId: "user-one", revision: 1,
+      value: { pinnedConversationIds: ["conversation-production"], briefingTopLevelIds: null },
+    });
+    fs.writeFileSync(path.join(sourceRoot, "user-one.json"), originalTheme, { mode: 0o600 });
+    fs.writeFileSync(path.join(sourceRoot, "user-one.sidebar-order.json"), originalOrder, { mode: 0o600 });
+
+    expect(seedPreviewUserPreferences({ previewRoot, sourceRoot })).toMatchObject({
+      sourceMissing: false,
+      copied: ["user-one.json", "user-one.sidebar-order.json"],
+      preserved: [],
+    });
+    const targetRoot = path.join(previewRoot, "settings", "users");
+    const previewTheme = JSON.stringify({
+      version: 1, userId: "user-one", revision: 2,
+      settings: { chatShownProjects: [], appTheme: "dark" },
+    });
+    fs.writeFileSync(path.join(targetRoot, "user-one.json"), previewTheme, { mode: 0o600 });
+    const previewOrder = JSON.stringify({
+      version: 1, userId: "user-one", revision: 2,
+      value: { pinnedConversationIds: ["conversation-preview"], briefingTopLevelIds: null },
+    });
+    fs.writeFileSync(path.join(targetRoot, "user-one.sidebar-order.json"), previewOrder, { mode: 0o600 });
+    const changedProductionTheme = JSON.stringify({
+      version: 1, userId: "user-one", revision: 2,
+      settings: { chatShownProjects: [], appTheme: "system" },
+    });
+    fs.writeFileSync(path.join(sourceRoot, "user-one.json"), changedProductionTheme, { mode: 0o600 });
+    fs.writeFileSync(path.join(sourceRoot, "user-two.json"), JSON.stringify({
+      version: 1, userId: "user-two", revision: 1,
+      settings: { chatShownProjects: [], appTheme: "dark" },
+    }), { mode: 0o600 });
+
+    expect(seedPreviewUserPreferences({ previewRoot, sourceRoot })).toMatchObject({
+      copied: ["user-two.json"],
+      preserved: ["user-one.json", "user-one.sidebar-order.json"],
+    });
+    expect(fs.readFileSync(path.join(targetRoot, "user-one.json"), "utf8")).toBe(previewTheme);
+    expect(fs.readFileSync(path.join(sourceRoot, "user-one.json"), "utf8")).toBe(changedProductionTheme);
+    expect(fs.readFileSync(path.join(targetRoot, "user-one.sidebar-order.json"), "utf8")).toBe(previewOrder);
+
+    const unsafeRoot = path.join(previewBase, "unsafe-preview");
+    fs.mkdirSync(path.join(unsafeRoot, "settings"), { recursive: true });
+    fs.symlinkSync(sourceRoot, path.join(unsafeRoot, "settings", "users"), "dir");
+    expect(() => seedPreviewUserPreferences({ previewRoot: unsafeRoot, sourceRoot }))
+      .toThrow("preview user-preferences directory is a symlink");
   });
 
   it("does not reuse a healthy daemon without preview reject policy metadata", async () => {
@@ -1799,7 +1920,7 @@ describe("iab-preview launcher", () => {
       startup_epoch: startupEpoch,
       startup_commit: { hash: currentHead, summary: "current", date: "" },
       instance: {
-        role: "preview", allowed_effects: ["ledger:read", "ledger:write", "files:preview"], preview_browser_enrollment: "allow",
+        role: "preview", allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"], preview_browser_enrollment: "allow",
       },
       file_rpc_dir: fileRpcDir,
     }, proofPath);
@@ -1872,7 +1993,7 @@ describe("iab-preview launcher", () => {
     const health = {
       startup_epoch: startupEpoch,
       instance: {
-        role: "preview", allowed_effects: ["ledger:read", "ledger:write", "files:preview"], preview_browser_enrollment: "allow",
+        role: "preview", allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"], preview_browser_enrollment: "allow",
       },
     };
     const port = await listenForHealth(health, proofPath, { verifiedHuman: false });
@@ -1897,11 +2018,17 @@ describe("iab-preview launcher", () => {
 
   it("refreshes the same preview in place when its startup commit drifts", async () => {
     const fixture = await createRefreshFixture();
-    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    });
+    let result;
+    try {
+      result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+        cwd: fixture.repo,
+        encoding: "utf8",
+        env: fixture.env,
+      });
+    } catch (error) {
+      const commandError = error as Error & { stdout?: string; stderr?: string };
+      throw new Error(`${commandError.message}\nstdout:\n${commandError.stdout ?? ""}\nstderr:\n${commandError.stderr ?? ""}`);
+    }
 
     const payload = JSON.parse(result.stdout);
     expect(payload.status).toBe("refreshed");
@@ -1943,6 +2070,41 @@ describe("iab-preview launcher", () => {
       path.basename(fixture.db),
     ]);
     expect(fs.realpathSync(path.join(fixture.previewRoot, "current.db"))).toBe(fs.realpathSync(fixture.db));
+  }, 60_000);
+
+  it("upgrades an existing healthy preview without overwriting its local preferences", async () => {
+    const fixture = await createRefreshFixture({ legacyUserPreferences: true });
+    const localBefore = fs.readFileSync(fixture.localPreferenceFile, "utf8");
+    let result;
+    try {
+      result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
+        cwd: fixture.repo,
+        encoding: "utf8",
+        env: fixture.env,
+      });
+    } catch (error) {
+      const commandError = error as Error & { stdout?: string; stderr?: string };
+      throw new Error(`${commandError.message}\nstdout:\n${commandError.stdout ?? ""}\nstderr:\n${commandError.stderr ?? ""}`);
+    }
+
+    const payload = JSON.parse(result.stdout);
+    expect(payload.status).toBe("refreshed");
+    expect(payload.port).toBe(fixture.metadata.port);
+    expect(payload.health.instance.allowed_effects).toEqual([
+      "ledger:read", "ledger:write", "files:preview", "preferences:instance",
+    ]);
+    expect(payload.instanceEnv.MANDIBLE_USER_PREFERENCES_DIR)
+      .toBe(path.join(fixture.previewRoot, "settings", "users"));
+    expect(payload.userPreferencesSeed).toMatchObject({
+      copied: ["user-two.json"],
+      preserved: ["user-one.json"],
+    });
+    expect(fs.readFileSync(fixture.localPreferenceFile, "utf8")).toBe(localBefore);
+    expect(JSON.parse(fs.readFileSync(path.join(path.dirname(fixture.localPreferenceFile), "user-two.json"), "utf8")))
+      .toMatchObject({ userId: "user-two", settings: { appTheme: "system" } });
+    expect(JSON.parse(fs.readFileSync(fixture.metadataPath, "utf8"))).not.toHaveProperty("legacyContractDrift");
+    expect(fs.readFileSync(path.join(fixture.productionPreferencesRoot, "user-one.json"), "utf8"))
+      .toContain('"appTheme":"light"');
   }, 60_000);
 
   it("terminates the running preview daemon before starting its replacement", async () => {
