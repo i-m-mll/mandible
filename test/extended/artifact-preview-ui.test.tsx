@@ -565,6 +565,7 @@ describe('ArtifactDetail artifact preview rendering', () => {
       selectedVersionNo: null,
     });
     const header = container.querySelector('.artifact-detail__header');
+    const notice = container.querySelector('.artifact-detail [data-detail-pane-slot="notice"]');
     const composition = header?.querySelector('.detail-pane-header[data-detail-pane-header-variant="versioned"]');
     const main = composition?.querySelector('.detail-pane-header__main');
     const pane = container.querySelector('.artifact-detail__pane');
@@ -600,7 +601,8 @@ describe('ArtifactDetail artifact preview rendering', () => {
     ]));
     expect(detail?.contains(header as Node)).toBe(true);
     expect(detail?.contains(pane as Node)).toBe(true);
-    expect(header?.nextElementSibling).toBe(pane);
+    expect(header?.nextElementSibling).toBe(notice);
+    expect(notice?.nextElementSibling).toBe(pane);
     expect(pane?.contains(header as Node)).toBe(false);
     expect(pane?.querySelector('.artifact-detail__body')).toBeNull();
     expect(pane?.querySelector('.artifact-preview-frame')).toBeNull();

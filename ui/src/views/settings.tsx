@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
+import { AppOperationalNoticeOutlet } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { formatRelativeTime } from '../lib/format';
 import {
@@ -1806,6 +1807,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <div className="view-header">
         <h2>Settings</h2>
       </div>
+      <AppOperationalNoticeOutlet />
 
       <div className="settings-view__layout">
         <nav className="settings-view__toc" aria-label="Settings sections">

@@ -650,14 +650,22 @@ function App(): JSX.Element {
   const [viewSidebarWidths, setViewSidebarWidths] = useState<ViewSidebarWidths>(
     readInitialViewSidebarWidths,
   );
-  const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
+  const [fallbackNoticeHost, setFallbackNoticeHost] = useState<HTMLElement | null>(null);
+  const [mainNoticeHosts, setMainNoticeHosts] = useState<Array<{ id: number; host: HTMLElement }>>([]);
+  const noticeHostRegistrationSequence = useRef(0);
+  const registerMainNoticeHost = useCallback((host: HTMLElement) => {
+    const id = ++noticeHostRegistrationSequence.current;
+    setMainNoticeHosts((current) => [...current, { id, host }]);
+    return () => setMainNoticeHosts((current) => current.filter((registration) => registration.id !== id));
+  }, []);
+  const noticeHost = mainNoticeHosts[0]?.host ?? fallbackNoticeHost;
   const [noticeHeight, setNoticeHeight] = useState(0);
   useLayoutEffect(() => {
-    if (!noticeHost || typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(() => setNoticeHeight(noticeHost.getBoundingClientRect().height));
-    observer.observe(noticeHost);
+    if (!fallbackNoticeHost || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => setNoticeHeight(fallbackNoticeHost.getBoundingClientRect().height));
+    observer.observe(fallbackNoticeHost);
     return () => observer.disconnect();
-  }, [noticeHost]);
+  }, [fallbackNoticeHost]);
   const [visitedTabs, setVisitedTabs] = useState<Set<RenderableTab>>(() => {
     const initial = parseHashRoute();
     return new Set<RenderableTab>([isRenderableTab(initial.tab) ? initial.tab : 'spaces']);
@@ -788,7 +796,8 @@ function App(): JSX.Element {
     viewSidebarWidth,
     active: true,
     noticeHost,
-  }), [noticeHost, rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
+    registerMainNoticeHost,
+  }), [noticeHost, registerMainNoticeHost, rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
 
   const effectiveSettings = useMemo(() => (
     hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
@@ -2639,20 +2648,20 @@ function App(): JSX.Element {
         <main
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
           data-app-surface="main"
-          style={{ '--app-operational-notice-height': `${noticeHeight}px` } as JSX.CSSProperties}
+          style={{ '--app-operational-notice-height': `${mainNoticeHosts.length > 0 ? 0 : noticeHeight}px` } as JSX.CSSProperties}
         >
         <div
           id="app-operational-notices"
           className="app-operational-notices"
           data-testid="app-operational-notices"
-          ref={setNoticeHost}
-        >
-          {clientAccess.phase === 'initializing' || clientAccess.phase === 'recovering' ? (
-            <DetailPaneNotice severity="info" source="local-access">
-              {accessEverReady ? 'Reconnecting to Mandible…' : 'Connecting to Mandible…'}
-            </DetailPaneNotice>
-          ) : null}
-        </div>
+          data-app-operational-notice-fallback
+          ref={setFallbackNoticeHost}
+        />
+        {clientAccess.phase === 'initializing' || clientAccess.phase === 'recovering' ? (
+          <DetailPaneNotice severity="info" source="local-access">
+            {accessEverReady ? 'Reconnecting to Mandible…' : 'Connecting to Mandible…'}
+          </DetailPaneNotice>
+        ) : null}
         {clientAccess.phase === 'failed' ? (
           <DetailPaneNotice
             severity="error"
