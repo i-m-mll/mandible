@@ -228,31 +228,6 @@
   flex: none;
 }
 
-.artifact-detail__actions-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.artifact-detail__actions-trigger:hover,
-.artifact-detail__actions-trigger--active {
-  background: var(--neutral-alpha-08);
-  color: var(--text-primary);
-}
-
-.artifact-detail__actions-trigger svg {
-  width: 17px;
-  height: 17px;
-  fill: currentColor;
-}
-
 .artifact-detail__actions-menu {
   position: fixed;
   z-index: 80;

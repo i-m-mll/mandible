@@ -205,13 +205,31 @@
   display: contents;
 }
 
-/* The toggle moves into the open sidebar, but its shared-header slot remains
- * geometrically present so opening the sidebar never reflows header rows. */
-.detail-pane-header__right-sidebar-action-slot {
-  flex: 0 0 34px;
-  width: 34px;
-  height: 34px;
-  visibility: hidden;
+.detail-pane-menu-trigger {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--chrome-icon-hover-indirect);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.detail-pane-menu-trigger:is(:hover, :focus-visible, [aria-expanded='true']) {
+  background: var(--neutral-alpha-08);
+  color: var(--chrome-icon-hover-direct);
+}
+
+.detail-pane-menu-trigger svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
 }
 
 .detail-pane-header--standard .detail-pane-header__topline-controls {

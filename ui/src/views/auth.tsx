@@ -9,6 +9,7 @@ import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { EntityPill } from '../components/shared/EntityPill';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigger';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
@@ -1055,18 +1056,12 @@ function AuthRequestDetail({
           )}
           actions={(
             <div className="auth-detail__header-actions">
-              <button
-                ref={actionsTriggerRef}
-                type="button"
-                className={`auth-detail__actions-trigger${actionsOpen ? ' auth-detail__actions-trigger--active' : ''}`}
-                aria-label="Approval actions"
-                aria-haspopup="menu"
-                aria-expanded={actionsOpen}
-                title="Approval actions"
+              <DetailPaneMenuTrigger
+                buttonRef={actionsTriggerRef}
+                label="Approval actions"
+                expanded={actionsOpen}
                 onClick={() => setActionsOpen((open) => !open)}
-              >
-                <HorizontalDotsIcon />
-              </button>
+              />
               {actionsOpen && (
                 <div
                   ref={actionsMenuRef}
@@ -1314,16 +1309,6 @@ function AuthRequestDetail({
           </div>
         )}
     </DetailPaneShell>
-  );
-}
-
-function HorizontalDotsIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="5" cy="12" r="1.5" />
-      <circle cx="12" cy="12" r="1.5" />
-      <circle cx="19" cy="12" r="1.5" />
-    </svg>
   );
 }
 

@@ -7,6 +7,7 @@ const interactiveStylesheet = [
   'ui/src/styles/timeline.css',
   'ui/src/styles/shared.css',
   'ui/src/styles/contextual-action.css',
+  'ui/src/styles/detail-pane-shell.css',
   'ui/src/styles/sidebar-search-filter.css',
   'ui/src/styles/sidebar-item-row.css',
   'ui/src/styles/sidebar-group-node.css',
@@ -108,7 +109,7 @@ describe('shared chrome icon cascade', () => {
         <button class="sidebar-search-filter__trigger sidebar-search-filter__trigger--active test-hover">F</button>
         <div class="timeline-corner-toolbar"><button class="timeline-icon-button test-hover">T</button></div>
         <button class="ledger-copy-ref-button test-focus-visible">H</button>
-        <button class="ledger-issue-actions-menu__trigger ledger-issue-actions-menu__trigger--active test-hover">L</button>
+        <button class="detail-pane-menu-trigger test-hover" aria-expanded="true">L</button>
         <button class="tab-overflow__btn tab-overflow__btn--active test-focus-visible">O</button>
         <button class="daemon-toast__dismiss test-hover">D</button>
         <button class="overlay-close-button test-focus-visible">U</button>
@@ -125,7 +126,7 @@ describe('shared chrome icon cascade', () => {
       '.sidebar-search-filter__trigger',
       '.timeline-icon-button',
       '.ledger-copy-ref-button',
-      '.ledger-issue-actions-menu__trigger',
+      '.detail-pane-menu-trigger',
       '.tab-overflow__btn',
       '.daemon-toast__dismiss',
       '.overlay-close-button',
@@ -139,7 +140,7 @@ describe('shared chrome icon cascade', () => {
 
     expect(document.querySelector('.sidebar-search-filter__trigger')?.classList)
       .toContain('sidebar-search-filter__trigger--active');
-    expect(document.querySelector('.ledger-issue-actions-menu__trigger')?.classList)
-      .toContain('ledger-issue-actions-menu__trigger--active');
+    expect(document.querySelector('.detail-pane-menu-trigger')?.getAttribute('aria-expanded'))
+      .toBe('true');
   });
 });

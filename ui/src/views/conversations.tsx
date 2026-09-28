@@ -67,6 +67,7 @@ import {
   type ProviderLiveProjection,
 } from '../api.js';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigger';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
@@ -2070,18 +2071,12 @@ export function ConversationDetail({
       menuLabel="Conversation detail actions"
       menu={(
         <div className="conv-actions">
-          <button
-              ref={actionsTriggerRef}
-              type="button"
-              className="conv-actions__trigger"
-              onClick={() => setActionsOpen((prev) => !prev)}
-              title="Conversation actions"
-              aria-label="Conversation actions"
-              aria-haspopup="menu"
-              aria-expanded={actionsOpen}
-            >
-              <HorizontalDotsIcon />
-          </button>
+          <DetailPaneMenuTrigger
+            buttonRef={actionsTriggerRef}
+            label="Conversation actions"
+            expanded={actionsOpen}
+            onClick={() => setActionsOpen((prev) => !prev)}
+          />
           {actionsOpen && (
             <div
                 ref={actionsMenuRef}
