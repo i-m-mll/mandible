@@ -1196,7 +1196,7 @@ api_write_instance_metadata_unknown() {
   local output_file="${2:-}"
   local message
 
-  message="Refusing ${category} mutation because Mandible instance metadata is unavailable from /api/instance or /api/health. Use a daemon that exposes valid instance metadata, or set MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS=1 only in isolated test/dev environments."
+  message="Refusing ${category} mutation because Mandible instance metadata is unavailable from /api/instance or /api/health. Use a daemon that exposes valid instance metadata."
   printf '%s\n' "$message" >&2
   if [[ -n "$output_file" ]]; then
     jq -n \
@@ -1275,8 +1275,6 @@ api_preflight_operational_mutation() {
   if api_restart_availability_preflight "$category" "$output_file"; then
     return 75
   fi
-  api_non_main_operational_mutation_override_enabled && return 0
-
   tmp_response="$(api_temp_file)"
   if api_fetch_instance_payload "$tmp_response"; then
     fetch_status=0
@@ -1308,6 +1306,19 @@ api_preflight_operational_mutation() {
     rm -f "$tmp_response"
     return 0
   fi
+
+  # The HTTP server owns preview permissions. Validate that this request is
+  # aimed at a real Mandible instance, then preserve its canonical effects
+  # gate and response instead of duplicating route classifications here.
+  if [[ "$role" == "preview" ]]; then
+    rm -f "$tmp_response"
+    return 0
+  fi
+
+  api_non_main_operational_mutation_override_enabled && {
+    rm -f "$tmp_response"
+    return 0
+  }
 
   db_path=$(jq -r '.instance.db_path // ""' "$tmp_response")
   source_db_path=$(jq -r '.instance.source_db_path // ""' "$tmp_response")
