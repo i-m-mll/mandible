@@ -68,7 +68,7 @@ describe('shared app-shell chrome contract', () => {
 
     expect(header).toContain('border-bottom: 1px solid var(--neutral-alpha-06)');
     expect(header).toContain('border-right: none');
-    expect(railSidebarDivider).toContain('top: var(--app-header-height)');
+    expect(railSidebarDivider).toContain('top: var(--app-left-chrome-height)');
     expect(railSidebarDivider).toContain('left: calc(var(--app-left-boundary-width) + var(--app-rail-width))');
     expect(railSidebarDivider).toContain('width: 1px');
     expect(railSidebarDivider).toContain('background: var(--border-muted)');
@@ -77,6 +77,41 @@ describe('shared app-shell chrome contract', () => {
     expect(footer).toContain('padding-inline: var(--app-rail-inline-padding)');
     expect(footer).toContain('margin-inline: calc(-1 * var(--app-rail-inline-padding))');
     expect(ruleBody(base, '.app-shell::after')).toContain('var(--shadow-app-subdivision-paint)');
+  });
+
+  it('keeps native titlebar space in left chrome and tints only glass-backed chrome', () => {
+    const shell = base.match(/\.app-shell\s*\{[^{}]*--app-header-height:[^{}]*\}/)?.[0] ?? '';
+    const nativeShell = ruleBody(base, '.tauri-window .app-shell');
+    const nativeHeader = ruleBody(base, '.tauri-window .app-header');
+    const rail = ruleBody(base, '.app-rail');
+    const sidebar = ruleBody(base, '.app-layout--view-sidebar-open .view-sidebar');
+    const resizeHandle = ruleBody(base, '.app-layout--view-sidebar-open .view-sidebar__resize-handle.sidebar-drag-handle');
+    const nativeGlassChrome = ruleBody(base, ":root[data-native-glass='regular'] .app-rail");
+    const nativeSidebarBacking = ruleBody(base, ":root[data-native-glass='regular'] .app-layout--view-sidebar-open .app-content--view-sidebar");
+
+    expect(shell).toContain('--app-header-height: 48px');
+    expect(shell).toContain('--app-left-chrome-height: var(--app-header-height)');
+    expect(nativeShell).toContain('--app-titlebar-height: max(44px, env(titlebar-area-height, 44px))');
+    expect(nativeShell).toContain('--app-left-chrome-height: calc(var(--app-titlebar-height) + var(--app-header-height))');
+    expect(nativeShell).not.toContain('--app-header-height:');
+    expect(ruleBody(base, '.app-header')).toContain('height: var(--app-header-height)');
+    expect(nativeHeader).toContain('height: var(--app-left-chrome-height)');
+    expect(nativeHeader).toContain('padding-top: var(--app-titlebar-height)');
+    expect(ruleBody(base, '.app-right-sidebar')).toContain('grid-template-rows: var(--app-header-height) minmax(0, 1fr)');
+    expect(rail).toContain('padding: calc(var(--app-left-chrome-height) + 18px)');
+    expect(sidebar).toContain('padding-top: var(--app-left-chrome-height)');
+    expect(resizeHandle).toContain('top: var(--app-left-chrome-height)');
+
+    expect(ruleBody(tokens, ':root')).toContain('--surface-glass-tint: color-mix(in srgb, var(--surface-chrome) 72%, transparent)');
+    expect(ruleBody(base, ":root[data-native-glass='regular'] .app-header"))
+      .toContain('background: var(--surface-glass-tint)');
+    expect(nativeGlassChrome).toContain('var(--surface-glass-regular) 0 var(--app-left-chrome-height)');
+    expect(nativeGlassChrome).toContain('var(--surface-glass-tint) var(--app-left-chrome-height) 100%');
+    expect(ruleBody(base, ":root[data-native-glass='regular'] .app-layout--view-sidebar-open .view-sidebar"))
+      .toBe(nativeGlassChrome);
+    expect(nativeSidebarBacking).toContain('var(--surface-glass-regular) 0 var(--app-view-sidebar-outer-width)');
+    expect(nativeSidebarBacking).toContain('var(--surface-main) var(--app-view-sidebar-outer-width) 100%');
+    expect(nativeSidebarBacking).not.toContain('var(--surface-glass-tint)');
   });
 
   it('gives compact detail chrome exactly the app-header physical height', () => {
