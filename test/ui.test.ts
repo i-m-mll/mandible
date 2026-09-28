@@ -1853,7 +1853,7 @@ describe('app shell', () => {
       .toBe('var(--app-view-sidebar-width)');
     expect(css).toMatch(/\.app-layout\s*\{[^}]*grid-template-columns:\s*calc\(var\(--app-left-boundary-width\) \+ var\(--app-rail-outer-width\)\) minmax\(0, 1fr\);/s);
     expect(css).toMatch(/\.app-layout--view-sidebar-open\s*\{[^}]*grid-template-columns:\s*calc\(var\(--app-left-boundary-width\) \+ var\(--app-rail-width\)\) minmax\(0, 1fr\);/s);
-    expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*padding-top:\s*var\(--app-header-height\);/s);
+    expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*padding-top:\s*var\(--app-left-chrome-height\);/s);
 
     restoreLocalStorage();
   });
