@@ -154,11 +154,14 @@ describe("source-backed conversation storage preparation", () => {
          SET content = 'database fallback', metadata_json = '{}', payload_state = 'legacy'
        WHERE conversation_id = 'conversation-storage'
     `).run();
-    fs.appendFileSync(sourcePath, " ");
+    fs.writeFileSync(sourcePath, fs.readFileSync(sourcePath, "utf8").replace(
+      "source-backed body",
+      "source-backed bodx",
+    ));
 
     await expect(store.verifyAndPromoteConversationPayload("conversation-storage")).resolves.toMatchObject({
       promoted: false,
-      reason: "exact source read failed: This transcript changed after Mandible indexed it.",
+      reason: "exact source read failed: conversation source prefix no longer matches its indexed version",
     });
     expect(db.prepare(`
       SELECT COUNT(*) AS count FROM conversation_blocks
