@@ -4,6 +4,8 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { AppOperationalNoticeOutlet } from '../app-shell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { EntityPill } from '../components/shared/EntityPill';
 import { spawnIssueAgent } from '../api';
@@ -145,6 +147,8 @@ export interface InboxViewProps {
   onAckAll: () => Promise<void>;
   onRefresh: () => void;
   mutationsAllowed?: boolean;
+  externalActionsAllowed?: boolean;
+  error?: string | null;
 }
 
 // ── Types for unified item list ──
@@ -484,9 +488,11 @@ function InboxSidebarItem({
 function ContinuationDetail({
   item,
   onAck,
+  mutationsAllowed,
 }: {
   item: InboxContinuation;
   onAck: (id: string) => Promise<void>;
+  mutationsAllowed: boolean;
 }): JSX.Element {
   return (
     <div className="inbox-detail__content">
@@ -527,6 +533,7 @@ function ContinuationDetail({
           type="button"
           className="btn btn--ghost"
           onClick={() => void onAck(item.session_id)}
+          disabled={!mutationsAllowed}
         >
           Acknowledge
         </button>
@@ -538,9 +545,11 @@ function ContinuationDetail({
 function AuthResultDetail({
   item,
   onAck,
+  mutationsAllowed,
 }: {
   item: InboxAuthResult;
   onAck: (id: string) => Promise<void>;
+  mutationsAllowed: boolean;
 }): JSX.Element {
   const statusTone = authResultTone(item.status);
   const statusLabel = item.status === 'needs_rebase'
@@ -609,6 +618,7 @@ function AuthResultDetail({
           type="button"
           className="btn btn--ghost"
           onClick={() => void onAck(item.id)}
+          disabled={!mutationsAllowed}
         >
           Acknowledge
         </button>
@@ -620,13 +630,15 @@ function AuthResultDetail({
 // Bug: cbbb3d9 — work-unit continuation detail with Resume button
 function WorkUnitContinuationDetail({
   item,
+  externalActionsAllowed,
 }: {
   item: import('../api').WorkUnitWithLiveness;
+  externalActionsAllowed: boolean;
 }): JSX.Element {
   const [spawning, setSpawning] = useState(false);
 
   const handleResume = async () => {
-    if (spawning) return;
+    if (!externalActionsAllowed || spawning) return;
     setSpawning(true);
     try {
       const result = await spawnIssueAgent(item.repo_id, item.issue_id);
@@ -679,7 +691,8 @@ function WorkUnitContinuationDetail({
           type="button"
           className="btn btn--active"
           onClick={() => void handleResume()}
-          disabled={spawning}
+          disabled={!externalActionsAllowed || spawning}
+          title={externalActionsAllowed ? undefined : 'Starting an agent is unavailable in this instance'}
         >
           {spawning ? 'Spawning...' : 'Resume'}
         </button>
@@ -839,9 +852,11 @@ function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
 function ManagedReminderOccurrenceDetail({
   item,
   onAck,
+  mutationsAllowed,
 }: {
   item: InboxManagedReminderOccurrence;
   onAck: (id: string) => Promise<void>;
+  mutationsAllowed: boolean;
 }): JSX.Element {
   const evidence = item.triggering_evidence;
   const predicate = item.predicate;
@@ -915,6 +930,7 @@ function ManagedReminderOccurrenceDetail({
           type="button"
           className="btn btn--ghost"
           onClick={() => void onAck(item.id)}
+          disabled={!mutationsAllowed}
         >
           Acknowledge
         </button>
@@ -935,7 +951,10 @@ export function InboxView({
   onAckAuthResult,
   onAckManagedReminderOccurrence,
   onAckAll,
+  onRefresh,
   mutationsAllowed = true,
+  externalActionsAllowed = true,
+  error = null,
 }: InboxViewProps): JSX.Element {
   const [chips, setChips] = useState<FilterChip[]>([]);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -996,6 +1015,7 @@ export function InboxView({
   if (loading && !data) {
     return (
       <div className="inbox-detail" style={{ height: 'calc(100vh - 80px)', margin: '-28px -32px -48px' }}>
+        <AppOperationalNoticeOutlet registerAsMain />
         <div className="inbox-detail__empty">
           <span className="text-muted">Loading inbox…</span>
         </div>
@@ -1071,7 +1091,15 @@ export function InboxView({
       >
               {filteredItems.length === 0 ? (
                 <div className="inbox-sidebar__empty">
-                  {allItems.length === 0 ? 'Inbox is clear.' : 'No items match the current filters.'}
+                  {allItems.length > 0
+                    ? 'No items match the current filters.'
+                    : data
+                      ? error
+                        ? 'Could not confirm the inbox is clear.'
+                        : 'Inbox is clear.'
+                      : error
+                        ? 'Inbox could not be loaded.'
+                        : 'Inbox has not loaded yet.'}
                 </div>
               ) : (
                 filteredItems.map((item) => (
@@ -1085,27 +1113,45 @@ export function InboxView({
               )}
       </ViewSidebar>
 
+      {error ? (
+        <DetailPaneNotice
+          severity="error"
+          density="compact"
+          source="inbox-load"
+          title={data ? 'Inbox refresh failed' : 'Inbox could not be loaded'}
+          actions={<button type="button" onClick={onRefresh} disabled={loading}>Retry</button>}
+        >
+          {data ? `The last loaded inbox is still shown. ${error}` : error}
+        </DetailPaneNotice>
+      ) : null}
+
       {/* RIGHT DETAIL PANEL */}
       <div className="inbox-detail">
+        <AppOperationalNoticeOutlet registerAsMain />
         {!selectedItem ? (
           <div className="inbox-detail__empty">
             <span className="text-muted" style={{ fontSize: '14px' }}>
-              No items in this view
+              {data
+                ? error ? 'Could not confirm the inbox is clear.' : 'No items in this view'
+                : error ? 'Inbox data is unavailable.' : 'Inbox has not loaded yet.'}
             </span>
           </div>
         ) : selectedItem.type === 'continuation' ? (
           <ContinuationDetail
             item={selectedItem.raw as InboxContinuation}
             onAck={onAckContinuation}
+            mutationsAllowed={mutationsAllowed}
           />
         ) : selectedItem.type === 'auth_result' ? (
           <AuthResultDetail
             item={selectedItem.raw as InboxAuthResult}
             onAck={onAckAuthResult}
+            mutationsAllowed={mutationsAllowed}
           />
         ) : selectedItem.type === 'work_unit_continuation' ? (
           <WorkUnitContinuationDetail
             item={selectedItem.raw as import('../api').WorkUnitWithLiveness}
+            externalActionsAllowed={externalActionsAllowed}
           />
         ) : selectedItem.type === 'credential_leak' ? (
           <CredentialLeakDetail item={selectedItem.raw as InboxWebhookEvent} />
@@ -1113,6 +1159,7 @@ export function InboxView({
           <ManagedReminderOccurrenceDetail
             item={selectedItem.raw as InboxManagedReminderOccurrence}
             onAck={onAckManagedReminderOccurrence}
+            mutationsAllowed={mutationsAllowed}
           />
         ) : (
           <IssueDetail item={selectedItem.raw as InboxIssue} />

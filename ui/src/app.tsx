@@ -35,6 +35,8 @@ import {
   updateUserAppRailOrderSetting,
   updateUserTypographySetting,
   canEditUserPreferences,
+  canWriteLedger,
+  allowsInstanceEffect,
   type UserTypographySettingKey,
   type InstanceInfo,
   type DashboardBadgeCounts,
@@ -58,6 +60,7 @@ import {
 } from './client-auth-token';
 import { keepSubmittedBriefingAnnotations } from './views/feedback/briefing-preferences';
 import { DetailPaneNotice } from './components/shared/DetailPaneNotice';
+import { PreviewCopyNotice } from './components/shared/PreviewCopyNotice';
 import {
   daemonEpochChanged,
   daemonCommitChanged,
@@ -1087,6 +1090,7 @@ function App(): JSX.Element {
           await getInboxGlobal().then((data) => dispatch({ type: 'setInboxData', data }));
           return;
         case 'settings':
+          dispatch({ type: 'setSettingsLoadError', error: null });
           await getSettings().then((settings) => dispatch({ type: 'setSettings', settings }));
           return;
         case 'work':
@@ -1098,8 +1102,10 @@ function App(): JSX.Element {
         default:
           return;
       }
-    } catch {
-      if (tab === 'inbox') dispatch({ type: 'setInboxLoading', loading: false });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (tab === 'inbox') dispatch({ type: 'setInboxLoadError', error: message });
+      if (tab === 'settings') dispatch({ type: 'setSettingsLoadError', error: message });
     }
   }, [accessReady, loadWorkData]);
   loadVisibleRouteDataRef.current = loadVisibleRouteData;
@@ -1973,7 +1979,10 @@ function App(): JSX.Element {
     dispatch({ type: 'setInboxLoading', loading: true });
     getInboxGlobal()
       .then((data) => dispatch({ type: 'setInboxData', data }))
-      .catch(() => dispatch({ type: 'setInboxLoading', loading: false }));
+      .catch((error: unknown) => dispatch({
+        type: 'setInboxLoadError',
+        error: error instanceof Error ? error.message : String(error),
+      }));
   };
 
   // ── Console handlers ── Bug: b949700
@@ -2681,6 +2690,7 @@ function App(): JSX.Element {
           data-app-operational-notice-fallback
           ref={setFallbackNoticeHost}
         />
+        <PreviewCopyNotice instance={instanceInfo} />
         {clientAccess.phase === 'initializing' || clientAccess.phase === 'recovering' ? (
           <DetailPaneNotice severity="info" source="local-access">
             {accessEverReady ? 'Reconnecting to Mandible…' : 'Connecting to Mandible…'}
@@ -2776,6 +2786,7 @@ function App(): JSX.Element {
             <LazyInboxView
               data={state.inboxData}
               loading={state.inboxLoading}
+              error={state.inboxLoadError}
               selectedItemId={state.selectedInboxItemId}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
               onSelectItem={handleSelectInboxItem}
@@ -2784,7 +2795,8 @@ function App(): JSX.Element {
               onAckManagedReminderOccurrence={handleAckManagedReminderOccurrence}
               onAckAll={handleAckAll}
               onRefresh={handleInboxRefresh}
-              mutationsAllowed={!previewMutationsRejected}
+              mutationsAllowed={canWriteLedger(instanceInfo)}
+              externalActionsAllowed={allowsInstanceEffect(instanceInfo, 'process:external')}
             />
           );
         })())}
@@ -2808,6 +2820,8 @@ function App(): JSX.Element {
           <LazySettingsView
             settings={effectiveSettings}
             onSave={handleSettingsSave}
+            loadError={state.settingsLoadError}
+            onRefresh={() => void loadVisibleRouteData('settings')}
             typography={typography}
             onTypographySave={handleTypographySave}
             onClose={handleSettingsClose}
