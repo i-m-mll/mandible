@@ -10,7 +10,7 @@ import type { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import type { AuthClearanceManager } from "../src/auth-clearance.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
-import type { Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { createAuthCheckRepo, createMigratedDb, git, trackTempPath } from "./helpers/auth-queue-fixtures.js";
 
 describe("copied auth preview isolation", () => {
@@ -27,6 +27,7 @@ describe("copied auth preview isolation", () => {
     ).run(repo, candidateSha, sourceRequest.id);
 
     const copiedDb = new Database(sourceDb.serialize()) as Db;
+    setDb(copiedDb);
     const executor = vi.fn();
     const preview = new AuthQueue({
       db: copiedDb,

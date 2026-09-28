@@ -1439,6 +1439,11 @@ export class WorkScanner {
         );
         nextConfig = JSON.stringify(config, null, 2);
       }
+    } else if (this.configRoot) {
+      const remaining = this.db.prepare(
+        "SELECT root FROM work_repos WHERE id <> ? AND dir_exists = 1 ORDER BY root",
+      ).all(id) as Array<{ root: string }>;
+      nextConfig = JSON.stringify({ repos: remaining.map((repo) => repo.root) }, null, 2);
     }
 
     let configChanged = false;
@@ -1466,7 +1471,12 @@ export class WorkScanner {
       }
       if (configChanged) {
         try {
-          if (previousConfig !== null) this.writeRepoConfig(previousConfig);
+          if (previousConfig === null) {
+            this.assertRepoConfigPathWithinRoot();
+            fs.rmSync(this.configPath, { force: true });
+          } else {
+            this.writeRepoConfig(previousConfig);
+          }
         } catch (restoreError) {
           workScannerLog("error", "work_scanner_repo_config_restore_failed", {
             subsystem: "work-scanner",
