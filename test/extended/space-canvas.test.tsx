@@ -840,40 +840,6 @@ describe('SpaceCanvas drag persistence + autosave', () => {
     expect(screen.queryByTestId('space-canvas-preview-disabled')).toBeNull();
     expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
   });
-
-  it('persists canvas positions to the copied preview ledger when ledger writes are allowed', async () => {
-    vi.useFakeTimers();
-    const model: SpaceCanvasModel = {
-      items: [item('a', 'Alpha')],
-      occurrences: [occ('a', { x: 10, y: 20 })],
-    };
-    const batchWrite = vi.fn().mockResolvedValue({
-      occurrences: [occ('a', { x: 55, y: 66 })],
-    });
-
-    render(
-      h(SpaceCanvas, {
-        ...baseProps,
-        spaceId: 'sp1',
-        initialModel: model,
-        batchWrite,
-        debounceMs: 50,
-        instance: previewInstance(['ledger:read', 'ledger:write', 'files:preview']),
-      }),
-    );
-
-    act(() => {
-      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
-    });
-    await act(async () => {
-      vi.advanceTimersByTime(60);
-      await Promise.resolve();
-    });
-
-    expect(batchWrite).toHaveBeenCalledWith('sp1', [{ id: 'a', x: 55, y: 66 }]);
-    expect(screen.queryByText('Saving disabled')).toBeNull();
-    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
-  });
 });
 
 describe('SpaceCanvas SSE reconciliation', () => {

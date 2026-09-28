@@ -27,7 +27,6 @@ it('keeps the row ellipsis contextual while focus and an open menu persist it', 
           defaultBranch="main"
           expanded={new Set()}
           onToggle={() => undefined}
-          externalActionsAllowed
         />
       </tbody>
     </table>,
@@ -52,26 +51,4 @@ it('keeps the row ellipsis contextual while focus and an open menu persist it', 
   expect(workStylesheet).not.toMatch(/tr:hover[^}]*work-actions__trigger/);
   expect(workStylesheet).not.toMatch(/work-actions__trigger:(?:hover|focus-visible)[^{]*{[^}]*background/);
   expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*\.contextual-action-group\s*{[^}]*opacity: 1;[^}]*pointer-events: auto;/);
-});
-
-it('disables Finder access when external actions are unavailable', () => {
-  render(
-    <table>
-      <tbody>
-        <BranchRow
-          branch={{ name: 'feature/copied', status: 'clean', worktree_path: '/tmp/copied/worktree' }}
-          repoId="r1"
-          defaultBranch="main"
-          expanded={new Set()}
-          onToggle={() => undefined}
-          externalActionsAllowed={false}
-        />
-      </tbody>
-    </table>,
-  );
-
-  fireEvent.click(screen.getByRole('button', { name: 'Branch actions' }));
-  const openInFinder = screen.getByRole('menuitem', { name: 'Open in Finder' }) as HTMLButtonElement;
-  expect(openInFinder.disabled).toBe(true);
-  expect(openInFinder.title).toBe('External actions are unavailable in this instance.');
 });

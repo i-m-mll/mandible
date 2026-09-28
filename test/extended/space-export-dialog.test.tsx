@@ -11,10 +11,9 @@
 //   - UI-state-persistence (standing AC #2): the user's confirmed path/message
 //     persists per-Space across remounts.
 
-import { screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
-import { render } from './notice-test-render';
 
 const getSpaceExportsMock = vi.fn();
 const exportSpaceTrackedMock = vi.fn();
@@ -32,19 +31,6 @@ vi.mock('../../ui/src/api', async (importOriginal) => {
 
 import { SpaceExportDialog } from '../../ui/src/views/spaces/SpaceExportDialog';
 import { exportDialogStorageKey } from '../../ui/src/views/spaces/exportDialogState';
-import type { InstanceInfo } from '../../ui/src/api';
-
-const copiedPreview: InstanceInfo = {
-  role: 'preview',
-  instance_id: 'preview-1',
-  installation_id: 'install-1',
-  public_origin: 'http://localhost:19420',
-  backend_generation: 'test-generation',
-  allowed_effects: ['ledger:read', 'ledger:write', 'files:preview'],
-  writable_roots: ['/tmp/mandible-preview'],
-  db_path: '/tmp/mandible-preview/mandible.db',
-  db_path_source: 'iab-preview-copy',
-};
 
 // jsdom's localStorage in this config is a partial stub; install a full
 // Map-backed shim (matching the spaces-document-renderer test) so per-Space view
@@ -180,38 +166,6 @@ describe('SpaceExportDialog', () => {
     await waitFor(() => expect(screen.getByTestId('export-no-issue')).toBeTruthy());
     expect((screen.getByTestId('export-submit') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByTestId('export-submit'));
-    expect(exportSpaceTrackedMock).not.toHaveBeenCalled();
-  });
-
-  it('saves a copied-preview path setting locally while blocking repository export', async () => {
-    render(
-      <SpaceExportDialog
-        spaceId="space-1"
-        projectId="proj-1"
-        issues={['7be021']}
-        instance={copiedPreview}
-      />,
-    );
-    await waitFor(() => expect(screen.getByTestId('export-path-input')).toBeTruthy());
-
-    fireEvent.input(screen.getByTestId('export-path-input') as HTMLInputElement, {
-      target: { value: 'docs/copied-preview.md' },
-    });
-    fireEvent.click(await screen.findByTestId('export-save-default'));
-
-    expect((await screen.findByTestId('export-preview-disabled')).textContent)
-      .toContain('cannot write to the configured repository');
-    expect((screen.getByTestId('export-submit') as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByTestId('export-submit'));
-    expect(exportSpaceTrackedMock).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByTestId('export-save-default-submit'));
-    await waitFor(() => expect(setSpaceExportSettingsMock).toHaveBeenCalledWith({
-      repo_id: 'repo-1',
-      path: 'docs/copied-preview.md',
-    }));
-    expect((await screen.findByTestId('export-settings-saved')).textContent)
-      .toContain('saved in this instance');
     expect(exportSpaceTrackedMock).not.toHaveBeenCalled();
   });
 

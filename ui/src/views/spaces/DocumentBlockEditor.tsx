@@ -33,7 +33,7 @@ import type { EditorView } from '@codemirror/view';
 
 import type { SpaceBlock, SpaceExport, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
-import { getSpaceExports } from '../../api';
+import { canPerformOperation, getSpaceExports } from '../../api';
 import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
@@ -430,8 +430,11 @@ export function DocumentBlockEditor({
     () => resolveCustodyEditorUx(deriveDocumentCustody(exports)),
     [exports],
   );
-  const canWriteLedger = !instance || instance.allowed_effects.includes('ledger:write');
-  const editable = custody.editable && canWriteLedger;
+  const editable = custody.editable && spaceId !== null && canPerformOperation(
+    instance,
+    'PATCH',
+    `/api/spaces/${encodeURIComponent(spaceId)}/blocks/_`,
+  );
 
   const rendered = useMemo(
     () => (load.status === 'ready' ? renderSpaceBlocks(blocks, spaceId ?? undefined) : null),

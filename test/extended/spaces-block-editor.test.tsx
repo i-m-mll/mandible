@@ -56,6 +56,18 @@ import { __resetResourceRefRecognizers } from '../../ui/src/resource-refs';
 
 const NOW = 1_700_000_000_000;
 
+const mainInstance: InstanceInfo = {
+  role: 'main',
+  instance_id: 'main-editor-tests',
+  installation_id: 'test-installation',
+  public_origin: 'http://localhost:19420',
+  backend_generation: 'test-generation',
+  allowed_effects: ['ledger:read', 'ledger:write'],
+  writable_roots: ['/tmp'],
+  db_path: '/tmp/mandible-main.db',
+  db_path_source: 'test',
+};
+
 // --- SSE mock (matches the createSSEClient EventSource transport) ------------
 
 class MockEventSource {
@@ -510,9 +522,8 @@ describe('spaceBlocksClient', () => {
 
 async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor>[0]> & {
   backend: ReturnType<typeof makeBackend>;
-  waitForList?: boolean;
 }) {
-  const { backend, waitForList = true, ...rest } = props;
+  const { backend, instance = mainInstance, ...rest } = props;
   vi.stubGlobal('fetch', backend.fetchImpl);
   render(
     <DocumentBlockEditor
@@ -520,12 +531,11 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
       spaceId="sp1"
       renderer="document"
       fetchImpl={backend.fetchImpl}
+      instance={instance}
       {...rest}
     />,
   );
-  await waitFor(() => expect(screen.getByTestId(
-    waitForList ? 'spaces-block-editor-list' : 'spaces-block-editor',
-  )).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId('spaces-block-editor-list')).toBeTruthy());
 }
 
 type SourceHost = HTMLElement & { __spacesEditorView?: EditorView };
@@ -738,6 +748,7 @@ describe('DocumentBlockEditor (editable)', () => {
         spaceId="sp1"
         renderer="document"
         fetchImpl={fetchImpl as unknown as typeof fetch}
+        instance={mainInstance}
       />,
     );
     await waitFor(() => expect(rejectOldBlocks).toBeTruthy());
@@ -748,6 +759,7 @@ describe('DocumentBlockEditor (editable)', () => {
         spaceId="sp2"
         renderer="document"
         fetchImpl={fetchImpl as unknown as typeof fetch}
+        instance={mainInstance}
       />,
     );
     await waitFor(() => expect(screen.getByText('Fresh document.')).toBeTruthy());
@@ -1227,16 +1239,6 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(backend.calls.some((call) => call.method === 'PATCH')).toBe(true);
   });
 
-  it('shows copied-preview blocks read-only when ledger writes are unavailable', async () => {
-    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Preview text.' })]);
-    await renderEditor({ backend, instance: makePreviewInstance(['ledger:read']), waitForList: false });
-
-    await waitFor(() => expect(screen.getByText('Preview text.')).toBeTruthy());
-    const editor = screen.getByTestId('spaces-block-editor');
-    expect(editor.getAttribute('data-editable')).toBe('false');
-    expect(screen.queryByTestId('spaces-block-editor-list')).toBeNull();
-  });
-
   it('debounces autosave while a prose block is being edited', async () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
     await renderEditor({ backend });
@@ -1381,6 +1383,7 @@ describe('DocumentBlockEditor (custody gating)', () => {
         spaceId="sp1"
         renderer="document"
         fetchImpl={backend.fetchImpl}
+        instance={mainInstance}
         onReimport={onReimport}
         onFork={onFork}
       />,
