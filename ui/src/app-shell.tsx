@@ -138,6 +138,7 @@ export function AppOperationalNoticeOutlet({
 }): JSX.Element {
   const { active, registerMainNoticeHost } = useAppShell();
   const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const [registeredAsMain, setRegisteredAsMain] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const setHostNode = useCallback((node: HTMLDivElement | null) => {
     if (hostRef.current === node) return;
@@ -145,27 +146,27 @@ export function AppOperationalNoticeOutlet({
     setHost(node);
   }, []);
 
-  const ownerShell = host?.closest('.detail-pane-shell');
-  const nestedInDetailPane = Boolean(ownerShell?.parentElement?.closest('.detail-pane-shell'));
-  const forbiddenSurface = host?.closest('#app-right-sidebar, .view-sidebar, [hidden]') ?? null;
-  const mayRegisterAsMain = Boolean(
-    active
-    && registerAsMain
-    && registerMainNoticeHost
-    && host
-    && !nestedInDetailPane
-    && !forbiddenSurface,
-  );
-
   useLayoutEffect(() => {
-    if (!mayRegisterAsMain || !host || !registerMainNoticeHost) return undefined;
-    return registerMainNoticeHost(host);
-  }, [host, mayRegisterAsMain, registerMainNoticeHost]);
+    if (!active || !registerAsMain || !host || !registerMainNoticeHost) {
+      setRegisteredAsMain(false);
+      return undefined;
+    }
+    const ownerShell = host.closest('.detail-pane-shell');
+    const nestedInDetailPane = Boolean(ownerShell?.parentElement?.closest('.detail-pane-shell'));
+    const forbiddenSurface = host.closest('#app-right-sidebar, .view-sidebar, [hidden]');
+    if (nestedInDetailPane || forbiddenSurface) {
+      setRegisteredAsMain(false);
+      return undefined;
+    }
+    const unregister = registerMainNoticeHost(host);
+    setRegisteredAsMain(true);
+    return unregister;
+  }, [active, host, registerAsMain, registerMainNoticeHost]);
 
   return (
     <div
       className={className}
-      data-app-operational-notice-outlet={mayRegisterAsMain ? 'main' : undefined}
+      data-app-operational-notice-outlet={active && registeredAsMain ? 'main' : undefined}
       data-detail-pane-slot={detailPaneSlot ? 'notice' : undefined}
       data-testid={testId}
       ref={setHostNode}

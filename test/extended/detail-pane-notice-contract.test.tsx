@@ -93,6 +93,26 @@ describe('one app-owned operational notice outlet', () => {
     expect(container.querySelectorAll('.detail-pane-notice')).toHaveLength(0);
   });
 
+  it('registers the main outlet when a visited hidden tab becomes active again', () => {
+    const view = (active: boolean) => (
+      <NoticeHarness active={active}>
+        <section hidden={!active}>
+          <DetailPaneShell header={<h1>Visited tab</h1>}>
+            <DetailPaneNotice severity="error" title="Current failure">The tab became active again.</DetailPaneNotice>
+          </DetailPaneShell>
+        </section>
+      </NoticeHarness>
+    );
+    const { container, rerender } = render(view(false));
+
+    expect(container.querySelector('[data-app-operational-notice-outlet="main"]')).toBeNull();
+    rerender(view(true));
+
+    const outlet = container.querySelector('[data-app-operational-notice-outlet="main"]');
+    expect(outlet?.textContent).toContain('The tab became active again.');
+    expect(container.querySelector('[data-testid="fallback-notice-host"] .detail-pane-notice')).toBeNull();
+  });
+
   it('places notices first when a main shell explicitly has no header', () => {
     const { container } = render(
       <NoticeHarness>
