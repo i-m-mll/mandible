@@ -664,7 +664,17 @@ export function ChatSurface({
       requestWithAnchor(key, () => transcript.loadAround(start));
       return;
     }
-  }, [captureReadingAnchor, historyLoadStates, items, requestHistory, transcript, virtualItems, virtualizer]);
+  }, [
+    captureReadingAnchor,
+    distanceFromBottom,
+    historyLoadStates,
+    items,
+    requestHistory,
+    transcript,
+    virtualItems,
+    viewportHeight,
+    virtualizer,
+  ]);
 
   function handleUserScrollIntent(): void {
     // Direct scroll input supersedes a deferred virtual-row restore. The ensuing
