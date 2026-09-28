@@ -127,10 +127,11 @@ a {
 }
 
 .tauri-window .app-shell {
-  /* Overlay titlebars put web content behind the native controls. Extend only
-     the left chrome below that inset; shared content headers keep their 48px row. */
-  --app-titlebar-height: max(44px, env(titlebar-area-height, 44px));
-  --app-left-chrome-height: calc(var(--app-titlebar-height) + var(--app-header-height));
+  /* Overlay controls end at y=27 with the configured 22px inset. A 30.75px
+     inset halves the prior 26.5px gap to the centered 28px logo and preserves
+     the 48px content row below it. */
+  --app-titlebar-inset: 30.75px;
+  --app-left-chrome-height: calc(var(--app-titlebar-inset) + var(--app-header-height));
 }
 
 .app-header {
@@ -152,7 +153,7 @@ a {
 .tauri-window .app-header {
   height: var(--app-left-chrome-height);
   min-height: var(--app-left-chrome-height);
-  padding-top: var(--app-titlebar-height);
+  padding-top: var(--app-titlebar-inset);
   -webkit-user-select: none;
   user-select: none;
 }
@@ -1237,6 +1238,12 @@ a {
     var(--surface-glass-regular) 0 var(--app-left-chrome-height),
     var(--surface-glass-tint) var(--app-left-chrome-height) 100%
   );
+}
+
+:root[data-native-glass='regular'] .app-layout--view-sidebar-open .view-sidebar > .view-sidebar__header,
+:root[data-native-glass='regular'] .app-layout--view-sidebar-open .view-sidebar > .view-sidebar__body,
+:root[data-native-glass='regular'] .app-layout--view-sidebar-open .view-sidebar > .view-sidebar__footer {
+  background: transparent;
 }
 
 :root[data-native-glass='regular'] .app-layout--view-sidebar-open .app-content--view-sidebar {
