@@ -1294,7 +1294,7 @@ export function GraphView({
 
       <div className="graph-workspace">
         <div className="graph-canvas-wrap">
-          <AppOperationalNoticeOutlet />
+          <AppOperationalNoticeOutlet registerAsMain />
           {error ? <DetailPaneNotice severity="error" title="Graph could not be refreshed" className="graph-canvas-notice">{error}</DetailPaneNotice> : null}
           {loading && flowNodes.length === 0 && <LoadingSkeleton variant="canvas" label="Loading graph" />}
           {!loading && !error && flowNodes.length === 0 && (

@@ -354,7 +354,7 @@ export function SpacesViewShell({
             </span>
           )}
         </header>
-        <AppOperationalNoticeOutlet />
+        <AppOperationalNoticeOutlet registerAsMain />
         {spaceLoadError && (
           <DetailPaneNotice severity="error" density="compact" title="Could not load space">
             {spaceLoadError}

@@ -1909,7 +1909,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
         </ViewSidebar>
 
         <div className={`timeline-canvas${error ? ' timeline-canvas--with-notice' : ''}`}>
-          <AppOperationalNoticeOutlet />
+          <AppOperationalNoticeOutlet registerAsMain />
           {error ? (
             <DetailPaneNotice severity="error" density="compact">
               Timeline refresh failed. Showing the last loaded timeline. {error}

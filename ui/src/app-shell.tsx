@@ -125,13 +125,14 @@ export function useAppShell(): AppShellContextValue {
 export function AppOperationalNoticeOutlet({
   className = 'app-operational-notice-slot',
   detailPaneSlot = false,
-  registerAsMain = true,
+  registerAsMain,
   testId,
   children,
 }: {
   className?: string;
   detailPaneSlot?: boolean;
-  registerAsMain?: boolean;
+  /** Main-view registration is explicit so embedded surfaces cannot claim it by default. */
+  registerAsMain: boolean;
   testId?: string;
   children?: ComponentChildren;
 }): JSX.Element {
@@ -144,17 +145,27 @@ export function AppOperationalNoticeOutlet({
     setHost(node);
   }, []);
 
+  const ownerShell = host?.closest('.detail-pane-shell');
+  const nestedInDetailPane = Boolean(ownerShell?.parentElement?.closest('.detail-pane-shell'));
+  const forbiddenSurface = host?.closest('#app-right-sidebar, .view-sidebar, [hidden]') ?? null;
+  const mayRegisterAsMain = Boolean(
+    active
+    && registerAsMain
+    && registerMainNoticeHost
+    && host
+    && !nestedInDetailPane
+    && !forbiddenSurface,
+  );
+
   useLayoutEffect(() => {
-    if (!active || !registerAsMain || !host || !registerMainNoticeHost) return undefined;
-    const ownerShell = host.closest('.detail-pane-shell');
-    if (ownerShell?.parentElement?.closest('.detail-pane-shell')) return undefined;
+    if (!mayRegisterAsMain || !host || !registerMainNoticeHost) return undefined;
     return registerMainNoticeHost(host);
-  }, [active, host, registerAsMain, registerMainNoticeHost]);
+  }, [host, mayRegisterAsMain, registerMainNoticeHost]);
 
   return (
     <div
       className={className}
-      data-app-operational-notice-outlet={registerAsMain ? 'main' : undefined}
+      data-app-operational-notice-outlet={mayRegisterAsMain ? 'main' : undefined}
       data-detail-pane-slot={detailPaneSlot ? 'notice' : undefined}
       data-testid={testId}
       ref={setHostNode}

@@ -6,6 +6,7 @@ import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import { AppOperationalNoticeOutlet, AppShellProvider } from '../../ui/src/app-shell';
 import { DetailPaneNotice } from '../../ui/src/components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell';
+import { SessionOverviewView } from '../../ui/src/views/session-overview';
 
 afterEach(() => cleanup());
 
@@ -114,7 +115,7 @@ describe('one app-owned operational notice outlet', () => {
     const { container } = render(
       <NoticeHarness>
         <header><h1>Custom main header</h1></header>
-        <AppOperationalNoticeOutlet />
+        <AppOperationalNoticeOutlet registerAsMain />
         <main>
           <DetailPaneNotice severity="error" title="View failed">The selected view could not load.</DetailPaneNotice>
         </main>
@@ -126,5 +127,22 @@ describe('one app-owned operational notice outlet', () => {
     expect(header?.nextElementSibling).toBe(outlet);
     expect(outlet?.textContent).toContain('The selected view could not load.');
     expect(container.querySelector('[data-testid="fallback-notice-host"] .detail-pane-notice')).toBeNull();
+  });
+
+  it('keeps embedded Session Overview and explicit nested outlets out of main registration', () => {
+    const { container } = render(
+      <NoticeHarness>
+        <div id="app-right-sidebar">
+          <AppOperationalNoticeOutlet registerAsMain testId="sidebar-outlet">
+            <DetailPaneNotice severity="error" title="Sidebar-only failure">The sidebar notice stays at the fallback.</DetailPaneNotice>
+          </AppOperationalNoticeOutlet>
+          <SessionOverviewView embedded initialSessionId={null} agentBinding={null} />
+        </div>
+      </NoticeHarness>,
+    );
+
+    expect(container.querySelector('#app-right-sidebar [data-app-operational-notice-outlet="main"]')).toBeNull();
+    expect(container.querySelector('[data-testid="sidebar-outlet"] .detail-pane-notice')).toBeNull();
+    expect(container.querySelector('[data-testid="fallback-notice-host"]')?.textContent).toContain('The sidebar notice stays at the fallback.');
   });
 });

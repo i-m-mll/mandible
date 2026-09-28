@@ -530,7 +530,7 @@ export function SessionOverviewView({
   return (
     <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
       {sharedHeader}
-      <AppOperationalNoticeOutlet />
+      <AppOperationalNoticeOutlet registerAsMain={!embedded} />
       {(binding.kind === 'error' || providerOverviewError || overviewError || pickerError) ? (
         <DetailPaneNotice severity="error" density="compact" title="Session overview unavailable">
           {binding.kind === 'error' ? binding.message : providerOverviewError ?? overviewError ?? pickerError}

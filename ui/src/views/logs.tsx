@@ -545,7 +545,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
           </label>
         </div>
       </div>
-      <AppOperationalNoticeOutlet />
+      <AppOperationalNoticeOutlet registerAsMain />
 
       {(error || sseError) ? (
         <DetailPaneNotice severity="error" density="compact" title="Logs need attention">
