@@ -68,7 +68,8 @@ export class ConversationSourceChangedError extends Error {
 export function isConversationSourceChangedError(error: unknown): boolean {
   if (error instanceof ConversationSourceChangedError) return true;
   if (error instanceof AggregateError) {
-    return Array.from(error.errors).some(isConversationSourceChangedError);
+    const errors = Array.from(error.errors);
+    return errors.length > 0 && errors.every(isConversationSourceChangedError);
   }
   return false;
 }

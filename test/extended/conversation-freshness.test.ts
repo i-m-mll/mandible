@@ -242,6 +242,16 @@ describe("exact conversation freshness", () => {
     expect(actorCloses).toBe(1);
   });
 
+  it("keeps a mixed source-change and parser AggregateError fatal", () => {
+    const mixed = new AggregateError([
+      new AggregateError([new ConversationSourceChangedError("append race")]),
+      new Error("parser failure"),
+    ]);
+
+    expect(isConversationSourceChangedError(mixed)).toBe(false);
+    expect(isConversationSourceChangedError(new AggregateError([]))).toBe(false);
+  });
+
   it("retries a typed active-append race on the selected path without caching a fatal failure", async () => {
     const selected = await seed("selected-append-race");
     const other = await seed("unselected-during-race");
