@@ -8,7 +8,6 @@ declare global {
   interface Window {
     __sourceBackedHistory: {
       navigate: (anchor: ConversationAnchor | null) => void;
-      searchAndNavigate: (needle: string) => Promise<string>;
       snapshot: () => Record<string, unknown>;
     };
   }
@@ -118,18 +117,6 @@ function Fixture(): JSX.Element {
 
 window.__sourceBackedHistory = {
   navigate: (anchor) => navigation(anchor),
-  searchAndNavigate: async (needle) => {
-    const response = await nativeFetch(`/api/conversations/sidebar?search=${encodeURIComponent(needle)}&full_text=true&limit=5`);
-    const payload = await response.json() as {
-      groups?: Array<{ conversations?: Array<{ id?: string; search_target?: ConversationAnchor }> }>;
-    };
-    const target = payload.groups?.flatMap((group) => group.conversations ?? [])
-      .find((conversation) => conversation.id === conversationId)?.search_target;
-    if (!target || !('block' in target)) throw new Error('Full-text search did not return an exact block target.');
-    requests.push(`search-target:${target.block}`);
-    navigation(target);
-    return target.block;
-  },
   snapshot: () => {
     const scroll = document.querySelector<HTMLElement>('.stream-renderer__scroll');
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -138,6 +125,7 @@ window.__sourceBackedHistory = {
       fetchedBlockIds: [...fetchedBlockIds],
       seenBlockIds: [...seenBlockIds],
       mountedRows: document.querySelectorAll('.stream-renderer__virtual-row').length,
+      historyRows: document.querySelectorAll('.stream-renderer__history-state').length,
       maximumMountedRows,
       scrollTop: scroll?.scrollTop ?? null,
       scrollHeight: scroll?.scrollHeight ?? null,

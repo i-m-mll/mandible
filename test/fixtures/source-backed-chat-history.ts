@@ -74,6 +74,8 @@ export function sourceBackedHistoryRecords(): JsonRecord[] {
           type: role === 'user' ? 'input_text' : 'output_text',
           text: position === 0
             ? 'FIRST SOURCE BACKED PROMPT'
+            : position === 43
+              ? 'Long historical assistant response. '.repeat(600)
             : position === SOURCE_BACKED_HISTORY_BLOCK_COUNT - 2
               ? 'LATEST SOURCE BACKED RESPONSE'
               : `readable source block ${String(position).padStart(3, '0')}`,
