@@ -43,14 +43,19 @@ export type ConversationTranscriptData = {
 };
 
 export type ConversationTranscriptConsumer = {
+  conversationId: string;
+  sourceVersionId: string | null;
+  historyLoading: boolean;
   loadedIntervals: readonly ConversationLoadedInterval[];
   hasOlder: boolean;
   hasNewer: boolean;
   unmaterializedAfterCount: number;
-  loadOlder: () => void | Promise<void>;
-  loadNewer: () => void | Promise<void>;
-  loadAround: (position: number) => void | Promise<void>;
+  loadOlder: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
+  loadNewer: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
+  loadAround: (position: number) => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
 };
+
+export type ConversationHistoryLoadResult = 'loaded' | 'covered' | 'busy' | 'failed';
 
 export type ConversationNavigationCommand = {
   key: string;

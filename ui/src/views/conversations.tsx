@@ -127,6 +127,7 @@ import {
   flattenConversationTranscript,
   reconcileConversationWindow,
   mergeSidebarPages,
+  type ConversationHistoryLoadResult,
   type ConversationTranscriptConsumer,
   type ConversationTranscriptData,
   type ConversationWithDetails,
@@ -1251,13 +1252,31 @@ export function ConversationDetail({
       : null
   );
 
-  const loadTranscriptEdge = useCallback(async (direction: 'older' | 'newer') => {
+  const loadTranscriptEdge = useCallback(async (direction: 'older' | 'newer'): Promise<ConversationHistoryLoadResult> => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
-    if (!aggregate || edgeLoading) return;
+    if (!aggregate || edgeLoading) return 'busy';
     const interval = direction === 'older' ? aggregate.loaded_intervals[0] : aggregate.loaded_intervals.at(-1);
-    if (!interval) return;
+    if (!interval) {
+      const failure = conversationLoadFailure(
+        new Error('Chat cannot find a loaded history interval to continue from.'),
+        true,
+        direction === 'older' ? 'edge-older' : 'edge-newer',
+      );
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+      return 'failed';
+    }
     const position = direction === 'older' ? interval.start - 1 : interval.end + 1;
-    if (position < 0 || position >= aggregate.total) return;
+    if (position < 0 || position >= aggregate.total) {
+      const reachedBoundary = direction === 'older' ? aggregate.start_reached : aggregate.end_reached;
+      if (reachedBoundary) return 'covered';
+      const failure = conversationLoadFailure(
+        new Error(`Chat reported more ${direction === 'older' ? 'earlier' : 'later'} history, but no next position is available.`),
+        true,
+        direction === 'older' ? 'edge-older' : 'edge-newer',
+      );
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+      return 'failed';
+    }
     setEdgeLoading(direction);
     setNavigationError(null);
     historyRetryRef.current = { kind: 'edge', direction };
@@ -1270,20 +1289,27 @@ export function ConversationDetail({
         : Boolean(nextInterval && nextInterval.end > interval.end);
       if (!advanced) throw new Error(`Conversation history did not advance ${direction === 'older' ? 'toward the beginning' : 'toward the end'}.`);
       historyRetryRef.current = null;
+      return 'loaded';
     } catch (cause) {
       const failure = conversationLoadFailure(cause, true, direction === 'older' ? 'edge-older' : 'edge-newer');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+      return failure ? 'failed' : 'busy';
     } finally {
       if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
   }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
-  const loadTranscriptAround = useCallback(async (position: number) => {
+  const loadTranscriptAround = useCallback(async (position: number): Promise<ConversationHistoryLoadResult> => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
-    if (!aggregate || edgeLoading || !Number.isSafeInteger(position) || position < 0 || position >= aggregate.total) return;
+    if (!aggregate || edgeLoading) return 'busy';
+    if (!Number.isSafeInteger(position) || position < 0 || position >= aggregate.total) {
+      const failure = conversationLoadFailure(new Error(`Chat cannot load history at position ${position}.`), true, 'edge-newer');
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+      return 'failed';
+    }
     if (aggregate.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) {
       historyRetryRef.current = null;
-      return;
+      return 'covered';
     }
     setEdgeLoading('newer');
     setNavigationError(null);
@@ -1295,9 +1321,11 @@ export function ConversationDetail({
         throw new Error(`Conversation history did not include requested position ${position}.`);
       }
       historyRetryRef.current = null;
+      return 'loaded';
     } catch (cause) {
       const failure = conversationLoadFailure(cause, true, 'edge-newer');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+      return failure ? 'failed' : 'busy';
     } finally {
       if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
@@ -1307,6 +1335,9 @@ export function ConversationDetail({
     const aggregate = aggregateQuery.data;
     if (!aggregate) return undefined;
     return {
+      conversationId: aggregate.conversation.id,
+      sourceVersionId: aggregate.source_version_id,
+      historyLoading: edgeLoading !== null,
       loadedIntervals: aggregate.loaded_intervals,
       hasOlder: !aggregate.start_reached,
       hasNewer: !aggregate.end_reached,

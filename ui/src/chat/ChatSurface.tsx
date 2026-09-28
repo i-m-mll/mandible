@@ -27,6 +27,7 @@ import { PermissionApprovalCard } from '../components/console/PermissionApproval
 import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import { openMarkdownDocument } from './markdownActions';
 import type {
+  ConversationHistoryLoadResult,
   ConversationNavigationCommand,
   ConversationNavigationResult,
   ConversationTranscriptConsumer,
@@ -225,11 +226,15 @@ export function ChatSurface({
   const pendingReadingAnchorRef = useRef<ReadingAnchor | null>(null);
   const readingAnchorRef = useRef<ReadingAnchor | null>(null);
   const itemIdentitySignatureRef = useRef<string | null>(null);
-  const inFlightHistoryRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
-  const transcriptRef = useRef(transcript);
-  transcriptRef.current = transcript;
-  const historyScopeRef = useRef(storageScope);
-  historyScopeRef.current = storageScope;
+  const inFlightHistoryRef = useRef<{ promise: Promise<void> } | null>(null);
+  const historyScope = JSON.stringify([
+    storageScope,
+    transcript?.conversationId ?? null,
+    transcript?.sourceVersionId ?? null,
+  ]);
+  const historyScopeRef = useRef(historyScope);
+  historyScopeRef.current = historyScope;
+  const historyStateScopeRef = useRef(historyScope);
 
   const groups = useMemo(() => groupMessagesForDisplay(nodes), [nodes]);
   const turns = useMemo(() => extractTurns(nodes), [nodes]);
@@ -316,27 +321,30 @@ export function ChatSurface({
     viewportHeight,
   );
 
-  const requestHistory = useCallback((key: string, load: () => void | Promise<void>): Promise<void> => {
+  const requestHistory = useCallback((
+    key: string,
+    load: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>,
+  ): Promise<void> => {
     const current = inFlightHistoryRef.current;
     if (current) return current.promise;
-    const scope = storageScope;
-    const before = JSON.stringify(transcriptRef.current?.loadedIntervals ?? []);
+    const scope = historyScope;
     setHistoryLoadStates((states) => ({ ...states, [key]: 'loading' }));
-    const promise = Promise.resolve(load()).then(() => new Promise<void>((resolve) => {
-      window.setTimeout(resolve, 0);
-    })).then(() => {
+    const promise = Promise.resolve(load()).then((result) => new Promise<ConversationHistoryLoadResult>((resolve) => {
+      window.setTimeout(() => resolve(result), 0);
+    })).then((result) => {
       if (historyScopeRef.current !== scope) return;
-      const after = JSON.stringify(transcriptRef.current?.loadedIntervals ?? []);
-      setHistoryLoadStates((states) => ({ ...states, [key]: before === after ? 'retry' : 'idle' }));
+      setHistoryLoadStates((states) => ({ ...states, [key]: result === 'failed' ? 'retry' : 'idle' }));
     }, () => {
       if (historyScopeRef.current !== scope) return;
       setHistoryLoadStates((states) => ({ ...states, [key]: 'retry' }));
     }).finally(() => {
-      if (inFlightHistoryRef.current?.promise === promise) inFlightHistoryRef.current = null;
+      if (inFlightHistoryRef.current?.promise !== promise) return;
+      inFlightHistoryRef.current = null;
+      if (historyScopeRef.current !== scope) setHistoryLoadStates({});
     });
-    inFlightHistoryRef.current = { key, promise };
+    inFlightHistoryRef.current = { promise };
     return promise;
-  }, [storageScope]);
+  }, [historyScope]);
 
   const findAnchorItemIndex = useCallback((anchor: Pick<ReadingAnchor, 'itemId' | 'blockId'>): number => {
     if (anchor.blockId) {
@@ -391,7 +399,7 @@ export function ChatSurface({
     if (!el) return false;
     const itemIndex = findAnchorItemIndex(anchor);
     if (itemIndex < 0) {
-      if (anchor.position !== null && transcript) {
+      if (anchor.position !== null && transcript && !transcript.historyLoading) {
         const key = `anchor:${anchor.position}`;
         if ((historyLoadStates[key] ?? 'idle') === 'idle') {
           void requestHistory(key, () => transcript.loadAround(anchor.position!));
@@ -433,6 +441,12 @@ export function ChatSurface({
     readingAnchorRef.current = null;
     inFlightHistoryRef.current = null;
   }, [storageScope]);
+
+  useEffect(() => {
+    if (historyStateScopeRef.current === historyScope) return;
+    historyStateScopeRef.current = historyScope;
+    setHistoryLoadStates({});
+  }, [historyScope]);
 
   const setScrollNode = useCallback((node: HTMLDivElement | null) => {
     scrollRef.current = node;
@@ -549,7 +563,7 @@ export function ChatSurface({
   }, [items, navigationTarget, restoreReadingAnchor]);
 
   useEffect(() => {
-    if (!transcript || inFlightHistoryRef.current) return;
+    if (!transcript || transcript.historyLoading || inFlightHistoryRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
     const rendered = virtualizer.getVirtualItems();
@@ -557,7 +571,10 @@ export function ChatSurface({
     const scrollStart = el.scrollTop;
     const scrollEnd = scrollStart + el.clientHeight;
     const prefetchDistance = Math.max(el.clientHeight * 1.5, 720);
-    const requestWithAnchor = (key: string, load: () => void | Promise<void>) => {
+    const requestWithAnchor = (
+      key: string,
+      load: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>,
+    ) => {
       const anchor = captureReadingAnchor();
       if (anchor && !anchor.followingTail) pendingReadingAnchorRef.current = anchor;
       void requestHistory(key, load);
