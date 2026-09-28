@@ -16,6 +16,7 @@ declare global {
 }
 
 const conversationId = 'source-backed-history';
+const legacyBlockId = (position: number) => `legacy-${position}`;
 const requests: string[] = [];
 const transformedSourceRequests: string[] = [];
 const fetchedBlockIds = new Set<string>();
@@ -42,13 +43,30 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.includes('/api/conversations')) requests.push(url);
   let response = await nativeFetch(input, init);
   const requestPath = new URL(url, window.location.href).pathname;
-  if (requestPath === `/api/conversations/${conversationId}`
-      && response.ok && refreshedSourceGeneration > 0) {
-    transformedSourceRequests.push(url);
+  if (requestPath === `/api/conversations/${conversationId}` && response.ok) {
     const payload = await response.json() as {
       source_version_id?: string | null;
+      blocks?: Array<{ id?: string; position: number; parent_id?: string | null }>;
+      target?: { block_id?: string | null; turn_id?: string | null };
     };
-    payload.source_version_id = `source-refresh-${refreshedSourceGeneration}`;
+    if (refreshedSourceGeneration > 0) {
+      transformedSourceRequests.push(url);
+      payload.source_version_id = `source-refresh-${refreshedSourceGeneration}`;
+    } else {
+      const legacyIds = new Map((payload.blocks ?? []).flatMap((block) => (
+        block.id ? [[block.id, legacyBlockId(block.position)] as const] : []
+      )));
+      for (const block of payload.blocks ?? []) {
+        if (block.parent_id) block.parent_id = legacyIds.get(block.parent_id) ?? block.parent_id;
+        block.id = legacyBlockId(block.position);
+      }
+      if (payload.target?.block_id) {
+        payload.target.block_id = legacyIds.get(payload.target.block_id) ?? payload.target.block_id;
+      }
+      if (payload.target?.turn_id) {
+        payload.target.turn_id = legacyIds.get(payload.target.turn_id) ?? payload.target.turn_id;
+      }
+    }
     response = new Response(JSON.stringify(payload), {
       status: response.status,
       statusText: response.statusText,

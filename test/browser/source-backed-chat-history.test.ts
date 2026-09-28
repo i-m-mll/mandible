@@ -65,6 +65,10 @@ let expectedReadableBlockIds: string[] = [];
 let targetBlockId = '';
 let fixtureBundle = '';
 
+function legacyBlockId(position: number): string {
+  return `legacy-${position}`;
+}
+
 function bundleFixture(): string {
   const output = join(directory, 'source-backed-chat-history.js');
   const bundled = spawnSync(esbuildCli, [
@@ -154,12 +158,16 @@ async function seedSourceBackedConversation(): Promise<void> {
      ORDER BY position
   `).all() as Array<{ id: string; position: number }>;
   expect(rows).toHaveLength(SOURCE_BACKED_HISTORY_BLOCK_COUNT);
-  expectedBlockIds = rows.map((row) => row.id);
+  expectedBlockIds = rows.map((row) => legacyBlockId(row.position));
   const hiddenPositions = new Set(parsed.blocks
     .filter((block) => block.metadata.usage_telemetry !== undefined)
     .map((block) => block.position));
-  expectedReadableBlockIds = rows.filter((row) => !hiddenPositions.has(row.position)).map((row) => row.id);
-  targetBlockId = rows.find((row) => row.position === 123)?.id ?? '';
+  expectedReadableBlockIds = rows
+    .filter((row) => !hiddenPositions.has(row.position))
+    .map((row) => legacyBlockId(row.position));
+  targetBlockId = rows.find((row) => row.position === 123)
+    ? legacyBlockId(123)
+    : '';
   expect(targetBlockId).not.toBe('');
 }
 
@@ -553,8 +561,8 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     const sourceRefreshAfterAnchor = await waitFor('same reading block is restored from the new source version', async () => {
       const value = await snapshot();
       const anchor = value.readingAnchor;
-      const block = await visibleAnchor(sourceRefreshBeforeAnchor!.id, true);
-      if (!block || anchor?.blockId !== sourceRefreshBeforeAnchor!.id
+      const block = anchor?.blockId ? await visibleAnchor(anchor.blockId, true) : null;
+      if (!block || anchor?.blockId === sourceRefreshBeforeAnchor!.id
           || anchor.position !== sourceRefreshBeforeState!.readingAnchor!.position) return null;
       const requestedAnchorPosition = value.requests.slice(sourceRefreshAnchorRequestStart).some((url) => (
         new URL(url, origin).searchParams.get('position') === String(sourceRefreshBeforeState!.readingAnchor!.position)
@@ -566,7 +574,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
         ? block
         : null;
     }, browser, profile);
-    expect(sourceRefreshAfterAnchor.id).toBe(sourceRefreshBeforeAnchor!.id);
+    expect(sourceRefreshAfterAnchor.id).not.toBe(sourceRefreshBeforeAnchor!.id);
     expect(Math.abs(sourceRefreshAfterAnchor.top - sourceRefreshBeforeAnchor!.top)).toBeLessThan(5);
     return {
       coldRequest: cold.requests.find((url) => url.includes('target=initial')),
@@ -576,7 +584,11 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       readableCanonicalIdentities: complete.seenBlockIds.length,
       maximumMountedRows: complete.maximumMountedRows,
       prependAnchor: { before: beforePrepend, after: afterPrepend },
-      sourceRefreshAnchor: { before: sourceRefreshBeforeAnchor, after: sourceRefreshAfterAnchor },
+      sourceRefreshAnchor: {
+        position: sourceRefreshBeforeState!.readingAnchor!.position,
+        before: sourceRefreshBeforeAnchor,
+        after: sourceRefreshAfterAnchor,
+      },
       wheelAfterPrepend: { before: afterPrepend.scrollTop, after: afterWheel.scrollTop },
       gapTargets,
       targetBlockId,

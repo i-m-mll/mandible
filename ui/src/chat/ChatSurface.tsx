@@ -185,6 +185,28 @@ function renderNodePosition(node: RenderNode, targetBlockId: string | null): num
   return node.turn.assistantEvent.message.content.find((block) => block.source?.position !== undefined)?.source?.position ?? null;
 }
 
+function renderNodeBlockIdAtPosition(node: RenderNode, position: number): string | null {
+  if (node.kind === 'user_message') {
+    return node.persisted?.position === position ? node.persisted.blockId : null;
+  }
+  if (node.kind === 'semantic_event') {
+    return node.event.source.position === position ? node.event.source.blockId : null;
+  }
+  if (node.kind === 'unmatched_tool_result') {
+    const source = node.result.source;
+    return source?.position === position ? source.blockId : null;
+  }
+  if (node.kind === 'activity') {
+    return node.source?.position === position ? node.source.blockId : null;
+  }
+  const content = node.turn.assistantEvent.message.content.find((block) => block.source?.position === position);
+  if (content?.source) return content.source.blockId;
+  const result = Array.from(node.turn.toolResults.values()).find((candidate) => (
+    candidate.source?.position === position
+  ));
+  return result?.source?.blockId ?? null;
+}
+
 export function ChatSurface({
   events,
   streaming,
@@ -353,11 +375,16 @@ export function ChatSurface({
     return promise;
   }, [historyScope]);
 
-  const findAnchorItemIndex = useCallback((anchor: Pick<ReadingAnchor, 'itemId' | 'blockId'>): number => {
+  const findAnchorItemIndex = useCallback((anchor: Pick<ReadingAnchor, 'itemId' | 'blockId' | 'position'>): number => {
     if (anchor.blockId) {
       const blockIndex = items.findIndex((item) => item.kind === 'group'
         && item.group.nodes.some((node) => renderNodeContainsBlock(node, anchor.blockId!)));
       if (blockIndex >= 0) return blockIndex;
+    }
+    if (anchor.position !== null) {
+      const positionIndex = items.findIndex((item) => item.kind === 'group'
+        && item.group.nodes.some((node) => renderNodeBlockIdAtPosition(node, anchor.position!) !== null));
+      if (positionIndex >= 0) return positionIndex;
     }
     return items.findIndex((item) => item.id === anchor.itemId);
   }, [items]);
@@ -404,45 +431,67 @@ export function ChatSurface({
   const restoreReadingAnchor = useCallback((anchor: ReadingAnchor): boolean => {
     const el = scrollRef.current;
     if (!el) return false;
+    const requestAnchorPosition = () => {
+      if (anchor.position === null || !transcript || transcript.historyLoading) return;
+      const key = `anchor:${anchor.position}`;
+      if ((historyLoadStates[key] ?? 'idle') === 'idle') {
+        void requestHistory(key, () => transcript.loadAround(anchor.position!));
+      }
+    };
     const itemIndex = findAnchorItemIndex(anchor);
     if (itemIndex < 0) {
-      if (anchor.position !== null && transcript && !transcript.historyLoading) {
-        const key = `anchor:${anchor.position}`;
-        if ((historyLoadStates[key] ?? 'idle') === 'idle') {
-          void requestHistory(key, () => transcript.loadAround(anchor.position!));
-        }
-      }
+      requestAnchorPosition();
       return false;
     }
     const item = items[itemIndex];
+    const hasSavedBlock = Boolean(anchor.blockId && item.kind === 'group'
+      && item.group.nodes.some((node) => renderNodeContainsBlock(node, anchor.blockId!)));
+    const positionBlockId = !hasSavedBlock && item.kind === 'group' && anchor.position !== null
+      ? item.group.nodes.map((node) => renderNodeBlockIdAtPosition(node, anchor.position!))
+        .find((candidate): candidate is string => candidate !== null) ?? null
+      : null;
+    const resolvedBlockId = hasSavedBlock ? anchor.blockId : positionBlockId;
+    if (anchor.blockId && !resolvedBlockId) {
+      requestAnchorPosition();
+      return false;
+    }
+    const resolvedAnchor: ReadingAnchor = {
+      ...anchor,
+      itemId: item.id,
+      blockId: resolvedBlockId,
+    };
+    if (resolvedAnchor.itemId !== anchor.itemId || resolvedAnchor.blockId !== anchor.blockId) {
+      readingAnchorRef.current = resolvedAnchor;
+      storageSet(scrollStorageKey, JSON.stringify(resolvedAnchor));
+    }
     const row = Array.from(el.querySelectorAll<HTMLElement>('[data-virtual-key]'))
       .find((candidate) => candidate.dataset.virtualKey === item.id);
     if (!row) {
-      pendingReadingAnchorRef.current = anchor;
+      pendingReadingAnchorRef.current = resolvedAnchor;
       virtualizer.scrollToIndex(itemIndex, { align: 'start', behavior: 'auto' });
       return false;
     }
-    const target = anchor.blockId
+    const target = resolvedAnchor.blockId
       ? Array.from(row.querySelectorAll<HTMLElement>('[data-block-id]'))
-        .find((candidate) => candidate.dataset.blockId === anchor.blockId)
+        .find((candidate) => candidate.dataset.blockId === resolvedAnchor.blockId)
       : row;
     if (!target) return false;
-    const currentOffset = anchor.blockId
+    const currentOffset = resolvedAnchor.blockId
       ? target.getBoundingClientRect().top - el.getBoundingClientRect().top
       : (virtualizer.getVirtualItems().find((candidate) => candidate.index === itemIndex)?.start ?? el.scrollTop) - el.scrollTop;
-    const delta = currentOffset - anchor.viewportOffset;
+    const delta = currentOffset - resolvedAnchor.viewportOffset;
     if (Math.abs(delta) >= 0.5) {
       const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
       const targetScrollTop = Math.max(0, Math.min(maxScrollTop, el.scrollTop + delta));
       if (Math.abs(targetScrollTop - el.scrollTop) >= 0.5) {
-        pendingReadingAnchorRef.current = anchor;
+        pendingReadingAnchorRef.current = resolvedAnchor;
         virtualizer.scrollToOffset(targetScrollTop, { behavior: 'auto' });
         return false;
       }
     }
     pendingReadingAnchorRef.current = null;
     return true;
-  }, [findAnchorItemIndex, historyLoadStates, items, requestHistory, transcript, virtualizer]);
+  }, [findAnchorItemIndex, historyLoadStates, items, requestHistory, scrollStorageKey, transcript, virtualizer]);
 
   // Chat disclosures are transient reading state. A new conversation or page
   // refresh starts from each block's declared default instead of reviving old
