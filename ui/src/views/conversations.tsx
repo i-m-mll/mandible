@@ -684,6 +684,16 @@ export function conversationAnchorHref(
   return `#/console?${params.toString()}`;
 }
 
+export function conversationLatestHref(currentHash: string, conversationId: string): string {
+  const query = currentHash.includes('?') ? currentHash.slice(currentHash.indexOf('?') + 1) : '';
+  const params = new URLSearchParams(query);
+  params.set('conversation', conversationId);
+  params.delete('block');
+  params.delete('turn');
+  params.delete('position');
+  return `#/console?${params.toString()}`;
+}
+
 // ── Props ──
 
 export type NewChatInput = {
@@ -1598,8 +1608,7 @@ export function ConversationDetail({
       }
       if (selectionRef.current.generation !== selectionGeneration) return;
       setEffectiveAnchor(null);
-      const params = new URLSearchParams({ conversation: conversationId });
-      window.history.replaceState(null, '', `#/console?${params.toString()}`);
+      window.history.replaceState(null, '', conversationLatestHref(window.location.hash, conversationId));
       setNavigationTarget({
         key: `${conversationId}:latest:${latest.source_version_id ?? 'legacy'}:${latest.revision}`,
         kind: 'latest',
