@@ -4,7 +4,8 @@ import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { classifyRuntimeStatus, healthDocumentError, healthEndpointUrl, launchModeFromAgent, probeJson, renderLaunchAgent } from "../scripts/local-runtime.mjs";
+import { classifyRuntimeStatus, healthDocumentError, healthEndpointUrl, launchModeFromAgent, probeJson, reconcileMainRegistration, renderLaunchAgent } from "../scripts/local-runtime.mjs";
+import { resolveInstanceInfo } from "../src/instance-policy";
 
 const servers: Array<http.Server | https.Server> = [];
 
@@ -32,6 +33,18 @@ const expected = {
   publicOrigin: "https://app.mandible.localhost:19420",
   generation: "a".repeat(40),
 };
+
+function productionInstance() {
+  return resolveInstanceInfo({
+    env: {
+      MANDIBLE_INSTANCE_ROLE: "main",
+      MANDIBLE_INSTANCE_ID: "production",
+      MANDIBLE_INSTALLATION_ID: expected.installationId,
+      MANDIBLE_PUBLIC_ORIGIN: expected.publicOrigin,
+      MANDIBLE_BACKEND_GENERATION: expected.generation,
+    },
+  });
+}
 
 function health(overrides: Record<string, unknown> = {}) {
   return {
@@ -164,5 +177,56 @@ describe("supervised runtime readiness", () => {
     expect(backend).toContain("/path/with &amp; spaces/production-runner.mjs");
     expect(backend).toContain("<string>run</string>");
     expect(gateway).toContain("<string>run</string>");
+  });
+});
+
+describe("production registration reconciliation", () => {
+  it("adds the new effect to an exact prior production default while preserving registration fields", () => {
+    const instance = productionInstance();
+    const previousDefault = instance.allowed_effects.filter((effect) => effect !== "preferences:instance");
+    const existing = {
+      instance_id: "production",
+      installation_id: instance.installation_id,
+      role: "main",
+      public_origin: instance.public_origin,
+      backend_origin: "http://127.0.0.1:29420",
+      backend_generation: "b".repeat(40),
+      effect_ceiling: previousDefault,
+      writable_roots: ["/preserved/root"],
+    };
+    const registrations: unknown[] = [];
+    const authority = {
+      instance: () => existing,
+      registerInstance: (registration: unknown) => registrations.push(registration),
+    };
+
+    expect(reconcileMainRegistration(authority, instance, "http://127.0.0.1:29420")).toBe(true);
+
+    expect(registrations).toEqual([{ ...existing, effect_ceiling: instance.allowed_effects }]);
+  });
+
+  it("keeps a deliberately narrowed production ceiling unchanged", () => {
+    const instance = productionInstance();
+    const previousDefault = instance.allowed_effects.filter((effect) => effect !== "preferences:instance");
+    const narrowed = previousDefault.filter((effect) => effect !== "maintenance:shared");
+    const existing = {
+      instance_id: "production",
+      installation_id: instance.installation_id,
+      role: "main",
+      public_origin: instance.public_origin,
+      backend_origin: "http://127.0.0.1:29420",
+      backend_generation: "b".repeat(40),
+      effect_ceiling: narrowed,
+      writable_roots: ["/preserved/root"],
+    };
+    const registrations: unknown[] = [];
+    const authority = {
+      instance: () => existing,
+      registerInstance: (registration: unknown) => registrations.push(registration),
+    };
+
+    expect(reconcileMainRegistration(authority, instance, "http://127.0.0.1:29420")).toBe(false);
+
+    expect(registrations).toEqual([]);
   });
 });

@@ -37,6 +37,7 @@ const GATEWAY_LABEL = `bio.mll.mandible.local-front-door${INSTALL_SUFFIX}`;
 const HEALTH_TIMEOUT_MS = 900;
 const OPERATION_TIMEOUT_MS = 4500;
 const BODY_LIMIT = 256 * 1024;
+const MIGRATABLE_MAIN_EFFECT = "preferences:instance";
 
 function readProductionRecord() {
   const installed = locateLaunchAgent(BACKEND_LABEL);
@@ -566,12 +567,12 @@ function reloadCaddy(binary) {
   }
 }
 
-async function waitForRuntime(deadlineMs = OPERATION_TIMEOUT_MS, launchMode = "on_demand") {
+async function waitForRuntime(deadlineMs = OPERATION_TIMEOUT_MS, launchMode = "on_demand", additionalReadiness = () => true) {
   const deadline = Date.now() + deadlineMs;
   let current;
   do {
     current = await inspectRuntime({ launchMode });
-    if (current.status.dashboard_ready || current.status.state === "port_conflict") return current;
+    if ((current.status.dashboard_ready && additionalReadiness(current)) || current.status.state === "port_conflict") return current;
     if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 220));
   } while (Date.now() < deadline);
   return current;
@@ -593,7 +594,16 @@ function prepareGateway(production) {
 async function startRuntime({ launchMode = "on_demand" } = {}) {
   let current = await inspectRuntime({ launchMode });
   if (current.status.state === "port_conflict") return current.status;
+  const registration = await initializeMainRegistration(current.production.root);
+  current = await inspectRuntime({ launchMode });
+  if (current.status.state === "port_conflict") return current.status;
   ensureInstalled(current.production, current.main, launchMode);
+  if (registration.legacyEffectsMigrated) {
+    if (!current.backendJob.loaded && current.backendPortOpen) {
+      throw new Error("The production effect ceiling was updated, but the healthy backend is not owned by Mandible's LaunchAgent; restart it explicitly to apply the update.");
+    }
+    if (current.backendJob.loaded) restartOwnedJob(BACKEND_LABEL);
+  }
   current = await inspectRuntime({ launchMode });
   if (current.status.state === "port_conflict") return current.status;
   if (!current.backend.ok) {
@@ -606,7 +616,14 @@ async function startRuntime({ launchMode = "on_demand" } = {}) {
     ensureInstalled(current.production, current.main, launchMode);
     ensureEnabledAndLoaded(GATEWAY_LABEL);
   }
-  return (await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode)).status;
+  const ready = await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode, (candidate) => !registration.legacyEffectsMigrated
+    || sameEffectList(candidate.backend.document?.instance?.allowed_effects, candidate.main.effectCeiling));
+  if (ready.status.state === "port_conflict") return ready.status;
+  if (registration.legacyEffectsMigrated
+    && !sameEffectList(ready.backend.document?.instance?.allowed_effects, ready.main.effectCeiling)) {
+    throw new Error("The production service restarted, but its active effect ceiling does not match the registered production ceiling.");
+  }
+  return ready.status;
 }
 
 function registeredPreviewCount(root) {
@@ -637,6 +654,9 @@ async function stopRuntime({ launchMode = "on_demand" } = {}) {
 
 async function restartRuntime({ launchMode = "on_demand" } = {}) {
   let current = await inspectRuntime({ launchMode });
+  if (current.status.state === "port_conflict") return current.status;
+  await initializeMainRegistration(current.production.root);
+  current = await inspectRuntime({ launchMode });
   if (current.status.state === "port_conflict") return current.status;
   const beforeEpoch = current.backend.document?.startup_epoch;
   ensureInstalled(current.production, current.main, launchMode);
@@ -679,6 +699,41 @@ async function reloadGatewayRuntime({ launchMode = "on_demand", ifConfigured = f
   return (await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode)).status;
 }
 
+function sameEffectList(actual, expected) {
+  return Array.isArray(actual) && actual.length === expected.length
+    && actual.every((effect, index) => effect === expected[index]);
+}
+
+export function reconcileMainRegistration(authority, instance, backendOrigin) {
+  const existing = authority.instance("production");
+  if (existing) {
+    if (existing.installation_id !== instance.installation_id || existing.role !== "main"
+      || existing.public_origin !== instance.public_origin) {
+      throw new Error("The registered production instance belongs to another installation or origin.");
+    }
+    const previousCanonicalEffects = instance.allowed_effects.filter((effect) => effect !== MIGRATABLE_MAIN_EFFECT);
+    const isExactPriorDefault = instance.allowed_effects.includes(MIGRATABLE_MAIN_EFFECT)
+      && sameEffectList(existing.effect_ceiling, previousCanonicalEffects);
+    if (isExactPriorDefault) {
+      authority.registerInstance({ ...existing, effect_ceiling: instance.allowed_effects });
+      return true;
+    }
+    return false;
+  }
+
+  authority.registerInstance({
+    instance_id: instance.instance_id,
+    installation_id: instance.installation_id,
+    role: instance.role,
+    public_origin: instance.public_origin,
+    backend_origin: backendOrigin,
+    backend_generation: instance.backend_generation,
+    effect_ceiling: instance.allowed_effects,
+    writable_roots: instance.writable_roots,
+  });
+  return false;
+}
+
 async function initializeMainRegistration(root) {
   if (!fs.existsSync(INSTALLATION_AUTHORITY)) {
     const result = spawnSync(nodeBinary(), [path.join(root, "scripts", "local-front-door.mjs"), "initialize"], {
@@ -701,37 +756,22 @@ async function initializeMainRegistration(root) {
     import(pathToFileURL(path.join(root, "dist", "instance-policy.js")).href),
   ]);
   const authority = new authorityModule.LocalSessionAuthority(RUNTIME_DIR, installationId, { initialize: true });
+  let legacyEffectsMigrated = false;
   try {
-    const existing = authority.instance("production");
-    if (existing) {
-      if (existing.installation_id !== installationId || existing.role !== "main" || existing.public_origin !== PRODUCTION_ORIGIN) {
-        throw new Error("The registered production instance belongs to another installation or origin.");
-      }
-    } else {
-      const instance = policyModule.resolveInstanceInfo({
-        env: {
-          MANDIBLE_INSTANCE_ROLE: "main",
-          MANDIBLE_INSTANCE_ID: "production",
-          MANDIBLE_INSTALLATION_ID: installationId,
-          MANDIBLE_PUBLIC_ORIGIN: PRODUCTION_ORIGIN,
-          MANDIBLE_BACKEND_GENERATION: generation,
-        },
-      });
-      authority.registerInstance({
-        instance_id: instance.instance_id,
-        installation_id: instance.installation_id,
-        role: instance.role,
-        public_origin: instance.public_origin,
-        backend_origin: `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`,
-        backend_generation: instance.backend_generation,
-        effect_ceiling: instance.allowed_effects,
-        writable_roots: instance.writable_roots,
-      });
-    }
+    const instance = policyModule.resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "main",
+        MANDIBLE_INSTANCE_ID: "production",
+        MANDIBLE_INSTALLATION_ID: installationId,
+        MANDIBLE_PUBLIC_ORIGIN: PRODUCTION_ORIGIN,
+        MANDIBLE_BACKEND_GENERATION: generation,
+      },
+    });
+    legacyEffectsMigrated = reconcileMainRegistration(authority, instance, `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`);
   } finally {
     authority.close();
   }
-  return { root, environment: {} };
+  return { root, environment: {}, legacyEffectsMigrated };
 }
 
 async function main() {
@@ -773,6 +813,12 @@ async function main() {
     });
     if (result.error || result.status !== 0) throw new Error(`Gateway installation failed: ${(result.stderr || result.error?.message || "unknown failure").trim()}`);
     const installed = ensureInstalled(production, mainInstance, effectiveLaunchMode);
+    if (production.legacyEffectsMigrated) {
+      if (installed.wasBackendLoaded) restartOwnedJob(BACKEND_LABEL);
+      else if (await portOpen(mainInstance.backendUrl)) {
+        throw new Error("The production effect ceiling was updated, but the healthy backend is not owned by Mandible's LaunchAgent; restart it explicitly to apply the update.");
+      }
+    }
     process.stdout.write(`${JSON.stringify({ installed: true, launch_mode: effectiveLaunchMode, ...installed })}\n`);
     return;
   } else {
