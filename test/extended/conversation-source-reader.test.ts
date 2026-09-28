@@ -136,7 +136,9 @@ describe("versioned conversation source reader", () => {
     writeRecords(filePath, records());
     const parsed = await parse(filePath);
     const sourceSnapshot = parsed.sourceSnapshot;
-    if (!sourceSnapshot) throw new Error("full parse did not return its source snapshot");
+    if (!sourceSnapshot || sourceSnapshot.kind !== "full") {
+      throw new Error("full parse did not return its source snapshot");
+    }
     insertConversation(db, "conversation-a", filePath, parsed);
 
     fs.appendFileSync(filePath, `${JSON.stringify({

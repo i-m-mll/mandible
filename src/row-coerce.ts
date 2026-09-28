@@ -35,3 +35,15 @@ export function parseJsonObject(value: unknown): Record<string, unknown> {
     return {};
   }
 }
+
+/** Read an object-valued JSON column and fail when present data is malformed. */
+export function parseJsonObjectStrict(value: unknown, field = "JSON object"): Record<string, unknown> {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new TypeError(`${field} must contain a JSON object`);
+  }
+  const parsed: unknown = JSON.parse(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new TypeError(`${field} must contain a JSON object`);
+  }
+  return parsed as Record<string, unknown>;
+}
