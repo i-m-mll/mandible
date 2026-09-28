@@ -16,7 +16,7 @@ export type IngestionWorkerRequest = IngestionWorkerCommand & { id: number };
 export type IngestionWorkerResponse =
   | { kind: "ready" }
   | { kind: "result"; id: number; ok: true; value?: unknown }
-  | { kind: "result"; id: number; ok: false; error: string }
+  | { kind: "result"; id: number; ok: false; error: string; errorCode?: "conversation_source_changed" }
   | {
       kind: "log";
       level: LogLevel;

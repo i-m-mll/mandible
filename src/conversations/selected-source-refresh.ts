@@ -2,6 +2,7 @@ import path from "node:path";
 import type { Db } from "../db.js";
 import { ingestExactSelectedPath, selectedConversationSourceEpochIsCurrent } from "../ingestion.js";
 import { IngestionActor, canUseDefaultIngestionWorker } from "../ingestion-actor.js";
+import { ConversationSourceChangedError } from "./source-store.js";
 import type { Logger } from "../types.js";
 
 const FAILED_REFRESH_RETRY_MS = 30_000;
@@ -118,17 +119,27 @@ export class SelectedSourceRefresher {
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        if (!this.failures.has(target) && this.failures.size >= MAX_CACHED_FAILURES) {
-          const oldest = this.failures.keys().next().value;
-          if (oldest !== undefined) this.failures.delete(oldest);
+        const sourceChanged = error instanceof ConversationSourceChangedError;
+        if (sourceChanged) {
+          this.logger("info", "selected_conversation_refresh_source_changed", {
+            conversation_id: conversationId ?? null,
+            source_id: sourceId ?? null,
+            source_path: target,
+            error: message,
+          });
+        } else {
+          if (!this.failures.has(target) && this.failures.size >= MAX_CACHED_FAILURES) {
+            const oldest = this.failures.keys().next().value;
+            if (oldest !== undefined) this.failures.delete(oldest);
+          }
+          this.failures.set(target, { at: this.now(), message });
+          this.logger("warn", "selected_conversation_refresh_failed", {
+            conversation_id: conversationId ?? null,
+            source_id: sourceId ?? null,
+            source_path: target,
+            error: message,
+          });
         }
-        this.failures.set(target, { at: this.now(), message });
-        this.logger("warn", "selected_conversation_refresh_failed", {
-          conversation_id: conversationId ?? null,
-          source_id: sourceId ?? null,
-          source_path: target,
-          error: message,
-        });
         if (conversationId) this.notifyConversation(conversationId);
         throw error;
       })
@@ -147,7 +158,11 @@ export class SelectedSourceRefresher {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        ingestExactSelectedPath(actor, target),
+        ingestExactSelectedPath(actor, target, (attempt) => this.logger(
+          "info",
+          "selected_conversation_source_change_retry",
+          { source_path: target, source_id: sourceId ?? null, attempt },
+        )),
         new Promise<never>((_resolve, reject) => {
           timeout = setTimeout(() => reject(new Error("selected conversation refresh exceeded 60 seconds")), this.timeoutMs);
           timeout.unref?.();
