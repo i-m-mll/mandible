@@ -35,8 +35,6 @@ import {
   updateUserAppRailOrderSetting,
   updateUserTypographySetting,
   canEditUserPreferences,
-  canWriteLedger,
-  allowsInstanceEffect,
   type UserTypographySettingKey,
   type InstanceInfo,
   type DashboardBadgeCounts,
@@ -2802,8 +2800,7 @@ function App(): JSX.Element {
               onAckManagedReminderOccurrence={handleAckManagedReminderOccurrence}
               onAckAll={handleAckAll}
               onRefresh={handleInboxRefresh}
-              mutationsAllowed={canWriteLedger(instanceInfo)}
-              externalActionsAllowed={allowsInstanceEffect(instanceInfo, 'process:external')}
+              instance={instanceInfo}
             />
           );
         })())}
