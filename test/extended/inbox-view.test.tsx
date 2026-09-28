@@ -3,6 +3,18 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { InboxView, type InboxData } from "../../ui/src/views/inbox";
+import type { InstanceInfo } from "../../ui/src/api";
+
+const previewInstance: InstanceInfo = {
+  role: "preview",
+  allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"],
+  operational_mutations: "reject",
+  operational_mutations_overridden: true,
+  db_path: "/tmp/preview.db",
+  db_path_source: "iab-preview-copy",
+  source_db_path: "/tmp/main.db",
+  source_db_path_source: "env",
+};
 
 afterEach(() => cleanup());
 
@@ -110,18 +122,22 @@ describe("Inbox shared sidebar header", () => {
     expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves mutation and loading disabled states inside the menu", () => {
-    renderInbox({ loading: true, mutationsAllowed: false });
+  it("keeps copied acknowledgements available while disabling refresh during loading", () => {
+    renderInbox({ loading: true, instance: previewInstance });
     fireEvent.click(screen.getByRole("button", { name: "Inbox menu" }));
 
-    expect((screen.getByRole("menuitem", { name: "Acknowledge All" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("menuitem", { name: "Acknowledge All" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("menuitem", { name: "Refreshing…" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("gates individual acknowledgements and never reports an empty result after a failed load", () => {
-    const { rerender } = renderInbox({ mutationsAllowed: false });
+  it("allows copied acknowledgements and never reports an empty result after a failed load", async () => {
+    const onAck = vi.fn(async () => undefined);
+    const { rerender } = renderInbox({ instance: previewInstance, onAckContinuation: onAck });
     const detail = document.querySelector(".inbox-detail") as HTMLElement;
-    expect((within(detail).getByRole("button", { name: "Acknowledge" }) as HTMLButtonElement).disabled).toBe(true);
+    const acknowledge = within(detail).getByRole("button", { name: "Acknowledge" }) as HTMLButtonElement;
+    expect(acknowledge.disabled).toBe(false);
+    fireEvent.click(acknowledge);
+    await waitFor(() => expect(onAck).toHaveBeenCalledWith("session-1"));
 
     rerender(<InboxView
       data={null}
@@ -133,7 +149,7 @@ describe("Inbox shared sidebar header", () => {
       onAckManagedReminderOccurrence={async () => undefined}
       onAckAll={async () => undefined}
       onRefresh={() => undefined}
-      mutationsAllowed
+      instance={previewInstance}
     />);
     expect(screen.getByText("Inbox could not be loaded.")).toBeTruthy();
     expect(screen.queryByText("Inbox is clear.")).toBeNull();
@@ -158,7 +174,7 @@ describe("Inbox shared sidebar header", () => {
         total: 1,
       },
       selectedItemId: "wu_continuation:wu-1",
-      externalActionsAllowed: false,
+      instance: previewInstance,
     });
 
     expect((screen.getByRole("button", { name: "Resume" }) as HTMLButtonElement).disabled).toBe(true);

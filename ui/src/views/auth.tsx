@@ -27,6 +27,7 @@ import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import {
   fetchAuthHooks,
+  canPerformOperation,
   findIssue,
   getAuthRequestActions,
   getAuthRequestDetail,
@@ -219,12 +220,6 @@ function getStats(request: AuthRequest): { files: number | null; additions: numb
 
 function formatNumber(value: number): string {
   return value.toLocaleString();
-}
-
-function compactPath(value: string): string {
-  const parts = value.split('/').filter(Boolean);
-  if (parts.length <= 3) return value;
-  return `.../${parts.slice(-3).join('/')}`;
 }
 
 function extractMandibleIssueRefs(message: string): string[] {
@@ -519,13 +514,13 @@ function AuthActionBundle({
   request,
   actions,
   inFlightActionIds,
-  mutationsAllowed,
+  instance,
   onToggleVeto,
 }: {
   request: AuthRequest;
   actions: AuthRequestAction[];
   inFlightActionIds: Set<string>;
-  mutationsAllowed: boolean;
+  instance?: InstanceInfo | null;
   onToggleVeto: (requestId: string, action: AuthRequestAction, vetoed: boolean) => void;
 }): JSX.Element | null {
   const requestId = getAuthId(request);
@@ -632,7 +627,12 @@ function AuthActionBundle({
                   className={`auth-action-row__veto${vetoed ? ' auth-action-row__veto--on' : ''}`}
                   role="switch"
                   aria-checked={vetoed}
-                  disabled={vetoBusy || !mutationsAllowed}
+                  disabled={vetoBusy || !canPerformOperation(
+                    instance,
+                    'POST',
+                    `/api/auth/request/${encodeURIComponent(requestId)}/actions/${encodeURIComponent(action.id)}/veto`,
+                    { vetoed: !vetoed },
+                  )}
                   onClick={() => onToggleVeto(requestId, action, !vetoed)}
                 >
                   {vetoBusy ? 'Saving' : vetoed ? 'Restore' : 'Veto'}
@@ -1397,20 +1397,23 @@ function AuthSidebarItem({
 /** Hooks management panel for auth hook settings. */
 export function AuthHooksPanel({
   onClose,
-  readAvailable = true,
-  mutationsAllowed = true,
+  instance,
 }: {
   onClose?: () => void;
-  readAvailable?: boolean;
-  mutationsAllowed?: boolean;
+  instance?: InstanceInfo | null;
 }): JSX.Element {
   const [hooks, setHooks] = useState<AuthHook[]>([]);
+  const readAvailable = canPerformOperation(instance, 'GET', '/api/auth/hooks');
+  const createAllowed = canPerformOperation(instance, 'POST', '/api/auth/hooks');
   const [loading, setLoading] = useState(readAvailable);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
-  const changesAllowed = readAvailable && mutationsAllowed;
+  const updateAllowed = (id: string) => canPerformOperation(instance, 'PUT', `/api/auth/hooks/${id}`);
+  const deleteAllowed = (id: string) => canPerformOperation(instance, 'DELETE', `/api/auth/hooks/${id}`);
+  const formChangesAllowed = readAvailable && (editId ? updateAllowed(editId) : createAllowed);
+  const changesUnavailable = !createAllowed || hooks.some((hook) => !updateAllowed(hook.id) || !deleteAllowed(hook.id));
 
   // Form fields
   const [formRepo, setFormRepo] = useState('*');
@@ -1451,7 +1454,7 @@ export function AuthHooksPanel({
   };
 
   const handleSave = async () => {
-    if (!changesAllowed) {
+    if (!formChangesAllowed) {
       setActionError('Approval hook changes are unavailable in this instance.');
       return;
     }
@@ -1480,7 +1483,7 @@ export function AuthHooksPanel({
   };
 
   const handleEdit = (hook: AuthHook) => {
-    if (!changesAllowed) return;
+    if (!updateAllowed(hook.id)) return;
     setFormRepo(hook.repo_pattern);
     setFormType(hook.auth_type as AuthRequestType);
     setFormCommand(hook.command);
@@ -1490,7 +1493,7 @@ export function AuthHooksPanel({
   };
 
   const handleToggle = async (hook: AuthHook) => {
-    if (hook.builtin || !changesAllowed) return; // Built-in hooks cannot be toggled
+    if (hook.builtin || !updateAllowed(hook.id)) return; // Built-in hooks cannot be toggled
     setActionError(null);
     try {
       await updateAuthHook(hook.id, { enabled: !hook.enabled });
@@ -1501,7 +1504,7 @@ export function AuthHooksPanel({
   };
 
   const handleDelete = async (hook: AuthHook) => {
-    if (hook.builtin || !changesAllowed) return;
+    if (hook.builtin || !deleteAllowed(hook.id)) return;
     setActionError(null);
     try {
       await deleteAuthHook(hook.id);
@@ -1520,7 +1523,7 @@ export function AuthHooksPanel({
             type="button"
             className="btn btn--sm btn--ghost"
             onClick={() => { resetForm(); setShowForm(true); }}
-            disabled={!changesAllowed}
+            disabled={!createAllowed}
           >
             + Add Hook
           </button>
@@ -1547,7 +1550,7 @@ export function AuthHooksPanel({
           This instance cannot read approval-hook configuration.
         </DetailPaneNotice>
       )}
-      {readAvailable && !mutationsAllowed && (
+      {readAvailable && changesUnavailable && (
         <DetailPaneNotice severity="info" density="compact" title="Approval-hook changes unavailable">
           This instance can read approval hooks, but cannot change their configuration.
         </DetailPaneNotice>
@@ -1562,7 +1565,7 @@ export function AuthHooksPanel({
               placeholder="Hook description"
               value={formLabel}
               onInput={(e) => setFormLabel((e.target as HTMLInputElement).value)}
-              disabled={!changesAllowed}
+              disabled={!formChangesAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-row">
@@ -1572,7 +1575,7 @@ export function AuthHooksPanel({
               placeholder="* for all, or repo name"
               value={formRepo}
               onInput={(e) => setFormRepo((e.target as HTMLInputElement).value)}
-              disabled={!changesAllowed}
+              disabled={!formChangesAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-row">
@@ -1580,7 +1583,7 @@ export function AuthHooksPanel({
             <select
               value={formType}
               onChange={(e) => setFormType((e.target as HTMLSelectElement).value as AuthRequestType)}
-              disabled={!changesAllowed}
+              disabled={!formChangesAllowed}
             >
               <option value="merge">Merge</option>
               <option value="commit">Commit</option>
@@ -1597,7 +1600,7 @@ export function AuthHooksPanel({
               value={formCommand}
               rows={3}
               onInput={(e) => setFormCommand((e.target as HTMLTextAreaElement).value)}
-              disabled={!changesAllowed}
+              disabled={!formChangesAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-actions">
@@ -1605,7 +1608,7 @@ export function AuthHooksPanel({
               type="button"
               className="btn btn--sm btn--success"
               onClick={() => void handleSave()}
-              disabled={!changesAllowed || !formCommand.trim()}
+              disabled={!formChangesAllowed || !formCommand.trim()}
             >
               {editId ? 'Update' : 'Create'}
             </button>
@@ -1638,8 +1641,8 @@ export function AuthHooksPanel({
                   type="button"
                   className={`auth-hooks-panel__toggle${hook.enabled ? ' auth-hooks-panel__toggle--on' : ''}`}
                   onClick={() => void handleToggle(hook)}
-                  disabled={hook.builtin || !changesAllowed}
-                  title={hook.builtin ? 'Built-in hooks are always enabled' : !changesAllowed ? 'Unavailable in this instance' : (hook.enabled ? 'Disable' : 'Enable')}
+                  disabled={hook.builtin || !updateAllowed(hook.id)}
+                  title={hook.builtin ? 'Built-in hooks are always enabled' : !updateAllowed(hook.id) ? 'Unavailable in this instance' : (hook.enabled ? 'Disable' : 'Enable')}
                 >
                   {hook.enabled ? 'ON' : 'OFF'}
                 </button>
@@ -1665,7 +1668,7 @@ export function AuthHooksPanel({
                     type="button"
                     className="btn btn--sm btn--ghost"
                     onClick={() => handleEdit(hook)}
-                    disabled={!changesAllowed}
+                    disabled={!updateAllowed(hook.id)}
                   >
                     Edit
                   </button>
@@ -1673,7 +1676,7 @@ export function AuthHooksPanel({
                     type="button"
                     className="btn btn--sm btn--danger"
                     onClick={() => void handleDelete(hook)}
-                    disabled={!changesAllowed}
+                    disabled={!deleteAllowed(hook.id)}
                   >
                     Delete
                   </button>
@@ -2051,25 +2054,6 @@ export function AuthQueueView({
   }, []);
 
   const [actionErrors, setActionErrors] = useState<Map<string, AuthActionError>>(() => new Map());
-  const queueMutationsAllowed = !instance || instance.allowed_effects?.includes('ledger:write') === true;
-  const operationalMutationsAllowed = !instance || instance.allowed_effects?.includes('auth:protected') === true;
-  const instanceMutationBlocked = Boolean(instance && (!queueMutationsAllowed || !operationalMutationsAllowed));
-  const instanceLabel = instance?.role ?? 'main';
-  const instanceDbLabel = instance?.db_path ? compactPath(instance.db_path) : null;
-  const instanceSourceLabel = instance?.source_db_path ? compactPath(instance.source_db_path) : null;
-  const previewNotice = instanceMutationBlocked ? (
-    <DetailPaneNotice
-      severity="warning"
-      title={`${instanceLabel} instance`}
-    >
-      <>
-        Queue edits apply only to this copied database. Approval, merge preparation, and external execution are disabled
-        {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
-        {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
-      </>
-    </DetailPaneNotice>
-  ) : null;
-
   const clearActionError = useCallback((requestId: string) => {
     setActionErrors((prev) => {
       if (!prev.has(requestId)) return prev;
@@ -2099,19 +2083,16 @@ export function AuthQueueView({
       action: (requestId: string) => void | Promise<void>,
       fallbackError: string,
       retry: AuthActionRetry,
-      requiredAccess: 'queue' | 'protected' = 'queue',
-    ) => {
+      pathForRequest: (requestId: string) => string,
+    ): boolean => {
       // Bug: 645f8a8 — block all mutating actions while the daemon is not ready
       // (rebuilding / starting). The buttons are also disabled, but gate here too
       // so no mutation POST can fire from a keyboard/programmatic trigger.
-      const accessAllowed = requiredAccess === 'protected'
-        ? operationalMutationsAllowed
-        : queueMutationsAllowed;
-      if (!daemonReady || !accessAllowed) {
-        return;
+      if (!daemonReady || !id || !canPerformOperation(instance, 'POST', pathForRequest(id))) {
+        return false;
       }
       if (!id || inFlightRef.current.has(id)) {
-        return;
+        return false;
       }
       clearActionError(id);
       setInFlightState((prev) => {
@@ -2133,17 +2114,30 @@ export function AuthQueueView({
             return next;
           });
         });
+      return true;
     },
-    [clearActionError, setActionError, setInFlightState, daemonReady, operationalMutationsAllowed, queueMutationsAllowed],
+    [clearActionError, setActionError, setInFlightState, daemonReady, instance],
   );
 
   const handleApprove = useCallback(
-    (id: string) => runAction(id, onApprove, 'Approval failed. Try again.', { kind: 'approve' }, 'protected'),
+    (id: string) => runAction(
+      id,
+      onApprove,
+      'Approval failed. Try again.',
+      { kind: 'approve' },
+      (requestId) => `/api/auth/request/${encodeURIComponent(requestId)}/approve`,
+    ),
     [runAction, onApprove],
   );
 
   const handleReject = useCallback(
-    (id: string) => runAction(id, onReject, 'Rejection failed. Try again.', { kind: 'reject' }),
+    (id: string) => runAction(
+      id,
+      onReject,
+      'Rejection failed. Try again.',
+      { kind: 'reject' },
+      (requestId) => `/api/auth/request/${encodeURIComponent(requestId)}/reject`,
+    ),
     [runAction, onReject],
   );
 
@@ -2163,15 +2157,18 @@ export function AuthQueueView({
 
   const handleRetry = useCallback(
     (id: string) => {
+      const started = runAction(
+        id,
+        onRetry,
+        'Retry failed. Try again.',
+        { kind: 'retry' },
+        (requestId) => `/api/auth/request/${encodeURIComponent(requestId)}/retry`,
+      );
+      if (!started) return;
       setRetryingIdsState((prev) => {
         const next = new Set(prev);
         next.add(id);
         return next;
-      });
-      runAction(id, onRetry, 'Retry failed. Try again.', { kind: 'retry' });
-      // Clean up retryingIds when inFlight clears (use a microtask to stay in sync)
-      Promise.resolve().then(() => {
-        // retryingIds is cleaned when inFlight clears — watch via effect below
       });
     },
     [runAction, onRetry, setRetryingIdsState],
@@ -2197,7 +2194,12 @@ export function AuthQueueView({
 
   const handleToggleActionVeto = useCallback(
     (requestId: string, action: AuthRequestAction, vetoed: boolean) => {
-      if (!queueMutationsAllowed) {
+      if (!canPerformOperation(
+        instance,
+        'POST',
+        `/api/auth/request/${encodeURIComponent(requestId)}/actions/${encodeURIComponent(action.id)}/veto`,
+        { vetoed },
+      )) {
         return;
       }
       if (inFlightActionIdsRef.current.has(action.id)) return;
@@ -2225,7 +2227,7 @@ export function AuthQueueView({
           });
         });
     },
-    [clearActionError, queueMutationsAllowed, setActionError, updateActionForRequest],
+    [clearActionError, instance, setActionError, updateActionForRequest],
   );
 
   const retryActionError = useCallback((requestId: string, retry: AuthActionRetry) => {
@@ -2636,8 +2638,9 @@ export function AuthQueueView({
     // Bug: 645f8a8 — while the daemon is not ready (rebuilding / starting), all
     // mutating actions are blocked. Kept separate from actionDisabled (in-flight)
     // so it doesn't trip the "Submitting…" label when nothing is actually queued.
-    const queueMutationsBlocked = !daemonReady || !queueMutationsAllowed;
-    const approvalBlocked = !daemonReady || !operationalMutationsAllowed;
+    const rejectAllowed = daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/reject`);
+    const retryAllowed = daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/retry`);
+    const approvalAllowed = daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/approve`);
     const actionDisabled = inFlight.has(id);
     // Bug: 816476e — isExecuting covers both the optimistic 'approved' status and
     // the inFlight window before the API returns (where status is still 'pending'
@@ -2654,7 +2657,7 @@ export function AuthQueueView({
             type="button"
             className="btn btn--success"
             onClick={() => handleRetry(id)}
-            disabled={actionDisabled || queueMutationsBlocked}
+            disabled={actionDisabled || !retryAllowed}
           >
             {isRetrying ? 'Retrying...' : 'Retry'}
           </button>
@@ -2706,10 +2709,10 @@ export function AuthQueueView({
           onClick={() => {
             if (!dependencyBlocked) handleApprove(id);
           }}
-          disabled={actionDisabled || approvalBlocked || dependencyBlocked}
+          disabled={actionDisabled || !approvalAllowed || dependencyBlocked}
           title={dependencyBlocked
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
-            : undefined}
+            : !approvalAllowed ? 'Approval is unavailable in this instance.' : undefined}
         >
           {dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
         </button>
@@ -2717,7 +2720,7 @@ export function AuthQueueView({
           type="button"
           className={`btn btn--danger${rejectConfirmId === id ? ' btn--confirm' : ''}`}
           onClick={() => toggleRejectConfirm(id)}
-          disabled={actionDisabled || queueMutationsBlocked}
+          disabled={actionDisabled || !rejectAllowed}
         >
           {rejectConfirmId === id ? 'Confirm reject?' : 'Reject'}
         </button>
@@ -2919,7 +2922,6 @@ export function AuthQueueView({
         className="auth-detail"
         style={{ position: 'relative' }}
       >
-        {previewNotice}
         {!selectedRequest ? (
           <div className="auth-detail__empty">
             <p className="text-muted">
@@ -2992,13 +2994,13 @@ export function AuthQueueView({
                   request={request}
                   actions={requestActions}
                   inFlightActionIds={inFlightActionIds}
-                  mutationsAllowed={queueMutationsAllowed}
+                  instance={instance}
                   onToggleVeto={handleToggleActionVeto}
                 />
               ) : undefined}
               actions={renderDetailActions(request)}
               onUpdateField={onUpdateField}
-              mutationsAllowed={queueMutationsAllowed}
+              mutationsAllowed={canPerformOperation(instance, 'PUT', `/api/auth/request/${encodeURIComponent(id)}`)}
               autoShowConsoleOnApproval={autoShowConsoleOnApproval}
               autoReturnToAbstractOnSuccess={autoReturnToAbstractOnSuccess}
             />
