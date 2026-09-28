@@ -6821,7 +6821,7 @@ describe('ArtifactsView', () => {
 
   it('keeps auth detail surfaces visually separated by the app subdivision contract', () => {
     const css = readResolvedStylesheet();
-    const rightEdge = ruleBody(css, '.app-shell::after');
+    const rightEdge = ruleBody(css, '.app-shell__workspace::after');
     const leftEdge = ruleBody(css, '.app-shell--left-shadow::before');
 
     expect(rightEdge).toContain('inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width))');
