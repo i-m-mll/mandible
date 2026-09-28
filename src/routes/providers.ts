@@ -53,6 +53,7 @@ import {
 } from "../artifact-source.js";
 import type { RecordArtifactVersionInput } from "../provider-artifacts.js";
 import type { ArtifactVersionSourceKind } from "../types.js";
+import { isInlineManagedArtifactByteRequest } from "../security/effect-policy.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { resolveArtifactProject, resolveIssueProject } from "../permissions/resources.js";
@@ -455,7 +456,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       const metadata = body.metadata as { git?: { repo_id?: string } } | undefined;
       const repoRef = typeof body.repo_id === "string" ? body.repo_id : metadata?.git?.repo_id;
       if (repoRef && !enforceProjectRefWrite(req, res, repoRef)) return;
-      const artifact = await ingestArtifactAsync(getDb(), body);
+      const artifact = await ingestArtifactAsync(getDb(), isInlineManagedArtifactByteRequest("/api/artifacts/ingest", body)
+        ? { ...body, custody_mode: "managed" }
+        : body);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
     } catch (error) {
       handleError(res, error);
@@ -721,7 +724,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     try {
       const body = bodyRecord(req);
       if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
-      const artifact = await snapshotArtifactBytesAsync(getDb(), body);
+      const artifact = await snapshotArtifactBytesAsync(getDb(), isInlineManagedArtifactByteRequest("/api/artifacts/snapshot", body)
+        ? { ...body, custody_mode: "managed" }
+        : body);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
     } catch (error) {
       handleError(res, error);

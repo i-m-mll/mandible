@@ -37,6 +37,28 @@ const LOCAL_WRITE_OPERATION: Operation = { id: "ledger.write", effects: ["ledger
 const AUTH_PROTECTED_OPERATION: Operation = { id: "auth.protected", effects: ["auth:protected"] };
 const PREVIEW_FILE_WRITE_OPERATION: Operation = { id: "artifacts.bytes", effects: ["ledger:write", "files:preview"] };
 
+const INLINE_ARTIFACT_BYTE_FIELDS = new Set([
+  "content", "content_base64", "json", "custody_mode", "role", "media_type",
+  "filename", "logical_name", "metadata", "reference",
+]);
+const INLINE_SNAPSHOT_BYTE_FIELDS = new Set([...INLINE_ARTIFACT_BYTE_FIELDS, "ref", "artifact_ref"]);
+
+/** Exact request modes whose bytes and resulting managed custody stay in the active instance. */
+export function isInlineManagedArtifactByteRequest(pathname: string, body: unknown): boolean {
+  if (pathname !== "/api/artifacts/ingest" && pathname !== "/api/artifacts/snapshot") return false;
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return false;
+  const input = body as Record<string, unknown>;
+  const allowedFields = pathname === "/api/artifacts/snapshot"
+    ? INLINE_SNAPSHOT_BYTE_FIELDS
+    : INLINE_ARTIFACT_BYTE_FIELDS;
+  if (Object.keys(input).some((key) => !allowedFields.has(key))) return false;
+  if (input.custody_mode !== undefined && input.custody_mode !== "managed") return false;
+  const byteFields = ["content", "content_base64", "json"].filter((key) => Object.hasOwn(input, key));
+  if (byteFields.length !== 1) return false;
+  const byteField = byteFields[0];
+  return byteField === "json" || typeof input[byteField] === "string";
+}
+
 const EXACT_OPERATIONS = new Map<string, Operation>([
   ["GET /api/health", { id: "health.read", effects: [] }],
   ["GET /api/instance", { id: "instance.read", effects: [] }],
@@ -111,8 +133,16 @@ export function operationForRequest(
   method: string,
   pathname: string,
   instanceRole: InstanceRole = "main",
+  body?: unknown,
 ): Operation | null {
   const normalizedMethod = method.toUpperCase();
+  if (instanceRole === "preview" && normalizedMethod === "POST" && (
+    pathname === "/api/artifacts/drafts/publish"
+    || pathname === "/api/artifacts/drafts/rebase"
+    || isInlineManagedArtifactByteRequest(pathname, body)
+  )) {
+    return PREVIEW_FILE_WRITE_OPERATION;
+  }
   if (normalizedMethod === "POST" && pathname === "/api/users/setup") {
     return instanceRole === "preview"
       ? { id: "user.setup.copy", effects: ["auth:credentials"] }

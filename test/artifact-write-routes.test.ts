@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import Database from "better-sqlite3";
@@ -13,6 +14,8 @@ import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.
 import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { recordArtifactVersion, saveArtifactDraft, getArtifactDraft } from "../src/provider-artifacts.js";
 import { getArtifactCurrentSource } from "../src/artifact-source.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
+import { STANDARD_PREVIEW_EFFECTS, validatePreviewWritableRoots } from "../src/security/effect-policy.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import { createUser, setupOperator } from "../src/users/store.js";
@@ -20,14 +23,16 @@ import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import type { Router } from "../src/server.js";
 
 let db: Db;
+let previewDb: Db | null = null;
+let originalArtifactDir: string | undefined;
+let restoreArtifactDir = false;
 let root: string;
 let router: Router;
 let agent: ReturnType<typeof createUser>;
 let operator: ReturnType<typeof setupOperator>;
-function snapshot() {
+function snapshot(database: Db = db, cas = path.join(root, "cas")) {
   const state = Object.fromEntries(["artifact", "artifact_blob", "artifact_version", "artifact_source", "artifact_source_move"]
-    .map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
-  const cas = path.join(root, "cas");
+    .map(table => [table, database.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
   state.custody_files = fs.existsSync(cas) ? fs.readdirSync(cas, { recursive: true }).sort() : [];
   return state;
 }
@@ -38,6 +43,8 @@ function grant(project: string) {
   addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project", resource: project, permission: "write" });
 }
 beforeEach(() => {
+  previewDb = null;
+  restoreArtifactDir = false;
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-artifact-write-"));
   db = new Database(":memory:"); migrate(db); setDb(db);
   setSetting(db, "artifact_root", path.join(root, "cas"));
@@ -45,9 +52,111 @@ beforeEach(() => {
   agent = createUser(db, { slug: "writer", kind: "agent", display_name: "Writer" });
   router = authenticatedTestRouter(agent); registerProviderRoutes(router);
 });
-afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+  setDb(db);
+  previewDb?.close();
+  previewDb = null;
+  if (restoreArtifactDir) {
+    if (originalArtifactDir === undefined) delete process.env.MANDIBLE_ARTIFACT_DIR;
+    else process.env.MANDIBLE_ARTIFACT_DIR = originalArtifactDir;
+  }
+  originalArtifactDir = undefined;
+  restoreArtifactDir = false;
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
 
 describe("artifact write authorization", () => {
+  it("keeps inline bytes and draft writes inside copied preview database and CAS custody", async () => {
+    const sourceCas = path.join(root, "cas");
+    const sourceFile = path.join(root, "external-source.md");
+    fs.writeFileSync(sourceFile, "unchanged source bytes\n");
+    const sourceText = fs.readFileSync(sourceFile, "utf8");
+
+    const recorded = recordArtifactVersion(db, {
+      source_kind: "managed", series_key: "preview-draft", content: "base\n", media_type: "text/plain",
+    });
+    const artifactId = recorded.series.id.replace(/^artifact-series:/, "artifact:");
+    saveArtifactDraft(db, { ref: artifactId, base_version_id: recorded.version.id, content: "draft\n", media_type: "text/plain" });
+    recordArtifactVersion(db, { source_kind: "managed", artifact_id: artifactId, content: "latest\n", media_type: "text/plain" });
+
+    const sourceDbPath = path.join(root, "source.db");
+    const previewRoot = path.join(root, "preview");
+    const previewDbPath = path.join(previewRoot, "preview.db");
+    const previewCas = path.join(previewRoot, "artifacts");
+    const previewPreferences = path.join(previewRoot, "settings", "users");
+    fs.mkdirSync(previewCas, { recursive: true });
+    fs.mkdirSync(previewPreferences, { recursive: true });
+    await db.backup(sourceDbPath);
+    fs.copyFileSync(sourceDbPath, previewDbPath);
+    const sourceDatabaseBytes = crypto.createHash("sha256").update(fs.readFileSync(sourceDbPath)).digest("hex");
+    const sourceState = snapshot(db, sourceCas);
+    const sourceCasFiles = [...(sourceState.custody_files as string[])];
+    const sourceRefs = db.prepare(`SELECT id, artifact_id, version_no, content_hash, commit_sha
+      FROM artifact_version ORDER BY rowid`).all();
+    const previewInstance = resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_INSTANCE_ID: "preview-0123456789abcdef",
+        MANDIBLE_INSTALLATION_ID: "install_test",
+        MANDIBLE_PUBLIC_ORIGIN: "https://preview-0123456789abcdef.mandible.localhost:19421",
+        MANDIBLE_BACKEND_GENERATION: "preview-test",
+        MANDIBLE_PREVIEW_ROOT: previewRoot,
+        MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS),
+        MANDIBLE_ARTIFACT_DIR: previewCas,
+        MANDIBLE_USER_PREFERENCES_DIR: previewPreferences,
+        MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: sourceCas,
+      },
+      dbPath: previewDbPath,
+      sourceDbPath,
+    });
+    expect(() => validatePreviewWritableRoots(previewInstance)).not.toThrow();
+    previewDb = new Database(previewDbPath);
+    setSetting(previewDb, "artifact_root", previewCas);
+    originalArtifactDir = process.env.MANDIBLE_ARTIFACT_DIR;
+    restoreArtifactDir = true;
+    process.env.MANDIBLE_ARTIFACT_DIR = previewCas;
+    setDb(previewDb);
+    router = authenticatedTestRouter(agent, { instance: previewInstance });
+    registerProviderRoutes(router);
+
+    const ingest = await invoke("POST", "/api/artifacts/ingest", { content: "preview ingest", media_type: "text/plain" });
+    expect(ingest.status, JSON.stringify(ingest.body)).toBe(200);
+    const snapshotResult = await invoke("POST", "/api/artifacts/snapshot", { content: "preview snapshot", media_type: "text/plain" });
+    expect(snapshotResult.status, JSON.stringify(snapshotResult.body)).toBe(200);
+    const rebased = await invoke("POST", "/api/artifacts/drafts/rebase", { ref: artifactId });
+    expect(rebased.status, JSON.stringify(rebased.body)).toBe(200);
+    expect((rebased.body as any).draft.stale).toBe(false);
+    const published = await invoke("POST", "/api/artifacts/drafts/publish", { ref: artifactId });
+    expect(published.status, JSON.stringify(published.body)).toBe(200);
+    expect(getArtifactDraft(previewDb, artifactId)).toBeNull();
+
+    const previewCasFiles = fs.readdirSync(previewCas, { recursive: true });
+    expect(previewCasFiles.length).toBeGreaterThan(0);
+    const previewState = snapshot(previewDb, previewCas);
+    const deniedBaseline = snapshot(previewDb, previewCas);
+    for (const [url, body] of [
+      ["/api/artifacts/ingest", { path: sourceFile }],
+      ["/api/artifacts/ingest", { content: "ambiguous", path: sourceFile }],
+      ["/api/artifacts/ingest", { paths: [sourceFile] }],
+      ["/api/artifacts/snapshot", { path: sourceFile }],
+      ["/api/artifacts/snapshot", { content: "ambiguous", content_path: sourceFile }],
+    ] as const) {
+      const response = await invoke("POST", url, body);
+      expect(response.status, JSON.stringify(response.body)).toBe(403);
+      expect(snapshot(previewDb, previewCas)).toEqual(deniedBaseline);
+    }
+
+    expect(snapshot(db, sourceCas)).toEqual(sourceState);
+    expect(db.prepare(`SELECT id, artifact_id, version_no, content_hash, commit_sha
+      FROM artifact_version ORDER BY rowid`).all()).toEqual(sourceRefs);
+    expect(fs.readFileSync(sourceFile, "utf8")).toBe(sourceText);
+    expect(crypto.createHash("sha256").update(fs.readFileSync(sourceDbPath)).digest("hex"))
+      .toBe(sourceDatabaseBytes);
+    expect([...fs.readdirSync(sourceCas, { recursive: true })].sort()).toEqual(sourceCasFiles.sort());
+    expect(previewState.artifact).not.toEqual(sourceState.artifact);
+  });
+
   it("denies path, explicit identity, upload and legacy-key updates before any mutation", async () => {
     const project = addProject(db, { project_key: "owner", display_name: "Owner" });
     setProjectRestricted(db, project.id, true);
@@ -270,7 +379,13 @@ describe("artifact write authorization", () => {
 
   it("runs CLI ingest, guarded rename, old-path reuse and exact historical reads against the API", async () => {
     const requests: string[] = [];
+    const cliInstance = resolveInstanceInfo({ env: {} });
     const server = http.createServer((req, res) => {
+      if (req.method === "GET" && req.url === "/api/instance") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ instance: cliInstance }));
+        return;
+      }
       requests.push(`${req.method} ${req.url}`);
       const chunks: Buffer[] = [];
       req.on("data", chunk => chunks.push(chunk));
