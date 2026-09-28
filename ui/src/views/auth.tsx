@@ -2028,8 +2028,9 @@ export function AuthQueueView({
   }, []);
 
   const [actionErrors, setActionErrors] = useState<Map<string, AuthActionError>>(() => new Map());
+  const queueMutationsAllowed = !instance || instance.allowed_effects?.includes('ledger:write') === true;
   const operationalMutationsAllowed = !instance || instance.allowed_effects?.includes('auth:protected') === true;
-  const instanceMutationBlocked = Boolean(instance && !operationalMutationsAllowed);
+  const instanceMutationBlocked = Boolean(instance && (!queueMutationsAllowed || !operationalMutationsAllowed));
   const instanceLabel = instance?.role ?? 'main';
   const instanceDbLabel = instance?.db_path ? compactPath(instance.db_path) : null;
   const instanceSourceLabel = instance?.source_db_path ? compactPath(instance.source_db_path) : null;
@@ -2039,7 +2040,7 @@ export function AuthQueueView({
       title={`${instanceLabel} instance`}
     >
       <>
-        Approval actions are disabled for this copied preview queue
+        Queue edits apply only to this copied database. Approval, merge preparation, and external execution are disabled
         {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
         {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
       </>
@@ -2075,11 +2076,15 @@ export function AuthQueueView({
       action: (requestId: string) => void | Promise<void>,
       fallbackError: string,
       retry: AuthActionRetry,
+      requiredAccess: 'queue' | 'protected' = 'queue',
     ) => {
       // Bug: 645f8a8 — block all mutating actions while the daemon is not ready
       // (rebuilding / starting). The buttons are also disabled, but gate here too
       // so no mutation POST can fire from a keyboard/programmatic trigger.
-      if (!daemonReady || !operationalMutationsAllowed) {
+      const accessAllowed = requiredAccess === 'protected'
+        ? operationalMutationsAllowed
+        : queueMutationsAllowed;
+      if (!daemonReady || !accessAllowed) {
         return;
       }
       if (!id || inFlightRef.current.has(id)) {
@@ -2106,11 +2111,11 @@ export function AuthQueueView({
           });
         });
     },
-    [clearActionError, setActionError, setInFlightState, daemonReady, operationalMutationsAllowed],
+    [clearActionError, setActionError, setInFlightState, daemonReady, operationalMutationsAllowed, queueMutationsAllowed],
   );
 
   const handleApprove = useCallback(
-    (id: string) => runAction(id, onApprove, 'Approval failed. Try again.', { kind: 'approve' }),
+    (id: string) => runAction(id, onApprove, 'Approval failed. Try again.', { kind: 'approve' }, 'protected'),
     [runAction, onApprove],
   );
 
@@ -2169,7 +2174,7 @@ export function AuthQueueView({
 
   const handleToggleActionVeto = useCallback(
     (requestId: string, action: AuthRequestAction, vetoed: boolean) => {
-      if (!operationalMutationsAllowed) {
+      if (!queueMutationsAllowed) {
         return;
       }
       if (inFlightActionIdsRef.current.has(action.id)) return;
@@ -2197,7 +2202,7 @@ export function AuthQueueView({
           });
         });
     },
-    [clearActionError, operationalMutationsAllowed, setActionError, updateActionForRequest],
+    [clearActionError, queueMutationsAllowed, setActionError, updateActionForRequest],
   );
 
   const retryActionError = useCallback((requestId: string, retry: AuthActionRetry) => {
@@ -2608,7 +2613,8 @@ export function AuthQueueView({
     // Bug: 645f8a8 — while the daemon is not ready (rebuilding / starting), all
     // mutating actions are blocked. Kept separate from actionDisabled (in-flight)
     // so it doesn't trip the "Submitting…" label when nothing is actually queued.
-    const mutationsBlocked = !daemonReady || !operationalMutationsAllowed;
+    const queueMutationsBlocked = !daemonReady || !queueMutationsAllowed;
+    const approvalBlocked = !daemonReady || !operationalMutationsAllowed;
     const actionDisabled = inFlight.has(id);
     // Bug: 816476e — isExecuting covers both the optimistic 'approved' status and
     // the inFlight window before the API returns (where status is still 'pending'
@@ -2625,7 +2631,7 @@ export function AuthQueueView({
             type="button"
             className="btn btn--success"
             onClick={() => handleRetry(id)}
-            disabled={actionDisabled || mutationsBlocked}
+            disabled={actionDisabled || queueMutationsBlocked}
           >
             {isRetrying ? 'Retrying...' : 'Retry'}
           </button>
@@ -2677,7 +2683,7 @@ export function AuthQueueView({
           onClick={() => {
             if (!dependencyBlocked) handleApprove(id);
           }}
-          disabled={actionDisabled || mutationsBlocked || dependencyBlocked}
+          disabled={actionDisabled || approvalBlocked || dependencyBlocked}
           title={dependencyBlocked
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
             : undefined}
@@ -2688,7 +2694,7 @@ export function AuthQueueView({
           type="button"
           className={`btn btn--danger${rejectConfirmId === id ? ' btn--confirm' : ''}`}
           onClick={() => toggleRejectConfirm(id)}
-          disabled={actionDisabled || mutationsBlocked}
+          disabled={actionDisabled || queueMutationsBlocked}
         >
           {rejectConfirmId === id ? 'Confirm reject?' : 'Reject'}
         </button>
@@ -2963,13 +2969,13 @@ export function AuthQueueView({
                   request={request}
                   actions={requestActions}
                   inFlightActionIds={inFlightActionIds}
-                  mutationsAllowed={operationalMutationsAllowed}
+                  mutationsAllowed={queueMutationsAllowed}
                   onToggleVeto={handleToggleActionVeto}
                 />
               ) : undefined}
               actions={renderDetailActions(request)}
               onUpdateField={onUpdateField}
-              mutationsAllowed={operationalMutationsAllowed}
+              mutationsAllowed={queueMutationsAllowed}
               autoShowConsoleOnApproval={autoShowConsoleOnApproval}
               autoReturnToAbstractOnSuccess={autoReturnToAbstractOnSuccess}
             />

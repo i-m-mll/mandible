@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthHooksPanel, AuthQueueView, type AuthRequest } from '../../ui/src/views/auth';
 import type { AuthRequestAction, InstanceInfo } from '../../ui/src/api';
+import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 
 // jsdom in this build ships a localStorage stub whose setItem throws; install a
 // working in-memory localStorage so the sidebar-width persistence round-trips.
@@ -72,6 +73,7 @@ const deferredAction: AuthRequestAction = {
 
 const previewInstance: InstanceInfo = {
   role: 'preview',
+  allowed_effects: ['ledger:read', 'ledger:write', 'files:preview', 'preferences:instance'],
   operational_mutations: 'reject',
   operational_mutations_overridden: true,
   db_path: '/tmp/mandible-preview.db',
@@ -105,6 +107,7 @@ function renderView(
 }
 
 beforeEach(() => {
+  __resetBrowserSessionForTests();
   installMemoryLocalStorage();
   Element.prototype.scrollIntoView = vi.fn();
   // Keep the auto-approve status / action probes hermetic and offline.
@@ -232,7 +235,7 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(screen.queryByLabelText('Protected merge clearances')).toBeNull();
     expect(document.querySelector('.auth-detail__panels')?.className).toContain('auth-detail__panels--single');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Auth actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approval actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     expect(screen.getByText('clearance-use-1')).toBeTruthy();
     expect(screen.getByText('api_token')).toBeTruthy();
@@ -271,8 +274,8 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(requestBody?.contains(requestHeader as Node)).toBe(false);
     expect(requestBody?.contains(approve)).toBe(false);
     expect(requestHeader?.contains(approve)).toBe(true);
-    expect(canonicalHeader?.contains(screen.getByRole('button', { name: 'Auth actions' }))).toBe(true);
-    expect(screen.getByText(/Auth actions are disabled for this copied preview queue/)).toBeTruthy();
+    expect(canonicalHeader?.contains(screen.getByRole('button', { name: 'Approval actions' }))).toBe(true);
+    expect(screen.getByText(/Queue edits apply only to this copied database/)).toBeTruthy();
 
     expect(approve.disabled).toBe(true);
 
@@ -284,23 +287,34 @@ describe('AuthQueueView daemon readiness gate', () => {
     const onApprove = vi.fn();
     renderView(true, onApprove, previewInstance, undefined, null);
 
-    const warning = screen.getByText(/Auth actions are disabled for this copied preview queue/).closest('.detail-pane-notice')!;
+    const warning = screen.getByText(/Queue edits apply only to this copied database/).closest('.detail-pane-notice')!;
     const detail = warning.parentElement;
     const empty = screen.getByText('No requests in this view').closest('.auth-detail__empty');
     expect(detail?.id).toBe('app-operational-notices');
     expect(warning.getAttribute('data-severity')).toBe('warning');
     expect(detail?.firstElementChild).toBe(warning);
     expect(empty?.contains(warning)).toBe(false);
-    expect(screen.getByText(/Auth actions are disabled for this copied preview queue/)).toBeTruthy();
+    expect(screen.getByText(/Queue edits apply only to this copied database/)).toBeTruthy();
   });
 
-  it('hides commit message editing on preview instances', () => {
+  it('allows copied-queue metadata edits while keeping approval disabled', () => {
     const onApprove = vi.fn();
     const onUpdateField = vi.fn();
     renderView(true, onApprove, previewInstance, onUpdateField);
 
     expect(screen.getByText('Commit message')).toBeTruthy();
-    expect(screen.queryByText('edit')).toBeNull();
+    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(screen.getByText('edit'));
+    const textarea = document.querySelector('.panel__edit-textarea') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: 'Local copied review text' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(onUpdateField).toHaveBeenCalledWith('req-1', 'commit_message', 'Local copied review text');
+    fireEvent.click(approve);
+    expect(onApprove).not.toHaveBeenCalled();
   });
 
   it('maps auth output phases to the execution callout', () => {
@@ -329,6 +343,12 @@ describe('AuthQueueView daemon readiness gate', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
+      if (url === '/api/client-auth/whoami' && method === 'GET') {
+        return Promise.resolve(new Response(JSON.stringify({
+          authenticated: true,
+          session: { csrf_token: 'preview-test-csrf' },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
       if (url === '/api/auth/hooks' && method === 'GET') {
         return Promise.resolve(new Response(JSON.stringify({
           hooks: [
@@ -351,7 +371,7 @@ describe('AuthQueueView daemon readiness gate', () => {
     render(<AuthHooksPanel mutationsAllowed={false} />);
 
     expect(await screen.findByText('Test Hook')).toBeTruthy();
-    expect(screen.getByText('Auth hook mutations are disabled on this Mandible preview instance.')).toBeTruthy();
+    expect(screen.getByText('Approval hook mutations are disabled on this Mandible preview instance.')).toBeTruthy();
 
     const addButton = screen.getByRole('button', { name: '+ Add Hook' }) as HTMLButtonElement;
     const toggleButton = screen.getByRole('button', { name: 'ON' }) as HTMLButtonElement;

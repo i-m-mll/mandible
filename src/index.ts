@@ -271,6 +271,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     autoApprover: autoApproveManager,
     clearanceManager,
     backgroundMaintenance: operationalMutationsAllowed,
+    allowExternalEffects: operationalMutationsAllowed,
     restartAvailability: restartAvailability ?? undefined,
   });
   registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager);

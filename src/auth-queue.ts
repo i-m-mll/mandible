@@ -415,9 +415,11 @@ export interface AuthQueueOptions {
   restartFn?: () => void;
   // Issue ff784d8 — local, DB-independent self-merge availability receipt.
   restartAvailability?: RestartAvailabilityLifecycle;
-  // Read-only preview instances expose auth status and independence checks but
-  // must not recover, reconcile, expire, or finalize requests in the copied DB.
+  // Background recovery is disabled for database copies used by previews.
   backgroundMaintenance?: boolean;
+  // Preview copies may edit their own auth rows, but must not inspect or change
+  // host Git state, credentials, executor processes, or hook/runtime state.
+  allowExternalEffects?: boolean;
 }
 
 const GIT_OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
@@ -570,6 +572,8 @@ export class AuthQueue {
   private readonly db: InstanceType<typeof Database>;
   private readonly now: () => number;
   private readonly ttlMs: number;
+  private readonly backgroundMaintenance: boolean;
+  private readonly allowExternalEffects: boolean;
   private readonly broadcast: (event: SseEvent) => void;
   private readonly executor: typeof executeAuthCommand;
   private readonly hookManager: AuthHookManager;
@@ -624,6 +628,8 @@ export class AuthQueue {
     this.db = options.db ?? getDb();
     this.now = options.now ?? (() => Date.now());
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+    this.allowExternalEffects = options.allowExternalEffects !== false;
+    this.backgroundMaintenance = options.backgroundMaintenance !== false && this.allowExternalEffects;
     const broadcast = options.broadcast ?? defaultBroadcast;
     this.broadcast = (event) => broadcast(projectAuthAttributionEvent(this.db, event));
     this.executor = options.executor ?? executeAuthCommand;
@@ -640,7 +646,7 @@ export class AuthQueue {
     this.finalizerQueue = new FinalizerQueue((id) => this.runBackgroundFinalizers(id));
     // Bug: 681739e — fast-recover executions orphaned by a self-merge restart
     // before the generic (threshold-based) stuck-request recovery runs.
-    if (options.backgroundMaintenance !== false) {
+    if (this.backgroundMaintenance) {
       this.recoverSelfMergeShutdown();
       this.recoverStuckRequests();
       // Issue fbf2a58 — reconcile merge requests whose merge already landed but
@@ -666,6 +672,20 @@ export class AuthQueue {
   /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
   get isRebuilding(): boolean {
     return this._rebuilding;
+  }
+
+  /** Whether this instance may touch host resources or run execution work. */
+  get externalEffectsAllowed(): boolean {
+    return this.allowExternalEffects;
+  }
+
+  private requireExternalEffects(operation: string): void {
+    if (!this.allowExternalEffects) {
+      throw new AuthQueueError(
+        "invalid_command",
+        `${operation} is unavailable in a copied auth preview.`,
+      );
+    }
   }
 
   private startExpiryTimer(): void {
@@ -1596,6 +1616,7 @@ export class AuthQueue {
   }
 
   async replayCodexThreadArchives(requestId: string): Promise<CodexArchiveReplayResult> {
+    this.requireExternalEffects("Codex archive replay");
     const request = this.getRequest(requestId);
     if (!request) {
       throw new AuthQueueError("not_found", "Request not found.");
@@ -1611,6 +1632,12 @@ export class AuthQueue {
   }
 
   submit(payload: AuthRequestInput, requestedByUserId?: string): AuthRequest {
+    if (!this.allowExternalEffects && isAuthMergeCommand(payload)) {
+      this.requireExternalEffects("Merge request preparation");
+    }
+    if (!this.allowExternalEffects && payload.change_report) {
+      this.requireExternalEffects("Merge change report submission");
+    }
     if (payload.change_report && (payload.type ?? "merge") !== "merge") {
       throw new AuthQueueError(
         "invalid_command",
@@ -1630,10 +1657,20 @@ export class AuthQueue {
     const custody = predecessor
       ? this.requireRequestCustody(predecessor, actor, payload.expected_revision, payload.expected_custody_generation)
       : this.resolveSubmissionCustody(payload, actor);
-    const mergeCheck = this.checkMergeIndependence({
-      ...payload,
-      request_id: predecessor?.id ?? null,
-    });
+    const mergeCheck: AuthMergeCheckReport = this.allowExternalEffects
+      ? this.checkMergeIndependence({
+          ...payload,
+          request_id: predecessor?.id ?? null,
+        })
+      : {
+          status: "unknown",
+          repo: payload.repo ?? null,
+          base_branch: payload.base_branch ?? null,
+          head_branch: payload.head_branch ?? null,
+          checked_requests: 0,
+          conflicts: [],
+          reason: "Git preflight is unavailable in a copied auth preview.",
+        };
     if (mergeCheck.status === "conflict") {
       const firstConflict = mergeCheck.conflicts[0];
       const files = firstConflict?.files.length ? ` (${firstConflict.files.join(", ")})` : "";
@@ -1679,7 +1716,7 @@ export class AuthQueue {
 
     let candidateTreeSha: string | null = null;
     if (
-      mergeCheck.status === "clean" && payload.cwd && payload.merge_head_sha &&
+      this.allowExternalEffects && mergeCheck.status === "clean" && payload.cwd && payload.merge_head_sha &&
       mergeCheck.target_head_sha
     ) {
       const candidate = this.mergeTree(payload.cwd, mergeCheck.target_head_sha, payload.merge_head_sha);
@@ -2002,7 +2039,9 @@ export class AuthQueue {
       }
     });
 
-    request.merge_candidate_pin_sha = this.cacheMergeCandidate(request);
+    request.merge_candidate_pin_sha = this.allowExternalEffects
+      ? this.cacheMergeCandidate(request)
+      : null;
     try {
       insertRequest();
     } catch (error) {
@@ -2162,6 +2201,7 @@ export class AuthQueue {
     prior_base_sha: string;
     current_base_sha: string;
   } {
+    this.requireExternalEffects("Candidate snapshot inspection");
     const request = this.requireRequest(requestId);
     this.requestCustodyForActor(request, actor);
     if (request.status !== "pending" || !isAuthMergeCommand(request) || request.execution_mode === "remote") {
@@ -2240,6 +2280,7 @@ export class AuthQueue {
     expectedGeneration: number,
     expectedCurrentSnapshotSha256: string,
   ): AuthRequest {
+    this.requireExternalEffects("Candidate snapshot repair");
     const repaired = this.db.transaction(() => {
       const proof = this.inspectPendingCandidateSnapshotRepair(requestId, actor);
       if (proof.lifecycle_revision !== expectedRevision ||
@@ -2419,6 +2460,7 @@ export class AuthQueue {
   }
 
   checkMergeIndependence(input: AuthMergeCheckInput): AuthMergeCheckReport {
+    this.requireExternalEffects("Git merge preflight");
     const repo = input.repo ?? null;
     const baseBranch = input.base_branch ?? null;
     const headBranch = input.head_branch ?? null;
@@ -3265,6 +3307,7 @@ export class AuthQueue {
   }
 
   approve(id: string, approval?: AuthApprovalContext, approvedByUserId?: string): AuthRequest {
+    this.requireExternalEffects("Auth approval and execution");
     this.expireStale();
     let request = this.requireRequest(id);
     if (request.status !== "pending") {
@@ -3416,6 +3459,7 @@ export class AuthQueue {
 
   /** Consume one exact scoped clearance and begin the protected merge. */
   approveWithClearance(id: string): AuthRequest {
+    this.requireExternalEffects("Clearance approval and execution");
     if (!this.clearanceManager) {
       throw new AuthQueueError("invalid_command", "Scoped merge clearance is unavailable in this runtime.");
     }
@@ -3886,6 +3930,9 @@ export class AuthQueue {
 
   private dropMergeCandidate(request: AuthRequest, options: { clearRequestFields?: boolean } = {}): void {
     if (!request.merge_candidate_pin_sha) return;
+    // The preview database may contain a pin that belongs to the source repo.
+    // A local status change must never remove that source ref or inspect Git.
+    if (!this.allowExternalEffects) return;
     try {
       if (request.cwd) {
         execFileSync(
@@ -4684,6 +4731,7 @@ export class AuthQueue {
   }
 
   appendOutput(id: string, chunk: string): AuthRequest {
+    this.requireExternalEffects("Executor output delivery");
     this.expireStale();
     const request = this.requireRequest(id);
     // Issue 08a5f04 (review F1) — output is execution evidence: external
@@ -4710,6 +4758,7 @@ export class AuthQueue {
   }
 
   setResult(id: string, exitCode: number, output: string, error?: string): AuthRequest {
+    this.requireExternalEffects("Executor result delivery");
     this.expireStale();
     const request = this.requireRequest(id);
     // main: an auth merge result may only be recorded while the request is
@@ -4775,6 +4824,7 @@ export class AuthQueue {
   }
 
   expireStale(): AuthRequest[] {
+    if (!this.backgroundMaintenance) return [];
     const now = this.now();
     const rows = this.db
       .prepare(
@@ -5373,6 +5423,7 @@ export class AuthQueue {
    * hooks of a merged request and run them. Never re-runs the merge.
    */
   async retryHookConvergence(requestId: string, hookId?: string): Promise<AuthConvergence> {
+    this.requireExternalEffects("Hook convergence retry");
     const request = this.getRequest(requestId);
     if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
     if (request.status !== "completed" || request.exit_code !== 0) {

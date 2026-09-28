@@ -58,6 +58,13 @@ export function registerAuthRoutes(
     clearanceManager,
   });
   app.post("/api/auth/check", (req, res) => {
+    if (!authQueue.externalEffectsAllowed) {
+      res.status(403).json({
+        error: "Git merge preflight is unavailable in a copied auth preview.",
+        code: "auth_preview_external_effect_forbidden",
+      });
+      return;
+    }
     const payload = parseAuthCheckPayload(readBody<Record<string, unknown>>(req));
     if (!payload) {
       res.status(400).json({ error: "Invalid auth check payload." });
@@ -74,6 +81,13 @@ export function registerAuthRoutes(
       return;
     }
     const isAuthMerge = isAuthMergeCommand(payload);
+    if (isAuthMerge && !authQueue.externalEffectsAllowed) {
+      res.status(403).json({
+        error: "Merge request preparation is unavailable in a copied auth preview.",
+        code: "auth_preview_external_effect_forbidden",
+      });
+      return;
+    }
     const requester = resolveAuthRequester(req, payload, isAuthMerge);
     if (!requester.ok) {
       res.status(requester.status).json({ error: requester.error, code: requester.code });
@@ -154,7 +168,9 @@ export function registerAuthRoutes(
     // The failure is still logged with its kind, so a request that arrived
     // without a target_repo_root can be explained after the fact instead of
     // looking like the submitter simply omitted it.
-    const cwdRootProbe = payload.cwd ? probeRepoRootFromGitCommonDir(payload.cwd) : null;
+    const cwdRootProbe = authQueue.externalEffectsAllowed && payload.cwd
+      ? probeRepoRootFromGitCommonDir(payload.cwd)
+      : null;
     if (cwdRootProbe?.failure && cwdRootProbe.failure.kind !== "exit") {
       authRouteLog("warn", "auth_cwd_repo_root_probe_failed", {
         subsystem: "auth",
