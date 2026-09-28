@@ -37,6 +37,7 @@ export function RichChatPane({
   allowedTools,
   permissionRequest,
   onPermissionRespond,
+  onCreatedTaskNavigate,
   selectedMessageId,
   onSelectMessageInfo,
   usage,
@@ -68,6 +69,7 @@ export function RichChatPane({
   allowedTools?: string[] | null;
   permissionRequest: ConsolePermissionRequest | null;
   onPermissionRespond: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
+  onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
   selectedMessageId: string | null;
   onSelectMessageInfo: (turnId: string) => void;
   usage?: ComposerUsage;
@@ -152,6 +154,7 @@ export function RichChatPane({
               backend: providerFamily,
               model,
             }}
+            onCreatedTaskNavigate={onCreatedTaskNavigate}
             onSelectMessageInfo={onSelectMessageInfo}
             selectedMessageId={selectedMessageId}
             activePermissionRequest={permissionRequest}

@@ -58,6 +58,7 @@ export type ChatSurfaceProps = StreamRendererProps & {
   onToggleBlockSelect?: (blockId: string, shiftKey: boolean) => void;
   onFork?: (dagUuid: string) => void;
   onResume?: (dagUuid: string) => void;
+  onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
@@ -209,6 +210,7 @@ export function ChatSurface({
   onToggleBlockSelect,
   onFork,
   onResume,
+  onCreatedTaskNavigate,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -635,10 +637,11 @@ export function ChatSurface({
     navigator.clipboard.writeText(text).catch(() => {});
   }
 
-  let lastAssistantKey: string | null = null;
+  let lastAssistantTurnId: string | null = null;
   for (let i = nodes.length - 1; i >= 0; i--) {
-    if (nodes[i].kind === 'assistant_turn') {
-      lastAssistantKey = nodes[i].key;
+    const node = nodes[i];
+    if (node.kind === 'assistant_turn') {
+      lastAssistantTurnId = node.turn.id;
       break;
     }
   }
@@ -704,13 +707,16 @@ export function ChatSurface({
 
       case 'activity': {
         const source = node.source;
+        const sourceBlockId = source?.blockId
+          ?? (node.item.type === 'provider-directive' ? node.item.blockId ?? undefined : undefined);
         const disclosureKey = `activity:${node.key}`;
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
+          <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId}>
             <ActivityRow
               item={node.item}
               expanded={expandedBlocks[disclosureKey] ?? false}
               onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+              onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
@@ -724,7 +730,7 @@ export function ChatSurface({
 
       case 'assistant_turn': {
         const { turn } = node;
-        const isLastStreamingTurn = streaming && node.key === lastAssistantKey;
+        const isLastStreamingTurn = streaming && node.turn.id === lastAssistantTurnId;
         const isThinking =
           isLastStreamingTurn &&
           turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
@@ -788,12 +794,15 @@ export function ChatSurface({
             <div
               key={entry.key}
               className="message-block-wrapper"
-              data-member-refs={entry.nodes.map((node) => node.source?.blockId ?? node.key).join(' ')}
+              data-member-refs={[...new Set(entry.nodes.map((node) => node.source?.blockId
+                ?? (node.item.type === 'provider-directive' ? node.item.blockId : null)
+                ?? node.key))].join(' ')}
             >
               <ActivityGroup
                 items={entry.nodes.map((node) => node.item)}
                 expanded={expandedBlocks[entry.key] ?? false}
                 onExpandedChange={(next) => setBlockExpanded(entry.key, next)}
+                onCreatedTaskNavigate={onCreatedTaskNavigate}
               />
             </div>
           );
