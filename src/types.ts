@@ -158,6 +158,8 @@ export interface InstanceInfo {
   allowed_effects: readonly import("./security/effect-policy.js").Effect[];
   writable_roots: readonly string[];
   preview_root?: string | null;
+  /** Canonical per-instance root for authenticated user-owned appearance preferences. */
+  user_preferences_root: string;
   artifact_root?: string | null;
   source_artifact_root?: string | null;
   db_path: string | null;

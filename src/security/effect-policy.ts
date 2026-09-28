@@ -14,6 +14,7 @@ export const EFFECTS = [
   "network:publish",
   "delivery:background",
   "maintenance:shared",
+  "preferences:instance",
 ] as const;
 
 export type Effect = (typeof EFFECTS)[number];
@@ -23,6 +24,7 @@ export const STANDARD_PREVIEW_EFFECTS: readonly Effect[] = [
   "ledger:read",
   "ledger:write",
   "files:preview",
+  "preferences:instance",
 ];
 
 export type Operation = {
@@ -45,8 +47,9 @@ const EXACT_OPERATIONS = new Map<string, Operation>([
   ["POST /api/events/subscribe", READ_OPERATION],
   ["POST /api/briefing-destination-routes/plan", READ_OPERATION],
   ["GET /api/client-auth/forward-auth", { id: "session.forward_auth", effects: [] }],
-  ["PUT /api/host-preferences/chat-shown-projects", { id: "preferences.shared", effects: ["maintenance:shared"] }],
-  ["PUT /api/host-preferences/app-theme", { id: "preferences.shared", effects: ["maintenance:shared"] }],
+  ["PUT /api/host-preferences/chat-shown-projects", { id: "preferences.instance", effects: ["preferences:instance"] }],
+  ["PUT /api/host-preferences/sidebar-order", { id: "preferences.instance", effects: ["preferences:instance"] }],
+  ["PUT /api/host-preferences/app-theme", { id: "preferences.instance", effects: ["preferences:instance"] }],
 ]);
 
 const EXACT_WRITE_OPERATIONS = new Map<string, Operation>([
@@ -112,6 +115,10 @@ export function operationForRequest(method: string, pathname: string): Operation
   if (normalizedMethod === "POST"
       && /^\/api\/conversations\/[^/]+\/control\/(submit|stop)$/.test(pathname)) {
     return { id: "provider.send", effects: ["provider:send"] };
+  }
+  if (normalizedMethod === "PUT"
+      && /^\/api\/user-settings\/(app_rail_order|ui_font_face|ui_font_size|detail_font_face|detail_font_size)$/.test(pathname)) {
+    return { id: "preferences.instance", effects: ["preferences:instance"] };
   }
   if (normalizedMethod === "POST"
       && (/^\/api\/artifacts\/[^/]+\/open-externally$/.test(pathname)
@@ -223,6 +230,13 @@ export function validatePreviewWritableRoots(instance: InstanceInfo): void {
     if (sameFile(artifactRoot, sourceRoot) || inside(previewRoot, sourceRoot)) {
       throw new Error("Preview artifact root aliases production or source custody.");
     }
+  }
+  if (!instance.user_preferences_root) {
+    throw new Error("Preview startup requires an explicit user-preferences directory.");
+  }
+  const userPreferencesRoot = canonicalDirectory(instance.user_preferences_root);
+  if (!inside(previewRoot, userPreferencesRoot)) {
+    throw new Error("Preview user-preferences directory escapes registered custody.");
   }
 }
 

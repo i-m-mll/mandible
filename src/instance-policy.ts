@@ -8,7 +8,7 @@ import {
   effectsForInstance,
   type Effect,
 } from "./security/effect-policy.js";
-import { getMandibleConfigPath } from "./platform-paths.js";
+import { getMandibleConfigPath, getMandibleHomePath } from "./platform-paths.js";
 import { PRODUCTION_ORIGIN } from "./canonical-origin.js";
 
 // Retained only as a reporting taxonomy for request telemetry. Authorization
@@ -24,11 +24,16 @@ export const UNSAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
 // available on instances that reject operational mutations.
 export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/auth/check",
-  // Chat project visibility is host/user view intent stored outside both the
-  // ledger and copied preview DB. Main and reject-mode previews deliberately
-  // share this one revisioned authority.
+  // User-owned appearance and navigation intent has its own effect and
+  // instance-custody boundary; it is not shared operational maintenance.
   "PUT /api/host-preferences/chat-shown-projects",
+  "PUT /api/host-preferences/sidebar-order",
   "PUT /api/host-preferences/app-theme",
+  "PUT /api/user-settings/app_rail_order",
+  "PUT /api/user-settings/ui_font_face",
+  "PUT /api/user-settings/ui_font_size",
+  "PUT /api/user-settings/detail_font_face",
+  "PUT /api/user-settings/detail_font_size",
   "POST /api/briefing-destination-routes/plan",
   "POST /api/timeline/project",
 ]);
@@ -96,6 +101,13 @@ export function resolveInstanceInfo(options: {
   const resolvedSourceArtifactRoot = env.MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR
     ? path.resolve(env.MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR)
     : null;
+  const configuredUserPreferencesRoot = env.MANDIBLE_USER_PREFERENCES_DIR?.trim() ?? "";
+  if (configuredUserPreferencesRoot && !path.isAbsolute(configuredUserPreferencesRoot)) {
+    throw new Error("MANDIBLE_USER_PREFERENCES_DIR must be an absolute path.");
+  }
+  const userPreferencesRoot = configuredUserPreferencesRoot
+    ? path.resolve(configuredUserPreferencesRoot)
+    : getMandibleHomePath("settings", "users");
   const instanceId = env.MANDIBLE_INSTANCE_ID?.trim()
     || (role === "main" ? "production" : "");
   const installationId = resolveInstallationId(env);
@@ -115,6 +127,12 @@ export function resolveInstanceInfo(options: {
   )) {
     throw new Error("Preview startup requires an isolated copied database beneath its registered root.");
   }
+  if (role === "preview" && (
+    !configuredUserPreferencesRoot
+    || !isPathWithinRoot(userPreferencesRoot, resolvedPreviewRoot)
+  )) {
+    throw new Error("Preview startup requires an isolated user-preferences directory beneath its registered root.");
+  }
   const writableRoots = parseWritableRoots(env.MANDIBLE_WRITABLE_ROOTS, resolvedPreviewRoot, role);
   if (role === "preview" && writableRoots.some((root) => !isPathAtOrWithinRoot(root, resolvedPreviewRoot))) {
     throw new Error("Preview writable roots must remain beneath the registered preview root.");
@@ -130,6 +148,7 @@ export function resolveInstanceInfo(options: {
     allowed_effects: allowedEffects,
     writable_roots: writableRoots,
     preview_root: resolvedPreviewRoot,
+    user_preferences_root: userPreferencesRoot,
     artifact_root: resolvedArtifactRoot,
     source_artifact_root: resolvedSourceArtifactRoot,
     db_path: resolvedDbPath,
