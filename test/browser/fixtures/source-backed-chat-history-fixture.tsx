@@ -2,12 +2,14 @@ import { render } from 'preact';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 
 import { AppShellProvider, type AppRightSidebarDescriptor } from '../../../ui/src/app-shell';
+import { queryClient } from '../../../ui/src/query/client';
 import { ConversationDetail, type ConversationAnchor } from '../../../ui/src/views/conversations';
 
 declare global {
   interface Window {
     __sourceBackedHistory: {
       navigate: (anchor: ConversationAnchor | null) => void;
+      refreshSourceVersion: () => Promise<void>;
       snapshot: () => Record<string, unknown>;
     };
   }
@@ -15,14 +17,17 @@ declare global {
 
 const conversationId = 'source-backed-history';
 const requests: string[] = [];
+const transformedSourceRequests: string[] = [];
 const fetchedBlockIds = new Set<string>();
 const seenBlockIds = new Set<string>();
 let maximumMountedRows = 0;
+let refreshedSourceGeneration = 0;
 let navigation: (anchor: ConversationAnchor | null) => void = () => undefined;
+let refreshActiveConversation: () => Promise<void> = async () => undefined;
 
 const nativeFetch = window.fetch.bind(window);
 window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-  const url = String(input);
+  const url = input instanceof Request ? input.url : String(input);
   // This source-reader fixture has no browser-session server. Supply only its
   // access boundary; all conversation bytes still traverse the real HTTP route.
   if (url === '/api/client-auth/whoami') {
@@ -35,7 +40,21 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     }), { headers: { 'Content-Type': 'application/json' } });
   }
   if (url.includes('/api/conversations')) requests.push(url);
-  const response = await nativeFetch(input, init);
+  let response = await nativeFetch(input, init);
+  const requestPath = new URL(url, window.location.href).pathname;
+  if (requestPath === `/api/conversations/${conversationId}`
+      && response.ok && refreshedSourceGeneration > 0) {
+    transformedSourceRequests.push(url);
+    const payload = await response.json() as {
+      source_version_id?: string | null;
+    };
+    payload.source_version_id = `source-refresh-${refreshedSourceGeneration}`;
+    response = new Response(JSON.stringify(payload), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
   if (url.includes(`/api/conversations/${conversationId}`) && response.ok) {
     void response.clone().json().then((payload: { blocks?: Array<{ id?: string }> }) => {
       for (const block of payload.blocks ?? []) {
@@ -52,7 +71,7 @@ Object.defineProperty(navigator, 'clipboard', {
   configurable: true,
 });
 
-const observer = new MutationObserver(() => {
+function recordMountedBlocks(): void {
   for (const element of document.querySelectorAll<HTMLElement>('[data-block-id]')) {
     if (element.dataset.blockId) seenBlockIds.add(element.dataset.blockId);
   }
@@ -65,7 +84,9 @@ const observer = new MutationObserver(() => {
     maximumMountedRows,
     document.querySelectorAll('.stream-renderer__virtual-row').length,
   );
-});
+}
+
+const observer = new MutationObserver(recordMountedBlocks);
 observer.observe(document.documentElement, { childList: true, subtree: true });
 
 function initialAnchor(): ConversationAnchor | null {
@@ -82,6 +103,10 @@ function Fixture(): JSX.Element {
   const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
   const ownerRef = useRef<string | null>(null);
   navigation = setAnchor;
+  refreshActiveConversation = () => queryClient.refetchQueries({
+    queryKey: ['chat', 'conversation', conversationId, 'window'],
+    type: 'active',
+  });
   const registerRightSidebar = useCallback((ownerId: string) => {
     ownerRef.current = ownerId;
     return () => {
@@ -117,19 +142,39 @@ function Fixture(): JSX.Element {
 
 window.__sourceBackedHistory = {
   navigate: (anchor) => navigation(anchor),
+  refreshSourceVersion: () => {
+    refreshedSourceGeneration += 1;
+    return refreshActiveConversation();
+  },
   snapshot: () => {
+    recordMountedBlocks();
     const scroll = document.querySelector<HTMLElement>('.stream-renderer__scroll');
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const transcript = queryClient.getQueryData<{
+      source_version_id?: string | null;
+      blocks?: Array<{ id: string }>;
+    }>(['chat', 'conversation', conversationId, 'aggregate']);
+    const readingAnchor = (() => {
+      const entry = Object.entries(window.localStorage).find(([key]) => key.includes('chat-scroll'));
+      if (!entry) return null;
+      try { return JSON.parse(entry[1]) as Record<string, unknown>; } catch { return null; }
+    })();
     return {
       requests: [...requests],
+      transformedSourceRequests: [...transformedSourceRequests],
       fetchedBlockIds: [...fetchedBlockIds],
       seenBlockIds: [...seenBlockIds],
+      sourceVersionId: transcript?.source_version_id ?? null,
+      anchorBlockLoaded: Boolean(readingAnchor?.blockId && transcript?.blocks?.some((block) => (
+        block.id === readingAnchor.blockId
+      ))),
       mountedRows: document.querySelectorAll('.stream-renderer__virtual-row').length,
       historyRows: document.querySelectorAll('.stream-renderer__history-state').length,
       maximumMountedRows,
       scrollTop: scroll?.scrollTop ?? null,
       scrollHeight: scroll?.scrollHeight ?? null,
       clientHeight: scroll?.clientHeight ?? null,
+      readingAnchor,
       focusedBlockId: focused?.dataset.blockId
         ?? focused?.closest<HTMLElement>('[data-block-id]')?.dataset.blockId
         ?? null,

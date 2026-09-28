@@ -72,7 +72,7 @@ describe('Chat transcript native mount', () => {
       expect(rendered.error, rendered.stderr).toBeUndefined();
       expect(rendered.status, rendered.stderr).toBe(0);
       expect(rendered.stdout).toContain('data-mount-status="settled"');
-      expect(rendered.stdout).toContain('data-row-count="6"');
+      expect(rendered.stdout).toContain('A source-backed assistant response');
       expect(rendered.stdout).toMatch(/data-sidebar-updates="[1-4]"/);
     } finally {
       rmSync(directory, { recursive: true, force: true });
