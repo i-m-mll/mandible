@@ -565,7 +565,8 @@ export function ChatSurface({
   }, [items, navigationTarget, restoreReadingAnchor]);
 
   useEffect(() => {
-    if (!transcript || transcript.historyLoading || inFlightHistoryRef.current) return;
+    if (!transcript || transcript.historyLoading || inFlightHistoryRef.current
+        || pendingReadingAnchorRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
     const rendered = virtualizer.getVirtualItems();
@@ -627,11 +628,12 @@ export function ChatSurface({
     }
     const nextViewportHeight = el.clientHeight || viewportHeight;
     const nextDistance = Math.max(0, el.scrollHeight - el.scrollTop - nextViewportHeight);
+    setViewportHeight(nextViewportHeight);
+    setDistanceFromBottom(nextDistance);
+    if (pendingReadingAnchorRef.current) return;
     const nextFollowingTail = nextDistance <= FOLLOW_THRESHOLD_PX
       && !transcript?.hasNewer
       && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
-    setViewportHeight(nextViewportHeight);
-    setDistanceFromBottom(nextDistance);
     setFollowingTail(nextFollowingTail);
     captureReadingAnchor(nextFollowingTail);
   }
