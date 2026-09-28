@@ -1003,7 +1003,17 @@ api_operational_mutation_category() {
   # and the TypeScript set in sync; test/cli-instance-preflight.test.ts fails on
   # drift.
   case "${method} ${pathname}" in
-    "POST /api/auth/check"|"POST /api/briefing-destination-routes/plan"|"POST /api/timeline/project"|"PUT /api/host-preferences/app-theme"|"PUT /api/host-preferences/chat-shown-projects") return 1 ;;
+    "POST /api/auth/check"|\
+    "POST /api/briefing-destination-routes/plan"|\
+    "POST /api/timeline/project"|\
+    "PUT /api/host-preferences/app-theme"|\
+    "PUT /api/host-preferences/chat-shown-projects"|\
+    "PUT /api/host-preferences/sidebar-order"|\
+    "PUT /api/user-settings/app_rail_order"|\
+    "PUT /api/user-settings/ui_font_face"|\
+    "PUT /api/user-settings/ui_font_size"|\
+    "PUT /api/user-settings/detail_font_face"|\
+    "PUT /api/user-settings/detail_font_size") return 1 ;;
   esac
 
   if generated_category="$(api_generated_operational_mutation_category "$method" "$pathname")"; then
