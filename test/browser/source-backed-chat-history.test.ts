@@ -339,6 +339,15 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       });
       await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     };
+    const setScrollTop = async (scrollTop: number) => {
+      await evaluate(`(() => {
+        const scroll=document.querySelector('.stream-renderer__scroll');
+        if(scroll) scroll.scrollTop=${scrollTop};
+      })()`);
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    };
+    const mountedVirtualIndexes = () => evaluate<number[]>(`[...document.querySelectorAll('.stream-renderer__virtual-row')]
+      .map(row=>Number(row.getAttribute('data-index')))`);
     const visibleAnchor = (blockId?: string, requireVisible = false) => evaluate<{ id: string; top: number; scrollTop: number; viewportTop: number } | null>(`(() => {
       const scroll=document.querySelector('.stream-renderer__scroll');
       const viewport=scroll.getBoundingClientRect();
@@ -428,7 +437,11 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       4_000,
     );
     const previousFetchedCount = afterGapFill.fetchedBlockIds.length;
-    await wheel(-10);
+    const mountedBeforeScroll = await mountedVirtualIndexes();
+    const targetScrollTop = Math.max(0, beforePrepend.scrollTop - 2);
+    const scrollDelta = beforePrepend.scrollTop - targetScrollTop;
+    await setScrollTop(targetScrollTop);
+    expect(await mountedVirtualIndexes()).toEqual(mountedBeforeScroll);
     await waitFor('automatic older window request', async () => {
       const value = await snapshot();
       return value.requests.slice(anchorRequestStart)
@@ -441,7 +454,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     }, browser, profile);
     expect(afterPrepend.id).toBe(beforePrepend.id);
     expect(
-      Math.abs(afterPrepend.top - (beforePrepend.top + 10)),
+      Math.abs(afterPrepend.top - (beforePrepend.top + scrollDelta)),
       JSON.stringify({ beforePrepend, afterPrepend }),
     ).toBeLessThan(5);
     process.stdout.write('SOURCE_BACKED_CHAT_STAGE prepend\n');
