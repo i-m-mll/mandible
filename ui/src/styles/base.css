@@ -91,6 +91,7 @@ a {
 
 .app-shell {
   --app-header-height: 48px;
+  --app-left-chrome-height: var(--app-header-height);
   --app-left-boundary-width: 0px;
   --app-rail-inline-padding: 12px;
   --app-rail-width: 208px;
@@ -126,10 +127,10 @@ a {
 }
 
 .tauri-window .app-shell {
-  /* Overlay titlebars put web content behind the native controls. Reserve a
-     safe 44px strip (or the reported native height) before app header content. */
+  /* Overlay titlebars put web content behind the native controls. Extend only
+     the left chrome below that inset; shared content headers keep their 48px row. */
   --app-titlebar-height: max(44px, env(titlebar-area-height, 44px));
-  --app-header-height: calc(var(--app-titlebar-height) + 48px);
+  --app-left-chrome-height: calc(var(--app-titlebar-height) + var(--app-header-height));
 }
 
 .app-header {
@@ -149,6 +150,9 @@ a {
 }
 
 .tauri-window .app-header {
+  height: var(--app-left-chrome-height);
+  min-height: var(--app-left-chrome-height);
+  padding-top: var(--app-titlebar-height);
   -webkit-user-select: none;
   user-select: none;
 }
@@ -366,7 +370,7 @@ a {
 .app-layout--view-sidebar-open::before {
   content: '';
   position: absolute;
-  top: var(--app-header-height);
+  top: var(--app-left-chrome-height);
   bottom: 0;
   left: calc(var(--app-left-boundary-width) + var(--app-rail-width));
   z-index: var(--z-app-subdivision);
@@ -533,7 +537,7 @@ a {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: calc(var(--app-header-height) + 18px) var(--app-rail-inline-padding) 18px;
+  padding: calc(var(--app-left-chrome-height) + 18px) var(--app-rail-inline-padding) 18px;
   background: var(--surface-rail);
   border-right: none;
   box-shadow: none;
@@ -1114,7 +1118,7 @@ a {
 }
 
 .app-layout--view-sidebar-open .view-sidebar {
-  padding-top: var(--app-header-height);
+  padding-top: var(--app-left-chrome-height);
   margin-right: var(--app-shadow-gutter-width);
 }
 
@@ -1180,7 +1184,7 @@ a {
 }
 
 .app-layout--view-sidebar-open .view-sidebar__resize-handle.sidebar-drag-handle {
-  top: var(--app-header-height);
+  top: var(--app-left-chrome-height);
 }
 
 .app-layout--view-sidebar-open .auth-sidebar,
@@ -1209,11 +1213,9 @@ a {
 
 /* Native Regular glass is enabled only after Tauri confirms that the native
    effect and transparent window backing were both configured. The left app
-   header, rail, and sidebar reveal that material; the main workspace stays
-   opaque beside the visible sidebar. */
+   header, rail, and sidebar tint that material with the active chrome theme;
+   the main workspace stays opaque beside the visible sidebar. */
 :root[data-native-glass='regular'] {
-  --surface-rail: var(--surface-glass-regular);
-  --surface-sidebar: var(--surface-glass-regular);
   background: var(--surface-glass-regular);
 }
 
@@ -1225,7 +1227,16 @@ a {
 }
 
 :root[data-native-glass='regular'] .app-header {
-  background: var(--surface-glass-regular);
+  background: var(--surface-glass-tint);
+}
+
+:root[data-native-glass='regular'] .app-rail,
+:root[data-native-glass='regular'] .app-layout--view-sidebar-open .view-sidebar {
+  background: linear-gradient(
+    to bottom,
+    var(--surface-glass-regular) 0 var(--app-left-chrome-height),
+    var(--surface-glass-tint) var(--app-left-chrome-height) 100%
+  );
 }
 
 :root[data-native-glass='regular'] .app-layout--view-sidebar-open .app-content--view-sidebar {
