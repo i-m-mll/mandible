@@ -982,6 +982,7 @@ describe('compact detail pane shell', () => {
     expect(document.querySelector('.block-assistant-message')).toBeNull();
     fireEvent.click(screen.getByRole('menuitem', { name: 'View metadata' }));
     expect(screen.getByRole('dialog', { name: 'Conversation metadata' })).toBeTruthy();
+    expect(screen.getByText(conversation.session_id!)).toBeTruthy();
     const projectLabel = screen.getByText('Project');
     expect(projectLabel.parentElement?.textContent).toBe('ProjectUnscoped');
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation metadata' }));

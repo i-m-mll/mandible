@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import type http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -30,6 +31,7 @@ const chrome = [
   '/usr/bin/google-chrome',
   '/usr/bin/chromium',
 ].filter((candidate): candidate is string => Boolean(candidate)).find(existsSync);
+const esbuildCli = createRequire(import.meta.url).resolve('esbuild/bin/esbuild');
 
 type CdpClient = {
   call: (method: string, params?: Record<string, unknown>) => Promise<Record<string, any>>;
@@ -60,7 +62,7 @@ let fixtureBundle = '';
 
 function bundleFixture(): string {
   const output = join(directory, 'source-backed-chat-history.js');
-  const bundled = spawnSync(resolve('node_modules/esbuild/bin/esbuild'), [
+  const bundled = spawnSync(esbuildCli, [
     resolve('test/browser/fixtures/source-backed-chat-history-fixture.tsx'),
     '--bundle',
     `--outfile=${output}`,

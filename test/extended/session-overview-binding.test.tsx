@@ -5,6 +5,7 @@
 import { render, screen, cleanup, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 import { SessionOverviewView } from '../../ui/src/views/session-overview';
 
 const PAGE_BINDING = 'aaaabbbb';
@@ -89,6 +90,11 @@ function stubFetch(options: { registered: { value: boolean } }): { calls: FetchC
     }
     calls.push({ url, method, body });
 
+    if (url === '/api/client-auth/whoami') {
+      return Promise.resolve(jsonResponse({ authenticated: true, session: {
+        family_id: 'session-overview-test', audience: 'production', csrf_token: 'csrf',
+      } }));
+    }
     if (url.startsWith('/api/sessions/resolve')) {
       return Promise.resolve(jsonResponse({
         provider: null,
@@ -113,6 +119,7 @@ function stubFetch(options: { registered: { value: boolean } }): { calls: FetchC
 }
 
 beforeEach(() => {
+  __resetBrowserSessionForTests();
   window.history.replaceState(null, '', '/#/overview');
 });
 
@@ -120,6 +127,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  __resetBrowserSessionForTests();
 });
 
 describe('SessionOverviewView provider-scoped binding', () => {
@@ -141,12 +149,39 @@ describe('SessionOverviewView provider-scoped binding', () => {
     expect(screen.queryByRole('button', { name: 'Register as Mandible session' })).toBeNull();
     expect(calls.every((call) => call.method === 'GET')).toBe(true);
   });
+
+  it.each([
+    { binding: 'provider-scoped', registered: false },
+    { binding: 'registered', registered: true },
+  ])('does not repeat the session id as an embedded $binding heading', async ({ registered }) => {
+    const registration = { value: registered };
+    stubFetch({ registered: registration });
+    const { container } = render(
+      <SessionOverviewView
+        initialSessionId={null}
+        agentBinding={PAGE_BINDING}
+        embedded
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Linked issues')).toBeTruthy();
+    });
+    const overview = container.querySelector('.session-overview--embedded');
+    expect(overview?.querySelector('h3')).toBeNull();
+    if (registered) {
+      expect(screen.getByText('active').className).toContain('session-overview-badge');
+    }
+  });
 });
 
 describe('SessionOverviewView truncated resolution (review C4)', () => {
   it('never auto-binds a single match from a truncated scan', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === '/api/client-auth/whoami') {
+        return Promise.resolve(jsonResponse({ authenticated: true, session: { csrf_token: 'csrf' } }));
+      }
       if (url.startsWith('/api/sessions/resolve')) {
         return Promise.resolve(jsonResponse({
           provider: null,
@@ -185,6 +220,9 @@ describe('SessionOverviewView truncated resolution (review C4)', () => {
     };
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === '/api/client-auth/whoami') {
+        return Promise.resolve(jsonResponse({ authenticated: true, session: { csrf_token: 'csrf' } }));
+      }
       if (url.startsWith('/api/sessions/resolve')) {
         return Promise.resolve(jsonResponse({
           provider: null,
