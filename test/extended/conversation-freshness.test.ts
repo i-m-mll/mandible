@@ -23,6 +23,10 @@ import { Router } from "../../src/server.js";
 import { ConversationSourceReader } from "../../src/conversations/source-reader.js";
 import { getConversationStructureCache } from "../../src/conversations/structure-cache.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
+import {
+  ConversationSourceChangedError,
+  isConversationSourceChangedError,
+} from "../../src/conversations/source-store.js";
 import { sourceFilesystemIdentity } from "../../src/conversations/source-observer.js";
 import { CodexParser } from "../../src/parsers/codex.js";
 import { FileRpcTransport } from "../../src/file-rpc-transport.js";
@@ -236,6 +240,100 @@ describe("exact conversation freshness", () => {
     expect(ingestedPaths).toEqual([[selected.file]]);
     expect(ingestedPaths.flat()).not.toContain(other.file);
     expect(actorCloses).toBe(1);
+  });
+
+  it("keeps a mixed source-change and parser AggregateError fatal", () => {
+    const mixed = new AggregateError([
+      new AggregateError([new ConversationSourceChangedError("append race")]),
+      new Error("parser failure"),
+    ]);
+
+    expect(isConversationSourceChangedError(mixed)).toBe(false);
+    expect(isConversationSourceChangedError(new AggregateError([]))).toBe(false);
+  });
+
+  it("retries a typed active-append race on the selected path without caching a fatal failure", async () => {
+    const selected = await seed("selected-append-race");
+    const other = await seed("unselected-during-race");
+    const otherVersion = db.prepare(`SELECT current_version_id FROM conversation_sources
+      WHERE conversation_id = ?`).get(other.id) as { current_version_id: string };
+    await appendAt(selected.file, assistant("first appended tail", 3), 2);
+    const ingestedPaths: string[][] = [];
+    let actorCloses = 0;
+    const refresher = new SelectedSourceRefresher({
+      db,
+      dbPath: db.name,
+      logger: () => undefined,
+      publish: () => undefined,
+      actorFactory: () => ({
+        ingest: async (paths) => {
+          ingestedPaths.push(paths);
+          if (ingestedPaths.length === 1) {
+            await appendAt(paths[0], assistant("tail written during refresh", 4), 3);
+            throw new ConversationSourceChangedError("conversation source changed while being indexed");
+          }
+          await triggerExactPathIngest(paths[0]);
+        },
+        close: async () => { actorCloses += 1; },
+      }),
+    });
+
+    await expect(ensureExactConversationFresh(db, selected.id, {
+      waitForFresh: false,
+      scheduleReparse: refresher.scheduleReparse,
+    })).rejects.toMatchObject({ code: "freshness_pending" });
+    await expect(refresher.ingest(selected.file)).resolves.toMatchObject({ status: "ingested" });
+
+    expect(ingestedPaths).toEqual([[selected.file], [selected.file]]);
+    expect(actorCloses).toBe(1);
+    expect(isConversationSourceChangedError(new AggregateError([
+      new AggregateError([new ConversationSourceChangedError("append race")]),
+    ]))).toBe(true);
+    const current = await ensureExactConversationFresh(db, selected.id, {
+      waitForFresh: false,
+      scheduleReparse: refresher.scheduleReparse,
+    });
+    expect(current).toMatchObject({ conversationId: selected.id, refreshed: false });
+    expect(await exactContents(selected.id)).toEqual([
+      "hello",
+      "initial tail",
+      "first appended tail",
+      "tail written during refresh",
+    ]);
+    expect(db.prepare(`SELECT current_version_id FROM conversation_sources
+      WHERE conversation_id = ?`).get(other.id)).toEqual(otherVersion);
+    await refresher.close();
+  });
+
+  it("does not retain an exhausted source-change race as a fatal refresh failure", async () => {
+    const selected = await seed("repeated-selected-append-race");
+    const pinned = resolveExactConversation(db, selected.id);
+    let actorsCreated = 0;
+    let actorCalls = 0;
+    const refresher = new SelectedSourceRefresher({
+      db,
+      dbPath: db.name,
+      logger: () => undefined,
+      publish: () => undefined,
+      actorFactory: () => {
+        actorsCreated += 1;
+        return {
+          ingest: async () => {
+            actorCalls += 1;
+            throw new ConversationSourceChangedError("conversation source changed while being indexed");
+          },
+          close: async () => undefined,
+        };
+      },
+    });
+
+    expect(refresher.scheduleReparse(selected.file, pinned.sourceId!, selected.id)).toBe(true);
+    await expect(refresher.ingest(selected.file)).rejects.toBeInstanceOf(ConversationSourceChangedError);
+    expect(refresher.scheduleReparse(selected.file, pinned.sourceId!, selected.id)).toBe(true);
+    expect(actorsCreated).toBe(2);
+    await refresher.close();
+
+    expect(actorCalls).toBe(6);
   });
 
   it("closes a failed one-shot worker and reports the stale-source failure on retry", async () => {

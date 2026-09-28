@@ -41,7 +41,7 @@ import {
 import type { Logger } from "./types.js";
 import type { ConversationBlock, ParseResult } from "./parsers/types.js";
 import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.js";
-import { ConversationSourceStore } from "./conversations/source-store.js";
+import { ConversationSourceChangedError, ConversationSourceStore } from "./conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./conversations/source-types.js";
 import { getConversationStructureCache } from "./conversations/structure-cache.js";
 
@@ -1110,11 +1110,23 @@ export function selectedConversationSourceEpochIsCurrent(db: Db, sourceId: strin
 }
 
 /** Use the same exact-path ingest request for selected reads and watcher work. */
-export function ingestExactSelectedPath(
+export async function ingestExactSelectedPath(
   actor: Pick<IngestionActor, "ingest">,
   transcriptPath: string,
+  onSourceChangeRetry?: (attempt: number) => void,
 ): Promise<void> {
-  return actor.ingest([transcriptPath], false, true, true);
+  const maxRetries = 2;
+  let retries = 0;
+  for (;;) {
+    try {
+      await actor.ingest([transcriptPath], false, true, true);
+      return;
+    } catch (error) {
+      if (!(error instanceof ConversationSourceChangedError) || retries >= maxRetries) throw error;
+      retries += 1;
+      onSourceChangeRetry?.(retries);
+    }
+  }
 }
 
 function notifySelectedReparseFailure(conversationId: string): void {

@@ -5,7 +5,7 @@ import {
   triggerExactPathIngest,
   type TargetedIngestResult,
 } from "../ingestion.js";
-import { ConversationSourceStore } from "./source-store.js";
+import { ConversationSourceChangedError, ConversationSourceStore } from "./source-store.js";
 import {
   observeStableSourceAlias,
   observeStableSourceAliasExtent,
@@ -555,6 +555,12 @@ export async function ensureExactConversationFresh(
     )
       .catch((error: unknown) => {
         if (error instanceof ConversationFreshnessError) throw error;
+        if (error instanceof ConversationSourceChangedError) {
+          throw new ConversationFreshnessError(
+            "freshness_pending",
+            "conversation source changed during refresh; retry selected read",
+          );
+        }
         throw new ConversationFreshnessError("freshness_error", error instanceof Error ? error.message : String(error));
       })
       .finally(() => flights.delete(sourceId));

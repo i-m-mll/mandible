@@ -58,6 +58,22 @@ interface CompatibilityBlockRow extends LegacyBlockRow {
 
 class ConversationPayloadChangedError extends Error {}
 
+export class ConversationSourceChangedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConversationSourceChangedError";
+  }
+}
+
+export function isConversationSourceChangedError(error: unknown): boolean {
+  if (error instanceof ConversationSourceChangedError) return true;
+  if (error instanceof AggregateError) {
+    const errors = Array.from(error.errors);
+    return errors.length > 0 && errors.every(isConversationSourceChangedError);
+  }
+  return false;
+}
+
 function rawValueEquals(left: unknown, right: unknown): boolean {
   if (Buffer.isBuffer(left) || Buffer.isBuffer(right)) {
     return Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.equals(right);
@@ -185,7 +201,7 @@ async function snapshotJsonl(filePath: string): Promise<SourceSnapshot> {
       total !== size || afterSize !== size || before.mtimeNs !== after.mtimeNs
       || !sameSourceFilesystemIdentity(beforeIdentity, sourceFilesystemIdentity(after))
     ) {
-      throw new Error("conversation source changed while being indexed");
+      throw new ConversationSourceChangedError("conversation source changed while being indexed");
     }
     return {
       contentHash: contentHash.digest("hex"),
@@ -444,7 +460,7 @@ export class ConversationSourceStore {
           || !insideDeclaredRoot(sourceRootPath, finalRealPath)
           || !sameSourceFilesystemIdentity(expectedIdentity, sourceFilesystemIdentity(finalFdStat))
           || !sameSourceFilesystemIdentity(expectedIdentity, sourceFilesystemIdentity(finalPathStat))) {
-        throw new Error("conversation source changed while duplicate payload was stripped");
+        throw new ConversationSourceChangedError("conversation source changed while duplicate payload was stripped");
       }
       return { promoted: true, blocks: state.block_count, reason: null };
     } finally {
@@ -700,7 +716,7 @@ export class ConversationSourceStore {
     const snapshot = await snapshotJsonl(input.filePath);
     if (input.expectedContentHash && isSha256(input.expectedContentHash)
       && input.expectedContentHash !== snapshot.contentHash) {
-      throw new Error("conversation source changed after parser snapshot");
+      throw new ConversationSourceChangedError("conversation source changed after parser snapshot");
     }
     const existingSource = this.db.prepare(`
       SELECT id FROM conversation_sources WHERE conversation_id = ? AND provider = ?
