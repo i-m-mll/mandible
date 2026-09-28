@@ -40,10 +40,20 @@ function makeSpace(defaultRenderer: Space['default_renderer'] = 'document'): Spa
 
 const previewInstance: InstanceInfo = {
   role: 'preview',
-  operational_mutations: 'reject',
-  operational_mutations_overridden: false,
+  instance_id: 'preview-readonly',
+  installation_id: 'install-1',
+  public_origin: 'http://localhost:19420',
+  backend_generation: 'test-generation',
+  allowed_effects: [],
+  writable_roots: [],
   db_path: '/tmp/mandible-preview.db',
   db_path_source: 'iab-preview-copy',
+};
+
+const editablePreviewInstance: InstanceInfo = {
+  ...previewInstance,
+  instance_id: 'preview-editable',
+  allowed_effects: ['ledger:read', 'ledger:write', 'files:preview'],
 };
 
 afterEach(() => {
@@ -143,6 +153,23 @@ describe('SpacesViewShell home polish', () => {
     expect(main?.firstElementChild).toBe(notice);
     expect(header?.contains(notice)).toBe(false);
     expect(body.contains(notice)).toBe(false);
+  });
+
+  it('does not show the saving-disabled notice when the copied preview can write its ledger', () => {
+    render(
+      <SpacesViewShell
+        projectId="p1"
+        spaceId="s1"
+        renderer="canvas"
+        instance={editablePreviewInstance}
+        onNavigate={vi.fn()}
+        renderers={{ canvas: Mount }}
+        loadSpace={vi.fn().mockResolvedValue(makeSpace('canvas'))}
+      />,
+    );
+
+    expect(screen.queryByText('Saving disabled in copied preview instance.')).toBeNull();
+    expect(screen.getByTestId('mount').textContent).toBe('canvas');
   });
 
   it('hides the sidebar when sidebarHidden is true', () => {
