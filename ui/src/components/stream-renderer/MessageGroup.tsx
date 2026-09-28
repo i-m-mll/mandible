@@ -149,6 +149,10 @@ export function MessageGroup({
 
       const groupId = `tool-group:${run[0].id}`;
       const expanded = getDisclosureExpanded?.(groupId, false);
+      const memberRefs = run
+        .map((block) => block.source?.blockId)
+        .filter((blockId): blockId is string => Boolean(blockId))
+        .join(' ');
       rendered.push(
         <ToolCallGroup
           key={groupId}
@@ -156,6 +160,7 @@ export function MessageGroup({
           icon={toolRunIcon(run)}
           expanded={expanded}
           onExpandedChange={(next) => onDisclosureExpandedChange?.(groupId, next)}
+          memberRefs={memberRefs}
         >
           {run.map((block, offset) => renderBlock(block, index + offset))}
         </ToolCallGroup>,
