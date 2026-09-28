@@ -331,19 +331,24 @@ export function ChatSurface({
     if (current) return current.promise;
     const scope = historyScope;
     setHistoryLoadStates((states) => ({ ...states, [key]: 'loading' }));
-    const promise = Promise.resolve(load()).then((result) => new Promise<ConversationHistoryLoadResult>((resolve) => {
-      window.setTimeout(() => resolve(result), 0);
-    })).then((result) => {
-      if (historyScopeRef.current !== scope) return;
-      setHistoryLoadStates((states) => ({ ...states, [key]: result === 'failed' ? 'retry' : 'idle' }));
-    }, () => {
-      if (historyScopeRef.current !== scope) return;
-      setHistoryLoadStates((states) => ({ ...states, [key]: 'retry' }));
-    }).finally(() => {
-      if (inFlightHistoryRef.current?.promise !== promise) return;
-      inFlightHistoryRef.current = null;
-      if (historyScopeRef.current !== scope) setHistoryLoadStates({});
-    });
+    const promise = Promise.resolve()
+      .then(load)
+      .then((result) => new Promise<ConversationHistoryLoadResult>((resolve) => {
+        window.setTimeout(() => resolve(result), 0);
+      }))
+      .then(
+        (result): HistoryLoadState => (result === 'failed' ? 'retry' : 'idle'),
+        (): HistoryLoadState => 'retry',
+      )
+      .then((nextState) => {
+        if (inFlightHistoryRef.current?.promise !== promise) return;
+        inFlightHistoryRef.current = null;
+        if (historyScopeRef.current !== scope) {
+          setHistoryLoadStates({});
+          return;
+        }
+        setHistoryLoadStates((states) => ({ ...states, [key]: nextState }));
+      });
     inFlightHistoryRef.current = { promise };
     return promise;
   }, [historyScope]);
@@ -427,7 +432,13 @@ export function ChatSurface({
       : (virtualizer.getVirtualItems().find((candidate) => candidate.index === itemIndex)?.start ?? el.scrollTop) - el.scrollTop;
     const delta = currentOffset - anchor.viewportOffset;
     if (Math.abs(delta) >= 0.5) {
-      virtualizer.scrollToOffset(el.scrollTop + delta, { behavior: 'auto' });
+      const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      const targetScrollTop = Math.max(0, Math.min(maxScrollTop, el.scrollTop + delta));
+      if (Math.abs(targetScrollTop - el.scrollTop) >= 0.5) {
+        pendingReadingAnchorRef.current = anchor;
+        virtualizer.scrollToOffset(targetScrollTop, { behavior: 'auto' });
+        return false;
+      }
     }
     pendingReadingAnchorRef.current = null;
     return true;
@@ -551,7 +562,7 @@ export function ChatSurface({
     const pending = pendingReadingAnchorRef.current;
     if (!pending || navigationTarget) return;
     restoreReadingAnchor(pending);
-  }, [expandedBlocks, items, navigationTarget, restoreReadingAnchor, virtualItems]);
+  }, [distanceFromBottom, expandedBlocks, items, navigationTarget, restoreReadingAnchor, virtualItems]);
 
   useLayoutEffect(() => {
     const signature = items.map((item) => item.id).join('\0');
