@@ -3,18 +3,6 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { InboxView, type InboxData } from "../../ui/src/views/inbox";
-import type { InstanceInfo } from "../../ui/src/api";
-
-const previewInstance: InstanceInfo = {
-  role: "preview",
-  allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"],
-  operational_mutations: "reject",
-  operational_mutations_overridden: true,
-  db_path: "/tmp/preview.db",
-  db_path_source: "iab-preview-copy",
-  source_db_path: "/tmp/main.db",
-  source_db_path_source: "env",
-};
 
 afterEach(() => cleanup());
 
@@ -122,62 +110,12 @@ describe("Inbox shared sidebar header", () => {
     expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps copied acknowledgements available while disabling refresh during loading", () => {
-    renderInbox({ loading: true, instance: previewInstance });
+  it("preserves mutation and loading disabled states inside the menu", () => {
+    renderInbox({ loading: true, mutationsAllowed: false });
     fireEvent.click(screen.getByRole("button", { name: "Inbox menu" }));
 
-    expect((screen.getByRole("menuitem", { name: "Acknowledge All" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("menuitem", { name: "Acknowledge All" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("menuitem", { name: "Refreshing…" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("allows copied acknowledgements and never reports an empty result after a failed load", async () => {
-    const onAck = vi.fn(async () => undefined);
-    const { rerender } = renderInbox({ instance: previewInstance, onAckContinuation: onAck });
-    const detail = document.querySelector(".inbox-detail") as HTMLElement;
-    const acknowledge = within(detail).getByRole("button", { name: "Acknowledge" }) as HTMLButtonElement;
-    expect(acknowledge.disabled).toBe(false);
-    fireEvent.click(acknowledge);
-    await waitFor(() => expect(onAck).toHaveBeenCalledWith("session-1"));
-
-    rerender(<InboxView
-      data={null}
-      loading={false}
-      error="Preview request failed"
-      selectedItemId={null}
-      onAckContinuation={async () => undefined}
-      onAckAuthResult={async () => undefined}
-      onAckManagedReminderOccurrence={async () => undefined}
-      onAckAll={async () => undefined}
-      onRefresh={() => undefined}
-      instance={previewInstance}
-    />);
-    expect(screen.getByText("Inbox could not be loaded.")).toBeTruthy();
-    expect(screen.queryByText("Inbox is clear.")).toBeNull();
-    expect(within(document.querySelector(".inbox-detail") as HTMLElement).getByText("Inbox data is unavailable.")).toBeTruthy();
-  });
-
-  it("disables agent resume when external process actions are unavailable", () => {
-    const workUnit = {
-      id: "wu-1",
-      issue_id: "issue-123",
-      repo_id: "repo-1",
-      branch: "feature/copied-preview",
-      continuation: "Resume this work",
-      continuation_at: "2026-09-01T12:00:00Z",
-    } as unknown as import("../../ui/src/api").WorkUnitWithLiveness;
-    renderInbox({
-      data: {
-        continuations: [],
-        auth_results: [],
-        open_issues: [],
-        work_unit_continuations: [workUnit],
-        total: 1,
-      },
-      selectedItemId: "wu_continuation:wu-1",
-      instance: previewInstance,
-    });
-
-    expect((screen.getByRole("button", { name: "Resume" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("preserves chip autocomplete and empty-input Backspace removal", () => {

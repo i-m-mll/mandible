@@ -12,7 +12,8 @@ import {
   resolveInstanceInfo,
   UNSAFE_MUTATION_METHODS as UNSAFE_METHODS,
 } from "./instance-policy.js";
-import { authorizeEffects, operationForRequest } from "./security/effect-policy.js";
+import { authorizeEffects } from "./security/effect-policy.js";
+import { operationForRequest } from "./security/operation-policy.js";
 import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
 import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";

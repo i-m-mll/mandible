@@ -53,7 +53,7 @@ import {
 } from "../artifact-source.js";
 import type { RecordArtifactVersionInput } from "../provider-artifacts.js";
 import type { ArtifactVersionSourceKind } from "../types.js";
-import { isInlineManagedArtifactByteRequest } from "../security/effect-policy.js";
+import { isInlineManagedArtifactByteRequest } from "../security/operation-policy.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { resolveArtifactProject, resolveIssueProject } from "../permissions/resources.js";
