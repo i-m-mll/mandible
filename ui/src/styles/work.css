@@ -167,6 +167,12 @@
   min-height: 32px;
 }
 
+.work-sidebar__capability-note {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .work-detail {
   position: relative;
   min-width: 0;

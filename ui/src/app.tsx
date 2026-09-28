@@ -2747,6 +2747,7 @@ function App(): JSX.Element {
                 repos={state.workRepos}
                 branchesByRepo={state.workBranches}
                 onRescan={handleRescan}
+                instance={instanceInfo}
                 params={tabRoute.params}
               />
             );
