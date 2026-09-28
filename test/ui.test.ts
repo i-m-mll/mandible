@@ -18,6 +18,7 @@ import {
 } from '../ui/src/state';
 import { App } from '../ui/src/app';
 import { PRODUCTION_ORIGIN } from '../src/canonical-origin';
+import { PRODUCTION_EFFECTS } from '../src/security/effect-policy.js';
 import { APP_RAIL_PREVIEW_ORDER_STORAGE_KEY } from '../ui/src/app-rail-order';
 import {
   getWorkCompare,
@@ -584,6 +585,18 @@ const previewInstance: InstanceInfo = {
   db_path_source: 'iab-preview-copy',
   source_db_path: '/tmp/mandible-main.db',
   source_db_path_source: 'env',
+};
+
+const mainInstance: InstanceInfo = {
+  role: 'main',
+  instance_id: 'main-ui-tests',
+  installation_id: 'install-test',
+  public_origin: PRODUCTION_ORIGIN,
+  backend_generation: 'main-1',
+  allowed_effects: [...PRODUCTION_EFFECTS],
+  writable_roots: ['/tmp'],
+  db_path: '/tmp/mandible-main.db',
+  db_path_source: 'test',
 };
 
 const writablePreviewInstance: InstanceInfo = {
@@ -1899,6 +1912,7 @@ describe('app shell', () => {
 
   it('persists Settings theme choices, applies root attributes, and follows system changes', async () => {
     stubEventSource();
+    window.__MANDIBLE_BOOTSTRAP__ = { instance: mainInstance };
     window.history.replaceState(null, '', '#/settings');
     let storedTheme = 'system';
     let systemListener: (() => void) | null = null;
@@ -2406,7 +2420,7 @@ describe('app shell', () => {
 
 describe('SettingsView', () => {
   it('offers only the native setup handoff from the browser', () => {
-    render(h(SettingsView, { settings: {}, onSave: async () => undefined }));
+    render(h(SettingsView, { instance: mainInstance, settings: {}, onSave: async () => undefined }));
     const action = screen.getByRole('link', { name: 'Open macOS setup action' });
     expect(action.getAttribute('href')).toBe('mandible://connections/setup');
     const handoff = action.closest('.settings-view__daemon-card');
@@ -2417,7 +2431,7 @@ describe('SettingsView', () => {
   it('exposes and saves every app theme mode through the labelled Appearance select', async () => {
     const onSave = vi.fn(async () => undefined);
 
-    render(h(SettingsView, { settings: { app_theme: 'system' }, onSave }));
+    render(h(SettingsView, { instance: mainInstance, settings: { app_theme: 'system' }, onSave }));
 
     const themeSelect = screen.getByRole('combobox', { name: 'App theme' });
     expect(themeSelect.getAttribute('aria-describedby')).toBe('settings-app-theme-description');
@@ -2598,7 +2612,7 @@ describe('SettingsView', () => {
       return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
     }));
 
-    render(h(SettingsView, { settings: {}, onSave: async () => undefined }));
+    render(h(SettingsView, { instance: mainInstance, settings: {}, onSave: async () => undefined }));
 
     expect(await screen.findByTestId('project-permissions-settings')).toBeTruthy();
     expect(await screen.findByText('group:agents — write')).toBeTruthy();
@@ -2680,6 +2694,7 @@ describe('SettingsView', () => {
 
     render(
       h(SettingsView, {
+        instance: mainInstance,
         settings: {},
         onSave,
       }),
@@ -3388,6 +3403,7 @@ describe('AuthQueueView', () => {
 
     render(
       h(AuthQueueView, {
+        instance: mainInstance,
         queue: [
           { id: 'req-veto', title: 'Veto auth', repo: 'mandible', status: 'pending', action_count: 1, actions: [action] as never },
         ],
@@ -3466,6 +3482,7 @@ describe('WorkOverviewView', () => {
     const onRescan = vi.fn();
     render(
       h(WorkOverviewView, {
+        instance: mainInstance,
         repos: [
           { id: 'old', name: 'Zeta Repo', path: '/repo/zeta' },
           { id: 'new', name: 'Alpha Repo', path: '/repo/alpha' },
@@ -3555,6 +3572,7 @@ describe('WorkOverviewView', () => {
       { status: 400, headers: { 'content-type': 'application/json' } },
     )));
     render(h(WorkOverviewView, {
+      instance: mainInstance,
       repos: [],
       branchesByRepo: {},
       onRescan: () => undefined,
@@ -3626,6 +3644,7 @@ describe('WorkOverviewView', () => {
 
     render(
       h(WorkOverviewView, {
+        instance: mainInstance,
         repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' }],
         branchesByRepo: {
           r1: [
@@ -3735,6 +3754,7 @@ describe('WorkOverviewView', () => {
     ];
     stubAuditFetch(entries);
     render(h(WorkOverviewView, {
+      instance: mainInstance,
       repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' }],
       branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }] },
       onRescan: () => undefined,
@@ -3776,6 +3796,7 @@ describe('WorkOverviewView', () => {
     });
     const onRescan = vi.fn(() => rescanPromise);
     render(h(WorkOverviewView, {
+      instance: mainInstance,
       repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' }],
       branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }, { name: 'other', status: 'clean' }] },
       onRescan,
@@ -3816,6 +3837,7 @@ describe('WorkOverviewView', () => {
       } },
     });
     render(h(WorkOverviewView, {
+      instance: mainInstance,
       repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one' }],
       branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }] },
       onRescan: () => undefined,
@@ -3843,6 +3865,7 @@ describe('WorkOverviewView', () => {
       },
     });
     render(h(WorkOverviewView, {
+      instance: mainInstance,
       repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one' }],
       branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }] },
       onRescan: () => undefined,
@@ -5546,7 +5569,7 @@ describe('LedgerIssueDetail', () => {
 
     const css = readResolvedStylesheet();
     expect(css).toMatch(/\.detail-pane-shell\s*\{[^}]*--detail-content-inline-inset:\s*24px;/s);
-    expect(css).toMatch(/\.detail-pane-header\s*\{[^}]*padding:\s*20px var\(--detail-content-inline-inset\);/s);
+    expect(css).toMatch(/\.detail-pane-header\s*\{[^}]*padding:\s*20px var\(--app-header-inline-inset\);/s);
     expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail > \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
     expect(css).toMatch(/\.app-right-sidebar \.graph-detail-pane--ledger\s*\{[^}]*--detail-content-inline-inset:\s*0;/s);
     expect(css).toMatch(/\.graph-detail-pane--ledger \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
