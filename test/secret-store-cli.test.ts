@@ -11,6 +11,8 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import type { InstanceInfo } from "../src/types.js";
 
 const API_HELPER = path.join(process.cwd(), "cli", "api.sh");
 const CLI = path.join(process.cwd(), "bin", "mandible");
@@ -655,9 +657,28 @@ interface FakeUser {
 }
 
 const MINTED_TOKEN = "mandible_pat_test-token-value";
+const MAIN_INSTANCE_RESPONSE = {
+  instance: {
+    role: "main",
+    instance_id: "production",
+    installation_id: "test-installation",
+    public_origin: "https://app.mandible.localhost:19420",
+    backend_generation: "production",
+    allowed_effects: PRODUCTION_EFFECTS,
+    writable_roots: [],
+    user_preferences_root: "/tmp/mandible-test-user-preferences",
+    db_path: "/tmp/mandible-main.db",
+    db_path_source: "env",
+  },
+} satisfies { instance: InstanceInfo };
 
 async function startUserServer(user: FakeUser, requests: string[]): Promise<number> {
   server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/api/instance") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(MAIN_INSTANCE_RESPONSE));
+      return;
+    }
     requests.push(`${req.method} ${req.url}`);
     if (req.headers.authorization) authHeaders.push(req.headers.authorization);
     requestAuth.push({
