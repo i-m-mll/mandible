@@ -1,4 +1,10 @@
-import type { BlockType, ConversationBlock, ConversationSource, Role } from "../parsers/types.js";
+import type {
+  BlockType,
+  ConversationBlock,
+  ConversationSource,
+  ParserSourceSnapshot,
+  Role,
+} from "../parsers/types.js";
 
 /** Durable source availability. Missing/stale sources retain all identities. */
 export type ConversationSourceAvailability =
@@ -107,6 +113,8 @@ export interface RecordConversationSourceInput extends ConversationSourceEpochs 
   filePath: string;
   /** Full parser-observed SHA-256 when available; append markers are omitted. */
   expectedContentHash?: string;
+  /** Exact complete-record extent captured by a full JSONL parser read. */
+  sourceSnapshot?: ParserSourceSnapshot;
   /**
    * Parser output supplied by ingestion so source indexing does not depend on
    * retaining a second body copy in conversation_blocks.

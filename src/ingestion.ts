@@ -2039,6 +2039,24 @@ async function refreshAppendState(
   });
 }
 
+async function refreshAppendStateFromParse(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+  stat: fs.Stats,
+  result: ParseResult,
+): Promise<void> {
+  const snapshot = result.sourceSnapshot;
+  await refreshAppendState(
+    db,
+    filePath,
+    stat,
+    snapshot?.completeLineCount ?? await countCompleteLines(filePath),
+    snapshot ? "" : undefined,
+    snapshot?.tailHash,
+    snapshot?.byteLength ?? stat.size,
+  );
+}
+
 async function readAppend(
   filePath: string,
   stat: fs.Stats,
@@ -3004,7 +3022,7 @@ async function ingestFilePass(
     if (!isSidechain && result.conversation.source === "claude_code") {
       linkExistingClaudeSubagents(db, result.conversation.session_id, existing.id);
     }
-    await refreshAppendState(db, filePath, stat, await countCompleteLines(filePath));
+    await refreshAppendStateFromParse(db, filePath, stat, result);
     await recordDurableConversationSource(db, existing.id, result, filePath, "replace", result.blocks, options.strictParseErrors);
     // The selected Chat reacts to this event by reading its source-backed
     // window. Publish only after the locator map and disposable cache have
@@ -3101,10 +3119,10 @@ async function ingestFilePass(
       stat,
       ingestMode === "append"
         ? (appendState?.line_count ?? alreadyIngestedCount) + (appendInfo?.completeLineCount ?? 0)
-        : await countCompleteLines(filePath),
-      appendInfo?.nextPartialLine,
-      appendInfo?.tailHash,
-      appendInfo?.byteOffset,
+        : result.sourceSnapshot?.completeLineCount ?? await countCompleteLines(filePath),
+      appendInfo?.nextPartialLine ?? (result.sourceSnapshot ? "" : undefined),
+      appendInfo?.tailHash ?? result.sourceSnapshot?.tailHash,
+      appendInfo?.byteOffset ?? result.sourceSnapshot?.byteLength ?? stat.size,
     );
     if (!appendInfo?.hasMore) {
       await recordDurableConversationSource(
@@ -3557,10 +3575,10 @@ async function ingestFilePass(
     stat,
     ingestMode === "append"
       ? (appendState?.line_count ?? alreadyIngestedCount) + (appendInfo?.completeLineCount ?? 0)
-      : await countCompleteLines(filePath),
-    appendInfo?.nextPartialLine,
-    appendInfo?.tailHash,
-    appendInfo?.byteOffset,
+      : result.sourceSnapshot?.completeLineCount ?? await countCompleteLines(filePath),
+    appendInfo?.nextPartialLine ?? (result.sourceSnapshot ? "" : undefined),
+    appendInfo?.tailHash ?? result.sourceSnapshot?.tailHash,
+    appendInfo?.byteOffset ?? result.sourceSnapshot?.byteLength ?? stat.size,
   );
   if (!appendInfo?.hasMore) {
     await recordDurableConversationSource(
@@ -3650,6 +3668,7 @@ async function recordDurableConversationSource(
       nativeSessionId: result.conversation.session_id,
       filePath,
       expectedContentHash: result.conversation.source_hash,
+      sourceSnapshot: result.sourceSnapshot,
       structuralMode,
       blocks: blocks.map((block, index) => ({ ...block, legacyId: legacyIds[index] })),
       ...CURRENT_CONVERSATION_SOURCE_EPOCHS,

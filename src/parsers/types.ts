@@ -167,9 +167,21 @@ export interface Conversation {
   updated_at: string;
 }
 
+/** Exact bytes parsed by a full JSONL read, through its last complete record. */
+export interface ParserSourceSnapshot {
+  contentHash: string;
+  byteLength: number;
+  completeLineCount: number;
+  tailHash: string;
+  filesystemDevice: string;
+  filesystemInode: string;
+}
+
 export interface ParseResult {
   conversation: Omit<Conversation, "id" | "created_at" | "updated_at" | "starred" | "tags" | "notes">;
   blocks: Omit<ConversationBlock, "id" | "conversation_id">[];
+  /** Full-read JSONL extent used to keep source indexing aligned with parsing. */
+  sourceSnapshot?: ParserSourceSnapshot;
   /** Provider-authored title metadata present in this parse batch. */
   providerTitle?: string;
   /** Provider record that supplied providerTitle, when precedence matters across batches. */

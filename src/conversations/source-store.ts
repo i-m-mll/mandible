@@ -15,10 +15,12 @@ import type {
   UpdateConversationSourceCustodyInput,
 } from "./source-types.js";
 import {
+  ConversationSourceChangedError,
   sameSourceFilesystemIdentity,
   sourceFilesystemIdentity,
   type SourceFilesystemIdentity,
 } from "./source-observer.js";
+export { ConversationSourceChangedError } from "./source-observer.js";
 import { parseJsonObject } from "../row-coerce.js";
 
 interface RecordRange {
@@ -57,13 +59,6 @@ interface CompatibilityBlockRow extends LegacyBlockRow {
 }
 
 class ConversationPayloadChangedError extends Error {}
-
-export class ConversationSourceChangedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ConversationSourceChangedError";
-  }
-}
 
 export function isConversationSourceChangedError(error: unknown): boolean {
   if (error instanceof ConversationSourceChangedError) return true;
@@ -146,16 +141,27 @@ function sourceRoot(provider: ConversationSource, filePath: string): AliasRoot {
   throw new Error(`unsupported ${provider} source path outside its allowlisted provider root`);
 }
 
-async function snapshotJsonl(filePath: string): Promise<SourceSnapshot> {
+async function snapshotJsonl(
+  filePath: string,
+  expected: RecordConversationSourceInput["sourceSnapshot"] = undefined,
+): Promise<SourceSnapshot> {
   const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
     const before = await handle.stat({ bigint: true });
     if (!before.isFile()) throw new Error("conversation source is not a regular file");
-    const size = Number(before.size);
-    if (!Number.isSafeInteger(size) || size < 0) {
+    const observedSize = Number(before.size);
+    if (!Number.isSafeInteger(observedSize) || observedSize < 0) {
       throw new Error("conversation source extent exceeds safe integer range");
     }
+    const size = expected?.byteLength ?? observedSize;
+    if (!Number.isSafeInteger(size) || size < 0 || observedSize < size) {
+      throw new ConversationSourceChangedError("conversation source was truncated after parser snapshot");
+    }
     const beforeIdentity = sourceFilesystemIdentity(before);
+    if (expected && (beforeIdentity.device !== expected.filesystemDevice
+      || beforeIdentity.inode !== expected.filesystemInode)) {
+      throw new ConversationSourceChangedError("conversation source file changed after parser snapshot");
+    }
 
     const contentHash = createHash("sha256");
     const records: RecordRange[] = [];
@@ -163,28 +169,33 @@ async function snapshotJsonl(filePath: string): Promise<SourceSnapshot> {
     let carryOffset = 0;
     let total = 0;
 
-    for await (const rawChunk of handle.createReadStream({ autoClose: false })) {
-      const chunk = rawChunk as Buffer;
-      contentHash.update(chunk);
-      const data = carry.length === 0 ? chunk : Buffer.concat([carry, chunk]);
-      let start = 0;
-      for (;;) {
-        const newline = data.indexOf(0x0a, start);
-        if (newline < 0) break;
-        const record = data.subarray(start, newline);
-        if (record.toString("utf8").trim()) {
-          records.push({
-            ordinal: records.length,
-            offset: carryOffset + start,
-            length: record.length,
-            hash: createHash("sha256").update(record).digest("hex"),
-          });
+    if (size > 0) {
+      const stream = expected
+        ? handle.createReadStream({ start: 0, end: size - 1, autoClose: false })
+        : handle.createReadStream({ autoClose: false });
+      for await (const rawChunk of stream) {
+        const chunk = rawChunk as Buffer;
+        contentHash.update(chunk);
+        const data = carry.length === 0 ? chunk : Buffer.concat([carry, chunk]);
+        let start = 0;
+        for (;;) {
+          const newline = data.indexOf(0x0a, start);
+          if (newline < 0) break;
+          const record = data.subarray(start, newline);
+          if (record.toString("utf8").trim()) {
+            records.push({
+              ordinal: records.length,
+              offset: carryOffset + start,
+              length: record.length,
+              hash: createHash("sha256").update(record).digest("hex"),
+            });
+          }
+          start = newline + 1;
         }
-        start = newline + 1;
+        total += chunk.length;
+        carry = data.subarray(start);
+        carryOffset = total - carry.length;
       }
-      total += chunk.length;
-      carry = data.subarray(start);
-      carryOffset = total - carry.length;
     }
     if (carry.toString("utf8").trim()) {
       records.push({
@@ -197,18 +208,35 @@ async function snapshotJsonl(filePath: string): Promise<SourceSnapshot> {
 
     const after = await handle.stat({ bigint: true });
     const afterSize = Number(after.size);
-    if (
+    const afterIdentity = sourceFilesystemIdentity(after);
+    if (expected) {
+      const pathAfter = await fs.promises.lstat(filePath, { bigint: true });
+      if (
+        total !== size || afterSize < size
+        || beforeIdentity.device !== afterIdentity.device
+        || beforeIdentity.inode !== afterIdentity.inode
+        || !pathAfter.isFile()
+        || pathAfter.dev.toString(10) !== beforeIdentity.device
+        || pathAfter.ino.toString(10) !== beforeIdentity.inode
+      ) {
+        throw new ConversationSourceChangedError("conversation source changed while being indexed");
+      }
+    } else if (
       total !== size || afterSize !== size || before.mtimeNs !== after.mtimeNs
-      || !sameSourceFilesystemIdentity(beforeIdentity, sourceFilesystemIdentity(after))
+      || !sameSourceFilesystemIdentity(beforeIdentity, afterIdentity)
     ) {
       throw new ConversationSourceChangedError("conversation source changed while being indexed");
     }
+    const snapshotHash = contentHash.digest("hex");
+    if (expected && snapshotHash !== expected.contentHash) {
+      throw new ConversationSourceChangedError("conversation source changed after parser snapshot");
+    }
     return {
-      contentHash: contentHash.digest("hex"),
+      contentHash: snapshotHash,
       size,
       mtimeMs: Number(after.mtimeNs) / 1_000_000,
       records,
-      filesystemIdentity: beforeIdentity,
+      filesystemIdentity: afterIdentity,
       mode: Number(after.mode),
     };
   } finally {
@@ -713,8 +741,8 @@ export class ConversationSourceStore {
   }
 
   async recordConversation(input: RecordConversationSourceInput): Promise<string> {
-    const snapshot = await snapshotJsonl(input.filePath);
-    if (input.expectedContentHash && isSha256(input.expectedContentHash)
+    const snapshot = await snapshotJsonl(input.filePath, input.sourceSnapshot);
+    if (!input.sourceSnapshot && input.expectedContentHash && isSha256(input.expectedContentHash)
       && input.expectedContentHash !== snapshot.contentHash) {
       throw new ConversationSourceChangedError("conversation source changed after parser snapshot");
     }

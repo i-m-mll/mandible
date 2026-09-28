@@ -129,6 +129,51 @@ describe("versioned conversation source reader", () => {
     db.close();
   });
 
+  it("seals the parser extent when the writer appends before source indexing", async () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    const parsed = await parse(filePath);
+    const sourceSnapshot = parsed.sourceSnapshot;
+    if (!sourceSnapshot) throw new Error("full parse did not return its source snapshot");
+    insertConversation(db, "conversation-a", filePath, parsed);
+
+    fs.appendFileSync(filePath, `${JSON.stringify({
+      type: "response_item",
+      timestamp: "2026-08-17T00:00:04Z",
+      payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "writer tail" }] },
+    })}\n`);
+
+    const versionId = await new ConversationSourceStore(db).recordConversation({
+      conversationId: "conversation-a",
+      provider: "codex",
+      nativeSessionId: "duplicate-session",
+      filePath,
+      expectedContentHash: parsed.conversation.source_hash,
+      sourceSnapshot,
+      blocks: parsed.blocks.map((block) => ({
+        ...block,
+        legacyId: `legacy-conversation-a-${block.position}`,
+      })),
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+
+    expect(db.prepare(`
+      SELECT content_sha256, byte_length FROM conversation_source_versions WHERE id = ?
+    `).get(versionId)).toEqual({
+      content_sha256: sourceSnapshot.contentHash,
+      byte_length: sourceSnapshot.byteLength,
+    });
+    expect(fs.statSync(filePath).size).toBeGreaterThan(sourceSnapshot.byteLength);
+
+    const read = await new ConversationSourceReader(db).readAll("conversation-a");
+    expect(read.status).toBe("source");
+    if (read.status !== "source") throw new Error("expected parser-sealed source read");
+    expect(read.value.map((block) => block.content)).toEqual(parsed.blocks.map((block) => block.content));
+    db.close();
+  });
+
   it("reads verified multi-record tool linkage and resolves every legacy block id", async () => {
     const db = new Database(":memory:");
     migrate(db);

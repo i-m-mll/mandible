@@ -17,6 +17,7 @@ import type {
   ConversationBlock,
   ConversationParser,
   IncrementalParseInput,
+  ParserSourceSnapshot,
   ParseResult,
 } from "./types.js";
 import { attachTranscriptChatItem } from "./types.js";
@@ -389,7 +390,7 @@ export class CodexParser implements ConversationParser {
   }
 
   async parse(filePath: string): Promise<ParseResult | null> {
-    const { records, sourceHash } = await readJsonlFileRecords<CodexRecord>(filePath);
+    const { records, sourceHash, sourceSnapshot } = await readJsonlFileRecords<CodexRecord>(filePath);
     let sourceMtime = 0;
     try {
       const stat = await fs.promises.stat(filePath);
@@ -402,6 +403,7 @@ export class CodexParser implements ConversationParser {
       baseRecordCount: 0,
       sourceHash,
       sourceMtime,
+      sourceSnapshot,
     });
   }
 
@@ -418,7 +420,14 @@ export class CodexParser implements ConversationParser {
   private async parseRecords(
     filePath: string,
     records: CodexRecord[],
-    options: { baseBlockCount: number; baseRecordCount: number; nativeSessionId?: string; sourceHash: string; sourceMtime: number },
+    options: {
+      baseBlockCount: number;
+      baseRecordCount: number;
+      nativeSessionId?: string;
+      sourceHash: string;
+      sourceMtime: number;
+      sourceSnapshot?: ParserSourceSnapshot;
+    },
   ): Promise<ParseResult | null> {
     // Extract session metadata
     let sessionId = options.nativeSessionId ?? "";
@@ -852,6 +861,7 @@ export class CodexParser implements ConversationParser {
         agent_id: null,
       },
       blocks,
+      ...(options.sourceSnapshot ? { sourceSnapshot: options.sourceSnapshot } : {}),
     };
   }
 }

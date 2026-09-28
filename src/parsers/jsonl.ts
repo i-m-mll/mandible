@@ -1,10 +1,13 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as readline from "node:readline";
+import { ConversationSourceChangedError } from "../conversations/source-observer.js";
+import type { ParserSourceSnapshot } from "./types.js";
 
 export interface JsonlFileRecords<T> {
   records: T[];
   sourceHash: string;
+  sourceSnapshot: ParserSourceSnapshot;
 }
 
 function parseJsonlLine<T>(line: string, records: T[]): void {
@@ -24,18 +27,98 @@ function parseJsonlLine<T>(line: string, records: T[]): void {
  */
 export async function readJsonlFileRecords<T>(filePath: string): Promise<JsonlFileRecords<T>> {
   const records: T[] = [];
-  const sourceHash = crypto.createHash("sha256");
-  const input = fs.createReadStream(filePath);
-  input.on("data", (chunk) => {
-    sourceHash.update(chunk);
-  });
-  const lines = readline.createInterface({ input, crlfDelay: Infinity });
+  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) throw new Error("conversation source is not a regular file");
+    const byteLength = Number(before.size);
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+      throw new Error("conversation source extent exceeds safe integer range");
+    }
 
-  for await (const line of lines) {
-    parseJsonlLine<T>(line, records);
+    const filesystemDevice = before.dev.toString(10);
+    const filesystemInode = before.ino.toString(10);
+    const sourceHash = crypto.createHash("sha256");
+    const completeHash = crypto.createHash("sha256");
+    let bytesRead = 0;
+    let completeByteLength = 0;
+    let completeLineCount = 0;
+    let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    let completeTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    const updateTail = (tail: Buffer, bytes: Buffer): Buffer => {
+      if (bytes.length >= 4096) return Buffer.from(bytes.subarray(bytes.length - 4096));
+      const joined = tail.length === 0 ? bytes : Buffer.concat([tail, bytes]);
+      return joined.length > 4096 ? Buffer.from(joined.subarray(joined.length - 4096)) : Buffer.from(joined);
+    };
+
+    const input = byteLength > 0
+      ? handle.createReadStream({ start: 0, end: byteLength - 1, autoClose: false })
+      : null;
+    if (input) {
+      input.on("data", (rawChunk) => {
+        const chunk = rawChunk as Buffer;
+        sourceHash.update(chunk);
+        bytesRead += chunk.length;
+        const data = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+        const newline = data.lastIndexOf(0x0a);
+        if (newline >= 0) {
+          const complete = data.subarray(0, newline + 1);
+          completeHash.update(complete);
+          completeByteLength += complete.length;
+          for (const byte of complete) if (byte === 0x0a) completeLineCount += 1;
+          completeTail = updateTail(completeTail, complete);
+          pending = Buffer.from(data.subarray(newline + 1));
+        } else {
+          pending = Buffer.from(data);
+        }
+      });
+      const lines = readline.createInterface({ input, crlfDelay: Infinity });
+      for await (const line of lines) parseJsonlLine<T>(line, records);
+    }
+
+    const after = await handle.stat({ bigint: true });
+    if (
+      bytesRead !== byteLength
+      || Number(after.size) < byteLength
+      || before.dev !== after.dev
+      || before.ino !== after.ino
+    ) {
+      throw new ConversationSourceChangedError("conversation source changed while being parsed");
+    }
+
+    const trailingLine = pending.toString("utf8");
+    if (trailingLine.trim()) {
+      try {
+        JSON.parse(trailingLine);
+        completeHash.update(pending);
+        completeByteLength += pending.length;
+        completeTail = updateTail(completeTail, pending);
+      } catch {
+        // The parser ignores an interrupted final row; do not seal its bytes.
+      }
+    }
+
+    const sourceHashHex = sourceHash.digest("hex");
+    const snapshotHash = completeByteLength === byteLength
+      ? sourceHashHex
+      : completeHash.digest("hex");
+    return {
+      records,
+      sourceHash: sourceHashHex,
+      sourceSnapshot: {
+        contentHash: snapshotHash,
+        byteLength: completeByteLength,
+        completeLineCount,
+        tailHash: completeByteLength > 0
+          ? crypto.createHash("sha256").update(completeTail).digest("hex")
+          : "",
+        filesystemDevice,
+        filesystemInode,
+      },
+    };
+  } finally {
+    await handle.close();
   }
-
-  return { records, sourceHash: sourceHash.digest("hex") };
 }
 
 /** Read only until the first provider record accepted by `match`. */
