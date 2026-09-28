@@ -1094,6 +1094,7 @@ async function refreshExistingPreview(existing, details) {
     sourceCache: sourceConversationStructureCachePath(),
     targetCache: validated.instanceEnv.MANDIBLE_CONVERSATION_STRUCTURE_DB,
     projectedDb: validated.dbCopy,
+    preserveExisting: true,
   });
   const started = await startPreviewProcess({
     runScript: validated.runScript,
@@ -1550,26 +1551,28 @@ function sourceConversationStructureCachePath() {
 /**
  * Copy the source daemon's derived coordinate index into preview custody.
  *
- * A dataful preview cannot rebuild this index on demand: reject-mode previews
- * intentionally disable ingestion, and doing that work from a GET request
- * blocks the daemon. SQLite backup includes the source WAL consistently. Rows
- * are then restricted to exact conversation/source-version pairs in the
- * projected ledger, so stale coordinates cannot be used with different bytes.
+ * Preview creation copies the source index with its WAL, then restricts rows
+ * to exact conversation/source-version pairs in the projected ledger. Existing
+ * previews keep that private index across code refreshes because a selected
+ * source read may have advanced it beyond main.
  */
-export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb }) {
-  if (!fs.existsSync(sourceCache)) {
+export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb, preserveExisting = false }) {
+  const preserveTarget = preserveExisting && fs.existsSync(targetCache);
+  if (!preserveTarget && !fs.existsSync(sourceCache)) {
     return { status: "unavailable", source: sourceCache, target: targetCache, conversations: 0, blocks: 0 };
   }
   fs.mkdirSync(path.dirname(targetCache), { recursive: true });
-  for (const candidate of [targetCache, `${targetCache}-journal`, `${targetCache}-wal`, `${targetCache}-shm`]) {
-    fs.rmSync(candidate, { force: true });
-  }
+  if (!preserveTarget) {
+    for (const candidate of [targetCache, `${targetCache}-journal`, `${targetCache}-wal`, `${targetCache}-shm`]) {
+      fs.rmSync(candidate, { force: true });
+    }
 
-  const source = new Database(sourceCache, { readonly: true, fileMustExist: true });
-  try {
-    await source.backup(targetCache);
-  } finally {
-    source.close();
+    const source = new Database(sourceCache, { readonly: true, fileMustExist: true });
+    try {
+      await source.backup(targetCache);
+    } finally {
+      source.close();
+    }
   }
 
   const target = new Database(targetCache);
@@ -1588,9 +1591,9 @@ export async function seedProjectedConversationStructureCache({ sourceCache, tar
        )
     `).run();
     target.prepare("DETACH DATABASE projected").run();
-    target.exec("VACUUM");
+    if (!preserveTarget) target.exec("VACUUM");
     return {
-      status: "seeded",
+      status: preserveTarget ? "preserved" : "seeded",
       source: sourceCache,
       target: targetCache,
       conversations: Number(target.prepare("SELECT COUNT(*) AS count FROM cache_conversations").get().count),

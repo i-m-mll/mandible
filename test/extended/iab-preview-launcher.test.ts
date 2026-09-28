@@ -1096,6 +1096,29 @@ describe("iab-preview launcher", () => {
     expect(seeded.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
       .toEqual([{ cache_conversation_id: 1, position: 0 }]);
     seeded.close();
+
+    const previewDb = new Database(projectedDb);
+    previewDb.prepare("UPDATE conversation_sources SET current_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
+    previewDb.close();
+    const privateCache = new Database(targetCache);
+    privateCache.prepare("UPDATE cache_conversations SET source_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
+    privateCache.prepare("UPDATE cache_blocks SET position = 17 WHERE cache_conversation_id = 1").run();
+    privateCache.close();
+
+    const refreshed = await runLauncherExport("seedProjectedConversationStructureCache", {
+      sourceCache,
+      targetCache,
+      projectedDb,
+      preserveExisting: true,
+    });
+    expect(refreshed.status, refreshed.stderr).toBe(0);
+    expect(JSON.parse(refreshed.stdout)).toMatchObject({ status: "preserved", conversations: 1, blocks: 1 });
+    const retained = new Database(targetCache, { readonly: true });
+    expect(retained.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
+      .toEqual([{ conversation_id: "kept", source_version_id: "version-preview" }]);
+    expect(retained.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
+      .toEqual([{ cache_conversation_id: 1, position: 17 }]);
+    retained.close();
   });
 
   it("rejects malformed agents-review refs before touching the launcher-owned copy", async () => {

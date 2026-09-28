@@ -88,7 +88,18 @@ export interface FreshConversationResult {
   refreshed: boolean;
 }
 
-type ExactIngest = (path: string) => Promise<TargetedIngestResult>;
+export type ExactIngest = (path: string) => Promise<TargetedIngestResult>;
+
+export interface ExactConversationFreshnessOptions {
+  timeoutMs?: number;
+  ingest?: ExactIngest;
+  /** Check the indexed extent without waiting; queue an exact-source refresh when stale. */
+  waitForFresh?: boolean;
+  /** Schedule one exact selected-source reparse without blocking the read. */
+  scheduleReparse?: (path: string, sourceId: string, conversationId: string) => boolean;
+  /** Bounded observer instrumentation used by large-source regressions. */
+  sourceReadInstrumentation?: SourceReadInstrumentation;
+}
 
 const flights = new Map<string, Promise<FreshConversationResult>>();
 
@@ -476,16 +487,7 @@ async function converge(
 export async function ensureExactConversationFresh(
   db: Db,
   ref: string,
-  options: {
-    timeoutMs?: number;
-    ingest?: ExactIngest;
-    /** Check the indexed extent without waiting; queue an exact-source refresh when stale. */
-    waitForFresh?: boolean;
-    /** Test seam for the production actor's nonblocking selected-source reparse. */
-    scheduleReparse?: (path: string, sourceId: string, conversationId: string) => boolean;
-    /** Bounded observer instrumentation used by large-source regressions. */
-    sourceReadInstrumentation?: SourceReadInstrumentation;
-  } = {},
+  options: ExactConversationFreshnessOptions = {},
 ): Promise<FreshConversationResult> {
   let pinned: PinnedConversationSource;
   try {

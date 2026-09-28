@@ -1053,7 +1053,7 @@ export async function triggerExactPathIngest(transcriptPath: string): Promise<Ta
   }
   queuedIngestPaths.delete(normalized);
   if (ingestionActor) await (activeActorPathFlights.get(normalized)
-    ?? trackActorPathFlight([normalized], ingestionActor.ingest([normalized], false, true, true)));
+    ?? trackActorPathFlight([normalized], ingestExactSelectedPath(ingestionActor, normalized)));
   else await ingestFile(normalized, { bypassSameMtimeUnchanged: true, strictParseErrors: true });
   clearHookNotificationAttention({ sessionRef: null, transcriptPath: normalized });
   return { ok: true, status: "ingested", transcript_path: normalized, session_ref: null };
@@ -1095,8 +1095,8 @@ async function pathNeedsFollowupAfterActor(filePath: string): Promise<boolean> {
   }
 }
 
-function selectedSourceEpochIsCurrent(sourceId: string): boolean {
-  const source = getDb().prepare(`
+export function selectedConversationSourceEpochIsCurrent(db: Db, sourceId: string): boolean {
+  const source = db.prepare(`
     SELECT parser_format, parser_version, normalization_version, redaction_epoch
       FROM conversation_sources WHERE id = ?
   `).get(sourceId) as {
@@ -1107,6 +1107,14 @@ function selectedSourceEpochIsCurrent(sourceId: string): boolean {
     && source.parser_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
     && source.normalization_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
     && source.redaction_epoch === CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch);
+}
+
+/** Use the same exact-path ingest request for selected reads and watcher work. */
+export function ingestExactSelectedPath(
+  actor: Pick<IngestionActor, "ingest">,
+  transcriptPath: string,
+): Promise<void> {
+  return actor.ingest([transcriptPath], false, true, true);
 }
 
 function notifySelectedReparseFailure(conversationId: string): void {
@@ -1133,10 +1141,10 @@ export function scheduleExactPathReparse(transcriptPath: string, sourceId: strin
   }
   queuedIngestPaths.delete(normalized);
   const actorFlight = activeActorPathFlights.get(normalized)
-    ?? trackActorPathFlight([normalized], actor.ingest([normalized], false, true, true));
+    ?? trackActorPathFlight([normalized], ingestExactSelectedPath(actor, normalized));
   const flight = actorFlight
     .then(() => {
-      if (!selectedSourceEpochIsCurrent(sourceId)) {
+      if (!selectedConversationSourceEpochIsCurrent(getDb(), sourceId)) {
         throw new Error("Selected source did not reach the current parser version");
       }
     })

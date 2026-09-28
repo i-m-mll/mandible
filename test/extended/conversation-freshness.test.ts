@@ -11,6 +11,7 @@ import {
   ensureExactConversationFresh,
   resolveExactConversation,
 } from "../../src/conversations/freshness.js";
+import { SelectedSourceRefresher } from "../../src/conversations/selected-source-refresh.js";
 import {
   INGEST_RANGE_READ_CHUNK_BYTES,
   triggerExactPathIngest,
@@ -180,6 +181,84 @@ describe("exact conversation freshness", () => {
     await expect(ensureExactConversationFresh(db, "fresh-session", { ingest })).resolves.toMatchObject({ conversationId: seeded.id, refreshed: false });
     await expect(ensureExactConversationFresh(db, seeded.id.slice(0, 8), { ingest })).rejects.toMatchObject({ code: "not_found" });
     expect(ingests).toBe(0);
+  });
+
+  it("does not create a preview worker for an inherited fresh source index", async () => {
+    const seeded = await seed("inherited-fresh-index");
+    const actorFactory = vi.fn(() => ({
+      ingest: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    }));
+    const refresher = new SelectedSourceRefresher({
+      db,
+      dbPath: db.name,
+      logger: () => undefined,
+      publish: () => undefined,
+      actorFactory,
+    });
+
+    const result = await ensureExactConversationFresh(db, seeded.id, {
+      waitForFresh: false,
+      scheduleReparse: refresher.scheduleReparse,
+    });
+
+    const source = db.prepare(`SELECT current_version_id FROM conversation_sources
+      WHERE conversation_id = ?`).get(seeded.id) as { current_version_id: string };
+    expect(getConversationStructureCache(db).hasCompleteConversation(seeded.id, source.current_version_id, 2)).toBe(true);
+    expect(result).toMatchObject({ conversationId: seeded.id, refreshed: false });
+    expect(actorFactory).not.toHaveBeenCalled();
+    await refresher.close();
+  });
+
+  it("schedules only the exact stale source selected by the chat read", async () => {
+    const selected = await seed("selected-stale-source");
+    const other = await seed("unselected-source");
+    await appendAt(selected.file, assistant("selected appended tail", 3), 2);
+    const ingestedPaths: string[][] = [];
+    let actorCloses = 0;
+    const refresher = new SelectedSourceRefresher({
+      db,
+      dbPath: db.name,
+      logger: () => undefined,
+      publish: () => undefined,
+      actorFactory: () => ({
+        ingest: async (paths) => { ingestedPaths.push(paths); },
+        close: async () => { actorCloses += 1; },
+      }),
+    });
+
+    await expect(ensureExactConversationFresh(db, selected.id, {
+      waitForFresh: false,
+      scheduleReparse: refresher.scheduleReparse,
+    })).rejects.toMatchObject({ code: "freshness_pending" });
+    await refresher.close();
+
+    expect(ingestedPaths).toEqual([[selected.file]]);
+    expect(ingestedPaths.flat()).not.toContain(other.file);
+    expect(actorCloses).toBe(1);
+  });
+
+  it("closes a failed one-shot worker and reports the stale-source failure on retry", async () => {
+    const selected = await seed("failed-selected-source");
+    const pinned = resolveExactConversation(db, selected.id);
+    let actorCloses = 0;
+    const refresher = new SelectedSourceRefresher({
+      db,
+      dbPath: db.name,
+      logger: () => undefined,
+      publish: () => undefined,
+      actorFactory: () => ({
+        ingest: async () => { throw new Error("fixture parse failure"); },
+        close: async () => { actorCloses += 1; },
+      }),
+    });
+
+    expect(refresher.scheduleReparse(selected.file, pinned.sourceId!, selected.id)).toBe(true);
+    await expect(refresher.ingest(selected.file)).rejects.toThrow("fixture parse failure");
+    expect(() => refresher.scheduleReparse(selected.file, pinned.sourceId!, selected.id))
+      .toThrow("Selected-source refresh failed; retry after 30 seconds: fixture parse failure");
+    await refresher.close();
+    expect(actorCloses).toBe(1);
   });
 
   it("rebuilds a deleted sparse cache before declaring an unchanged source fresh", async () => {
