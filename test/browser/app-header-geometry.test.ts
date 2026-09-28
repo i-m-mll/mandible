@@ -58,6 +58,7 @@ const CHROME_CANDIDATES = [
 const chrome = CHROME_CANDIDATES.find(existsSync);
 const tokens = readFileSync(resolve('ui/src/styles/tokens.css'), 'utf8');
 const base = readFileSync(resolve('ui/src/styles/base.css'), 'utf8');
+const preview = readFileSync(resolve('ui/src/components/shared/PreviewCopyNotice.css'), 'utf8');
 const detailPaneShell = readFileSync(resolve('ui/src/styles/detail-pane-shell.css'), 'utf8');
 const iconTabList = readFileSync(resolve('ui/src/styles/icon-tab-list.css'), 'utf8');
 const tauriConfig = JSON.parse(readFileSync(resolve('src-tauri/tauri.conf.json'), 'utf8')) as {
@@ -109,20 +110,22 @@ function fixtureMarkup({ width, route, theme, leftShadow, gutterWidth, mode }: H
 
   return `<div class="app-shell${open ? ' app-shell--view-sidebar-open' : ''}${mode === 'collapsed' ? ' app-shell--rail-icons' : ''}${leftShadow ? ' app-shell--left-shadow' : ''}"
     style="--app-shadow-gutter-width: ${gutterWidth}px; --app-view-sidebar-persisted-width: ${Math.max(0, width - 208)}px; --app-view-sidebar-width: ${Math.max(0, width - 208)}px">
-    <header class="app-header${open ? '' : ' app-header--sidebar-hidden'}" data-app-surface="chrome">
-      <div class="app-header__identity">
-        <span class="app-header__mark" aria-hidden="true">
-          <span class="app-header__logo" style="--app-header-logo-image: url('/header-logo.svg')" aria-hidden="true"></span>
-        </span>
-        ${open ? `<div class="app-header__text">
-          <div class="app-header__brand"><span class="app-header__brand-text">Mandible</span></div>
-          <div class="app-header__route" aria-live="polite">${route}</div>
-        </div>` : ''}
-      </div>
-    </header>
-    <aside class="app-rail">
-      <a class="app-rail__item"><span class="app-rail__icon">N</span></a>
-    </aside>
+    <div class="app-shell__workspace">
+      <header class="app-header${open ? '' : ' app-header--sidebar-hidden'}" data-app-surface="chrome">
+        <div class="app-header__identity">
+          <span class="app-header__mark" aria-hidden="true">
+            <span class="app-header__logo" style="--app-header-logo-image: url('/header-logo.svg')" aria-hidden="true"></span>
+          </span>
+          ${open ? `<div class="app-header__text">
+            <div class="app-header__brand"><span class="app-header__brand-text">Mandible</span></div>
+            <div class="app-header__route" aria-live="polite">${route}</div>
+          </div>` : ''}
+        </div>
+      </header>
+      <aside class="app-rail">
+        <a class="app-rail__item"><span class="app-rail__icon">N</span></a>
+      </aside>
+    </div>
   </div>`;
 }
 
@@ -142,7 +145,7 @@ function renderHeaderSuite(fixtures: HeaderFixture[]): { geometries: Map<string,
         theme: fixture.theme,
         markup: fixtureMarkup(fixture),
       }));
-    const payload = JSON.stringify({ cases, styles: `${tokens}\n${base}` }).replaceAll('<', '\\u003c');
+    const payload = JSON.stringify({ cases, styles: `${tokens}\n${base}\n${preview}` }).replaceAll('<', '\\u003c');
     const html = `<!doctype html><html><body><script>
       const { cases, styles } = ${payload};
       const results = [];
@@ -157,8 +160,9 @@ function renderHeaderSuite(fixtures: HeaderFixture[]): { geometries: Map<string,
         const route = doc.querySelector('.app-header__route');
         const logoStyle = getComputedStyle(doc.querySelector('.app-header__logo'));
         const shell = doc.querySelector('.app-shell');
+        const workspace = doc.querySelector('.app-shell__workspace');
         const edgeStyle = getComputedStyle(shell, '::before');
-        const gutterStyle = getComputedStyle(shell, '::after');
+        const gutterStyle = getComputedStyle(workspace, '::after');
         results.push([entry.key, {
           devicePixelRatio: frame.contentWindow.devicePixelRatio,
           header: snapshot(doc, '.app-header'),
@@ -221,45 +225,47 @@ function renderHeaderSuite(fixtures: HeaderFixture[]): { geometries: Map<string,
 function renderNativeChromeGeometry(): NativeChromeGeometry {
   if (!chrome) throw new Error('A Chromium browser is required for the native header geometry regression.');
 
-  const styles = `${tokens}\n${base}\n${detailPaneShell}\n${iconTabList}`;
+  const styles = `${tokens}\n${base}\n${preview}\n${detailPaneShell}\n${iconTabList}`;
   const html = `<!doctype html><html data-theme="light"><head><style>
     html, body { width: 100%; height: 100%; margin: 0; }
     #app { width: 100vw; height: 100vh; }
     ${styles}
   </style></head><body>
-    <div id="app" class="tauri-window">
-      <div class="app-shell" style="--app-right-sidebar-width: 320px">
-        <header class="app-header">
-          <div class="app-header__identity">
-            <span class="app-header__mark"><span class="app-header__logo"></span></span>
-          </div>
-        </header>
-        <div class="app-layout app-layout--right-sidebar-docked">
-          <aside class="app-rail"></aside>
-          <main class="app-content app-content--view-sidebar">
-            <section class="detail-pane-shell detail-pane-shell--compact">
-              <header class="detail-pane-shell__header">
-                <div class="detail-pane-shell__header-primary">
-                  <div class="detail-pane-header detail-pane-header--compact">
-                    <div class="detail-pane-header__main">
-                      <div class="detail-pane-header__title-row"><h2 class="detail-pane-header__title">Conversation</h2></div>
-                      <div class="detail-pane-header__actions" role="group">
-                        <button class="app-right-sidebar-toggle" aria-label="Open details">Details</button>
+      <div id="app" class="tauri-window">
+        <div class="app-shell" style="--app-right-sidebar-width: 320px">
+          <div class="app-shell__workspace">
+            <header class="app-header">
+              <div class="app-header__identity">
+                <span class="app-header__mark"><span class="app-header__logo"></span></span>
+              </div>
+            </header>
+            <div class="app-layout app-layout--right-sidebar-docked">
+              <aside class="app-rail"></aside>
+              <main class="app-content app-content--view-sidebar">
+                <section class="detail-pane-shell detail-pane-shell--compact">
+                  <header class="detail-pane-shell__header">
+                    <div class="detail-pane-shell__header-primary">
+                      <div class="detail-pane-header detail-pane-header--compact">
+                        <div class="detail-pane-header__main">
+                          <div class="detail-pane-header__title-row"><h2 class="detail-pane-header__title">Conversation</h2></div>
+                          <div class="detail-pane-header__actions" role="group">
+                            <button class="app-right-sidebar-toggle" aria-label="Open details">Details</button>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </div>
-              </header>
-            </section>
-          </main>
-          <aside class="app-right-sidebar">
-            <header class="app-right-sidebar__header">
-              <div class="icon-tab-list app-right-sidebar__tabs"><button aria-selected="true">Graph</button></div>
-              <button class="app-right-sidebar-toggle app-right-sidebar__toggle" aria-label="Hide details">Hide</button>
-            </header>
-            <div class="app-right-sidebar__body"></div>
-          </aside>
-        </div>
+                  </header>
+                </section>
+              </main>
+              <aside class="app-right-sidebar">
+                <header class="app-right-sidebar__header">
+                  <div class="icon-tab-list app-right-sidebar__tabs"><button aria-selected="true">Graph</button></div>
+                  <button class="app-right-sidebar-toggle app-right-sidebar__toggle" aria-label="Hide details">Hide</button>
+                </header>
+                <div class="app-right-sidebar__body"></div>
+              </aside>
+            </div>
+          </div>
       </div>
     </div>
     <script>
