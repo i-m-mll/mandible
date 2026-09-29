@@ -875,8 +875,15 @@
 .stream-renderer__scroll {
   flex: 1;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
   padding: var(--space-7) var(--space-5) var(--space-4);
   min-height: 0;
+}
+
+.stream-renderer__scroll:hover,
+.stream-renderer__scroll:focus-within {
+  scrollbar-color: var(--text-chrome-faint) transparent;
 }
 
 .stream-renderer__virtual-canvas {
