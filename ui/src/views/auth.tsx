@@ -1666,19 +1666,27 @@ export function AuthHooksPanel({
                 <div className="auth-hooks-panel__item-actions">
                   <button
                     type="button"
-                    className="btn btn--sm btn--ghost"
+                    className="auth-hooks-panel__item-action"
                     onClick={() => handleEdit(hook)}
                     disabled={!updateAllowed(hook.id)}
+                    aria-label={`Edit ${hook.label || hook.command}`}
+                    title="Edit hook"
                   >
-                    Edit
+                    <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="m10.8 2.5 2.7 2.7M3 13l2.5-.5L13 5a1.9 1.9 0 0 0-2.7-2.7L2.8 9.8 2.3 12.3 3 13Z" />
+                    </svg>
                   </button>
                   <button
                     type="button"
-                    className="btn btn--sm btn--danger"
+                    className="auth-hooks-panel__item-action auth-hooks-panel__item-action--delete"
                     onClick={() => void handleDelete(hook)}
                     disabled={!deleteAllowed(hook.id)}
+                    aria-label={`Delete ${hook.label || hook.command}`}
+                    title="Delete hook"
                   >
-                    Delete
+                    <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M2.5 4h11M6 4V2.5h4V4m2.5 0-.6 9H4.1l-.6-9m3 2.5v4m3-4v4" />
+                    </svg>
                   </button>
                 </div>
               )}

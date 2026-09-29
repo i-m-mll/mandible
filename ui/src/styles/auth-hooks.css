@@ -132,6 +132,7 @@
 }
 
 .auth-hooks-panel__item {
+  position: relative;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -151,6 +152,7 @@
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
+  padding-right: 60px;
 }
 
 .auth-hooks-panel__toggle {
@@ -226,6 +228,42 @@
 }
 
 .auth-hooks-panel__item-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
   display: flex;
-  gap: 6px;
+  gap: 4px;
+}
+
+.auth-hooks-panel__item-action {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.auth-hooks-panel__item-action:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.auth-hooks-panel__item-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.auth-hooks-panel__item-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.auth-hooks-panel__item-action--delete:hover:not(:disabled) {
+  color: var(--accent-red);
 }
