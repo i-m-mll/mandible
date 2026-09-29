@@ -9,7 +9,7 @@ declare global {
   interface Window {
     __sourceBackedHistory: {
       navigate: (anchor: ConversationAnchor | null) => void;
-      refreshSourceVersion: () => Promise<void>;
+      reloadWithNewSourceVersion: () => Promise<void>;
       snapshot: () => Record<string, unknown>;
     };
   }
@@ -24,7 +24,7 @@ const seenBlockIds = new Set<string>();
 let maximumMountedRows = 0;
 let refreshedSourceGeneration = 0;
 let navigation: (anchor: ConversationAnchor | null) => void = () => undefined;
-let refreshActiveConversation: () => Promise<void> = async () => undefined;
+let reloadConversationWithNewVersion: () => Promise<void> = async () => undefined;
 
 const nativeFetch = window.fetch.bind(window);
 window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -119,12 +119,16 @@ function initialAnchor(): ConversationAnchor | null {
 function Fixture(): JSX.Element {
   const [anchor, setAnchor] = useState<ConversationAnchor | null>(initialAnchor);
   const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const [conversationMountGeneration, setConversationMountGeneration] = useState(0);
   const ownerRef = useRef<string | null>(null);
   navigation = setAnchor;
-  refreshActiveConversation = () => queryClient.refetchQueries({
-    queryKey: ['chat', 'conversation', conversationId, 'window'],
-    type: 'active',
-  });
+  reloadConversationWithNewVersion = async () => {
+    navigation(null);
+    refreshedSourceGeneration += 1;
+    queryClient.clear();
+    setConversationMountGeneration((current) => current + 1);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  };
   const registerRightSidebar = useCallback((ownerId: string) => {
     ownerRef.current = ownerId;
     return () => {
@@ -147,6 +151,7 @@ function Fixture(): JSX.Element {
   return (
     <AppShellProvider value={shell}>
       <ConversationDetail
+        key={conversationMountGeneration}
         conversationId={conversationId}
         anchor={anchor}
         onNavigate={() => undefined}
@@ -160,10 +165,7 @@ function Fixture(): JSX.Element {
 
 window.__sourceBackedHistory = {
   navigate: (anchor) => navigation(anchor),
-  refreshSourceVersion: () => {
-    refreshedSourceGeneration += 1;
-    return refreshActiveConversation();
-  },
+  reloadWithNewSourceVersion: () => reloadConversationWithNewVersion(),
   snapshot: () => {
     recordMountedBlocks();
     const scroll = document.querySelector<HTMLElement>('.stream-renderer__scroll');

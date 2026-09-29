@@ -577,19 +577,9 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     const rss = Number(spawnSync('ps', ['-o', 'rss=', '-p', String(browser.pid)], { encoding: 'utf8' }).stdout.trim());
     expect(rss).toBeLessThan(1_000_000);
 
-    // Re-fetch the active latest window while the user is reading older
-    // content. A new source version replaces that window; Chat must retain the
-    // reading anchor and materialize it from the new version before resuming
-    // automatic edge prefetch.
-    const sourceRefreshPrevious = await snapshot();
-    await evaluate('window.__sourceBackedHistory.navigate(null)');
-    await waitFor('latest window is active', async () => {
-      const value = await snapshot();
-      return value.requests.slice(sourceRefreshPrevious.requests.length).some((url) => (
-        new URL(url, origin).searchParams.get('target') === 'initial'
-      ))
-        ? value : null;
-    }, browser, profile);
+    // Save an older reading position, then remount on a newer source version.
+    // The new instance receives only the latest window; Chat must load the
+    // saved anchor's page and restore it without user scroll input.
     let sourceRefreshBeforeAnchor: { id: string; top: number; scrollTop: number; viewportTop: number } | null = null;
     let sourceRefreshBeforeState: BrowserSnapshot | null = null;
     for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -611,8 +601,8 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     expect(sourceRefreshBeforeState?.readingAnchor?.followingTail).toBe(false);
     const sourceRefreshRequestStart = sourceRefreshBeforeState!.transformedSourceRequests.length;
     const sourceRefreshAnchorRequestStart = sourceRefreshBeforeState!.requests.length;
-    await evaluate('window.__sourceBackedHistory.refreshSourceVersion()');
-    await waitFor('latest window refetched from the new source version', async () => {
+    await evaluate('window.__sourceBackedHistory.reloadWithNewSourceVersion()');
+    await waitFor('latest-only window from the new source version is active after remount', async () => {
       const value = await snapshot();
       return value.transformedSourceRequests.slice(sourceRefreshRequestStart).some((url) => (
         new URL(url, origin).searchParams.get('target') === 'initial'

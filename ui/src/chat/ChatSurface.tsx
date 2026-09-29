@@ -115,6 +115,17 @@ type HistoryRowState = {
   loadState: HistoryLoadState;
 };
 
+function historyPositionAtOffset(
+  state: HistoryRowState,
+  rowStart: number,
+  rowSize: number,
+  offset: number,
+): number {
+  const span = state.end - state.start + 1;
+  const fraction = Math.max(0, Math.min(1, (offset - rowStart) / Math.max(1, rowSize)));
+  return Math.min(state.end, state.start + Math.floor(fraction * span));
+}
+
 type ReadingAnchor = {
   version: 1;
   itemId: string;
@@ -616,7 +627,11 @@ export function ChatSurface({
       version: 1,
       itemId: item.id,
       blockId: blockIdValue,
-      position: node ? renderNodePosition(node, blockIdValue) : null,
+      position: node
+        ? renderNodePosition(node, blockIdValue)
+        : item.kind === 'history'
+          ? historyPositionAtOffset(item.state, virtualItem.start, virtualItem.size, offset)
+          : null,
       viewportOffset: visibleBlock
         ? visibleBlock.getBoundingClientRect().top - scrollRect.top
         : virtualItem.start - offset,
@@ -850,8 +865,7 @@ export function ChatSurface({
   }, [items, measuredGroupSizes, navigationTarget, restoreReadingAnchor]);
 
   useEffect(() => {
-    if (!transcript || transcript.historyLoading || inFlightHistoryRef.current
-        || pendingReadingAnchorRef.current) return;
+    if (!transcript || transcript.historyLoading || inFlightHistoryRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
     const rendered = virtualizer.getVirtualItems();
