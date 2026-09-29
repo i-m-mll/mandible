@@ -537,7 +537,7 @@ export function ChatSurface({
     const promise = Promise.resolve()
       .then(load)
       .then(
-        (result): HistoryLoadState => (result === 'failed' ? 'retry' : 'idle'),
+        (): HistoryLoadState => 'retry',
         (): HistoryLoadState => 'retry',
       )
       .then((nextState) => {
@@ -547,12 +547,7 @@ export function ChatSurface({
           setHistoryLoadStates({});
           return;
         }
-        setHistoryLoadStates((states) => {
-          const updated = { ...states };
-          if (nextState === 'idle') delete updated[key];
-          else updated[key] = nextState;
-          return updated;
-        });
+        setHistoryLoadStates((states) => ({ ...states, [key]: nextState }));
       });
     inFlightHistoryRef.current.set(key, promise);
     return promise;
@@ -902,6 +897,10 @@ export function ChatSurface({
     // scroll event captures the new anchor before data can change.
     userScrollIntentRef.current = true;
     pendingReadingAnchorRef.current = null;
+    setHistoryLoadStates((states) => {
+      const pending = Object.entries(states).filter(([, state]) => state === 'loading');
+      return pending.length === Object.keys(states).length ? states : Object.fromEntries(pending);
+    });
   }
 
   function handleUserScrollPointer(event: PointerEvent): void {
