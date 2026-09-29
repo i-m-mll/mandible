@@ -541,7 +541,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     const extentRatio = Math.max(cold.scrollHeight, complete.scrollHeight)
       / Math.max(1, Math.min(cold.scrollHeight, complete.scrollHeight));
     expect(afterGapFill.scrollHeight).toBeLessThanOrEqual(cold.scrollHeight + (2 * afterGapFill.clientHeight));
-    expect(extentRatio).toBeLessThan(4);
+    expect(extentRatio).toBeLessThan(1.25);
     process.stdout.write(`SOURCE_BACKED_CHAT_EXTENT initial ${cold.scrollHeight} full ${complete.scrollHeight} ratio ${extentRatio.toFixed(2)}\n`);
     expect(new Set(complete.fetchedBlockIds)).toEqual(new Set(expectedBlockIds));
     expect(complete.fetchedBlockIds).toHaveLength(expectedBlockIds.length);
