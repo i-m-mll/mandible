@@ -479,6 +479,8 @@ export type StoredConversationBlock = {
   metadata_json: string;
   dag_uuid?: string | null;
   dag_parent_uuid?: string | null;
+  /** Display projection records keep position coverage while omitting expandable payloads. */
+  details_loaded?: boolean;
 };
 
 export type ConversationExternalNavigation =

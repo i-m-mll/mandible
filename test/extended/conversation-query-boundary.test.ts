@@ -159,6 +159,22 @@ describe('Chat Query authority', () => {
     const merged = reconcileConversationWindow(conversationTranscriptFromWindow(initial), exact);
     expect(merged.blocks.map((item) => item.id)).toEqual(['b0', 'b1', 'b2']);
     expect(merged.loaded_intervals).toEqual([{ start: 0, end: 2 }]);
+
+    const expanded = {
+      ...initial,
+      blocks: initial.blocks.map((item) => item.id === 'b1'
+        ? { ...item, content: 'expanded payload', details_loaded: true }
+        : item),
+    };
+    const compactRefresh = {
+      ...initial,
+      blocks: initial.blocks.map((item) => ({ ...item, content: 'compact summary', details_loaded: false })),
+    };
+    const preserved = reconcileConversationWindow(conversationTranscriptFromWindow(expanded), compactRefresh);
+    expect(preserved.blocks.find((item) => item.id === 'b1')).toMatchObject({
+      content: 'expanded payload',
+      details_loaded: true,
+    });
   });
 
   it('preserves explicit gaps and replaces the aggregate when source bytes change at the same count', () => {

@@ -2607,10 +2607,10 @@ export async function getConversationSidebar(params: {
 }
 
 export type ConversationWindowRequest =
-  | { target?: 'initial' | 'latest'; limit?: number; signal?: AbortSignal }
-  | { block: string; limit?: number; signal?: AbortSignal }
-  | { turn: string; limit?: number; signal?: AbortSignal }
-  | { position: number; limit?: number; signal?: AbortSignal };
+  | { target?: 'initial' | 'latest'; limit?: number; view?: 'display'; signal?: AbortSignal }
+  | { block: string; limit?: number; view?: 'display'; signal?: AbortSignal }
+  | { turn: string; limit?: number; view?: 'display'; signal?: AbortSignal }
+  | { position: number; limit?: number; view?: 'display'; signal?: AbortSignal };
 
 export async function getConversationWindow(
   id: string,
@@ -2622,6 +2622,7 @@ export async function getConversationWindow(
   if ('turn' in request) query.set('turn', request.turn);
   if ('position' in request) query.set('position', String(request.position));
   if (request.limit) query.set('limit', String(request.limit));
+  if (request.view) query.set('view', request.view);
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${suffix}`, {
     signal: request.signal,

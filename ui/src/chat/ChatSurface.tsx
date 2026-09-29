@@ -12,6 +12,7 @@ import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRe
 import type {
   ContentBlock,
   DisplayGroup,
+  PersistedBlockSource,
   RenderNode,
   StreamRendererProps,
 } from '../components/stream-renderer/types';
@@ -62,6 +63,7 @@ export type ChatSurfaceProps = StreamRendererProps & {
   onFork?: (dagUuid: string) => void;
   onResume?: (dagUuid: string) => void;
   onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
+  onExpandDetails?: (sources: readonly PersistedBlockSource[]) => void | Promise<void>;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
@@ -316,6 +318,7 @@ export function ChatSurface({
   onFork,
   onResume,
   onCreatedTaskNavigate,
+  onExpandDetails,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -347,6 +350,7 @@ export function ChatSurface({
     transcript?.conversationId ?? null,
     transcript?.sourceVersionId ?? null,
   ]);
+  const expansionOwnerScope = JSON.stringify([storageScope, transcript?.conversationId ?? null]);
   const extentScope = JSON.stringify([
     storageScope,
     transcript?.conversationId ?? null,
@@ -354,6 +358,7 @@ export function ChatSurface({
   const historyScopeRef = useRef(historyScope);
   historyScopeRef.current = historyScope;
   const historyStateScopeRef = useRef(historyScope);
+  const expansionOwnerScopeRef = useRef(expansionOwnerScope);
   const extentScopeRef = useRef(extentScope);
   extentScopeRef.current = extentScope;
   const estimatedPositionHeightRef = useRef<{
@@ -731,6 +736,12 @@ export function ChatSurface({
     setHistoryLoadStates({});
   }, [historyScope]);
 
+  useEffect(() => {
+    if (expansionOwnerScopeRef.current === expansionOwnerScope) return;
+    expansionOwnerScopeRef.current = expansionOwnerScope;
+    setExpandedBlocks({});
+  }, [expansionOwnerScope]);
+
   const setScrollNode = useCallback((node: HTMLDivElement | null) => {
     scrollEndCleanupRef.current?.();
     scrollEndCleanupRef.current = null;
@@ -965,13 +976,37 @@ export function ChatSurface({
     captureReadingAnchor(!transcript?.hasNewer);
   }
 
-  function setBlockExpanded(id: string, expanded: boolean): void {
+  function setBlockExpanded(id: string, expanded: boolean, sources: readonly (PersistedBlockSource | undefined)[] = []): void {
     const anchor = captureReadingAnchor();
     if (anchor) pendingReadingAnchorRef.current = anchor;
+    if (expanded) {
+      const unloaded = sources.filter((source): source is PersistedBlockSource => source?.detailsLoaded === false);
+      if (unloaded.length > 0) void onExpandDetails?.(unloaded);
+    }
     setExpandedBlocks((current) => {
       return { ...current, [id]: expanded };
     });
   }
+
+  useEffect(() => {
+    const sources: Array<PersistedBlockSource | undefined> = [];
+    for (const node of nodes) {
+      if (node.kind === 'activity' && expandedBlocks[`activity:${node.key}`]) {
+        sources.push(node.source, node.item.type === 'tool-call-activity' ? node.item.result?.source : undefined);
+      } else if (node.kind === 'assistant_turn') {
+        const blocks = node.turn.assistantEvent.message.content;
+        blocks.forEach((contentBlock, index) => {
+          if (!expandedBlocks[blockId(node.turn.id, contentBlock, index)]) return;
+          sources.push(contentBlock.source);
+          if (contentBlock.type === 'tool_use') {
+            sources.push(node.turn.toolResults.get(contentBlock.id)?.source);
+          }
+        });
+      }
+    }
+    const unloaded = sources.filter((source): source is PersistedBlockSource => source?.detailsLoaded === false);
+    if (unloaded.length > 0) void onExpandDetails?.(unloaded);
+  }, [expandedBlocks, historyScope, nodes, onExpandDetails]);
 
   function copyText(text: string): void {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -1066,7 +1101,7 @@ export function ChatSurface({
               result={node.item.result}
               defaultExpanded={false}
               expanded={expanded}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source, resultSource])}
               resultSelected={resultSource ? selectedBlockIds?.has(resultSource.blockId) : false}
               selectMode={selectMode}
               onToggleResultSelect={resultSource && onToggleBlockSelect
@@ -1082,7 +1117,7 @@ export function ChatSurface({
               content={node.item.content}
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
             />
           );
         } else {
@@ -1090,7 +1125,7 @@ export function ChatSurface({
             <ActivityRow
               item={node.item}
               expanded={expanded}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
               onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
           );
@@ -1130,8 +1165,8 @@ export function ChatSurface({
               getBlockExpanded={(contentBlock, index, defaultExpanded) => (
                 expandedBlocks[blockId(turn.id, contentBlock, index)] ?? defaultExpanded
               )}
-              onBlockExpandedChange={(contentBlock, index, expanded) => (
-                setBlockExpanded(blockId(turn.id, contentBlock, index), expanded)
+              onBlockExpandedChange={(contentBlock, index, expanded, relatedSources = []) => (
+                setBlockExpanded(blockId(turn.id, contentBlock, index), expanded, [contentBlock.source, ...relatedSources])
               )}
               getDisclosureExpanded={(id, defaultExpanded) => expandedBlocks[`${turn.id}:${id}`] ?? defaultExpanded}
               onDisclosureExpandedChange={(id, expanded) => setBlockExpanded(`${turn.id}:${id}`, expanded)}

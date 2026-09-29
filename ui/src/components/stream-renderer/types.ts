@@ -43,6 +43,8 @@ export type DisplayActivityItem = ActivityItem | ProviderDirectiveActivity | Too
 export type PersistedBlockSource = {
   blockId: string;
   position?: number;
+  /** False when a display projection omitted expandable block payload. */
+  detailsLoaded?: boolean;
   /** Exact persisted parent link; a present value proves a result is not orphaned. */
   parentBlockId?: string;
   timestamp?: string;
@@ -290,7 +292,7 @@ export interface MessageGroupProps {
   /** True if this turn contains a thinking block and is still streaming — shows "thinking…" indicator. */
   isThinking?: boolean;
   getBlockExpanded?: (block: ContentBlock, index: number, defaultExpanded: boolean) => boolean;
-  onBlockExpandedChange?: (block: ContentBlock, index: number, expanded: boolean) => void;
+  onBlockExpandedChange?: (block: ContentBlock, index: number, expanded: boolean, relatedSources?: PersistedBlockSource[]) => void;
   getDisclosureExpanded?: (id: string, defaultExpanded: boolean) => boolean;
   onDisclosureExpandedChange?: (id: string, expanded: boolean) => void;
   selectedBlockIds?: ReadonlySet<string>;

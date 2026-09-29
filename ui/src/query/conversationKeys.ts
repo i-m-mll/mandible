@@ -29,24 +29,25 @@ export function normalizeSidebarFilters(filters: ConversationSidebarFilters): Co
 }
 
 export type ConversationWindowTarget =
-  | { kind: 'initial' | 'latest'; value: null; limit: number | null }
-  | { kind: 'block' | 'turn'; value: string; limit: number | null }
-  | { kind: 'position'; value: number; limit: number | null };
+  | { kind: 'initial' | 'latest'; value: null; limit: number | null; view?: 'display' }
+  | { kind: 'block' | 'turn'; value: string; limit: number | null; view?: 'display' }
+  | { kind: 'position'; value: number; limit: number | null; view?: 'display' };
 
 export function normalizeWindowTarget(request: ConversationWindowRequest = {}): ConversationWindowTarget {
   const limit = request.limit ?? null;
-  if ('block' in request) return { kind: 'block', value: request.block, limit };
-  if ('turn' in request) return { kind: 'turn', value: request.turn, limit };
-  if ('position' in request) return { kind: 'position', value: request.position, limit };
-  return { kind: request.target ?? 'initial', value: null, limit };
+  const view = request.view;
+  if ('block' in request) return { kind: 'block', value: request.block, limit, view };
+  if ('turn' in request) return { kind: 'turn', value: request.turn, limit, view };
+  if ('position' in request) return { kind: 'position', value: request.position, limit, view };
+  return { kind: request.target ?? 'initial', value: null, limit, view };
 }
 
 export function windowRequest(target: ConversationWindowTarget, signal?: AbortSignal): ConversationWindowRequest {
   const limit = target.limit ?? undefined;
-  if (target.kind === 'block') return { block: target.value, limit, signal };
-  if (target.kind === 'turn') return { turn: target.value, limit, signal };
-  if (target.kind === 'position') return { position: target.value, limit, signal };
-  return { target: target.kind, limit, signal };
+  if (target.kind === 'block') return { block: target.value, limit, view: target.view, signal };
+  if (target.kind === 'turn') return { turn: target.value, limit, view: target.view, signal };
+  if (target.kind === 'position') return { position: target.value, limit, view: target.view, signal };
+  return { target: target.kind, limit, view: target.view, signal };
 }
 
 export const conversationKeys = {

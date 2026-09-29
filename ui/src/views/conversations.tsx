@@ -1340,7 +1340,10 @@ export function ConversationDetail({
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
   const handledAnchorKeyRef = useRef<string | null>(null);
-  const windowTargetJson = JSON.stringify(normalizeWindowTarget(effectiveAnchor ?? { target: 'initial' }));
+  const windowTargetJson = JSON.stringify({
+    ...normalizeWindowTarget(effectiveAnchor ?? { target: 'initial' }),
+    view: 'display' as const,
+  });
   const windowTarget = useMemo(
     () => JSON.parse(windowTargetJson) as ReturnType<typeof normalizeWindowTarget>,
     [windowTargetJson],
@@ -1403,13 +1406,61 @@ export function ConversationDetail({
   const fetchAndReconcileWindow = useCallback(async (
     target: ReturnType<typeof normalizeWindowTarget>,
   ): Promise<ConversationPositionWindow> => {
-    const key = conversationKeys.window(conversationId, target);
-    return readAndReconcileWindow(target, () => queryClient.fetchQuery({
+    const displayTarget = { ...target, view: 'display' as const };
+    const key = conversationKeys.window(conversationId, displayTarget);
+    return readAndReconcileWindow(displayTarget, () => queryClient.fetchQuery({
       queryKey: key,
-      queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(target, signal)),
+      queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(displayTarget, signal)),
       staleTime: 0,
     }));
   }, [conversationId, queryClient, readAndReconcileWindow]);
+
+  const hydrateConversationDetails = useCallback(async (
+    sources: readonly { blockId: string; position?: number; detailsLoaded?: boolean }[],
+  ): Promise<void> => {
+    const aggregateKey = conversationKeys.aggregate(conversationId);
+    const aggregateAtStart = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+    if (!aggregateAtStart) return;
+    const requested = [...new Map(sources
+      .filter((source) => source.detailsLoaded === false && Number.isSafeInteger(source.position))
+      .map((source) => [source.position!, source])).values()];
+    await Promise.all(requested.map(async (source) => {
+      const target = normalizeWindowTarget({ position: source.position!, limit: 1 });
+      const incoming = await queryClient.fetchQuery({
+        queryKey: conversationKeys.window(conversationId, target),
+        queryFn: ({ signal }) => readConversationWindowWhenReady(
+          conversationId,
+          windowRequest(target, signal),
+        ),
+        staleTime: 0,
+      });
+      const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+      if (!current) return;
+      if (incoming.source_version_id !== current.source_version_id) {
+        // Keep the old projection intact until a complete display projection
+        // for the new source version has arrived.
+        void queryClient.invalidateQueries({ queryKey: conversationRequestKey, exact: true });
+        return;
+      }
+      if (!incoming.blocks.some((block) => block.id === source.blockId && block.details_loaded !== false)) {
+        throw new Error('The expanded conversation block did not return its complete details.');
+      }
+      queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
+    }));
+  }, [conversationId, conversationRequestKey, queryClient]);
+  const handleExpandConversationDetails = useCallback(async (
+    sources: readonly { blockId: string; position?: number; detailsLoaded?: boolean }[],
+  ) => {
+    try {
+      await hydrateConversationDetails(sources);
+    } catch (cause) {
+      if (selectionRef.current.generation !== selectionGeneration) return;
+      setToast({
+        message: `Could not load expanded chat details: ${cause instanceof Error ? cause.message : String(cause)}`,
+        type: 'error',
+      });
+    }
+  }, [hydrateConversationDetails, selectionGeneration]);
 
   useEffect(() => () => {
     void queryClient.cancelQueries({ queryKey: conversationKeys.conversation(conversationId) });
@@ -2630,6 +2681,7 @@ export function ConversationDetail({
             onNavigationResult={handleNavigationResult}
             onFork={handleFork}
             onCreatedTaskNavigate={navigateToCreatedTask}
+            onExpandDetails={handleExpandConversationDetails}
             sessionInfo={{
               sessionId: conversation.session_id,
               backend: conversation.source,
