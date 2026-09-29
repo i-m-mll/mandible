@@ -2493,6 +2493,12 @@ describe('SettingsView', () => {
       if (url === '/api/projects') {
         return new Response(JSON.stringify({ projects: [] }), { headers: { 'content-type': 'application/json' } });
       }
+      if (url === '/api/users/operator/signing-key') {
+        return new Response(JSON.stringify({
+          audit: { status: 'unconfigured', configured: false, fingerprint: null, operator_slug: 'operator', reason: null, hint: null },
+          credentials: [], git_config_read: true,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       return new Response('{}', { headers: { 'content-type': 'application/json' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -2527,7 +2533,6 @@ describe('SettingsView', () => {
     const chatLimit = screen.getByRole('spinbutton', { name: 'Chats per group' }) as HTMLInputElement;
     expect(chatLimit.value).toBe('5');
     fireEvent.input(chatLimit, { target: { value: '6' } });
-    fireEvent.click(chatLimit.parentElement?.querySelector('button') as HTMLButtonElement);
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('conversations.sidebar_group_limit', '6'));
   });
 
@@ -2563,6 +2568,12 @@ describe('SettingsView', () => {
       if (url === '/api/projects') {
         return new Response(JSON.stringify({ projects: [] }), { headers: { 'content-type': 'application/json' } });
       }
+      if (url === '/api/users/operator/signing-key') {
+        return new Response(JSON.stringify({
+          audit: { status: 'unconfigured', configured: false, fingerprint: null, operator_slug: 'operator', reason: null, hint: null },
+          credentials: [], git_config_read: true,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       return new Response('{}', { headers: { 'content-type': 'application/json' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -2575,7 +2586,7 @@ describe('SettingsView', () => {
 
     expect(await screen.findByDisplayValue('/tmp/old-codex.md')).toBeTruthy();
     const targetRow = screen.getByLabelText('Instruction target /tmp/old-codex.md').closest('.settings-view__instruction-target') as HTMLElement;
-    fireEvent.click(within(targetRow).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(within(targetRow).getByRole('button', { name: 'Remove instruction target /tmp/old-codex.md' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/settings/instructions-delivery',
@@ -2712,7 +2723,7 @@ describe('SettingsView', () => {
     fireEvent.input(screen.getByLabelText('New instruction target path'), {
       target: { value: '/tmp/50-mandible.generated.md' },
     });
-    fireEvent.click(screen.getByText('Add target'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add instruction target' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/settings/instructions-delivery',
@@ -2728,11 +2739,11 @@ describe('SettingsView', () => {
         }),
       }),
     ));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.targets', expect.any(String)));
 
     fireEvent.input(screen.getByLabelText('Instructions post-export hook'), {
       target: { value: 'bin/compile-agent-instructions' },
     });
-    fireEvent.click(screen.getByLabelText('Save instructions post-export hook'));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/settings/instructions-delivery',
