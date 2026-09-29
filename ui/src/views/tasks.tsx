@@ -24,6 +24,7 @@ import type { JSX } from 'preact';
 import {
   ApiError,
   canPerformOperation,
+  invalidateApiGetCache,
   getTaskCommand,
   getTaskInventory,
   getTaskCommands,
@@ -923,7 +924,10 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     mounted.current = true;
     const controller = new AbortController();
     registerInitialRouteLoad(load(controller.signal));
-    const timer = setInterval(() => { void load(); }, TASKS_POLL_INTERVAL_MS);
+    const timer = setInterval(() => {
+      invalidateApiGetCache('/api/tasks');
+      void load();
+    }, TASKS_POLL_INTERVAL_MS);
     const onManagedReminder = () => { void load(); };
     window.addEventListener('managed-reminder:sse', onManagedReminder);
     return () => {
@@ -1002,7 +1006,10 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     setCommandAvailable(false);
     setCommandError(null);
     registerInitialCommandsLoad(loadCommands());
-    const timer = setInterval(() => { void loadCommands(); }, TASKS_POLL_INTERVAL_MS);
+    const timer = setInterval(() => {
+      invalidateApiGetCache('/api/tasks/commands');
+      void loadCommands();
+    }, TASKS_POLL_INTERVAL_MS);
     return () => {
       controller.abort();
       clearInterval(timer);

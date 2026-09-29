@@ -1799,6 +1799,7 @@ function App(): JSX.Element {
       if (shouldSkipFallbackPoll(sseStateRef.current, lastDashboardSseAtRef.current, Date.now(), SSE_FRESH_FOR)) {
         return;
       }
+      if (route.tab === 'issues') invalidateApiGetCache('/api/issues');
       void loadVisibleRouteData(route.tab);
       void loadDashboardBadges();
       void refreshRailOrder();

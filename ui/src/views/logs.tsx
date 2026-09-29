@@ -1,6 +1,6 @@
 // Logs viewer tab — Bug: af91bdd
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { getLogs, type LogEntry, type LogEntityFacetValue, type LogsResponse } from '../api';
+import { getLogs, invalidateApiGetCache, type LogEntry, type LogEntityFacetValue, type LogsResponse } from '../api';
 import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
@@ -348,10 +348,13 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestSeqRef = useRef(0);
   const hasLoadedRef = useRef(false);
+  const hasStartedLoadRef = useRef(false);
   const autoScrollRef = useRef(true);
   const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
 
   const fetchLogs = useCallback(async (initial = false) => {
+    if (hasStartedLoadRef.current) invalidateApiGetCache('/api/system/logs');
+    hasStartedLoadRef.current = true;
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
     if (!hasLoadedRef.current || initial) setLoading(true);
