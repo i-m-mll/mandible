@@ -15,6 +15,7 @@ import {
   getProviderScopedOverview,
   getSessionOverview,
   getSessions,
+  invalidateApiGetCache,
   resolveAgentSession,
   type ProviderScopedLinkedIssue,
   type ProviderScopedOverview,
@@ -437,7 +438,11 @@ export function SessionOverviewView({
   useEffect(() => {
     if (embedded || typeof window === 'undefined') return undefined;
     const refreshVisible = () => {
-      if (document.visibilityState === 'visible') setRefreshToken((token) => token + 1);
+      if (document.visibilityState !== 'visible') return;
+      if (selectedSessionId) {
+        invalidateApiGetCache(`/api/sessions/${encodeURIComponent(selectedSessionId)}/overview`);
+      }
+      setRefreshToken((token) => token + 1);
     };
     const interval = window.setInterval(refreshVisible, 15_000);
     window.addEventListener('focus', refreshVisible);
@@ -447,7 +452,7 @@ export function SessionOverviewView({
       window.removeEventListener('focus', refreshVisible);
       document.removeEventListener('visibilitychange', refreshVisible);
     };
-  }, [embedded]);
+  }, [embedded, selectedSessionId]);
 
   // Provider-scoped overview: loaded only for the conversation-only binding
   // state, keyed on the full identity and provider the (possibly short)

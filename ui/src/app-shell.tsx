@@ -127,13 +127,15 @@ export function useAppShell(): AppShellContextValue {
 export function useRegisterInitialRouteLoad(): (promise: Promise<unknown>) => void {
   const { active, registerInitialRouteLoad } = useAppShell();
   const activeRef = useRef(active);
+  const registerInitialRouteLoadRef = useRef(registerInitialRouteLoad);
   activeRef.current = active;
+  registerInitialRouteLoadRef.current = registerInitialRouteLoad;
   const registered = useRef(false);
   return useCallback((promise: Promise<unknown>) => {
     if (!activeRef.current || registered.current) return;
     registered.current = true;
-    registerInitialRouteLoad(promise);
-  }, [registerInitialRouteLoad]);
+    registerInitialRouteLoadRef.current(promise);
+  }, [active]);
 }
 
 /** One structural target for the shared DetailPaneNotice portal. */
