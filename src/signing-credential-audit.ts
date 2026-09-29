@@ -93,6 +93,61 @@ export interface ResolvedSigningKey {
   fingerprint: string;
 }
 
+/** Parse one pasted OpenSSH public-key line and calculate its SHA256 fingerprint. */
+export function resolveOpenSshPublicKey(
+  input: string,
+  options: SigningCredentialAuditOptions = {},
+): { ok: true; value: ResolvedSigningKey } | { ok: false; reason: string } {
+  if (input.length > 16_384) {
+    return { ok: false, reason: "public_key_input_too_large" };
+  }
+  const lines = input.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length !== 1) {
+    return { ok: false, reason: "expected_one_openssh_public_key_line" };
+  }
+  const fields = lines[0].split(/\s+/);
+  if (fields.length < 2 || !isPublicKeyLine(`${fields[0]} ${fields[1]}`)) {
+    return { ok: false, reason: "signing_key_not_openssh_public_key" };
+  }
+  const material = `${fields[0]} ${fields[1]}`;
+  const fingerprint = fingerprintOf(material, options.cwd ?? os.homedir());
+  if (!fingerprint) {
+    return { ok: false, reason: "signing_key_fingerprint_failed" };
+  }
+  return { ok: true, value: { material, fingerprint } };
+}
+
+/** Discover only public material for Settings; never open or derive from a private key. */
+export function discoverConfiguredPublicSigningKey(
+  options: SigningCredentialAuditOptions = {},
+): { configured_key: string | null; value: ResolvedSigningKey | null; reason: string | null } {
+  const configuredKey = readConfiguredSigningKey(options);
+  if (!configuredKey) return { configured_key: null, value: null, reason: null };
+
+  const inline = configuredKey.startsWith("key::")
+    ? configuredKey.slice("key::".length)
+    : configuredKey;
+  if (isPublicKeyLine(inline)) {
+    const result = resolveOpenSshPublicKey(inline, options);
+    return result.ok
+      ? { configured_key: configuredKey, value: result.value, reason: null }
+      : { configured_key: configuredKey, value: null, reason: result.reason };
+  }
+
+  let configuredPath = configuredKey;
+  if (configuredPath.startsWith("~/")) configuredPath = path.join(os.homedir(), configuredPath.slice(2));
+  if (!path.isAbsolute(configuredPath)) configuredPath = path.resolve(options.cwd ?? os.homedir(), configuredPath);
+  const publicPath = configuredPath.endsWith(".pub") ? configuredPath : `${configuredPath}.pub`;
+  const publicMaterial = readFirstLine(publicPath);
+  if (!publicMaterial || !isPublicKeyLine(publicMaterial)) {
+    return { configured_key: configuredKey, value: null, reason: "public_key_not_available_without_private_key_access" };
+  }
+  const result = resolveOpenSshPublicKey(publicMaterial, options);
+  return result.ok
+    ? { configured_key: configuredKey, value: result.value, reason: null }
+    : { configured_key: configuredKey, value: null, reason: result.reason };
+}
+
 /**
  * Resolve a `user.signingkey` value to its OpenSSH public material and SHA256
  * fingerprint. Accepts the three shapes git supports: a literal `key::` value,

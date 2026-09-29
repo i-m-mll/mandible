@@ -137,6 +137,18 @@ describe("instance effect policy", () => {
       .toMatchObject({ allowed: false, missing: ["auth:protected"] });
   });
 
+  it("keeps signing-key discovery read-only and writes registrations only to preview data", () => {
+    const path = "/api/users/operator/signing-key";
+    expect(operationForRequest("GET", path, "preview")?.effects).toEqual(["ledger:read"]);
+    expect(operationForRequest("POST", path, "preview")?.effects).toEqual(["ledger:write"]);
+    expect(operationForRequest("GET", path, "main")?.effects).toEqual(["auth:credentials"]);
+    expect(operationForRequest("POST", path, "main")?.effects).toEqual(["auth:credentials"]);
+
+    const instance = preview();
+    expect(authorizeEffects(instance, { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("POST", path, "preview")))
+      .toEqual({ allowed: true });
+  });
+
   it("keeps preview theme, navigation, and font edits separate from production in both directions", async () => {
     const instance = preview();
     const productionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-production-user-preferences-"));
