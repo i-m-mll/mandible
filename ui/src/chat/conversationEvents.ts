@@ -111,8 +111,13 @@ export function conversationBlocksToStreamEvents(
     & Partial<Pick<ConversationBlock, 'parent_id'>>>,
 ): StreamEvent[] {
   const events: StreamEvent[] = [];
+  let lastPosition: number | null = null;
 
   for (const block of blocks) {
+    if (lastPosition !== null && block.position !== undefined && block.position > lastPosition + 1) {
+      events.push({ type: 'transcript:boundary' });
+    }
+    if (block.position !== undefined) lastPosition = block.position;
     const metadata = parseMetadata(block.metadata_json);
     const source = {
       blockId: block.id,

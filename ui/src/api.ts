@@ -2645,6 +2645,13 @@ export type ConversationWindowRequest =
   | { turn: string; limit?: number; view?: 'display'; signal?: AbortSignal }
   | { position: number; limit?: number; view?: 'display'; signal?: AbortSignal };
 
+export type ConversationStructure = import('../../src/contracts').ConversationStructure;
+
+export async function getConversationStructure(id: string, signal?: AbortSignal): Promise<ConversationStructure> {
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}/structure`, { signal });
+  return (await parseMaybeJson(resp)) as ConversationStructure;
+}
+
 export async function getConversationWindow(
   id: string,
   request: ConversationWindowRequest = {},

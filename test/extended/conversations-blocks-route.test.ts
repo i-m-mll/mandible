@@ -217,6 +217,16 @@ describe("indexed conversation position window", () => {
     });
     expect((initial.body as { blocks: unknown[] }).blocks).toHaveLength(160);
 
+    const display = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed?view=display&position=5000&limit=80" });
+    expect(display.status).toBe(200);
+    expect(display.body).toMatchObject({ total: 10_000, target: { position: 5000 } });
+    expect((display.body as { blocks: unknown[] }).blocks).toHaveLength(80);
+
+    const structure = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed/structure" });
+    expect(structure.status).toBe(200);
+    expect(structure.body).toMatchObject({ total: 10_000 });
+    expect((structure.body as { rows: unknown[] }).rows).toHaveLength(10_000);
+
     const start = await router.invoke({
       method: "GET",
       url: "/api/conversations/conv-indexed?position=1&limit=80",

@@ -213,6 +213,20 @@ describe('chat message stream render model', () => {
     expect(state.nodes[0]).toMatchObject({ kind: 'assistant_turn', key: 'stable-turn-start' });
   });
 
+  it('keeps distant loaded ranges in separate turn fragments', () => {
+    const item = (ordinal: number) => canonicalItem({
+      type: 'message', role: 'assistant', parts: [{ type: 'text', text: `part ${ordinal}` }],
+      ordinal, turn: 'same-provider-turn',
+    });
+    const events = conversationBlocksToStreamEvents('session', [
+      { ...persistedBlock('first', item(1)), position: 1 },
+      { ...persistedBlock('distant', item(10)), position: 10 },
+    ]);
+    const nodes = buildStreamState(events).nodes;
+    expect(nodes.map((node) => node.kind)).toEqual(['assistant_turn', 'assistant_turn']);
+    expect(nodes[0].key).not.toBe(nodes[1].key);
+  });
+
   it('groups consecutive same-speaker nodes before rendering and serializes markdown', () => {
     const state = buildStreamState([
       user('first', 'u1'),
