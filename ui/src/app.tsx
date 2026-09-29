@@ -212,13 +212,11 @@ type RouteInitialDataWarmer = (
 type RouteDataLoadOptions = { background?: boolean; route?: Route };
 
 async function warmRouteModule(
-  module: unknown,
+  module: { warmInitialData: RouteInitialDataWarmer },
   params: Record<string, string>,
   context: RouteInitialDataContext,
 ): Promise<void> {
-  if (!module || typeof module !== 'object' || !('warmInitialData' in module)) return;
-  const warmer = (module as { warmInitialData?: unknown }).warmInitialData;
-  if (typeof warmer === 'function') await (warmer as RouteInitialDataWarmer)(params, context);
+  await module.warmInitialData(params, context);
 }
 
 const RENDERABLE_TABS: RenderableTab[] = [
@@ -331,6 +329,7 @@ const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
   rightSidebar: null,
   registerRightSidebar: () => () => undefined,
   updateRightSidebar: () => undefined,
+  registerInitialRouteLoad: () => undefined,
   setViewSidebarWidth: () => undefined,
   // Keep keep-alive route sidebars in controlled mode while hidden so they
   // cannot republish a stale local hook value over the active route's storage.
@@ -801,6 +800,7 @@ function App(): JSX.Element {
   };
   const routeWarmupSettingsLoadRef = useRef<Promise<void>>(Promise.resolve());
   const activeRouteDataLoadRef = useRef<Promise<void>>(Promise.resolve());
+  const activeRouteInitialLoadsRef = useRef(new Set<Promise<unknown>>());
   const startupRouteWarmupStartedRef = useRef(false);
   const loadVisibleRouteDataRef = useRef<(
     tab: Route['tab'],
@@ -818,6 +818,15 @@ function App(): JSX.Element {
   const updateRightSidebar = useCallback((ownerId: string, descriptor: AppRightSidebarDescriptor) => {
     if (rightSidebarOwnerRef.current !== ownerId) return;
     setRegisteredRightSidebar((current) => current === descriptor ? current : descriptor);
+  }, []);
+  const registerInitialRouteLoad = useCallback((promise: Promise<unknown>) => {
+    const pending = activeRouteInitialLoadsRef.current;
+    if (pending.has(promise)) return;
+    pending.add(promise);
+    void promise.then(
+      () => pending.delete(promise),
+      () => pending.delete(promise),
+    );
   }, []);
   const fallbackRightSidebar = useMemo<AppRightSidebarDescriptor>(() => ({
     id: 'app-preview',
@@ -863,13 +872,14 @@ function App(): JSX.Element {
     rightSidebar,
     registerRightSidebar,
     updateRightSidebar,
+    registerInitialRouteLoad,
     setRightSidebarOpen,
     setViewSidebarWidth,
     viewSidebarWidth,
     active: true,
     noticeHost,
     registerMainNoticeHost,
-  }), [noticeHost, registerMainNoticeHost, rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
+  }), [noticeHost, registerMainNoticeHost, registerInitialRouteLoad, rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
 
   const effectiveSettings = useMemo(() => (
     hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
@@ -1340,6 +1350,12 @@ function App(): JSX.Element {
           while (active) {
             const pendingActiveLoad = activeRouteDataLoadRef.current;
             await pendingActiveLoad.catch(() => undefined);
+            await Promise.resolve();
+            const pendingRouteReads = [...activeRouteInitialLoadsRef.current];
+            if (pendingRouteReads.length > 0) {
+              await Promise.allSettled(pendingRouteReads);
+              continue;
+            }
             if (pendingActiveLoad === activeRouteDataLoadRef.current) break;
           }
           if (!active) return;

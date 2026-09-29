@@ -86,6 +86,7 @@ export type AppShellContextValue = {
   rightSidebar: AppRightSidebarDescriptor | null;
   registerRightSidebar(ownerId: string): () => void;
   updateRightSidebar(ownerId: string, descriptor: AppRightSidebarDescriptor): void;
+  registerInitialRouteLoad(promise: Promise<unknown>): void;
   setRightSidebarOpen?(open: boolean): void;
   setViewSidebarWidth(width: number | null): void;
   viewSidebarWidth?: number | null;
@@ -100,6 +101,7 @@ const noopContext: AppShellContextValue = {
   rightSidebar: null,
   registerRightSidebar: () => () => undefined,
   updateRightSidebar: () => undefined,
+  registerInitialRouteLoad: () => undefined,
   setRightSidebarOpen: () => undefined,
   setViewSidebarWidth: () => undefined,
   active: true,
@@ -119,6 +121,19 @@ export function AppShellProvider({ value, children }: { value: AppShellContextVa
 
 export function useAppShell(): AppShellContextValue {
   return useContext(AppShellContext);
+}
+
+/** Register this mounted view's one bounded initial read with the app warmup barrier. */
+export function useRegisterInitialRouteLoad(): (promise: Promise<unknown>) => void {
+  const { active, registerInitialRouteLoad } = useAppShell();
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const registered = useRef(false);
+  return useCallback((promise: Promise<unknown>) => {
+    if (!activeRef.current || registered.current) return;
+    registered.current = true;
+    registerInitialRouteLoad(promise);
+  }, [registerInitialRouteLoad]);
 }
 
 /** One structural target for the shared DetailPaneNotice portal. */

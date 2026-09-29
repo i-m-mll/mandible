@@ -2,7 +2,12 @@ import { Fragment, type ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { getProjectTimeline, getWorkRepos } from '../api';
-import { AppOperationalNoticeOutlet, useAppShell, useRegisterAppRightSidebar } from '../app-shell';
+import {
+  AppOperationalNoticeOutlet,
+  useAppShell,
+  useRegisterAppRightSidebar,
+  useRegisterInitialRouteLoad,
+} from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -845,6 +850,7 @@ function AddTimelineRowIcon(): JSX.Element {
 }
 
 export function TimelineView({ repos, params = {}, sidebarHidden = false }: TimelineViewProps): JSX.Element {
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const { active } = useAppShell();
   const urlState = useMemo(() => parseUrlState(params), [params]);
   const initialProjectRef = defaultProjectRef(repos, urlState.projectRef);
@@ -968,7 +974,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   useEffect(() => {
     const generation = requestGeneration.current;
     const controller = new AbortController();
-    getProjectTimeline(timelineRequest, controller.signal)
+    const initialLoad = getProjectTimeline(timelineRequest, controller.signal)
       .then((next) => {
         if (
           requestGeneration.current !== generation
@@ -989,8 +995,10 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
         setProjection(lastProjectionRef.current);
         setStatus('error');
       });
+    registerInitialRouteLoad(initialLoad);
     return () => controller.abort();
   }, [
+    registerInitialRouteLoad,
     timelineRequest,
     timelineRequestKey,
   ]);

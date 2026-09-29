@@ -123,6 +123,7 @@ import { chatItemIdentityKey, mergeProviderLiveProjection } from '../../../src/c
 import type { ChatItem } from '../../../src/parsers/types';
 import {
   CHAT_DETAIL_PREVIEW_MIN_WIDTH,
+  useRegisterInitialRouteLoad,
   useRegisterAppRightSidebar,
 } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
@@ -419,10 +420,47 @@ type ConversationWarmupContext = {
   sidebarGroupLimit?: number;
 };
 
-const WARMED_CHAT_SIDEBAR_STALE_TIME_MS = 60_000;
+const WARMED_CHAT_QUERY_STALE_TIME_MS = 1_000;
+
+async function warmSelectedConversationWindow(
+  params: Record<string, string>,
+  lastSelection: { type: 'conversation' | 'session'; id: string } | null,
+): Promise<void> {
+  let conversationId = params.conversation?.trim()
+    || (lastSelection?.type === 'conversation' ? lastSelection.id : '');
+  if (!conversationId) {
+    const sessionId = params.session?.trim()
+      || (lastSelection?.type === 'session' ? lastSelection.id : '');
+    if (!sessionId) return;
+    const resolved = await appQueryClient.fetchQuery({
+      queryKey: conversationKeys.bySession(sessionId),
+      queryFn: ({ signal }) => getConversations({ session_id: sessionId, limit: 1, signal }),
+      staleTime: 0,
+    });
+    conversationId = resolved.conversations[0]?.id ?? '';
+  }
+  if (!conversationId) return;
+
+  const target = normalizeWindowTarget({ target: 'initial' });
+  const aggregateKey = conversationKeys.aggregate(conversationId);
+  const aggregateAtStart = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+  const window = await appQueryClient.fetchQuery({
+    queryKey: conversationKeys.window(conversationId, target),
+    queryFn: ({ signal }) => readConversationWindowWhenReady(
+      conversationId,
+      windowRequest(target, signal),
+    ),
+    staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
+  });
+  const current = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+  const aggregateAdvanced = current !== undefined
+    && (aggregateAtStart === undefined || current.source_version_id !== aggregateAtStart.source_version_id);
+  if (aggregateAdvanced && current.source_version_id !== window.source_version_id) return;
+  appQueryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, window));
+}
 
 export async function warmInitialData(
-  _params: Record<string, string>,
+  params: Record<string, string>,
   context: ConversationWarmupContext = {},
 ): Promise<void> {
   const [projectSnapshot, shownPreference, sidebarOrder] = await Promise.all([
@@ -471,11 +509,16 @@ export async function warmInitialData(
     searchMode: 'title',
     sort: 'date',
   });
-  await appQueryClient.fetchQuery({
-    queryKey: conversationKeys.sidebarInitial(filters),
-    queryFn: ({ signal }) => getConversationSidebar({ ...filters, signal }),
-    staleTime: WARMED_CHAT_SIDEBAR_STALE_TIME_MS,
-  });
+  const warmResults = await Promise.allSettled([
+    appQueryClient.fetchQuery({
+      queryKey: conversationKeys.sidebarInitial(filters),
+      queryFn: ({ signal }) => getConversationSidebar({ ...filters, signal }),
+      staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
+    }),
+    warmSelectedConversationWindow(params, storedViewState.lastSelection),
+  ]);
+  const failedWarm = warmResults.find((result) => result.status === 'rejected');
+  if (failedWarm?.status === 'rejected') throw failedWarm.reason;
 }
 
 function isLiveConsoleSession(session: ConsoleSession): boolean {
@@ -1336,12 +1379,17 @@ export function ConversationDetail({
     queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
     return incoming;
   }, [conversationId, queryClient, selectionGeneration]);
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const fetchConversationDetail = useCallback(
-    async ({ signal }: { signal: AbortSignal }) => readAndReconcileWindow(
-      windowTarget,
-      () => readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal)),
-    ),
-    [conversationId, readAndReconcileWindow, windowTarget],
+    ({ signal }: { signal: AbortSignal }) => {
+      const initialLoad = readAndReconcileWindow(
+        windowTarget,
+        () => readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal)),
+      );
+      registerInitialRouteLoad(initialLoad);
+      return initialLoad;
+    },
+    [conversationId, readAndReconcileWindow, registerInitialRouteLoad, windowTarget],
   );
   const windowQuery = useQuery({
     queryKey: conversationRequestKey,
@@ -3188,6 +3236,7 @@ export function ConversationsView({
     });
   }, [chatViewState.previewPinOverrides, conversationLifecycle, hideEmpty, previewMutationsRejected, selectedProjectIds, sidebarOrder.value.pinnedConversationIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
+  const registerInitialSidebarLoad = useRegisterInitialRouteLoad();
   const sidebarFiltersJson = JSON.stringify(sidebarRequestParams(sidebarGroupLimit));
   const sidebarFilters = useMemo(
     () => JSON.parse(sidebarFiltersJson) as ConversationSidebarFilters,
@@ -3199,14 +3248,18 @@ export function ConversationsView({
   const sidebarEnabled = canonicalProjectsReady && shownProjectsState.ready;
   const sidebarQueryKey = useMemo(() => conversationKeys.sidebarInitial(sidebarFilters), [sidebarFilters]);
   const fetchSidebarInitial = useCallback(
-    ({ signal }: { signal: AbortSignal }) => getConversationSidebar({ ...sidebarFilters, signal }),
-    [sidebarFilters],
+    ({ signal }: { signal: AbortSignal }) => {
+      const initialLoad = getConversationSidebar({ ...sidebarFilters, signal });
+      registerInitialSidebarLoad(initialLoad);
+      return initialLoad;
+    },
+    [registerInitialSidebarLoad, sidebarFilters],
   );
   const sidebarQuery = useQuery({
     queryKey: sidebarQueryKey,
     queryFn: fetchSidebarInitial,
     enabled: sidebarEnabled,
-    staleTime: WARMED_CHAT_SIDEBAR_STALE_TIME_MS,
+    staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
   }, queryClient);
   const [continuationCacheRevision, setContinuationCacheRevision] = useState(0);
   useEffect(() => queryClient.getQueryCache().subscribe((event) => {

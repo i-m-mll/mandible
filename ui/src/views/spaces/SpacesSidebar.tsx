@@ -24,6 +24,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useSidebarReorder } from '../../hooks/useSidebarReorder';
+import { useRegisterInitialRouteLoad } from '../../app-shell';
 
 import {
   listSpacesGrouped,
@@ -271,6 +272,7 @@ export function SpacesSidebar({
   refreshToken,
   onSelectedSpaceResolved,
 }: SpacesSidebarProps): JSX.Element | null {
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [groups, setGroups] = useState<SpaceGroup[]>(() => loadCachedGroups());
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -302,7 +304,7 @@ export function SpacesSidebar({
     let active = true;
     setLoading(true);
     setLoadError(null);
-    loadGroups()
+    const initialLoad = loadGroups()
       .then((next) => {
         if (active) {
           setGroups(next);
@@ -316,10 +318,11 @@ export function SpacesSidebar({
       .finally(() => {
         if (active) setLoading(false);
       });
+    registerInitialRouteLoad(initialLoad);
     return () => {
       active = false;
     };
-  }, [loadGroups, refreshToken, internalRefresh]);
+  }, [internalRefresh, loadGroups, refreshToken, registerInitialRouteLoad]);
 
   const refresh = useCallback(() => setInternalRefresh((n) => n + 1), []);
 

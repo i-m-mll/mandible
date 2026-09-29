@@ -27,7 +27,11 @@ import {
   type SpaceRenderer,
 } from '../../api';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
-import { AppOperationalNoticeOutlet, useAppShell } from '../../app-shell';
+import {
+  AppOperationalNoticeOutlet,
+  useAppShell,
+  useRegisterInitialRouteLoad,
+} from '../../app-shell';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
 import type { SpacesRouteTarget } from '../../routing';
@@ -180,6 +184,7 @@ export function SpacesViewShell({
   loadSpaceFactPacket,
 }: SpacesViewShellProps): JSX.Element {
   const appShell = useAppShell();
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const resolvedLoadSpaceFactPacket = useMemo(
     () => {
       if (loadSpaceFactPacket) return loadSpaceFactPacket;
@@ -230,7 +235,7 @@ export function SpacesViewShell({
           : null
     ));
     setSpaceLoadError(null);
-    resolvedLoadSpaceFactPacket(spaceId)
+    const initialLoad = resolvedLoadSpaceFactPacket(spaceId)
       .then((packet) => {
         if (!cancelled) {
           const { space } = packet;
@@ -249,10 +254,11 @@ export function SpacesViewShell({
       .catch((error: unknown) => {
         if (!cancelled) setSpaceLoadError(error instanceof Error ? error.message : String(error));
       });
+    registerInitialRouteLoad(initialLoad);
     return () => {
       cancelled = true;
     };
-  }, [spaceId, resolvedLoadSpaceFactPacket]);
+  }, [registerInitialRouteLoad, resolvedLoadSpaceFactPacket, spaceId]);
 
   const handleSidebarSpaceResolved = useCallback((space: Space) => {
     if (!spaceId || space.id !== spaceId) return;
