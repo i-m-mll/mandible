@@ -51,6 +51,15 @@ export type SessionOverviewViewProps = {
   embedded?: boolean;
 };
 
+export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const sessionId = params.session?.trim();
+  if (sessionId) {
+    await getSessionOverview(sessionId);
+    return;
+  }
+  await getSessions<SessionRecord>();
+}
+
 function formatTimestamp(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—';
   const date = typeof value === 'number' ? new Date(value) : new Date(String(value));

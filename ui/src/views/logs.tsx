@@ -300,6 +300,16 @@ function filterParam(filters: LogFilters, before?: string): Parameters<typeof ge
   };
 }
 
+export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const query = new URLSearchParams();
+  for (const key of ['levels', 'subsystem', 'event', 'q', 'related', 'since', 'until']) {
+    const value = params[key];
+    if (value) query.set(key, value);
+  }
+  const routeHash = `#/logs${query.size > 0 ? `?${query.toString()}` : ''}`;
+  await getLogs(filterParam(parseLogsHash(routeHash)));
+}
+
 function mergeLogEntries(current: LogEntry[], incoming: LogEntry[]): LogEntry[] {
   const byId = new Map<string, LogEntry>();
   for (const entry of [...current, ...incoming]) {

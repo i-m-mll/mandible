@@ -243,6 +243,17 @@ function applyOrder(projectGroups: KeyedGroup[], order: string[]): KeyedGroup[] 
   return ordered;
 }
 
+export function defaultInitialSpaceId(groups: readonly SpaceGroup[]): string | null {
+  const topLevel = groups.find((group) => group.project_id === null);
+  const projectGroups = groups
+    .filter((group) => group.project_id !== null)
+    .map((group) => ({ key: groupKey(group), group }));
+  const orderedProjects = applyOrder(projectGroups, loadOrder());
+  return topLevel?.spaces[0]?.id
+    ?? orderedProjects.flatMap(({ group }) => group.spaces)[0]?.id
+    ?? null;
+}
+
 const PlusIcon = (): JSX.Element => (
   <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false">
     <path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" />
