@@ -246,28 +246,6 @@ function missingPositionRanges(
   return ranges.filter((range) => range.start <= range.end);
 }
 
-function loadedPositionCount(
-  total: number,
-  intervals: readonly { start: number; end: number }[],
-): number {
-  return intervals.reduce((sum, interval) => (
-    sum + Math.max(0, Math.min(total - 1, interval.end) - Math.max(0, interval.start) + 1)
-  ), 0);
-}
-
-function groupPositionCount(group: DisplayGroup): number {
-  return group.nodes.reduce((count, node) => count + (renderNodePosition(node, null) === null ? 0 : 1), 0);
-}
-
-function median(values: readonly number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? (sorted[middle - 1] + sorted[middle]) / 2
-    : sorted[middle];
-}
-
 function renderNodeBlockIdAtPosition(node: RenderNode, position: number): string | null {
   if (node.kind === 'user_message') {
     return node.persisted?.position === position ? node.persisted.blockId : null;
@@ -344,7 +322,7 @@ export function ChatSurface({
   const pendingReadingAnchorRef = useRef<ReadingAnchor | null>(null);
   const readingAnchorRef = useRef<ReadingAnchor | null>(null);
   const itemIdentitySignatureRef = useRef<string | null>(null);
-  const inFlightHistoryRef = useRef<{ promise: Promise<void> } | null>(null);
+  const inFlightHistoryRef = useRef(new Map<string, Promise<void>>());
   const historyScope = JSON.stringify([
     storageScope,
     transcript?.conversationId ?? null,
@@ -361,13 +339,27 @@ export function ChatSurface({
   const expansionOwnerScopeRef = useRef(expansionOwnerScope);
   const extentScopeRef = useRef(extentScope);
   extentScopeRef.current = extentScope;
-  const estimatedPositionHeightRef = useRef<{
-    scope: string;
-    height: number;
-    calibrated: boolean;
-  } | null>(null);
-
-  const groups = useMemo(() => groupMessagesForDisplay(nodes), [nodes]);
+  const groups = useMemo(() => {
+    const intervals = transcript?.loadedIntervals;
+    if (!intervals || intervals.length <= 1) return groupMessagesForDisplay(nodes);
+    const sections: RenderNode[][] = [];
+    let current: RenderNode[] = [];
+    let currentInterval = -1;
+    for (const node of nodes) {
+      const position = renderNodePosition(node, null);
+      const interval = position === null
+        ? currentInterval
+        : intervals.findIndex((range) => position >= range.start && position <= range.end);
+      if (current.length > 0 && interval !== currentInterval) {
+        sections.push(current);
+        current = [];
+      }
+      current.push(node);
+      currentInterval = interval;
+    }
+    if (current.length > 0) sections.push(current);
+    return sections.flatMap(groupMessagesForDisplay);
+  }, [nodes, transcript?.loadedIntervals]);
   const displayEntriesByGroup = useMemo(() => new Map(groups.map((group) => (
     [group.id, groupActivityItemsForDisplay(group.nodes)] as const
   ))), [groups]);
@@ -379,49 +371,26 @@ export function ChatSurface({
   const measuredGroupSizes = measuredGroupSizesByScope.scope === extentScope
     ? measuredGroupSizesByScope.sizes
     : {};
-  if (estimatedPositionHeightRef.current?.scope !== extentScope) {
-    estimatedPositionHeightRef.current = null;
-  }
-  const coveredPositions = transcript
-    ? loadedPositionCount(transcript.total, transcript.loadedIntervals)
-    : 0;
-  const positionedGroupIds = transcript
-    ? groups.filter((group) => groupPositionCount(group) > 0).map((group) => group.id)
-    : [];
-  const provisionalPositionHeight = coveredPositions > 0 && positionedGroupIds.length > 0
-    ? Math.max(
-      MIN_CANONICAL_POSITION_HEIGHT,
-      (positionedGroupIds.length * ESTIMATED_ROW_HEIGHT) / coveredPositions,
-    )
-    : null;
-  const samples = positionedGroupIds
-    .map((id) => measuredGroupSizes[id])
-    .filter((size): size is number => typeof size === 'number' && size > 0);
-  const neededSamples = Math.min(3, positionedGroupIds.length);
-  const measuredMedian = positionedGroupIds.length > 0
-      && samples.length >= neededSamples
-      && coveredPositions > 0
-    ? median(samples)
-    : null;
-  if (measuredMedian !== null && !estimatedPositionHeightRef.current?.calibrated) {
-    estimatedPositionHeightRef.current = {
-      scope: extentScope,
-      height: Math.max(
-        MIN_CANONICAL_POSITION_HEIGHT,
-        (measuredMedian * positionedGroupIds.length) / coveredPositions,
-      ),
-      calibrated: true,
-    };
-  } else if (!estimatedPositionHeightRef.current && provisionalPositionHeight !== null) {
-    estimatedPositionHeightRef.current = {
-      scope: extentScope,
-      height: provisionalPositionHeight,
-      calibrated: false,
-    };
-  }
-  const estimatedPositionHeight = estimatedPositionHeightRef.current?.scope === extentScope
-    ? estimatedPositionHeightRef.current.height
-    : provisionalPositionHeight ?? MIN_CANONICAL_POSITION_HEIGHT;
+  const structureHeights = useMemo(() => {
+    if (!transcript?.structure || transcript.structure.total !== transcript.total) return null;
+    const prefix = new Float64Array(transcript.total + 1);
+    for (const row of transcript.structure.rows) {
+      const base = row.type === 'user_message' ? 110
+        : row.type === 'assistant_message' ? 155
+        : row.type === 'thinking' ? 55
+        : row.type === 'tool_use' || row.type === 'tool_result' ? 42
+        : 48;
+      const size = Math.min(90, Math.log2(1 + Math.max(0, row.record_length)) * 4);
+      prefix[row.position + 1] = Math.max(MIN_CANONICAL_POSITION_HEIGHT, base + size);
+    }
+    for (let i = 0; i < transcript.total; i += 1) prefix[i + 1] += prefix[i];
+    return prefix;
+  }, [transcript?.structure, transcript?.total]);
+  const estimatedRangeHeight = useCallback((start: number, end: number) =>
+    structureHeights
+      ? structureHeights[end + 1] - structureHeights[start]
+      : (end - start + 1) * ESTIMATED_ROW_HEIGHT,
+  [structureHeights]);
 
   const items = useMemo<VirtualItem[]>(() => {
     const groupPositions = groups.map((group) => group.nodes
@@ -437,7 +406,7 @@ export function ChatSurface({
       const interval = intervalIndex >= 0 ? transcript?.loadedIntervals[intervalIndex] : undefined;
       const intervalGroupCount = intervalIndex >= 0 ? groupCountsByInterval[intervalIndex] : 0;
       const estimatedSize = interval && intervalGroupCount > 0
-        ? ((interval.end - interval.start + 1) * estimatedPositionHeight) / intervalGroupCount
+        ? estimatedRangeHeight(interval.start, interval.end) / intervalGroupCount
         : ESTIMATED_ROW_HEIGHT;
       return {
         item: { kind: 'group', id: group.id, group, estimatedSize },
@@ -449,7 +418,6 @@ export function ChatSurface({
       const missingRanges = missingPositionRanges(transcript.total, transcript.loadedIntervals);
       const gaps: Array<{ item: VirtualItem; position: number }> = missingRanges.map((range) => {
         const key = `gap:${range.start}:${range.end}`;
-        const span = range.end - range.start + 1;
         const scopeKey = `${historyScope}:${key}`;
         return {
           item: {
@@ -460,7 +428,7 @@ export function ChatSurface({
               key: scopeKey,
               start: range.start,
               end: range.end,
-              extentHeight: span * Math.max(MIN_CANONICAL_POSITION_HEIGHT, estimatedPositionHeight),
+              extentHeight: estimatedRangeHeight(range.start, range.end),
               loadState: historyLoadStates[scopeKey] ?? 'idle',
             },
           },
@@ -486,7 +454,7 @@ export function ChatSurface({
     return groupedItems;
   }, [
     activePermissionRequest,
-    estimatedPositionHeight,
+    estimatedRangeHeight,
     groups,
     historyLoadStates,
     historyScope,
@@ -562,29 +530,31 @@ export function ChatSurface({
     key: string,
     load: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>,
   ): Promise<void> => {
-    const current = inFlightHistoryRef.current;
-    if (current) return current.promise;
+    const current = inFlightHistoryRef.current.get(key);
+    if (current) return current;
     const scope = historyScope;
     setHistoryLoadStates((states) => ({ ...states, [key]: 'loading' }));
     const promise = Promise.resolve()
       .then(load)
-      .then((result) => new Promise<ConversationHistoryLoadResult>((resolve) => {
-        window.setTimeout(() => resolve(result), 0);
-      }))
       .then(
         (result): HistoryLoadState => (result === 'failed' ? 'retry' : 'idle'),
         (): HistoryLoadState => 'retry',
       )
       .then((nextState) => {
-        if (inFlightHistoryRef.current?.promise !== promise) return;
-        inFlightHistoryRef.current = null;
+        if (inFlightHistoryRef.current.get(key) !== promise) return;
+        inFlightHistoryRef.current.delete(key);
         if (historyScopeRef.current !== scope) {
           setHistoryLoadStates({});
           return;
         }
-        setHistoryLoadStates((states) => ({ ...states, [key]: nextState }));
+        setHistoryLoadStates((states) => {
+          const updated = { ...states };
+          if (nextState === 'idle') delete updated[key];
+          else updated[key] = nextState;
+          return updated;
+        });
       });
-    inFlightHistoryRef.current = { promise };
+    inFlightHistoryRef.current.set(key, promise);
     return promise;
   }, [historyScope]);
 
@@ -656,7 +626,7 @@ export function ChatSurface({
     const el = scrollRef.current;
     if (!el) return false;
     const requestAnchorPosition = () => {
-      if (anchor.position === null || !transcript || transcript.historyLoading) return;
+      if (anchor.position === null || !transcript) return;
       const key = `anchor:${anchor.position}`;
       if ((historyLoadStates[key] ?? 'idle') === 'idle') {
         void requestHistory(key, () => transcript.loadAround(anchor.position!));
@@ -730,7 +700,7 @@ export function ChatSurface({
     pendingReadingAnchorRef.current = null;
     readingAnchorRef.current = null;
     userScrollIntentRef.current = false;
-    inFlightHistoryRef.current = null;
+    inFlightHistoryRef.current.clear();
   }, [storageScope]);
 
   useEffect(() => {
@@ -881,7 +851,7 @@ export function ChatSurface({
   }, [items, measuredGroupSizes, navigationTarget, restoreReadingAnchor]);
 
   useEffect(() => {
-    if (!transcript || transcript.historyLoading || inFlightHistoryRef.current) return;
+    if (!transcript) return;
     const el = scrollRef.current;
     if (!el) return;
     const rendered = virtualizer.getVirtualItems();

@@ -168,6 +168,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
     return false;
   }
 
+  let boundarySegment = 0;
   for (const event of events) {
     if (event.type === 'chat:item') {
       const canonical = event as CanonicalChatItemEvent;
@@ -175,6 +176,9 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
       const key = chatItemStableKey(item);
       const source = canonical.source;
       const turnId = item.identity.native_turn_id;
+      const turnEventId = boundarySegment > 0
+        ? `${turnId ?? key}@${source?.position ?? key}`
+        : turnId ?? key;
       if (pendingAssistant && pendingCanonicalTurnId && turnId && pendingCanonicalTurnId !== turnId) {
         flushPendingTurn();
       }
@@ -203,10 +207,10 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
         if (!pendingAssistant) {
           pendingAssistant = {
             type: 'assistant',
-            uuid: turnId ?? key,
+            uuid: turnEventId,
             session_id: item.identity.session_id,
             parent_tool_use_id: null,
-            message: { id: turnId ?? key, role: 'assistant', content: [] },
+            message: { id: turnEventId, role: 'assistant', content: [] },
           };
           pendingCanonicalTurnId = turnId;
         }
@@ -229,10 +233,10 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
           if (!pendingAssistant) {
             pendingAssistant = {
               type: 'assistant',
-              uuid: turnId ?? key,
+              uuid: turnEventId,
               session_id: item.identity.session_id,
               parent_tool_use_id: null,
-              message: { id: turnId ?? key, role: 'assistant', content: [] },
+              message: { id: turnEventId, role: 'assistant', content: [] },
             };
             pendingCanonicalTurnId = turnId;
           }
@@ -273,6 +277,9 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
         flushPendingTurn();
         nodes.push({ kind: 'activity', key, entity: item.role, item, source });
       }
+    } else if (event.type === 'transcript:boundary') {
+      flushPendingTurn();
+      boundarySegment += 1;
     } else if (event.type === 'system' && (event as SystemInitEvent).subtype === 'init') {
       initEvent = event as SystemInitEvent;
     } else if (event.type === 'transcript:semantic') {
