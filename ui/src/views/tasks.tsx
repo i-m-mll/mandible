@@ -55,7 +55,7 @@ import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
-import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 
 const TASKS_SELECTION_STATE_KEY = 'mandible.tasks.selection:v1';
 
@@ -845,6 +845,24 @@ function taskSearchText(item: TaskInventoryItem): string {
     item.reminder.lifecycle,
     item.reminder.revision.payload.predicate.kind,
   ].join(' ').toLocaleLowerCase();
+}
+
+export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const inventory = await getTaskInventory();
+  const persisted = readPersistedViewState(
+    TASKS_SELECTION_STATE_KEY,
+    normalizeTasksSelectionState,
+    { selectedKey: null },
+  );
+  const selectedKey = params.task?.trim() || persisted.selectedKey;
+  const selected = inventory.tasks.find((item) => item.key === selectedKey)
+    ?? inventory.tasks[0]
+    ?? null;
+  if (selected?.source_kind !== 'executor') return;
+  await getTaskCommands({
+    executor: selected.executor,
+    taskId: selected.task.task_id,
+  });
 }
 
 export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JSX.Element {

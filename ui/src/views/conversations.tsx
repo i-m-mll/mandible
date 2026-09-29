@@ -41,9 +41,11 @@ import {
   exportConversationBlocks,
   getConversationControl,
   getConversationLiveProjection,
+  getChatShownProjectsPreference,
   getProviderChat,
   getConversationSidebar,
   getConversations,
+  getSidebarOrderPreference,
   getSessionIssues,
   listWorkflows,
   listCanonicalProjects,
@@ -105,9 +107,13 @@ import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import {
   preferredProjectCheckout,
   reconcileShownProjects,
+  DEFAULT_CHAT_VIEW_STATE,
+  CHAT_VIEW_STATE_KEY,
+  normalizeChatViewState,
   useChatProjectSelection,
   useChatViewState,
 } from './conversation-view-state';
+import { readPersistedViewState } from '../hooks/usePersistedViewState';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { useIntrinsicOverflowGroup } from '../hooks/useIntrinsicOverflowGroup';
@@ -369,6 +375,107 @@ export function applyConversationSearchParams(
   if (!query) return;
   params.search = query;
   if (mode === 'full') params.full_text = true;
+}
+
+type ConversationSidebarRequestState = {
+  limit: number;
+  projectIds: string[];
+  lifecycle: 'active' | 'archived';
+  pinnedConversationIds: string[] | null;
+  previewPinOverrides: Record<string, boolean>;
+  previewMutationsRejected: boolean;
+  sourceFilter: ConversationSource | 'all';
+  starredOnly: boolean;
+  hideEmpty: boolean;
+  search: string;
+  searchMode: 'title' | 'full';
+  sort: 'date' | 'blocks';
+};
+
+function buildConversationSidebarFilters(state: ConversationSidebarRequestState): ConversationSidebarFilters {
+  const params: Parameters<typeof getConversationSidebar>[0] = {
+    limit: state.limit,
+    sort: state.sort === 'blocks' ? 'block_count' : 'started_at',
+    exclude_subagents: true,
+    project_ids: state.projectIds,
+    lifecycle: state.lifecycle,
+  };
+  if (state.pinnedConversationIds !== null) {
+    params.pinned_ids = state.pinnedConversationIds;
+  } else if (state.previewMutationsRejected) {
+    params.pinned_ids = Object.entries(state.previewPinOverrides)
+      .flatMap(([id, pinned]) => pinned ? [id] : []);
+  }
+  if (state.sourceFilter !== 'all') params.source = state.sourceFilter;
+  if (state.starredOnly) params.starred = true;
+  if (state.hideEmpty) params.min_blocks = 1;
+  applyConversationSearchParams(params, state.search, state.searchMode);
+  return params;
+}
+
+type ConversationWarmupContext = {
+  settings?: Record<string, string>;
+  instanceInfo?: InstanceInfo | null;
+  sidebarGroupLimit?: number;
+};
+
+const WARMED_CHAT_SIDEBAR_STALE_TIME_MS = 60_000;
+
+export async function warmInitialData(
+  _params: Record<string, string>,
+  context: ConversationWarmupContext = {},
+): Promise<void> {
+  const [projectSnapshot, shownPreference, sidebarOrder] = await Promise.all([
+    listCanonicalProjects()
+      .then((projects) => ({ projects, loaded: true }))
+      .catch(() => ({ projects: [] as CanonicalProject[], loaded: false })),
+    getChatShownProjectsPreference(),
+    getSidebarOrderPreference().catch(() => null),
+  ]);
+  const { projects, loaded: projectsLoaded } = projectSnapshot;
+  const storedViewState = readPersistedViewState(
+    CHAT_VIEW_STATE_KEY,
+    normalizeChatViewState,
+    { ...DEFAULT_CHAT_VIEW_STATE, shownProjects: [] },
+  );
+  const shownProjects = shownPreference.revision === 0 && storedViewState.shownProjects.length > 0
+    ? storedViewState.shownProjects
+    : shownPreference.value;
+  const reconciledShownProjects = projectsLoaded
+    ? reconcileShownProjects(shownProjects, projects)
+    : shownProjects;
+  const registeredSelections = new Set(projects.flatMap((project) => {
+    const checkout = preferredProjectCheckout(project);
+    return checkout ? [`${project.id}\0${checkout.id}`] : [];
+  }));
+  const projectIds = [...new Set(projectsLoaded
+    ? reconciledShownProjects
+      .filter((shown) => registeredSelections.has(`${shown.projectId}\0${shown.checkoutId}`))
+      .map((shown) => shown.projectId)
+    : reconciledShownProjects.map((shown) => shown.projectId))];
+  const previewMutationsRejected = Boolean(
+    context.instanceInfo
+    && context.instanceInfo.allowed_effects?.includes('ledger:write') !== true,
+  );
+  const filters = buildConversationSidebarFilters({
+    limit: context.sidebarGroupLimit ?? normalizeSidebarGroupLimit(undefined),
+    projectIds,
+    lifecycle: storedViewState.conversationLifecycle,
+    pinnedConversationIds: sidebarOrder?.value.pinnedConversationIds ?? null,
+    previewPinOverrides: storedViewState.previewPinOverrides,
+    previewMutationsRejected,
+    sourceFilter: 'all',
+    starredOnly: false,
+    hideEmpty: true,
+    search: '',
+    searchMode: 'title',
+    sort: 'date',
+  });
+  await appQueryClient.fetchQuery({
+    queryKey: conversationKeys.sidebarInitial(filters),
+    queryFn: ({ signal }) => getConversationSidebar({ ...filters, signal }),
+    staleTime: WARMED_CHAT_SIDEBAR_STALE_TIME_MS,
+  });
 }
 
 function isLiveConsoleSession(session: ConsoleSession): boolean {
@@ -3064,24 +3171,20 @@ export function ConversationsView({
   }, [canonicalProjectsLoaded, canonicalProjectsReady, registeredProjects, shownProjects, shownProjectsState.ready]);
 
   const sidebarRequestParams = useCallback((limit: number, projectIds = selectedProjectIds) => {
-    const params: Parameters<typeof getConversationSidebar>[0] = {
+    return buildConversationSidebarFilters({
       limit,
-      sort: sort === 'blocks' ? 'block_count' : 'started_at',
-      exclude_subagents: true,
-      project_ids: projectIds,
+      projectIds,
       lifecycle: conversationLifecycle,
-    };
-    if (sidebarOrder.value.pinnedConversationIds !== null) {
-      params.pinned_ids = sidebarOrder.value.pinnedConversationIds;
-    } else if (previewMutationsRejected) {
-      params.pinned_ids = Object.entries(chatViewState.previewPinOverrides)
-        .flatMap(([id, pinned]) => pinned ? [id] : []);
-    }
-    if (sourceFilter !== 'all') params.source = sourceFilter;
-    if (starredOnly) params.starred = true;
-    if (hideEmpty) params.min_blocks = 1;
-    applyConversationSearchParams(params, search, searchMode);
-    return params;
+      pinnedConversationIds: sidebarOrder.value.pinnedConversationIds,
+      previewPinOverrides: chatViewState.previewPinOverrides,
+      previewMutationsRejected,
+      sourceFilter,
+      starredOnly,
+      hideEmpty,
+      search,
+      searchMode,
+      sort,
+    });
   }, [chatViewState.previewPinOverrides, conversationLifecycle, hideEmpty, previewMutationsRejected, selectedProjectIds, sidebarOrder.value.pinnedConversationIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
   const sidebarFiltersJson = JSON.stringify(sidebarRequestParams(sidebarGroupLimit));
@@ -3102,6 +3205,7 @@ export function ConversationsView({
     queryKey: sidebarQueryKey,
     queryFn: fetchSidebarInitial,
     enabled: sidebarEnabled,
+    staleTime: WARMED_CHAT_SIDEBAR_STALE_TIME_MS,
   }, queryClient);
   const [continuationCacheRevision, setContinuationCacheRevision] = useState(0);
   useEffect(() => queryClient.getQueryCache().subscribe((event) => {

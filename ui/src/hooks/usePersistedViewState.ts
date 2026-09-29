@@ -65,6 +65,15 @@ function loadState<T>(
   return { storageKey, value, serialized: serialize(value) };
 }
 
+/** Read the same normalized browser-local state used by the hook without writing it back. */
+export function readPersistedViewState<T>(
+  storageKey: string,
+  normalize: PersistedViewStateNormalizer<T>,
+  defaults: T,
+): T {
+  return loadState(storageKey, normalize, defaults).value;
+}
+
 /**
  * Persist browser-local view state without coupling it to backend data flow.
  *
