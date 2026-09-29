@@ -477,13 +477,13 @@ describe('ChatSurface stream behavior', () => {
       canonicalEvent(activity(1, 'Outer activity after prose'), 'outer-activity-2'),
     ]} streaming={false} sessionInfo={{ sessionId: 'mixed-boundaries' }} />);
 
-    expect(screen.getByRole('button', { name: 'Read some files, thought, running' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Read some files, thought, running' }));
+    expect(screen.getByRole('button', { name: 'Read some files, thought' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Read some files, thought' }));
     const mixedDetails = view.container.querySelector('.activity-group__members')!;
     expect(mixedDetails.querySelectorAll('.tool-card')).toHaveLength(2);
     expect(mixedDetails.querySelectorAll('.thinking-block')).toHaveLength(1);
     const renderedText = view.container.querySelector('.turn-group__body')!.textContent ?? '';
-    const orderedLabels = ['Prose before activity', 'Read some files, thought, running', 'Prose after activity', 'Outer activity before prose', 'Outer prose', 'Outer activity after prose'];
+    const orderedLabels = ['Prose before activity', 'Read some files, thought', 'Prose after activity', 'Outer activity before prose', 'Outer prose', 'Outer activity after prose'];
     const positions = orderedLabels.map((label) => renderedText.indexOf(label));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((left, right) => left - right));
@@ -1025,6 +1025,55 @@ describe('ChatSurface stream behavior', () => {
     expect(document.querySelector('.tool-card__body .overflow-fade__scroll')).toBeTruthy();
     expect(screen.getByText(/TAIL-MARKER/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /open full/i })).toBeNull();
+  });
+
+  it('hydrates only the individually expanded tool nested inside a compact activity group', async () => {
+    const onExpandDetails = vi.fn();
+    const events: StreamEvent[] = [
+      {
+        type: 'assistant',
+        uuid: 'tool-turn',
+        session_id: 's1',
+        parent_tool_use_id: null,
+        message: {
+          id: 'tool-turn',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: '', source: { blockId: 'call-1', position: 0, detailsLoaded: false } },
+            { type: 'tool_use', id: 'tool-2', name: 'Read', input: '', source: { blockId: 'call-2', position: 1, detailsLoaded: false } },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'tool-results',
+        session_id: 's1',
+        parent_tool_use_id: null,
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'tool-1', content: '', source: { blockId: 'result-1', position: 2, detailsLoaded: false } },
+            { type: 'tool_result', tool_use_id: 'tool-2', content: '', source: { blockId: 'result-2', position: 3, detailsLoaded: false } },
+          ],
+        },
+      },
+      result(),
+    ];
+    const view = render(
+      <ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'nested-tool-expansion' }} onExpandDetails={onExpandDetails} />,
+    );
+
+    const activityGroup = screen.getByRole('button', { name: 'Read some files' });
+    expect(activityGroup.textContent).not.toContain('Running');
+    fireEvent.click(activityGroup);
+    expect(onExpandDetails).not.toHaveBeenCalled();
+
+    const childRows = view.container.querySelectorAll('.activity-group__members .tool-card .compact-activity__row');
+    expect(childRows).toHaveLength(2);
+    expect(childRows[0].textContent).not.toContain('Running');
+    fireEvent.click(childRows[0]);
+    await waitFor(() => expect(onExpandDetails).toHaveBeenCalledTimes(1));
+    expect(onExpandDetails.mock.calls[0][0].map((source: { blockId: string }) => source.blockId)).toEqual(['call-1', 'result-1']);
   });
 
   it('ignores legacy persisted chat disclosure state and starts tools folded', () => {

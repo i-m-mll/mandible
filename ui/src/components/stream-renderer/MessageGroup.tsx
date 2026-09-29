@@ -75,7 +75,7 @@ export function MessageGroup({
         // Find the matching tool result from the user event
         const result: ToolResultContentBlock | null = toolResults.get(block.id) ?? null;
         // Tool disclosures are initially folded in both live and persisted
-        // streams. Running state remains visible in the summary row.
+        // streams. Full input and result content appears only after expansion.
         const defaultExpanded = false;
         const expanded = getBlockExpanded?.(block, index, defaultExpanded);
         inner = (
@@ -88,7 +88,7 @@ export function MessageGroup({
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
             defaultExpanded={defaultExpanded}
             expanded={expanded}
-            onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
+            onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next, result?.source ? [result.source] : [])}
             resultSelected={result?.source ? selectedBlockIds?.has(result.source.blockId) : false}
             selectMode={selectMode}
             onToggleResultSelect={result?.source && onToggleBlockSelect

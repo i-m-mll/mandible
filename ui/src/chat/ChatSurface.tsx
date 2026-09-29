@@ -368,6 +368,9 @@ export function ChatSurface({
   } | null>(null);
 
   const groups = useMemo(() => groupMessagesForDisplay(nodes), [nodes]);
+  const displayEntriesByGroup = useMemo(() => new Map(groups.map((group) => (
+    [group.id, groupActivityItemsForDisplay(group.nodes)] as const
+  ))), [groups]);
   const turns = useMemo(() => extractTurns(nodes), [nodes]);
   const liveLabel = deriveLiveLabel(turns, streaming);
   const tokenCount = deriveTokenCount(turns);
@@ -976,33 +979,67 @@ export function ChatSurface({
     captureReadingAnchor(!transcript?.hasNewer);
   }
 
-  function setBlockExpanded(id: string, expanded: boolean): void {
+  function requestExpandedDetails(sources: readonly (PersistedBlockSource | undefined)[]): void {
+    const unloaded = [...new Map(sources
+      .filter((source): source is PersistedBlockSource => source?.detailsLoaded === false)
+      .map((source) => [source.blockId, source])).values()];
+    if (unloaded.length > 0) void onExpandDetails?.(unloaded);
+  }
+
+  function setBlockExpanded(
+    id: string,
+    expanded: boolean,
+    sources: readonly (PersistedBlockSource | undefined)[] = [],
+  ): void {
     const anchor = captureReadingAnchor();
     if (anchor) pendingReadingAnchorRef.current = anchor;
+    if (expanded) requestExpandedDetails(sources);
     setExpandedBlocks((current) => {
       return { ...current, [id]: expanded };
     });
   }
 
+  const detailRefreshScopeRef = useRef({ owner: expansionOwnerScope, source: historyScope });
   useEffect(() => {
-    const sources: Array<PersistedBlockSource | undefined> = [];
-    for (const node of nodes) {
-      if (node.kind === 'activity' && expandedBlocks[`activity:${node.key}`]) {
-        sources.push(node.source, node.item.type === 'tool-call-activity' ? node.item.result?.source : undefined);
+    const previous = detailRefreshScopeRef.current;
+    detailRefreshScopeRef.current = { owner: expansionOwnerScope, source: historyScope };
+    if (previous.owner !== expansionOwnerScope || previous.source === historyScope) return;
+
+    // Resolve already-expanded individual rows from the exact display entries
+    // used below, including inline activities extracted from assistant turns.
+    const sourcesByKey = new Map<string, PersistedBlockSource[]>();
+    const add = (key: string, sources: Array<PersistedBlockSource | undefined>) => {
+      const available = sources.filter((source): source is PersistedBlockSource => Boolean(source));
+      if (available.length > 0) sourcesByKey.set(key, available);
+    };
+    const addNode = (node: RenderNode) => {
+      if (node.kind === 'activity') {
+        add(`activity:${node.key}`, [
+          node.source,
+          node.item.type === 'tool-call-activity' ? node.item.result?.source : undefined,
+        ]);
+      } else if (node.kind === 'unmatched_tool_result') {
+        add(`unmatched-tool-result:${node.key}`, [node.result.source]);
       } else if (node.kind === 'assistant_turn') {
-        const blocks = node.turn.assistantEvent.message.content;
-        blocks.forEach((contentBlock, index) => {
-          if (!expandedBlocks[blockId(node.turn.id, contentBlock, index)]) return;
-          sources.push(contentBlock.source);
-          if (contentBlock.type === 'tool_use') {
-            sources.push(node.turn.toolResults.get(contentBlock.id)?.source);
-          }
+        node.turn.assistantEvent.message.content.forEach((block, index) => {
+          add(blockId(node.turn.id, block, index), [
+            block.source,
+            block.type === 'tool_use' ? node.turn.toolResults.get(block.id)?.source : undefined,
+          ]);
         });
       }
+    };
+    for (const entries of displayEntriesByGroup.values()) {
+      for (const entry of entries) {
+        if (entry.kind === 'node') addNode(entry.node);
+        else entry.nodes.forEach(addNode);
+      }
     }
-    const unloaded = sources.filter((source): source is PersistedBlockSource => source?.detailsLoaded === false);
-    if (unloaded.length > 0) void onExpandDetails?.(unloaded);
-  }, [expandedBlocks, historyScope, nodes, onExpandDetails]);
+    const expandedSources = Object.entries(expandedBlocks)
+      .filter(([, expanded]) => expanded)
+      .flatMap(([key]) => sourcesByKey.get(key) ?? []);
+    requestExpandedDetails(expandedSources);
+  }, [displayEntriesByGroup, expandedBlocks, expansionOwnerScope, historyScope, onExpandDetails]);
 
   function copyText(text: string): void {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -1063,9 +1100,14 @@ export function ChatSurface({
 
       case 'unmatched_tool_result': {
         const source = node.result.source;
+        const disclosureKey = `unmatched-tool-result:${node.key}`;
         return (
           <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
-            <UnmatchedToolResultBlock result={node.result} />
+            <UnmatchedToolResultBlock
+              result={node.result}
+              expanded={expandedBlocks[disclosureKey]}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
+            />
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
@@ -1097,7 +1139,7 @@ export function ChatSurface({
               result={node.item.result}
               defaultExpanded={false}
               expanded={expanded}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source, resultSource])}
               resultSelected={resultSource ? selectedBlockIds?.has(resultSource.blockId) : false}
               selectMode={selectMode}
               onToggleResultSelect={resultSource && onToggleBlockSelect
@@ -1114,7 +1156,7 @@ export function ChatSurface({
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
               detailsAvailable={source?.detailsLoaded === false}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
             />
           );
         } else {
@@ -1123,7 +1165,7 @@ export function ChatSurface({
               item={node.item}
               expanded={expanded}
               detailsAvailable={source?.detailsLoaded === false}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
               onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
           );
@@ -1163,8 +1205,8 @@ export function ChatSurface({
               getBlockExpanded={(contentBlock, index, defaultExpanded) => (
                 expandedBlocks[blockId(turn.id, contentBlock, index)] ?? defaultExpanded
               )}
-              onBlockExpandedChange={(contentBlock, index, expanded) => (
-                setBlockExpanded(blockId(turn.id, contentBlock, index), expanded)
+              onBlockExpandedChange={(contentBlock, index, expanded, relatedSources = []) => (
+                setBlockExpanded(blockId(turn.id, contentBlock, index), expanded, [contentBlock.source, ...relatedSources])
               )}
               getDisclosureExpanded={(id, defaultExpanded) => expandedBlocks[`${turn.id}:${id}`] ?? defaultExpanded}
               onDisclosureExpandedChange={(id, expanded) => setBlockExpanded(`${turn.id}:${id}`, expanded)}
@@ -1204,7 +1246,7 @@ export function ChatSurface({
         speaker={group.speaker}
         footer={footer}
       >
-        {groupActivityItemsForDisplay(group.nodes).map((entry) => {
+        {(displayEntriesByGroup.get(group.id) ?? []).map((entry) => {
           if (entry.kind === 'node') return renderNodeBody(entry.node);
           const memberRefs = entry.nodes.map((node) => node.source?.blockId
             ?? (node.item.type === 'provider-directive' ? node.item.blockId : null)
