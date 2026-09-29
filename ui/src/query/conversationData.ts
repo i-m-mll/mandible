@@ -46,6 +46,7 @@ export type ConversationTranscriptConsumer = {
   conversationId: string;
   sourceVersionId: string | null;
   historyLoading: boolean;
+  total: number;
   loadedIntervals: readonly ConversationLoadedInterval[];
   hasOlder: boolean;
   hasNewer: boolean;
