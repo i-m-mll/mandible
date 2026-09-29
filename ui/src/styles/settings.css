@@ -78,6 +78,10 @@
   font-weight: 600;
 }
 
+.settings-view [hidden] {
+  display: none !important;
+}
+
 .settings-view__content {
   width: 100%;
   min-width: 0;
@@ -125,6 +129,7 @@
 
 .settings-view__input {
   width: 100%;
+  box-sizing: border-box;
   background: var(--bg-secondary);
   border: 1px solid var(--neutral-alpha-08);
   color: var(--text-primary);
@@ -166,11 +171,19 @@
 }
 
 .settings-view__search-label {
-  display: block;
-  margin-bottom: 6px;
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 600;
+}
+
+.settings-view__toc .settings-view__input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
 }
 
 .settings-view__collection-action {
