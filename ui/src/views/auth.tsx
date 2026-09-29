@@ -1408,6 +1408,7 @@ export function AuthHooksPanel({
   const [loading, setLoading] = useState(readAvailable);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [editSaveError, setEditSaveError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [editSaveState, setEditSaveState] = useState<'idle' | 'incomplete' | 'saving' | 'saved'>('idle');
@@ -1416,6 +1417,11 @@ export function AuthHooksPanel({
   const editSaveRevisionRef = useRef(0);
   const editSaveBaselineRef = useRef<string | null>(null);
   const editSaveQueuedSignatureRef = useRef<string | null>(null);
+  const pendingEditRef = useRef<{
+    id: string;
+    values: { repo_pattern: string; auth_type: AuthRequestType; command: string; label: string };
+    signature: string;
+  } | null>(null);
   const updateAllowed = (id: string) => canPerformOperation(instance, 'PUT', `/api/auth/hooks/${id}`);
   const deleteAllowed = (id: string) => canPerformOperation(instance, 'DELETE', `/api/auth/hooks/${id}`);
   const formChangesAllowed = readAvailable && (editId ? updateAllowed(editId) : createAllowed);
@@ -1432,6 +1438,12 @@ export function AuthHooksPanel({
   const editSignatureRef = useRef(editSignature);
   editSignatureRef.current = editSignature;
 
+  if (showForm && editId && editSignature !== editSaveQueuedSignatureRef.current) {
+    pendingEditRef.current = { id: editId, values: editValues, signature: editSignature };
+  } else {
+    pendingEditRef.current = null;
+  }
+
   const persistEdit = useCallback(async (
     id: string,
     values: typeof editValues,
@@ -1447,7 +1459,7 @@ export function AuthHooksPanel({
     }
     const revision = ++editSaveRevisionRef.current;
     editSaveQueuedSignatureRef.current = signature;
-    setActionError(null);
+    setEditSaveError(null);
     setEditSaveState('saving');
     let succeeded = false;
     editSaveQueueRef.current = editSaveQueueRef.current.catch(() => undefined).then(async () => {
@@ -1461,7 +1473,7 @@ export function AuthHooksPanel({
         }
       } catch (err) {
         if (revision === editSaveRevisionRef.current) {
-          setActionError(err instanceof Error ? err.message : 'Failed to update hook');
+          setEditSaveError(err instanceof Error ? err.message : 'Failed to update hook');
           editSaveQueuedSignatureRef.current = editSaveBaselineRef.current;
           setEditSaveState('idle');
         }
@@ -1469,6 +1481,15 @@ export function AuthHooksPanel({
     });
     await editSaveQueueRef.current;
     return succeeded;
+  }, []);
+
+  const persistEditRef = useRef(persistEdit);
+  persistEditRef.current = persistEdit;
+
+  useEffect(() => () => {
+    if (editSaveTimerRef.current !== null) window.clearTimeout(editSaveTimerRef.current);
+    const pending = pendingEditRef.current;
+    if (pending) void persistEditRef.current(pending.id, pending.values, pending.signature);
   }, []);
 
   useEffect(() => {
@@ -1483,6 +1504,7 @@ export function AuthHooksPanel({
       return;
     }
     setEditSaveState('idle');
+    setEditSaveError(null);
     editSaveTimerRef.current = window.setTimeout(() => {
       editSaveTimerRef.current = null;
       void persistEdit(editId, editValues, editSignature);
@@ -1522,6 +1544,7 @@ export function AuthHooksPanel({
     editSaveRevisionRef.current += 1;
     editSaveBaselineRef.current = null;
     editSaveQueuedSignatureRef.current = null;
+    pendingEditRef.current = null;
     setFormRepo('*');
     setFormType('merge');
     setFormCommand('');
@@ -1529,6 +1552,7 @@ export function AuthHooksPanel({
     setEditId(null);
     setShowForm(false);
     setEditSaveState('idle');
+    setEditSaveError(null);
   };
 
   const handleCreate = async () => {
@@ -1561,8 +1585,9 @@ export function AuthHooksPanel({
     setShowForm(true);
   };
 
-  const handleEdit = (hook: AuthHook) => {
+  const handleEdit = async (hook: AuthHook) => {
     if (!updateAllowed(hook.id)) return;
+    if (editId && editId !== hook.id && !(await handleFinishEdit())) return;
     setFormRepo(hook.repo_pattern);
     setFormType(hook.auth_type as AuthRequestType);
     setFormCommand(hook.command);
@@ -1648,8 +1673,8 @@ export function AuthHooksPanel({
       )}
 
       {showForm && (
-        <div className="auth-hooks-panel__form">
-          <div className="auth-hooks-panel__form-row">
+        <div className="auth-hooks-panel__form" data-settings-searchable>
+          <div className="auth-hooks-panel__form-row" data-settings-searchable>
             <label>Label</label>
             <input
               type="text"
@@ -1660,7 +1685,7 @@ export function AuthHooksPanel({
               aria-label="Hook label"
             />
           </div>
-          <div className="auth-hooks-panel__form-row">
+          <div className="auth-hooks-panel__form-row" data-settings-searchable>
             <label>Repo pattern</label>
             <input
               type="text"
@@ -1671,7 +1696,7 @@ export function AuthHooksPanel({
               aria-label="Repository pattern"
             />
           </div>
-          <div className="auth-hooks-panel__form-row">
+          <div className="auth-hooks-panel__form-row" data-settings-searchable>
             <label>Approval type</label>
             <select
               value={formType}
@@ -1687,7 +1712,7 @@ export function AuthHooksPanel({
               <option value="data-delete">Data Delete</option>
             </select>
           </div>
-          <div className="auth-hooks-panel__form-row">
+          <div className="auth-hooks-panel__form-row" data-settings-searchable>
             <label>Command</label>
             <textarea
               placeholder="Shell command to run after approval action"
@@ -1697,13 +1722,19 @@ export function AuthHooksPanel({
               disabled={!formChangesAllowed}
               aria-label="Hook command"
             />
+            {editId && (editSaveError ? (
+              <span className="auth-hooks-panel__save-status auth-hooks-panel__save-status--error" role="alert">
+                {editSaveError}
+              </span>
+            ) : (
+              <span className="auth-hooks-panel__save-status" role="status" aria-live="polite">
+                {editSaveState === 'saving' ? 'Saving…' : editSaveState === 'saved' ? 'Saved' : editSaveState === 'incomplete' ? 'Enter a repository pattern and command to save' : 'Changes save automatically'}
+              </span>
+            ))}
           </div>
           <div className="auth-hooks-panel__form-actions">
             {editId ? (
               <>
-                <span className="auth-hooks-panel__save-status" role="status" aria-live="polite">
-                  {editSaveState === 'saving' ? 'Saving…' : editSaveState === 'saved' ? 'Saved' : editSaveState === 'incomplete' ? 'Enter a repository pattern and command to save' : 'Changes save automatically'}
-                </span>
                 <button type="button" className="btn btn--sm btn--ghost" onClick={() => void handleFinishEdit()}>
                   Done
                 </button>
@@ -1742,6 +1773,7 @@ export function AuthHooksPanel({
           {hooks.map((hook) => (
             <div
               key={hook.id}
+              data-settings-searchable
               className={`auth-hooks-panel__item${!hook.enabled ? ' auth-hooks-panel__item--disabled' : ''}${hook.builtin ? ' auth-hooks-panel__item--builtin' : ''}`}
             >
               <div className="auth-hooks-panel__item-header">
@@ -1775,7 +1807,7 @@ export function AuthHooksPanel({
                   <button
                     type="button"
                     className="auth-hooks-panel__item-action"
-                    onClick={() => handleEdit(hook)}
+                    onClick={() => void handleEdit(hook)}
                     disabled={!updateAllowed(hook.id)}
                     aria-label={`Edit ${hook.label || hook.command}`}
                     title="Edit hook"
