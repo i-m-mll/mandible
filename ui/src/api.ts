@@ -483,8 +483,8 @@ type InflightGetRequest = {
 const DEFAULT_GET_CACHE_TTL_MS = 1_000;
 const DEFAULT_GET_CACHE_STALE_MS = 4_000;
 const WARMED_ROUTE_GET_OPTIONS = {
-  ttlMs: DEFAULT_GET_CACHE_TTL_MS,
-  staleWhileRevalidateMs: 60_000,
+  ttlMs: 60_000,
+  staleWhileRevalidateMs: 0,
 };
 const getJsonCache = new Map<string, CachedJsonEntry>();
 const inflightGetJson = new Map<string, InflightGetRequest>();

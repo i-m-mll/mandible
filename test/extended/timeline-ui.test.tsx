@@ -341,6 +341,7 @@ function TimelineView({ active = true, ...props }: TimelineViewProps & { active?
     active,
     rightSidebar,
     registerRightSidebar,
+    registerInitialRouteLoad: () => undefined,
     updateRightSidebar,
     setViewSidebarWidth: () => undefined,
   }), [active, rightSidebar, registerRightSidebar, updateRightSidebar]);

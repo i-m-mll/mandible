@@ -22,7 +22,7 @@ import { shortRouteId } from '../routing';
 import { renderInlineMarkdown } from '../lib/markdown';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
-import { useAppShell } from '../app-shell';
+import { useAppShell, useRegisterInitialRouteLoad } from '../app-shell';
 import {
   LEDGER_ISSUE_KINDS,
   LEDGER_ISSUE_RESOLUTIONS,
@@ -539,6 +539,7 @@ export function IssuesView({
   sidebarHidden = false,
 }: IssuesViewProps): JSX.Element {
   const appShell = useAppShell();
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const normalizedDefaultFilter = useMemo(
     () => normalizeIssueDefaultFilter(defaultFilter),
     [defaultFilter],
@@ -833,6 +834,10 @@ export function IssuesView({
     const fullDetail = repoId
       ? getLedgerIssueDetailByRef(repoId, issueId)
       : getLedgerIssueDetailByIssueId(issueId);
+    registerInitialRouteLoad(Promise.allSettled([
+      ...(initialDetail ? [initialDetail] : []),
+      fullDetail,
+    ]));
     if (initialDetail) {
       initialDetail
         .then((detail) => {
@@ -861,7 +866,7 @@ export function IssuesView({
     return () => {
       if (detailRequestSeqRef.current === requestSeq) detailRequestSeqRef.current += 1;
     };
-  }, [selectedRepoId, selectedIssueId]);
+  }, [registerInitialRouteLoad, selectedRepoId, selectedIssueId]);
 
   const selectIssue = useCallback((repoId: string, issueId: string) => {
     const cachedDetail = getCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId);

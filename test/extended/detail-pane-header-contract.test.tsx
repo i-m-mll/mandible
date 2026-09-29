@@ -58,6 +58,7 @@ describe('canonical detail pane header', () => {
           active: true,
           rightSidebar: descriptor,
           registerRightSidebar: () => () => undefined,
+          registerInitialRouteLoad: () => undefined,
           updateRightSidebar: () => undefined,
           setRightSidebarOpen: () => undefined,
           setViewSidebarWidth: () => undefined,

@@ -19,6 +19,7 @@ function shell(active: boolean): AppShellContextValue {
     active,
     rightSidebar: null,
     registerRightSidebar: () => () => undefined,
+    registerInitialRouteLoad: () => undefined,
     setViewSidebarWidth: () => undefined,
   };
 }

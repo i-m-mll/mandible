@@ -140,6 +140,7 @@ function Fixture(): JSX.Element {
     active: true,
     rightSidebar,
     registerRightSidebar,
+    registerInitialRouteLoad: () => undefined,
     updateRightSidebar,
     setViewSidebarWidth: () => undefined,
   }), [registerRightSidebar, rightSidebar, updateRightSidebar]);

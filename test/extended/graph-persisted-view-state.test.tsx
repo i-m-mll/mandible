@@ -60,6 +60,7 @@ function renderGraph(refreshToken = 0) {
   const value: AppShellContextValue = {
     rightSidebar: null,
     registerRightSidebar,
+    registerInitialRouteLoad: () => undefined,
     updateRightSidebar,
     setViewSidebarWidth: () => undefined,
     active: true,

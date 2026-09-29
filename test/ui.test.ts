@@ -176,6 +176,7 @@ const render: typeof testingRender = (view, options) => {
     noticeHost,
     rightSidebar: null,
     registerRightSidebar: () => () => undefined,
+    registerInitialRouteLoad: () => undefined,
     updateRightSidebar: () => undefined,
   } }, content);
   const result = testingRender(wrap(view), options);
@@ -939,6 +940,7 @@ describe('app shell', () => {
     const shell = useMemo<AppShellContextValue>(() => ({
       rightSidebar,
       registerRightSidebar,
+      registerInitialRouteLoad: () => undefined,
       updateRightSidebar,
       setViewSidebarWidth: () => undefined,
       active: true,
@@ -2211,6 +2213,7 @@ describe('app shell', () => {
       const shell = useMemo<AppShellContextValue>(() => ({
         rightSidebar: null,
         registerRightSidebar,
+        registerInitialRouteLoad: () => undefined,
         updateRightSidebar,
         setViewSidebarWidth: () => undefined,
         active: true,
