@@ -52,20 +52,19 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (refreshedSourceGeneration > 0) {
       transformedSourceRequests.push(url);
       payload.source_version_id = `source-refresh-${refreshedSourceGeneration}`;
-    } else {
-      const legacyIds = new Map((payload.blocks ?? []).flatMap((block) => (
-        block.id ? [[block.id, legacyBlockId(block.position)] as const] : []
-      )));
-      for (const block of payload.blocks ?? []) {
-        if (block.parent_id) block.parent_id = legacyIds.get(block.parent_id) ?? block.parent_id;
-        block.id = legacyBlockId(block.position);
-      }
-      if (payload.target?.block_id) {
-        payload.target.block_id = legacyIds.get(payload.target.block_id) ?? payload.target.block_id;
-      }
-      if (payload.target?.turn_id) {
-        payload.target.turn_id = legacyIds.get(payload.target.turn_id) ?? payload.target.turn_id;
-      }
+    }
+    const sourceIds = new Map((payload.blocks ?? []).flatMap((block) => (
+      block.id ? [[block.id, legacyBlockId(block.position)] as const] : []
+    )));
+    for (const block of payload.blocks ?? []) {
+      if (block.parent_id) block.parent_id = sourceIds.get(block.parent_id) ?? block.parent_id;
+      block.id = legacyBlockId(block.position);
+    }
+    if (payload.target?.block_id) {
+      payload.target.block_id = sourceIds.get(payload.target.block_id) ?? payload.target.block_id;
+    }
+    if (payload.target?.turn_id) {
+      payload.target.turn_id = sourceIds.get(payload.target.turn_id) ?? payload.target.turn_id;
     }
     response = new Response(JSON.stringify(payload), {
       status: response.status,
@@ -173,7 +172,7 @@ window.__sourceBackedHistory = {
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const transcript = queryClient.getQueryData<{
       source_version_id?: string | null;
-      blocks?: Array<{ id: string }>;
+      blocks?: Array<{ id: string; position?: number }>;
     }>(['chat', 'conversation', conversationId, 'aggregate']);
     const readingAnchor = (() => {
       const entry = Object.entries(window.localStorage).find(([key]) => key.includes('chat-scroll'));
@@ -189,6 +188,7 @@ window.__sourceBackedHistory = {
       anchorBlockLoaded: Boolean(readingAnchor?.blockId && transcript?.blocks?.some((block) => (
         block.id === readingAnchor.blockId
       ))),
+      anchorBlockPosition: transcript?.blocks?.find((block) => block.id === readingAnchor?.blockId)?.position ?? null,
       mountedRows: document.querySelectorAll('.stream-renderer__virtual-row').length,
       historyRows: document.querySelectorAll('.stream-renderer__history-state').length,
       maximumMountedRows,
