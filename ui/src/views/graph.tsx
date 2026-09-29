@@ -30,7 +30,7 @@ import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpa
 import { appColors } from '../theme';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
-import { AppOperationalNoticeOutlet, useRegisterAppRightSidebar } from '../app-shell';
+import { AppOperationalNoticeOutlet, useRegisterAppRightSidebar, useRegisterInitialRouteLoad } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
@@ -250,8 +250,8 @@ function graphRequestForSpec(spec: GraphSpecState) {
     mode: spec.preset,
     since: spec.since === 'all' ? undefined : spec.since,
     status: spec.status === 'all' ? 'all' as const : undefined,
-    repos: spec.repos,
-    branches: spec.branches,
+    repo: spec.repos.join(',') || undefined,
+    branch: spec.branches.join(',') || undefined,
     limit: spec.limit,
     nodeTypes: spec.nodeTypes,
     edgeTypes: spec.edgeTypes,
@@ -938,6 +938,9 @@ export function GraphView({
   initialFocus,
   sidebarHidden = false,
 }: GraphViewProps): JSX.Element {
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
+  const registerInitialRouteLoadRef = useRef(registerInitialRouteLoad);
+  registerInitialRouteLoadRef.current = registerInitialRouteLoad;
   const routeMode = coerceGraphMode(initialMode);
   const [payloadState, setPayloadState] = useState<{
     requestKey: string | null;
@@ -994,7 +997,7 @@ export function GraphView({
     if (cached) setPayloadState({ requestKey: graphRequestKey, value: cached });
     setLoading(true);
     setError(null);
-    getGraph(graphRequest)
+    const initialRead = getGraph(graphRequest)
       .then((result) => {
         const data = result as GraphPayload;
         if (!active) return;
@@ -1020,6 +1023,8 @@ export function GraphView({
       .finally(() => {
         if (active) setLoading(false);
       });
+    registerInitialRouteLoadRef.current(initialRead);
+    void initialRead;
     return () => {
       active = false;
     };

@@ -18,7 +18,7 @@ import {
   type BriefingSubmissionOverlaySummary,
   type InstanceInfo,
 } from '../../api';
-import { useAppShell } from '../../app-shell';
+import { useAppShell, useRegisterInitialRouteLoad } from '../../app-shell';
 import { DetailHeaderIdentity } from '../../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
 import { DetailPaneMenuTrigger } from '../../components/shared/DetailPaneMenuTrigger';
@@ -138,6 +138,9 @@ export function BriefingDocumentRenderer({
   keepSubmittedAnnotations = false,
 }: BriefingDocumentRendererProps): JSX.Element {
   const { active } = useAppShell();
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
+  const registerInitialRouteLoadRef = useRef(registerInitialRouteLoad);
+  registerInitialRouteLoadRef.current = registerInitialRouteLoad;
   const [load, setLoad] = useState<LoadState>(() => ({
     round: readPersistedDetail<BriefingProjection>(
       BRIEFING_PROJECTION_CACHE_NAMESPACE,
@@ -259,7 +262,9 @@ export function BriefingDocumentRenderer({
     setClearBusy(false);
     currentSelection.current = selectionKey(null);
     onBriefingChange?.(null);
-    void reconcile(null);
+    const initialRead = reconcile(null);
+    registerInitialRouteLoadRef.current(initialRead);
+    void initialRead;
   }, [briefingId, displayContext?.groupId, displayContext?.proposalBundleId, roundId]);
 
   useEffect(() => {

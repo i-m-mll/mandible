@@ -71,6 +71,7 @@ import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigge
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { useRegisterInitialRouteLoad } from '../app-shell';
 import { artifactLinkBadgeLabel } from '../lib/format';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -182,16 +183,12 @@ function artifactRouteSelection(input: {
   };
 }
 
-function artifactSeriesListRequest(
-  filters: ArtifactFilters,
-  initialRepo?: string,
-  initialRole?: string,
-): ArtifactQueryParams {
+function artifactSeriesListRequest(filters: ArtifactFilters): ArtifactQueryParams {
   return {
     q: filters.q || undefined,
-    repo: initialRepo || filters.repo || undefined,
+    repo: filters.repo || undefined,
     provider: filters.provider || undefined,
-    role: initialRole || filters.role || undefined,
+    role: filters.role || undefined,
     custody: filters.custody || undefined,
     availability: filters.availability || undefined,
     scheme: filters.scheme || undefined,
@@ -258,6 +255,7 @@ export function ArtifactsView({
   initialRole,
   sidebarHidden = false,
 }: ArtifactsViewProps): JSX.Element {
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const routeSelection = artifactRouteSelection({
     artifactId: initialArtifactId,
     ref: initialRef,
@@ -304,6 +302,8 @@ export function ArtifactsView({
   const deepLinkActiveRef = useRef(routeSelection.hasDeepLink);
   const listRequestIdRef = useRef(0);
   const facetRequestIdRef = useRef(0);
+  const seriesListReadRef = useRef<Promise<void>>(Promise.resolve());
+  const facetListReadRef = useRef<Promise<void>>(Promise.resolve());
   const versionsRequestIdRef = useRef(0);
   const artifactRequestIdRef = useRef(0);
   const contentRequestIdRef = useRef(0);
@@ -387,7 +387,7 @@ export function ArtifactsView({
     setLoading(true);
     setError(null);
     try {
-      const next = await getArtifactSeriesList(artifactSeriesListRequest(filters, initialRepo, initialRole));
+      const next = await getArtifactSeriesList(artifactSeriesListRequest(filters));
       if (listRequestIdRef.current !== requestId) return;
       const ordered = sortArtifactSeries(next, sortField, sortDirection);
       setSeries(ordered);
@@ -411,10 +411,12 @@ export function ArtifactsView({
         setLoading(false);
       }
     }
-  }, [filters, initialRepo, initialRole, sortDirection, sortField]);
+  }, [filters, sortDirection, sortField]);
 
   useEffect(() => {
-    void loadSeries();
+    const read = loadSeries();
+    seriesListReadRef.current = read;
+    void read;
   }, [loadSeries]);
 
   const loadFacetSeries = useCallback(async () => {
@@ -435,8 +437,15 @@ export function ArtifactsView({
   }, [filters.q, filters.location]);
 
   useEffect(() => {
-    void loadFacetSeries();
+    const read = loadFacetSeries();
+    facetListReadRef.current = read;
+    void read;
   }, [loadFacetSeries]);
+
+  useEffect(() => {
+    if ((initialRepo && filters.repo !== initialRepo) || (initialRole && filters.role !== initialRole)) return;
+    registerInitialRouteLoad(Promise.all([seriesListReadRef.current, facetListReadRef.current]));
+  }, [filters.repo, filters.role, initialRepo, initialRole, loadFacetSeries, loadSeries, registerInitialRouteLoad]);
 
   useEffect(() => {
     if (!initialArtifactId) return;
@@ -2702,7 +2711,7 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     role: params.role || viewState.filters.role,
   };
   const ordered = sortArtifactSeries(
-    await getArtifactSeriesList(artifactSeriesListRequest(listFilters, params.repo, params.role)),
+    await getArtifactSeriesList(artifactSeriesListRequest(listFilters)),
     viewState.sortField,
     viewState.sortDirection,
   );
