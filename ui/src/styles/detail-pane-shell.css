@@ -136,7 +136,7 @@
 .detail-pane-header {
   width: 100%;
   min-width: 0;
-  padding: 20px var(--app-header-inline-inset);
+  padding: var(--app-header-control-block-inset) var(--app-header-inline-inset) 20px;
   border-bottom: 1px solid var(--neutral-alpha-06);
 }
 

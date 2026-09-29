@@ -90,7 +90,6 @@ a {
 }
 
 .app-shell {
-  --app-header-height: 48px;
   --app-left-chrome-height: var(--app-header-height);
   --app-left-boundary-width: 0px;
   --app-rail-inline-padding: 12px;
@@ -163,14 +162,22 @@ a {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: var(--app-header-control-size);
+  height: var(--app-header-control-size);
   margin-left: auto;
+  margin-inline-end: calc(0px - var(--app-header-control-icon-inline-inset));
+  padding: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
+}
+
+.app-right-sidebar-toggle > svg {
+  width: var(--app-header-control-icon-size);
+  height: var(--app-header-control-icon-size);
+  flex: none;
 }
 
 .app-right-sidebar-toggle:is(:hover, :focus-visible),
@@ -1228,6 +1235,7 @@ a {
 
 :root[data-native-glass='regular'] .app-header {
   background: var(--surface-glass-tint);
+  border-bottom-color: var(--app-divider);
 }
 
 :root[data-native-glass='regular'] .app-rail,
