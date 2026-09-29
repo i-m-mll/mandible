@@ -309,6 +309,7 @@ export function ChatSurface({
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
   const [followingTail, setFollowingTail] = useState(false);
   const userScrollIntentRef = useRef(false);
+  const lastUserScrollTopRef = useRef<number | null>(null);
   const scrollEndCleanupRef = useRef<(() => void) | null>(null);
   const [historyLoadStates, setHistoryLoadStates] = useState<Record<string, HistoryLoadState>>({});
   const [measuredGroupSizesByScope, setMeasuredGroupSizesByScope] = useState<{
@@ -688,6 +689,7 @@ export function ChatSurface({
     pendingReadingAnchorRef.current = null;
     readingAnchorRef.current = null;
     userScrollIntentRef.current = false;
+    lastUserScrollTopRef.current = null;
     inFlightHistoryRef.current.clear();
   }, [storageScope]);
 
@@ -709,7 +711,10 @@ export function ChatSurface({
     scrollRef.current = node;
     registerScrollOwner?.(node);
     if (node) {
-      const handleScrollEnd = () => { userScrollIntentRef.current = false; };
+      const handleScrollEnd = () => {
+        userScrollIntentRef.current = false;
+        lastUserScrollTopRef.current = null;
+      };
       node.addEventListener('scrollend', handleScrollEnd);
       scrollEndCleanupRef.current = () => node.removeEventListener('scrollend', handleScrollEnd);
       setViewportHeight(node.clientHeight || 720);
@@ -821,6 +826,10 @@ export function ChatSurface({
   useLayoutEffect(() => {
     const pending = pendingReadingAnchorRef.current;
     if (!pending || navigationTarget) return;
+    if (userScrollIntentRef.current) {
+      pendingReadingAnchorRef.current = null;
+      return;
+    }
     restoreReadingAnchor(pending);
   }, [distanceFromBottom, expandedBlocks, items, navigationTarget, restoreReadingAnchor, virtualItems]);
 
@@ -832,6 +841,7 @@ export function ChatSurface({
     const previous = itemIdentitySignatureRef.current;
     itemIdentitySignatureRef.current = signature;
     if (previous === null || previous === signature || navigationTarget) return;
+    if (userScrollIntentRef.current) return;
     const anchor = readingAnchorRef.current;
     if (!anchor || anchor.followingTail) return;
     pendingReadingAnchorRef.current = anchor;
@@ -851,8 +861,10 @@ export function ChatSurface({
       key: string,
       load: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>,
     ) => {
-      const anchor = readingAnchorRef.current ?? captureReadingAnchor();
-      if (anchor && !anchor.followingTail) pendingReadingAnchorRef.current = anchor;
+      if (!userScrollIntentRef.current) {
+        const anchor = captureReadingAnchor();
+        if (anchor && !anchor.followingTail) pendingReadingAnchorRef.current = anchor;
+      }
       void requestHistory(key, load);
     };
     for (const item of items) {
@@ -889,7 +901,9 @@ export function ChatSurface({
     // Direct scroll input supersedes a deferred virtual-row restore. The ensuing
     // scroll event captures the new anchor before data can change.
     userScrollIntentRef.current = true;
+    lastUserScrollTopRef.current = scrollRef.current?.scrollTop ?? null;
     pendingReadingAnchorRef.current = null;
+    setFollowingTail(false);
     setHistoryLoadStates((states) => {
       const pending = Object.entries(states).filter(([, state]) => state === 'loading');
       return pending.length === Object.keys(states).length ? states : Object.fromEntries(pending);
@@ -919,9 +933,13 @@ export function ChatSurface({
     const userScrollIntent = userScrollIntentRef.current;
     setViewportHeight(nextViewportHeight);
     setDistanceFromBottom(nextDistance);
-    if (pendingReadingAnchorRef.current) return;
+    if (pendingReadingAnchorRef.current && !userScrollIntent) return;
     if (!userScrollIntent) return;
+    pendingReadingAnchorRef.current = null;
+    const movingDown = lastUserScrollTopRef.current === null || el.scrollTop >= lastUserScrollTopRef.current;
+    lastUserScrollTopRef.current = el.scrollTop;
     const nextFollowingTail = nextDistance <= FOLLOW_THRESHOLD_PX
+      && movingDown
       && !transcript?.hasNewer
       && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
     setFollowingTail(nextFollowingTail);

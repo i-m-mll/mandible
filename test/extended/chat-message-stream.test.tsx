@@ -722,6 +722,46 @@ describe('ChatSurface stream behavior', () => {
     });
   });
 
+  it('does not restore a stale anchor while the user is scrolling upward', () => {
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function clientHeight() {
+      return this.classList.contains('stream-renderer__scroll') ? 500 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function scrollHeight() {
+      if (!this.classList.contains('stream-renderer__scroll')) return 0;
+      return Number.parseFloat(this.querySelector<HTMLElement>('.stream-renderer__virtual-canvas')?.style.height ?? '0');
+    });
+    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = Number(options.top ?? 0);
+      this.dispatchEvent(new Event('scroll'));
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
+    const events = Array.from({ length: 40 }, (_, index) => [
+      user(`prompt ${index}`, `u${index}`),
+      assistantText(`answer ${index}`, `a${index}`),
+    ]).flat();
+    const { container, rerender } = render(
+      <ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'scrolling-anchor' }} />,
+    );
+    const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    scroll.scrollTop = 2000;
+    fireEvent.wheel(scroll, { deltaY: -100 });
+    fireEvent.scroll(scroll);
+    fireEvent.wheel(scroll, { deltaY: -100 });
+    scroll.scrollTop = 1700;
+    const previousScrollCalls = scrollTo.mock.calls.length;
+
+    rerender(
+      <ChatSurface
+        events={[...events, user('new prompt', 'new-u')]}
+        streaming={false}
+        sessionInfo={{ sessionId: 'scrolling-anchor' }}
+      />,
+    );
+
+    expect(scroll.scrollTop).toBe(1700);
+    expect(scrollTo.mock.calls.length).toBe(previousScrollCalls);
+  });
+
   it('anchors Chat-only message actions and restores focus on Escape', async () => {
     vi.stubGlobal('innerWidth', 800);
     vi.stubGlobal('innerHeight', 600);
