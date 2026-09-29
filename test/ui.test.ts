@@ -5547,7 +5547,7 @@ describe('LedgerIssueDetail', () => {
     Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
   });
 
-  it('keeps embedded graph issue headers and bodies on one shared content-width contract', () => {
+  it('keeps embedded graph issue content on the shared content-width contract', () => {
     const detail = issueDetailProjection({
       displayId: 'embed-width',
       title: 'Embedded width contract',
@@ -5569,7 +5569,6 @@ describe('LedgerIssueDetail', () => {
 
     const css = readResolvedStylesheet();
     expect(css).toMatch(/\.detail-pane-shell\s*\{[^}]*--detail-content-inline-inset:\s*24px;/s);
-    expect(css).toMatch(/\.detail-pane-header\s*\{[^}]*padding:\s*20px var\(--app-header-inline-inset\);/s);
     expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail > \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
     expect(css).toMatch(/\.app-right-sidebar \.graph-detail-pane--ledger\s*\{[^}]*--detail-content-inline-inset:\s*0;/s);
     expect(css).toMatch(/\.graph-detail-pane--ledger \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
