@@ -2621,7 +2621,7 @@ function App(): JSX.Element {
       icon: SettingsIcon,
     }].find((item) => item.tab === route.tab)?.title ?? 'Mandible'
   );
-  const rightSidebarAvailable = true;
+  const rightSidebarAvailable = route.tab !== 'settings';
   const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
   const viewSidebarAvailable = Boolean(viewSidebarGeometry);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
