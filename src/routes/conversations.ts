@@ -559,6 +559,58 @@ export function registerConversationRoutes(
     ...sourceFreshness,
     ...(waitForFresh === undefined ? {} : { waitForFresh }),
   });
+  const activeDisplayConversations = new Set<string>();
+  const freshnessChecksInFlight = new Set<string>();
+  const freshnessFailureLoggedAt = new Map<string, number>();
+  let selectedConversationFreshnessTimer: ReturnType<typeof setInterval> | null = null;
+  let selectedConversationFreshnessTickRunning = false;
+  const trackSelectedConversation = (conversationId: string) => {
+    if (process.env.MANDIBLE_INSTANCE_ROLE !== "preview") return;
+    activeDisplayConversations.delete(conversationId);
+    activeDisplayConversations.add(conversationId);
+    while (activeDisplayConversations.size > 16) {
+      const oldest = activeDisplayConversations.keys().next().value;
+      if (oldest === undefined) break;
+      activeDisplayConversations.delete(oldest);
+      freshnessFailureLoggedAt.delete(oldest);
+    }
+    if (selectedConversationFreshnessTimer) return;
+    // Preview instances intentionally skip root watchers and full reconciliation.
+    // Keep recently selected display views fresh with the same bounded extent
+    // check and exact-path scheduler used by the request path. This reads source
+    // metadata and its tail, never the whole transcript or every source root.
+    selectedConversationFreshnessTimer = setInterval(() => {
+      if (selectedConversationFreshnessTickRunning) return;
+      selectedConversationFreshnessTickRunning = true;
+      const activeIds = [...activeDisplayConversations.keys()];
+      void Promise.all(activeIds.map(async (activeId) => {
+        if (freshnessChecksInFlight.has(activeId)) return;
+        freshnessChecksInFlight.add(activeId);
+        try {
+          await ensureFresh(activeId, false);
+          freshnessFailureLoggedAt.delete(activeId);
+        } catch (error) {
+          const now = Date.now();
+          if (now - (freshnessFailureLoggedAt.get(activeId) ?? 0) >= 60_000) {
+            freshnessFailureLoggedAt.set(activeId, now);
+            console.warn("selected conversation freshness check failed", {
+              conversation_id: activeId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        } finally {
+          freshnessChecksInFlight.delete(activeId);
+        }
+      })).catch((error) => {
+        console.error("selected conversation freshness tick failed", error);
+      }).finally(() => {
+        selectedConversationFreshnessTickRunning = false;
+      });
+    }, 2_000);
+    if (typeof selectedConversationFreshnessTimer === "object" && "unref" in selectedConversationFreshnessTimer) {
+      selectedConversationFreshnessTimer.unref();
+    }
+  };
 
   // --- Static routes MUST be registered before parameterized :id routes ---
 
@@ -1277,6 +1329,7 @@ export function registerConversationRoutes(
       sendJson(res, 400, { error: "view must be display when provided" });
       return;
     }
+    if (displayView) trackSelectedConversation(id);
     const sourceBacked = conversationRequiresSourceReader(db, id);
     const useSourceReader = displayView || sourceBacked
       || query.source_backed === "true" || query.source_backed === "1";
