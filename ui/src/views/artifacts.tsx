@@ -18,7 +18,7 @@ import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
-import { shortRouteId } from '../routing';
+import { parseArtifactVersionParam, shortRouteId } from '../routing';
 import { PRODUCTION_ORIGIN } from '../../../src/canonical-origin';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
@@ -44,6 +44,7 @@ import {
   type ArtifactDraftRecord,
   type ArtifactLinkRecord,
   type ArtifactRecord,
+  type ArtifactQueryParams,
   type ArtifactResolveResult,
   type ArtifactSeriesRecord,
   type ArtifactSeriesSummary,
@@ -70,9 +71,10 @@ import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigge
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { useRegisterInitialRouteLoad } from '../app-shell';
 import { artifactLinkBadgeLabel } from '../lib/format';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
-import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { briefingRoute } from '../routing';
 
 type ArtifactsViewProps = {
@@ -152,6 +154,59 @@ function normalizeArtifactListViewState(value: unknown): ArtifactListViewState {
   };
 }
 
+type ArtifactRouteSelection = {
+  artifactId?: string;
+  ref?: string;
+  seriesRef: string | null;
+  versionNo: number | null;
+  hasDeepLink: boolean;
+  hasInvalidSeries: boolean;
+};
+
+function artifactRouteSelection(input: {
+  artifactId?: string;
+  ref?: string;
+  seriesRef?: string;
+  versionNo?: number | null;
+}): ArtifactRouteSelection {
+  const artifactId = input.artifactId?.trim() || undefined;
+  const ref = input.ref?.trim() || undefined;
+  const rawSeriesRef = input.seriesRef?.trim() || undefined;
+  const seriesRef = rawSeriesRef ? normalizeInitialSeriesRef(rawSeriesRef) : null;
+  return {
+    artifactId,
+    ref,
+    seriesRef,
+    versionNo: input.versionNo ?? null,
+    hasDeepLink: Boolean(artifactId || ref || rawSeriesRef),
+    hasInvalidSeries: Boolean(rawSeriesRef && !seriesRef),
+  };
+}
+
+function artifactSeriesListRequest(filters: ArtifactFilters): ArtifactQueryParams {
+  return {
+    q: filters.q || undefined,
+    repo: filters.repo || undefined,
+    provider: filters.provider || undefined,
+    role: filters.role || undefined,
+    custody: filters.custody || undefined,
+    availability: filters.availability || undefined,
+    scheme: filters.scheme || undefined,
+    location: filters.location || undefined,
+    limit: 200,
+    summary: true,
+  };
+}
+
+function artifactSelectedSeriesRef(
+  current: string | null,
+  hasDeepLink: boolean,
+  ordered: readonly ArtifactSeriesSummary[],
+): string | null {
+  if (current || hasDeepLink || !ordered[0]) return current;
+  return seriesRef(ordered[0]);
+}
+
 type BundleMemberPreview = {
   artifactId: string;
   role: string;
@@ -200,7 +255,14 @@ export function ArtifactsView({
   initialRole,
   sidebarHidden = false,
 }: ArtifactsViewProps): JSX.Element {
-  const initialSeriesSelection = initialSeriesRef ? normalizeInitialSeriesRef(initialSeriesRef) : null;
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
+  const routeSelection = artifactRouteSelection({
+    artifactId: initialArtifactId,
+    ref: initialRef,
+    seriesRef: initialSeriesRef,
+    versionNo: initialVersionNo,
+  });
+  const initialSeriesSelection = routeSelection.seriesRef;
   const [listViewState, setListViewState] = usePersistedViewState(
     ARTIFACT_LIST_STATE_KEY,
     normalizeArtifactListViewState,
@@ -209,15 +271,15 @@ export function ArtifactsView({
   const { filters, sortField, sortDirection } = listViewState;
   const [series, setSeries] = useState<ArtifactSeriesSummary[]>([]);
   const [selectedSeriesRef, setSelectedSeriesRef] = useState<string | null>(
-    initialArtifactId || initialRef
+    routeSelection.artifactId || routeSelection.ref
       ? null
-      : initialSeriesSelection ?? listViewState.selectedSeriesRef,
+      : initialSeriesSelection ?? (routeSelection.hasDeepLink ? null : listViewState.selectedSeriesRef),
   );
   const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(
-    initialArtifactId || initialRef || (initialSeriesRef && !initialSeriesSelection)
+    routeSelection.artifactId || routeSelection.ref || routeSelection.hasInvalidSeries
       ? null
       : initialSeriesSelection
-        ? initialVersionNo
+        ? routeSelection.versionNo
         : listViewState.selectedVersionNo,
   );
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(initialArtifactId ?? null);
@@ -237,16 +299,18 @@ export function ArtifactsView({
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [detailMetadataOpen, setDetailMetadataOpen] = useState(false);
   const [facetSeries, setFacetSeries] = useState<ArtifactSeriesSummary[]>([]);
-  const deepLinkActiveRef = useRef(Boolean(initialArtifactId || initialRef || initialSeriesRef));
+  const deepLinkActiveRef = useRef(routeSelection.hasDeepLink);
   const listRequestIdRef = useRef(0);
   const facetRequestIdRef = useRef(0);
+  const seriesListReadRef = useRef<Promise<void>>(Promise.resolve());
+  const facetListReadRef = useRef<Promise<void>>(Promise.resolve());
   const versionsRequestIdRef = useRef(0);
   const artifactRequestIdRef = useRef(0);
   const contentRequestIdRef = useRef(0);
   const knowledgeRequestIdRef = useRef(0);
   const lastWrittenHashRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
   const lastAppliedInitialSeriesRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(
-    initialSeriesSelection ? { seriesRef: initialSeriesSelection, versionNo: initialVersionNo } : null,
+    initialSeriesSelection ? { seriesRef: initialSeriesSelection, versionNo: routeSelection.versionNo } : null,
   );
 
   useEffect(() => {
@@ -264,7 +328,7 @@ export function ArtifactsView({
   }, [initialRole, setListViewState]);
 
   useEffect(() => {
-    deepLinkActiveRef.current = Boolean(initialArtifactId || initialRef || initialSeriesRef);
+    deepLinkActiveRef.current = routeSelection.hasDeepLink;
   }, [initialArtifactId, initialRef, initialSeriesRef]);
 
   const applyResolutionSelection = useCallback((next: ArtifactResolveResult, options?: { forcePinned?: boolean }) => {
@@ -323,24 +387,12 @@ export function ArtifactsView({
     setLoading(true);
     setError(null);
     try {
-      const next = await getArtifactSeriesList({
-        q: filters.q || undefined,
-        repo: filters.repo || undefined,
-        provider: filters.provider || undefined,
-        role: filters.role || undefined,
-        custody: filters.custody || undefined,
-        availability: filters.availability || undefined,
-        scheme: filters.scheme || undefined,
-        location: filters.location || undefined,
-        limit: 200,
-        summary: true,
-      });
+      const next = await getArtifactSeriesList(artifactSeriesListRequest(filters));
       if (listRequestIdRef.current !== requestId) return;
       const ordered = sortArtifactSeries(next, sortField, sortDirection);
       setSeries(ordered);
       setSelectedSeriesRef((current) => {
-        if (current || deepLinkActiveRef.current || !ordered[0]) return current;
-        return seriesRef(ordered[0]);
+        return artifactSelectedSeriesRef(current, deepLinkActiveRef.current, ordered);
       });
       setSelectedArtifactId((current) => {
         if (current || deepLinkActiveRef.current || !ordered[0]?.latest_version) return current;
@@ -362,7 +414,9 @@ export function ArtifactsView({
   }, [filters, sortDirection, sortField]);
 
   useEffect(() => {
-    void loadSeries();
+    const read = loadSeries();
+    seriesListReadRef.current = read;
+    void read;
   }, [loadSeries]);
 
   const loadFacetSeries = useCallback(async () => {
@@ -383,8 +437,15 @@ export function ArtifactsView({
   }, [filters.q, filters.location]);
 
   useEffect(() => {
-    void loadFacetSeries();
+    const read = loadFacetSeries();
+    facetListReadRef.current = read;
+    void read;
   }, [loadFacetSeries]);
+
+  useEffect(() => {
+    if ((initialRepo && filters.repo !== initialRepo) || (initialRole && filters.role !== initialRole)) return;
+    registerInitialRouteLoad(Promise.all([seriesListReadRef.current, facetListReadRef.current]));
+  }, [filters.repo, filters.role, initialRepo, initialRole, loadFacetSeries, loadSeries, registerInitialRouteLoad]);
 
   useEffect(() => {
     if (!initialArtifactId) return;
@@ -2618,4 +2679,106 @@ function entityHref(type: string, id: string, repoId: string | null): string {
   if (type === 'session') return `#/sessions?session=${encodeURIComponent(id)}`;
   if (type === 'provider_manifest') return `#/graph?mode=provider-lineage&focus=${encodeURIComponent(id)}`;
   return `#/graph?focus=${encodeURIComponent(id)}`;
+}
+
+async function warmArtifactDetail(artifactId: string, knownArtifact: ArtifactRecord | null): Promise<void> {
+  const artifact = knownArtifact?.id === artifactId ? knownArtifact : await getArtifact(artifactId);
+  writePersistedDetail('artifact-record', detailRequestKey('artifact-record', { id: artifactId }), artifact);
+  const [content, backrefs] = await Promise.all([
+    getArtifactContent(artifactId),
+    getArtifactKnowledgeBackrefs(artifactId),
+  ]);
+  writePersistedDetail('artifact-content', detailRequestKey('artifact-content', { id: artifactId }), content);
+  writePersistedDetail('artifact-backrefs', detailRequestKey('artifact-backrefs', { id: artifactId }), backrefs);
+}
+
+/** Warm the Artifacts list and only its explicit, saved, or default selection. */
+export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const selection = artifactRouteSelection({
+    artifactId: params.artifact,
+    ref: params.ref,
+    seriesRef: params.series,
+    versionNo: parseArtifactVersionParam(params.version),
+  });
+  const viewState = readPersistedViewState(
+    ARTIFACT_LIST_STATE_KEY,
+    normalizeArtifactListViewState,
+    DEFAULT_ARTIFACT_LIST_STATE,
+  );
+  const listFilters = {
+    ...viewState.filters,
+    repo: params.repo || viewState.filters.repo,
+    role: params.role || viewState.filters.role,
+  };
+  const ordered = sortArtifactSeries(
+    await getArtifactSeriesList(artifactSeriesListRequest(listFilters)),
+    viewState.sortField,
+    viewState.sortDirection,
+  );
+
+  let selectedSeriesRef: string | null = null;
+  let selectedVersionNo: number | null = null;
+  let selectedArtifactId: string | null = null;
+  let resolvedArtifact: ArtifactRecord | null = null;
+  let loadedHistory: ArtifactVersionHistory | null = null;
+
+  if (selection.artifactId || selection.ref) {
+    const resolution = await resolveArtifact(selection.artifactId ?? selection.ref ?? '');
+    if (resolution.target_type === 'artifact_blob') return;
+    resolvedArtifact = resolution.artifact;
+    selectedSeriesRef = resolution.logical_artifact
+      ? canonicalArtifactSeriesRef(resolution.logical_artifact.id)
+      : null;
+    const forcePinned = Boolean(selection.artifactId) && !/^artifact-series:/i.test(resolution.ref);
+    const latestTracking = resolution.warnings?.includes('series_latest_not_pinned') && !forcePinned;
+    selectedVersionNo = resolution.artifact_version && !latestTracking
+      ? resolution.artifact_version.version_no
+      : null;
+    selectedArtifactId = resolution.artifact?.id ?? resolution.artifact_version?.id ?? null;
+
+    if (selection.artifactId && resolution.artifact && !resolution.logical_artifact && !resolution.artifact_version) {
+      try {
+        loadedHistory = sortedVersionHistory(await getArtifactVersions(resolution.artifact.id));
+        writePersistedDetail(
+          'artifact-versions',
+          detailRequestKey('artifact-versions', { ref: resolution.artifact.id }),
+          loadedHistory,
+        );
+        const pinnedVersion = loadedHistory.versions.find((version) => version.artifact_id === resolution.artifact?.id) ?? null;
+        if (pinnedVersion) {
+          selectedSeriesRef = seriesRecordRef(loadedHistory.series);
+          selectedVersionNo = pinnedVersion.version_no;
+          selectedArtifactId = resolution.artifact.id;
+        }
+      } catch (error) {
+        if (!isApiErrorStatus(error, 404)) throw error;
+      }
+    }
+  } else if (selection.hasInvalidSeries) {
+    return;
+  } else {
+    selectedSeriesRef = selection.seriesRef
+      ?? viewState.selectedSeriesRef
+      ?? (selection.hasDeepLink ? null : (ordered[0] ? seriesRef(ordered[0]) : null));
+    selectedVersionNo = selection.seriesRef
+      ? selection.versionNo
+      : viewState.selectedSeriesRef ? viewState.selectedVersionNo : null;
+  }
+
+  if (selectedSeriesRef) {
+    loadedHistory = loadedHistory && seriesRecordRef(loadedHistory.series) === selectedSeriesRef
+      ? loadedHistory
+      : sortedVersionHistory(await getArtifactVersions(selectedSeriesRef));
+    writePersistedDetail(
+      'artifact-versions',
+      detailRequestKey('artifact-versions', { ref: selectedSeriesRef }),
+      loadedHistory,
+    );
+    const selectedVersion = selectedVersionNo === null
+      ? loadedHistory.versions[0] ?? null
+      : loadedHistory.versions.find((version) => version.version_no === selectedVersionNo) ?? null;
+    selectedArtifactId = selectedVersion?.artifact_id ?? null;
+  }
+
+  if (selectedArtifactId) await warmArtifactDetail(selectedArtifactId, resolvedArtifact);
 }

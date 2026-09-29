@@ -18,7 +18,7 @@ import {
   type BriefingSubmissionOverlaySummary,
   type InstanceInfo,
 } from '../../api';
-import { useAppShell } from '../../app-shell';
+import { useAppShell, useRegisterInitialRouteLoad } from '../../app-shell';
 import { DetailHeaderIdentity } from '../../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
 import { DetailPaneMenuTrigger } from '../../components/shared/DetailPaneMenuTrigger';
@@ -26,6 +26,7 @@ import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import { readPersistedDetail, writePersistedDetail } from '../../detail-cache';
 import { artifactDetailHref, displayResourceRef } from '../../resource-refs';
 import { shortRouteId } from '../../routing';
 import {
@@ -37,6 +38,10 @@ import {
   type BriefingDraftScope,
 } from './briefing-round-view-state';
 import { BriefingDocumentPanel } from './BriefingDocumentPanel';
+import {
+  briefingProjectionCacheKey,
+  BRIEFING_PROJECTION_CACHE_NAMESPACE,
+} from './briefing-projection-cache';
 
 export type BriefingDocumentRendererProps = {
   briefingId: string;
@@ -133,7 +138,17 @@ export function BriefingDocumentRenderer({
   keepSubmittedAnnotations = false,
 }: BriefingDocumentRendererProps): JSX.Element {
   const { active } = useAppShell();
-  const [load, setLoad] = useState<LoadState>({ round: null, loading: true, error: null });
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
+  const registerInitialRouteLoadRef = useRef(registerInitialRouteLoad);
+  registerInitialRouteLoadRef.current = registerInitialRouteLoad;
+  const [load, setLoad] = useState<LoadState>(() => ({
+    round: readPersistedDetail<BriefingProjection>(
+      BRIEFING_PROJECTION_CACHE_NAMESPACE,
+      briefingProjectionCacheKey(briefingId, roundId, null, displayContext),
+    ),
+    loading: true,
+    error: null,
+  }));
   const [userId, setUserId] = useState<string | null>(null);
   const [userKind, setUserKind] = useState<string | null>(null);
   const [draft, setDraft] = useState<BriefingDraft>({});
@@ -178,7 +193,9 @@ export function BriefingDocumentRenderer({
   const reconcile = useCallback(async (overlayId: string | null = selectedOverlayId) => {
     const sequence = ++loadSequence.current;
     const expectedSelection = selectionKey(overlayId);
-    setLoad((current) => ({ ...current, loading: true, error: null }));
+    const cacheKey = briefingProjectionCacheKey(briefingId, roundId, overlayId, displayContext);
+    const cached = readPersistedDetail<BriefingProjection>(BRIEFING_PROJECTION_CACHE_NAMESPACE, cacheKey);
+    setLoad((current) => ({ ...current, round: cached ?? current.round, loading: true, error: null }));
     try {
       const [identity, round] = await Promise.all([
         getClientAuthWhoami(),
@@ -186,6 +203,7 @@ export function BriefingDocumentRenderer({
       ]);
       if (sequence !== loadSequence.current || currentSelection.current !== expectedSelection) return null;
       if (round.briefing_id !== briefingId || (roundId && !round.selected_round_id.startsWith(roundId))) throw new Error('The Briefing service returned a mismatched immutable round.');
+      writePersistedDetail(BRIEFING_PROJECTION_CACHE_NAMESPACE, cacheKey, round);
       const nextUserId = identity.authenticated ? identity.user?.id ?? null : null;
       setUserId(nextUserId);
       setUserKind(identity.user?.kind ?? null);
@@ -218,7 +236,14 @@ export function BriefingDocumentRenderer({
   useEffect(() => {
     loadSequence.current += 1;
     mutationSequence.current += 1;
-    setLoad({ round: null, loading: true, error: null });
+    setLoad({
+      round: readPersistedDetail<BriefingProjection>(
+        BRIEFING_PROJECTION_CACHE_NAMESPACE,
+        briefingProjectionCacheKey(briefingId, roundId, null, displayContext),
+      ),
+      loading: true,
+      error: null,
+    });
     setUserId(null);
     setUserKind(null);
     setBusy(false);
@@ -237,7 +262,9 @@ export function BriefingDocumentRenderer({
     setClearBusy(false);
     currentSelection.current = selectionKey(null);
     onBriefingChange?.(null);
-    void reconcile(null);
+    const initialRead = reconcile(null);
+    registerInitialRouteLoadRef.current(initialRead);
+    void initialRead;
   }, [briefingId, displayContext?.groupId, displayContext?.proposalBundleId, roundId]);
 
   useEffect(() => {

@@ -469,6 +469,7 @@ describe('additive app chrome-edge geometry and pixels', () => {
     expect(mirrors).toContain('--app-boundary-shadow-direction: to left');
     expect(mirrors).not.toMatch(/divider|box-shadow/);
     expect(ruleBody(base, '.app-header')).toContain('border-bottom: 1px solid var(--neutral-alpha-06)');
+    expect(ruleBody(base, ":root[data-native-glass='regular'] .app-header")).toContain('border-bottom-color: var(--app-divider)');
     expect(ruleBody(base, '.app-rail__footer')).toContain('border-top: 1px solid var(--neutral-alpha-06)');
     expect(active).not.toContain('var(--border-muted)');
     expect(base).not.toMatch(/agent_session|19422|user-agent|location\.search/);

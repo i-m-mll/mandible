@@ -1,11 +1,14 @@
 import { CompactActivityRow } from '../shared/ChatDisclosure';
-import { plainActivityHeader } from './ActivityBlock';
+import { plainActivityHeader } from './activityText';
+import { LightbulbIcon } from '../icons/TabIcons';
 
 export type ThinkingBlockProps = {
   content: string;
   defaultCollapsed?: boolean;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
+  memberRefs?: string;
+  detailsAvailable?: boolean;
 };
 
 export function ThinkingBlock({
@@ -13,15 +16,19 @@ export function ThinkingBlock({
   defaultCollapsed = true,
   expanded,
   onExpandedChange,
+  memberRefs,
+  detailsAvailable = false,
 }: ThinkingBlockProps): JSX.Element {
   const parts = content.split('\n').map((line) => plainActivityHeader(line).trim()).filter(Boolean);
-  const summary = parts[0] ?? 'Thinking';
+  const summary = parts[0] ?? 'Thought';
   const remaining = parts.slice(1);
   return (
     <CompactActivityRow
       className="thinking-block"
+      icon={<LightbulbIcon />}
       summary={summary}
-      disclosure={remaining.length > 0 ? {
+      memberRefs={memberRefs}
+      disclosure={remaining.length > 0 || detailsAvailable ? {
         content: <div className="thinking-block__body"><pre>{remaining.join('\n')}</pre></div>,
         regionLabel: `${summary} details`,
         defaultExpanded: !defaultCollapsed,

@@ -1,8 +1,14 @@
+import { HistoryIcon, LightbulbIcon, MonitorIcon } from '../icons/TabIcons';
+
 export function ToolActivityIcon({ icon, className }: {
   icon: string;
   className?: string;
 }): JSX.Element {
   if (icon !== 'terminal') {
+    if (icon === 'tool') return <MonitorIcon className={className} />;
+    if (icon === 'wait') return <HistoryIcon className={className} />;
+    if (icon === 'thought') return <LightbulbIcon className={className} />;
+    if (icon === 'javascript') return <span className={className} aria-hidden="true">JS</span>;
     return <span className={className} aria-hidden="true">{icon}</span>;
   }
   return (

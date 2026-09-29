@@ -24,6 +24,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useSidebarReorder } from '../../hooks/useSidebarReorder';
+import { useRegisterInitialRouteLoad } from '../../app-shell';
 
 import {
   listSpacesGrouped,
@@ -243,6 +244,17 @@ function applyOrder(projectGroups: KeyedGroup[], order: string[]): KeyedGroup[] 
   return ordered;
 }
 
+export function defaultInitialSpaceId(groups: readonly SpaceGroup[]): string | null {
+  const topLevel = groups.find((group) => group.project_id === null);
+  const projectGroups = groups
+    .filter((group) => group.project_id !== null)
+    .map((group) => ({ key: groupKey(group), group }));
+  const orderedProjects = applyOrder(projectGroups, loadOrder());
+  return topLevel?.spaces[0]?.id
+    ?? orderedProjects.flatMap(({ group }) => group.spaces)[0]?.id
+    ?? null;
+}
+
 const PlusIcon = (): JSX.Element => (
   <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false">
     <path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" />
@@ -260,6 +272,7 @@ export function SpacesSidebar({
   refreshToken,
   onSelectedSpaceResolved,
 }: SpacesSidebarProps): JSX.Element | null {
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [groups, setGroups] = useState<SpaceGroup[]>(() => loadCachedGroups());
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -291,7 +304,7 @@ export function SpacesSidebar({
     let active = true;
     setLoading(true);
     setLoadError(null);
-    loadGroups()
+    const initialLoad = loadGroups()
       .then((next) => {
         if (active) {
           setGroups(next);
@@ -305,10 +318,11 @@ export function SpacesSidebar({
       .finally(() => {
         if (active) setLoading(false);
       });
+    registerInitialRouteLoad(initialLoad);
     return () => {
       active = false;
     };
-  }, [loadGroups, refreshToken, internalRefresh]);
+  }, [internalRefresh, loadGroups, refreshToken, registerInitialRouteLoad]);
 
   const refresh = useCallback(() => setInternalRefresh((n) => n + 1), []);
 

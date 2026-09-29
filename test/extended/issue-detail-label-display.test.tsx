@@ -46,6 +46,11 @@ function detail(labels: string[]): LedgerIssueDetailProjection {
   } as LedgerIssueDetailProjection;
 }
 
+function openWorkingNotes(): void {
+  fireEvent.click(screen.getByRole('button', { name: 'Issue actions' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Working notes' }));
+}
+
 describe('issue detail label presentation', () => {
   it('displays labels as free-form metadata without hiding metadata-shaped names', () => {
     render(<LedgerIssueDetail detail={detail([
@@ -126,6 +131,8 @@ describe('issue detail label presentation', () => {
 
     render(<LedgerIssueDetail detail={projection} />);
 
+    expect(document.querySelector('.ledger-issue-detail__body .ledger-work-notes-body')).toBeNull();
+    openWorkingNotes();
     expect(document.querySelector('.ledger-work-notes-body')?.textContent).toContain('Current notes');
     expect(screen.getByText('Working notes updated')).toBeTruthy();
     expect(document.querySelector('.ledger-work-notes-history')?.hasAttribute('open')).toBe(false);
@@ -146,6 +153,7 @@ describe('issue detail label presentation', () => {
       <LedgerIssueDetail detail={initial} onUpdateWorkNotes={onUpdateWorkNotes} />,
     );
 
+    openWorkingNotes();
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     const editor = screen.getByRole('textbox', { name: 'Working notes' }) as HTMLTextAreaElement;
     fireEvent.input(editor, { target: { value: 'Draft kept locally' } });
@@ -174,13 +182,15 @@ describe('issue detail label presentation', () => {
     const onUpdateWorkNotes = vi.fn(async () => undefined);
     const view = render(<LedgerIssueDetail detail={initial} onUpdateWorkNotes={onUpdateWorkNotes} />);
 
+    openWorkingNotes();
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.input(screen.getByRole('textbox', { name: 'Working notes' }), { target: { value: 'Issue one draft' } });
     view.rerender(<LedgerIssueDetail detail={other} onUpdateWorkNotes={onUpdateWorkNotes} />);
     expect(screen.queryByRole('textbox', { name: 'Working notes' })).toBeNull();
-    expect(screen.getByText('Issue two notes')).toBeTruthy();
+    expect(screen.queryByText('Issue two notes')).toBeNull();
 
     view.rerender(<LedgerIssueDetail detail={{ ...initial, work_notes: 'Remote first notes', work_notes_revision: 'remote-first-revision' }} onUpdateWorkNotes={onUpdateWorkNotes} />);
+    openWorkingNotes();
     await waitFor(() => expect((screen.getByRole('textbox', { name: 'Working notes' }) as HTMLTextAreaElement).value).toBe('Issue one draft'));
     fireEvent.click(screen.getByRole('button', { name: 'Save notes' }));
     await waitFor(() => expect(onUpdateWorkNotes).toHaveBeenCalledWith('Issue one draft', null));
@@ -194,11 +204,13 @@ describe('issue detail label presentation', () => {
     const onUpdateWorkNotes = vi.fn(() => new Promise<void>((resolve) => { resolveSave = resolve; }));
     const view = render(<LedgerIssueDetail detail={initial} onUpdateWorkNotes={onUpdateWorkNotes} />);
 
+    openWorkingNotes();
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.input(screen.getByRole('textbox', { name: 'Working notes' }), { target: { value: 'Old issue save' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save notes' }));
     view.rerender(<LedgerIssueDetail detail={other} onUpdateWorkNotes={onUpdateWorkNotes} />);
     resolveSave?.();
+    openWorkingNotes();
     await waitFor(() => expect(screen.getByText('Issue two notes')).toBeTruthy());
     expect(screen.queryByText('Old issue save')).toBeNull();
   });

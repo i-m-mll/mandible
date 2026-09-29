@@ -22,7 +22,8 @@ type Geometry = {
   footerBottom: number;
   firstTurnBottom: number;
   nextEventTop: number;
-  secondActionOffset: number;
+  secondActionPosition: string;
+  secondActionWithinEvent: boolean;
   collapsedHeight: number;
   expandedHeight: number;
   wideHeight: number;
@@ -98,7 +99,11 @@ describe('Chat turn geometry', () => {
           footerBottom: footerRect.bottom,
           firstTurnBottom: rect('[data-turn="first"]').bottom,
           nextEventTop: rect('[data-event="next"]').top,
-          secondActionOffset: secondAction.top - secondAfterResize.top,
+          secondActionPosition: getComputedStyle(document.querySelector('[data-second-actions]')).position,
+          secondActionWithinEvent: secondAction.left >= secondAfterResize.left
+            && secondAction.right <= secondAfterResize.right
+            && secondAction.top >= secondAfterResize.top
+            && secondAction.bottom <= secondAfterResize.bottom,
           collapsedHeight,
           expandedHeight,
           wideHeight,
@@ -124,7 +129,8 @@ describe('Chat turn geometry', () => {
       expect(geometry.footerFocused).toBe(true);
       expect(geometry.footerBottom).toBeLessThanOrEqual(geometry.firstTurnBottom);
       expect(geometry.footerBottom).toBeLessThan(geometry.nextEventTop);
-      expect(geometry.secondActionOffset).toBe(6);
+      expect(geometry.secondActionPosition).toBe('static');
+      expect(geometry.secondActionWithinEvent).toBe(true);
       expect(geometry.expandedHeight).toBeGreaterThan(geometry.collapsedHeight);
       expect(geometry.narrowHeight).toBeGreaterThan(geometry.wideHeight);
     } finally {

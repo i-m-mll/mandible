@@ -6,18 +6,45 @@ import type { ProviderDirective } from '../message-blocks/providerDirectives';
 export type ProviderDirectiveActivity = {
   type: 'provider-directive';
   directive: ProviderDirective;
-  turnId: string;
+  turnId?: string;
+  sessionId: string;
+  provider?: string;
   blockId: string | null;
   sequence: number;
 };
 
-export type DisplayActivityItem = ActivityItem | ProviderDirectiveActivity;
+export type ToolCallActivity = {
+  type: 'tool-call-activity';
+  id: string;
+  name: string;
+  toolKind?: string;
+  input: Record<string, unknown> | string;
+  result: ToolResultContentBlock | null;
+  turnId?: string;
+  sessionId: string;
+  sourceIdentity?: {
+    provider: string;
+    sessionId: string;
+    turnId?: string;
+  };
+};
+
+export type ThinkingBlockActivity = {
+  type: 'thinking-block-activity';
+  content: string;
+  turnId?: string;
+  sessionId: string;
+};
+
+export type DisplayActivityItem = ActivityItem | ProviderDirectiveActivity | ToolCallActivity | ThinkingBlockActivity;
 
 // ---- Raw event types (as emitted by Claude Code --output-format stream-json) ----
 
 export type PersistedBlockSource = {
   blockId: string;
   position?: number;
+  /** False when a display projection omitted expandable block payload. */
+  detailsLoaded?: boolean;
   /** Exact persisted parent link; a present value proves a result is not orphaned. */
   parentBlockId?: string;
   timestamp?: string;
@@ -27,6 +54,11 @@ export type PersistedBlockSource = {
 export type TextContentBlock = {
   type: 'text';
   text: string;
+  sourceIdentity?: {
+    provider: string;
+    sessionId: string;
+    turnId?: string;
+  };
   source?: PersistedBlockSource;
 };
 
@@ -46,7 +78,13 @@ export type ToolUseContentBlock = {
   type: 'tool_use';
   id: string;
   name: string;
+  toolKind?: string;
   input: Record<string, unknown> | string;
+  sourceIdentity?: {
+    provider: string;
+    sessionId: string;
+    turnId?: string;
+  };
   source?: PersistedBlockSource;
 };
 
@@ -254,7 +292,7 @@ export interface MessageGroupProps {
   /** True if this turn contains a thinking block and is still streaming — shows "thinking…" indicator. */
   isThinking?: boolean;
   getBlockExpanded?: (block: ContentBlock, index: number, defaultExpanded: boolean) => boolean;
-  onBlockExpandedChange?: (block: ContentBlock, index: number, expanded: boolean) => void;
+  onBlockExpandedChange?: (block: ContentBlock, index: number, expanded: boolean, relatedSources?: PersistedBlockSource[]) => void;
   getDisclosureExpanded?: (id: string, defaultExpanded: boolean) => boolean;
   onDisclosureExpandedChange?: (id: string, expanded: boolean) => void;
   selectedBlockIds?: ReadonlySet<string>;

@@ -200,6 +200,24 @@ const THEME_COLOR_BY_RESOLVED_THEME = {
   light: '#FFFFFF',
 } as const;
 type RenderableTab = Exclude<Route['tab'], 'chat-history'>;
+type RouteInitialDataContext = {
+  settings: Record<string, string>;
+  instanceInfo: InstanceInfo | null;
+  sidebarGroupLimit: number;
+};
+type RouteInitialDataWarmer = (
+  params: Record<string, string>,
+  context: RouteInitialDataContext,
+) => Promise<void>;
+type RouteDataLoadOptions = { background?: boolean; route?: Route };
+
+async function warmRouteModule(
+  module: { warmInitialData: RouteInitialDataWarmer },
+  params: Record<string, string>,
+  context: RouteInitialDataContext,
+): Promise<void> {
+  await module.warmInitialData(params, context);
+}
 
 const RENDERABLE_TABS: RenderableTab[] = [
   'overview',
@@ -279,10 +297,39 @@ const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>
   tasks: loadTasksView,
 };
 
+const ROUTE_INITIAL_DATA_WARMERS: Partial<Record<RenderableTab, RouteInitialDataWarmer>> = {
+  artifacts: async (params, context) => warmRouteModule(await import('./views/artifacts'), params, context),
+  graph: async (params, context) => warmRouteModule(await import('./views/graph'), params, context),
+  briefing: async (params, context) => warmRouteModule(await import('./views/briefing'), params, context),
+  logs: async (params, context) => warmRouteModule(await import('./views/logs'), params, context),
+  overview: async (params, context) => warmRouteModule(await import('./views/session-overview'), params, context),
+  tasks: async (params, context) => warmRouteModule(await import('./views/tasks'), params, context),
+  spaces: async (params, context) => warmRouteModule(await import('./views/spaces/SpacesTab'), params, context),
+  timeline: async (params, context) => warmRouteModule(await import('./views/timeline'), params, context),
+  issues: async (params, context) => warmRouteModule(await import('./views/issues'), params, context),
+  console: async (params, context) => warmRouteModule(await import('./views/conversations'), params, context),
+};
+
+type IdleRouteWindow = Window & {
+  requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+  cancelIdleCallback?: (handle: number) => void;
+};
+
+function scheduleRouteWarmup(callback: () => void): () => void {
+  const idleWindow = window as IdleRouteWindow;
+  if (idleWindow.requestIdleCallback) {
+    const handle = idleWindow.requestIdleCallback(callback, { timeout: 1_500 });
+    return () => idleWindow.cancelIdleCallback?.(handle);
+  }
+  const handle = window.setTimeout(callback, 150);
+  return () => window.clearTimeout(handle);
+}
+
 const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
   rightSidebar: null,
   registerRightSidebar: () => () => undefined,
   updateRightSidebar: () => undefined,
+  registerInitialRouteLoad: () => undefined,
   setViewSidebarWidth: () => undefined,
   // Keep keep-alive route sidebars in controlled mode while hidden so they
   // cannot republish a stale local hook value over the active route's storage.
@@ -737,7 +784,28 @@ function App(): JSX.Element {
   // effect need not re-run (and re-register handlers) on every route change.
   const routeTabRef = useRef(route.tab);
   routeTabRef.current = route.tab;
-  const loadVisibleRouteDataRef = useRef<(tab: Route['tab']) => void>(() => undefined);
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const tabRouteSnapshotsRef = useRef(tabRouteSnapshots);
+  tabRouteSnapshotsRef.current = tabRouteSnapshots;
+  const routeInitialDataContextRef = useRef<RouteInitialDataContext>({
+    settings: state.settings,
+    instanceInfo,
+    sidebarGroupLimit: normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit']),
+  });
+  routeInitialDataContextRef.current = {
+    settings: state.settings,
+    instanceInfo,
+    sidebarGroupLimit: normalizeSidebarGroupLimit(state.settings['conversations.sidebar_group_limit']),
+  };
+  const routeWarmupSettingsLoadRef = useRef<Promise<void>>(Promise.resolve());
+  const activeRouteDataLoadRef = useRef<Promise<void>>(Promise.resolve());
+  const activeRouteInitialLoadsRef = useRef(new Set<Promise<unknown>>());
+  const startupRouteWarmupStartedRef = useRef(false);
+  const loadVisibleRouteDataRef = useRef<(
+    tab: Route['tab'],
+    options?: RouteDataLoadOptions,
+  ) => Promise<void>>(() => Promise.resolve());
 
   const registerRightSidebar = useCallback((ownerId: string) => {
     rightSidebarOwnerRef.current = ownerId;
@@ -750,6 +818,15 @@ function App(): JSX.Element {
   const updateRightSidebar = useCallback((ownerId: string, descriptor: AppRightSidebarDescriptor) => {
     if (rightSidebarOwnerRef.current !== ownerId) return;
     setRegisteredRightSidebar((current) => current === descriptor ? current : descriptor);
+  }, []);
+  const registerInitialRouteLoad = useCallback((promise: Promise<unknown>) => {
+    const pending = activeRouteInitialLoadsRef.current;
+    if (pending.has(promise)) return;
+    pending.add(promise);
+    void promise.then(
+      () => pending.delete(promise),
+      () => pending.delete(promise),
+    );
   }, []);
   const fallbackRightSidebar = useMemo<AppRightSidebarDescriptor>(() => ({
     id: 'app-preview',
@@ -795,13 +872,14 @@ function App(): JSX.Element {
     rightSidebar,
     registerRightSidebar,
     updateRightSidebar,
+    registerInitialRouteLoad,
     setRightSidebarOpen,
     setViewSidebarWidth,
     viewSidebarWidth,
     active: true,
     noticeHost,
     registerMainNoticeHost,
-  }), [noticeHost, registerMainNoticeHost, rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
+  }), [noticeHost, registerMainNoticeHost, registerInitialRouteLoad, rightSidebar, registerRightSidebar, setRightSidebarOpen, setViewSidebarWidth, updateRightSidebar, viewSidebarWidth]);
 
   const effectiveSettings = useMemo(() => (
     hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
@@ -1044,19 +1122,35 @@ function App(): JSX.Element {
     }
   }, []);
 
-  const loadWorkData = useCallback(async (includeBranches: boolean) => {
+  const loadWorkData = useCallback(async (
+    includeBranches: boolean,
+    options: RouteDataLoadOptions = {},
+  ) => {
     const repos = await getWorkRepos<WorkRepo>();
     dispatch({ type: 'setWorkRepos', repos });
     if (!includeBranches) return;
-    await Promise.all(repos.map(async (repo) => {
+    const loadRepoBranches = async (repo: WorkRepo) => {
       const repoId = getRepoId(repo);
       if (!repoId) return;
       const branches = await getRepoBranches<WorkBranch>(repoId);
       dispatch({ type: 'setRepoBranches', repoId, branches });
-    }));
+    };
+    if (!options.background) {
+      await Promise.all(repos.map(loadRepoBranches));
+      return;
+    }
+    if (options.route?.tab !== 'work') return;
+    const requestedRepo = options.route.params.repo;
+    const selectedRepo = repos.find((repo) => getRepoId(repo) === requestedRepo)
+      ?? repos.find((repo) => getRepoId(repo) === 'mandible' || repo.name === 'mandible')
+      ?? repos[0];
+    if (selectedRepo) await loadRepoBranches(selectedRepo);
   }, []);
 
-  const loadVisibleRouteData = useCallback(async (tab: Route['tab']) => {
+  const loadVisibleRouteData = useCallback(async (
+    tab: Route['tab'],
+    options: RouteDataLoadOptions = {},
+  ) => {
     if (!accessReady) return;
     try {
       switch (tab) {
@@ -1064,7 +1158,7 @@ function App(): JSX.Element {
           await Promise.all([
             getAuthQueue<AuthRequest>().then((queue) => dispatch({ type: 'setAuthQueue', queue })),
             getAuthHistory<AuthRequest>(200).then((history) => dispatch({ type: 'setAuthHistory', history })),
-            loadWorkData(true),
+            loadWorkData(!options.background, options),
           ]);
           return;
         case 'console':
@@ -1092,7 +1186,7 @@ function App(): JSX.Element {
           await getSettings().then((settings) => dispatch({ type: 'setSettings', settings }));
           return;
         case 'work':
-          await loadWorkData(true);
+          await loadWorkData(true, options);
           return;
         case 'timeline':
           await loadWorkData(false);
@@ -1104,6 +1198,7 @@ function App(): JSX.Element {
       const message = error instanceof Error ? error.message : String(error);
       if (tab === 'inbox') dispatch({ type: 'setInboxLoadError', error: message });
       if (tab === 'settings') dispatch({ type: 'setSettingsLoadError', error: message });
+      if (options.background) throw error;
     }
   }, [accessReady, loadWorkData]);
   loadVisibleRouteDataRef.current = loadVisibleRouteData;
@@ -1223,14 +1318,92 @@ function App(): JSX.Element {
   useEffect(() => {
     if (!accessReady) return;
     // Start the visible view request before the small global aggregate.
-    void loadVisibleRouteData(route.tab);
-    void getSettings()
+    const activeLoad = loadVisibleRouteData(route.tab);
+    activeRouteDataLoadRef.current = activeLoad;
+    void activeLoad;
+    const settingsLoad = getSettings()
       .then((settings) => {
+        routeInitialDataContextRef.current = {
+          ...routeInitialDataContextRef.current,
+          settings,
+          sidebarGroupLimit: normalizeSidebarGroupLimit(settings['conversations.sidebar_group_limit']),
+        };
         dispatch({ type: 'setSettings', settings });
       })
       .catch(() => undefined);
+    routeWarmupSettingsLoadRef.current = settingsLoad;
     void loadDashboardBadges();
   }, [accessReady, route.tab, loadDashboardBadges, loadVisibleRouteData]);
+
+  useEffect(() => {
+    if (!accessReady || startupRouteWarmupStartedRef.current) return undefined;
+    startupRouteWarmupStartedRef.current = true;
+    let active = true;
+    let completed = false;
+    let cancelScheduled: () => void = () => undefined;
+    const tabs = RENDERABLE_TABS.filter((tab) => Boolean(ROUTE_CHUNK_LOADERS[tab]));
+    let nextIndex = 0;
+
+    const scheduleNext = () => {
+      cancelScheduled = scheduleRouteWarmup(() => {
+        void (async () => {
+          while (active) {
+            const pendingActiveLoad = activeRouteDataLoadRef.current;
+            await pendingActiveLoad.catch(() => undefined);
+            await Promise.resolve();
+            const pendingRouteReads = [...activeRouteInitialLoadsRef.current];
+            if (pendingRouteReads.length > 0) {
+              await Promise.allSettled(pendingRouteReads);
+              continue;
+            }
+            if (pendingActiveLoad === activeRouteDataLoadRef.current) break;
+          }
+          if (!active) return;
+
+          const tab = tabs[nextIndex++];
+          if (!tab) {
+            completed = true;
+            return;
+          }
+          if (tab !== routeTabRef.current) {
+            const tabRoute = routeForTab(tab, routeRef.current, tabRouteSnapshotsRef.current);
+            try {
+              if (tab === 'issues' || tab === 'console') {
+                while (active) {
+                  const settingsLoad = routeWarmupSettingsLoadRef.current;
+                  await settingsLoad.catch(() => undefined);
+                  if (settingsLoad === routeWarmupSettingsLoadRef.current) break;
+                }
+              }
+              if (!active || tab === routeTabRef.current) {
+                if (active) scheduleNext();
+                return;
+              }
+              await ROUTE_CHUNK_LOADERS[tab]?.();
+              if (active && tab !== routeTabRef.current) {
+                await loadVisibleRouteDataRef.current(tab, { background: true, route: tabRoute });
+              }
+              if (active && tab !== routeTabRef.current) {
+                await ROUTE_INITIAL_DATA_WARMERS[tab]?.(tabRoute.params, routeInitialDataContextRef.current);
+              }
+            } catch (error) {
+              // Speculative reads never surface as route notices. Keep one console
+              // diagnostic so a failed warmup can still be distinguished from a hit.
+              console.warn(`Initial ${tab} route warmup failed`, error);
+            }
+          }
+          if (active) scheduleNext();
+        })();
+      });
+    };
+
+    scheduleNext();
+    return () => {
+      active = false;
+      cancelScheduled();
+      if (!completed) startupRouteWarmupStartedRef.current = false;
+    };
+  }, [accessReady]);
 
   // SSE real-time updates: register handlers FIRST, then connect, so no
   // events arrive before we are ready to dispatch them.
@@ -1626,6 +1799,7 @@ function App(): JSX.Element {
       if (shouldSkipFallbackPoll(sseStateRef.current, lastDashboardSseAtRef.current, Date.now(), SSE_FRESH_FOR)) {
         return;
       }
+      if (route.tab === 'issues') invalidateApiGetCache('/api/issues');
       void loadVisibleRouteData(route.tab);
       void loadDashboardBadges();
       void refreshRailOrder();

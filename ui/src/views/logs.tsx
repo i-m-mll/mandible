@@ -1,11 +1,11 @@
 // Logs viewer tab — Bug: af91bdd
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { getLogs, type LogEntry, type LogEntityFacetValue, type LogsResponse } from '../api';
+import { getLogs, invalidateApiGetCache, type LogEntry, type LogEntityFacetValue, type LogsResponse } from '../api';
 import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
 import { shortRouteId } from '../routing';
-import { AppOperationalNoticeOutlet } from '../app-shell';
+import { AppOperationalNoticeOutlet, useRegisterInitialRouteLoad } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -300,6 +300,16 @@ function filterParam(filters: LogFilters, before?: string): Parameters<typeof ge
   };
 }
 
+export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const query = new URLSearchParams();
+  for (const key of ['levels', 'subsystem', 'event', 'q', 'related', 'since', 'until']) {
+    const value = params[key];
+    if (value) query.set(key, value);
+  }
+  const routeHash = `#/logs${query.size > 0 ? `?${query.toString()}` : ''}`;
+  await getLogs(filterParam(parseLogsHash(routeHash)));
+}
+
 function mergeLogEntries(current: LogEntry[], incoming: LogEntry[]): LogEntry[] {
   const byId = new Map<string, LogEntry>();
   for (const entry of [...current, ...incoming]) {
@@ -317,6 +327,7 @@ function facetLabel(facet: LogEntityFacetValue): string {
 }
 
 export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: LogsViewProps): JSX.Element {
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [filters, setFilters] = useState<LogFilters>(() => parseLogsHash());
   const [facets, setFacets] = useState<LogsResponse['facets'] | null>(null);
@@ -337,10 +348,13 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestSeqRef = useRef(0);
   const hasLoadedRef = useRef(false);
+  const hasStartedLoadRef = useRef(false);
   const autoScrollRef = useRef(true);
   const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
 
   const fetchLogs = useCallback(async (initial = false) => {
+    if (hasStartedLoadRef.current) invalidateApiGetCache('/api/system/logs');
+    hasStartedLoadRef.current = true;
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
     if (!hasLoadedRef.current || initial) setLoading(true);
@@ -407,8 +421,8 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     setEntries([]);
     setOlderCursor(null);
     setHasOlder(false);
-    void fetchLogs(true);
-  }, [filters, fetchLogs]);
+    registerInitialRouteLoad(fetchLogs(true));
+  }, [filters, fetchLogs, registerInitialRouteLoad]);
 
   useLayoutEffect(() => {
     const anchor = prependAnchorRef.current;

@@ -12,6 +12,7 @@ import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRe
 import type {
   ContentBlock,
   DisplayGroup,
+  PersistedBlockSource,
   RenderNode,
   StreamRendererProps,
 } from '../components/stream-renderer/types';
@@ -23,6 +24,8 @@ import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
 import { ActivityGroup, ActivityRow } from '../components/message-blocks/ActivityBlock';
+import { ThinkingBlock } from '../components/message-blocks/ThinkingBlock';
+import { ToolUseBlock } from '../components/message-blocks/ToolUseBlock';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
 import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import { openMarkdownDocument } from './markdownActions';
@@ -60,16 +63,24 @@ export type ChatSurfaceProps = StreamRendererProps & {
   onFork?: (dagUuid: string) => void;
   onResume?: (dagUuid: string) => void;
   onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
+  onExpandDetails?: (sources: readonly PersistedBlockSource[]) => void | Promise<void>;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
+const MIN_CANONICAL_POSITION_HEIGHT = 1;
 const FOLLOW_THRESHOLD_PX = 80;
 const JUMP_RETURN_SECONDS = 2;
 const MANUAL_RETURN_PX_PER_SECOND = 600;
 const INITIAL_VIRTUAL_RECT = { width: 600, height: 720 };
 
-function estimateVirtualRow(index: number, items: VirtualItem[]): number {
-  if (items[index]?.kind === 'history') return 40;
+function estimateVirtualRow(
+  index: number,
+  items: VirtualItem[],
+  measuredGroupSizes: Readonly<Record<string, number>>,
+): number {
+  const item = items[index];
+  if (item?.kind === 'history') return item.state.extentHeight;
+  if (item?.kind === 'group') return measuredGroupSizes[item.id] ?? item.estimatedSize;
   return ESTIMATED_ROW_HEIGHT;
 }
 
@@ -93,13 +104,31 @@ export function shouldShowJumpToLatest(distancePx: number, viewportHeight: numbe
 }
 
 type VirtualItem =
-  | { kind: 'group'; id: string; group: DisplayGroup }
+  | { kind: 'group'; id: string; group: DisplayGroup; estimatedSize: number }
   | { kind: 'history'; id: string; state: HistoryRowState }
   | { kind: 'live'; id: string }
   | { kind: 'permission'; id: string };
 
 type HistoryLoadState = 'idle' | 'loading' | 'retry';
-type HistoryRowState = { kind: 'gap'; start: number; end: number; loadState: HistoryLoadState };
+type HistoryRowState = {
+  kind: 'gap';
+  key: string;
+  start: number;
+  end: number;
+  extentHeight: number;
+  loadState: HistoryLoadState;
+};
+
+function historyPositionAtOffset(
+  state: HistoryRowState,
+  rowStart: number,
+  rowSize: number,
+  offset: number,
+): number {
+  const span = state.end - state.start + 1;
+  const fraction = Math.max(0, Math.min(1, (offset - rowStart) / Math.max(1, rowSize)));
+  return Math.min(state.end, state.start + Math.floor(fraction * span));
+}
 
 type ReadingAnchor = {
   version: 1;
@@ -162,8 +191,11 @@ function blockId(turnId: string, block: ContentBlock, index: number): string {
   return `${turnId}:${block.type}:${index}`;
 }
 
-function measureVirtualRow(element: Element): number {
-  const height = element.getBoundingClientRect().height;
+function measureVirtualRow(element: Element, entry?: ResizeObserverEntry): number {
+  const observedHeight = entry?.borderBoxSize?.[0]?.blockSize;
+  const height = typeof observedHeight === 'number'
+    ? observedHeight
+    : element.getBoundingClientRect().height;
   return height > 0 ? Math.ceil(height) : ESTIMATED_ROW_HEIGHT;
 }
 
@@ -194,6 +226,46 @@ function renderNodePosition(node: RenderNode, targetBlockId: string | null): num
     if (result?.source?.position !== undefined) return result.source.position;
   }
   return node.turn.assistantEvent.message.content.find((block) => block.source?.position !== undefined)?.source?.position ?? null;
+}
+
+function missingPositionRanges(
+  total: number,
+  intervals: readonly { start: number; end: number }[],
+): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  let next = 0;
+  for (const interval of intervals) {
+    const start = Math.max(0, Math.min(total, interval.start));
+    const end = Math.min(total - 1, interval.end);
+    if (end < start) continue;
+    if (start > next) ranges.push({ start: next, end: start - 1 });
+    next = Math.max(next, end + 1);
+    if (next >= total) break;
+  }
+  if (next < total) ranges.push({ start: next, end: total - 1 });
+  return ranges.filter((range) => range.start <= range.end);
+}
+
+function loadedPositionCount(
+  total: number,
+  intervals: readonly { start: number; end: number }[],
+): number {
+  return intervals.reduce((sum, interval) => (
+    sum + Math.max(0, Math.min(total - 1, interval.end) - Math.max(0, interval.start) + 1)
+  ), 0);
+}
+
+function groupPositionCount(group: DisplayGroup): number {
+  return group.nodes.reduce((count, node) => count + (renderNodePosition(node, null) === null ? 0 : 1), 0);
+}
+
+function median(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
 }
 
 function renderNodeBlockIdAtPosition(node: RenderNode, position: number): string | null {
@@ -246,6 +318,7 @@ export function ChatSurface({
   onFork,
   onResume,
   onCreatedTaskNavigate,
+  onExpandDetails,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -260,6 +333,10 @@ export function ChatSurface({
   const userScrollIntentRef = useRef(false);
   const scrollEndCleanupRef = useRef<(() => void) | null>(null);
   const [historyLoadStates, setHistoryLoadStates] = useState<Record<string, HistoryLoadState>>({});
+  const [measuredGroupSizesByScope, setMeasuredGroupSizesByScope] = useState<{
+    scope: string;
+    sizes: Readonly<Record<string, number>>;
+  }>({ scope: '', sizes: {} });
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const handledNavigationKeyRef = useRef<string | null>(null);
   const pendingFocusRef = useRef<{ key: string; blockId: string | null; itemId: string } | null>(null);
@@ -273,53 +350,132 @@ export function ChatSurface({
     transcript?.conversationId ?? null,
     transcript?.sourceVersionId ?? null,
   ]);
+  const expansionOwnerScope = JSON.stringify([storageScope, transcript?.conversationId ?? null]);
+  const extentScope = JSON.stringify([
+    storageScope,
+    transcript?.conversationId ?? null,
+  ]);
   const historyScopeRef = useRef(historyScope);
   historyScopeRef.current = historyScope;
   const historyStateScopeRef = useRef(historyScope);
+  const expansionOwnerScopeRef = useRef(expansionOwnerScope);
+  const extentScopeRef = useRef(extentScope);
+  extentScopeRef.current = extentScope;
+  const estimatedPositionHeightRef = useRef<{
+    scope: string;
+    height: number;
+    calibrated: boolean;
+  } | null>(null);
 
   const groups = useMemo(() => groupMessagesForDisplay(nodes), [nodes]);
+  const displayEntriesByGroup = useMemo(() => new Map(groups.map((group) => (
+    [group.id, groupActivityItemsForDisplay(group.nodes)] as const
+  ))), [groups]);
   const turns = useMemo(() => extractTurns(nodes), [nodes]);
   const liveLabel = deriveLiveLabel(turns, streaming);
   const tokenCount = deriveTokenCount(turns);
   const hasContent = nodes.length > 0;
   const hasPermissionCard = Boolean(activePermissionRequest && onPermissionRespond);
+  const measuredGroupSizes = measuredGroupSizesByScope.scope === extentScope
+    ? measuredGroupSizesByScope.sizes
+    : {};
+  if (estimatedPositionHeightRef.current?.scope !== extentScope) {
+    estimatedPositionHeightRef.current = null;
+  }
+  const coveredPositions = transcript
+    ? loadedPositionCount(transcript.total, transcript.loadedIntervals)
+    : 0;
+  const positionedGroupIds = transcript
+    ? groups.filter((group) => groupPositionCount(group) > 0).map((group) => group.id)
+    : [];
+  const provisionalPositionHeight = coveredPositions > 0 && positionedGroupIds.length > 0
+    ? Math.max(
+      MIN_CANONICAL_POSITION_HEIGHT,
+      (positionedGroupIds.length * ESTIMATED_ROW_HEIGHT) / coveredPositions,
+    )
+    : null;
+  const samples = positionedGroupIds
+    .map((id) => measuredGroupSizes[id])
+    .filter((size): size is number => typeof size === 'number' && size > 0);
+  const neededSamples = Math.min(3, positionedGroupIds.length);
+  const measuredMedian = positionedGroupIds.length > 0
+      && samples.length >= neededSamples
+      && coveredPositions > 0
+    ? median(samples)
+    : null;
+  if (measuredMedian !== null && !estimatedPositionHeightRef.current?.calibrated) {
+    estimatedPositionHeightRef.current = {
+      scope: extentScope,
+      height: Math.max(
+        MIN_CANONICAL_POSITION_HEIGHT,
+        (measuredMedian * positionedGroupIds.length) / coveredPositions,
+      ),
+      calibrated: true,
+    };
+  } else if (!estimatedPositionHeightRef.current && provisionalPositionHeight !== null) {
+    estimatedPositionHeightRef.current = {
+      scope: extentScope,
+      height: provisionalPositionHeight,
+      calibrated: false,
+    };
+  }
+  const estimatedPositionHeight = estimatedPositionHeightRef.current?.scope === extentScope
+    ? estimatedPositionHeightRef.current.height
+    : provisionalPositionHeight ?? MIN_CANONICAL_POSITION_HEIGHT;
 
   const items = useMemo<VirtualItem[]>(() => {
-    const contentItems: VirtualItem[] = groups.map((group) => ({
-      kind: 'group',
-      id: group.id,
-      group,
-    }));
+    const groupPositions = groups.map((group) => group.nodes
+        .map((node) => renderNodePosition(node, null))
+        .find((candidate): candidate is number => candidate !== null) ?? Number.MAX_SAFE_INTEGER);
+    const groupCountsByInterval = transcript?.loadedIntervals.map((interval) => groupPositions
+      .filter((position) => position >= interval.start && position <= interval.end).length) ?? [];
+    const contentItems: Array<{ item: VirtualItem; position: number }> = groups.map((group, index) => {
+      const position = groupPositions[index];
+      const intervalIndex = transcript?.loadedIntervals.findIndex((interval) => (
+        position >= interval.start && position <= interval.end
+      )) ?? -1;
+      const interval = intervalIndex >= 0 ? transcript?.loadedIntervals[intervalIndex] : undefined;
+      const intervalGroupCount = intervalIndex >= 0 ? groupCountsByInterval[intervalIndex] : 0;
+      const estimatedSize = interval && intervalGroupCount > 0
+        ? ((interval.end - interval.start + 1) * estimatedPositionHeight) / intervalGroupCount
+        : ESTIMATED_ROW_HEIGHT;
+      return {
+        item: { kind: 'group', id: group.id, group, estimatedSize },
+        position,
+      };
+    });
     const groupedItems: VirtualItem[] = [];
     if (transcript) {
-      const gaps: Array<Extract<VirtualItem, { kind: 'history' }>> = [];
-      for (let index = 1; index < transcript.loadedIntervals.length; index += 1) {
-        const previous = transcript.loadedIntervals[index - 1];
-        const next = transcript.loadedIntervals[index];
-        if (next.start <= previous.end + 1) continue;
-        const start = previous.end + 1;
-        const end = next.start - 1;
-        const key = `gap:${start}:${end}`;
-        gaps.push({
-          kind: 'history',
-          id: `history:${key}`,
-          state: { kind: 'gap', start, end, loadState: historyLoadStates[key] ?? 'idle' },
-        });
-      }
-      for (const item of contentItems) {
-        if (item.kind === 'group') {
-          const position = item.group.nodes
-            .map((node) => renderNodePosition(node, null))
-            .find((candidate): candidate is number => candidate !== null);
-          while (position !== undefined && gaps[0]?.state.kind === 'gap' && gaps[0].state.end < position) {
-            groupedItems.push(gaps.shift()!);
-          }
-        }
-        groupedItems.push(item);
-      }
-      groupedItems.push(...gaps);
+      const missingRanges = missingPositionRanges(transcript.total, transcript.loadedIntervals);
+      const gaps: Array<{ item: VirtualItem; position: number }> = missingRanges.map((range) => {
+        const key = `gap:${range.start}:${range.end}`;
+        const span = range.end - range.start + 1;
+        const scopeKey = `${historyScope}:${key}`;
+        return {
+          item: {
+            kind: 'history',
+            id: `history:${scopeKey}`,
+            state: {
+              kind: 'gap',
+              key: scopeKey,
+              start: range.start,
+              end: range.end,
+              extentHeight: span * Math.max(MIN_CANONICAL_POSITION_HEIGHT, estimatedPositionHeight),
+              loadState: historyLoadStates[scopeKey] ?? 'idle',
+            },
+          },
+          position: range.start,
+        };
+      });
+      const positionedItems = [...contentItems, ...gaps].sort((left, right) => {
+        const positionOrder = left.position - right.position;
+        if (positionOrder !== 0) return positionOrder;
+        if (left.item.kind !== right.item.kind) return left.item.kind === 'history' ? -1 : 1;
+        return left.item.id.localeCompare(right.item.id);
+      });
+      groupedItems.push(...positionedItems.map(({ item }) => item));
     } else {
-      groupedItems.push(...contentItems);
+      groupedItems.push(...contentItems.map(({ item }) => item));
     }
     if (streaming) {
       groupedItems.push({ kind: 'live', id: 'stream-live-tail' });
@@ -328,25 +484,57 @@ export function ChatSurface({
       groupedItems.push({ kind: 'permission', id: `permission:${activePermissionRequest.id}` });
     }
     return groupedItems;
-  }, [activePermissionRequest, groups, historyLoadStates, onPermissionRespond, streaming, transcript]);
+  }, [
+    activePermissionRequest,
+    estimatedPositionHeight,
+    groups,
+    historyLoadStates,
+    historyScope,
+    onPermissionRespond,
+    streaming,
+    transcript,
+  ]);
 
   const getItemKey = useCallback((index: number) => items[index]?.id ?? index, [items]);
   const extractVirtualRows = useCallback((range: Range): number[] => {
     const indices = new Set(defaultRangeExtractor(range));
-    // Keep one truthful discontinuity discoverable without letting a fragmented
-    // transcript make the mounted DOM grow with the number of gaps.
+    // Keep one gap represented in the DOM so sparse history remains observable;
+    // the loader still hydrates only a gap intersecting the viewport buffer.
     const firstGap = items.findIndex((item) => item.kind === 'history');
     if (firstGap >= 0) indices.add(firstGap);
     return [...indices].sort((left, right) => left - right);
   }, [items]);
   const getScrollElement = useCallback(() => scrollRef.current, []);
+  const initialEstimatedExtent = items.reduce((sum, item) => (
+    sum + (item.kind === 'history'
+      ? item.state.extentHeight
+      : item.kind === 'group' && measuredGroupSizes[item.id]
+        ? measuredGroupSizes[item.id]
+        : item.kind === 'group' ? item.estimatedSize : ESTIMATED_ROW_HEIGHT)
+  ), 0);
+  const recordMeasuredGroupSize = useCallback((key: string, size: number) => {
+    setMeasuredGroupSizesByScope((current) => {
+      if (extentScopeRef.current !== extentScope) return current;
+      const sizes = current.scope === extentScope ? current.sizes : {};
+      if (sizes[key] === size) return current;
+      return { scope: extentScope, sizes: { ...sizes, [key]: size } };
+    });
+  }, [extentScope]);
+  const measureVirtualItem = useCallback((element: HTMLDivElement, entry?: ResizeObserverEntry) => {
+    const size = measureVirtualRow(element, entry);
+    if (element.dataset.virtualKind === 'group') {
+      const key = element.dataset.virtualKey;
+      if (key) recordMeasuredGroupSize(key, size);
+    }
+    return size;
+  }, [recordMeasuredGroupSize]);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: items.length,
     getScrollElement,
-    estimateSize: (index) => estimateVirtualRow(index, items),
-    measureElement: measureVirtualRow,
+    estimateSize: (index) => estimateVirtualRow(index, items, measuredGroupSizes),
+    measureElement: measureVirtualItem,
     getItemKey,
-    initialOffset: Math.max(0, items.length * ESTIMATED_ROW_HEIGHT - 720),
+    initialOffset: Math.max(0, initialEstimatedExtent - 720),
     initialRect: INITIAL_VIRTUAL_RECT,
     observeElementRect: observeChatElementRect,
     rangeExtractor: extractVirtualRows,
@@ -356,12 +544,20 @@ export function ChatSurface({
     scrollEndThreshold: FOLLOW_THRESHOLD_PX,
   });
   const virtualItems = virtualizer.getVirtualItems();
-  const estimatedUnmaterializedDistance = Math.max(0, unmaterializedAfterCount) * ESTIMATED_ROW_HEIGHT;
+  useLayoutEffect(() => {
+    items.forEach((item, index) => {
+      if (item.kind === 'history') {
+        virtualizer.resizeItem(index, Math.max(1, Math.round(item.state.extentHeight)));
+      }
+    });
+  }, [items, virtualizer]);
+  const estimatedUnmaterializedDistance = transcript
+    ? 0
+    : Math.max(0, unmaterializedAfterCount) * ESTIMATED_ROW_HEIGHT;
   const showJumpToLatest = shouldShowJumpToLatest(
     Math.max(distanceFromBottom, estimatedUnmaterializedDistance),
     viewportHeight,
   );
-
   const requestHistory = useCallback((
     key: string,
     load: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>,
@@ -441,7 +637,11 @@ export function ChatSurface({
       version: 1,
       itemId: item.id,
       blockId: blockIdValue,
-      position: node ? renderNodePosition(node, blockIdValue) : null,
+      position: node
+        ? renderNodePosition(node, blockIdValue)
+        : item.kind === 'history'
+          ? historyPositionAtOffset(item.state, virtualItem.start, virtualItem.size, offset)
+          : null,
       viewportOffset: visibleBlock
         ? visibleBlock.getBoundingClientRect().top - scrollRect.top
         : virtualItem.start - offset,
@@ -538,6 +738,12 @@ export function ChatSurface({
     historyStateScopeRef.current = historyScope;
     setHistoryLoadStates({});
   }, [historyScope]);
+
+  useEffect(() => {
+    if (expansionOwnerScopeRef.current === expansionOwnerScope) return;
+    expansionOwnerScopeRef.current = expansionOwnerScope;
+    setExpandedBlocks({});
+  }, [expansionOwnerScope]);
 
   const setScrollNode = useCallback((node: HTMLDivElement | null) => {
     scrollEndCleanupRef.current?.();
@@ -661,7 +867,10 @@ export function ChatSurface({
   }, [distanceFromBottom, expandedBlocks, items, navigationTarget, restoreReadingAnchor, virtualItems]);
 
   useLayoutEffect(() => {
-    const signature = items.map((item) => item.id).join('\0');
+    const signature = items.map((item) => item.kind === 'history'
+      ? `${item.id}:${Math.round(item.state.extentHeight)}`
+      : `${item.id}:${item.kind === 'group' ? measuredGroupSizes[item.id] ?? 0 : 0}`)
+      .join('\0');
     const previous = itemIdentitySignatureRef.current;
     itemIdentitySignatureRef.current = signature;
     if (previous === null || previous === signature || navigationTarget) return;
@@ -669,11 +878,10 @@ export function ChatSurface({
     if (!anchor || anchor.followingTail) return;
     pendingReadingAnchorRef.current = anchor;
     restoreReadingAnchor(anchor);
-  }, [items, navigationTarget, restoreReadingAnchor]);
+  }, [items, measuredGroupSizes, navigationTarget, restoreReadingAnchor]);
 
   useEffect(() => {
-    if (!transcript || transcript.historyLoading || inFlightHistoryRef.current
-        || pendingReadingAnchorRef.current) return;
+    if (!transcript || transcript.historyLoading || inFlightHistoryRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
     const rendered = virtualizer.getVirtualItems();
@@ -689,26 +897,22 @@ export function ChatSurface({
       if (anchor && !anchor.followingTail) pendingReadingAnchorRef.current = anchor;
       void requestHistory(key, load);
     };
-    const olderState = historyLoadStates['edge:older'] ?? 'idle';
-    const newerState = historyLoadStates['edge:newer'] ?? 'idle';
-    if (transcript.hasOlder && olderState === 'idle' && scrollStart <= prefetchDistance) {
-      requestWithAnchor('edge:older', transcript.loadOlder);
-      return;
-    }
-    if (transcript.hasNewer && newerState === 'idle'
-        && el.scrollHeight - scrollEnd <= prefetchDistance) {
-      requestWithAnchor('edge:newer', transcript.loadNewer);
-      return;
-    }
     for (const item of items) {
       if (item.kind !== 'history') continue;
-      const { start, end, loadState } = item.state;
+      const { start, end, key, loadState } = item.state;
       const row = rendered.find((candidate) => items[candidate.index]?.id === item.id);
       if (!row || loadState !== 'idle'
           || row.end < scrollStart - prefetchDistance
           || row.start > scrollEnd + prefetchDistance) continue;
-      const key = `gap:${start}:${end}`;
-      requestWithAnchor(key, () => transcript.loadAround(start));
+      const visibleStart = Math.max(row.start, scrollStart);
+      const visibleEnd = Math.min(row.end, scrollEnd);
+      const targetOffset = visibleStart <= visibleEnd
+        ? (visibleStart + visibleEnd) / 2
+        : row.start > scrollEnd ? row.start : row.end;
+      const rowHeight = Math.max(1, row.end - row.start);
+      const fraction = Math.max(0, Math.min(1, (targetOffset - row.start) / rowHeight));
+      const position = Math.max(start, Math.min(end, Math.floor(start + fraction * (end - start + 1))));
+      requestWithAnchor(key, () => transcript.loadAround(position));
       return;
     }
   }, [
@@ -775,13 +979,67 @@ export function ChatSurface({
     captureReadingAnchor(!transcript?.hasNewer);
   }
 
-  function setBlockExpanded(id: string, expanded: boolean): void {
+  function requestExpandedDetails(sources: readonly (PersistedBlockSource | undefined)[]): void {
+    const unloaded = [...new Map(sources
+      .filter((source): source is PersistedBlockSource => source?.detailsLoaded === false)
+      .map((source) => [source.blockId, source])).values()];
+    if (unloaded.length > 0) void onExpandDetails?.(unloaded);
+  }
+
+  function setBlockExpanded(
+    id: string,
+    expanded: boolean,
+    sources: readonly (PersistedBlockSource | undefined)[] = [],
+  ): void {
     const anchor = captureReadingAnchor();
     if (anchor) pendingReadingAnchorRef.current = anchor;
+    if (expanded) requestExpandedDetails(sources);
     setExpandedBlocks((current) => {
       return { ...current, [id]: expanded };
     });
   }
+
+  const detailRefreshScopeRef = useRef({ owner: expansionOwnerScope, source: historyScope });
+  useEffect(() => {
+    const previous = detailRefreshScopeRef.current;
+    detailRefreshScopeRef.current = { owner: expansionOwnerScope, source: historyScope };
+    if (previous.owner !== expansionOwnerScope || previous.source === historyScope) return;
+
+    // Resolve already-expanded individual rows from the exact display entries
+    // used below, including inline activities extracted from assistant turns.
+    const sourcesByKey = new Map<string, PersistedBlockSource[]>();
+    const add = (key: string, sources: Array<PersistedBlockSource | undefined>) => {
+      const available = sources.filter((source): source is PersistedBlockSource => Boolean(source));
+      if (available.length > 0) sourcesByKey.set(key, available);
+    };
+    const addNode = (node: RenderNode) => {
+      if (node.kind === 'activity') {
+        add(`activity:${node.key}`, [
+          node.source,
+          node.item.type === 'tool-call-activity' ? node.item.result?.source : undefined,
+        ]);
+      } else if (node.kind === 'unmatched_tool_result') {
+        add(`unmatched-tool-result:${node.key}`, [node.result.source]);
+      } else if (node.kind === 'assistant_turn') {
+        node.turn.assistantEvent.message.content.forEach((block, index) => {
+          add(blockId(node.turn.id, block, index), [
+            block.source,
+            block.type === 'tool_use' ? node.turn.toolResults.get(block.id)?.source : undefined,
+          ]);
+        });
+      }
+    };
+    for (const entries of displayEntriesByGroup.values()) {
+      for (const entry of entries) {
+        if (entry.kind === 'node') addNode(entry.node);
+        else entry.nodes.forEach(addNode);
+      }
+    }
+    const expandedSources = Object.entries(expandedBlocks)
+      .filter(([, expanded]) => expanded)
+      .flatMap(([key]) => sourcesByKey.get(key) ?? []);
+    requestExpandedDetails(expandedSources);
+  }, [displayEntriesByGroup, expandedBlocks, expansionOwnerScope, historyScope, onExpandDetails]);
 
   function copyText(text: string): void {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -796,7 +1054,7 @@ export function ChatSurface({
     }
   }
 
-  function renderNodeBody(node: RenderNode): JSX.Element | null {
+  function renderNodeBody(node: RenderNode, memberRef?: string): JSX.Element | null {
     switch (node.kind) {
       case 'user_message': {
         const source = node.persisted;
@@ -842,9 +1100,14 @@ export function ChatSurface({
 
       case 'unmatched_tool_result': {
         const source = node.result.source;
+        const disclosureKey = `unmatched-tool-result:${node.key}`;
         return (
           <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
-            <UnmatchedToolResultBlock result={node.result} />
+            <UnmatchedToolResultBlock
+              result={node.result}
+              expanded={expandedBlocks[disclosureKey]}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
+            />
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
@@ -860,18 +1123,63 @@ export function ChatSurface({
         const sourceBlockId = source?.blockId
           ?? (node.item.type === 'provider-directive' ? node.item.blockId ?? undefined : undefined);
         const disclosureKey = `activity:${node.key}`;
-        return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId}>
+        const defaultExpanded = node.item.type === 'thinking-block-activity'
+          && streaming
+          && node.item.turnId === lastAssistantTurnId;
+        const expanded = expandedBlocks[disclosureKey] ?? defaultExpanded;
+        let activity: JSX.Element;
+        if (node.item.type === 'tool-call-activity') {
+          const resultSource = node.item.result?.source;
+          activity = (
+            <ToolUseBlock
+              toolName={node.item.name}
+              toolKind={node.item.toolKind}
+              toolUseId={node.item.id}
+              input={node.item.input}
+              result={node.item.result}
+              defaultExpanded={false}
+              expanded={expanded}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source, resultSource])}
+              resultSelected={resultSource ? selectedBlockIds?.has(resultSource.blockId) : false}
+              selectMode={selectMode}
+              onToggleResultSelect={resultSource && onToggleBlockSelect
+                ? (shiftKey) => onToggleBlockSelect(resultSource.blockId, shiftKey)
+                : undefined}
+              onForkResult={resultSource?.dagUuid && onFork ? () => onFork(resultSource.dagUuid!) : undefined}
+              onResumeResult={resultSource?.dagUuid && onResume ? () => onResume(resultSource.dagUuid!) : undefined}
+            />
+          );
+        } else if (node.item.type === 'thinking-block-activity') {
+          activity = (
+            <ThinkingBlock
+              content={node.item.content}
+              defaultCollapsed={!defaultExpanded}
+              expanded={expanded}
+              detailsAvailable={source?.detailsLoaded === false}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
+            />
+          );
+        } else {
+          activity = (
             <ActivityRow
               item={node.item}
-              expanded={expandedBlocks[disclosureKey] ?? false}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+              expanded={expanded}
+              detailsAvailable={source?.detailsLoaded === false}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
               onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
+          );
+        }
+        return (
+          <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId} data-member-refs={memberRef}>
+            {activity}
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
               selectMode={selectMode}
+              onFork={source?.dagUuid && onFork ? () => onFork(source.dagUuid!) : undefined}
+              onResume={source?.dagUuid && onResume ? () => onResume(source.dagUuid!) : undefined}
+              dagUuid={source?.dagUuid}
               metadata={{ timestamp: source?.timestamp }}
             />
           </div>
@@ -897,8 +1205,8 @@ export function ChatSurface({
               getBlockExpanded={(contentBlock, index, defaultExpanded) => (
                 expandedBlocks[blockId(turn.id, contentBlock, index)] ?? defaultExpanded
               )}
-              onBlockExpandedChange={(contentBlock, index, expanded) => (
-                setBlockExpanded(blockId(turn.id, contentBlock, index), expanded)
+              onBlockExpandedChange={(contentBlock, index, expanded, relatedSources = []) => (
+                setBlockExpanded(blockId(turn.id, contentBlock, index), expanded, [contentBlock.source, ...relatedSources])
               )}
               getDisclosureExpanded={(id, defaultExpanded) => expandedBlocks[`${turn.id}:${id}`] ?? defaultExpanded}
               onDisclosureExpandedChange={(id, expanded) => setBlockExpanded(`${turn.id}:${id}`, expanded)}
@@ -938,21 +1246,27 @@ export function ChatSurface({
         speaker={group.speaker}
         footer={footer}
       >
-        {groupActivityItemsForDisplay(group.nodes).map((entry) => {
+        {(displayEntriesByGroup.get(group.id) ?? []).map((entry) => {
           if (entry.kind === 'node') return renderNodeBody(entry.node);
+          const memberRefs = entry.nodes.map((node) => node.source?.blockId
+            ?? (node.item.type === 'provider-directive' ? node.item.blockId : null)
+            ?? node.key);
+          const groupDisclosureKey = `activity-group:${entry.key}`;
+          const defaultGroupExpanded = expandedBlocks[entry.key] ?? (streaming && entry.nodes.some((node) => (
+            node.item.type === 'thinking-block-activity' && node.item.turnId === lastAssistantTurnId
+          )));
           return (
             <div
               key={entry.key}
               className="message-block-wrapper"
-              data-member-refs={[...new Set(entry.nodes.map((node) => node.source?.blockId
-                ?? (node.item.type === 'provider-directive' ? node.item.blockId : null)
-                ?? node.key))].join(' ')}
+              data-member-refs={[...new Set(memberRefs)].join(' ')}
             >
               <ActivityGroup
                 items={entry.nodes.map((node) => node.item)}
-                expanded={expandedBlocks[entry.key] ?? false}
-                onExpandedChange={(next) => setBlockExpanded(entry.key, next)}
-                onCreatedTaskNavigate={onCreatedTaskNavigate}
+                memberRefs={memberRefs}
+                renderMember={(_, index) => renderNodeBody(entry.nodes[index], memberRefs[index])}
+                expanded={expandedBlocks[groupDisclosureKey] ?? defaultGroupExpanded}
+                onExpandedChange={(next) => setBlockExpanded(groupDisclosureKey, next)}
               />
             </div>
           );
@@ -982,11 +1296,18 @@ export function ChatSurface({
 
   function renderHistoryRow(state: HistoryRowState): JSX.Element {
     if (state.loadState !== 'loading') {
-      return <div className="stream-renderer__history-state" aria-hidden="true" />;
+      return (
+        <div
+          className="stream-renderer__history-state"
+          style={{ height: `${state.extentHeight}px`, boxSizing: 'border-box' }}
+          aria-hidden="true"
+        />
+      );
     }
     return (
       <div
         className="stream-renderer__history-state"
+        style={{ height: `${state.extentHeight}px`, boxSizing: 'border-box' }}
         role="status"
         aria-live="polite"
       >
@@ -1024,10 +1345,11 @@ export function ChatSurface({
             return (
               <div
                 key={virtualItem.key}
-                ref={virtualizer.measureElement}
+                ref={item.kind === 'history' ? undefined : virtualizer.measureElement}
                 className="stream-renderer__virtual-row"
                 data-index={virtualItem.index}
                 data-virtual-key={item.id}
+                data-virtual-kind={item.kind}
                 style={{ top: 0, transform: `translateY(${virtualItem.start}px)` }}
               >
                 {item.kind === 'group' && renderGroup(item.group)}

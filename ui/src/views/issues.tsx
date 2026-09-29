@@ -5,6 +5,7 @@ import {
   getLedgerIssueDetailByRef,
   getLedgerIssueInitialDetailByIssueId,
   getLedgerIssueInitialDetailByRef,
+  getIssueRepos,
   patchLedgerIssue,
   spawnIssueAgent,
   isApiErrorStatus,
@@ -16,12 +17,12 @@ import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { LedgerIssueDetail, type LedgerIssueCloseResolution } from '../components/ledger/IssueDetail';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
-import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { shortRouteId } from '../routing';
 import { renderInlineMarkdown } from '../lib/markdown';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
-import { useAppShell } from '../app-shell';
+import { useAppShell, useRegisterInitialRouteLoad } from '../app-shell';
 import {
   LEDGER_ISSUE_KINDS,
   LEDGER_ISSUE_RESOLUTIONS,
@@ -231,6 +232,59 @@ function issueHasAnyPriority(issue: { priority?: string }, selected: string[]): 
 function issueParentIds(issue: IssueSummary): string[] {
   if (Array.isArray(issue.parent_ids)) return issue.parent_ids;
   return issue.parent_id ? [issue.parent_id] : [];
+}
+
+function filterIssueReposForView(
+  repos: IssueRepoSummary[],
+  filter: string,
+  parentFilter: string | null,
+): IssueRepoSummary[] {
+  const parsed = parseIssueFilter(filter);
+  const normalizedFilter = parsed.text.trim().toLowerCase();
+  return repos
+    .map((repo) => {
+      let issues = repo.issues;
+      if (parsed.status && parsed.status !== 'all') {
+        issues = issues.filter((issue) => getVisualState(issue) === parsed.status);
+      }
+      if (parsed.resolution) {
+        issues = issues.filter((issue) => issue.resolution === parsed.resolution);
+      }
+      if (normalizedFilter) {
+        const repoMatches = [
+          repo.project_key,
+          repo.repo_id,
+          repo.repo_name,
+          repo.repo_root,
+          pathBasename(repo.repo_root),
+        ].some((value) => value?.toLowerCase().includes(normalizedFilter));
+        issues = issues.filter((issue) => repoMatches
+          || issue.title.toLowerCase().includes(normalizedFilter)
+          || issue.id.toLowerCase().includes(normalizedFilter));
+      }
+      if (parsed.kinds.length > 0) {
+        issues = issues.filter((issue) => issueHasAnyKind(issue, parsed.kinds));
+      }
+      if (parsed.priorities.length > 0) {
+        issues = issues.filter((issue) => issueHasAnyPriority(issue, parsed.priorities));
+      }
+      if (parentFilter) {
+        issues = issues.filter((issue) => issueParentIds(issue).includes(parentFilter)
+          || issue.parent_relationships?.some((parent) => parent.parent_ref === parentFilter));
+      }
+      return { ...repo, issues };
+    })
+    .filter((repo) => repo.issues.length > 0);
+}
+
+function buildIssueItems(repos: IssueRepoSummary[]): ListItem[] {
+  const items = repos.flatMap((repo) => repo.issues.map((issue) => ({ kind: 'issue' as const, issue, repo })));
+  items.sort((left, right) => {
+    const leftTime = left.issue.created_at ? Date.parse(left.issue.created_at) : 0;
+    const rightTime = right.issue.created_at ? Date.parse(right.issue.created_at) : 0;
+    return rightTime - leftTime;
+  });
+  return items;
 }
 
 function ledgerDetailMatchesSelection(
@@ -485,6 +539,7 @@ export function IssuesView({
   sidebarHidden = false,
 }: IssuesViewProps): JSX.Element {
   const appShell = useAppShell();
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const normalizedDefaultFilter = useMemo(
     () => normalizeIssueDefaultFilter(defaultFilter),
     [defaultFilter],
@@ -611,7 +666,6 @@ export function IssuesView({
   }, [ledgerIssueDetail, initialCommentId]);
 
   const parsedFilter = useMemo(() => parseIssueFilter(filter), [filter]);
-  const normalizedFilter = useMemo(() => parsedFilter.text.trim().toLowerCase(), [parsedFilter.text]);
   const selectedStatus = parsedFilter.status;
   const selectedResolution = parsedFilter.resolution;
   const selectedKinds = parsedFilter.kinds;
@@ -647,60 +701,12 @@ export function IssuesView({
   // Filter issues within repos — three-state aware, plus repo identity,
   // label, and parent matching through one view-wide query.
   const filteredRepos = useMemo(() => {
-    return repos
-      .map((repo) => {
-        let issues = repo.issues;
-        if (selectedStatus && selectedStatus !== 'all') {
-          issues = issues.filter((issue) => getVisualState(issue) === selectedStatus);
-        }
-        if (selectedResolution) {
-          issues = issues.filter((issue) => issue.resolution === selectedResolution);
-        }
-        if (normalizedFilter) {
-          const repoMatches = [
-            repo.project_key,
-            repo.repo_id,
-            repo.repo_name,
-            repo.repo_root,
-            pathBasename(repo.repo_root),
-          ].some((value) => value?.toLowerCase().includes(normalizedFilter));
-          issues = issues.filter(
-            (issue) =>
-              repoMatches ||
-              issue.title.toLowerCase().includes(normalizedFilter) ||
-              issue.id.toLowerCase().includes(normalizedFilter),
-          );
-        }
-        if (selectedKinds.length > 0) {
-          issues = issues.filter((issue) => issueHasAnyKind(issue, selectedKinds));
-        }
-        if (selectedPriorities.length > 0) {
-          issues = issues.filter((issue) => issueHasAnyPriority(issue, selectedPriorities));
-        }
-        if (parentFilter) {
-          issues = issues.filter((issue) => issueParentIds(issue).includes(parentFilter)
-            || issue.parent_relationships?.some(parent => parent.parent_ref === parentFilter));
-        }
-        return { ...repo, issues };
-      })
-      .filter((repo) => repo.issues.length > 0);
-  }, [repos, selectedStatus, selectedResolution, normalizedFilter, selectedKinds, selectedPriorities, parentFilter]);
+    return filterIssueReposForView(repos, filter, parentFilter);
+  }, [repos, filter, parentFilter]);
 
   // Build flat list items: all issues sorted by created_at descending (newest first)
   const items = useMemo<ListItem[]>(() => {
-    const all: ListItem[] = [];
-    for (const repo of filteredRepos) {
-      for (const issue of repo.issues) {
-        all.push({ kind: 'issue', issue, repo });
-      }
-    }
-    // Sort by created_at descending (newest first)
-    all.sort((a, b) => {
-      const ta = a.issue.created_at ? Date.parse(a.issue.created_at) : 0;
-      const tb = b.issue.created_at ? Date.parse(b.issue.created_at) : 0;
-      return tb - ta;
-    });
-    return all;
+    return buildIssueItems(filteredRepos);
   }, [filteredRepos, sortField]);
 
   const showRepoLabels = useMemo(() => {
@@ -828,6 +834,10 @@ export function IssuesView({
     const fullDetail = repoId
       ? getLedgerIssueDetailByRef(repoId, issueId)
       : getLedgerIssueDetailByIssueId(issueId);
+    registerInitialRouteLoad(Promise.allSettled([
+      ...(initialDetail ? [initialDetail] : []),
+      fullDetail,
+    ]));
     if (initialDetail) {
       initialDetail
         .then((detail) => {
@@ -856,7 +866,7 @@ export function IssuesView({
     return () => {
       if (detailRequestSeqRef.current === requestSeq) detailRequestSeqRef.current += 1;
     };
-  }, [selectedRepoId, selectedIssueId]);
+  }, [registerInitialRouteLoad, selectedRepoId, selectedIssueId]);
 
   const selectIssue = useCallback((repoId: string, issueId: string) => {
     const cachedDetail = getCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId);
@@ -1354,4 +1364,57 @@ export function IssuesView({
       </div>
     </div>
   );
+}
+
+type IssueWarmupContext = { settings?: Record<string, string> };
+
+export async function warmInitialData(
+  params: Record<string, string>,
+  context: IssueWarmupContext = {},
+): Promise<void> {
+  const repos = await getIssueRepos<IssueRepoSummary>();
+  const normalizedDefaultFilter = normalizeIssueDefaultFilter(context.settings?.['issues.default_filter']);
+  const defaults: IssuesViewState = {
+    filter: normalizedDefaultFilter.filter,
+    filterEdited: false,
+    filterNotice: normalizedDefaultFilter.notice,
+    parentFilter: null,
+    selectedRepoId: null,
+    selectedIssueId: null,
+  };
+  const viewState = readPersistedViewState(
+    ISSUES_VIEW_STATE_STORAGE_KEY,
+    normalizeIssuesViewState,
+    defaults,
+  );
+
+  let repoId = params.issue && !params.repo ? null : params.repo ?? viewState.selectedRepoId;
+  let issueId = params.issue ?? viewState.selectedIssueId;
+  if (issueId && repoId) {
+    repoId = resolveIssueRepoDeepLink(repos, repoId) ?? repoId;
+    const repo = repos.find((candidate) => candidate.repo_id === repoId || candidate.project_key === repoId);
+    issueId = resolveIssueIdDeepLink(repo, issueId);
+  } else if (issueId && params.issue) {
+    const match = repos
+      .flatMap((repo) => repo.issues.map((issue) => ({ repo, issue })))
+      .find(({ issue }) => issue.id === issueId || issue.id.startsWith(issueId!));
+    if (match) {
+      repoId = match.repo.repo_id;
+      issueId = match.issue.id;
+    }
+  } else {
+    const first = buildIssueItems(filterIssueReposForView(repos, viewState.filter, viewState.parentFilter))[0];
+    if (first) {
+      repoId = first.repo.repo_id;
+      issueId = first.issue.id;
+    }
+  }
+  if (!issueId) return;
+
+  const key = detailRequestKey('issue', { repoId, issueId });
+  if (readPersistedDetail<LedgerIssueDetailProjection>('issue-detail', key)) return;
+  const detail = repoId
+    ? await getLedgerIssueDetailByRef(repoId, issueId)
+    : await getLedgerIssueDetailByIssueId(issueId);
+  writePersistedDetail('issue-detail', key, detail);
 }

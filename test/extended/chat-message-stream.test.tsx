@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useContext } from 'preact/hooks';
 
@@ -194,7 +194,9 @@ describe('chat message stream render model', () => {
     expect(flowPositions.every((position) => position >= 0)).toBe(true);
     expect(flowPositions).toEqual([...flowPositions].sort((left, right) => left - right));
     fireEvent.click(screen.getByRole('button', { name: /Created task/i }));
-    const links = screen.getAllByRole('button', { name: /Open created task/ });
+    const details = view.container.querySelector('.activity-group__members')!;
+    within(details).getAllByRole('button', { name: /Created task/i }).forEach((row) => fireEvent.click(row));
+    const links = within(details).getAllByRole('button', { name: /Open created task/ });
     expect(links.map((link) => link.getAttribute('data-provider-session-id'))).toEqual(['thread-identity', 'client-identity']);
     expect(links.map((link) => link.getAttribute('data-provider-session-identity'))).toEqual(['threadId', 'clientThreadId']);
     fireEvent.click(links[0]);
@@ -293,6 +295,28 @@ describe('chat message stream render model', () => {
     expect(groupActivityItemsForDisplay(nodes).map((entry) => entry.kind)).toEqual([
       'activity-group', 'node', 'node',
     ]);
+  });
+
+  it('groups reasoning summaries and thinking under Thought while preserving the short label', () => {
+    const thought = (ordinal: number, text: string, kind: 'thinking' | 'reasoning-summary'): ActivityItem => canonicalItem<ActivityItem>({
+      type: 'activity', role: 'assistant', activity_kind: kind,
+      parts: [{ type: 'text', text }], ordinal, turn: 'thought-turn',
+    });
+    const events = [
+      canonicalEvent(thought(0, 'Reviewing history limits', 'reasoning-summary'), 'thought-one'),
+      canonicalEvent(thought(1, 'private thought two', 'thinking'), 'thought-two'),
+    ];
+    const nodes = buildStreamState(events).nodes;
+    expect(groupActivityItemsForDisplay(nodes).map((entry) => entry.kind)).toEqual(['activity-group']);
+
+    const view = render(<ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'thought-activity' }} />);
+    const summary = screen.getByRole('button', { name: 'Thought' });
+    expect(summary.textContent).toBe('Thought');
+    expect(summary.querySelector('.compact-activity__icon svg path[fill="#FFD76A"]')).toBeTruthy();
+    expect(view.container.textContent).not.toContain('private thought');
+    fireEvent.click(summary);
+    expect(screen.getByText('Reviewing history limits')).toBeTruthy();
+    expect(screen.getByText('private thought two')).toBeTruthy();
   });
 
   it('preserves distinct reasoning identities while folding exact-adjacent visible duplicates', () => {
@@ -453,8 +477,16 @@ describe('ChatSurface stream behavior', () => {
       canonicalEvent(activity(1, 'Outer activity after prose'), 'outer-activity-2'),
     ]} streaming={false} sessionInfo={{ sessionId: 'mixed-boundaries' }} />);
 
-    const inner = view.container.querySelector('.message-group__content')!;
-    expect(inner.children).toHaveLength(4);
+    expect(screen.getByRole('button', { name: 'Read some files, thought' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Read some files, thought' }));
+    const mixedDetails = view.container.querySelector('.activity-group__members')!;
+    expect(mixedDetails.querySelectorAll('.tool-card')).toHaveLength(2);
+    expect(mixedDetails.querySelectorAll('.thinking-block')).toHaveLength(1);
+    const renderedText = view.container.querySelector('.turn-group__body')!.textContent ?? '';
+    const orderedLabels = ['Prose before activity', 'Read some files, thought', 'Prose after activity', 'Outer activity before prose', 'Outer prose', 'Outer activity after prose'];
+    const positions = orderedLabels.map((label) => renderedText.indexOf(label));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
     expect(view.container.querySelector('[class*="chat-boundary--"]')).toBeNull();
   });
 
@@ -506,8 +538,8 @@ describe('ChatSurface stream behavior', () => {
     expect(screen.getByText('Checked the typed status payload')).toBeTruthy();
     expect(view.container.textContent).not.toContain('**');
     expect(view.container.textContent).not.toContain('__');
-    expect(view.container.querySelector('.compact-activity__icon')).toBeNull();
-    expect(view.container.querySelector('.compact-activity__row--no-icon')).toBeTruthy();
+    expect(view.container.querySelector('.compact-activity__icon svg path[fill="#FFD76A"]')).toBeTruthy();
+    expect(view.container.querySelector('.compact-activity__row--no-icon')).toBeNull();
     expect(view.container.querySelector('strong')).toBeNull();
     expect(plainActivityHeader('**Header**\nMore **provider-authored words**')).toBe('Header\nMore provider-authored words');
     expect(plainActivityHeader('value__name__suffix and 2 ** 3')).toBe('value__name__suffix and 2 ** 3');
@@ -539,7 +571,7 @@ describe('ChatSurface stream behavior', () => {
       streaming={false}
       sessionInfo={{ sessionId: 'reasoning-growth' }}
     />);
-    expect(screen.getByRole('button', { name: 'Reviewing item identity handling' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Thought' }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getAllByText('Refining missing identity error handling')).toHaveLength(1);
     expect(view.container.querySelector('[data-member-refs="durable-one durable-two"]')).toBeTruthy();
   });
@@ -993,6 +1025,55 @@ describe('ChatSurface stream behavior', () => {
     expect(document.querySelector('.tool-card__body .overflow-fade__scroll')).toBeTruthy();
     expect(screen.getByText(/TAIL-MARKER/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /open full/i })).toBeNull();
+  });
+
+  it('hydrates only the individually expanded tool nested inside a compact activity group', async () => {
+    const onExpandDetails = vi.fn();
+    const events: StreamEvent[] = [
+      {
+        type: 'assistant',
+        uuid: 'tool-turn',
+        session_id: 's1',
+        parent_tool_use_id: null,
+        message: {
+          id: 'tool-turn',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: '', source: { blockId: 'call-1', position: 0, detailsLoaded: false } },
+            { type: 'tool_use', id: 'tool-2', name: 'Read', input: '', source: { blockId: 'call-2', position: 1, detailsLoaded: false } },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'tool-results',
+        session_id: 's1',
+        parent_tool_use_id: null,
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'tool-1', content: '', source: { blockId: 'result-1', position: 2, detailsLoaded: false } },
+            { type: 'tool_result', tool_use_id: 'tool-2', content: '', source: { blockId: 'result-2', position: 3, detailsLoaded: false } },
+          ],
+        },
+      },
+      result(),
+    ];
+    const view = render(
+      <ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'nested-tool-expansion' }} onExpandDetails={onExpandDetails} />,
+    );
+
+    const activityGroup = screen.getByRole('button', { name: 'Read some files' });
+    expect(activityGroup.textContent).not.toContain('Running');
+    fireEvent.click(activityGroup);
+    expect(onExpandDetails).not.toHaveBeenCalled();
+
+    const childRows = view.container.querySelectorAll('.activity-group__members .tool-card .compact-activity__row');
+    expect(childRows).toHaveLength(2);
+    expect(childRows[0].textContent).not.toContain('Running');
+    fireEvent.click(childRows[0]);
+    await waitFor(() => expect(onExpandDetails).toHaveBeenCalledTimes(1));
+    expect(onExpandDetails.mock.calls[0][0].map((source: { blockId: string }) => source.blockId)).toEqual(['call-1', 'result-1']);
   });
 
   it('ignores legacy persisted chat disclosure state and starts tools folded', () => {

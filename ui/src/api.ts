@@ -2,7 +2,7 @@ import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import { operationForRequest } from '../../src/security/operation-policy';
 import { browserSessionFetch } from './client-auth-token';
 import type { InboxData } from './views/inbox';
-import type { GraphNode, GraphEdge } from './types/graph';
+import type { GraphEdge, GraphNode, GraphMode, GraphPayload } from './types/graph';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
 import { feedbackCollectionIdentity, type FeedbackCollection } from './views/feedback/collection-model';
 import type {
@@ -463,6 +463,7 @@ async function parseMaybeJson(response: Response): Promise<unknown> {
 type CachedJsonOptions = {
   ttlMs?: number;
   staleWhileRevalidateMs?: number;
+  signal?: AbortSignal;
 };
 
 type CachedJsonEntry = {
@@ -471,31 +472,118 @@ type CachedJsonEntry = {
   staleUntil: number;
 };
 
+type InflightGetRequest = {
+  promise: Promise<unknown>;
+  controller: AbortController;
+  consumers: number;
+  settled: boolean;
+  invalidated: boolean;
+};
+
 const DEFAULT_GET_CACHE_TTL_MS = 1_000;
 const DEFAULT_GET_CACHE_STALE_MS = 4_000;
+const WARMED_ROUTE_GET_OPTIONS = {
+  ttlMs: 60_000,
+  staleWhileRevalidateMs: 0,
+};
 const getJsonCache = new Map<string, CachedJsonEntry>();
-const inflightGetJson = new Map<string, Promise<unknown>>();
+const inflightGetJson = new Map<string, InflightGetRequest>();
 
 function cacheKeyForGet(path: string): string {
   return `GET ${path}`;
 }
 
-async function fetchJsonForCache(path: string, options: Required<CachedJsonOptions>): Promise<unknown> {
-  const response = await apiGet(path);
+async function fetchJsonForCache(
+  path: string,
+  options: { ttlMs: number; staleWhileRevalidateMs: number },
+  signal: AbortSignal,
+  shouldCache: () => boolean,
+): Promise<unknown> {
+  const response = await apiGet(path, { signal });
   const value = await parseMaybeJson(response);
-  const now = Date.now();
-  getJsonCache.set(cacheKeyForGet(path), {
-    value,
-    freshUntil: now + options.ttlMs,
-    staleUntil: now + options.ttlMs + options.staleWhileRevalidateMs,
-  });
+  if (shouldCache()) {
+    const now = Date.now();
+    getJsonCache.set(cacheKeyForGet(path), {
+      value,
+      freshUntil: now + options.ttlMs,
+      staleUntil: now + options.ttlMs + options.staleWhileRevalidateMs,
+    });
+  }
   return value;
+}
+
+function startCachedGet(
+  key: string,
+  path: string,
+  options: { ttlMs: number; staleWhileRevalidateMs: number },
+): InflightGetRequest {
+  const request: InflightGetRequest = {
+    promise: Promise.resolve(undefined),
+    controller: new AbortController(),
+    consumers: 0,
+    settled: false,
+    invalidated: false,
+  };
+  request.promise = fetchJsonForCache(
+    path,
+    options,
+    request.controller.signal,
+    () => !request.invalidated,
+  ).finally(() => {
+    request.settled = true;
+    if (inflightGetJson.get(key) === request) inflightGetJson.delete(key);
+  });
+  inflightGetJson.set(key, request);
+  return request;
+}
+
+function waitForGetWithSignal<T>(request: InflightGetRequest, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) return Promise.reject(new DOMException('The request was cancelled.', 'AbortError'));
+  request.consumers += 1;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    request.consumers -= 1;
+    if (request.consumers === 0 && !request.settled) request.controller.abort();
+  };
+  if (!signal) {
+    return request.promise.then(
+      (value) => { release(); return value as T; },
+      (error: unknown) => { release(); throw error; },
+    );
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      release();
+      reject(new DOMException('The request was cancelled.', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    request.promise.then(
+      (value) => {
+        if (released) return;
+        signal.removeEventListener('abort', onAbort);
+        release();
+        resolve(value as T);
+      },
+      (error: unknown) => {
+        if (released) return;
+        signal.removeEventListener('abort', onAbort);
+        release();
+        reject(error);
+      },
+    );
+  });
 }
 
 async function cachedApiGetJson<T>(
   path: string,
   options: CachedJsonOptions = {},
 ): Promise<T> {
+  if (options.signal?.aborted) {
+    throw new DOMException('The request was cancelled.', 'AbortError');
+  }
   const resolvedOptions = {
     ttlMs: options.ttlMs ?? DEFAULT_GET_CACHE_TTL_MS,
     staleWhileRevalidateMs: options.staleWhileRevalidateMs ?? DEFAULT_GET_CACHE_STALE_MS,
@@ -503,25 +591,18 @@ async function cachedApiGetJson<T>(
   const key = cacheKeyForGet(path);
   const cached = getJsonCache.get(key);
   const now = Date.now();
-  if (cached && now < cached.freshUntil) {
-    return cached.value as T;
-  }
+  if (cached && now < cached.freshUntil) return cached.value as T;
+
   const inflight = inflightGetJson.get(key);
-  if (inflight) {
-    return (await inflight) as T;
-  }
   if (cached && now < cached.staleUntil) {
-    const refresh = fetchJsonForCache(path, resolvedOptions).finally(() => {
-      if (inflightGetJson.get(key) === refresh) inflightGetJson.delete(key);
-    });
-    inflightGetJson.set(key, refresh);
+    if (!inflight) {
+      const refresh = startCachedGet(key, path, resolvedOptions);
+      void refresh.promise.catch(() => undefined);
+    }
     return cached.value as T;
   }
-  const request = fetchJsonForCache(path, resolvedOptions).finally(() => {
-    if (inflightGetJson.get(key) === request) inflightGetJson.delete(key);
-  });
-  inflightGetJson.set(key, request);
-  return (await request) as T;
+  const request = inflight ?? startCachedGet(key, path, resolvedOptions);
+  return waitForGetWithSignal<T>(request, options.signal);
 }
 
 export function invalidateApiGetCache(
@@ -529,6 +610,7 @@ export function invalidateApiGetCache(
 ): void {
   if (!matcher) {
     getJsonCache.clear();
+    for (const request of inflightGetJson.values()) request.invalidated = true;
     inflightGetJson.clear();
     return;
   }
@@ -540,6 +622,18 @@ export function invalidateApiGetCache(
           ? matcher.test(key)
           : matcher(key);
     if (matches) getJsonCache.delete(key);
+  }
+  for (const [key, request] of Array.from(inflightGetJson.entries())) {
+    const matches =
+      typeof matcher === 'string'
+        ? key.includes(matcher)
+        : matcher instanceof RegExp
+          ? matcher.test(key)
+          : matcher(key);
+    if (matches) {
+      request.invalidated = true;
+      inflightGetJson.delete(key);
+    }
   }
 }
 
@@ -573,7 +667,14 @@ export function invalidateBriefingApiCacheForEvent(type: string): boolean {
 }
 
 export function invalidateDashboardApiCacheForEvent(type: string): void {
-  if (invalidateBriefingApiCacheForEvent(type)) return;
+  // Logs are an all-event projection. Its view refetches on each event, so
+  // discard a warmed snapshot before the visible consumer asks again.
+  invalidateApiGetCache('/api/system/logs');
+  if (invalidateBriefingApiCacheForEvent(type)) {
+    invalidateApiGetCache('/api/graph');
+    if (type === 'briefing:round-published') invalidateApiGetCache('/api/artifacts');
+    return;
+  }
   // Streamed auth output does not change any dashboard count, so the badge
   // cache is left intact for that event; every other family below can move a
   // count and refreshes the badges key.
@@ -582,32 +683,44 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
   }
   if (type.startsWith('conversation:')) {
     invalidateApiGetCache('/api/conversations');
+    invalidateApiGetCache('/api/graph');
   } else if (type.startsWith('session:') || type.startsWith('console:session:')) {
     invalidateApiGetCache('/api/sessions');
     invalidateApiGetCache('/api/console/sessions');
     invalidateApiGetCache('/api/conversations');
+    invalidateApiGetCache('/api/graph');
   } else if (type.startsWith('auth:')) {
     invalidateApiGetCache('/api/auth/');
     invalidateApiGetCache('/api/inbox');
+    if (type !== 'auth:output') invalidateApiGetCache('/api/graph');
   } else if (type.startsWith('work:') || type.startsWith('push:')) {
     invalidateApiGetCache('/api/work/');
+    invalidateApiGetCache('/api/graph');
   } else if (type.startsWith('ledger:')) {
     // Covers ledger:issue:*, ledger:comment:*, ledger:label:*, and other
     // ledger:* events; all can change an issue list row or detail projection.
     invalidateApiGetCache('/api/issues');
     invalidateApiGetCache('/api/ledger');
+    invalidateApiGetCache('/api/graph');
   } else if (type.startsWith('space:')) {
     invalidateApiGetCache('/api/spaces');
+    invalidateApiGetCache('/api/graph');
   } else if (type.startsWith('artifact:')) {
     invalidateApiGetCache('/api/artifacts');
+    invalidateApiGetCache('/api/graph');
   } else if (type.startsWith('managed-reminders.')) {
     invalidateApiGetCache('/api/tasks');
     invalidateApiGetCache('/api/inbox');
+    invalidateApiGetCache('/api/graph');
+  } else if (type.startsWith('tasks.')) {
+    invalidateApiGetCache('/api/tasks');
+    invalidateApiGetCache('/api/tasks/commands');
+    invalidateApiGetCache('/api/graph');
   }
 }
 
 export async function getSessions<T>(query?: string): Promise<T[]> {
-  const payload = await cachedApiGetJson<ApiList<T>>(`/api/sessions${query || ''}`);
+  const payload = await cachedApiGetJson<ApiList<T>>(`/api/sessions${query || ''}`, WARMED_ROUTE_GET_OPTIONS);
   return normalizeList(payload);
 }
 
@@ -769,8 +882,10 @@ export async function getSessionOverview(
   providerSessionId?: string | null,
 ): Promise<SessionOverview> {
   const query = buildQuery({ provider_session_id: providerSessionId ?? undefined });
-  const response = await apiGet(`/api/sessions/${encodeURIComponent(sessionId)}/overview${query}`);
-  return await response.json() as SessionOverview;
+  return cachedApiGetJson<SessionOverview>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/overview${query}`,
+    WARMED_ROUTE_GET_OPTIONS,
+  );
 }
 
 // Issue 037fa85 (follow-up) — provider-scoped overview for a Codex session
@@ -1129,8 +1244,7 @@ export async function createTrashEntry(request: TrashCreateRequest): Promise<Tra
 }
 
 export async function getIssueRepos<T>(): Promise<T[]> {
-  const response = await apiGet('/api/issues');
-  const payload = (await parseMaybeJson(response)) as ApiList<T>;
+  const payload = await cachedApiGetJson<ApiList<T>>('/api/issues', WARMED_ROUTE_GET_OPTIONS);
   return normalizeList(payload);
 }
 
@@ -2493,10 +2607,10 @@ export async function getConversationSidebar(params: {
 }
 
 export type ConversationWindowRequest =
-  | { target?: 'initial' | 'latest'; limit?: number; signal?: AbortSignal }
-  | { block: string; limit?: number; signal?: AbortSignal }
-  | { turn: string; limit?: number; signal?: AbortSignal }
-  | { position: number; limit?: number; signal?: AbortSignal };
+  | { target?: 'initial' | 'latest'; limit?: number; view?: 'display'; signal?: AbortSignal }
+  | { block: string; limit?: number; view?: 'display'; signal?: AbortSignal }
+  | { turn: string; limit?: number; view?: 'display'; signal?: AbortSignal }
+  | { position: number; limit?: number; view?: 'display'; signal?: AbortSignal };
 
 export async function getConversationWindow(
   id: string,
@@ -2508,6 +2622,7 @@ export async function getConversationWindow(
   if ('turn' in request) query.set('turn', request.turn);
   if ('position' in request) query.set('position', String(request.position));
   if (request.limit) query.set('limit', String(request.limit));
+  if (request.view) query.set('view', request.view);
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${suffix}`, {
     signal: request.signal,
@@ -2810,8 +2925,10 @@ export async function getLogs(params?: {
   if (params?.offset != null) query.set('offset', String(params.offset));
   if (params?.before) query.set('before', params.before);
   const qs = query.toString();
-  const resp = await apiGet(`/api/system/logs${qs ? '?' + qs : ''}`);
-  return (await parseMaybeJson(resp)) as LogsResponse;
+  return cachedApiGetJson<LogsResponse>(
+    `/api/system/logs${qs ? '?' + qs : ''}`,
+    WARMED_ROUTE_GET_OPTIONS,
+  );
 }
 
 export type DesktopDaemonLaunchMode = 'on_demand' | 'manual';
@@ -3010,25 +3127,34 @@ export async function getWorkflow(id: string): Promise<WorkflowRun> {
 // ── Graph API ──
 
 export type GraphQueryParams = {
+  mode?: GraphMode;
   repo?: string;
+  branch?: string;
   since?: string;
   limit?: number;
   status?: 'open' | 'all';
+  nodeTypes?: string[];
+  edgeTypes?: string[];
 };
 
 export type { GraphNode, GraphEdge };
 
 export async function getGraph(
   params: GraphQueryParams = {},
-): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
+): Promise<GraphPayload> {
   const query = new URLSearchParams();
+  if (params.mode) query.set('mode', params.mode);
   if (params.repo) query.set('repo', params.repo);
+  if (params.branch) query.set('branch', params.branch);
   if (params.since) query.set('since', params.since);
   if (params.limit != null) query.set('limit', String(params.limit));
   if (params.status) query.set('status', params.status);
+  if (params.nodeTypes?.length) query.set('node_type', params.nodeTypes.join(','));
+  if (params.edgeTypes?.length) query.set('edge_type', params.edgeTypes.join(','));
   const qs = query.toString();
-  return cachedApiGetJson<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
+  return cachedApiGetJson<GraphPayload>(
     `/api/graph${qs ? '?' + qs : ''}`,
+    WARMED_ROUTE_GET_OPTIONS,
   );
 }
 
@@ -3209,7 +3335,7 @@ export type ArtifactQueryParams = {
 
 export async function getArtifacts(params: ArtifactQueryParams = {}): Promise<ArtifactRecord[]> {
   const query = buildQuery(params);
-  const payload = await cachedApiGetJson<{ artifacts?: ArtifactRecord[] }>(`/api/artifacts${query}`);
+  const payload = await cachedApiGetJson<{ artifacts?: ArtifactRecord[] }>(`/api/artifacts${query}`, WARMED_ROUTE_GET_OPTIONS);
   return payload.artifacts ?? [];
 }
 
@@ -3217,6 +3343,7 @@ export async function getArtifactSeriesList(params: ArtifactQueryParams = {}): P
   const query = buildQuery(params);
   const payload = await cachedApiGetJson<{ series?: ArtifactSeriesSummary[] }>(
     `/api/artifacts/series${query}`,
+    WARMED_ROUTE_GET_OPTIONS,
   );
   return payload.series ?? [];
 }
@@ -3432,7 +3559,7 @@ export async function listSpaces(projectId: string): Promise<ContractSpace[]> {
  * per project. Each Space carries its nullable `project_id`.
  */
 export async function listSpacesGrouped(): Promise<ContractSpaceGroup[]> {
-  const payload = await cachedApiGetJson<{ groups?: ContractSpaceGroup[] }>('/api/spaces');
+  const payload = await cachedApiGetJson<{ groups?: ContractSpaceGroup[] }>('/api/spaces', WARMED_ROUTE_GET_OPTIONS);
   return payload.groups ?? [];
 }
 
@@ -3575,7 +3702,7 @@ export async function getSpaceFactPacket(spaceId: string): Promise<SpaceFactPack
     items?: ContractSpaceItem[];
     occurrences?: ContractSpaceOccurrence[];
     edges?: ContractSpaceEdge[];
-  }>(`/api/spaces/${encodeURIComponent(spaceId)}`, { ttlMs: 0, staleWhileRevalidateMs: 0 });
+  }>(`/api/spaces/${encodeURIComponent(spaceId)}`, WARMED_ROUTE_GET_OPTIONS);
   return {
     space: payload.space,
     items: payload.items ?? [],
@@ -4783,10 +4910,10 @@ export function getCachedBriefings(now: number = Date.now()): FeedbackCollection
 }
 
 export async function getBriefings(signal?: AbortSignal): Promise<FeedbackCollection[]> {
-  const response = await apiGet(BRIEFINGS_PATH, signal ? { signal } : {});
-  const payload = await parseMaybeJson(response);
-  const now = Date.now();
-  getJsonCache.set(cacheKeyForGet(BRIEFINGS_PATH), { value: payload, freshUntil: now + DEFAULT_GET_CACHE_TTL_MS, staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS });
+  const payload = await cachedApiGetJson<unknown>(BRIEFINGS_PATH, {
+    ...WARMED_ROUTE_GET_OPTIONS,
+    signal,
+  });
   return normalizeBriefings(payload);
 }
 
@@ -4797,10 +4924,10 @@ export function getCachedBriefingBundles(now: number = Date.now()): BriefingBund
 }
 
 export async function getBriefingBundles(signal?: AbortSignal): Promise<BriefingBundle[]> {
-  const response = await apiGet(BRIEFING_BUNDLES_PATH, signal ? { signal } : {});
-  const payload = await parseMaybeJson(response);
-  const now = Date.now();
-  getJsonCache.set(cacheKeyForGet(BRIEFING_BUNDLES_PATH), { value: payload, freshUntil: now + DEFAULT_GET_CACHE_TTL_MS, staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS });
+  const payload = await cachedApiGetJson<unknown>(BRIEFING_BUNDLES_PATH, {
+    ...WARMED_ROUTE_GET_OPTIONS,
+    signal,
+  });
   return normalizeBriefingBundles(payload);
 }
 
@@ -4811,10 +4938,10 @@ export function getCachedBriefingGroups(now: number = Date.now()): BriefingGroup
 }
 
 export async function getBriefingGroups(signal?: AbortSignal): Promise<BriefingGroup[]> {
-  const response = await apiGet(BRIEFING_GROUPS_PATH, signal ? { signal } : {});
-  const payload = await parseMaybeJson(response);
-  const now = Date.now();
-  getJsonCache.set(cacheKeyForGet(BRIEFING_GROUPS_PATH), { value: payload, freshUntil: now + DEFAULT_GET_CACHE_TTL_MS, staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS });
+  const payload = await cachedApiGetJson<unknown>(BRIEFING_GROUPS_PATH, {
+    ...WARMED_ROUTE_GET_OPTIONS,
+    signal,
+  });
   return normalizeBriefingGroups(payload);
 }
 
@@ -4874,8 +5001,8 @@ export async function getBriefingSidebarSnapshot(signal?: AbortSignal): Promise<
   const now = Date.now();
   getJsonCache.set(BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY, {
     value: snapshot,
-    freshUntil: now + DEFAULT_GET_CACHE_TTL_MS,
-    staleUntil: now + DEFAULT_GET_CACHE_TTL_MS + DEFAULT_GET_CACHE_STALE_MS,
+    freshUntil: now + WARMED_ROUTE_GET_OPTIONS.ttlMs,
+    staleUntil: now + WARMED_ROUTE_GET_OPTIONS.ttlMs + WARMED_ROUTE_GET_OPTIONS.staleWhileRevalidateMs,
   });
   return snapshot;
 }
@@ -5764,8 +5891,11 @@ export function normalizeTaskInventory(payload: unknown): TaskInventory {
 
 /** The whole Tasks read surface. Read-only: the UI never posts an inventory. */
 export async function getTaskInventory(signal?: AbortSignal): Promise<TaskInventory> {
-  const response = await apiGet('/api/tasks', signal ? { signal } : {});
-  return normalizeTaskInventory(await parseMaybeJson(response));
+  const payload = await cachedApiGetJson<unknown>('/api/tasks', {
+    ...WARMED_ROUTE_GET_OPTIONS,
+    signal,
+  });
+  return normalizeTaskInventory(payload);
 }
 
 const TASK_COMMAND_VERBS: readonly TaskCommandVerb[] = ['disable', 'dry_run', 'enable'];
@@ -5830,8 +5960,11 @@ export async function getTaskCommands(
   if (filter.executor) query.set('executor', filter.executor);
   if (filter.taskId) query.set('task_id', filter.taskId);
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
-  const response = await apiGet(`/api/tasks/commands${suffix}`, signal ? { signal } : {});
-  return normalizeTaskCommands(await parseMaybeJson(response));
+  const payload = await cachedApiGetJson<unknown>(`/api/tasks/commands${suffix}`, {
+    ...WARMED_ROUTE_GET_OPTIONS,
+    signal,
+  });
+  return normalizeTaskCommands(payload);
 }
 
 export async function getTaskCommand(

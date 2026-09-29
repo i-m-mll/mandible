@@ -10,6 +10,7 @@ function NoticeHarness({ children }: { children: ComponentChildren }): JSX.Eleme
     noticeHost,
     rightSidebar: null,
     registerRightSidebar: () => () => undefined,
+    registerInitialRouteLoad: () => undefined,
     updateRightSidebar: () => undefined,
   }}>
     <div id="app-operational-notices" ref={setNoticeHost} />

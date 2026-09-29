@@ -23,6 +23,8 @@ import type { JSX } from 'preact';
 
 import {
   ApiError,
+  canPerformOperation,
+  invalidateApiGetCache,
   getTaskCommand,
   getTaskInventory,
   getTaskCommands,
@@ -46,6 +48,7 @@ import {
   type ManagedReminderPredicate,
   type TaskRunFacts,
   type TaskRunSlot,
+  type InstanceInfo,
 } from '../api';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
@@ -55,7 +58,8 @@ import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
-import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
+import { useRegisterInitialRouteLoad } from '../app-shell';
 
 const TASKS_SELECTION_STATE_KEY = 'mandible.tasks.selection:v1';
 
@@ -847,6 +851,29 @@ function taskSearchText(item: TaskInventoryItem): string {
   ].join(' ').toLocaleLowerCase();
 }
 
+export async function warmInitialData(
+  params: Record<string, string>,
+  context: { instanceInfo: InstanceInfo | null },
+): Promise<void> {
+  if (!canPerformOperation(context.instanceInfo, 'GET', '/api/tasks')) return;
+  const inventory = await getTaskInventory();
+  const persisted = readPersistedViewState(
+    TASKS_SELECTION_STATE_KEY,
+    normalizeTasksSelectionState,
+    { selectedKey: null },
+  );
+  const selectedKey = params.task?.trim() || persisted.selectedKey;
+  const selected = inventory.tasks.find((item) => item.key === selectedKey)
+    ?? inventory.tasks[0]
+    ?? null;
+  if (selected?.source_kind !== 'executor'
+      || !canPerformOperation(context.instanceInfo, 'GET', '/api/tasks/commands')) return;
+  await getTaskCommands({
+    executor: selected.executor,
+    taskId: selected.task.task_id,
+  });
+}
+
 export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JSX.Element {
   const [selectionState, setSelectionState] = usePersistedViewState(
     TASKS_SELECTION_STATE_KEY,
@@ -875,25 +902,32 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   // disable request merely because the first response was lost.
   const pendingRequestKeys = useRef(new Map<string, string>());
 
-  const load = useCallback(async (signal?: AbortSignal) => {
+  const load = useCallback(async (signal?: AbortSignal): Promise<TaskInventory | null> => {
     try {
       const next = await getTaskInventory(signal);
-      if (!mounted.current) return;
+      if (!mounted.current) return null;
       setInventory(next);
       setError(null);
+      return next;
     } catch (loadError) {
-      if (!mounted.current) return;
+      if (!mounted.current) return null;
       setError(loadError instanceof Error ? loadError.message : String(loadError));
+      return null;
     } finally {
       if (mounted.current) setLoading(false);
     }
   }, []);
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
+  const registerInitialCommandsLoad = useRegisterInitialRouteLoad();
 
   useEffect(() => {
     mounted.current = true;
     const controller = new AbortController();
-    void load(controller.signal);
-    const timer = setInterval(() => { void load(); }, TASKS_POLL_INTERVAL_MS);
+    registerInitialRouteLoad(load(controller.signal));
+    const timer = setInterval(() => {
+      invalidateApiGetCache('/api/tasks');
+      void load();
+    }, TASKS_POLL_INTERVAL_MS);
     const onManagedReminder = () => { void load(); };
     window.addEventListener('managed-reminder:sse', onManagedReminder);
     return () => {
@@ -902,7 +936,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       clearInterval(timer);
       window.removeEventListener('managed-reminder:sse', onManagedReminder);
     };
-  }, [load]);
+  }, [load, registerInitialRouteLoad]);
 
   const tasks = inventory?.tasks ?? [];
   const executors = inventory?.executors ?? [];
@@ -971,13 +1005,16 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     setCommands([]);
     setCommandAvailable(false);
     setCommandError(null);
-    void loadCommands();
-    const timer = setInterval(() => { void loadCommands(); }, TASKS_POLL_INTERVAL_MS);
+    registerInitialCommandsLoad(loadCommands());
+    const timer = setInterval(() => {
+      invalidateApiGetCache('/api/tasks/commands');
+      void loadCommands();
+    }, TASKS_POLL_INTERVAL_MS);
     return () => {
       controller.abort();
       clearInterval(timer);
     };
-  }, [selectedTargetExecutor, selectedTargetKey, selectedTargetTaskId]);
+  }, [registerInitialCommandsLoad, selectedTargetExecutor, selectedTargetKey, selectedTargetTaskId]);
 
   const selectedCommands = useMemo(
     () => commands.filter((command) =>

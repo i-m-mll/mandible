@@ -41,9 +41,11 @@ import {
   exportConversationBlocks,
   getConversationControl,
   getConversationLiveProjection,
+  getChatShownProjectsPreference,
   getProviderChat,
   getConversationSidebar,
   getConversations,
+  getSidebarOrderPreference,
   getSessionIssues,
   listWorkflows,
   listCanonicalProjects,
@@ -105,9 +107,13 @@ import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import {
   preferredProjectCheckout,
   reconcileShownProjects,
+  DEFAULT_CHAT_VIEW_STATE,
+  CHAT_VIEW_STATE_KEY,
+  normalizeChatViewState,
   useChatProjectSelection,
   useChatViewState,
 } from './conversation-view-state';
+import { readPersistedViewState } from '../hooks/usePersistedViewState';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { useIntrinsicOverflowGroup } from '../hooks/useIntrinsicOverflowGroup';
@@ -117,6 +123,7 @@ import { chatItemIdentityKey, mergeProviderLiveProjection } from '../../../src/c
 import type { ChatItem } from '../../../src/parsers/types';
 import {
   CHAT_DETAIL_PREVIEW_MIN_WIDTH,
+  useRegisterInitialRouteLoad,
   useRegisterAppRightSidebar,
 } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
@@ -369,6 +376,149 @@ export function applyConversationSearchParams(
   if (!query) return;
   params.search = query;
   if (mode === 'full') params.full_text = true;
+}
+
+type ConversationSidebarRequestState = {
+  limit: number;
+  projectIds: string[];
+  lifecycle: 'active' | 'archived';
+  pinnedConversationIds: string[] | null;
+  previewPinOverrides: Record<string, boolean>;
+  previewMutationsRejected: boolean;
+  sourceFilter: ConversationSource | 'all';
+  starredOnly: boolean;
+  hideEmpty: boolean;
+  search: string;
+  searchMode: 'title' | 'full';
+  sort: 'date' | 'blocks';
+};
+
+function buildConversationSidebarFilters(state: ConversationSidebarRequestState): ConversationSidebarFilters {
+  const params: Parameters<typeof getConversationSidebar>[0] = {
+    limit: state.limit,
+    sort: state.sort === 'blocks' ? 'block_count' : 'started_at',
+    exclude_subagents: true,
+    project_ids: state.projectIds,
+    lifecycle: state.lifecycle,
+  };
+  if (state.pinnedConversationIds !== null) {
+    params.pinned_ids = state.pinnedConversationIds;
+  } else if (state.previewMutationsRejected) {
+    params.pinned_ids = Object.entries(state.previewPinOverrides)
+      .flatMap(([id, pinned]) => pinned ? [id] : []);
+  }
+  if (state.sourceFilter !== 'all') params.source = state.sourceFilter;
+  if (state.starredOnly) params.starred = true;
+  if (state.hideEmpty) params.min_blocks = 1;
+  applyConversationSearchParams(params, state.search, state.searchMode);
+  return params;
+}
+
+type ConversationWarmupContext = {
+  settings?: Record<string, string>;
+  instanceInfo?: InstanceInfo | null;
+  sidebarGroupLimit?: number;
+};
+
+const WARMED_CHAT_QUERY_STALE_TIME_MS = 1_000;
+
+async function warmSelectedConversationWindow(
+  params: Record<string, string>,
+  lastSelection: { type: 'conversation' | 'session'; id: string } | null,
+): Promise<void> {
+  let conversationId = params.conversation?.trim()
+    || (lastSelection?.type === 'conversation' ? lastSelection.id : '');
+  if (!conversationId) {
+    const sessionId = params.session?.trim()
+      || (lastSelection?.type === 'session' ? lastSelection.id : '');
+    if (!sessionId) return;
+    const resolved = await appQueryClient.fetchQuery({
+      queryKey: conversationKeys.bySession(sessionId),
+      queryFn: ({ signal }) => getConversations({ session_id: sessionId, limit: 1, signal }),
+      staleTime: 0,
+    });
+    conversationId = resolved.conversations[0]?.id ?? '';
+  }
+  if (!conversationId) return;
+
+  const target = normalizeWindowTarget({ target: 'initial' });
+  const aggregateKey = conversationKeys.aggregate(conversationId);
+  const aggregateAtStart = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+  const window = await appQueryClient.fetchQuery({
+    queryKey: conversationKeys.window(conversationId, target),
+    queryFn: ({ signal }) => readConversationWindowWhenReady(
+      conversationId,
+      windowRequest(target, signal),
+    ),
+    staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
+  });
+  const current = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+  const aggregateAdvanced = current !== undefined
+    && (aggregateAtStart === undefined || current.source_version_id !== aggregateAtStart.source_version_id);
+  if (aggregateAdvanced && current.source_version_id !== window.source_version_id) return;
+  appQueryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, window));
+}
+
+export async function warmInitialData(
+  params: Record<string, string>,
+  context: ConversationWarmupContext = {},
+): Promise<void> {
+  const [projectSnapshot, shownPreference, sidebarOrder] = await Promise.all([
+    listCanonicalProjects()
+      .then((projects) => ({ projects, loaded: true }))
+      .catch(() => ({ projects: [] as CanonicalProject[], loaded: false })),
+    getChatShownProjectsPreference(),
+    getSidebarOrderPreference().catch(() => null),
+  ]);
+  const { projects, loaded: projectsLoaded } = projectSnapshot;
+  const storedViewState = readPersistedViewState(
+    CHAT_VIEW_STATE_KEY,
+    normalizeChatViewState,
+    { ...DEFAULT_CHAT_VIEW_STATE, shownProjects: [] },
+  );
+  const shownProjects = shownPreference.revision === 0 && storedViewState.shownProjects.length > 0
+    ? storedViewState.shownProjects
+    : shownPreference.value;
+  const reconciledShownProjects = projectsLoaded
+    ? reconcileShownProjects(shownProjects, projects)
+    : shownProjects;
+  const registeredSelections = new Set(projects.flatMap((project) => {
+    const checkout = preferredProjectCheckout(project);
+    return checkout ? [`${project.id}\0${checkout.id}`] : [];
+  }));
+  const projectIds = [...new Set(projectsLoaded
+    ? reconciledShownProjects
+      .filter((shown) => registeredSelections.has(`${shown.projectId}\0${shown.checkoutId}`))
+      .map((shown) => shown.projectId)
+    : reconciledShownProjects.map((shown) => shown.projectId))];
+  const previewMutationsRejected = Boolean(
+    context.instanceInfo
+    && context.instanceInfo.allowed_effects?.includes('ledger:write') !== true,
+  );
+  const filters = buildConversationSidebarFilters({
+    limit: context.sidebarGroupLimit ?? normalizeSidebarGroupLimit(undefined),
+    projectIds,
+    lifecycle: storedViewState.conversationLifecycle,
+    pinnedConversationIds: sidebarOrder?.value.pinnedConversationIds ?? null,
+    previewPinOverrides: storedViewState.previewPinOverrides,
+    previewMutationsRejected,
+    sourceFilter: 'all',
+    starredOnly: false,
+    hideEmpty: true,
+    search: '',
+    searchMode: 'title',
+    sort: 'date',
+  });
+  const warmResults = await Promise.allSettled([
+    appQueryClient.fetchQuery({
+      queryKey: conversationKeys.sidebarInitial(filters),
+      queryFn: ({ signal }) => getConversationSidebar({ ...filters, signal }),
+      staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
+    }),
+    warmSelectedConversationWindow(params, storedViewState.lastSelection),
+  ]);
+  const failedWarm = warmResults.find((result) => result.status === 'rejected');
+  if (failedWarm?.status === 'rejected') throw failedWarm.reason;
 }
 
 function isLiveConsoleSession(session: ConsoleSession): boolean {
@@ -1190,7 +1340,10 @@ export function ConversationDetail({
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
   const handledAnchorKeyRef = useRef<string | null>(null);
-  const windowTargetJson = JSON.stringify(normalizeWindowTarget(effectiveAnchor ?? { target: 'initial' }));
+  const windowTargetJson = JSON.stringify({
+    ...normalizeWindowTarget(effectiveAnchor ?? { target: 'initial' }),
+    view: 'display' as const,
+  });
   const windowTarget = useMemo(
     () => JSON.parse(windowTargetJson) as ReturnType<typeof normalizeWindowTarget>,
     [windowTargetJson],
@@ -1229,12 +1382,17 @@ export function ConversationDetail({
     queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
     return incoming;
   }, [conversationId, queryClient, selectionGeneration]);
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const fetchConversationDetail = useCallback(
-    async ({ signal }: { signal: AbortSignal }) => readAndReconcileWindow(
-      windowTarget,
-      () => readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal)),
-    ),
-    [conversationId, readAndReconcileWindow, windowTarget],
+    ({ signal }: { signal: AbortSignal }) => {
+      const initialLoad = readAndReconcileWindow(
+        windowTarget,
+        () => readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal)),
+      );
+      registerInitialRouteLoad(initialLoad);
+      return initialLoad;
+    },
+    [conversationId, readAndReconcileWindow, registerInitialRouteLoad, windowTarget],
   );
   const windowQuery = useQuery({
     queryKey: conversationRequestKey,
@@ -1248,13 +1406,61 @@ export function ConversationDetail({
   const fetchAndReconcileWindow = useCallback(async (
     target: ReturnType<typeof normalizeWindowTarget>,
   ): Promise<ConversationPositionWindow> => {
-    const key = conversationKeys.window(conversationId, target);
-    return readAndReconcileWindow(target, () => queryClient.fetchQuery({
+    const displayTarget = { ...target, view: 'display' as const };
+    const key = conversationKeys.window(conversationId, displayTarget);
+    return readAndReconcileWindow(displayTarget, () => queryClient.fetchQuery({
       queryKey: key,
-      queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(target, signal)),
+      queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(displayTarget, signal)),
       staleTime: 0,
     }));
   }, [conversationId, queryClient, readAndReconcileWindow]);
+
+  const hydrateConversationDetails = useCallback(async (
+    sources: readonly { blockId: string; position?: number; detailsLoaded?: boolean }[],
+  ): Promise<void> => {
+    const aggregateKey = conversationKeys.aggregate(conversationId);
+    const aggregateAtStart = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+    if (!aggregateAtStart) return;
+    const requested = [...new Map(sources
+      .filter((source) => source.detailsLoaded === false && Number.isSafeInteger(source.position))
+      .map((source) => [source.position!, source])).values()];
+    await Promise.all(requested.map(async (source) => {
+      const target = normalizeWindowTarget({ position: source.position!, limit: 1 });
+      const incoming = await queryClient.fetchQuery({
+        queryKey: conversationKeys.window(conversationId, target),
+        queryFn: ({ signal }) => readConversationWindowWhenReady(
+          conversationId,
+          windowRequest(target, signal),
+        ),
+        staleTime: 0,
+      });
+      const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+      if (!current) return;
+      if (incoming.source_version_id !== current.source_version_id) {
+        // Keep the old projection intact until a complete display projection
+        // for the new source version has arrived.
+        void queryClient.invalidateQueries({ queryKey: conversationRequestKey, exact: true });
+        return;
+      }
+      if (!incoming.blocks.some((block) => block.id === source.blockId && block.details_loaded !== false)) {
+        throw new Error('The expanded conversation block did not return its complete details.');
+      }
+      queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
+    }));
+  }, [conversationId, conversationRequestKey, queryClient]);
+  const handleExpandConversationDetails = useCallback(async (
+    sources: readonly { blockId: string; position?: number; detailsLoaded?: boolean }[],
+  ) => {
+    try {
+      await hydrateConversationDetails(sources);
+    } catch (cause) {
+      if (selectionRef.current.generation !== selectionGeneration) return;
+      setToast({
+        message: `Could not load expanded chat details: ${cause instanceof Error ? cause.message : String(cause)}`,
+        type: 'error',
+      });
+    }
+  }, [hydrateConversationDetails, selectionGeneration]);
 
   useEffect(() => () => {
     void queryClient.cancelQueries({ queryKey: conversationKeys.conversation(conversationId) });
@@ -1373,6 +1579,7 @@ export function ConversationDetail({
       conversationId: aggregate.conversation.id,
       sourceVersionId: aggregate.source_version_id,
       historyLoading: edgeLoading !== null,
+      total: aggregate.total,
       loadedIntervals: aggregate.loaded_intervals,
       hasOlder: !aggregate.start_reached,
       hasNewer: !aggregate.end_reached,
@@ -2474,6 +2681,7 @@ export function ConversationDetail({
             onNavigationResult={handleNavigationResult}
             onFork={handleFork}
             onCreatedTaskNavigate={navigateToCreatedTask}
+            onExpandDetails={handleExpandConversationDetails}
             sessionInfo={{
               sessionId: conversation.session_id,
               backend: conversation.source,
@@ -3064,26 +3272,23 @@ export function ConversationsView({
   }, [canonicalProjectsLoaded, canonicalProjectsReady, registeredProjects, shownProjects, shownProjectsState.ready]);
 
   const sidebarRequestParams = useCallback((limit: number, projectIds = selectedProjectIds) => {
-    const params: Parameters<typeof getConversationSidebar>[0] = {
+    return buildConversationSidebarFilters({
       limit,
-      sort: sort === 'blocks' ? 'block_count' : 'started_at',
-      exclude_subagents: true,
-      project_ids: projectIds,
+      projectIds,
       lifecycle: conversationLifecycle,
-    };
-    if (sidebarOrder.value.pinnedConversationIds !== null) {
-      params.pinned_ids = sidebarOrder.value.pinnedConversationIds;
-    } else if (previewMutationsRejected) {
-      params.pinned_ids = Object.entries(chatViewState.previewPinOverrides)
-        .flatMap(([id, pinned]) => pinned ? [id] : []);
-    }
-    if (sourceFilter !== 'all') params.source = sourceFilter;
-    if (starredOnly) params.starred = true;
-    if (hideEmpty) params.min_blocks = 1;
-    applyConversationSearchParams(params, search, searchMode);
-    return params;
+      pinnedConversationIds: sidebarOrder.value.pinnedConversationIds,
+      previewPinOverrides: chatViewState.previewPinOverrides,
+      previewMutationsRejected,
+      sourceFilter,
+      starredOnly,
+      hideEmpty,
+      search,
+      searchMode,
+      sort,
+    });
   }, [chatViewState.previewPinOverrides, conversationLifecycle, hideEmpty, previewMutationsRejected, selectedProjectIds, sidebarOrder.value.pinnedConversationIds, sourceFilter, starredOnly, sort, search, searchMode]);
 
+  const registerInitialSidebarLoad = useRegisterInitialRouteLoad();
   const sidebarFiltersJson = JSON.stringify(sidebarRequestParams(sidebarGroupLimit));
   const sidebarFilters = useMemo(
     () => JSON.parse(sidebarFiltersJson) as ConversationSidebarFilters,
@@ -3095,13 +3300,18 @@ export function ConversationsView({
   const sidebarEnabled = canonicalProjectsReady && shownProjectsState.ready;
   const sidebarQueryKey = useMemo(() => conversationKeys.sidebarInitial(sidebarFilters), [sidebarFilters]);
   const fetchSidebarInitial = useCallback(
-    ({ signal }: { signal: AbortSignal }) => getConversationSidebar({ ...sidebarFilters, signal }),
-    [sidebarFilters],
+    ({ signal }: { signal: AbortSignal }) => {
+      const initialLoad = getConversationSidebar({ ...sidebarFilters, signal });
+      registerInitialSidebarLoad(initialLoad);
+      return initialLoad;
+    },
+    [registerInitialSidebarLoad, sidebarFilters],
   );
   const sidebarQuery = useQuery({
     queryKey: sidebarQueryKey,
     queryFn: fetchSidebarInitial,
     enabled: sidebarEnabled,
+    staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
   }, queryClient);
   const [continuationCacheRevision, setContinuationCacheRevision] = useState(0);
   useEffect(() => queryClient.getQueryCache().subscribe((event) => {

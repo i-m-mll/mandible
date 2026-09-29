@@ -296,7 +296,7 @@ function MountedRightSidebarShell({ children }: { children: ComponentChildren })
     if (ownerRef.current === ownerId) setSidebar(next);
   }, []);
   return (
-    <AppShellProvider value={{ rightSidebar: sidebar, registerRightSidebar, updateRightSidebar, setViewSidebarWidth: () => undefined, active: true }}>
+    <AppShellProvider value={{ rightSidebar: sidebar, registerRightSidebar, updateRightSidebar, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined, active: true }}>
       {children}
       {sidebar?.open && sidebar.kind === 'tabs' ? (
         <aside aria-label={sidebar.ariaLabel}>
@@ -330,7 +330,7 @@ function MountedConversationsApp({
     setSidebar((current) => current === next ? current : next);
   }, [onSidebarUpdate]);
   return (
-    <AppShellProvider value={{ rightSidebar: sidebar, registerRightSidebar, updateRightSidebar, setViewSidebarWidth: () => undefined, active: true }}>
+    <AppShellProvider value={{ rightSidebar: sidebar, registerRightSidebar, updateRightSidebar, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined, active: true }}>
       <ConversationsView
         consoleSessions={[]}
         initialConversationId={null}

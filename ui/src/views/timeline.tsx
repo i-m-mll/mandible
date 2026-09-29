@@ -1,8 +1,13 @@
 import { Fragment, type ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { getProjectTimeline } from '../api';
-import { AppOperationalNoticeOutlet, useAppShell, useRegisterAppRightSidebar } from '../app-shell';
+import { getProjectTimeline, getWorkRepos } from '../api';
+import {
+  AppOperationalNoticeOutlet,
+  useAppShell,
+  useRegisterAppRightSidebar,
+  useRegisterInitialRouteLoad,
+} from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -10,7 +15,7 @@ import { PreviewIcon } from '../components/icons/TabIcons';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
-import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import type { WorkRepo } from './work';
 import {
   TIMELINE_DAY_MS,
@@ -462,6 +467,42 @@ function projectionRowSpecFromFilterRow(row: TimelineFilterRowSpec): TimelineRow
   };
 }
 
+function buildProjectTimelineRequest(
+  projectRef: string,
+  state: TimelineViewState,
+  projection: ProjectTimelineProjection | null,
+): ProjectTimelineInput {
+  return {
+    project_ref: projectRef,
+    root_policy: state.rootPolicy,
+    explicit_root_issue_ids: state.explicitRootIssueIds,
+    promoted_root_issue_ids: state.promotedRootIssueIds,
+    expanded_event_ids: state.expandedEventIds,
+    expanded_paths: state.expandedPaths.filter((path) => !isLocalFilterPath(path)),
+    include_closed: state.includeClosed,
+    event_kinds: state.visibleEventTypes,
+    depth: projectionDepthForExpandedEvents(projection, state.expandedEventIds),
+    root_specs: state.filterRows.map(projectionRowSpecFromFilterRow),
+  };
+}
+
+export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const repos = await getWorkRepos<WorkRepo>();
+  const urlState = parseUrlState(params);
+  const projectRef = defaultProjectRef(repos, urlState.projectRef);
+  const persistedState = readPersistedViewState(
+    storageKey(projectRef),
+    normalizeTimelineViewState,
+    DEFAULT_TIMELINE_VIEW_STATE,
+  );
+  const viewState = mergeTimelineState(persistedState, {}, urlState);
+  const request = buildProjectTimelineRequest(projectRef, viewState, null);
+  const requestKey = detailRequestKey('timeline', request);
+  if (readPersistedDetail<ProjectTimelineProjection>('timeline', requestKey)) return;
+  const projection = await getProjectTimeline(request);
+  writePersistedDetail('timeline', requestKey, projection);
+}
+
 function projectedFilterRowId(row: TimelineFilterRowSpec, rows: readonly TimelineFilterRowSpec[]): string {
   const index = rows.findIndex((candidate) => candidate.id === row.id);
   return `row:spec:${row.id}:${Math.max(0, index)}`;
@@ -809,6 +850,7 @@ function AddTimelineRowIcon(): JSX.Element {
 }
 
 export function TimelineView({ repos, params = {}, sidebarHidden = false }: TimelineViewProps): JSX.Element {
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const { active } = useAppShell();
   const urlState = useMemo(() => parseUrlState(params), [params]);
   const initialProjectRef = defaultProjectRef(repos, urlState.projectRef);
@@ -870,37 +912,10 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     resetLoadedProjection();
     setProjectRef(nextProjectRef);
   }, [resetLoadedProjection]);
-  const projectionDepth = useMemo(
-    () => projectionDepthForExpandedEvents(projection, viewState.expandedEventIds),
-    [projection, viewState.expandedEventIds],
+  const timelineRequest = useMemo<ProjectTimelineInput>(
+    () => buildProjectTimelineRequest(projectRef, viewState, projection),
+    [projectRef, viewState, projection],
   );
-  const rootSpecs = useMemo(
-    () => viewState.filterRows.map(projectionRowSpecFromFilterRow),
-    [viewState.filterRows],
-  );
-  const timelineRequest = useMemo<ProjectTimelineInput>(() => ({
-    project_ref: projectRef,
-    root_policy: viewState.rootPolicy,
-    explicit_root_issue_ids: viewState.explicitRootIssueIds,
-    promoted_root_issue_ids: viewState.promotedRootIssueIds,
-    expanded_event_ids: viewState.expandedEventIds,
-    expanded_paths: viewState.expandedPaths.filter((path) => !isLocalFilterPath(path)),
-    include_closed: viewState.includeClosed,
-    event_kinds: viewState.visibleEventTypes,
-    depth: projectionDepth,
-    root_specs: rootSpecs,
-  }), [
-    projectRef,
-    viewState.rootPolicy,
-    viewState.explicitRootIssueIds.join(','),
-    viewState.promotedRootIssueIds.join(','),
-    viewState.expandedEventIds.join(','),
-    viewState.expandedPaths.join(','),
-    viewState.includeClosed,
-    viewState.visibleEventTypes.join(','),
-    rootSpecs,
-    projectionDepth,
-  ]);
   const timelineRequestKey = useMemo(
     () => detailRequestKey('timeline', timelineRequest),
     [timelineRequest],
@@ -959,7 +974,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   useEffect(() => {
     const generation = requestGeneration.current;
     const controller = new AbortController();
-    getProjectTimeline(timelineRequest, controller.signal)
+    const initialLoad = getProjectTimeline(timelineRequest, controller.signal)
       .then((next) => {
         if (
           requestGeneration.current !== generation
@@ -980,8 +995,10 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
         setProjection(lastProjectionRef.current);
         setStatus('error');
       });
+    registerInitialRouteLoad(initialLoad);
     return () => controller.abort();
   }, [
+    registerInitialRouteLoad,
     timelineRequest,
     timelineRequestKey,
   ]);

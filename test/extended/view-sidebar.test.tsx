@@ -111,6 +111,7 @@ describe('ViewSidebar', () => {
       active: true,
       rightSidebar: null,
       registerRightSidebar: () => () => undefined,
+      registerInitialRouteLoad: () => undefined,
       setViewSidebarWidth,
       viewSidebarWidth: 420,
     };

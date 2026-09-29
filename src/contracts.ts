@@ -479,6 +479,8 @@ export type StoredConversationBlock = {
   metadata_json: string;
   dag_uuid?: string | null;
   dag_parent_uuid?: string | null;
+  /** False when a display projection intentionally omits large block details. */
+  details_loaded?: boolean;
 };
 
 export type ConversationExternalNavigation =

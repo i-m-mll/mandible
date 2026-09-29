@@ -9,7 +9,7 @@ declare global {
   interface Window {
     __sourceBackedHistory: {
       navigate: (anchor: ConversationAnchor | null) => void;
-      refreshSourceVersion: () => Promise<void>;
+      reloadWithNewSourceVersion: () => Promise<void>;
       snapshot: () => Record<string, unknown>;
     };
   }
@@ -20,11 +20,12 @@ const legacyBlockId = (position: number) => `legacy-${position}`;
 const requests: string[] = [];
 const transformedSourceRequests: string[] = [];
 const fetchedBlockIds = new Set<string>();
+const detailReadBlockIds = new Set<string>();
 const seenBlockIds = new Set<string>();
 let maximumMountedRows = 0;
 let refreshedSourceGeneration = 0;
 let navigation: (anchor: ConversationAnchor | null) => void = () => undefined;
-let refreshActiveConversation: () => Promise<void> = async () => undefined;
+let reloadConversationWithNewVersion: () => Promise<void> = async () => undefined;
 
 const nativeFetch = window.fetch.bind(window);
 window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -52,20 +53,19 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (refreshedSourceGeneration > 0) {
       transformedSourceRequests.push(url);
       payload.source_version_id = `source-refresh-${refreshedSourceGeneration}`;
-    } else {
-      const legacyIds = new Map((payload.blocks ?? []).flatMap((block) => (
-        block.id ? [[block.id, legacyBlockId(block.position)] as const] : []
-      )));
-      for (const block of payload.blocks ?? []) {
-        if (block.parent_id) block.parent_id = legacyIds.get(block.parent_id) ?? block.parent_id;
-        block.id = legacyBlockId(block.position);
-      }
-      if (payload.target?.block_id) {
-        payload.target.block_id = legacyIds.get(payload.target.block_id) ?? payload.target.block_id;
-      }
-      if (payload.target?.turn_id) {
-        payload.target.turn_id = legacyIds.get(payload.target.turn_id) ?? payload.target.turn_id;
-      }
+    }
+    const sourceIds = new Map((payload.blocks ?? []).flatMap((block) => (
+      block.id ? [[block.id, legacyBlockId(block.position)] as const] : []
+    )));
+    for (const block of payload.blocks ?? []) {
+      if (block.parent_id) block.parent_id = sourceIds.get(block.parent_id) ?? block.parent_id;
+      block.id = legacyBlockId(block.position);
+    }
+    if (payload.target?.block_id) {
+      payload.target.block_id = sourceIds.get(payload.target.block_id) ?? payload.target.block_id;
+    }
+    if (payload.target?.turn_id) {
+      payload.target.turn_id = sourceIds.get(payload.target.turn_id) ?? payload.target.turn_id;
     }
     response = new Response(JSON.stringify(payload), {
       status: response.status,
@@ -77,6 +77,12 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     void response.clone().json().then((payload: { blocks?: Array<{ id?: string }> }) => {
       for (const block of payload.blocks ?? []) {
         if (block.id) fetchedBlockIds.add(block.id);
+      }
+      const query = new URL(url, window.location.href).searchParams;
+      if (query.has('position') && query.get('view') !== 'display') {
+        for (const block of payload.blocks ?? []) {
+          if (block.id) detailReadBlockIds.add(block.id);
+        }
       }
     }).catch(() => undefined);
   }
@@ -119,12 +125,16 @@ function initialAnchor(): ConversationAnchor | null {
 function Fixture(): JSX.Element {
   const [anchor, setAnchor] = useState<ConversationAnchor | null>(initialAnchor);
   const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const [conversationMountGeneration, setConversationMountGeneration] = useState(0);
   const ownerRef = useRef<string | null>(null);
   navigation = setAnchor;
-  refreshActiveConversation = () => queryClient.refetchQueries({
-    queryKey: ['chat', 'conversation', conversationId, 'window'],
-    type: 'active',
-  });
+  reloadConversationWithNewVersion = async () => {
+    navigation(null);
+    refreshedSourceGeneration += 1;
+    queryClient.clear();
+    setConversationMountGeneration((current) => current + 1);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  };
   const registerRightSidebar = useCallback((ownerId: string) => {
     ownerRef.current = ownerId;
     return () => {
@@ -140,6 +150,7 @@ function Fixture(): JSX.Element {
     active: true,
     rightSidebar,
     registerRightSidebar,
+    registerInitialRouteLoad: () => undefined,
     updateRightSidebar,
     setViewSidebarWidth: () => undefined,
   }), [registerRightSidebar, rightSidebar, updateRightSidebar]);
@@ -147,6 +158,7 @@ function Fixture(): JSX.Element {
   return (
     <AppShellProvider value={shell}>
       <ConversationDetail
+        key={conversationMountGeneration}
         conversationId={conversationId}
         anchor={anchor}
         onNavigate={() => undefined}
@@ -160,17 +172,16 @@ function Fixture(): JSX.Element {
 
 window.__sourceBackedHistory = {
   navigate: (anchor) => navigation(anchor),
-  refreshSourceVersion: () => {
-    refreshedSourceGeneration += 1;
-    return refreshActiveConversation();
-  },
+  reloadWithNewSourceVersion: () => reloadConversationWithNewVersion(),
   snapshot: () => {
     recordMountedBlocks();
     const scroll = document.querySelector<HTMLElement>('.stream-renderer__scroll');
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const transcript = queryClient.getQueryData<{
       source_version_id?: string | null;
-      blocks?: Array<{ id: string }>;
+      total?: number;
+      loaded_intervals?: Array<{ start: number; end: number }>;
+      blocks?: Array<{ id: string; position?: number }>;
     }>(['chat', 'conversation', conversationId, 'aggregate']);
     const readingAnchor = (() => {
       const entry = Object.entries(window.localStorage).find(([key]) => key.includes('chat-scroll'));
@@ -181,11 +192,15 @@ window.__sourceBackedHistory = {
       requests: [...requests],
       transformedSourceRequests: [...transformedSourceRequests],
       fetchedBlockIds: [...fetchedBlockIds],
+      detailReadBlockIds: [...detailReadBlockIds],
       seenBlockIds: [...seenBlockIds],
       sourceVersionId: transcript?.source_version_id ?? null,
+      totalPositions: transcript?.total ?? 0,
+      loadedIntervals: transcript?.loaded_intervals ?? [],
       anchorBlockLoaded: Boolean(readingAnchor?.blockId && transcript?.blocks?.some((block) => (
         block.id === readingAnchor.blockId
       ))),
+      anchorBlockPosition: transcript?.blocks?.find((block) => block.id === readingAnchor?.blockId)?.position ?? null,
       mountedRows: document.querySelectorAll('.stream-renderer__virtual-row').length,
       historyRows: document.querySelectorAll('.stream-renderer__history-state').length,
       maximumMountedRows,
@@ -196,6 +211,7 @@ window.__sourceBackedHistory = {
       focusedBlockId: focused?.dataset.blockId
         ?? focused?.closest<HTMLElement>('[data-block-id]')?.dataset.blockId
         ?? null,
+      expandedToolDetails: Boolean(document.querySelector('.tool-card__body')),
       text: document.getElementById('root')?.textContent ?? '',
     };
   },

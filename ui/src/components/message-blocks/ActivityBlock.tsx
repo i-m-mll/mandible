@@ -1,45 +1,18 @@
 import type { ActivityItem, ActivityKind } from '../../../../src/parsers/types';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
-import type { DisplayActivityItem } from '../stream-renderer/types';
-import { ChatIcon, HistoryIcon, InfoIcon, IssuesIcon, MonitorIcon, TerminalIcon } from '../icons/TabIcons';
+import type { DisplayActivityItem, ToolCallActivity } from '../stream-renderer/types';
+import { ChatIcon, HistoryIcon, InfoIcon, IssuesIcon, LightbulbIcon, MonitorIcon, TerminalIcon } from '../icons/TabIcons';
+import { ToolActivityIcon } from './ToolActivityIcon';
+import { plainActivityHeader } from './activityText';
+import { classifyTool, presentTool, summarizeToolRunParts } from './toolPresentation';
+
+export { plainActivityHeader };
 
 const ACTIVITY_LABELS: Record<ActivityKind, string> = {
-  'reasoning-summary': 'Reasoning', thinking: 'Thinking',
+  'reasoning-summary': 'Thought', thinking: 'Thought',
   'tool-progress': 'Tool progress', 'tool-summary': 'Tool summary',
   status: 'Status', information: 'Information', diagnostic: 'Diagnostic',
 };
-
-function stripPairedMarker(value: string, marker: '**' | '__'): string {
-  let output = '';
-  let cursor = 0;
-  while (cursor < value.length) {
-    const opening = value.indexOf(marker, cursor);
-    if (opening < 0) return output + value.slice(cursor);
-    const beforeOpening = value[opening - 1];
-    const afterOpening = value[opening + marker.length];
-    if ((beforeOpening && /[\p{L}\p{N}_]/u.test(beforeOpening)) || !afterOpening || /\s/u.test(afterOpening)) {
-      output += value.slice(cursor, opening + marker.length);
-      cursor = opening + marker.length;
-      continue;
-    }
-    let closing = value.indexOf(marker, opening + marker.length);
-    while (closing >= 0) {
-      const beforeClosing = value[closing - 1];
-      const afterClosing = value[closing + marker.length];
-      if (beforeClosing && !/\s/u.test(beforeClosing)
-          && (!afterClosing || !/[\p{L}\p{N}_]/u.test(afterClosing))) break;
-      closing = value.indexOf(marker, closing + marker.length);
-    }
-    if (closing < 0) return output + value.slice(cursor);
-    output += value.slice(cursor, opening) + value.slice(opening + marker.length, closing);
-    cursor = closing + marker.length;
-  }
-  return output;
-}
-
-export function plainActivityHeader(value: string): string {
-  return stripPairedMarker(stripPairedMarker(value, '**'), '__');
-}
 
 export function plainActivityParts(item: ActivityItem): string[] {
   return item.parts
@@ -53,6 +26,10 @@ type ActivityDetail = string
 
 function activityState(item: DisplayActivityItem): string[] {
   if (item.type === 'provider-directive') return [];
+  if (item.type === 'tool-call-activity') {
+    return item.result?.is_error ? ['Failed'] : [];
+  }
+  if (item.type === 'thinking-block-activity') return [];
   return [
     item.severity && item.severity !== 'info' ? item.severity : undefined,
     item.execution_outcome && item.execution_outcome !== 'unknown' ? item.execution_outcome : undefined,
@@ -74,6 +51,9 @@ function activityDetails(item: DisplayActivityItem, parts: readonly string[]): A
       providerSessionId: item.directive.providerSessionId,
     }];
   }
+  if (item.type === 'tool-call-activity') return [];
+  if (item.type === 'thinking-block-activity') return item.content.trim() ? [item.content.trim()] : [];
+  if (item.activity_kind === 'thinking') return [...parts.slice(1)];
   const details = [...parts.slice(1)];
   if (item.tool_name) details.push(`Tool: ${item.tool_name}`);
   if (item.elapsed_ms !== undefined) details.push(`${item.elapsed_ms.toLocaleString()} ms`);
@@ -87,6 +67,10 @@ function activityItemSignature(item: DisplayActivityItem): string {
       directive: item.directive,
       turn: item.turnId,
     });
+  }
+  if (item.type === 'tool-call-activity') return `tool:${item.turnId}:${item.id}`;
+  if (item.type === 'thinking-block-activity') {
+    return JSON.stringify({ type: item.type, turn: item.turnId, content: item.content });
   }
   return JSON.stringify({
     provider: item.identity.provider,
@@ -116,6 +100,8 @@ function activitySummary(item: DisplayActivityItem, parts: readonly string[], st
   if (item.type === 'provider-directive') {
     return item.directive.kind === 'memory-citation' ? 'Used memory' : 'Created task';
   }
+  if (item.type === 'tool-call-activity') return presentTool(item.name, item.input, item.toolKind).phrase;
+  if (item.type === 'thinking-block-activity') return 'Thought';
   const base = parts[0] ?? ACTIVITY_LABELS[item.activity_kind];
   return [...new Set([base, ...state])].join(' · ');
 }
@@ -129,7 +115,9 @@ export function presentActivityItems(items: readonly DisplayActivityItem[]): Act
       presentations[presentations.length - 1].members.push(item);
       continue;
     }
-    const parts = item.type === 'provider-directive' ? [] : plainActivityParts(item);
+    const parts = item.type === 'activity' ? plainActivityParts(item)
+      : item.type === 'thinking-block-activity' ? item.content.split('\n').map((part) => part.trim()).filter(Boolean)
+        : [];
     const state = activityState(item);
     presentations.push({
       summary: activitySummary(item, parts, state),
@@ -145,8 +133,12 @@ function activityIcon(item: DisplayActivityItem): JSX.Element | undefined {
   if (item.type === 'provider-directive') {
     return item.directive.kind === 'memory-citation' ? <HistoryIcon /> : <ChatIcon />;
   }
-  if (item.activity_kind === 'reasoning-summary' || item.activity_kind === 'thinking') {
-    return undefined;
+  if (item.type === 'tool-call-activity') {
+    return <ToolActivityIcon icon={presentTool(item.name, item.input, item.toolKind).icon} />;
+  }
+  if (item.type === 'thinking-block-activity') return <LightbulbIcon />;
+  if (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary') {
+    return <LightbulbIcon />;
   }
   if (item.activity_kind === 'tool-progress' || item.activity_kind === 'tool-summary') return <TerminalIcon />;
   if (item.activity_kind === 'information') return <InfoIcon />;
@@ -154,10 +146,18 @@ function activityIcon(item: DisplayActivityItem): JSX.Element | undefined {
   return <MonitorIcon />;
 }
 
-function activityDetailLines(presentations: readonly ActivityPresentation[]): ActivityDetail[] {
-  return presentations.flatMap((presentation, index) => (
-    index === 0 ? presentation.details : [presentation.summary, ...presentation.details]
-  ));
+function activityDetailLines(
+  presentations: readonly ActivityPresentation[],
+  includeMemberLabels = false,
+): ActivityDetail[] {
+  return presentations.flatMap((presentation, index) => {
+    const item = presentation.members[0];
+    if (includeMemberLabels && item) {
+      if (item.type === 'thinking-block-activity' || item.type === 'tool-call-activity') return presentation.details;
+      return [presentation.summary, ...presentation.details];
+    }
+    return index === 0 ? presentation.details : [presentation.summary, ...presentation.details];
+  });
 }
 
 function ActivityDetails({ lines, onCreatedTaskNavigate }: {
@@ -196,15 +196,17 @@ function ActivityDetails({ lines, onCreatedTaskNavigate }: {
   );
 }
 
-export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNavigate }: {
+export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNavigate, memberRefs, detailsAvailable = false }: {
   item: DisplayActivityItem;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
   onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
+  memberRefs?: string;
+  detailsAvailable?: boolean;
 }): JSX.Element {
   const presentation = presentActivityItems([item])[0];
   const lines = activityDetailLines([presentation]);
-  const disclosure = lines.length > 0
+  const disclosure = lines.length > 0 || detailsAvailable
     ? {
         content: <ActivityDetails lines={lines} onCreatedTaskNavigate={onCreatedTaskNavigate} />,
         regionLabel: `${presentation.summary} details`,
@@ -218,27 +220,113 @@ export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNav
       icon={activityIcon(item)}
       summary={presentation.summary}
       disclosure={disclosure}
+      memberRefs={memberRefs}
     />
   );
 }
 
-export function ActivityGroup({ items, expanded, onExpandedChange, onCreatedTaskNavigate }: {
+function ActivityGroupDetails({
+  items,
+  renderMember,
+}: {
+  items: readonly DisplayActivityItem[];
+  renderMember: (item: DisplayActivityItem, index: number) => JSX.Element | null;
+}): JSX.Element {
+  return (
+    <div className="activity-details activity-group__members">
+      {items.map(renderMember)}
+    </div>
+  );
+}
+
+function summarizeActivityRun(
+  items: readonly DisplayActivityItem[],
+  presentations: readonly ActivityPresentation[],
+): string {
+  const unifiedRun = items.some((item) => item.type !== 'activity'
+    || item.activity_kind === 'thinking'
+    || item.activity_kind === 'reasoning-summary');
+  if (!unifiedRun) {
+    const state = [...new Set(items.flatMap(activityState))];
+    return [...new Set([...presentations[0].summary.split(' · '), ...state])].join(' · ');
+  }
+
+  const tools = items.filter((item): item is ToolCallActivity => item.type === 'tool-call-activity');
+  const toolLabels = summarizeToolRunParts(tools.map((item) => ({ name: item.name, toolKind: item.toolKind })));
+  const labels = new Map<string, { label: string; count: number }>();
+  const presentationByMember = new Map<DisplayActivityItem, ActivityPresentation>();
+  for (const presentation of presentations) {
+    for (const member of presentation.members) presentationByMember.set(member, presentation);
+  }
+  const hasThinkingTool = tools.some((item) => classifyTool(item.name) === 'think');
+
+  const addLabel = (key: string, label: string): void => {
+    const existing = labels.get(key);
+    if (existing) existing.count += 1;
+    else labels.set(key, { label, count: 1 });
+  };
+
+  items.forEach((item) => {
+    if (item.type === 'tool-call-activity') return;
+    if (item.type === 'thinking-block-activity'
+      || (item.type === 'activity' && (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary'))) {
+      if (!hasThinkingTool) addLabel('thought', 'thought');
+      return;
+    }
+    if (item.type === 'provider-directive') {
+      if (item.directive.kind === 'memory-citation') addLabel('memory', 'used memory');
+      else addLabel('created-task', 'created task');
+      return;
+    }
+    const presentation = presentationByMember.get(item);
+    if (presentation) {
+      const label = presentation.summary.charAt(0).toLowerCase() + presentation.summary.slice(1);
+      addLabel(`${item.activity_kind}:${label}`, label);
+    }
+  });
+
+  const activityLabels = Array.from(labels.entries()).map(([key, value]) => {
+    if (key === 'created-task' && value.count > 1) return 'created tasks';
+    return value.label;
+  });
+  const toolStates = [...new Set(tools.flatMap(activityState))]
+    .map((state) => state.charAt(0).toLowerCase() + state.slice(1));
+  const summary = [...toolLabels, ...activityLabels, ...toolStates].join(', ');
+  return summary.charAt(0).toUpperCase() + summary.slice(1);
+}
+
+export function ActivityGroup({
+  items,
+  expanded,
+  onExpandedChange,
+  memberRefs,
+  renderMember,
+}: {
   items: readonly DisplayActivityItem[];
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
-  onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
+  memberRefs?: readonly (string | undefined)[];
+  renderMember: (item: DisplayActivityItem, index: number) => JSX.Element | null;
 }): JSX.Element {
   const presentations = presentActivityItems(items);
-  const state = [...new Set(items.flatMap(activityState))];
-  const summary = [...new Set([...presentations[0].summary.split(' · '), ...state])].join(' · ');
-  const lines = activityDetailLines(presentations);
+  const summary = summarizeActivityRun(items, presentations);
+  const hasMemberDisclosure = items.some((item) => item.type !== 'activity'
+    || item.activity_kind === 'thinking'
+    || item.activity_kind === 'reasoning-summary')
+    || activityDetailLines(presentations).length > 0;
   return (
     <CompactActivityRow
       className="activity-group"
       icon={activityIcon(items[0])}
       summary={summary}
-      disclosure={lines.length > 0 ? {
-        content: <ActivityDetails lines={lines} onCreatedTaskNavigate={onCreatedTaskNavigate} />,
+      memberRefs={memberRefs?.filter(Boolean).join(' ')}
+      disclosure={hasMemberDisclosure ? {
+        content: (
+          <ActivityGroupDetails
+            items={items}
+            renderMember={renderMember}
+          />
+        ),
         regionLabel: `${summary} details`,
         expanded,
         onExpandedChange,

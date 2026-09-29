@@ -9,12 +9,13 @@
 // display/navigation-only: it is never attached to a mutation request.
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { AppOperationalNoticeOutlet } from '../app-shell';
+import { AppOperationalNoticeOutlet, useRegisterInitialRouteLoad } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import {
   getProviderScopedOverview,
   getSessionOverview,
   getSessions,
+  invalidateApiGetCache,
   resolveAgentSession,
   type ProviderScopedLinkedIssue,
   type ProviderScopedOverview,
@@ -50,6 +51,15 @@ export type SessionOverviewViewProps = {
   agentBinding: string | null;
   embedded?: boolean;
 };
+
+export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const sessionId = params.session?.trim();
+  if (sessionId) {
+    await getSessionOverview(sessionId);
+    return;
+  }
+  await getSessions<SessionRecord>();
+}
 
 function formatTimestamp(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—';
@@ -261,12 +271,13 @@ function SessionPicker({
   onSelect: (sessionId: string) => void;
   onErrorChange: (error: string | null) => void;
 }): JSX.Element {
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [sessions, setSessions] = useState<SessionRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    getSessions<SessionRecord>()
+    const initialLoad = getSessions<SessionRecord>()
       .then((rows) => {
         if (!cancelled) {
           setSessions(rows);
@@ -280,11 +291,12 @@ function SessionPicker({
           onErrorChange(message);
         }
       });
+    registerInitialRouteLoad(initialLoad);
     return () => {
       cancelled = true;
       onErrorChange(null);
     };
-  }, [onErrorChange]);
+  }, [onErrorChange, registerInitialRouteLoad]);
 
   if (error) return <p className="text-muted">Sessions unavailable.</p>;
   if (sessions === null) return <p className="text-muted">Loading sessions…</p>;
@@ -319,6 +331,7 @@ export function SessionOverviewView({
   agentBinding,
   embedded = false,
 }: SessionOverviewViewProps): JSX.Element {
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialSessionId);
   const [binding, setBinding] = useState<BindingState>({ kind: 'none' });
   const [overview, setOverview] = useState<SessionOverview | null>(null);
@@ -348,7 +361,7 @@ export function SessionOverviewView({
     if (!agentBinding || initialSessionId) return;
     let cancelled = false;
     setBinding({ kind: 'resolving' });
-    resolveAgentSession(agentBinding)
+    const initialLoad = resolveAgentSession(agentBinding)
       .then((result) => {
         if (cancelled) return;
         const bindable = result.matches.filter((match) => match.mandible_session_id);
@@ -382,11 +395,12 @@ export function SessionOverviewView({
           message: err instanceof Error ? err.message : 'Resolver request failed',
         });
       });
+    registerInitialRouteLoad(initialLoad);
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentBinding]);
+  }, [agentBinding, registerInitialRouteLoad]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -401,7 +415,7 @@ export function SessionOverviewView({
       && binding.match.mandible_session_id === selectedSessionId
       ? agentBinding
       : null;
-    getSessionOverview(selectedSessionId, matchingAgentBinding)
+    const initialLoad = getSessionOverview(selectedSessionId, matchingAgentBinding)
       .then((payload) => {
         if (cancelled) return;
         setOverview(payload);
@@ -413,17 +427,22 @@ export function SessionOverviewView({
       .finally(() => {
         if (!cancelled) setOverviewLoading(false);
       });
+    registerInitialRouteLoad(initialLoad);
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId, agentBinding, binding, refreshToken]);
+  }, [selectedSessionId, agentBinding, binding, refreshToken, registerInitialRouteLoad]);
 
   // Local ledger state stays fresh without a user-operated refresh control.
   // Keep the last good snapshot visible while a background reconciliation runs.
   useEffect(() => {
     if (embedded || typeof window === 'undefined') return undefined;
     const refreshVisible = () => {
-      if (document.visibilityState === 'visible') setRefreshToken((token) => token + 1);
+      if (document.visibilityState !== 'visible') return;
+      if (selectedSessionId) {
+        invalidateApiGetCache(`/api/sessions/${encodeURIComponent(selectedSessionId)}/overview`);
+      }
+      setRefreshToken((token) => token + 1);
     };
     const interval = window.setInterval(refreshVisible, 15_000);
     window.addEventListener('focus', refreshVisible);
@@ -433,7 +452,7 @@ export function SessionOverviewView({
       window.removeEventListener('focus', refreshVisible);
       document.removeEventListener('visibilitychange', refreshVisible);
     };
-  }, [embedded]);
+  }, [embedded, selectedSessionId]);
 
   // Provider-scoped overview: loaded only for the conversation-only binding
   // state, keyed on the full identity and provider the (possibly short)
@@ -461,7 +480,7 @@ export function SessionOverviewView({
     }
     let cancelled = false;
     setProviderOverviewError(null);
-    getProviderScopedOverview(providerScopedProvider, providerScopedRef)
+    const initialLoad = getProviderScopedOverview(providerScopedProvider, providerScopedRef)
       .then((payload) => {
         if (!cancelled) setProviderOverview(payload);
       })
@@ -472,10 +491,11 @@ export function SessionOverviewView({
           err instanceof Error ? err.message : 'Failed to load provider-scoped overview',
         );
       });
+    registerInitialRouteLoad(initialLoad);
     return () => {
       cancelled = true;
     };
-  }, [binding.kind, providerScopedRef, providerScopedProvider, selectedSessionId, refreshToken]);
+  }, [binding.kind, providerScopedRef, providerScopedProvider, selectedSessionId, refreshToken, registerInitialRouteLoad]);
 
   const handleSelect = useCallback((sessionId: string) => {
     setSelectedSessionId(sessionId);

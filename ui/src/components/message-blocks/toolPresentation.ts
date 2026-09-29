@@ -1,6 +1,6 @@
 export type ToolCategory =
-  | 'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute'
-  | 'think' | 'fetch' | 'browser' | 'switch_mode' | 'mcp' | 'other';
+  | 'read' | 'edit' | 'write' | 'delete' | 'move' | 'search' | 'execute'
+  | 'javascript' | 'wait' | 'think' | 'fetch' | 'browser' | 'switch_mode' | 'other';
 
 export type ToolPresentation = {
   category: ToolCategory;
@@ -9,35 +9,103 @@ export type ToolPresentation = {
   target: string;
 };
 
-const DEFINITIONS: Record<ToolCategory, { icon: string; phrase: string }> = {
-  read: { icon: '↗', phrase: 'Read a file' },
-  edit: { icon: '±', phrase: 'Edited a file' },
-  delete: { icon: '−', phrase: 'Removed a file' },
-  move: { icon: '→', phrase: 'Moved a file' },
-  search: { icon: '⌕', phrase: 'Searched' },
-  execute: { icon: 'terminal', phrase: 'Ran a command' },
-  think: { icon: '·', phrase: 'Thought' },
-  fetch: { icon: '↓', phrase: 'Fetched' },
-  browser: { icon: '◎', phrase: 'Used the browser' },
-  switch_mode: { icon: '→', phrase: 'Switched mode' },
-  mcp: { icon: '◇', phrase: 'Called a tool' },
-  other: { icon: '·', phrase: 'Used a tool' },
+const DEFINITIONS: Record<ToolCategory, { icon: string; phrase: string; plural: string }> = {
+  read: { icon: '↗', phrase: 'Read a file', plural: 'Read some files' },
+  edit: { icon: '±', phrase: 'Edited a file', plural: 'Edited some files' },
+  write: { icon: '+', phrase: 'Wrote a file', plural: 'Wrote some files' },
+  delete: { icon: '−', phrase: 'Removed a file', plural: 'Removed some files' },
+  move: { icon: '→', phrase: 'Moved a file', plural: 'Moved some files' },
+  search: { icon: '⌕', phrase: 'Searched', plural: 'Searched several times' },
+  execute: { icon: 'terminal', phrase: 'Ran a command', plural: 'Ran some commands' },
+  javascript: { icon: 'javascript', phrase: 'Ran JavaScript', plural: 'Ran JavaScript several times' },
+  wait: { icon: 'wait', phrase: 'Waited', plural: 'Waited several times' },
+  think: { icon: 'thought', phrase: 'Thought', plural: 'Thought several times' },
+  fetch: { icon: '↓', phrase: 'Fetched a resource', plural: 'Fetched several resources' },
+  browser: { icon: '◎', phrase: 'Used the browser', plural: 'Used the browser several times' },
+  switch_mode: { icon: '→', phrase: 'Switched mode', plural: 'Switched modes several times' },
+  other: { icon: 'tool', phrase: 'Used a tool', plural: 'Used some tools' },
 };
 
-const PLURAL_PHRASES: Record<ToolCategory, string> = {
-  read: 'Read some files',
-  edit: 'Edited some files',
-  delete: 'Removed some files',
-  move: 'Moved some files',
-  search: 'Searched several times',
-  execute: 'Ran some commands',
-  think: 'Thought several times',
-  fetch: 'Fetched several resources',
-  browser: 'Used the browser several times',
-  switch_mode: 'Switched modes several times',
-  mcp: 'Called some tools',
-  other: 'Used some tools',
+/** Exact provider tool names with an unambiguous user-facing operation. */
+const TOOL_NAME_CATEGORIES: Readonly<Record<string, ToolCategory>> = {
+  bash: 'execute',
+  exec_command: 'execute',
+  exec: 'other',
+  read: 'read',
+  edit: 'edit',
+  multiedit: 'edit',
+  write: 'write',
+  delete: 'delete',
+  move: 'move',
+  grep: 'search',
+  glob: 'search',
+  websearch: 'search',
+  webfetch: 'fetch',
+  web__run: 'browser',
+  mcp__github__search: 'search',
+  mcp__browser__navigate: 'browser',
+  js: 'javascript',
+  wait: 'wait',
+  think: 'think',
+  thinking: 'think',
+  switch_mode: 'switch_mode',
 };
+
+const TOOL_KIND_PRESENTATIONS: Readonly<Record<string, ToolPresentation>> = {
+  function_call: { category: 'other', icon: 'tool', phrase: 'Called a function', target: '' },
+  custom_tool_call: { category: 'other', icon: 'tool', phrase: 'Used a custom tool', target: '' },
+  claude_tool_use: { category: 'other', icon: 'tool', phrase: 'Used a tool', target: '' },
+};
+
+function normalizedName(value: string | undefined): string {
+  return value?.trim().toLowerCase() ?? '';
+}
+
+export function classifyTool(toolName: string): ToolCategory {
+  const name = normalizedName(toolName);
+  return Object.hasOwn(TOOL_NAME_CATEGORIES, name) ? TOOL_NAME_CATEGORIES[name] : 'other';
+}
+
+/** Classification uses provider metadata; targets use only fields defined by exact known names. */
+export function presentTool(
+  toolName: string,
+  inputValue: Record<string, unknown> | string = {},
+  toolKind?: string,
+): ToolPresentation {
+  const normalizedToolName = normalizedName(toolName);
+  const normalizedToolKind = normalizedName(toolKind);
+  const category = Object.hasOwn(TOOL_NAME_CATEGORIES, normalizedToolName)
+    ? TOOL_NAME_CATEGORIES[normalizedToolName]
+    : undefined;
+  if (category) {
+    const definition = DEFINITIONS[category];
+    return {
+      category,
+      icon: definition.icon,
+      phrase: category === 'other' ? 'Used ' + toolName.trim() : definition.phrase,
+      target: toolTarget(toolName, inputValue),
+    };
+  }
+
+  if (normalizedToolName && normalizedToolName !== 'tool' && normalizedToolName !== normalizedToolKind) {
+    return {
+      category: 'other',
+      icon: DEFINITIONS.other.icon,
+      phrase: 'Used ' + toolName.trim(),
+      target: '',
+    };
+  }
+
+  const byKind = Object.hasOwn(TOOL_KIND_PRESENTATIONS, normalizedToolKind)
+    ? TOOL_KIND_PRESENTATIONS[normalizedToolKind]
+    : undefined;
+  return byKind ?? {
+    category: 'other',
+    icon: DEFINITIONS.other.icon,
+    phrase: DEFINITIONS.other.phrase,
+    target: '',
+  };
+}
 
 export function toolInputObject(input: Record<string, unknown> | string): Record<string, unknown> {
   if (typeof input !== 'string') return input;
@@ -51,7 +119,7 @@ export function toolInputObject(input: Record<string, unknown> | string): Record
   }
 }
 
-function firstString(input: Record<string, unknown>, keys: string[]): string {
+function firstString(input: Record<string, unknown>, keys: readonly string[]): string {
   for (const key of keys) {
     const value = input[key];
     if (typeof value === 'string' && value.trim()) return value.trim();
@@ -59,78 +127,78 @@ function firstString(input: Record<string, unknown>, keys: string[]): string {
   return '';
 }
 
-export function classifyTool(toolName: string): ToolCategory {
-  const name = toolName.trim().toLowerCase();
-  if (name.includes('browser') || name === 'web__run' || ['click', 'navigate', 'screenshot'].includes(name)) return 'browser';
-  if (name.startsWith('mcp__') || name.includes(':mcp') || name.includes('mcp')) return 'mcp';
-  if (['read', 'view', 'open'].includes(name)) return 'read';
-  if (['edit', 'multiedit', 'write', 'patch', 'create', 'apply_patch'].includes(name)) return 'edit';
-  if (['delete', 'remove', 'rm'].includes(name)) return 'delete';
-  if (['move', 'rename', 'mv'].includes(name)) return 'move';
-  if (['grep', 'glob', 'search', 'websearch', 'find'].includes(name)) return 'search';
-  if (['bash', 'execute', 'run', 'shell', 'terminal', 'command', 'exec', 'exec_command'].includes(name)) return 'execute';
-  if (['think', 'thinking'].includes(name)) return 'think';
-  if (['switch_mode', 'switchmode'].includes(name)) return 'switch_mode';
-  if (['webfetch', 'fetch', 'http', 'open_url'].includes(name)) return 'fetch';
-  return 'other';
-}
-
+/** Show a target only after the explicit tool name identifies what it means. */
 export function toolTarget(toolName: string, inputValue: Record<string, unknown> | string): string {
+  const category = classifyTool(toolName);
   const input = toolInputObject(inputValue);
-  const name = toolName.trim().toLowerCase();
-  if (classifyTool(toolName) === 'browser') {
+  if (category === 'browser') {
     for (const key of ['search_query', 'image_query', 'open', 'click', 'find']) {
       const rows = input[key];
       if (!Array.isArray(rows) || !rows.length || !rows[0] || typeof rows[0] !== 'object') continue;
-      const first = rows[0] as Record<string, unknown>;
-      const target = firstString(first, ['q', 'ref_id', 'pattern', 'url']);
+      const target = firstString(rows[0] as Record<string, unknown>, ['q', 'ref_id', 'pattern', 'url']);
       if (target) return target;
     }
-    return firstString(input, ['url', 'ref_id', 'query', 'q', 'selector']);
+    return firstString(input, ['url', 'ref_id', 'query', 'q']);
   }
-  if (['move', 'rename', 'mv'].includes(name)) {
+  if (category === 'move') {
     const from = firstString(input, ['source', 'from', 'old_path', 'file_path', 'path']);
     const to = firstString(input, ['destination', 'to', 'new_path']);
-    return to ? `${from} → ${to}` : from;
+    return to ? (from ? from + ' → ' : '') + to : from;
   }
-  if (['bash', 'execute', 'run', 'shell', 'terminal', 'command', 'exec', 'exec_command'].includes(name)) {
-    return firstString(input, ['description', 'cmd', 'command']);
+  if (category === 'execute') {
+    return firstString(input, ['description', 'cmd', 'command'])
+      || (typeof inputValue === 'string' ? inputValue.trim() : '');
   }
-  if (['grep', 'glob', 'search', 'find'].includes(name)) {
-    const query = firstString(input, ['pattern', 'query']);
-    const scope = firstString(input, ['path', 'directory', 'include']);
-    return scope ? `${query} in ${scope}` : query;
+  if (category === 'read' || category === 'edit' || category === 'write' || category === 'delete') {
+    return firstString(input, ['file_path', 'path']);
   }
-  return firstString(input, [
-    'path', 'file_path', 'target', 'pattern', 'query', 'url', 'uri',
-    'ref_id', 'selector', 'description', 'command', 'cmd',
-  ]);
+  if (category === 'search') return firstString(input, ['pattern', 'query']);
+  if (category === 'fetch') return firstString(input, ['url', 'uri']);
+  if (category === 'switch_mode') return firstString(input, ['mode']);
+  return '';
 }
 
-export function presentTool(toolName: string, input: Record<string, unknown> | string): ToolPresentation {
-  const category = classifyTool(toolName);
-  const definition = DEFINITIONS[category];
-  return { category, ...definition, target: toolTarget(toolName, input) };
+export function summarizeToolRunParts(
+  tools: ReadonlyArray<{ name: string; toolKind?: string }>,
+): string[] {
+  const counts = new Map<string, { presentation: ToolPresentation; count: number; names: Set<string> }>();
+  for (const tool of tools) {
+    const presentation = presentTool(tool.name, {}, tool.toolKind);
+    const category = classifyTool(tool.name);
+    const key = category;
+    const existing = counts.get(key);
+    if (existing) {
+      existing.count += 1;
+      if (category === 'other') existing.names.add(normalizedName(tool.name));
+    } else {
+      counts.set(key, {
+        presentation,
+        count: 1,
+        names: new Set([normalizedName(tool.name)]),
+      });
+    }
+  }
+
+  return Array.from(counts.values()).map(({ presentation, count, names }) => {
+    const phrase = count === 1
+      ? presentation.phrase
+      : presentation.category === 'other'
+        ? names.size === 1 ? presentation.phrase + ' several times' : DEFINITIONS.other.plural
+        : DEFINITIONS[presentation.category].plural;
+    return phrase.charAt(0).toLowerCase() + phrase.slice(1);
+  });
 }
 
 export function summarizeToolRun(
-  tools: ReadonlyArray<{ name: string; input: Record<string, unknown> | string }>,
+  tools: ReadonlyArray<{ name: string; toolKind?: string }>,
 ): string {
-  const counts = new Map<ToolCategory, number>();
-  for (const tool of tools) {
-    const category = classifyTool(tool.name);
-    counts.set(category, (counts.get(category) ?? 0) + 1);
-  }
-  const labels = Array.from(counts.entries()).map(([category, count]) => {
-    const phrase = count === 1 ? DEFINITIONS[category].phrase : PLURAL_PHRASES[category];
-    return phrase.charAt(0).toLowerCase() + phrase.slice(1);
-  });
+  const labels = summarizeToolRunParts(tools);
   const summary = labels.join(', ');
   return summary.charAt(0).toUpperCase() + summary.slice(1);
 }
 
 export function toolRunIcon(
-  tools: ReadonlyArray<{ name: string; input: Record<string, unknown> | string }>,
+  tools: ReadonlyArray<{ name: string; toolKind?: string }>,
 ): string {
-  return DEFINITIONS[classifyTool(tools[0]?.name ?? '')].icon;
+  return presentTool(tools[0]?.name ?? '', {}, tools[0]?.toolKind).icon;
 }

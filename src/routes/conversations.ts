@@ -282,6 +282,59 @@ function mapReadableBlock(row: BlockRow | SourceBackedConversationBlock) {
   return "compressed" in row ? mapBlock(row) : row;
 }
 
+function projectDisplayBlock(row: SourceBackedConversationBlock): SourceBackedConversationBlock & { details_loaded?: false } {
+  const targeted = row.type === "tool_use" || row.type === "tool_result" || row.type === "thinking";
+  if (!targeted) return row;
+
+  let metadata: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(row.metadata_json);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      metadata = { ...(parsed as Record<string, unknown>) };
+    }
+  } catch {
+    throw new Error(`block ${row.id} has invalid metadata and cannot be safely projected`);
+  }
+  delete metadata.tool_input;
+  delete metadata.tool_output;
+  const item = metadata.chat_item;
+  if (item && typeof item === "object" && !Array.isArray(item)) {
+    const compactItem = { ...(item as Record<string, unknown>) };
+    delete compactItem.input;
+    delete compactItem.output;
+    if (row.type === "thinking" && metadata.source_event_type !== "reasoning_summary") {
+      compactItem.parts = [];
+    } else if (row.type === "tool_use" || row.type === "tool_result") {
+      compactItem.parts = [];
+    }
+    metadata.chat_item = compactItem;
+  }
+
+  const preserveThinkingSummary = row.type === "thinking" && metadata.source_event_type === "reasoning_summary";
+  const content = preserveThinkingSummary
+    ? row.content
+    : row.type === "tool_use"
+      ? (typeof metadata.tool_name === "string" ? metadata.tool_name : "Tool call")
+      : row.type === "tool_result"
+        ? ""
+        : "Thought";
+  return {
+    id: row.id,
+    conversation_id: row.conversation_id,
+    type: row.type,
+    role: row.role,
+    content,
+    position: row.position,
+    timestamp: row.timestamp,
+    parent_id: row.parent_id,
+    metadata_json: JSON.stringify(metadata),
+    dag_uuid: row.dag_uuid,
+    dag_parent_uuid: row.dag_parent_uuid,
+    locator: row.locator,
+    details_loaded: false,
+  };
+}
+
 type PositionTargetKind = "initial" | "latest" | "position" | "block" | "turn";
 
 function turnIdForBlock(db: ReturnType<typeof getDb>, block: Pick<BlockRow, "id" | "conversation_id" | "position" | "type">): string {
@@ -506,6 +559,58 @@ export function registerConversationRoutes(
     ...sourceFreshness,
     ...(waitForFresh === undefined ? {} : { waitForFresh }),
   });
+  const activeDisplayConversations = new Set<string>();
+  const freshnessChecksInFlight = new Set<string>();
+  const freshnessFailureLoggedAt = new Map<string, number>();
+  let selectedConversationFreshnessTimer: ReturnType<typeof setInterval> | null = null;
+  let selectedConversationFreshnessTickRunning = false;
+  const trackSelectedConversation = (conversationId: string) => {
+    if (process.env.MANDIBLE_INSTANCE_ROLE !== "preview") return;
+    activeDisplayConversations.delete(conversationId);
+    activeDisplayConversations.add(conversationId);
+    while (activeDisplayConversations.size > 16) {
+      const oldest = activeDisplayConversations.keys().next().value;
+      if (oldest === undefined) break;
+      activeDisplayConversations.delete(oldest);
+      freshnessFailureLoggedAt.delete(oldest);
+    }
+    if (selectedConversationFreshnessTimer) return;
+    // Preview instances intentionally skip root watchers and full reconciliation.
+    // Keep recently selected display views fresh with the same bounded extent
+    // check and exact-path scheduler used by the request path. This reads source
+    // metadata and its tail, never the whole transcript or every source root.
+    selectedConversationFreshnessTimer = setInterval(() => {
+      if (selectedConversationFreshnessTickRunning) return;
+      selectedConversationFreshnessTickRunning = true;
+      const activeIds = [...activeDisplayConversations.keys()];
+      void Promise.all(activeIds.map(async (activeId) => {
+        if (freshnessChecksInFlight.has(activeId)) return;
+        freshnessChecksInFlight.add(activeId);
+        try {
+          await ensureFresh(activeId, false);
+          freshnessFailureLoggedAt.delete(activeId);
+        } catch (error) {
+          const now = Date.now();
+          if (now - (freshnessFailureLoggedAt.get(activeId) ?? 0) >= 60_000) {
+            freshnessFailureLoggedAt.set(activeId, now);
+            console.warn("selected conversation freshness check failed", {
+              conversation_id: activeId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        } finally {
+          freshnessChecksInFlight.delete(activeId);
+        }
+      })).catch((error) => {
+        console.error("selected conversation freshness tick failed", error);
+      }).finally(() => {
+        selectedConversationFreshnessTickRunning = false;
+      });
+    }, 2_000);
+    if (typeof selectedConversationFreshnessTimer === "object" && "unref" in selectedConversationFreshnessTimer) {
+      selectedConversationFreshnessTimer.unref();
+    }
+  };
 
   // --- Static routes MUST be registered before parameterized :id routes ---
 
@@ -1219,8 +1324,14 @@ export function registerConversationRoutes(
     }
 
     const query = req.query ?? {};
+    const displayView = query.view === "display";
+    if (query.view !== undefined && !displayView) {
+      sendJson(res, 400, { error: "view must be display when provided" });
+      return;
+    }
+    if (displayView) trackSelectedConversation(id);
     const sourceBacked = conversationRequiresSourceReader(db, id);
-    const useSourceReader = sourceBacked
+    const useSourceReader = displayView || sourceBacked
       || query.source_backed === "true" || query.source_backed === "1";
     const requestedLimit = Math.max(1, parseInt(query.limit || "160", 10) || 160);
     let limit = Math.min(500, requestedLimit);
@@ -1266,6 +1377,130 @@ export function registerConversationRoutes(
          LIMIT 1
       `).get(id) as { current_version_id: string } | undefined;
       sourceVersionId = source?.current_version_id ?? null;
+      if (displayView) {
+        const displayBlocks: SourceBackedConversationBlock[] = [];
+        let offset = 0;
+        let displayTotal: number | null = null;
+        let displayBodySource: "source" | "legacy" | null = null;
+        let displaySourceVersion: string | null = null;
+        let lastPosition = -1;
+        while (displayTotal === null || offset < displayTotal) {
+          const page = await sourceReader.readPage(id, { offset, limit: 500 });
+          if (page.status !== "source" && page.status !== "legacy") {
+            if (page.status === "stale") {
+              try {
+                await ensureFresh(id, false);
+                sendFreshnessError(res, new ConversationFreshnessError(
+                  "freshness_pending", "conversation source refreshed; retry display projection",
+                ));
+              } catch (error) {
+                if (!sendFreshnessError(res, error)) {
+                  sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
+                }
+              }
+              return;
+            }
+            sendJson(res, page.status === "not_found" ? 404 : 409, { error: page.reason, status: page.status });
+            return;
+          }
+          if (displayTotal === null) {
+            displayTotal = page.value.total;
+            displayBodySource = page.status;
+            displaySourceVersion = page.status === "source" ? page.sourceVersionId : null;
+            if (sourceVersionId !== null && displaySourceVersion !== sourceVersionId) {
+              sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation source changed before display projection; retry" });
+              return;
+            }
+          } else if (page.value.total !== displayTotal || page.status !== displayBodySource
+              || (page.status === "source" && page.sourceVersionId !== displaySourceVersion)) {
+            sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation source changed during display projection; retry" });
+            return;
+          }
+          if (page.value.offset !== offset || (page.value.blocks.length === 0 && page.value.total > 0)) {
+            sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation display coverage changed; retry" });
+            return;
+          }
+          try {
+            for (const block of page.value.blocks) {
+              if (block.position <= lastPosition) {
+                sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation display positions changed; retry" });
+                return;
+              }
+              lastPosition = block.position;
+              displayBlocks.push(projectDisplayBlock(block));
+            }
+          } catch (error) {
+            sendJson(res, 409, {
+              error: "display_projection_error",
+              message: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
+          offset += page.value.blocks.length;
+        }
+        if (displayBlocks.length !== (displayTotal ?? 0)) {
+          sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation display coverage changed; retry" });
+          return;
+        }
+        const current = db.prepare(`
+          SELECT current_version_id FROM conversation_sources
+           WHERE conversation_id = ? AND current_version_id IS NOT NULL
+           ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC
+           LIMIT 1
+        `).get(id) as { current_version_id: string } | undefined;
+        if (displaySourceVersion !== null && current?.current_version_id !== displaySourceVersion) {
+          sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation source changed during display projection; retry" });
+          return;
+        }
+        readableBlocks = displayBlocks;
+        bodySource = displayBodySource ?? "legacy";
+        sourceVersionId = displaySourceVersion;
+        total = displayTotal ?? 0;
+        limit = Math.max(1, total);
+        windowOffset = 0;
+        let anchorPosition: number | null = null;
+        if (targetKind === "initial" || targetKind === "latest") {
+          anchorPosition = displayBlocks[displayBlocks.length - 1]?.position ?? null;
+        } else if (targetKind === "position") {
+          anchorPosition = Number(requestedValue);
+        } else if (typeof requestedValue === "string") {
+          anchorPosition = displayBlocks.find((block) => block.id === requestedValue)?.position ?? null;
+          if (anchorPosition === null) {
+            anchorPosition = sparseConversationBlockPosition(id, requestedValue);
+          }
+          if (anchorPosition === null) {
+            const dense = db.prepare(`
+              SELECT position FROM conversation_structural_blocks
+               WHERE conversation_id = ? AND status = 'current'
+                 AND id = COALESCE((
+                   SELECT block_id FROM conversation_block_aliases WHERE alias = ?
+                 ), ?)
+            `).get(id, requestedValue, requestedValue) as { position: number } | undefined;
+            anchorPosition = dense?.position ?? null;
+          }
+        }
+        resolvedBlock = anchorPosition === null
+          ? null
+          : displayBlocks.find((block) => block.position === anchorPosition) ?? null;
+        if (targetKind !== "initial" && targetKind !== "latest" && !resolvedBlock) {
+          sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
+          return;
+        }
+        const preceding = anchorPosition === null
+          ? []
+          : displayBlocks.filter((block) => block.position <= anchorPosition!);
+        const previousUser = [...preceding].reverse()
+          .find((block) => block.type === "user_message")?.position ?? -1;
+        resolvedTurnId = resolvedBlock?.type === "user_message"
+          ? resolvedBlock.id
+          : preceding.find((block) => block.position > previousUser && block.type !== "user_message")?.id
+            ?? resolvedBlock?.id
+            ?? null;
+        if (targetKind === "turn" && resolvedTurnId !== requestedValue) {
+          sendJson(res, 404, { error: "Turn anchor not found" });
+          return;
+        }
+      } else {
       const structureCache = getConversationStructureCache(db);
       const cachedTotal = source
         ? structureCache.blockCount(id, source.current_version_id)
@@ -1383,6 +1618,7 @@ export function registerConversationRoutes(
       if (targetKind === "turn" && resolvedTurnId !== requestedValue) {
         sendJson(res, 404, { error: "Turn anchor not found" });
         return;
+      }
       }
     } else {
       const resolved = resolvePositionTarget(db, id, targetKind, requestedValue);

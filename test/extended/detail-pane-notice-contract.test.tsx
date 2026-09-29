@@ -25,6 +25,7 @@ function NoticeHarness({ children, active = true }: { children: ComponentChildre
     registerMainNoticeHost,
     rightSidebar: null,
     registerRightSidebar: () => () => undefined,
+    registerInitialRouteLoad: () => undefined,
     updateRightSidebar: () => undefined,
   }), [active, fallbackHost, mainHosts, registerMainNoticeHost]);
 
@@ -53,7 +54,7 @@ function renderOperationalNotices(active = true) {
         </DetailPaneShell>
       </DetailPaneShell>
       <div hidden data-testid="inactive-tab">
-        <AppShellProvider value={{ active: false, rightSidebar: null, registerRightSidebar: () => () => undefined, updateRightSidebar: () => undefined }}>
+        <AppShellProvider value={{ active: false, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, updateRightSidebar: () => undefined }}>
           <DetailPaneShell header={<h1>Hidden tab</h1>}>
             <DetailPaneNotice severity="error" title="Stale hidden failure">Hidden failure.</DetailPaneNotice>
           </DetailPaneShell>

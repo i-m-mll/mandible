@@ -56,6 +56,7 @@ function HeaderCase({ variant, open }: { variant: Variant; open: boolean }): JSX
       active: true,
       rightSidebar: descriptor(open),
       registerRightSidebar: () => () => undefined,
+      registerInitialRouteLoad: () => undefined,
       updateRightSidebar: () => undefined,
       setRightSidebarOpen: () => undefined,
       setViewSidebarWidth: () => undefined,

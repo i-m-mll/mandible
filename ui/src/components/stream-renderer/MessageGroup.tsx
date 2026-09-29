@@ -52,6 +52,7 @@ export function MessageGroup({
               content={block.thinking}
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
+              detailsAvailable={block.source?.detailsLoaded === false}
               onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
             />
           );
@@ -74,19 +75,20 @@ export function MessageGroup({
         // Find the matching tool result from the user event
         const result: ToolResultContentBlock | null = toolResults.get(block.id) ?? null;
         // Tool disclosures are initially folded in both live and persisted
-        // streams. Running state remains visible in the summary row.
+        // streams. Full input and result content appears only after expansion.
         const defaultExpanded = false;
         const expanded = getBlockExpanded?.(block, index, defaultExpanded);
         inner = (
           <ToolUseBlock
             key={`tool-${block.id}`}
             toolName={block.name}
+            toolKind={block.toolKind}
             toolUseId={block.id}
             input={block.input}
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
             defaultExpanded={defaultExpanded}
             expanded={expanded}
-            onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
+            onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next, result?.source ? [result.source] : [])}
             resultSelected={result?.source ? selectedBlockIds?.has(result.source.blockId) : false}
             selectMode={selectMode}
             onToggleResultSelect={result?.source && onToggleBlockSelect
@@ -156,8 +158,8 @@ export function MessageGroup({
       rendered.push(
         <ToolCallGroup
           key={groupId}
-          summary={summarizeToolRun(run)}
-          icon={toolRunIcon(run)}
+          summary={summarizeToolRun(run.map((block) => ({ name: block.name, toolKind: block.toolKind })))}
+          icon={toolRunIcon(run.map((block) => ({ name: block.name, toolKind: block.toolKind })))}
           expanded={expanded}
           onExpandedChange={(next) => onDisclosureExpandedChange?.(groupId, next)}
           memberRefs={memberRefs}
