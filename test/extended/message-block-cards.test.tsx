@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/preact
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computeDiffStats } from '../../ui/src/components/message-blocks/FileEditBlock';
 import { latestPlanIndex, parsePlanEntries } from '../../ui/src/components/message-blocks/PlanBlock';
+import { ThinkingBlock } from '../../ui/src/components/message-blocks/ThinkingBlock';
 import { getToolVisual, leftTruncateTarget, ToolUseBlock } from '../../ui/src/components/message-blocks/ToolUseBlock';
 import { presentTool, summarizeToolRun, toolRunIcon } from '../../ui/src/components/message-blocks/toolPresentation';
 import { PermissionApprovalCard, permissionActionsForRequest } from '../../ui/src/components/console/PermissionApprovalCard';
@@ -244,6 +245,15 @@ describe('message action cards', () => {
     detailAction.focus();
     view.rerender(<CompactActivityRow icon={<span>·</span>} summary="Shared summary" disclosure={disclosure(false)} />);
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Shared summary' }));
+  });
+
+  it('keeps compact thinking expandable while its full detail payload is unloaded', () => {
+    const onExpandedChange = vi.fn();
+    render(<ThinkingBlock content="Visible thought summary" detailsAvailable onExpandedChange={onExpandedChange} />);
+    const row = screen.getByRole('button', { name: 'Visible thought summary' });
+    expect(row.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(row);
+    expect(onExpandedChange).toHaveBeenCalledWith(true);
   });
 
   it('does not reserve an icon column when a compact activity has no icon', () => {

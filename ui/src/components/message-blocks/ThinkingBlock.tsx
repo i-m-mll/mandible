@@ -8,6 +8,7 @@ export type ThinkingBlockProps = {
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
   memberRefs?: string;
+  detailsAvailable?: boolean;
 };
 
 export function ThinkingBlock({
@@ -16,6 +17,7 @@ export function ThinkingBlock({
   expanded,
   onExpandedChange,
   memberRefs,
+  detailsAvailable = false,
 }: ThinkingBlockProps): JSX.Element {
   const parts = content.split('\n').map((line) => plainActivityHeader(line).trim()).filter(Boolean);
   const summary = parts[0] ?? 'Thought';
@@ -26,7 +28,7 @@ export function ThinkingBlock({
       icon={<LightbulbIcon />}
       summary={summary}
       memberRefs={memberRefs}
-      disclosure={remaining.length > 0 ? {
+      disclosure={remaining.length > 0 || detailsAvailable ? {
         content: <div className="thinking-block__body"><pre>{remaining.join('\n')}</pre></div>,
         regionLabel: `${summary} details`,
         defaultExpanded: !defaultCollapsed,

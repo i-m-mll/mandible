@@ -52,6 +52,7 @@ export function MessageGroup({
               content={block.thinking}
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
+              detailsAvailable={block.source?.detailsLoaded === false}
               onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
             />
           );
@@ -87,7 +88,7 @@ export function MessageGroup({
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
             defaultExpanded={defaultExpanded}
             expanded={expanded}
-            onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next, result?.source ? [result.source] : [])}
+            onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
             resultSelected={result?.source ? selectedBlockIds?.has(result.source.blockId) : false}
             selectMode={selectMode}
             onToggleResultSelect={result?.source && onToggleBlockSelect

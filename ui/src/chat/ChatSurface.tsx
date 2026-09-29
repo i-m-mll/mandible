@@ -976,13 +976,9 @@ export function ChatSurface({
     captureReadingAnchor(!transcript?.hasNewer);
   }
 
-  function setBlockExpanded(id: string, expanded: boolean, sources: readonly (PersistedBlockSource | undefined)[] = []): void {
+  function setBlockExpanded(id: string, expanded: boolean): void {
     const anchor = captureReadingAnchor();
     if (anchor) pendingReadingAnchorRef.current = anchor;
-    if (expanded) {
-      const unloaded = sources.filter((source): source is PersistedBlockSource => source?.detailsLoaded === false);
-      if (unloaded.length > 0) void onExpandDetails?.(unloaded);
-    }
     setExpandedBlocks((current) => {
       return { ...current, [id]: expanded };
     });
@@ -1101,7 +1097,7 @@ export function ChatSurface({
               result={node.item.result}
               defaultExpanded={false}
               expanded={expanded}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source, resultSource])}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
               resultSelected={resultSource ? selectedBlockIds?.has(resultSource.blockId) : false}
               selectMode={selectMode}
               onToggleResultSelect={resultSource && onToggleBlockSelect
@@ -1117,7 +1113,8 @@ export function ChatSurface({
               content={node.item.content}
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
+              detailsAvailable={source?.detailsLoaded === false}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
             />
           );
         } else {
@@ -1125,7 +1122,8 @@ export function ChatSurface({
             <ActivityRow
               item={node.item}
               expanded={expanded}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
+              detailsAvailable={source?.detailsLoaded === false}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
               onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
           );
@@ -1165,8 +1163,8 @@ export function ChatSurface({
               getBlockExpanded={(contentBlock, index, defaultExpanded) => (
                 expandedBlocks[blockId(turn.id, contentBlock, index)] ?? defaultExpanded
               )}
-              onBlockExpandedChange={(contentBlock, index, expanded, relatedSources = []) => (
-                setBlockExpanded(blockId(turn.id, contentBlock, index), expanded, [contentBlock.source, ...relatedSources])
+              onBlockExpandedChange={(contentBlock, index, expanded) => (
+                setBlockExpanded(blockId(turn.id, contentBlock, index), expanded)
               )}
               getDisclosureExpanded={(id, defaultExpanded) => expandedBlocks[`${turn.id}:${id}`] ?? defaultExpanded}
               onDisclosureExpandedChange={(id, expanded) => setBlockExpanded(`${turn.id}:${id}`, expanded)}

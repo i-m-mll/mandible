@@ -196,16 +196,17 @@ function ActivityDetails({ lines, onCreatedTaskNavigate }: {
   );
 }
 
-export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNavigate, memberRefs }: {
+export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNavigate, memberRefs, detailsAvailable = false }: {
   item: DisplayActivityItem;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
   onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
   memberRefs?: string;
+  detailsAvailable?: boolean;
 }): JSX.Element {
   const presentation = presentActivityItems([item])[0];
   const lines = activityDetailLines([presentation]);
-  const disclosure = lines.length > 0
+  const disclosure = lines.length > 0 || detailsAvailable
     ? {
         content: <ActivityDetails lines={lines} onCreatedTaskNavigate={onCreatedTaskNavigate} />,
         regionLabel: `${presentation.summary} details`,
