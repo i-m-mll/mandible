@@ -46,6 +46,21 @@
   overflow: hidden;
 }
 
+.detail-pane-modal__panel.ledger-issue-detail__working-notes-panel {
+  width: min(540px, 100%);
+  max-height: min(100%, calc(100vh - 190px));
+}
+
+.ledger-issue-detail__working-notes-content {
+  display: grid;
+  gap: 10px;
+}
+
+.ledger-issue-detail__working-notes-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .issues-detail .ledger-issue-detail__body > .ledger-issue-detail__section {
   max-width: 720px;
 }

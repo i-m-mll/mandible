@@ -44,7 +44,7 @@ type IssueMetadataSection = {
   title: string;
   rows: IssueMetadataRow[];
 };
-const ISSUE_METADATA_SCROLL_OWNER_SELECTORS = [
+const ISSUE_DETAIL_SCROLL_OWNER_SELECTORS = [
   '.issues-detail',
   '.graph-detail-pane',
   '.space-canvas__inspector',
@@ -161,6 +161,7 @@ export function LedgerIssueDetail({
   const [showComposer, setShowComposer] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
+  const [workNotesOpen, setWorkNotesOpen] = useState(false);
   const [authEvidenceOpen, setAuthEvidenceOpen] = useState(false);
   const [childrenExpanded, setChildrenExpanded] = useState(false);
   const [relationshipsExpanded, setRelationshipsExpanded] = useState(false);
@@ -190,6 +191,7 @@ export function LedgerIssueDetail({
   const { children: umbrellaChildren, rest: otherRelationships } = partitionUmbrellaChildren(detail);
   const dependencies = detail.dependencies ?? [];
   const editingCurrentIssue = editingWorkNotes && workNotesEditorIssueId === detail.id;
+  const hasIssueWorkNotes = typeof detail.work_notes === 'string' && (Boolean(onUpdateWorkNotes) || Boolean(detail.work_notes));
   const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
   const isInitialDetail = detail.detail_stage === 'initial';
   const shouldShowFullDetailLoading = (
@@ -210,7 +212,8 @@ export function LedgerIssueDetail({
     onSetStatus ||
     onStartAgent ||
     onShowChildren ||
-    onAddToSpace,
+    onAddToSpace ||
+    hasIssueWorkNotes,
   );
   const projectRef = issueProjectRef(detail);
 
@@ -218,6 +221,7 @@ export function LedgerIssueDetail({
     setChildrenExpanded(false);
     setRelationshipsExpanded(false);
     setArtifactsExpanded(false);
+    setWorkNotesOpen(false);
   }, [detail.id]);
 
   useEffect(() => {
@@ -293,13 +297,95 @@ export function LedgerIssueDetail({
         title="Issue metadata"
         closeLabel="Close issue metadata"
         excludeAboveRef={headerRef}
-        scrollOwnerSelector={ISSUE_METADATA_SCROLL_OWNER_SELECTORS}
+        scrollOwnerSelector={ISSUE_DETAIL_SCROLL_OWNER_SELECTORS}
         scrollLockClassName="issues-detail--metadata-open"
         className="ledger-issue-detail__metadata-modal"
         panelClassName="ledger-issue-detail__metadata-panel"
       >
         <IssueMetadataContent detail={detail} />
       </DetailPaneModal>
+      {hasIssueWorkNotes && (
+        <DetailPaneModal
+          open={workNotesOpen}
+          onClose={() => setWorkNotesOpen(false)}
+          titleId={`issue-working-notes-title-${detail.id}`}
+          title="Working notes"
+          closeLabel="Close working notes"
+          excludeAboveRef={headerRef}
+          scrollOwnerSelector={ISSUE_DETAIL_SCROLL_OWNER_SELECTORS}
+          panelClassName="ledger-issue-detail__working-notes-panel"
+        >
+          <div className="ledger-issue-detail__working-notes-content">
+            {onUpdateWorkNotes && !editingCurrentIssue && (
+              <div className="ledger-issue-detail__working-notes-toolbar">
+                <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
+                  setWorkNotesEditorIssueId(detail.id);
+                  setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
+                  setWorkNotesDraft(detail.work_notes ?? '');
+                  workNotesDraftsRef.current.set(detail.id, {
+                    draft: detail.work_notes ?? '',
+                    baseRevision: detail.work_notes_revision ?? null,
+                  });
+                  setWorkNotesSaveError(null);
+                  setWorkNotesConflict(false);
+                  setEditingWorkNotes(true);
+                }}>
+                  Edit
+                </button>
+              </div>
+            )}
+            {editingCurrentIssue ? (
+              <>
+                <textarea
+                  className="ledger-work-notes-editor"
+                  aria-label="Working notes"
+                  rows={compact ? 4 : 7}
+                  value={workNotesDraft}
+                  onInput={(event) => {
+                    const draft = event.currentTarget.value;
+                    setWorkNotesDraft(draft);
+                    workNotesDraftsRef.current.set(detail.id, { draft, baseRevision: workNotesBaseRevision });
+                  }}
+                />
+                {workNotesSaveError && <p className="text-muted ledger-work-notes-error" role="alert">{workNotesSaveError}</p>}
+                <div className="ledger-comment-composer__actions">
+                  <button type="button" className="btn btn--active" disabled={busy} onClick={() => void submitWorkNotes()}>
+                    Save notes
+                  </button>
+                  {workNotesConflict && (
+                    <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
+                      setWorkNotesDraft(detail.work_notes ?? '');
+                      setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
+                      workNotesDraftsRef.current.delete(detail.id);
+                      setWorkNotesSaveError(null);
+                      setWorkNotesConflict(false);
+                    }}>
+                      Use latest notes
+                    </button>
+                  )}
+                  <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
+                    setWorkNotesDraft(detail.work_notes ?? '');
+                    setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
+                    workNotesDraftsRef.current.delete(detail.id);
+                    setWorkNotesSaveError(null);
+                    setWorkNotesConflict(false);
+                    setEditingWorkNotes(false);
+                  }}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <LedgerRenderedBody
+                className="ledger-work-notes-body spec-panel"
+                source={detail.work_notes ?? ''}
+                empty="No working notes."
+                detail={detail}
+              />
+            )}
+          </div>
+        </DetailPaneModal>
+      )}
       {launchAgentOpen && (
         <AgentDispatchDialog
           subject={{ kind: 'issue', issue_ref: detail.display_id }}
@@ -363,6 +449,7 @@ export function LedgerIssueDetail({
               onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
               onAddToSpace={onAddToSpace}
               onShowMetadata={hasIssueMetadata ? () => setMetadataOpen(true) : undefined}
+              onShowWorkNotes={hasIssueWorkNotes ? () => setWorkNotesOpen(true) : undefined}
               onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
               onShowChildren={umbrellaChildren.length > 0 ? onShowChildren : undefined}
             />
@@ -403,79 +490,6 @@ export function LedgerIssueDetail({
           >
             <UmbrellaChildrenShelf rows={umbrellaChildren} onOpenEntity={onOpenEntity} />
           </CollapsiblePanel>
-        )}
-
-        {typeof detail.work_notes === 'string' && (onUpdateWorkNotes || Boolean(detail.work_notes)) && (
-          <section className="ledger-issue-detail__section ledger-issue-detail__working-notes-section">
-            <div className="ledger-issue-detail__section-heading">
-              <SectionTitle title="Working notes" />
-              {onUpdateWorkNotes && !editingCurrentIssue && (
-                <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
-                  setWorkNotesEditorIssueId(detail.id);
-                  setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
-                  setWorkNotesDraft(detail.work_notes ?? '');
-                  workNotesDraftsRef.current.set(detail.id, {
-                    draft: detail.work_notes ?? '',
-                    baseRevision: detail.work_notes_revision ?? null,
-                  });
-                  setWorkNotesSaveError(null);
-                  setWorkNotesConflict(false);
-                  setEditingWorkNotes(true);
-                }}>
-                  Edit
-                </button>
-              )}
-            </div>
-            {editingCurrentIssue ? (
-              <>
-                <textarea
-                  className="ledger-work-notes-editor"
-                  aria-label="Working notes"
-                  rows={compact ? 4 : 7}
-                  value={workNotesDraft}
-                  onInput={(event) => {
-                    const draft = event.currentTarget.value;
-                    setWorkNotesDraft(draft);
-                    workNotesDraftsRef.current.set(detail.id, { draft, baseRevision: workNotesBaseRevision });
-                  }}
-                />
-                {workNotesSaveError && <p className="text-muted ledger-work-notes-error" role="alert">{workNotesSaveError}</p>}
-                <div className="ledger-comment-composer__actions">
-                  <button type="button" className="btn btn--active" disabled={busy} onClick={() => void submitWorkNotes()}>
-                    Save notes
-                  </button>
-                  {workNotesConflict && (
-                    <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
-                      setWorkNotesDraft(detail.work_notes ?? '');
-                      setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
-                      workNotesDraftsRef.current.delete(detail.id);
-                      setWorkNotesSaveError(null);
-                      setWorkNotesConflict(false);
-                    }}>
-                      Use latest notes
-                    </button>
-                  )}
-                  <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => {
-                    setWorkNotesDraft(detail.work_notes ?? '');
-                    setWorkNotesBaseRevision(detail.work_notes_revision ?? null);
-                    workNotesDraftsRef.current.delete(detail.id);
-                    setWorkNotesSaveError(null);
-                    setWorkNotesConflict(false);
-                    setEditingWorkNotes(false);
-                  }}>
-                    Cancel
-                  </button>
-                </div>
-              </>
-            ) : (
-              <LedgerRenderedBody
-                className="ledger-work-notes-body spec-panel"
-                source={detail.work_notes ?? ''}
-                empty="No working notes."
-                detail={detail}
-              />
-            )}
-          </section>
         )}
 
         {dependencies.length > 0 && (
@@ -709,6 +723,7 @@ function IssueActionsMenu({
   onAddComment,
   onAddToSpace,
   onShowMetadata,
+  onShowWorkNotes,
   onShowAuthEvidence,
   onShowChildren,
 }: {
@@ -725,6 +740,7 @@ function IssueActionsMenu({
   onAddComment?: () => void;
   onAddToSpace?: () => void;
   onShowMetadata?: () => void;
+  onShowWorkNotes?: () => void;
   onShowAuthEvidence?: () => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
 }): JSX.Element {
@@ -801,6 +817,16 @@ function IssueActionsMenu({
               onClick={() => closeAfter(onAddComment)}
             >
               Add Comment
+            </button>
+          )}
+          {onShowWorkNotes && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              onClick={() => closeAfter(onShowWorkNotes)}
+            >
+              Working notes
             </button>
           )}
           {/* Add-to-Space region (child 08c312a) — disjoint from and after C6's
