@@ -11,7 +11,7 @@ import {
   type InstanceInfo,
 } from '../api';
 import { writePersistedDetail } from '../detail-cache';
-import { useAppShell } from '../app-shell';
+import { useAppShell, useRegisterInitialRouteLoad } from '../app-shell';
 import { briefingGroupRoute, briefingRoute } from '../routing';
 import { readPersistedViewState } from '../hooks/usePersistedViewState';
 import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
@@ -129,6 +129,7 @@ function briefingDisplayContext(
 
 export function BriefingView({ instance, initialBriefingId, initialRoundId, initialGroupId, sidebarHidden = false, nowMs, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
+  const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [viewState, setViewState] = useBriefingCollectionViewState();
   const [sidebar, setSidebar] = useState<BriefingSidebarSnapshot>(() =>
     getCachedBriefingSidebarSnapshot(nowMs) ?? { briefings: [], bundles: [], groups: [] });
@@ -187,9 +188,11 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   useEffect(() => {
     if (!appShell.active) return undefined;
     const controller = new AbortController();
-    void load(controller.signal);
+    const initialRead = load(controller.signal);
+    registerInitialRouteLoad(initialRead);
+    void initialRead;
     return () => controller.abort();
-  }, [appShell.active, load, reloadNonce]);
+  }, [appShell.active, load, registerInitialRouteLoad, reloadNonce]);
 
   useEffect(() => {
     if (!appShell.active) return undefined;
