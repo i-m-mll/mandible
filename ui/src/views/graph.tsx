@@ -20,6 +20,7 @@ import { graphEdgeStyle } from '../graph/edgeStyles';
 import { layoutGraph, type RoutedGraphEdge } from '../graph/layout';
 import {
   addLedgerIssueComment,
+  getGraph,
   getLedgerIssueDetail,
   type LedgerIssueDetailProjection,
 } from '../api';
@@ -27,7 +28,6 @@ import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { appColors } from '../theme';
-import { browserSessionFetch } from '../client-auth-token';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { AppOperationalNoticeOutlet, useRegisterAppRightSidebar } from '../app-shell';
@@ -39,17 +39,6 @@ import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
 import { shortRouteId } from '../routing';
 import { PreviewIcon } from '../components/icons/TabIcons';
-
-type GraphFetchParams = {
-  mode: GraphMode
-  repos?: string[]
-  branches?: string[]
-  since?: string
-  status?: string
-  limit?: number
-  nodeTypes?: string[]
-  edgeTypes?: string[]
-}
 
 type ReactFlowNode = {
   id: string
@@ -194,21 +183,6 @@ function applyLegendFallbackCopy(
   };
 }
 
-async function getGraph(params: GraphFetchParams): Promise<GraphPayload> {
-  const q = new URLSearchParams();
-  q.set('mode', params.mode);
-  if (params.since) q.set('since', params.since);
-  if (params.repos && params.repos.length > 0) q.set('repo', params.repos.join(','));
-  if (params.branches && params.branches.length > 0) q.set('branch', params.branches.join(','));
-  if (params.status) q.set('status', params.status);
-  if (params.limit) q.set('limit', String(params.limit));
-  if (params.nodeTypes && params.nodeTypes.length > 0) q.set('node_type', params.nodeTypes.join(','));
-  if (params.edgeTypes && params.edgeTypes.length > 0) q.set('edge_type', params.edgeTypes.join(','));
-  const r = await browserSessionFetch(`/api/graph?${q.toString()}`);
-  if (!r.ok) throw new Error(`graph fetch failed: ${r.status}`);
-  return r.json() as Promise<GraphPayload>;
-}
-
 export type { GraphNodeType };
 
 interface GraphViewProps {
@@ -258,6 +232,30 @@ const GRAPH_MODES = new Set<GraphMode>(Object.keys(MODE_LABELS) as GraphMode[]);
 
 function coerceGraphMode(value: string | undefined): GraphMode {
   return value && GRAPH_MODES.has(value as GraphMode) ? value as GraphMode : DEFAULT_GRAPH_PRESET;
+}
+
+function initialGraphSpec(mode?: string): GraphSpecState {
+  return {
+    preset: coerceGraphMode(mode),
+    since: 'all',
+    status: 'open',
+    limit: 120,
+    repos: [],
+    branches: [],
+  };
+}
+
+function graphRequestForSpec(spec: GraphSpecState) {
+  return {
+    mode: spec.preset,
+    since: spec.since === 'all' ? undefined : spec.since,
+    status: spec.status === 'all' ? 'all' as const : undefined,
+    repos: spec.repos,
+    branches: spec.branches,
+    limit: spec.limit,
+    nodeTypes: spec.nodeTypes,
+    edgeTypes: spec.edgeTypes,
+  };
 }
 
 function typeLabel(type: string): string {
@@ -947,14 +945,7 @@ export function GraphView({
   }>({ requestKey: null, value: { nodes: [], edges: [], mode: DEFAULT_GRAPH_PRESET } });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [spec, setSpec] = useState<GraphSpecState>({
-    preset: routeMode,
-    since: 'all',
-    status: 'open',
-    limit: 120,
-    repos: [],
-    branches: [],
-  });
+  const [spec, setSpec] = useState<GraphSpecState>(() => initialGraphSpec(initialMode));
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [detailPanelState, updateDetailPanelState] = useAppRightSidebarState('graph', {
     open: true,
@@ -974,16 +965,7 @@ export function GraphView({
   const detailPanelOpen = detailPanelState.open;
   const setDetailPanelOpen = (open: boolean) => updateDetailPanelState({ open });
   const lastFocusedNodeOpenedRef = useRef<string | null>(null);
-  const graphRequest = useMemo<GraphFetchParams>(() => ({
-    mode: spec.preset,
-    since: spec.since === 'all' ? undefined : spec.since,
-    status: spec.status === 'all' ? 'all' : undefined,
-    repos: spec.repos,
-    branches: spec.branches,
-    limit: spec.limit,
-    nodeTypes: spec.nodeTypes,
-    edgeTypes: spec.edgeTypes,
-  }), [spec]);
+  const graphRequest = useMemo(() => graphRequestForSpec(spec), [spec]);
   const graphRequestKey = useMemo(
     () => detailRequestKey('graph', graphRequest),
     [graphRequest],
@@ -1013,7 +995,8 @@ export function GraphView({
     setLoading(true);
     setError(null);
     getGraph(graphRequest)
-      .then((data) => {
+      .then((result) => {
+        const data = result as GraphPayload;
         if (!active) return;
         writePersistedDetail('graph', graphRequestKey, data);
         setPayloadState({ requestKey: graphRequestKey, value: data });
@@ -1344,6 +1327,26 @@ export function GraphView({
       </div>
     </div>
   );
+}
+
+/** Warm the Graph list and only its explicit or default selected issue detail. */
+export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const request = graphRequestForSpec(initialGraphSpec(params.mode));
+  const requestKey = detailRequestKey('graph', request);
+  const data = await getGraph(request) as GraphPayload;
+  writePersistedDetail('graph', requestKey, data);
+
+  const selectedNode = (params.focus
+    ? data.nodes.find((node) => node.id === params.focus)
+    : null) ?? data.nodes[0] ?? null;
+  const issueId = selectedNode?.type === 'issue'
+    && typeof selectedNode.detail?.ledger_issue_id === 'string'
+    ? selectedNode.detail.ledger_issue_id
+    : null;
+  if (!issueId) return;
+
+  const detail = await getLedgerIssueDetail(issueId);
+  writePersistedDetail('issue-detail', detailRequestKey('issue', { issueId }), detail);
 }
 
 export default GraphView;
