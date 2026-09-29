@@ -1140,13 +1140,9 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
       <SettingsSectionShell section={props.section}>
         <SettingsSectionHeader section={props.section} description="Set up the trusted local HTTPS connection before using a new browser origin." />
         <div className="settings-view__section-body">
-          <div className="settings-view__daemon-card" data-settings-searchable data-settings-search-text="secure local connections HTTPS trust setup">
-            <div className="settings-view__daemon-title">Secure local connections</div>
-            <p className="settings-view__daemon-footer">If the new secure page cannot load yet, open Mandible's installed macOS app for a one-time setup for secure local connections on this Mac account. The browser cannot complete this setup or sign you in.</p>
-            {connectionSetupAllowed ? (
-              <a className="btn btn--active btn--sm" href="mandible://connections/setup">Open macOS setup action</a>
-            ) : null}
-            <p className="settings-view__daemon-footer">This is a one-time setup for secure local connections on this Mac account. macOS may ask you to authorize it. New previews reuse this setup.</p>
+          <div data-settings-searchable data-settings-search-text="secure local connections HTTPS trust setup">
+            <p className="settings-view__daemon-footer">Open the installed macOS app to set up secure local connections for this Mac account. macOS may ask you to authorize the one-time setup; new previews reuse it.</p>
+            <a className="btn btn--active btn--sm" href="mandible://connections/setup">Open macOS setup</a>
           </div>
         </div>
       </SettingsSectionShell>
@@ -1264,7 +1260,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
             Check status
           </button>
         </div>
-        <div className="settings-view__daemon-card" data-settings-searchable data-settings-search-text="secure local connections HTTPS certificate trust">
+        <div className="settings-view__local-connections" data-settings-searchable data-settings-search-text="secure local connections HTTPS certificate trust">
           <div className="settings-view__daemon-status-row">
             <div>
               <div className="settings-view__daemon-title">Secure local connections</div>
@@ -2113,8 +2109,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
 
       <div className="settings-view__layout">
         <nav className="settings-view__toc" aria-label="Settings sections">
-          <label className="settings-view__search-label">
-            <span>Search settings</span>
+          <div className="settings-view__search-label">
             <input
               type="search"
               className="settings-view__input"
@@ -2123,7 +2118,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               aria-label="Search individual settings"
               placeholder="Find a setting"
             />
-          </label>
+          </div>
           {visibleSections.map((section) => {
             if (section.desktopOnly && !desktopShell) return null;
             const isActive = activeSection === section.id;

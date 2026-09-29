@@ -10,10 +10,19 @@ import {
   readAppRailPreviewOrder,
   reconcileAppRailOrder,
   serializeAppRailOrderSetting,
+  startupRailDestination,
   writeAppRailPreviewOrder,
 } from '../../ui/src/app-rail-order';
 
 describe('app rail order preference', () => {
+  it('starts at the first visible saved destination while preserving explicit routes', () => {
+    const primary = reconcileAppRailOrder(['console', 'auth', 'issues'], ['issues', 'console']);
+    expect(startupRailDestination('', primary, ['graph'], false)).toBe('#/issues');
+    expect(startupRailDestination('#/?agent_session=abc', primary, ['graph'], false)).toBe('#/issues');
+    expect(startupRailDestination('#/auth?request=abc', primary, ['graph'], false)).toBeNull();
+    expect(startupRailDestination('', [], ['graph'], false)).toBeNull();
+    expect(startupRailDestination('', [], ['graph'], true)).toBe('#/graph');
+  });
   it('uses a versioned canonical settings value rather than browser storage', () => {
     expect(APP_RAIL_ORDER_SETTING_KEY).toBe('app_rail_order');
     expect(serializeAppRailOrderSetting({

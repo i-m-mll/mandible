@@ -2277,9 +2277,6 @@
   background: var(--neutral-alpha-07);
 }
 
-.auth-sidebar__branch-input::placeholder {
-  color: var(--text-muted);
-}
 
 .auth-sidebar__branch-clear {
   background: transparent;
