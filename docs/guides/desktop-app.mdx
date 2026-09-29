@@ -49,37 +49,6 @@ From Settings > Mandible Daemon:
 - **Stop** — stop the production backend. The shared HTTPS gateway remains available when previews use it.
 - **View logs** — navigate to the Logs tab.
 
-## Zone 2: Mutable runtime
-
-Zone 2 is Mandible's self-modification layer. Instead of requiring a full rebuild for every code change, Zone 2 maintains a separate mutable copy of the daemon source that can be patched, updated, and rolled back independently.
-
-### Resolution chain
-
-When the Tauri shell starts the daemon, it looks for `dist/index.js` in this order:
-
-1. **Zone 2 runtime** — `~/Library/Application Support/Mandible/runtime/dist/index.js` (macOS). Takes priority because it may contain user patches.
-2. **Bundled sidecar** — the Tauri resource bundle (for distributed `.app` builds).
-3. **Dev path** — the repo root `dist/index.js` (for development).
-
-### Managing Zone 2
-
-From Settings > Runtime:
-
-- **Initialize Runtime** — clones the Mandible repo into the Zone 2 path, builds it, and activates it. After initialization, the daemon will load from Zone 2 on next start.
-- **Check for Updates** — pulls the latest upstream and rebuilds.
-- **Rollback Last Patch** — reverts the most recent local patch (useful if a self-applied change breaks something).
-- **Reset to Upstream** — discards all local patches and resets to upstream HEAD.
-
-The Runtime section also shows the current install mode (dev/bundled/zone2), the Zone 2 filesystem path, the current commit hash and branch, and the number of local patches applied.
-
-### Platform paths
-
-| OS | Zone 2 path |
-|----|-------------|
-| macOS | `~/Library/Application Support/Mandible/runtime/` |
-| Linux | `~/.local/share/mandible/runtime/` |
-| Windows | `%APPDATA%/Mandible/runtime/` |
-
 ## Building the desktop app
 
 ```bash

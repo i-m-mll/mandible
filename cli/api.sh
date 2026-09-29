@@ -1042,7 +1042,6 @@ api_operational_mutation_category() {
     /api/projects|/api/projects/*) printf 'projects'; return 0 ;;
     /api/provider-manifests|/api/provider-manifests/*) printf 'providers'; return 0 ;;
     /api/providers|/api/providers/*) printf 'providers'; return 0 ;;
-    /api/runtime|/api/runtime/*) printf 'runtime'; return 0 ;;
     /api/settings|/api/settings/*) printf 'settings'; return 0 ;;
     /api/sessions|/api/sessions/*) printf 'sessions'; return 0 ;;
     /api/spaces|/api/spaces/*) printf 'spaces'; return 0 ;;

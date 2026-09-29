@@ -5,18 +5,14 @@ import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import SigningSettings from '../components/settings/SigningSettings';
 import { formatRelativeTime } from '../lib/format';
 import {
-  bootstrapRuntime,
   getBackupStatus,
   getDelegatedSigningStatus,
   getDesktopDaemonStatus,
   getSecureLocalConnectionsStatus,
-  getRuntimeStatus,
   isDesktopShell,
   navigateToDesktopBootstrap,
-  resetRuntime,
   removeDelegatedSigning,
   restartDesktopDaemon,
-  rollbackRuntime,
   runBackupNow,
   setDesktopDaemonLaunchMode,
   setupDelegatedSigning,
@@ -26,7 +22,6 @@ import {
   getInstructionDeliverySettings,
   updateBackupSettings,
   updateInstructionDeliverySettings,
-  updateRuntime,
   getProjectAccessSettings,
   listProjectsForPicker,
   updateProjectAccessSettings,
@@ -39,7 +34,6 @@ import {
   type InstructionTargetMode,
   type DesktopDaemonStatus,
   type SecureLocalConnectionsStatus,
-  type RuntimeStatus,
   type ProjectAccessSettings,
   type ProjectPickerItem,
 } from '../api';
@@ -157,7 +151,6 @@ const SETTINGS_SECTIONS = {
   versionControl: { id: 'settings-version-control', title: 'Version Control' },
   maintenance: { id: 'settings-maintenance', title: 'Maintenance' },
   backup: { id: 'settings-backup', title: 'Backup' },
-  runtime: { id: 'settings-runtime', title: 'Local runtime' },
 } as const;
 
 const SETTINGS_SECTION_LIST: readonly SettingsSectionDefinition[] = Object.values(SETTINGS_SECTIONS);
@@ -994,8 +987,9 @@ function formatDaemonState(state: DesktopDaemonStatus['state']): string {
 
 function DesktopDaemonSection(props: { section: SettingsSectionDefinition; instance?: InstanceInfo | null }): JSX.Element | null {
   const desktopShell = isDesktopShell();
-  const hostStatusAllowed = canPerformOperation(props.instance, 'GET', '/api/runtime/status');
-  const hostActionsAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/bootstrap');
+  const hostStatusAllowed = Boolean(props.instance?.allowed_effects.includes('files:production')
+    && props.instance.allowed_effects.includes('process:external'));
+  const hostActionsAllowed = hostStatusAllowed;
   const connectionSetupAllowed = canPerformOperation(props.instance, 'POST', '/api/system/open-path');
   const [status, setStatus] = useState<DesktopDaemonStatus | null>(null);
   const [loading, setLoading] = useState(desktopShell && hostStatusAllowed);
@@ -1515,278 +1509,6 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
       {readAllowed && !loading && !loadError && !status && (
         <div className="settings-view__section-body settings-view__empty">Backup status is unavailable.</div>
       )}
-    </SettingsSectionShell>
-  );
-}
-
-// Bug: cc4688b — separate local runtime used for updates and patch rollback
-function RuntimeSection(props: { section: SettingsSectionDefinition; instance?: InstanceInfo | null }): JSX.Element {
-  const readAllowed = canPerformOperation(props.instance, 'GET', '/api/runtime/status');
-  const bootstrapAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/bootstrap');
-  const updateAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/update');
-  const rollbackAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/rollback');
-  const resetAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/reset');
-  const [status, setStatus] = useState<RuntimeStatus | null>(null);
-  const [loading, setLoading] = useState(readAllowed);
-  const [action, setAction] = useState<string | null>(null);
-  const [statusError, setStatusError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
-
-  const refreshStatus = useCallback(async () => {
-    if (!readAllowed) {
-      setStatus(null);
-      setStatusError(null);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setStatusError(null);
-    try {
-      const next = await getRuntimeStatus();
-      setStatus(next);
-    } catch (err) {
-      setStatus(null);
-      setStatusError(err instanceof Error ? err.message : 'Failed to load runtime status');
-    } finally {
-      setLoading(false);
-    }
-  }, [readAllowed]);
-
-  useEffect(() => {
-    void refreshStatus();
-  }, [refreshStatus]);
-
-  const handleBootstrap = useCallback(async () => {
-    if (!bootstrapAllowed) return;
-    setAction('bootstrap');
-    setActionError(null);
-    setFeedback(null);
-    try {
-      await bootstrapRuntime();
-      setFeedback('Bootstrap started. This may take a minute...');
-      // Poll for completion
-      const timer = window.setInterval(async () => {
-        try {
-          const next = await getRuntimeStatus();
-          setStatus(next);
-          setStatusError(null);
-          if (next.available) {
-            window.clearInterval(timer);
-            setFeedback('Local runtime initialized successfully.');
-            setAction(null);
-          }
-        } catch {
-          // keep polling
-        }
-      }, 3000);
-      // Safety timeout: stop polling after 3 minutes
-      window.setTimeout(() => {
-        window.clearInterval(timer);
-        setAction(null);
-      }, 180_000);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Bootstrap failed');
-      setAction(null);
-    }
-  }, [bootstrapAllowed]);
-
-  const handleUpdate = useCallback(async () => {
-    if (!updateAllowed) return;
-    setAction('update');
-    setActionError(null);
-    setFeedback(null);
-    try {
-      const result = await updateRuntime();
-      if (result.updated) {
-        setFeedback('Update applied successfully.');
-      } else {
-        setFeedback(result.message ?? 'Already up to date.');
-      }
-      await refreshStatus();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Update failed');
-    } finally {
-      setAction(null);
-    }
-  }, [refreshStatus, updateAllowed]);
-
-  const handleRollback = useCallback(async () => {
-    if (!rollbackAllowed) return;
-    setAction('rollback');
-    setActionError(null);
-    setFeedback(null);
-    try {
-      await rollbackRuntime();
-      setFeedback('Last patch rolled back.');
-      await refreshStatus();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Rollback failed');
-    } finally {
-      setAction(null);
-    }
-  }, [refreshStatus, rollbackAllowed]);
-
-  const handleReset = useCallback(async () => {
-    if (!resetAllowed) return;
-    setAction('reset');
-    setActionError(null);
-    setFeedback(null);
-    try {
-      await resetRuntime();
-      setFeedback('Reset to upstream complete.');
-      await refreshStatus();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Reset failed');
-    } finally {
-      setAction(null);
-    }
-  }, [refreshStatus, resetAllowed]);
-
-  return (
-    <SettingsSectionShell section={props.section}>
-      <SettingsSectionHeader
-        section={props.section}
-        description="Updates and patch rollback for Mandible's separate local runtime folder."
-      />
-      {!readAllowed ? (
-        <DetailPaneNotice severity="info" density="compact" title="Runtime unavailable">
-          Runtime status and controls require production-file access and external processes, which are unavailable in this instance.
-        </DetailPaneNotice>
-      ) : null}
-      {statusError && readAllowed && (
-        <DetailPaneNotice severity="error" density="compact" title="Runtime status could not be loaded" actions={
-          <button type="button" className="btn btn--ghost btn--sm" onClick={() => void refreshStatus()}>Retry</button>
-        }>{statusError}</DetailPaneNotice>
-      )}
-      {actionError && <DetailPaneNotice severity="error" density="compact" title="Runtime action failed">{actionError}</DetailPaneNotice>}
-
-      <div className="settings-view__section-body">
-        {/* Install mode */}
-        <div className="settings-view__number-row" data-settings-searchable>
-          <div className="settings-view__number-info">
-            <span className="settings-view__number-label">Install mode</span>
-          </div>
-          <div className="settings-view__number-controls">
-            {loading ? (
-              <span className="text-muted">Loading...</span>
-            ) : !readAllowed || statusError ? (
-              <span className="text-muted">Unavailable in this instance</span>
-            ) : (
-              <span>{status?.installMode ?? 'Unavailable'}</span>
-            )}
-          </div>
-        </div>
-
-        {/* Local runtime location */}
-        <div className="settings-view__number-row" data-settings-searchable>
-          <div className="settings-view__number-info">
-            <span className="settings-view__number-label">Runtime folder</span>
-          </div>
-          <div className="settings-view__number-controls">
-            {loading ? (
-              <span className="text-muted">Loading...</span>
-            ) : !readAllowed || statusError ? (
-              <span className="text-muted">Unavailable in this instance</span>
-            ) : (
-              <span className="text-muted" style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>
-                {status ? `${status.zone2Path ?? 'N/A'}${status.available ? ' (active)' : ' (not initialized)'}` : 'Unavailable'}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Git info (only when available) */}
-        {status?.available && (
-          <>
-            <div className="settings-view__number-row" data-settings-searchable>
-              <div className="settings-view__number-info">
-                <span className="settings-view__number-label">Commit</span>
-              </div>
-              <div className="settings-view__number-controls">
-                <span className="text-muted" style={{ fontFamily: 'monospace', fontSize: '0.85em' }}>
-                  {status.commit ? status.commit.slice(0, 12) : 'unknown'}
-                </span>
-                {status.branch && (
-                  <span className="text-muted" style={{ marginLeft: '0.5rem' }}>
-                    ({status.branch})
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="settings-view__number-row" data-settings-searchable>
-              <div className="settings-view__number-info">
-                <span className="settings-view__number-label">Local patches</span>
-              </div>
-              <div className="settings-view__number-controls">
-                <span>{status.patchCount}</span>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* Actions */}
-        <div className="settings-view__number-row" data-settings-searchable>
-          <div className="settings-view__number-info">
-            <span className="settings-view__number-label">Actions</span>
-          </div>
-          <div className="settings-view__number-controls" style={{ gap: '0.5rem', display: 'flex', flexWrap: 'wrap' }}>
-            {!readAllowed ? (
-              <span className="text-muted">Unavailable in this instance</span>
-            ) : !statusError && !status?.available && (
-              <button
-                type="button"
-                className="btn btn--active btn--sm"
-                onClick={handleBootstrap}
-                disabled={!bootstrapAllowed || loading || action != null}
-              >
-                {action === 'bootstrap' ? '...' : 'Initialize Runtime'}
-              </button>
-            )}
-            {readAllowed && status?.available && (
-              <>
-                <button
-                  type="button"
-                  className="btn btn--active btn--sm"
-                  onClick={handleUpdate}
-                  disabled={!updateAllowed || loading || action != null}
-                >
-                  {action === 'update' ? '...' : 'Check for Updates'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  onClick={handleRollback}
-                  disabled={!rollbackAllowed || loading || action != null || (status.patchCount ?? 0) === 0}
-                >
-                  {action === 'rollback' ? '...' : 'Rollback Last Patch'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  onClick={handleReset}
-                  disabled={!resetAllowed || loading || action != null}
-                >
-                  {action === 'reset' ? '...' : 'Reset to Upstream'}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Feedback / error */}
-        {feedback && (
-          <div className="settings-view__number-row" data-settings-searchable>
-            <div className="settings-view__number-info" />
-            <div className="settings-view__number-controls">
-              <span className="settings-view__feedback settings-view__feedback--success">
-                {feedback}
-              </span>
-            </div>
-          </div>
-        )}
-      </div>
     </SettingsSectionShell>
   );
 }
@@ -2677,8 +2399,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       {/* ── Section 7: Backup ── */}
       <BackupSection section={SETTINGS_SECTIONS.backup} instance={instance} />
 
-      {/* ── Section 8: Runtime ── Bug: cc4688b */}
-      <RuntimeSection section={SETTINGS_SECTIONS.runtime} instance={instance} />
         </div>
       </div>
     </div>

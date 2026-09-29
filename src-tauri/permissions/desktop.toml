@@ -13,6 +13,4 @@ commands.allow = [
   "navigate_to_desktop_dashboard",
   "secure_local_connections_status",
   "secure_local_connections_setup",
-  "zone2_status",
-  "zone2_bootstrap",
 ]

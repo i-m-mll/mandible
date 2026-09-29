@@ -250,7 +250,6 @@ describe('shared sidebar group presentation', () => {
     vi.spyOn(api, 'getInstructionDeliverySettings').mockResolvedValue({ targets: [], postExport: '' });
     vi.spyOn(api, 'listProjectsForPicker').mockResolvedValue([]);
     vi.spyOn(api, 'getBackupStatus').mockResolvedValue({} as Awaited<ReturnType<typeof api.getBackupStatus>>);
-    vi.spyOn(api, 'getRuntimeStatus').mockResolvedValue({} as Awaited<ReturnType<typeof api.getRuntimeStatus>>);
     vi.spyOn(api, 'getDelegatedSigningStatus').mockResolvedValue({
       provider: 'test', configured: false, public_key: null, public_key_path: '',
       encrypted_passphrase_path: '', recipient_path: '', missing_tools: [],
