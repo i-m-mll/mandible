@@ -27,7 +27,7 @@ type ActivityDetail = string
 function activityState(item: DisplayActivityItem): string[] {
   if (item.type === 'provider-directive') return [];
   if (item.type === 'tool-call-activity') {
-    return item.result ? (item.result.is_error ? ['Failed'] : []) : ['Running'];
+    return item.result?.is_error ? ['Failed'] : [];
   }
   if (item.type === 'thinking-block-activity') return [];
   return [

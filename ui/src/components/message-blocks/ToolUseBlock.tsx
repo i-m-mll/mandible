@@ -301,7 +301,7 @@ export function ToolCard({
     );
   }
 
-  const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'running' || status === 'pending' ? ' · Running' : status === 'failed' ? ' · Failed' : ''}`;
+  const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'failed' ? ' · Failed' : ''}`;
   const details = (
     <div className="tool-card__body">
       <div className="tool-card__payload-box tool-card__input-wrapper">
