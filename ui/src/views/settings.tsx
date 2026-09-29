@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren } from 'preact';
 import { AppOperationalNoticeOutlet } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import SigningSettings from '../components/settings/SigningSettings';
 import { formatRelativeTime } from '../lib/format';
 import {
   bootstrapRuntime,
@@ -2626,7 +2627,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           section={SETTINGS_SECTIONS.signing}
           description="Register the public key Git uses to sign commits."
         />
-        <div className="settings-view__section-body" data-testid="settings-signing-content" />
+        <div className="settings-view__section-body" data-testid="settings-signing-content">
+          <SigningSettings instance={instance} />
+        </div>
       </SettingsSectionShell>
 
       {/* ── Section 5: Version Control ── */}
