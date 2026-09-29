@@ -30,6 +30,18 @@ export function HistoryIcon(props: IconProps): JSX.Element {
   );
 }
 
+/** Thought — lit bulb with a warm fill and visible rays. */
+export function LightbulbIcon(props: IconProps): JSX.Element {
+  const { size, className } = { ...defaults, ...props };
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M9 18h6M9.75 21h4.5" stroke="#B77912" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M8.25 14.5a7 7 0 1 1 7.5 0c-.8.55-1.25 1.4-1.25 2.5h-5c0-1.1-.45-1.95-1.25-2.5Z" fill="#FFD76A" stroke="#B77912" strokeWidth="1.6" strokeLinejoin="round" />
+      <path d="M12 1.5v2M3.9 4.9l1.4 1.4M20.1 4.9l-1.4 1.4M2 12h2M20 12h2" stroke="#E3A928" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /** Monitor — Activity/heartbeat line */
 export function MonitorIcon(props: IconProps): JSX.Element {
   const { size, className } = { ...defaults, ...props };

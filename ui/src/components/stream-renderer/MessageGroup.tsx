@@ -81,6 +81,7 @@ export function MessageGroup({
           <ToolUseBlock
             key={`tool-${block.id}`}
             toolName={block.name}
+            toolKind={block.toolKind}
             toolUseId={block.id}
             input={block.input}
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
@@ -156,8 +157,8 @@ export function MessageGroup({
       rendered.push(
         <ToolCallGroup
           key={groupId}
-          summary={summarizeToolRun(run)}
-          icon={toolRunIcon(run)}
+          summary={summarizeToolRun(run.map((block) => ({ name: block.name, toolKind: block.toolKind })))}
+          icon={toolRunIcon(run.map((block) => ({ name: block.name, toolKind: block.toolKind })))}
           expanded={expanded}
           onExpandedChange={(next) => onDisclosureExpandedChange?.(groupId, next)}
           memberRefs={memberRefs}
