@@ -29,7 +29,7 @@ import {
   getProjectAccessSettings,
   listProjectsForPicker,
   updateProjectAccessSettings,
-  canEditUserPreferences,
+  canPerformOperation,
   type BackupStatus,
   type DelegatedSigningStatus,
   type DesktopDaemonLaunchMode,
@@ -73,6 +73,8 @@ import {
 export type SettingsViewProps = {
   settings: Record<string, string>;
   onSave: (key: string, value: string) => Promise<void>;
+  loadError?: string | null;
+  onRefresh?: () => void;
   onClose?: () => void;
   instance?: InstanceInfo | null;
   typography?: TypographySettings;
@@ -223,6 +225,15 @@ function hasRemovedInstructionTargets(previous: InstructionTarget[], next: Instr
 }
 
 function formatInstructionExportFeedback(result: InstructionDeliverySettings, fallback: string): string {
+  if (result.preview_only) {
+    return result.configuration_saved
+      ? 'Saved in this preview copy. Target files were not changed and the post-export hook was not run.'
+      : 'Loaded from this preview copy. Target files were not changed and the post-export hook was not run.';
+  }
+  if (result.export?.ok === false) {
+    const detail = result.export.stderr.trim() || result.export.stdout.trim() || 'The export did not complete.';
+    return `${fallback}; export failed: ${detail}`;
+  }
   const cleanupCount = result.cleanup?.filter((item) => item.ok).length ?? 0;
   if (cleanupCount > 0) {
     return `${fallback}; cleaned ${cleanupCount} previous target${cleanupCount === 1 ? '' : 's'}`;
@@ -430,6 +441,9 @@ function InstructionsDeliverySection(props: {
   section: SettingsSectionDefinition;
   settings: Record<string, string>;
   onSave: (key: string, value: string) => Promise<void>;
+  readAllowed: boolean;
+  settingsAllowed: boolean;
+  exportRunsOnSave: boolean;
 }): JSX.Element {
   const [targets, setTargets] = useState<InstructionTarget[]>([]);
   const [targetPath, setTargetPath] = useState('');
@@ -437,6 +451,7 @@ function InstructionsDeliverySection(props: {
   const [targetPathDrafts, setTargetPathDrafts] = useState<Record<string, string>>({});
   const [postExport, setPostExport] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
+  const [targetsLoaded, setTargetsLoaded] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const [confirmAction, setConfirmAction] = useState<{
     title: string;
@@ -456,28 +471,35 @@ function InstructionsDeliverySection(props: {
 
   useEffect(() => {
     let cancelled = false;
+    if (!props.readAllowed) {
+      setTargetsLoaded(true);
+      return () => { cancelled = true; };
+    }
     getInstructionDeliverySettings()
       .then((delivery) => {
         if (cancelled) return;
         setTargets(delivery.targets);
         setPostExport(delivery.postExport);
+        setTargetsLoaded(true);
       })
       .catch((err) => {
         if (cancelled) return;
         const fallbackTargets = parseInstructionTargets(props.settings['instructions.targets']);
         setTargets(fallbackTargets);
         setPostExport(props.settings['instructions.post_export'] ?? '');
+        setTargetsLoaded(true);
         showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to load instruction delivery settings' });
       });
     return () => {
       cancelled = true;
     };
-  }, [props.settings, showFeedback]);
+  }, [props.readAllowed, props.settings, showFeedback]);
 
   const applyInstructionDelivery = useCallback(async (
     request: { targets?: InstructionTarget[]; postExport?: string; cleanupRemovedTargets?: boolean; resetToDefaults?: boolean },
     successMessage: string,
   ) => {
+    if (!props.settingsAllowed) return;
     setSaving('instructions.delivery');
     try {
       const result = await updateInstructionDeliverySettings(request);
@@ -496,7 +518,7 @@ function InstructionsDeliverySection(props: {
     } finally {
       setSaving(null);
     }
-  }, [props.onSave, showFeedback]);
+  }, [props.onSave, props.settingsAllowed, showFeedback]);
 
   const saveTargets = useCallback(async (nextTargets: InstructionTarget[], cleanupRemovedTargets: boolean) => {
     await applyInstructionDelivery(
@@ -514,6 +536,11 @@ function InstructionsDeliverySection(props: {
       void saveTargets(nextTargets, false);
       return;
     }
+    if (!props.exportRunsOnSave) {
+      // Removing a target from the copied configuration never cleans files.
+      void saveTargets(nextTargets, false);
+      return;
+    }
     setConfirmAction({
       title: 'Clean previous instruction target?',
       body: 'Mandible can remove the old managed block or delete an exact generated standalone file before writing the new target list.',
@@ -528,7 +555,7 @@ function InstructionsDeliverySection(props: {
         void saveTargets(nextTargets, false);
       },
     });
-  }, [saveTargets, showFeedback, targets]);
+  }, [props.exportRunsOnSave, saveTargets, showFeedback, targets]);
 
   const addTarget = useCallback(async () => {
     const trimmed = targetPath.trim();
@@ -577,17 +604,19 @@ function InstructionsDeliverySection(props: {
   const resetToDefaults = useCallback(() => {
     setConfirmAction({
       title: 'Reset instruction delivery?',
-      body: 'This will restore the default Claude and Codex instruction targets and refresh the export immediately.',
+      body: props.exportRunsOnSave
+        ? 'This will restore the default Claude and Codex instruction targets and refresh the export immediately.'
+        : 'This will restore the default instruction targets in this preview copy. Target files are not changed, and the post-export command is not run.',
       confirmLabel: 'Reset to defaults',
       onConfirm: () => {
         setConfirmAction(null);
         void applyInstructionDelivery(
-          { resetToDefaults: true, cleanupRemovedTargets: true },
+          { resetToDefaults: true, cleanupRemovedTargets: props.exportRunsOnSave },
           'Defaults restored and exported',
         );
       },
     });
-  }, [applyInstructionDelivery]);
+  }, [applyInstructionDelivery, props.exportRunsOnSave]);
 
   return (
     <SettingsSectionShell section={props.section}>
@@ -598,7 +627,7 @@ function InstructionsDeliverySection(props: {
           type="button"
           className="btn btn--sm"
           onClick={resetToDefaults}
-          disabled={saving === 'instructions.delivery'}
+          disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
         >
           Reset
         </button>}
@@ -606,8 +635,12 @@ function InstructionsDeliverySection(props: {
 
       <div className="settings-view__section-body">
         <div className="settings-view__instruction-targets">
-          {targets.length === 0 ? (
+          {!props.readAllowed ? (
+            <div className="settings-view__empty">Instruction targets are unavailable in this instance.</div>
+          ) : !targetsLoaded ? (
             <div className="settings-view__empty">Loading instruction targets...</div>
+          ) : targets.length === 0 ? (
+            <div className="settings-view__empty">No instruction targets are configured.</div>
           ) : (
             targets.map((target) => (
               <div className="settings-view__instruction-target" key={target.path}>
@@ -625,14 +658,14 @@ function InstructionsDeliverySection(props: {
                       (e.currentTarget as HTMLInputElement).blur();
                     }
                   }}
-                  disabled={saving === 'instructions.delivery'}
+                  disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
                   title={target.path}
                   aria-label={`Instruction target ${target.path}`}
                 />
                 <select
                   className="settings-view__select settings-view__select--compact"
                   value={target.mode}
-                  disabled={saving === 'instructions.delivery'}
+                  disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
                   onChange={(e) => {
                     const nextMode = (e.target as HTMLSelectElement).value;
                     if (isInstructionTargetMode(nextMode)) void updateTargetMode(target.path, nextMode);
@@ -646,7 +679,7 @@ function InstructionsDeliverySection(props: {
                   type="button"
                   className="btn btn--sm"
                   onClick={() => void removeTarget(target.path)}
-                  disabled={saving === 'instructions.delivery'}
+                  disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
                 >
                   Remove
                 </button>
@@ -661,13 +694,13 @@ function InstructionsDeliverySection(props: {
             className="settings-view__input settings-view__input--wide"
             value={targetPath}
             onInput={(e) => setTargetPath((e.target as HTMLInputElement).value)}
-            disabled={saving === 'instructions.delivery'}
+            disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
             aria-label="New instruction target path"
           />
           <select
             className="settings-view__select settings-view__select--compact"
             value={targetMode}
-            disabled={saving === 'instructions.delivery'}
+            disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
             onChange={(e) => {
               const nextMode = (e.target as HTMLSelectElement).value;
               if (isInstructionTargetMode(nextMode)) setTargetMode(nextMode);
@@ -681,7 +714,7 @@ function InstructionsDeliverySection(props: {
             type="button"
             className="btn btn--active btn--sm"
             onClick={() => void addTarget()}
-            disabled={saving === 'instructions.delivery'}
+            disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
           >
             Add target
           </button>
@@ -690,7 +723,11 @@ function InstructionsDeliverySection(props: {
         <div className="settings-view__text-row">
           <div className="settings-view__text-info">
             <span className="settings-view__text-label">Post-export hook</span>
-            <span className="settings-view__text-desc">Optional command run after all targets refresh.</span>
+            <span className="settings-view__text-desc">
+              {props.exportRunsOnSave
+                ? 'Optional command run after all targets refresh.'
+                : 'Optional command saved in this copy but not run by a preview.'}
+            </span>
           </div>
           <div className="settings-view__text-controls">
             <input
@@ -698,7 +735,7 @@ function InstructionsDeliverySection(props: {
               className="settings-view__input settings-view__input--wide"
               value={postExport}
               onInput={(e) => setPostExport((e.target as HTMLInputElement).value)}
-              disabled={saving === 'instructions.delivery'}
+              disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
               aria-label="Instructions post-export hook"
             />
             <button
@@ -706,7 +743,7 @@ function InstructionsDeliverySection(props: {
               className="btn btn--active btn--sm"
               aria-label="Save instructions post-export hook"
               onClick={() => void savePostExport(postExport)}
-              disabled={saving === 'instructions.delivery'}
+              disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
             >
               Save
             </button>
@@ -715,7 +752,7 @@ function InstructionsDeliverySection(props: {
               className="btn btn--sm"
               aria-label="Clear instructions post-export hook"
               onClick={() => void savePostExport('')}
-              disabled={saving === 'instructions.delivery' || postExport.length === 0}
+              disabled={!props.settingsAllowed || saving === 'instructions.delivery' || postExport.length === 0}
             >
               Clear
             </button>
@@ -752,26 +789,31 @@ function formatBytes(bytes: number): string {
   return `${mb.toFixed(1)} MB`;
 }
 
-export function DelegatedSigningSection(): JSX.Element {
+export function DelegatedSigningSection({ instance }: { instance?: InstanceInfo | null }): JSX.Element {
   const [signing, setSigning] = useState<DelegatedSigningStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
+  const readAllowed = canPerformOperation(instance, 'GET', '/api/auth/clearances/signing');
+  const setupAllowed = canPerformOperation(instance, 'POST', '/api/auth/clearances/signing/setup');
+  const removeAllowed = canPerformOperation(instance, 'DELETE', '/api/auth/clearances/signing');
 
   const load = useCallback(() => {
+    if (!readAllowed) return;
     getDelegatedSigningStatus()
       .then(setSigning)
       .catch((err) => setFeedback({
         type: 'error',
         message: err instanceof Error ? err.message : 'Failed to load auth status',
       }));
-  }, []);
+  }, [readAllowed]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   const handleRemove = useCallback(async () => {
+    if (!removeAllowed) return;
     setBusy(true);
     setFeedback(null);
     try {
@@ -784,9 +826,10 @@ export function DelegatedSigningSection(): JSX.Element {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [removeAllowed]);
 
   const handleSetup = useCallback(async () => {
+    if (!setupAllowed) return;
     setBusy(true);
     setFeedback(null);
     try {
@@ -798,7 +841,7 @@ export function DelegatedSigningSection(): JSX.Element {
     } finally {
       setBusy(false);
     }
-  }, [load]);
+  }, [load, setupAllowed]);
 
   return (
     <div className="settings-view__delegated-signing">
@@ -816,7 +859,7 @@ export function DelegatedSigningSection(): JSX.Element {
             type="button"
             className="btn btn--active btn--sm"
             onClick={handleSetup}
-            disabled={busy || signing?.configured === true}
+            disabled={!setupAllowed || busy || signing?.configured === true}
           >
             {busy ? 'Setting up...' : signing?.configured ? 'Configured' : 'Set up'}
           </button>
@@ -825,12 +868,12 @@ export function DelegatedSigningSection(): JSX.Element {
               type="button"
               className="btn btn--sm"
               onClick={() => setConfirmRemove(true)}
-              disabled={busy}
+              disabled={!removeAllowed || busy}
             >
               Remove
             </button>
           )}
-          {signing && signing.missing_tools.length > 0 && (
+          {signing && signing.missing_tools?.length > 0 && (
             <span className="settings-view__feedback settings-view__feedback--error">
               Missing {signing.missing_tools.join(', ')}
             </span>
@@ -845,13 +888,22 @@ export function DelegatedSigningSection(): JSX.Element {
           </div>
           <div className="settings-view__confirm-actions">
             <button type="button" className="btn btn--sm" onClick={() => setConfirmRemove(false)} disabled={busy}>Cancel</button>
-            <button type="button" className="btn btn--active btn--sm" onClick={handleRemove} disabled={busy}>
+            <button type="button" className="btn btn--active btn--sm" onClick={handleRemove} disabled={!removeAllowed || busy}>
               {busy ? 'Removing...' : 'Remove key material'}
             </button>
           </div>
         </div>
       )}
-      {signing?.public_key && (
+      {!readAllowed ? (
+        <DetailPaneNotice severity="info" density="compact" title="Credential status unavailable">
+          This instance cannot read delegated signing credentials.
+        </DetailPaneNotice>
+      ) : !setupAllowed || !removeAllowed ? (
+        <DetailPaneNotice severity="info" density="compact" title="Credential changes unavailable">
+          Credential setup and removal are unavailable in this instance.
+        </DetailPaneNotice>
+      ) : null}
+      {readAllowed && signing?.public_key && (
         <div className="settings-view__field">
           <textarea
             className="settings-view__input settings-view__input--mono"
@@ -881,10 +933,13 @@ function formatDaemonState(state: DesktopDaemonStatus['state']): string {
   }
 }
 
-function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JSX.Element | null {
+function DesktopDaemonSection(props: { section: SettingsSectionDefinition; instance?: InstanceInfo | null }): JSX.Element | null {
   const desktopShell = isDesktopShell();
+  const hostStatusAllowed = canPerformOperation(props.instance, 'GET', '/api/runtime/status');
+  const hostActionsAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/bootstrap');
+  const connectionSetupAllowed = canPerformOperation(props.instance, 'POST', '/api/system/open-path');
   const [status, setStatus] = useState<DesktopDaemonStatus | null>(null);
-  const [loading, setLoading] = useState(desktopShell);
+  const [loading, setLoading] = useState(desktopShell && hostStatusAllowed);
   const [action, setAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [caStatus, setCaStatus] = useState<SecureLocalConnectionsStatus | null>(null);
@@ -892,18 +947,19 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
   const [caAction, setCaAction] = useState(false);
 
   const refreshCaStatus = useCallback(async () => {
-    if (!desktopShell) return;
+    if (!desktopShell || !hostStatusAllowed) return;
     try {
       setCaStatus(await getSecureLocalConnectionsStatus());
       setCaError(null);
     } catch (err) {
       setCaError(err instanceof Error ? err.message : 'Failed to inspect secure local connections');
     }
-  }, [desktopShell]);
+  }, [desktopShell, hostStatusAllowed]);
 
   useEffect(() => { void refreshCaStatus(); }, [refreshCaStatus]);
 
   const handleCaSetup = useCallback(async () => {
+    if (!connectionSetupAllowed) return;
     setCaAction(true);
     try {
       setCaStatus(await setupSecureLocalConnections());
@@ -913,10 +969,11 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
     } finally {
       setCaAction(false);
     }
-  }, []);
+  }, [connectionSetupAllowed]);
 
   const refreshStatus = useCallback(async () => {
-    if (!desktopShell) {
+    if (!desktopShell || !hostStatusAllowed) {
+      setLoading(false);
       return;
     }
     try {
@@ -928,10 +985,11 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
     } finally {
       setLoading(false);
     }
-  }, [desktopShell]);
+  }, [desktopShell, hostStatusAllowed]);
 
   useEffect(() => {
-    if (!desktopShell) {
+    if (!desktopShell || !hostStatusAllowed) {
+      setLoading(false);
       return;
     }
     let cancelled = false;
@@ -963,9 +1021,10 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [desktopShell]);
+  }, [desktopShell, hostStatusAllowed]);
 
   const handleLaunchModeChange = useCallback(async (e: Event) => {
+    if (!hostActionsAllowed) return;
     const value = (e.target as HTMLSelectElement).value as DesktopDaemonLaunchMode;
     setAction('mode');
     try {
@@ -977,9 +1036,10 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
     } finally {
       setAction(null);
     }
-  }, []);
+  }, [hostActionsAllowed]);
 
   const handleStart = useCallback(async () => {
+    if (!hostActionsAllowed) return;
     setAction('start');
     try {
       const next = await startDesktopDaemon();
@@ -990,9 +1050,10 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
     } finally {
       setAction(null);
     }
-  }, []);
+  }, [hostActionsAllowed]);
 
   const handleStop = useCallback(async () => {
+    if (!hostActionsAllowed) return;
     setAction('stop');
     try {
       await stopDesktopDaemon();
@@ -1001,9 +1062,10 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
       setError(err instanceof Error ? err.message : 'Failed to stop daemon');
       setAction(null);
     }
-  }, []);
+  }, [hostActionsAllowed]);
 
   const handleRestart = useCallback(async () => {
+    if (!hostActionsAllowed) return;
     setAction('restart');
     try {
       await restartDesktopDaemon();
@@ -1012,7 +1074,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
       setError(err instanceof Error ? err.message : 'Failed to restart daemon');
       setAction(null);
     }
-  }, []);
+  }, [hostActionsAllowed]);
 
   if (!desktopShell) {
     return (
@@ -1022,8 +1084,10 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
           <div className="settings-view__daemon-card">
             <div className="settings-view__daemon-title">Secure local connections</div>
             <p className="settings-view__daemon-footer">If the new secure page cannot load yet, open Mandible's installed macOS app for a one-time setup for secure local connections on this Mac account. The browser cannot complete this setup or sign you in.</p>
-            <a className="btn btn--active btn--sm" href="mandible://connections/setup">Open macOS setup action</a>
-            <p className="settings-view__daemon-footer">This is a one-time setup for secure local connections on this Mac account. macOS may ask you to authorize it. If the app is not installed, run <code>node scripts/local-ca-trust.mjs setup</code> from the local operator terminal.</p>
+            {connectionSetupAllowed ? (
+              <a className="btn btn--active btn--sm" href="mandible://connections/setup">Open macOS setup action</a>
+            ) : null}
+            <p className="settings-view__daemon-footer">This is a one-time setup for secure local connections on this Mac account. macOS may ask you to authorize it. New previews reuse this setup.</p>
           </div>
         </div>
       </SettingsSectionShell>
@@ -1042,6 +1106,11 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
           {caError && <div>{caError}</div>}
         </DetailPaneNotice>
       )}
+      {!hostActionsAllowed || !hostStatusAllowed ? (
+        <DetailPaneNotice severity="info" density="compact" title="Host controls unavailable">
+          Desktop services and secure local connection setup cannot be changed in this instance.
+        </DetailPaneNotice>
+      ) : null}
 
       <div className="settings-view__section-body">
         <div className="settings-view__select-row">
@@ -1055,7 +1124,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
             className="settings-view__select"
             value={status?.launch_mode ?? 'on_demand'}
             onChange={handleLaunchModeChange}
-            disabled={action === 'mode' || loading}
+            disabled={!hostActionsAllowed || action === 'mode' || loading}
           >
             {DESKTOP_DAEMON_MODES.map((mode) => (
               <option key={mode} value={mode}>
@@ -1086,7 +1155,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
                 type="button"
                 className="btn btn--active btn--sm"
                 onClick={handleStart}
-                disabled={loading || action != null || status?.dashboard_ready === true || status?.state === 'port_conflict'}
+                disabled={!hostActionsAllowed || loading || action != null || status?.dashboard_ready === true || status?.state === 'port_conflict'}
               >
                 {action === 'start' ? '...' : 'Start'}
               </button>
@@ -1094,7 +1163,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
                 type="button"
                 className="btn btn--sm"
                 onClick={handleRestart}
-                disabled={loading || action != null || !status}
+                disabled={!hostActionsAllowed || loading || action != null || !status}
               >
                 {action === 'restart' ? '...' : 'Restart'}
               </button>
@@ -1102,7 +1171,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
                 type="button"
                 className="btn btn--sm"
                 onClick={handleStop}
-                disabled={loading || action != null || !status || (status.state === 'stopped' && status.gateway_state !== 'running')}
+                disabled={!hostActionsAllowed || loading || action != null || !status || (status.state === 'stopped' && status.gateway_state !== 'running')}
               >
                 {action === 'stop' ? '...' : 'Stop'}
               </button>
@@ -1148,7 +1217,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
               </div>
             </div>
             <div className="settings-view__daemon-actions">
-              <button type="button" className="btn btn--active btn--sm" onClick={handleCaSetup} disabled={caAction}>
+              <button type="button" className="btn btn--active btn--sm" onClick={handleCaSetup} disabled={!connectionSetupAllowed || caAction}>
                 {caAction ? 'Setting up…' : caStatus?.state === 'trusted' ? 'Verify connection' : 'Set up'}
               </button>
               <button type="button" className="btn btn--sm" onClick={refreshCaStatus} disabled={caAction}>Check status</button>
@@ -1165,8 +1234,14 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition }): JS
   );
 }
 
-function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Element {
+function BackupSection(props: { section: SettingsSectionDefinition; instance?: InstanceInfo | null }): JSX.Element {
+  const readAllowed = canPerformOperation(props.instance, 'GET', '/api/backup/status');
+  const settingsAllowed = canPerformOperation(props.instance, 'PUT', '/api/backup/settings');
+  const runAllowed = canPerformOperation(props.instance, 'POST', '/api/backup/run');
   const [status, setStatus] = useState<BackupStatus | null>(null);
+  const [loading, setLoading] = useState(readAllowed);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [toggling, setToggling] = useState(false);
@@ -1174,9 +1249,28 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
   const [savingDestination, setSavingDestination] = useState(false);
   const [destinationFeedback, setDestinationFeedback] = useState<string | null>(null);
 
+  const refreshStatus = useCallback(async () => {
+    if (!readAllowed) {
+      setStatus(null);
+      setLoadError(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setLoadError(null);
+    try {
+      setStatus(await getBackupStatus());
+    } catch (err) {
+      setStatus(null);
+      setLoadError(err instanceof Error ? err.message : 'Failed to load backup status');
+    } finally {
+      setLoading(false);
+    }
+  }, [readAllowed]);
+
   useEffect(() => {
-    getBackupStatus().then(setStatus).catch(() => {});
-  }, []);
+    void refreshStatus();
+  }, [refreshStatus]);
 
   useEffect(() => {
     if (status?.destination) {
@@ -1185,37 +1279,42 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
   }, [status?.destination]);
 
   const handleToggle = useCallback(async () => {
-    if (!status) return;
+    if (!settingsAllowed || !status) return;
     setToggling(true);
+    setActionError(null);
     try {
       const newEnabled = !status.enabled;
       await updateBackupSettings({ enabled: newEnabled });
       setStatus((prev) => prev ? { ...prev, enabled: newEnabled } : prev);
-    } catch {
-      // ignore
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update backup schedule');
     } finally {
       setToggling(false);
     }
-  }, [status]);
+  }, [settingsAllowed, status]);
 
   const handleIntervalChange = useCallback(async (e: Event) => {
+    if (!settingsAllowed) return;
     const hours = parseInt((e.target as HTMLSelectElement).value, 10);
     if (!Number.isFinite(hours)) return;
+    setActionError(null);
     try {
       await updateBackupSettings({ interval_hours: hours });
       setStatus((prev) => prev ? { ...prev, interval_hours: hours } : prev);
-    } catch {
-      // ignore
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update backup interval');
     }
-  }, []);
+  }, [settingsAllowed]);
 
   const handleDestinationSave = useCallback(async () => {
+    if (!settingsAllowed) return;
     const destination = destinationInput.trim();
     if (!destination) {
       setDestinationFeedback('Destination is required');
       return;
     }
     setSavingDestination(true);
+    setActionError(null);
     setDestinationFeedback(null);
     try {
       await updateBackupSettings({ destination });
@@ -1226,17 +1325,16 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
     } finally {
       setSavingDestination(false);
     }
-  }, [destinationInput]);
+  }, [destinationInput, settingsAllowed]);
 
   const handleRunNow = useCallback(async () => {
+    if (!runAllowed) return;
     setRunning(true);
     setRunError(null);
     try {
       const result = await runBackupNow();
       if (result.ok) {
-        // Refresh status to get updated last_run_at / last_size_bytes
-        const updated = await getBackupStatus();
-        setStatus(updated);
+        await refreshStatus();
       } else {
         setRunError(result.error ?? 'Backup failed');
       }
@@ -1245,9 +1343,7 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
     } finally {
       setRunning(false);
     }
-  }, []);
-
-  const enabled = status?.enabled ?? true;
+  }, [refreshStatus, runAllowed]);
 
   return (
     <SettingsSectionShell section={props.section}>
@@ -1255,8 +1351,27 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
         section={props.section}
         description="Automatic metadata dump to a configured Mandible backup file."
       />
+      {!readAllowed ? (
+        <DetailPaneNotice severity="info" density="compact" title="Backup unavailable">
+          Backup status and controls access files outside this copy, so they are unavailable in this instance.
+        </DetailPaneNotice>
+      ) : !settingsAllowed || !runAllowed ? (
+        <DetailPaneNotice severity="info" density="compact" title="Some backup actions unavailable">
+          This instance cannot change backup settings or run a backup.
+        </DetailPaneNotice>
+      ) : null}
+      {loadError && readAllowed && (
+        <DetailPaneNotice severity="error" density="compact" title="Backup status could not be loaded" actions={
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => void refreshStatus()}>Retry</button>
+        }>{loadError}</DetailPaneNotice>
+      )}
+      {actionError && <DetailPaneNotice severity="error" density="compact" title="Backup settings update failed">{actionError}</DetailPaneNotice>}
       {runError && <DetailPaneNotice severity="error" density="compact" title="Backup run failed">{runError}</DetailPaneNotice>}
 
+      {readAllowed && loading && (
+        <div className="settings-view__section-body settings-view__empty">Loading backup status...</div>
+      )}
+      {readAllowed && !loading && !loadError && status && (
       <div className="settings-view__section-body">
         {/* Toggle row */}
         <div className="settings-view__toggle-row">
@@ -1265,23 +1380,24 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
             <p className="settings-view__section-desc">Run Mandible's metadata dump on a schedule.</p>
           </div>
           <Toggle
-            enabled={enabled}
+            enabled={status.enabled}
             onToggle={handleToggle}
-            disabled={toggling || status === null}
+            disabled={!settingsAllowed || toggling}
             label="Toggle automatic backup"
           />
         </div>
 
         {/* Interval selector — only shown when enabled */}
-        {enabled && (
+        {status.enabled && (
           <div className="settings-view__select-row">
             <div className="settings-view__select-info">
               <span className="settings-view__select-label">Interval</span>
             </div>
             <select
               className="settings-view__select"
-              value={status?.interval_hours ?? 6}
+              value={status.interval_hours}
               onChange={handleIntervalChange}
+              disabled={!settingsAllowed}
             >
               <option value={6}>6h</option>
               <option value={12}>12h</option>
@@ -1300,13 +1416,13 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
               type="text"
               value={destinationInput}
               onInput={(e) => setDestinationInput((e.target as HTMLInputElement).value)}
-              disabled={status === null || savingDestination}
+              disabled={!settingsAllowed || savingDestination}
             />
             <button
               type="button"
               className="btn btn--sm"
               onClick={handleDestinationSave}
-              disabled={status === null || savingDestination || destinationInput.trim() === status?.destination}
+              disabled={!settingsAllowed || savingDestination || destinationInput.trim() === status.destination}
             >
               {savingDestination ? '...' : 'Save'}
             </button>
@@ -1324,9 +1440,7 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
             <span className="settings-view__number-label">Last backup</span>
           </div>
           <div className="settings-view__number-controls">
-            {status === null ? (
-              <span className="text-muted">Loading...</span>
-            ) : status.last_run_at ? (
+            {status.last_run_at ? (
               <span>
                 {formatRelativeTime(status.last_run_at, { style: 'verbose' })}
                 {status.last_size_bytes != null && (
@@ -1354,43 +1468,63 @@ function BackupSection(props: { section: SettingsSectionDefinition }): JSX.Eleme
               type="button"
               className="btn btn--active btn--sm"
               onClick={handleRunNow}
-              disabled={running || status === null}
+              disabled={!runAllowed || running}
             >
               {running ? '...' : 'Run Now'}
             </button>
           </div>
         </div>
       </div>
+      )}
+      {readAllowed && !loading && !loadError && !status && (
+        <div className="settings-view__section-body settings-view__empty">Backup status is unavailable.</div>
+      )}
     </SettingsSectionShell>
   );
 }
 
 // Bug: cc4688b — Zone 2 mutable runtime section
-function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Element {
+function RuntimeSection(props: { section: SettingsSectionDefinition; instance?: InstanceInfo | null }): JSX.Element {
+  const readAllowed = canPerformOperation(props.instance, 'GET', '/api/runtime/status');
+  const bootstrapAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/bootstrap');
+  const updateAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/update');
+  const rollbackAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/rollback');
+  const resetAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/reset');
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(readAllowed);
   const [action, setAction] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
 
   const refreshStatus = useCallback(async () => {
+    if (!readAllowed) {
+      setStatus(null);
+      setStatusError(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setStatusError(null);
     try {
       const next = await getRuntimeStatus();
       setStatus(next);
-      setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load runtime status');
+      setStatus(null);
+      setStatusError(err instanceof Error ? err.message : 'Failed to load runtime status');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [readAllowed]);
 
   useEffect(() => {
     void refreshStatus();
   }, [refreshStatus]);
 
   const handleBootstrap = useCallback(async () => {
+    if (!bootstrapAllowed) return;
     setAction('bootstrap');
+    setActionError(null);
     setFeedback(null);
     try {
       await bootstrapRuntime();
@@ -1400,6 +1534,7 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
         try {
           const next = await getRuntimeStatus();
           setStatus(next);
+          setStatusError(null);
           if (next.available) {
             window.clearInterval(timer);
             setFeedback('Zone 2 runtime initialized successfully.');
@@ -1415,13 +1550,15 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
         setAction(null);
       }, 180_000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Bootstrap failed');
+      setActionError(err instanceof Error ? err.message : 'Bootstrap failed');
       setAction(null);
     }
-  }, []);
+  }, [bootstrapAllowed]);
 
   const handleUpdate = useCallback(async () => {
+    if (!updateAllowed) return;
     setAction('update');
+    setActionError(null);
     setFeedback(null);
     try {
       const result = await updateRuntime();
@@ -1432,39 +1569,43 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
       }
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Update failed');
+      setActionError(err instanceof Error ? err.message : 'Update failed');
     } finally {
       setAction(null);
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, updateAllowed]);
 
   const handleRollback = useCallback(async () => {
+    if (!rollbackAllowed) return;
     setAction('rollback');
+    setActionError(null);
     setFeedback(null);
     try {
       await rollbackRuntime();
       setFeedback('Last patch rolled back.');
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Rollback failed');
+      setActionError(err instanceof Error ? err.message : 'Rollback failed');
     } finally {
       setAction(null);
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, rollbackAllowed]);
 
   const handleReset = useCallback(async () => {
+    if (!resetAllowed) return;
     setAction('reset');
+    setActionError(null);
     setFeedback(null);
     try {
       await resetRuntime();
       setFeedback('Reset to upstream complete.');
       await refreshStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Reset failed');
+      setActionError(err instanceof Error ? err.message : 'Reset failed');
     } finally {
       setAction(null);
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, resetAllowed]);
 
   return (
     <SettingsSectionShell section={props.section}>
@@ -1472,7 +1613,17 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
         section={props.section}
         description="Zone 2 mutable runtime for self-modification and patching."
       />
-      {error && <DetailPaneNotice severity="error" density="compact" title="Runtime action failed">{error}</DetailPaneNotice>}
+      {!readAllowed ? (
+        <DetailPaneNotice severity="info" density="compact" title="Runtime unavailable">
+          Runtime status and controls require production-file access and external processes, which are unavailable in this instance.
+        </DetailPaneNotice>
+      ) : null}
+      {statusError && readAllowed && (
+        <DetailPaneNotice severity="error" density="compact" title="Runtime status could not be loaded" actions={
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => void refreshStatus()}>Retry</button>
+        }>{statusError}</DetailPaneNotice>
+      )}
+      {actionError && <DetailPaneNotice severity="error" density="compact" title="Runtime action failed">{actionError}</DetailPaneNotice>}
 
       <div className="settings-view__section-body">
         {/* Install mode */}
@@ -1483,8 +1634,10 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
           <div className="settings-view__number-controls">
             {loading ? (
               <span className="text-muted">Loading...</span>
+            ) : !readAllowed || statusError ? (
+              <span className="text-muted">Unavailable in this instance</span>
             ) : (
-              <span>{status?.installMode ?? 'unknown'}</span>
+              <span>{status?.installMode ?? 'Unavailable'}</span>
             )}
           </div>
         </div>
@@ -1497,10 +1650,11 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
           <div className="settings-view__number-controls">
             {loading ? (
               <span className="text-muted">Loading...</span>
+            ) : !readAllowed || statusError ? (
+              <span className="text-muted">Unavailable in this instance</span>
             ) : (
               <span className="text-muted" style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>
-                {status?.zone2Path ?? 'N/A'}
-                {status?.available ? ' (active)' : ' (not initialized)'}
+                {status ? `${status.zone2Path ?? 'N/A'}${status.available ? ' (active)' : ' (not initialized)'}` : 'Unavailable'}
               </span>
             )}
           </div>
@@ -1542,23 +1696,25 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
             <span className="settings-view__number-label">Actions</span>
           </div>
           <div className="settings-view__number-controls" style={{ gap: '0.5rem', display: 'flex', flexWrap: 'wrap' }}>
-            {!status?.available && (
+            {!readAllowed ? (
+              <span className="text-muted">Unavailable in this instance</span>
+            ) : !statusError && !status?.available && (
               <button
                 type="button"
                 className="btn btn--active btn--sm"
                 onClick={handleBootstrap}
-                disabled={loading || action != null}
+                disabled={!bootstrapAllowed || loading || action != null}
               >
                 {action === 'bootstrap' ? '...' : 'Initialize Runtime'}
               </button>
             )}
-            {status?.available && (
+            {readAllowed && status?.available && (
               <>
                 <button
                   type="button"
                   className="btn btn--active btn--sm"
                   onClick={handleUpdate}
-                  disabled={loading || action != null}
+                  disabled={!updateAllowed || loading || action != null}
                 >
                   {action === 'update' ? '...' : 'Check for Updates'}
                 </button>
@@ -1566,7 +1722,7 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
                   type="button"
                   className="btn btn--sm"
                   onClick={handleRollback}
-                  disabled={loading || action != null || (status.patchCount ?? 0) === 0}
+                  disabled={!rollbackAllowed || loading || action != null || (status.patchCount ?? 0) === 0}
                 >
                   {action === 'rollback' ? '...' : 'Rollback Last Patch'}
                 </button>
@@ -1574,7 +1730,7 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
                   type="button"
                   className="btn btn--sm"
                   onClick={handleReset}
-                  disabled={loading || action != null}
+                  disabled={!resetAllowed || loading || action != null}
                 >
                   {action === 'reset' ? '...' : 'Reset to Upstream'}
                 </button>
@@ -1599,22 +1755,33 @@ function RuntimeSection(props: { section: SettingsSectionDefinition }): JSX.Elem
   );
 }
 
-function ProjectPermissionsSection(props: { section: SettingsSectionDefinition }): JSX.Element {
+function ProjectPermissionsSection(props: { section: SettingsSectionDefinition; instance?: InstanceInfo | null }): JSX.Element {
   const [projects, setProjects] = useState<ProjectPickerItem[]>([]);
   const [selected, setSelected] = useState('');
   const [access, setAccess] = useState<ProjectAccessSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const readAllowed = canPerformOperation(props.instance, 'GET', '/api/projects');
+  const mutationsAllowed = Boolean(selected && canPerformOperation(
+    props.instance,
+    'PATCH',
+    `/api/projects/${encodeURIComponent(selected)}/access`,
+    { restricted: !Boolean(access?.restricted) },
+  ));
 
   useEffect(() => {
+    if (!readAllowed) {
+      setError('Project permissions are unavailable in this instance.');
+      return;
+    }
     void listProjectsForPicker().then((items) => {
       setProjects(items);
       if (!selected && items[0]) setSelected(items[0].project_key);
     }).catch((reason) => setError(reason instanceof Error ? reason.message : 'Failed to load projects'));
-  }, []);
+  }, [props.instance, readAllowed]);
 
   useEffect(() => {
-    if (!selected) {
+    if (!readAllowed || !selected) {
       setAccess(null);
       return;
     }
@@ -1622,10 +1789,10 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition }
     void getProjectAccessSettings(selected)
       .then(setAccess)
       .catch((reason) => setError(reason instanceof Error ? reason.message : 'Failed to load access'));
-  }, [selected]);
+  }, [props.instance, readAllowed, selected]);
 
   const toggleRestricted = useCallback(async () => {
-    if (!selected || !access) return;
+    if (!mutationsAllowed || !selected || !access) return;
     setBusy(true);
     setError('');
     try {
@@ -1635,7 +1802,7 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition }
     } finally {
       setBusy(false);
     }
-  }, [selected, access]);
+  }, [selected, access, mutationsAllowed]);
 
   return (
     <SettingsSectionShell section={props.section} testId="project-permissions-settings">
@@ -1643,6 +1810,11 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition }
         section={props.section}
         description="Projects remain unrestricted until this toggle is enabled. Grants are managed with the user CLI."
       />
+      {!mutationsAllowed ? (
+        <DetailPaneNotice severity="info" density="compact" title="Project settings unavailable">
+          This instance cannot change project restrictions.
+        </DetailPaneNotice>
+      ) : null}
       {error && <DetailPaneNotice severity="error" density="compact" title="Project permissions unavailable">{error}</DetailPaneNotice>}
       <div className="settings-view__section-body">
         <div className="settings-view__select-row">
@@ -1666,7 +1838,7 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition }
                 <p className="settings-view__section-desc">Require an explicit read, write, or admin grant.</p>
               </div>
               <Toggle enabled={access.restricted} onToggle={() => void toggleRestricted()}
-                disabled={busy} label="Toggle project restriction" />
+                disabled={!mutationsAllowed || busy} label="Toggle project restriction" />
             </div>
             <div className="settings-view__text-row">
               <div className="settings-view__text-info">
@@ -1691,12 +1863,21 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const {
     settings,
     onSave,
+    loadError = null,
+    onRefresh = () => undefined,
     instance = null,
     typography = DEFAULT_TYPOGRAPHY_SETTINGS,
     onTypographySave = async () => undefined,
   } = props;
-  const operationalMutationsAllowed = !instance || instance.allowed_effects?.includes('maintenance:shared') === true;
-  const userPreferencesAllowed = canEditUserPreferences(instance);
+  const canSaveTypography = (key: UserTypographySettingKey) => canPerformOperation(instance, 'PUT', `/api/user-settings/${key}`);
+  const appThemeAllowed = canPerformOperation(instance, 'PUT', '/api/host-preferences/app-theme');
+  const instructionReadAllowed = canPerformOperation(instance, 'GET', '/api/settings/instructions-delivery');
+  const instructionSettingsAllowed = canPerformOperation(instance, 'PUT', '/api/settings/instructions-delivery', {
+    targets: [],
+    cleanupRemovedTargets: false,
+  });
+  // Preview accepts these copied-setting writes but deliberately skips the host export.
+  const exportRunsOnSave = instance?.role !== 'preview';
   const [protectedBranches, setProtectedBranches] = useState('');
   const [quietHours, setQuietHours] = useState('');
   const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');
@@ -1753,6 +1934,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   }, [onSave, showFeedback]);
 
   const handleTypographyField = useCallback(async (key: UserTypographySettingKey, value: string) => {
+    if (!canSaveTypography(key)) return;
     setSaving(key);
     try {
       await onTypographySave(key, value);
@@ -1762,7 +1944,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     } finally {
       setSaving(null);
     }
-  }, [onTypographySave, showFeedback]);
+  }, [instance, onTypographySave, showFeedback]);
 
   const handleKeyDown = useCallback(
     (key: string, value: string) => (e: KeyboardEvent) => {
@@ -1810,6 +1992,16 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         <h2>Settings</h2>
       </div>
       <AppOperationalNoticeOutlet registerAsMain />
+      {loadError ? (
+        <DetailPaneNotice
+          severity="error"
+          source="settings-load"
+          title="Settings could not be loaded"
+          actions={<button type="button" onClick={onRefresh}>Retry</button>}
+        >
+          {loadError}
+        </DetailPaneNotice>
+      ) : null}
 
       <div className="settings-view__layout">
         <nav className="settings-view__toc" aria-label="Settings sections">
@@ -1891,7 +2083,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </SettingsSectionShell>
 
-      <DesktopDaemonSection section={SETTINGS_SECTIONS.daemon} />
+      <DesktopDaemonSection section={SETTINGS_SECTIONS.daemon} instance={instance} />
 
       {/* ── Agent Hooks ── */}
       <SettingsSectionShell section={SETTINGS_SECTIONS.agentHooks}>
@@ -1919,9 +2111,16 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </SettingsSectionShell>
 
-      <InstructionsDeliverySection section={SETTINGS_SECTIONS.instructionDelivery} settings={settings} onSave={onSave} />
+      <InstructionsDeliverySection
+        section={SETTINGS_SECTIONS.instructionDelivery}
+        settings={settings}
+        onSave={onSave}
+        readAllowed={instructionReadAllowed}
+        settingsAllowed={instructionSettingsAllowed}
+        exportRunsOnSave={exportRunsOnSave}
+      />
 
-      <ProjectPermissionsSection section={SETTINGS_SECTIONS.projectPermissions} />
+      <ProjectPermissionsSection section={SETTINGS_SECTIONS.projectPermissions} instance={instance} />
 
       <SettingsSectionShell section={SETTINGS_SECTIONS.briefings}>
         <SettingsSectionHeader
@@ -2110,7 +2309,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   className="settings-view__select"
                   aria-describedby={`settings-${key}-description`}
                   value={typographySettingValue(typography, key)}
-                  disabled={!userPreferencesAllowed || saving === key}
+                  disabled={!canSaveTypography(key) || saving === key}
                   onChange={(event) => void handleTypographyField(key, (event.target as HTMLSelectElement).value)}
                 >
                   {options.map(([value, text]) => <option value={value} key={value}>{text}</option>)}
@@ -2119,7 +2318,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   type="button"
                   className="btn btn--sm"
                   aria-label={`Reset ${label}`}
-                  disabled={!userPreferencesAllowed || saving === key}
+                  disabled={!canSaveTypography(key) || saving === key}
                   onClick={() => void handleTypographyField(key, typographySettingValue(DEFAULT_TYPOGRAPHY_SETTINGS, key))}
                 >Reset</button>
               </div>
@@ -2144,7 +2343,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   step="1"
                   aria-describedby={`settings-${key}-description`}
                   value={typographySettingValue(typography, key)}
-                  disabled={!userPreferencesAllowed || saving === key}
+                  disabled={!canSaveTypography(key) || saving === key}
                   onChange={(event) => {
                     const value = (event.target as HTMLInputElement).value;
                     if (Number.isInteger(Number(value)) && Number(value) >= 10 && Number(value) <= 20) {
@@ -2156,7 +2355,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   type="button"
                   className="btn btn--sm"
                   aria-label={`Reset ${label}`}
-                  disabled={!userPreferencesAllowed || saving === key}
+                  disabled={!canSaveTypography(key) || saving === key}
                   onClick={() => void handleTypographyField(key, typographySettingValue(DEFAULT_TYPOGRAPHY_SETTINGS, key))}
                 >Reset</button>
               </div>
@@ -2172,9 +2371,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               className="settings-view__select"
               aria-describedby="settings-app-theme-description"
               value={normalizeAppThemeMode(settings.app_theme)}
-              disabled={!userPreferencesAllowed}
+              disabled={!appThemeAllowed}
               onChange={async (e) => {
-                if (!userPreferencesAllowed) return;
+                if (!appThemeAllowed) return;
                 try {
                   await onSave('app_theme', normalizeAppThemeMode((e.target as HTMLSelectElement).value));
                 } catch { /* ignore */ }
@@ -2190,6 +2389,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             ['dark', 'Dark-mode terminal', 'Terminal palette used while Mandible is dark'],
           ] as const).map(([mode, label, description]) => {
             const key = `terminal_theme_${mode}`;
+            const themeAllowed = canPerformOperation(instance, 'PUT', `/api/settings/${key}`);
             const descriptionId = `settings-${key}-description`;
             return (
               <div className="settings-view__select-row" key={key}>
@@ -2202,9 +2402,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   className="settings-view__select"
                   aria-describedby={descriptionId}
                   value={normalizeTerminalThemeId(settings[key])}
-                  disabled={!operationalMutationsAllowed}
+                  disabled={!themeAllowed}
                   onChange={async (event) => {
-                    if (!operationalMutationsAllowed) return;
+                    if (!themeAllowed) return;
                     try {
                       await onSave(key, normalizeTerminalThemeId((event.target as HTMLSelectElement).value));
                     } catch { /* ignore */ }
@@ -2305,7 +2505,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             onSave={onSave}
             defaultEnabled
           />
-          <DelegatedSigningSection />
+          <DelegatedSigningSection instance={instance} />
         </div>
       </SettingsSectionShell>
 
@@ -2315,7 +2515,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           description="Repo-specific post-approval hook configuration."
         />
         <div className="settings-view__section-body">
-          <AuthHooksPanel mutationsAllowed={operationalMutationsAllowed} />
+          <AuthHooksPanel
+            instance={instance}
+          />
         </div>
       </SettingsSectionShell>
 
@@ -2377,10 +2579,10 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       </SettingsSectionShell>
 
       {/* ── Section 7: Backup ── */}
-      <BackupSection section={SETTINGS_SECTIONS.backup} />
+      <BackupSection section={SETTINGS_SECTIONS.backup} instance={instance} />
 
       {/* ── Section 8: Runtime ── Bug: cc4688b */}
-      <RuntimeSection section={SETTINGS_SECTIONS.runtime} />
+      <RuntimeSection section={SETTINGS_SECTIONS.runtime} instance={instance} />
         </div>
       </div>
     </div>

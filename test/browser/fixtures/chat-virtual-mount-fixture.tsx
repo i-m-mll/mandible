@@ -182,7 +182,6 @@ function Fixture(): JSX.Element {
       const rows = document.querySelectorAll('.stream-renderer__virtual-row');
       const hasResponse = document.body.textContent?.includes('A source-backed assistant response') ?? false;
       document.body.dataset.mountStatus = rows.length > 0 && hasResponse ? 'settled' : 'incomplete';
-      document.body.dataset.rowCount = String(rows.length);
       document.body.dataset.sidebarUpdates = String(updateCountRef.current);
     }, 750);
     return () => window.clearTimeout(timer);

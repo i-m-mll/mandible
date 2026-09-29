@@ -40,13 +40,18 @@ type CdpClient = {
 
 type BrowserSnapshot = {
   requests: string[];
+  transformedSourceRequests: string[];
   fetchedBlockIds: string[];
   seenBlockIds: string[];
+  sourceVersionId: string | null;
+  anchorBlockLoaded: boolean;
   mountedRows: number;
+  historyRows: number;
   maximumMountedRows: number;
   scrollTop: number;
   scrollHeight: number;
   clientHeight: number;
+  readingAnchor: { blockId?: string | null; position?: number | null; viewportOffset?: number; followingTail?: boolean } | null;
   focusedBlockId: string | null;
   text: string;
 };
@@ -59,6 +64,10 @@ let expectedBlockIds: string[] = [];
 let expectedReadableBlockIds: string[] = [];
 let targetBlockId = '';
 let fixtureBundle = '';
+
+function legacyBlockId(position: number): string {
+  return `legacy-${position}`;
+}
 
 function bundleFixture(): string {
   const output = join(directory, 'source-backed-chat-history.js');
@@ -149,12 +158,16 @@ async function seedSourceBackedConversation(): Promise<void> {
      ORDER BY position
   `).all() as Array<{ id: string; position: number }>;
   expect(rows).toHaveLength(SOURCE_BACKED_HISTORY_BLOCK_COUNT);
-  expectedBlockIds = rows.map((row) => row.id);
+  expectedBlockIds = rows.map((row) => legacyBlockId(row.position));
   const hiddenPositions = new Set(parsed.blocks
     .filter((block) => block.metadata.usage_telemetry !== undefined)
     .map((block) => block.position));
-  expectedReadableBlockIds = rows.filter((row) => !hiddenPositions.has(row.position)).map((row) => row.id);
-  targetBlockId = rows.find((row) => row.position === 123)?.id ?? '';
+  expectedReadableBlockIds = rows
+    .filter((row) => !hiddenPositions.has(row.position))
+    .map((row) => legacyBlockId(row.position));
+  targetBlockId = rows.find((row) => row.position === 123)
+    ? legacyBlockId(123)
+    : '';
   expect(targetBlockId).not.toBe('');
 }
 
@@ -320,53 +333,226 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       return response.result?.value as T;
     };
     const snapshot = () => evaluate<BrowserSnapshot>('window.__sourceBackedHistory?.snapshot()');
+    const wheel = async (deltaY: number) => {
+      await client!.call('Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x: 450, y: 450, deltaX: 0, deltaY,
+      });
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    };
+    const setScrollTop = async (scrollTop: number) => {
+      await evaluate(`(() => {
+        const scroll=document.querySelector('.stream-renderer__scroll');
+        if(scroll) scroll.scrollTop=${scrollTop};
+      })()`);
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    };
+    const clickJumpToLatest = () => evaluate<boolean>(`(() => {
+      const button=document.querySelector('button[aria-label="Jump to latest"]');
+      if(!(button instanceof HTMLButtonElement)||button.disabled) return false;
+      button.click();
+      return true;
+    })()`);
+    const scheduleDelayedGroupMeasurement = (anchorBlockId: string) => evaluate<{
+      rowIndex: number;
+      beforeHeight: number;
+    } | null>(`(() => {
+      const scroll=document.querySelector('.stream-renderer__scroll');
+      const anchor=[...document.querySelectorAll('[data-block-id]')]
+        .find(el=>el.dataset.blockId===${JSON.stringify(anchorBlockId)});
+      const anchorRow=anchor?.closest('.stream-renderer__virtual-row');
+      if(!scroll||!anchorRow) return null;
+      const anchorIndex=Number(anchorRow.getAttribute('data-index'));
+      const viewport=scroll.getBoundingClientRect();
+      const row=[...document.querySelectorAll('.stream-renderer__virtual-row')]
+        .filter(candidate=>Number(candidate.getAttribute('data-index'))<anchorIndex)
+        .filter(candidate=>candidate.querySelector('.turn-group'))
+        .filter(candidate=>candidate.getBoundingClientRect().top<viewport.top)
+        .sort((left,right)=>Number(right.getAttribute('data-index'))-Number(left.getAttribute('data-index')))[0];
+      if(!row) return null;
+      const beforeHeight=row.getBoundingClientRect().height;
+      const probe=document.createElement('div');
+      probe.dataset.delayedGroupMeasurement='true';
+      probe.style.height='320px';
+      probe.style.minHeight='320px';
+      requestAnimationFrame(()=>requestAnimationFrame(()=>row.append(probe)));
+      return {rowIndex:Number(row.getAttribute('data-index')),beforeHeight};
+    })()`);
+    const visibleAnchor = (blockId?: string, requireVisible = false) => evaluate<{ id: string; top: number; scrollTop: number; viewportTop: number } | null>(`(() => {
+      const scroll=document.querySelector('.stream-renderer__scroll');
+      const viewport=scroll.getBoundingClientRect();
+      const blocks=[...document.querySelectorAll('[data-block-id]')];
+      const visible=blocks.filter(el=>{
+        const rect=el.getBoundingClientRect();
+        return el.dataset.blockId&&rect.bottom>viewport.top&&rect.top<viewport.bottom;
+      }).sort((left,right)=>left.getBoundingClientRect().top-right.getBoundingClientRect().top);
+      const block=${blockId ? `blocks.find(el=>el.dataset.blockId===${JSON.stringify(blockId)})` : 'visible[0]'};
+      if(!block) return null;
+      const rect=block.getBoundingClientRect();
+      if(${requireVisible ? 'true' : 'false'}&&(rect.bottom<=viewport.top||rect.top>=viewport.bottom)) return null;
+      return {
+        id:block.dataset.blockId,
+        top:rect.top,
+        scrollTop:scroll.scrollTop,
+        viewportTop:viewport.top,
+      };
+    })()`);
     const cold = await waitFor('cold latest window', async () => {
       const value = await snapshot();
-      return value?.text.includes('LATEST SOURCE BACKED RESPONSE') && value.text.includes('Load earlier history') ? value : null;
+      return value?.text.includes('LATEST SOURCE BACKED RESPONSE') ? value : null;
     }, browser, profile);
-    expect(cold.text).toContain('End of conversation');
+    expect(cold.text).not.toContain('Load earlier history');
+    expect(cold.text).not.toContain('Load later history');
+    expect(cold.text).not.toContain('Load missing history');
     expect(cold.text).not.toContain('Start of conversation');
+    expect(cold.text).not.toContain('End of conversation');
     expect(cold.requests.filter((url) => url.includes('/source-backed-history?target=initial'))).toHaveLength(1);
     process.stdout.write('SOURCE_BACKED_CHAT_STAGE cold\n');
 
-    const beforePrepend = await evaluate<{ id: string; top: number }>(`new Promise(resolve => {(() => {
-      const scroll=document.querySelector('.stream-renderer__scroll');scroll.scrollTop=0;scroll.dispatchEvent(new Event('scroll'));
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        const viewport=scroll.getBoundingClientRect();
-        const block=[...document.querySelectorAll('[data-block-id]')].find(el=>{const rect=el.getBoundingClientRect();return rect.bottom>viewport.top&&rect.top<viewport.bottom});
-        resolve({id:block?.dataset.blockId??'',top:block?.getBoundingClientRect().top??0});
-      }));
-    })()})`);
-    const firstOlderCount = cold.requests.length;
-    const afterPrepend = await waitFor('first bounded older window', async () => {
+    await evaluate(`window.__sourceBackedHistory.navigate({block:'${targetBlockId}'})`);
+    const exact = await waitFor('exact target focus', async () => {
       const value = await snapshot();
-      if (value.requests.length <= firstOlderCount) return null;
-      return evaluate<{ id: string; top: number }>(`(() => {const block=[...document.querySelectorAll('[data-block-id]')].find(el=>el.dataset.blockId==='${beforePrepend.id}');return block?{id:block.dataset.blockId,top:block.getBoundingClientRect().top}:null})()`);
+      return value?.focusedBlockId === targetBlockId ? value : null;
+    }, browser, profile);
+    expect(exact.requests.some((url) => url.includes(`block=${encodeURIComponent(targetBlockId)}`))).toBe(true);
+    expect(exact.historyRows).toBeGreaterThan(0);
+    process.stdout.write('SOURCE_BACKED_CHAT_STAGE target-gap\n');
+
+    const gapRequestStart = exact.requests.length;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const value = await snapshot();
+      if (value.requests.slice(gapRequestStart).some((url) => new URL(url, origin).searchParams.get('position') === '204')) break;
+      await wheel(900);
+    }
+    await waitFor('automatic nearby gap fetch', async () => {
+      const value = await snapshot();
+      return value.requests.slice(gapRequestStart)
+        .some((url) => new URL(url, origin).searchParams.get('position') === '204') ? value : null;
+    }, browser, profile);
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const value = await snapshot();
+      if (value.historyRows === 0 && !value.text.includes('Loading history…')) break;
+      await wheel(900);
+    }
+    const afterGapFill = await waitFor('automatic gap fill completion', async () => {
+      const value = await snapshot();
+      return value.historyRows === 0 && !value.text.includes('Loading history…') ? value : null;
+    }, browser, profile);
+    const gapTargets = afterGapFill.requests.slice(gapRequestStart)
+      .map((url) => new URL(url, origin).searchParams.get('position'))
+      .filter((position): position is string => position !== null)
+      .map(Number);
+    expect(gapTargets.length).toBeGreaterThan(1);
+    expect(new Set(gapTargets).size).toBe(gapTargets.length);
+    expect(gapTargets.every((position, index) => index === 0 || position > gapTargets[index - 1])).toBe(true);
+    process.stdout.write('SOURCE_BACKED_CHAT_STAGE gap-auto-filled\n');
+
+    const anchorRequestStart = afterGapFill.requests.length;
+    const prefetchDistance = Math.max(afterGapFill.clientHeight * 1.5, 720);
+    let beforeEdge = afterGapFill;
+    for (let attempt = 0; attempt < 30 && beforeEdge.scrollTop > prefetchDistance + 900; attempt += 1) {
+      await wheel(-900);
+      beforeEdge = await snapshot();
+    }
+    const toPrefetchEdge = Math.max(0, Math.floor(beforeEdge.scrollTop - prefetchDistance - 1));
+    if (toPrefetchEdge > 0) {
+      await wheel(-toPrefetchEdge);
+      beforeEdge = await snapshot();
+    }
+    const beforePrepend = await waitFor(
+      'visible source-backed block at the older-history edge',
+      async () => visibleAnchor(),
+      browser,
+      profile,
+      4_000,
+    );
+    const previousFetchedCount = afterGapFill.fetchedBlockIds.length;
+    const savedAnchorBeforePassiveScroll = beforeEdge.readingAnchor;
+    expect(savedAnchorBeforePassiveScroll).not.toBeNull();
+    const targetScrollTop = Math.max(0, beforePrepend.scrollTop - 2);
+    await setScrollTop(targetScrollTop);
+    expect((await snapshot()).readingAnchor).toEqual(savedAnchorBeforePassiveScroll);
+    const beforePrependRestore = await visibleAnchor(beforePrepend.id, true);
+    expect(beforePrependRestore).not.toBeNull();
+    await waitFor('automatic older window request', async () => {
+      const value = await snapshot();
+      return value.requests.slice(anchorRequestStart)
+        .some((url) => new URL(url, origin).searchParams.get('position') === '43') ? value : null;
+    }, browser, profile);
+    const afterPrepend = await waitFor('older window preserves the reading anchor', async () => {
+      const value = await snapshot();
+      if (value.fetchedBlockIds.length <= previousFetchedCount) return null;
+      return visibleAnchor(beforePrepend.id, true);
     }, browser, profile);
     expect(afterPrepend.id).toBe(beforePrepend.id);
-    expect(Math.abs(afterPrepend.top - beforePrepend.top)).toBeLessThan(3);
+    expect(
+      Math.abs(
+        (afterPrepend.top - afterPrepend.viewportTop)
+        - (beforePrependRestore!.top - beforePrependRestore!.viewportTop),
+      ),
+      JSON.stringify({ beforePrependRestore, afterPrepend }),
+    ).toBeLessThan(5);
     process.stdout.write('SOURCE_BACKED_CHAT_STAGE prepend\n');
 
-    await waitFor('true beginning through edge demand', async () => {
+    await wheel(-800);
+    const afterWheel = await waitFor('wheel input remains in control after prepend', async () => {
       const value = await snapshot();
-      if (value.text.includes('Start of conversation')) return true;
-      await evaluate(`(() => {const scroll=document.querySelector('.stream-renderer__scroll');scroll.scrollTop=0;scroll.dispatchEvent(new Event('scroll'));const button=[...document.querySelectorAll('button')].find(el=>el.textContent?.includes('Load earlier history'));button?.click();return true})()`);
-      return null;
-    }, browser, profile, 20_000);
+      return value.scrollTop < afterPrepend.scrollTop - 300 ? value : null;
+    }, browser, profile);
+    expect(afterWheel.scrollTop).toBeLessThan(afterPrepend.scrollTop - 300);
+    let atBeginning: BrowserSnapshot | null = null;
+    for (let attempt = 0; attempt < 20 && !atBeginning; attempt += 1) {
+      const previousFetchedCount = (await snapshot()).fetchedBlockIds.length;
+      await wheel(-12_000);
+      const step = await waitFor('older page or true beginning', async () => {
+        const value = await snapshot();
+        if (value.text.includes('FIRST SOURCE BACKED PROMPT') && value.scrollTop <= 1) {
+          return { kind: 'beginning' as const, value };
+        }
+        if (value.fetchedBlockIds.length > previousFetchedCount && !value.text.includes('Loading history…')) {
+          return { kind: 'page' as const, value };
+        }
+        return null;
+      }, browser, profile);
+      if (step.kind === 'beginning') atBeginning = step.value;
+    }
+    expect(atBeginning, 'repeated upward wheel input should reach the true beginning').not.toBeNull();
     process.stdout.write('SOURCE_BACKED_CHAT_STAGE beginning\n');
 
-    const dimensions = await snapshot();
-    await evaluate(`new Promise(resolve=>{const scroll=document.querySelector('.stream-renderer__scroll');let offset=0;const step=Math.max(180,scroll.clientHeight/2);const advance=()=>{scroll.scrollTop=offset;scroll.dispatchEvent(new Event('scroll'));offset+=step;if(offset<=scroll.scrollHeight){requestAnimationFrame(advance)}else{requestAnimationFrame(()=>requestAnimationFrame(resolve))}};advance()})`);
+    let traversalSteps = 0;
+    for (; traversalSteps < 1_200; traversalSteps += 1) {
+      const value = await snapshot();
+      const atEnd = value.scrollHeight - value.scrollTop - value.clientHeight <= 1;
+      if (atEnd
+          && value.fetchedBlockIds.length === expectedBlockIds.length
+          && value.seenBlockIds.length === expectedReadableBlockIds.length) break;
+      await evaluate(`(() => {
+        const scroll=document.querySelector('.stream-renderer__scroll');
+        const step=Math.max(1, Math.floor(scroll.clientHeight * 0.5));
+        scroll.scrollTop=Math.min(scroll.scrollHeight-scroll.clientHeight, scroll.scrollTop+step);
+      })()`);
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    }
     const complete = await snapshot();
-    process.stdout.write(`SOURCE_BACKED_CHAT_STAGE traversed ${complete.seenBlockIds.length}\n`);
+    process.stdout.write(`SOURCE_BACKED_CHAT_STAGE traversed ${complete.seenBlockIds.length} at ${complete.scrollTop}/${complete.scrollHeight} in ${traversalSteps} steps\n`);
     expect(new Set(complete.fetchedBlockIds)).toEqual(new Set(expectedBlockIds));
     expect(complete.fetchedBlockIds).toHaveLength(expectedBlockIds.length);
-    expect(new Set(complete.seenBlockIds)).toEqual(new Set(expectedReadableBlockIds));
+    const missingReadablePositions = expectedReadableBlockIds
+      .filter((id) => !complete.seenBlockIds.includes(id))
+      .map((id) => expectedBlockIds.indexOf(id));
+    expect(missingReadablePositions.slice(0, 20), `${missingReadablePositions.length} readable blocks were never mounted`).toEqual([]);
+    expect(new Set(complete.seenBlockIds).size).toBe(expectedReadableBlockIds.length);
     expect(complete.seenBlockIds).toHaveLength(expectedReadableBlockIds.length);
     expect(complete.seenBlockIds).toContain(expectedReadableBlockIds[0]);
     expect(complete.maximumMountedRows).toBeLessThanOrEqual(20);
     const windowRequests = complete.requests.filter((url) => url.includes(`/api/conversations/source-backed-history?`));
     expect(windowRequests.length).toBeGreaterThan(3);
+    const edgeTargets = complete.requests.slice(anchorRequestStart)
+      .map((url) => new URL(url, origin).searchParams.get('position'))
+      .filter((position): position is string => position !== null)
+      .map(Number);
+    expect(edgeTargets).toContain(43);
+    expect(new Set(edgeTargets).size).toBe(edgeTargets.length);
+    expect(edgeTargets.slice(-1)).toEqual([43]);
     for (const request of windowRequests) {
       const response = await fetch(new URL(request, origin));
       const payload = await response.json() as { blocks: unknown[]; total: number; window: { limit: number } };
@@ -375,28 +561,115 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       expect(payload.window.limit).toBeLessThanOrEqual(160);
     }
 
-    await client.call('Page.navigate', { url: `${origin}/source-backed-history?block=${encodeURIComponent(targetBlockId)}` });
-    const exact = await waitFor('exact target focus', async () => {
-      const value = await snapshot();
-      return value?.focusedBlockId === targetBlockId ? value : null;
-    }, browser, profile);
-    expect(exact.requests.some((url) => url.includes(`block=${encodeURIComponent(targetBlockId)}`))).toBe(true);
-    process.stdout.write('SOURCE_BACKED_CHAT_STAGE exact\n');
-
-    const searchTarget = await evaluate<string>(`window.__sourceBackedHistory.searchAndNavigate('readable source block 123')`);
-    expect(searchTarget).toBe(targetBlockId);
-    await waitFor('search target focus', async () => (await snapshot()).focusedBlockId === targetBlockId ? true : null, browser, profile);
-    process.stdout.write('SOURCE_BACKED_CHAT_STAGE search\n');
-    await evaluate(`window.__sourceBackedHistory.navigate(null)`);
-    const gapped = await waitFor('truthful distant-window gap', async () => {
-      const value = await snapshot();
-      return value.text.includes('Load missing history from positions') ? value : null;
-    }, browser, profile);
-    expect(gapped.text).toContain('Load missing history from positions');
-    process.stdout.write('SOURCE_BACKED_CHAT_STAGE gap\n');
-
     const rss = Number(spawnSync('ps', ['-o', 'rss=', '-p', String(browser.pid)], { encoding: 'utf8' }).stdout.trim());
     expect(rss).toBeLessThan(1_000_000);
+
+    // Re-fetch the active latest window while the user is reading older
+    // content. A new source version replaces that window; Chat must retain the
+    // reading anchor and materialize it from the new version before resuming
+    // automatic edge prefetch.
+    const sourceRefreshPrevious = await snapshot();
+    await evaluate('window.__sourceBackedHistory.navigate(null)');
+    await waitFor('latest window is active', async () => {
+      const value = await snapshot();
+      return value.requests.slice(sourceRefreshPrevious.requests.length).some((url) => (
+        new URL(url, origin).searchParams.get('target') === 'initial'
+      ))
+        ? value : null;
+    }, browser, profile);
+    let sourceRefreshBeforeAnchor: { id: string; top: number; scrollTop: number; viewportTop: number } | null = null;
+    let sourceRefreshBeforeState: BrowserSnapshot | null = null;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const value = await snapshot();
+      const anchorBlockId = value.readingAnchor?.blockId;
+      const anchorPosition = value.readingAnchor?.position;
+      if (anchorBlockId && typeof anchorPosition === 'number' && anchorPosition < 450
+          && value.readingAnchor?.followingTail === false) {
+        const block = await visibleAnchor();
+        if (block) {
+          sourceRefreshBeforeAnchor = block;
+          sourceRefreshBeforeState = value;
+          break;
+        }
+      }
+      await wheel(-900);
+    }
+    expect(sourceRefreshBeforeAnchor, 'user scroll should place a stable anchor in older history').not.toBeNull();
+    expect(sourceRefreshBeforeState?.readingAnchor?.followingTail).toBe(false);
+    const sourceRefreshRequestStart = sourceRefreshBeforeState!.transformedSourceRequests.length;
+    const sourceRefreshAnchorRequestStart = sourceRefreshBeforeState!.requests.length;
+    await evaluate('window.__sourceBackedHistory.refreshSourceVersion()');
+    await waitFor('latest window refetched from the new source version', async () => {
+      const value = await snapshot();
+      return value.transformedSourceRequests.slice(sourceRefreshRequestStart).some((url) => (
+        new URL(url, origin).searchParams.get('target') === 'initial'
+      )) ? value : null;
+    }, browser, profile);
+    const sourceRefreshAfterAnchor = await waitFor('same reading block is restored from the new source version', async () => {
+      const value = await snapshot();
+      const anchor = value.readingAnchor;
+      const block = anchor?.blockId ? await visibleAnchor(anchor.blockId, true) : null;
+      if (!block || anchor?.blockId === sourceRefreshBeforeAnchor!.id
+          || anchor.position !== sourceRefreshBeforeState!.readingAnchor!.position) return null;
+      const requestedAnchorPosition = value.requests.slice(sourceRefreshAnchorRequestStart).some((url) => (
+        new URL(url, origin).searchParams.get('position') === String(sourceRefreshBeforeState!.readingAnchor!.position)
+      ));
+      return requestedAnchorPosition
+        && anchor.followingTail === false
+        && value.sourceVersionId !== sourceRefreshBeforeState!.sourceVersionId
+        && value.anchorBlockLoaded
+        ? block
+        : null;
+    }, browser, profile);
+    expect(sourceRefreshAfterAnchor.id).not.toBe(sourceRefreshBeforeAnchor!.id);
+    expect(Math.abs(sourceRefreshAfterAnchor.top - sourceRefreshBeforeAnchor!.top)).toBeLessThan(5);
+    const sourceRefreshRestoredState = await snapshot();
+    const measurement = await scheduleDelayedGroupMeasurement(sourceRefreshAfterAnchor.id);
+    expect(measurement, 'a mounted group above the reading anchor should be available for delayed measurement').not.toBeNull();
+    const afterDelayedMeasurement = await waitFor('delayed group measurement preserves the visible message', async () => {
+      const value = await snapshot();
+      const block = await visibleAnchor(sourceRefreshAfterAnchor.id, true);
+      if (!block || value.scrollHeight < sourceRefreshRestoredState.scrollHeight + 200) return null;
+      return { value, block };
+    }, browser, profile);
+    expect(afterDelayedMeasurement.block.id).toBe(sourceRefreshAfterAnchor.id);
+    expect(Math.abs(afterDelayedMeasurement.block.top - sourceRefreshAfterAnchor.top)).toBeLessThan(5);
+    expect(afterDelayedMeasurement.value.scrollTop).toBeGreaterThan(sourceRefreshRestoredState.scrollTop + 200);
+    expect(afterDelayedMeasurement.value.readingAnchor).toEqual(sourceRefreshRestoredState.readingAnchor);
+    expect(afterDelayedMeasurement.value.readingAnchor?.followingTail).toBe(false);
+
+    const latestRequestStart = afterDelayedMeasurement.value.requests.length;
+    expect(await clickJumpToLatest(), 'the older reading position should expose Jump to latest').toBe(true);
+    const afterLatestNavigation = await waitFor('latest navigation replaces older reading intent and settles at the end', async () => {
+      const value = await snapshot();
+      const requestedLatest = value.requests.slice(latestRequestStart).some((url) => (
+        new URL(url, origin).searchParams.get('target') === 'latest'
+      ));
+      const distanceFromEnd = value.scrollHeight - value.scrollTop - value.clientHeight;
+      return requestedLatest
+        && distanceFromEnd <= 5
+        && value.readingAnchor?.followingTail === true
+        && value.readingAnchor?.position === null
+        && value.readingAnchor?.blockId === null
+        ? value
+        : null;
+    }, browser, profile);
+    const latestVisibleBlock = await waitFor('latest message remains visible after navigation', async () => (
+      visibleAnchor(undefined, true)
+    ), browser, profile);
+    const latestMeasurement = await scheduleDelayedGroupMeasurement(latestVisibleBlock.id);
+    expect(latestMeasurement, 'a mounted group above the latest viewport should be available for delayed measurement').not.toBeNull();
+    const afterLatestMeasurement = await waitFor('tail intent survives delayed group layout after Jump to latest', async () => {
+      const value = await snapshot();
+      const block = await visibleAnchor(latestVisibleBlock.id, true);
+      const distanceFromEnd = value.scrollHeight - value.scrollTop - value.clientHeight;
+      if (!block || value.scrollHeight < afterLatestNavigation.scrollHeight + 200
+          || distanceFromEnd > 5 || value.readingAnchor?.followingTail !== true) return null;
+      return { value, block };
+    }, browser, profile);
+    expect(afterLatestMeasurement.block.id).toBe(latestVisibleBlock.id);
+    expect(Math.abs(afterLatestMeasurement.block.top - latestVisibleBlock.top)).toBeLessThan(5);
+    expect(afterLatestMeasurement.value.scrollTop).toBeGreaterThan(afterLatestNavigation.scrollTop + 200);
     return {
       coldRequest: cold.requests.find((url) => url.includes('target=initial')),
       boundedWindowRequests: windowRequests,
@@ -405,9 +678,29 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       readableCanonicalIdentities: complete.seenBlockIds.length,
       maximumMountedRows: complete.maximumMountedRows,
       prependAnchor: { before: beforePrepend, after: afterPrepend },
+      sourceRefreshAnchor: {
+        position: sourceRefreshBeforeState!.readingAnchor!.position,
+        before: sourceRefreshBeforeAnchor,
+        after: sourceRefreshAfterAnchor,
+      },
+      delayedGroupMeasurement: {
+        rowIndex: measurement!.rowIndex,
+        beforeHeight: measurement!.beforeHeight,
+        scrollTopBefore: sourceRefreshRestoredState.scrollTop,
+        scrollTopAfter: afterDelayedMeasurement.value.scrollTop,
+      },
+      latestNavigation: {
+        beforeScrollTop: afterDelayedMeasurement.value.scrollTop,
+        afterScrollTop: afterLatestNavigation.scrollTop,
+        remainingDistance: afterLatestNavigation.scrollHeight - afterLatestNavigation.scrollTop - afterLatestNavigation.clientHeight,
+        stableBlock: latestVisibleBlock,
+        scrollTopAfterDelayedMeasurement: afterLatestMeasurement.value.scrollTop,
+      },
+      wheelAfterPrepend: { before: afterPrepend.scrollTop, after: afterWheel.scrollTop },
+      gapTargets,
       targetBlockId,
       focusedBlockId: exact.focusedBlockId,
-      gapVisibleAfterDistantWindows: gapped.text.includes('Load missing history from positions'),
+      beganAtScrollTop: atBeginning.scrollTop,
       browserRssKb: rss,
     };
   } finally {
@@ -427,7 +720,6 @@ describe('source-backed Chat history acceptance', () => {
       firstPromptReached: true,
       sourceCanonicalIdentities: SOURCE_BACKED_HISTORY_BLOCK_COUNT,
       readableCanonicalIdentities: SOURCE_BACKED_HISTORY_BLOCK_COUNT - 1,
-      gapVisibleAfterDistantWindows: true,
       focusedBlockId: targetBlockId,
     });
     process.stdout.write(`SOURCE_BACKED_CHAT_EVIDENCE ${JSON.stringify(evidence)}\n`);

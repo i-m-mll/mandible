@@ -5,6 +5,7 @@ import type {
   IngestionWorkerRequest,
   IngestionWorkerResponse,
 } from "./ingestion-worker-protocol.js";
+import { ConversationSourceChangedError } from "./conversations/source-store.js";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -128,7 +129,9 @@ export class IngestionActor {
     if (message.ok) {
       pending.resolve(message.value);
     } else {
-      pending.reject(new Error(message.error));
+      pending.reject(message.errorCode === "conversation_source_changed"
+        ? new ConversationSourceChangedError(message.error)
+        : new Error(message.error));
     }
   }
 

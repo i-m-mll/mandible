@@ -18,6 +18,7 @@ import {
 } from '../ui/src/state';
 import { App } from '../ui/src/app';
 import { PRODUCTION_ORIGIN } from '../src/canonical-origin';
+import { PRODUCTION_EFFECTS } from '../src/security/effect-policy.js';
 import { APP_RAIL_PREVIEW_ORDER_STORAGE_KEY } from '../ui/src/app-rail-order';
 import {
   getWorkCompare,
@@ -584,6 +585,18 @@ const previewInstance: InstanceInfo = {
   db_path_source: 'iab-preview-copy',
   source_db_path: '/tmp/mandible-main.db',
   source_db_path_source: 'env',
+};
+
+const mainInstance: InstanceInfo = {
+  role: 'main',
+  instance_id: 'main-ui-tests',
+  installation_id: 'install-test',
+  public_origin: PRODUCTION_ORIGIN,
+  backend_generation: 'main-1',
+  allowed_effects: [...PRODUCTION_EFFECTS],
+  writable_roots: ['/tmp'],
+  db_path: '/tmp/mandible-main.db',
+  db_path_source: 'test',
 };
 
 const writablePreviewInstance: InstanceInfo = {
@@ -1899,6 +1912,7 @@ describe('app shell', () => {
 
   it('persists Settings theme choices, applies root attributes, and follows system changes', async () => {
     stubEventSource();
+    window.__MANDIBLE_BOOTSTRAP__ = { instance: mainInstance };
     window.history.replaceState(null, '', '#/settings');
     let storedTheme = 'system';
     let systemListener: (() => void) | null = null;
@@ -2383,12 +2397,22 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
-    const notice = (await screen.findByText('Saving disabled in copied preview instance.')).closest('.detail-pane-notice')!;
-    expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
+    const copyNotice = await screen.findByTestId('preview-copy-notice');
+    const spacesNoticeOutlet = await waitFor(() => {
+      const outlet = document.querySelector('.spaces-shell__main .app-operational-notice-slot');
+      expect(outlet).toBeTruthy();
+      return outlet as HTMLElement;
+    });
+    const notice = spacesNoticeOutlet.querySelector('.detail-pane-notice');
     const spacesHeader = document.querySelector('.spaces-shell__header');
-    const spacesNoticeOutlet = document.querySelector('.spaces-shell__main .app-operational-notice-slot');
+    const appShell = copyNotice.parentElement;
+    expect(appShell?.classList.contains('app-shell')).toBe(true);
+    expect(appShell?.firstElementChild).toBe(copyNotice);
+    expect(copyNotice.closest('.app-layout')).toBeNull();
     expect(spacesHeader?.nextElementSibling).toBe(spacesNoticeOutlet);
+    expect(notice).toBeTruthy();
     expect(spacesNoticeOutlet?.contains(notice)).toBe(true);
+    expect(spacesNoticeOutlet?.contains(copyNotice)).toBe(false);
     expect(document.querySelectorAll('.spaces-shell__main .detail-pane-notice')).toHaveLength(1);
     expect(document.querySelector('#app-operational-notices .detail-pane-notice')).toBeNull();
   });
@@ -2396,7 +2420,7 @@ describe('app shell', () => {
 
 describe('SettingsView', () => {
   it('offers only the native setup handoff from the browser', () => {
-    render(h(SettingsView, { settings: {}, onSave: async () => undefined }));
+    render(h(SettingsView, { instance: mainInstance, settings: {}, onSave: async () => undefined }));
     const action = screen.getByRole('link', { name: 'Open macOS setup action' });
     expect(action.getAttribute('href')).toBe('mandible://connections/setup');
     const handoff = action.closest('.settings-view__daemon-card');
@@ -2407,7 +2431,7 @@ describe('SettingsView', () => {
   it('exposes and saves every app theme mode through the labelled Appearance select', async () => {
     const onSave = vi.fn(async () => undefined);
 
-    render(h(SettingsView, { settings: { app_theme: 'system' }, onSave }));
+    render(h(SettingsView, { instance: mainInstance, settings: { app_theme: 'system' }, onSave }));
 
     const themeSelect = screen.getByRole('combobox', { name: 'App theme' });
     expect(themeSelect.getAttribute('aria-describedby')).toBe('settings-app-theme-description');
@@ -2455,7 +2479,20 @@ describe('SettingsView', () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  it('enables isolated theme and typography preferences without enabling shared settings', async () => {
+  it('skips unavailable automatic reads while keeping copied Settings preferences editable', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/settings/instructions-delivery') {
+        return new Response(JSON.stringify({ targets: [], postExport: '', configuredTargets: false }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === '/api/projects') {
+        return new Response(JSON.stringify({ projects: [] }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
     const onSave = vi.fn(async () => undefined);
     const onTypographySave = vi.fn(async () => undefined);
 
@@ -2466,19 +2503,87 @@ describe('SettingsView', () => {
       instance: preferenceWritablePreviewInstance,
     }));
 
+    const forbiddenReads = [
+      '/api/backup/status',
+      '/api/runtime/status',
+      '/api/auth/hooks',
+      '/api/auth/clearances/signing',
+    ];
+    const requestedUrls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(requestedUrls.filter((url) => forbiddenReads.includes(url))).toEqual([]);
+
     const theme = screen.getByRole('combobox', { name: 'App theme' }) as HTMLSelectElement;
     const font = screen.getByRole('combobox', { name: 'UI font' }) as HTMLSelectElement;
-    const fontSize = screen.getByRole('spinbutton', { name: 'UI size' }) as HTMLInputElement;
-    const terminalTheme = screen.getByRole('combobox', { name: 'Light-mode terminal' }) as HTMLSelectElement;
     expect(theme.disabled).toBe(false);
     expect(font.disabled).toBe(false);
-    expect(fontSize.disabled).toBe(false);
-    expect(terminalTheme.disabled).toBe(true);
-
     changeSelect(theme, 'dark');
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('app_theme', 'dark'));
     changeSelect(font, 'space-grotesk');
     await waitFor(() => expect(onTypographySave).toHaveBeenCalledWith('ui_font_face', 'space-grotesk'));
+
+    const chatLimit = screen.getByRole('spinbutton', { name: 'Chats per group' }) as HTMLInputElement;
+    expect(chatLimit.value).toBe('5');
+    fireEvent.input(chatLimit, { target: { value: '6' } });
+    fireEvent.click(chatLimit.parentElement?.querySelector('button') as HTMLButtonElement);
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('conversations.sidebar_group_limit', '6'));
+  });
+
+  it('saves preview instruction settings locally without offering file cleanup', async () => {
+    const onSave = vi.fn(async () => undefined);
+    const targets = [
+      { path: '/tmp/old-codex.md', mode: 'managed-block' },
+      { path: '/tmp/old-claude.md', mode: 'managed-block' },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/settings/instructions-delivery' && init?.method !== 'PUT') {
+        return new Response(JSON.stringify({
+          targets,
+          postExport: 'bin/compile-agent-instructions',
+          configuredTargets: true,
+          preview_only: true,
+          export: { ok: false, stdout: '', stderr: 'not run in preview' },
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/settings/instructions-delivery' && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { targets: typeof targets; cleanupRemovedTargets: boolean };
+        return new Response(JSON.stringify({
+          targets: body.targets,
+          postExport: 'bin/compile-agent-instructions',
+          configuredTargets: true,
+          preview_only: true,
+          configuration_saved: true,
+          export: { ok: false, stdout: '', stderr: 'not installed in preview' },
+          cleanup: [],
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/projects') {
+        return new Response(JSON.stringify({ projects: [] }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(h(SettingsView, {
+      settings: {},
+      onSave,
+      instance: preferenceWritablePreviewInstance,
+    }));
+
+    expect(await screen.findByDisplayValue('/tmp/old-codex.md')).toBeTruthy();
+    const targetRow = screen.getByLabelText('Instruction target /tmp/old-codex.md').closest('.settings-view__instruction-target') as HTMLElement;
+    fireEvent.click(within(targetRow).getByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/instructions-delivery',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ targets: [targets[1]], cleanupRemovedTargets: false }),
+      }),
+    ));
+    expect(screen.queryByRole('dialog', { name: 'Clean previous instruction target?' })).toBeNull();
+    await waitFor(() => expect(screen.getByText('Saved in this preview copy. Target files were not changed and the post-export hook was not run.')).toBeTruthy());
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.targets', JSON.stringify([targets[1]])));
   });
 
   it('shows project restriction state and existing grants', async () => {
@@ -2507,7 +2612,7 @@ describe('SettingsView', () => {
       return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
     }));
 
-    render(h(SettingsView, { settings: {}, onSave: async () => undefined }));
+    render(h(SettingsView, { instance: mainInstance, settings: {}, onSave: async () => undefined }));
 
     expect(await screen.findByTestId('project-permissions-settings')).toBeTruthy();
     expect(await screen.findByText('group:agents — write')).toBeTruthy();
@@ -2589,6 +2694,7 @@ describe('SettingsView', () => {
 
     render(
       h(SettingsView, {
+        instance: mainInstance,
         settings: {},
         onSave,
       }),
@@ -3297,6 +3403,7 @@ describe('AuthQueueView', () => {
 
     render(
       h(AuthQueueView, {
+        instance: mainInstance,
         queue: [
           { id: 'req-veto', title: 'Veto auth', repo: 'mandible', status: 'pending', action_count: 1, actions: [action] as never },
         ],
@@ -3375,6 +3482,7 @@ describe('WorkOverviewView', () => {
     const onRescan = vi.fn();
     render(
       h(WorkOverviewView, {
+        instance: mainInstance,
         repos: [
           { id: 'old', name: 'Zeta Repo', path: '/repo/zeta' },
           { id: 'new', name: 'Alpha Repo', path: '/repo/alpha' },
@@ -3464,6 +3572,7 @@ describe('WorkOverviewView', () => {
       { status: 400, headers: { 'content-type': 'application/json' } },
     )));
     render(h(WorkOverviewView, {
+      instance: mainInstance,
       repos: [],
       branchesByRepo: {},
       onRescan: () => undefined,
@@ -3535,6 +3644,7 @@ describe('WorkOverviewView', () => {
 
     render(
       h(WorkOverviewView, {
+        instance: mainInstance,
         repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' }],
         branchesByRepo: {
           r1: [
@@ -3644,6 +3754,7 @@ describe('WorkOverviewView', () => {
     ];
     stubAuditFetch(entries);
     render(h(WorkOverviewView, {
+      instance: mainInstance,
       repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' }],
       branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }] },
       onRescan: () => undefined,
@@ -3685,6 +3796,7 @@ describe('WorkOverviewView', () => {
     });
     const onRescan = vi.fn(() => rescanPromise);
     render(h(WorkOverviewView, {
+      instance: mainInstance,
       repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' }],
       branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }, { name: 'other', status: 'clean' }] },
       onRescan,
@@ -3725,6 +3837,7 @@ describe('WorkOverviewView', () => {
       } },
     });
     render(h(WorkOverviewView, {
+      instance: mainInstance,
       repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one' }],
       branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }] },
       onRescan: () => undefined,
@@ -3752,6 +3865,7 @@ describe('WorkOverviewView', () => {
       },
     });
     render(h(WorkOverviewView, {
+      instance: mainInstance,
       repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one' }],
       branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }] },
       onRescan: () => undefined,
@@ -5455,7 +5569,7 @@ describe('LedgerIssueDetail', () => {
 
     const css = readResolvedStylesheet();
     expect(css).toMatch(/\.detail-pane-shell\s*\{[^}]*--detail-content-inline-inset:\s*24px;/s);
-    expect(css).toMatch(/\.detail-pane-header\s*\{[^}]*padding:\s*20px var\(--detail-content-inline-inset\);/s);
+    expect(css).toMatch(/\.detail-pane-header\s*\{[^}]*padding:\s*20px var\(--app-header-inline-inset\);/s);
     expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail > \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
     expect(css).toMatch(/\.app-right-sidebar \.graph-detail-pane--ledger\s*\{[^}]*--detail-content-inline-inset:\s*0;/s);
     expect(css).toMatch(/\.graph-detail-pane--ledger \.ledger-issue-detail__body\s*\{[^}]*padding-inline:\s*var\(--detail-content-inline-inset\);/s);
@@ -6706,7 +6820,7 @@ describe('ArtifactsView', () => {
 
   it('keeps auth detail surfaces visually separated by the app subdivision contract', () => {
     const css = readResolvedStylesheet();
-    const rightEdge = ruleBody(css, '.app-shell::after');
+    const rightEdge = ruleBody(css, '.app-shell__workspace::after');
     const leftEdge = ruleBody(css, '.app-shell--left-shadow::before');
 
     expect(rightEdge).toContain('inset: 0 auto 0 calc(var(--app-detail-edge-x) - var(--app-boundary-shadow-paint-width))');

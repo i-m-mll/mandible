@@ -69,6 +69,7 @@ export interface StableSourceRangeObservation {
   fileMtimeMs: number;
   filesystemIdentity: SourceFilesystemIdentity;
   ranges: Buffer[];
+  prefixSha256?: string;
 }
 
 export type SourceReadInstrumentation = (read: SourceReadObservation) => void;
@@ -79,6 +80,13 @@ export class SourceObservationError extends Error {
     readonly kind: "unavailable" | "unsupported" | "changed",
   ) {
     super(message);
+  }
+}
+
+export class ConversationSourceChangedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConversationSourceChangedError";
   }
 }
 
@@ -257,7 +265,9 @@ export async function observeStableSourceAliasExtent(
 /**
  * Read only caller-selected immutable JSONL records from one verified alias.
  * The descriptor and extent are checked before and after the reads, so a large
- * transcript never has to be materialized merely to show one page.
+ * transcript never has to be materialized merely to show one page. When an
+ * indexed prefix is supplied, it is streamed through SHA-256 and the requested
+ * ranges are captured from that same stream; appended bytes are never retained.
  */
 export async function observeStableSourceAliasRanges(
   alias: ConversationSourceAlias,
@@ -266,6 +276,8 @@ export async function observeStableSourceAliasRanges(
     maxRangeBytes?: number;
     maxTotalBytes?: number;
     instrumentation?: SourceReadInstrumentation;
+    /** Stream and verify an indexed prefix while capturing requested ranges from those same bytes. */
+    prefix?: { byteLength: number; contentSha256: string; filesystemIdentity: Pick<SourceFilesystemIdentity, "device" | "inode"> };
   } = {},
 ): Promise<StableSourceRangeObservation> {
   if (alias.availability !== "available") {
@@ -278,6 +290,12 @@ export async function observeStableSourceAliasRanges(
       || !Number.isSafeInteger(range.length) || range.length < 0 || range.length > maxRangeBytes)
       || !Number.isSafeInteger(totalRequested) || totalRequested > maxTotalBytes) {
     throw new SourceObservationError("requested source page exceeds bounded range-read limit", "unsupported");
+  }
+  const prefix = options.prefix;
+  if (prefix && (!Number.isSafeInteger(prefix.byteLength) || prefix.byteLength < 0
+      || !/^[a-f0-9]{64}$/i.test(prefix.contentSha256)
+      || ranges.some((range) => range.offset + range.length > prefix.byteLength))) {
+    throw new SourceObservationError("requested source page is outside its indexed prefix", "unsupported");
   }
   try {
     const declaredRoot = path.resolve(alias.rootPath);
@@ -296,24 +314,82 @@ export async function observeStableSourceAliasRanges(
       if (!before.isFile()) throw new SourceObservationError("conversation source is not a regular file", "unavailable");
       const beforeExtent = numericSourceExtent(before);
       const beforeIdentity = sourceFilesystemIdentity(before);
-      const buffers: Buffer[] = [];
-      for (const range of ranges) {
+      const buffers = ranges.map((range) => Buffer.alloc(range.length));
+      if (prefix) {
+        if (beforeExtent.byteLength < prefix.byteLength
+            || beforeIdentity.device !== prefix.filesystemIdentity.device
+            || beforeIdentity.inode !== prefix.filesystemIdentity.inode) {
+          throw new SourceObservationError("conversation source no longer contains the indexed prefix", "changed");
+        }
+        const orderedRanges = ranges.map((range, index) => ({ ...range, index }))
+          .sort((left, right) => left.offset - right.offset || left.length - right.length);
+        const prefixHash = createHash("sha256");
+        const chunk = Buffer.alloc(64 * 1024);
+        let position = 0;
+        let rangeIndex = 0;
+        while (position < prefix.byteLength) {
+          const requested = Math.min(chunk.length, prefix.byteLength - position);
+          options.instrumentation?.({ position, length: requested, fileSize: beforeExtent.byteLength });
+          const result = await handle.read(chunk, 0, requested, position);
+          if (result.bytesRead !== requested) {
+            throw new SourceObservationError("conversation source changed while hashing its indexed prefix", "changed");
+          }
+          const chunkEnd = position + requested;
+          const bytes = chunk.subarray(0, requested);
+          prefixHash.update(bytes);
+          while (rangeIndex < orderedRanges.length && orderedRanges[rangeIndex].offset < chunkEnd) {
+            const range = orderedRanges[rangeIndex];
+            const overlapStart = Math.max(position, range.offset);
+            const overlapEnd = Math.min(chunkEnd, range.offset + range.length);
+            if (overlapStart < overlapEnd) {
+              bytes.copy(
+                buffers[range.index],
+                overlapStart - range.offset,
+                overlapStart - position,
+                overlapEnd - position,
+              );
+            }
+            if (range.offset + range.length <= chunkEnd) rangeIndex += 1;
+            else break;
+          }
+          position = chunkEnd;
+        }
+        const prefixSha256 = prefixHash.digest("hex");
+        if (prefixSha256 !== prefix.contentSha256.toLowerCase()) {
+          throw new SourceObservationError("conversation source prefix no longer matches its indexed version", "changed");
+        }
+        const after = await handle.stat({ bigint: true });
+        const afterExtent = numericSourceExtent(after);
+        const afterIdentity = sourceFilesystemIdentity(after);
+        if (afterExtent.byteLength < prefix.byteLength
+            || beforeIdentity.device !== afterIdentity.device
+            || beforeIdentity.inode !== afterIdentity.inode) {
+          throw new SourceObservationError("conversation source changed while its indexed prefix was verified", "changed");
+        }
+        return {
+          path: alias.path,
+          byteLength: afterExtent.byteLength,
+          fileMtimeMs: afterExtent.fileMtimeMs,
+          filesystemIdentity: afterIdentity,
+          ranges: buffers,
+          prefixSha256,
+        };
+      }
+      for (const [index, range] of ranges.entries()) {
         if (range.offset + range.length > beforeExtent.byteLength) {
           throw new SourceObservationError("source record range is outside the observed extent", "changed");
         }
-        const bytes = Buffer.alloc(range.length);
         let read = 0;
         while (read < range.length) {
           const length = Math.min(1024 * 1024, range.length - read);
           options.instrumentation?.({ position: range.offset + read, length, fileSize: beforeExtent.byteLength });
-          const result = await handle.read(bytes, read, length, range.offset + read);
+          const result = await handle.read(buffers[index], read, length, range.offset + read);
           if (result.bytesRead === 0) break;
           read += result.bytesRead;
         }
         if (read !== range.length) {
           throw new SourceObservationError("conversation source changed during range read", "changed");
         }
-        buffers.push(bytes);
       }
       const after = await handle.stat({ bigint: true });
       const afterExtent = numericSourceExtent(after);

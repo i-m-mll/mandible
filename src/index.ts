@@ -267,10 +267,15 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     autoApprover: autoApproveManager,
     clearanceManager,
     backgroundMaintenance: operationalMutationsAllowed,
+    allowExternalEffects: operationalMutationsAllowed,
     restartAvailability: restartAvailability ?? undefined,
   });
   registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
+    config_path: instance.role === "preview"
+      ? path.join(instance.preview_root!, "work", "repos.json")
+      : undefined,
+    config_root: instance.role === "preview" ? instance.preview_root! : undefined,
     on_event: (event) => {
       broadcast(event);
       if (event.type === "work:scan:completed") {
@@ -285,7 +290,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerIssueRoutes(router, workScanner, issueDeps);
   registerLedgerChangeRoutes(router, db);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
-  registerSettingsRoutes(router);
+  registerSettingsRoutes(router, instance.role);
   registerUserSettingsRoutes(router, db);
   registerHostUserPreferencesRoutes(router, new HostUserPreferencesStore(instance.user_preferences_root));
   registerSystemRoutes(router, workScanner, operationalLogStore?.db ?? db);
@@ -533,18 +538,25 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const startupWorkScan = operationalMutationsAllowed
     ? workScanner.scanAllAsync({ skip_recent: true })
     : null;
-  const cancelStartupIngestion = startupWorkScan
-    ? startIngestionAfterStartupWorkScan(startupWorkScan, () => {
+  const startInstanceIngestion = () => {
+    try {
       startIngestion(logger, {
         dbPath,
+        background: instance.role !== "preview",
         // Read the last periodic sample so ingestion backoff does not reset the
         // shared lag histogram between batches. Issue: 0d81726.
         getBackgroundBackoffMs: () => eventLoopDiagnostics.snapshot().backgroundBackoffMs,
       });
-    }, logger)
+    } catch (error) {
+      logger("warn", "ingestion_start_failed", { error: String(error) });
+    }
+  };
+  const cancelStartupIngestion = startupWorkScan
+    ? startIngestionAfterStartupWorkScan(startupWorkScan, startInstanceIngestion, logger)
     : () => undefined;
   if (!startupWorkScan) {
     startupWorkScanComplete = true;
+    if (instance.role === "preview") startInstanceIngestion();
   }
 
   // Resolve the startup epoch after critical readiness. A slow git process must

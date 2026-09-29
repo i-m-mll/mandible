@@ -4,9 +4,11 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { AppOperationalNoticeOutlet } from '../app-shell';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { EntityPill } from '../components/shared/EntityPill';
-import { spawnIssueAgent } from '../api';
+import { canPerformOperation, spawnIssueAgent, type InstanceInfo } from '../api';
 import { formatRelativeTime } from '../lib/format';
 import { renderInlineMarkdown } from '../lib/markdown';
 import { appColors } from '../theme';
@@ -144,7 +146,8 @@ export interface InboxViewProps {
   onAckManagedReminderOccurrence: (occurrenceId: string) => Promise<void>;
   onAckAll: () => Promise<void>;
   onRefresh: () => void;
-  mutationsAllowed?: boolean;
+  instance?: InstanceInfo | null;
+  error?: string | null;
 }
 
 // ── Types for unified item list ──
@@ -484,9 +487,11 @@ function InboxSidebarItem({
 function ContinuationDetail({
   item,
   onAck,
+  mutationsAllowed,
 }: {
   item: InboxContinuation;
   onAck: (id: string) => Promise<void>;
+  mutationsAllowed: boolean;
 }): JSX.Element {
   return (
     <div className="inbox-detail__content">
@@ -527,6 +532,7 @@ function ContinuationDetail({
           type="button"
           className="btn btn--ghost"
           onClick={() => void onAck(item.session_id)}
+          disabled={!mutationsAllowed}
         >
           Acknowledge
         </button>
@@ -538,9 +544,11 @@ function ContinuationDetail({
 function AuthResultDetail({
   item,
   onAck,
+  mutationsAllowed,
 }: {
   item: InboxAuthResult;
   onAck: (id: string) => Promise<void>;
+  mutationsAllowed: boolean;
 }): JSX.Element {
   const statusTone = authResultTone(item.status);
   const statusLabel = item.status === 'needs_rebase'
@@ -609,6 +617,7 @@ function AuthResultDetail({
           type="button"
           className="btn btn--ghost"
           onClick={() => void onAck(item.id)}
+          disabled={!mutationsAllowed}
         >
           Acknowledge
         </button>
@@ -620,13 +629,17 @@ function AuthResultDetail({
 // Bug: cbbb3d9 — work-unit continuation detail with Resume button
 function WorkUnitContinuationDetail({
   item,
+  instance,
 }: {
   item: import('../api').WorkUnitWithLiveness;
+  instance?: InstanceInfo | null;
 }): JSX.Element {
   const [spawning, setSpawning] = useState(false);
+  const spawnPath = `/api/issues/${encodeURIComponent(item.repo_id)}/${encodeURIComponent(item.issue_id)}/spawn`;
+  const spawnAllowed = canPerformOperation(instance, 'POST', spawnPath, {});
 
   const handleResume = async () => {
-    if (spawning) return;
+    if (!spawnAllowed || spawning) return;
     setSpawning(true);
     try {
       const result = await spawnIssueAgent(item.repo_id, item.issue_id);
@@ -679,7 +692,8 @@ function WorkUnitContinuationDetail({
           type="button"
           className="btn btn--active"
           onClick={() => void handleResume()}
-          disabled={spawning}
+          disabled={!spawnAllowed || spawning}
+          title={spawnAllowed ? undefined : 'Starting an agent is unavailable in this instance'}
         >
           {spawning ? 'Spawning...' : 'Resume'}
         </button>
@@ -839,9 +853,11 @@ function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
 function ManagedReminderOccurrenceDetail({
   item,
   onAck,
+  mutationsAllowed,
 }: {
   item: InboxManagedReminderOccurrence;
   onAck: (id: string) => Promise<void>;
+  mutationsAllowed: boolean;
 }): JSX.Element {
   const evidence = item.triggering_evidence;
   const predicate = item.predicate;
@@ -915,6 +931,7 @@ function ManagedReminderOccurrenceDetail({
           type="button"
           className="btn btn--ghost"
           onClick={() => void onAck(item.id)}
+          disabled={!mutationsAllowed}
         >
           Acknowledge
         </button>
@@ -935,7 +952,9 @@ export function InboxView({
   onAckAuthResult,
   onAckManagedReminderOccurrence,
   onAckAll,
-  mutationsAllowed = true,
+  onRefresh,
+  instance = null,
+  error = null,
 }: InboxViewProps): JSX.Element {
   const [chips, setChips] = useState<FilterChip[]>([]);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -985,9 +1004,18 @@ export function InboxView({
     setChips((prev) => prev.filter((c) => !(c.type === chip.type && c.value === chip.value)));
 
   const handleAckAll = async () => {
+    if (!canPerformOperation(instance, 'POST', '/api/inbox/ack-all')) return;
     await onAckAll();
     setActionsOpen(false);
   };
+
+  const acknowledge = (
+    type: 'continuation' | 'auth_result' | 'managed_reminder_occurrence',
+    id: string,
+    action: (itemId: string) => Promise<void>,
+  ) => canPerformOperation(instance, 'POST', `/api/inbox/${type}/${encodeURIComponent(id)}/ack`, {})
+    ? action(id)
+    : Promise.resolve();
 
   const acknowledgeableCount = (data?.continuations.length ?? 0)
     + (data?.auth_results.length ?? 0)
@@ -996,6 +1024,7 @@ export function InboxView({
   if (loading && !data) {
     return (
       <div className="inbox-detail" style={{ height: 'calc(100vh - 80px)', margin: '-28px -32px -48px' }}>
+        <AppOperationalNoticeOutlet registerAsMain />
         <div className="inbox-detail__empty">
           <span className="text-muted">Loading inbox…</span>
         </div>
@@ -1056,8 +1085,10 @@ export function InboxView({
                       type="button"
                       role="menuitem"
                       onClick={() => void handleAckAll()}
-                      disabled={!mutationsAllowed || acknowledgeableCount === 0}
-                      title={mutationsAllowed ? 'Acknowledge all inbox items' : 'Disabled on preview instances'}
+                      disabled={!canPerformOperation(instance, 'POST', '/api/inbox/ack-all') || acknowledgeableCount === 0}
+                      title={canPerformOperation(instance, 'POST', '/api/inbox/ack-all')
+                        ? 'Acknowledge all inbox items'
+                        : 'This action is unavailable in this instance'}
                     >
                       Acknowledge All
                     </button>
@@ -1071,7 +1102,15 @@ export function InboxView({
       >
               {filteredItems.length === 0 ? (
                 <div className="inbox-sidebar__empty">
-                  {allItems.length === 0 ? 'Inbox is clear.' : 'No items match the current filters.'}
+                  {allItems.length > 0
+                    ? 'No items match the current filters.'
+                    : data
+                      ? error
+                        ? 'Could not confirm the inbox is clear.'
+                        : 'Inbox is clear.'
+                      : error
+                        ? 'Inbox could not be loaded.'
+                        : 'Inbox has not loaded yet.'}
                 </div>
               ) : (
                 filteredItems.map((item) => (
@@ -1085,34 +1124,68 @@ export function InboxView({
               )}
       </ViewSidebar>
 
+      {error ? (
+        <DetailPaneNotice
+          severity="error"
+          density="compact"
+          source="inbox-load"
+          title={data ? 'Inbox refresh failed' : 'Inbox could not be loaded'}
+          actions={<button type="button" onClick={onRefresh} disabled={loading}>Retry</button>}
+        >
+          {data ? `The last loaded inbox is still shown. ${error}` : error}
+        </DetailPaneNotice>
+      ) : null}
+
       {/* RIGHT DETAIL PANEL */}
       <div className="inbox-detail">
+        <AppOperationalNoticeOutlet registerAsMain />
         {!selectedItem ? (
           <div className="inbox-detail__empty">
             <span className="text-muted" style={{ fontSize: '14px' }}>
-              No items in this view
+              {data
+                ? error ? 'Could not confirm the inbox is clear.' : 'No items in this view'
+                : error ? 'Inbox data is unavailable.' : 'Inbox has not loaded yet.'}
             </span>
           </div>
         ) : selectedItem.type === 'continuation' ? (
           <ContinuationDetail
             item={selectedItem.raw as InboxContinuation}
-            onAck={onAckContinuation}
+            onAck={(id) => acknowledge('continuation', id, onAckContinuation)}
+            mutationsAllowed={canPerformOperation(
+              instance,
+              'POST',
+              `/api/inbox/continuation/${encodeURIComponent((selectedItem.raw as InboxContinuation).session_id)}/ack`,
+              {},
+            )}
           />
         ) : selectedItem.type === 'auth_result' ? (
           <AuthResultDetail
             item={selectedItem.raw as InboxAuthResult}
-            onAck={onAckAuthResult}
+            onAck={(id) => acknowledge('auth_result', id, onAckAuthResult)}
+            mutationsAllowed={canPerformOperation(
+              instance,
+              'POST',
+              `/api/inbox/auth_result/${encodeURIComponent((selectedItem.raw as InboxAuthResult).id)}/ack`,
+              {},
+            )}
           />
         ) : selectedItem.type === 'work_unit_continuation' ? (
           <WorkUnitContinuationDetail
             item={selectedItem.raw as import('../api').WorkUnitWithLiveness}
+            instance={instance}
           />
         ) : selectedItem.type === 'credential_leak' ? (
           <CredentialLeakDetail item={selectedItem.raw as InboxWebhookEvent} />
         ) : selectedItem.type === 'managed_reminder_occurrence' ? (
           <ManagedReminderOccurrenceDetail
             item={selectedItem.raw as InboxManagedReminderOccurrence}
-            onAck={onAckManagedReminderOccurrence}
+            onAck={(id) => acknowledge('managed_reminder_occurrence', id, onAckManagedReminderOccurrence)}
+            mutationsAllowed={canPerformOperation(
+              instance,
+              'POST',
+              `/api/inbox/managed_reminder_occurrence/${encodeURIComponent((selectedItem.raw as InboxManagedReminderOccurrence).id)}/ack`,
+              {},
+            )}
           />
         ) : (
           <IssueDetail item={selectedItem.raw as InboxIssue} />

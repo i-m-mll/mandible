@@ -13,6 +13,7 @@ import {
 } from "../../src/conversations/freshness.js";
 import {
   INGEST_RANGE_READ_CHUNK_BYTES,
+  ingestExactSelectedPath,
   triggerExactPathIngest,
   triggerTargetedIngest,
   configureIngestionWorker,
@@ -22,6 +23,7 @@ import { Router } from "../../src/server.js";
 import { ConversationSourceReader } from "../../src/conversations/source-reader.js";
 import { getConversationStructureCache } from "../../src/conversations/structure-cache.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
+import { ConversationSourceChangedError } from "../../src/conversations/source-store.js";
 import { sourceFilesystemIdentity } from "../../src/conversations/source-observer.js";
 import { CodexParser } from "../../src/parsers/codex.js";
 import { FileRpcTransport } from "../../src/file-rpc-transport.js";
@@ -180,6 +182,42 @@ describe("exact conversation freshness", () => {
     await expect(ensureExactConversationFresh(db, "fresh-session", { ingest })).resolves.toMatchObject({ conversationId: seeded.id, refreshed: false });
     await expect(ensureExactConversationFresh(db, seeded.id.slice(0, 8), { ingest })).rejects.toMatchObject({ code: "not_found" });
     expect(ingests).toBe(0);
+  });
+
+  it("refreshes only the selected stale source and retries a source-change race", async () => {
+    const selected = await seed("selected-stale-source");
+    const other = await seed("unselected-source");
+    const otherVersion = db.prepare(`SELECT current_version_id FROM conversation_sources
+      WHERE conversation_id = ?`).get(other.id) as { current_version_id: string };
+    await appendAt(selected.file, assistant("selected appended tail", 3), 2);
+    let attempts = 0;
+    const actor = {
+      ingest: async (paths: string[]) => {
+        attempts += 1;
+        if (attempts === 1) {
+          await appendAt(paths[0], assistant("tail written during refresh", 4), 3);
+          throw new ConversationSourceChangedError("conversation source changed while being indexed");
+        }
+        await triggerExactPathIngest(paths[0]);
+      },
+    };
+    const ingest = async (file: string) => {
+      await ingestExactSelectedPath(actor, file);
+      return { ok: true as const, status: "ingested" as const, transcript_path: file, session_ref: null };
+    };
+
+    await expect(ensureExactConversationFresh(db, selected.id, { ingest }))
+      .resolves.toMatchObject({ conversationId: selected.id, refreshed: true });
+
+    expect(attempts).toBe(2);
+    expect(await exactContents(selected.id)).toEqual([
+      "hello",
+      "initial tail",
+      "selected appended tail",
+      "tail written during refresh",
+    ]);
+    expect(db.prepare(`SELECT current_version_id FROM conversation_sources
+      WHERE conversation_id = ?`).get(other.id)).toEqual(otherVersion);
   });
 
   it("rebuilds a deleted sparse cache before declaring an unchanged source fresh", async () => {
@@ -521,7 +559,7 @@ describe("exact conversation freshness", () => {
     expect(ingests).toBe(1);
   });
 
-  it("queues an exact source refresh for an active append instead of serving a stale selected window", async () => {
+  it("queues an exact source refresh for an active append and keeps unavailable workers visible", async () => {
     const seeded = await seed("background-refresh-session");
     await appendAt(seeded.file, assistant("new tail", 3), 2);
     let ingests = 0;
@@ -535,15 +573,15 @@ describe("exact conversation freshness", () => {
       ingest,
       waitForFresh: false,
       scheduleReparse,
-    })).rejects.toMatchObject({ code: "freshness_pending" });
+    })).resolves.toMatchObject({ conversationId: seeded.id, refreshed: false });
     expect(scheduleReparse).toHaveBeenCalledWith(seeded.file, expect.any(String), seeded.id);
     expect(ingests).toBe(0);
 
     const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
     registerConversationRoutes(router);
     const pending = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
-    // The isolated fixture has no running ingestion actor. Production accepts
-    // this exact-path demand and returns freshness_pending until it catches up.
+    // This isolated fixture has no running ingestion actor, so the route
+    // reports the scheduler failure before reaching the source reader.
     expect(pending.status).toBe(503);
     expect(pending.body).toMatchObject({ error: "freshness_error" });
 
@@ -557,7 +595,7 @@ describe("exact conversation freshness", () => {
     expect(JSON.stringify(current.body)).toContain("new tail");
   });
 
-  it("reconciles an append between the selected-window freshness check and source read", async () => {
+  it("serves the verified indexed prefix when an append races the selected read", async () => {
     const seeded = await seed("read-race-session");
     const originalReadPage = ConversationSourceReader.prototype.readPage;
     const readPage = vi.spyOn(ConversationSourceReader.prototype, "readPage").mockImplementation(async function (...args) {
@@ -568,8 +606,8 @@ describe("exact conversation freshness", () => {
       const router = new Router({ instance: resolveInstanceInfo({ env: {} }) });
       registerConversationRoutes(router);
       const response = await router.invoke({ method: "GET", url: `/api/conversations/${seeded.id}?target=latest` });
-      expect(response.status).toBe(503);
-      expect(response.body).toMatchObject({ error: "freshness_error" });
+      expect(response.status).toBe(200);
+      expect(JSON.stringify(response.body)).not.toContain("racing tail");
       expect(readPage).toHaveBeenCalledOnce();
     } finally {
       readPage.mockRestore();
@@ -584,8 +622,7 @@ describe("exact conversation freshness", () => {
       if (!first) return originalReadPage.apply(this, args);
       first = false;
       await appendAt(seeded.file, assistant("caught-up tail", 3), 2);
-      const stale = await originalReadPage.apply(this, args);
-      expect(stale.status).toBe("stale");
+      const stale = { status: "stale" as const, reason: "test invalidation between source read and refresh" };
       await triggerExactPathIngest(seeded.file);
       return stale;
     });

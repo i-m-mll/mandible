@@ -188,7 +188,7 @@ a {
   position: absolute;
   z-index: 8;
   top: 7px;
-  right: 8px;
+  right: var(--app-header-inline-inset);
 }
 
 /* A shared detail header owns the collapsed toggle when one is present; the
@@ -209,11 +209,10 @@ a {
 }
 
 
-/* One app-shell boundary owns the complete chrome/main edge. It is independent
+/* One workspace boundary owns the complete chrome/main edge. It is independent
  * of header, ViewSidebar, detail, and right-sidebar dimensions, so its divider and
- * falloff remain continuous for the entire viewport. Its transparent paint
- * modulates the chrome and its semantic hairlines without affecting layout. */
-.app-shell::after {
+ * falloff remain continuous for the whole workspace without affecting layout. */
+.app-shell__workspace::after {
   --app-boundary-shadow-direction: to right;
   --app-boundary-accent: var(--app-divider);
   --app-boundary-divider-paint: linear-gradient(var(--app-boundary-accent), var(--app-boundary-accent));
@@ -234,7 +233,7 @@ a {
 
 /* Shadow paint is shared by both directional shell edges. Divider paint is a
  * separate right-edge capability and is never inherited by the left edge. */
-:where(.app-shell)::after,
+:where(.app-shell__workspace)::after,
 :where(.app-shell--left-shadow)::before {
   --shadow-app-subdivision-paint: linear-gradient(var(--app-boundary-shadow-direction), var(--app-boundary-shadow-gradient-stops));
 }
@@ -380,7 +379,7 @@ a {
   background: var(--border-muted);
 }
 
-.app-shell:has(.sidebar-drag-handle:is(:hover, :focus-visible))::after {
+.app-shell__workspace:has(.sidebar-drag-handle:is(:hover, :focus-visible))::after {
   --app-boundary-accent: var(--app-divider-emphasis);
 }
 
@@ -442,7 +441,7 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 8px 0 14px;
+  padding-inline: var(--app-header-inline-inset);
   border-bottom: 1px solid var(--neutral-alpha-06);
   background: var(--surface-header);
 }

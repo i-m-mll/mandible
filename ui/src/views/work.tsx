@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   createTrashEntry,
+  canPerformOperation,
   getRepoBranchCommits,
   getWorkRepoAudit,
   getWorkCompare,
@@ -14,6 +15,7 @@ import {
   type TrashCreateOutcome,
   type WorkAuditEntry,
   type WorkRepoAudit,
+  type InstanceInfo,
 } from '../api';
 import { DiffView } from '../components/DiffView';
 import { ViewSidebar } from '../components/ViewSidebar';
@@ -71,6 +73,7 @@ export type WorkOverviewProps = {
   branchesByRepo: Record<string, WorkBranch[]>;
   onRescan: () => void | Promise<void>;
   onReposChanged?: (repos: WorkRepo[]) => void;
+  instance?: InstanceInfo | null;
   params?: Record<string, string>;
 };
 
@@ -280,14 +283,18 @@ type MenuAction = {
   label: string;
   onClick: () => void;
   show?: boolean;
+  disabled?: boolean;
+  title?: string;
 };
 
 function BranchContextMenu({
   branch,
   anchorRef,
+  instance,
 }: {
   branch: WorkBranch;
   anchorRef: { current: HTMLElement | null };
+  instance?: InstanceInfo | null;
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -302,6 +309,12 @@ function BranchContextMenu({
 
   const branchName = getBranchName(branch);
   const wtPath = getWorktreePath(branch);
+  const canOpenPath = Boolean(wtPath) && canPerformOperation(
+    instance,
+    'POST',
+    '/api/system/open-path',
+    { path: wtPath },
+  );
 
   const actions: MenuAction[] = [
     {
@@ -322,8 +335,10 @@ function BranchContextMenu({
     {
       label: 'Open in Finder',
       show: wtPath !== null,
+      disabled: !canOpenPath,
+      title: canOpenPath ? 'Open in Finder' : 'External actions are unavailable in this instance.',
       onClick: () => {
-        if (wtPath) void openPath(wtPath);
+        if (canOpenPath && wtPath) void openPath(wtPath);
         setOpen(false);
       },
     },
@@ -361,6 +376,8 @@ function BranchContextMenu({
               type="button"
               className="work-actions__item"
               role="menuitem"
+              disabled={action.disabled}
+              title={action.title}
               onClick={(e) => {
                 e.stopPropagation();
                 action.onClick();
@@ -383,9 +400,10 @@ type BranchRowProps = {
   defaultBranch: string;
   expanded: Set<string>;
   onToggle: (repoId: string, branchName: string) => void;
+  instance?: InstanceInfo | null;
 };
 
-export function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, onToggle }: BranchRowProps): JSX.Element {
+export function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, onToggle, instance }: BranchRowProps): JSX.Element {
   const anchorRef = useRef<HTMLElement>(null);
   const branchName = getBranchName(branch);
   const status = getBranchStatus(branch);
@@ -461,7 +479,7 @@ export function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expan
           </div>
         </td>
         <td className="work-col-actions contextual-action-scope">
-          <BranchContextMenu branch={branch} anchorRef={anchorRef} />
+          <BranchContextMenu branch={branch} anchorRef={anchorRef} instance={instance} />
         </td>
       </tr>
       {diffStat && isExpanded ? (
@@ -546,6 +564,9 @@ function BranchAuditPanel({
   repoTitle,
   audit,
   loadState,
+  unavailableReason,
+  capabilityReason,
+  instance,
   open,
   confirmingKey,
   actingKey,
@@ -559,6 +580,9 @@ function BranchAuditPanel({
   repoTitle: string;
   audit: WorkRepoAudit | null;
   loadState: AuditLoadState;
+  unavailableReason: string | null;
+  capabilityReason: string;
+  instance?: InstanceInfo | null;
   open: boolean;
   confirmingKey: string | null;
   actingKey: string | null;
@@ -570,9 +594,11 @@ function BranchAuditPanel({
   onTrash: (entry: WorkAuditEntry) => void;
 }): JSX.Element {
   const entries = Array.isArray(audit?.entries) ? audit.entries : [];
-  const activeNotice = loadState.error
-    ? { kind: 'error' as const, text: `Branch audit could not be refreshed: ${loadState.error}` }
-    : notice;
+  const activeNotice = unavailableReason
+    ? { kind: 'info' as const, text: unavailableReason }
+    : loadState.error
+      ? { kind: 'error' as const, text: `Branch audit could not be refreshed: ${loadState.error}` }
+      : notice;
   return (
     <CollapsiblePanel
       className="work-audit"
@@ -591,8 +617,9 @@ function BranchAuditPanel({
         <button
           type="button"
           className="btn btn--xs btn--ghost"
-          disabled={loadState.loading}
+          disabled={loadState.loading || unavailableReason !== null}
           onClick={onRefresh}
+          title={unavailableReason ?? 'Run a live Git branch audit'}
         >
           {loadState.loading ? 'Auditing\u2026' : 'Run audit'}
         </button>
@@ -618,7 +645,7 @@ function BranchAuditPanel({
               Worktree inventory is unknown. Preserve all entries until a refresh succeeds.
             </p>
           ) : null}
-          {loadState.loading && !audit ? (
+          {unavailableReason ? null : loadState.loading && !audit ? (
             <div className="empty-state">Auditing {repoTitle}\u2026</div>
           ) : entries.length === 0 ? (
             <div className="empty-state">No local branch or worktree audit entries.</div>
@@ -636,15 +663,23 @@ function BranchAuditPanel({
                       const domId = `work-audit-${encodeURIComponent(key)}`;
                       const label = auditEntryLabel(entry);
                       const confirming = confirmingKey === key;
-                      const actionEnabled = Boolean(
+                      const entryEligible = Boolean(
                         entry.kind === 'branch' &&
                         entry.classification === 'safe_candidate' &&
                         entry.trash_request &&
                         entry.trash_command,
                       );
-                      const disabledReason = actionEnabled
-                        ? null
-                        : entry.reason || 'This entry must be preserved.';
+                      const actionEnabled = entryEligible && canPerformOperation(
+                        instance,
+                        'POST',
+                        '/api/v1/trash',
+                        entry.trash_request,
+                      );
+                      const disabledReason = !entryEligible
+                        ? entry.reason || 'This entry must be preserved.'
+                        : actionEnabled
+                          ? null
+                          : `Trash actions are ${capabilityReason.toLowerCase()}`;
                       return (
                         <article className="work-audit-entry" key={key}>
                           <div className="work-audit-entry__heading">
@@ -738,8 +773,22 @@ export function WorkOverviewView({
   repos: initialRepos,
   branchesByRepo,
   onRescan,
+  instance,
   params = {},
 }: WorkOverviewProps): JSX.Element {
+  // The shared operation check stays closed until instance metadata is known.
+  const capabilityReason = !instance
+    ? 'Waiting for instance capabilities.'
+    : instance?.role === 'preview'
+      ? 'Unavailable in this copied preview.'
+      : 'Unavailable in this instance.';
+  const canRunScan = canPerformOperation(instance, 'POST', '/api/work/scan');
+  const canPushAll = canPerformOperation(
+    instance,
+    'POST',
+    '/api/work/push',
+    { scope: 'all_ahead' },
+  );
   const [repos, setRepos] = useState<WorkRepo[]>(initialRepos);
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(params.repo ?? null);
   const [selectedBranches, setSelectedBranches] = useState<Record<string, string>>(
@@ -790,6 +839,13 @@ export function WorkOverviewView({
   // Bug: b5abaea — Push/sync state
   const [pushState, setPushState] = useState<PushState>({ active: false, authPending: false, repoProgress: new Map() });
 
+  const canAddProject = canPerformOperation(
+    instance,
+    'POST',
+    '/api/work/repos/add',
+    { root: addPath },
+  );
+
   // Sync repos when initialRepos changes (external updates)
   useEffect(() => {
     setRepos(initialRepos);
@@ -832,6 +888,7 @@ export function WorkOverviewView({
 
   useEffect(() => {
     const refresh = () => {
+      if (!canRunScan) return;
       void onRescan();
     };
     const interval = window.setInterval(refresh, 60_000);
@@ -847,7 +904,7 @@ export function WorkOverviewView({
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [onRescan]);
+  }, [onRescan, canRunScan]);
 
   // Bug: b5abaea — Subscribe to push SSE events forwarded via window CustomEvents
   useEffect(() => {
@@ -979,6 +1036,14 @@ export function WorkOverviewView({
   const loadAudit = async (repoId: string) => {
     const sequence = (auditRequestSequence.current[repoId] ?? 0) + 1;
     auditRequestSequence.current[repoId] = sequence;
+    if (!canPerformOperation(
+      instance,
+      'GET',
+      `/api/work/repos/${encodeURIComponent(repoId)}/audit`,
+    )) {
+      setAuditLoadStates((prev) => ({ ...prev, [repoId]: { loading: false, error: null } }));
+      return;
+    }
     setAuditLoadStates((prev) => ({ ...prev, [repoId]: { loading: true, error: null } }));
     try {
       const audit = await getWorkRepoAudit(repoId);
@@ -999,11 +1064,16 @@ export function WorkOverviewView({
 
   useEffect(() => {
     if (selectedRepoId) void loadAudit(selectedRepoId);
-  }, [selectedRepoId]);
+  }, [selectedRepoId, instance]);
 
   const handleTrashAuditEntry = async (repoId: string, entry: WorkAuditEntry) => {
+    if (!entry.trash_request || !canPerformOperation(
+      instance,
+      'POST',
+      '/api/v1/trash',
+      entry.trash_request,
+    )) return;
     const key = auditEntryKey(entry);
-    if (!entry.trash_request) return;
     setAuditActingKey(key);
     setAuditNotices((prev) => ({ ...prev, [repoId]: null }));
     try {
@@ -1015,19 +1085,21 @@ export function WorkOverviewView({
       }));
       if (outcome) {
         if (result.ok) setAuditConfirmingKey(null);
-        try {
-          await Promise.resolve(onRescan());
-        } catch (error) {
-          setAuditLoadStates((prev) => ({
-            ...prev,
-            [repoId]: {
-              loading: false,
-              error: `Branch data refresh failed: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          }));
-          return;
+        if (canRunScan) {
+          try {
+            await Promise.resolve(onRescan());
+          } catch (error) {
+            setAuditLoadStates((prev) => ({
+              ...prev,
+              [repoId]: {
+                loading: false,
+                error: `Branch data refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+              },
+            }));
+            return;
+          }
+          await loadAudit(repoId);
         }
-        await loadAudit(repoId);
       }
     } catch (error) {
       setAuditNotices((prev) => ({
@@ -1066,6 +1138,14 @@ export function WorkOverviewView({
     }
     const branchName = getBranchName(selectedBranch);
     const key = commitKey(selectedRepo.repoId, branchName);
+    if (!canPerformOperation(
+      instance,
+      'GET',
+      `/api/work/repos/${encodeURIComponent(selectedRepo.repoId)}/branches/${encodeURIComponent(branchName)}/commits`,
+    )) {
+      setCommitLoadState((prev) => ({ ...prev, [key]: { loading: false, error: null } }));
+      return;
+    }
     setCommitLoadState((prev) => ({ ...prev, [key]: { loading: true, error: null } }));
     let cancelled = false;
     getRepoBranchCommits(selectedRepo.repoId, branchName, { limit: WORK_COMMIT_LIMIT, offset: 0 })
@@ -1090,10 +1170,20 @@ export function WorkOverviewView({
     return () => {
       cancelled = true;
     };
-  }, [selectedRepo?.repoId, selectedBranchName]);
+  }, [selectedRepo?.repoId, selectedBranchName, instance]);
 
   useEffect(() => {
     if (!selectedRepo || !compareFrom || !compareTo) {
+      setCompareResult(null);
+      setCompareError(null);
+      setCompareLoading(false);
+      return;
+    }
+    if (!canPerformOperation(
+      instance,
+      'GET',
+      `/api/work/repos/${encodeURIComponent(selectedRepo.repoId)}/compare`,
+    )) {
       setCompareResult(null);
       setCompareError(null);
       setCompareLoading(false);
@@ -1117,7 +1207,7 @@ export function WorkOverviewView({
     return () => {
       cancelled = true;
     };
-  }, [selectedRepo?.repoId, compareFrom, compareTo, compareMode]);
+  }, [selectedRepo?.repoId, compareFrom, compareTo, compareMode, instance]);
 
   const repoTitleCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1128,6 +1218,12 @@ export function WorkOverviewView({
   }, [repoRows]);
 
   const handleUpdateRepo = async (id: string, patch: { name?: string; excluded?: boolean }) => {
+    if (!canPerformOperation(
+      instance,
+      'PUT',
+      `/api/work/repos/${encodeURIComponent(id)}`,
+      patch,
+    )) return;
     try {
       const res = await browserSessionFetch(`/api/work/repos/${encodeURIComponent(id)}`, {
         method: 'PUT',
@@ -1144,6 +1240,11 @@ export function WorkOverviewView({
   };
 
   const handleRemoveRepo = async (id: string) => {
+    if (!canPerformOperation(
+      instance,
+      'DELETE',
+      `/api/work/repos/${encodeURIComponent(id)}`,
+    )) return;
     try {
       const res = await browserSessionFetch(`/api/work/repos/${encodeURIComponent(id)}`, {
         method: 'DELETE',
@@ -1158,6 +1259,7 @@ export function WorkOverviewView({
   };
 
   const handleAddRepo = async () => {
+    if (!canAddProject) return;
     setAddError(null);
     try {
       const res = await browserSessionFetch('/api/work/repos/add', {
@@ -1180,6 +1282,12 @@ export function WorkOverviewView({
   };
 
   const handlePushRepo = async (repoId: string, repoTitle: string) => {
+    if (!canPerformOperation(
+      instance,
+      'POST',
+      `/api/work/repos/${encodeURIComponent(repoId)}/push`,
+      { scope: 'current' },
+    )) return;
     setPushState((prev) => {
       const nextProgress = new Map(prev.repoProgress);
       nextProgress.set(repoId, 'pushing');
@@ -1306,7 +1414,13 @@ export function WorkOverviewView({
                     onInput={(e) => setAddPath(e.currentTarget.value)}
                   />
                   <div className="repo-add-form__actions">
-                    <button type="button" className="btn btn--sm" onClick={() => void handleAddRepo()}>
+                    <button
+                      type="button"
+                      className="btn btn--sm"
+                      disabled={!canAddProject}
+                      title={!canAddProject ? capabilityReason : undefined}
+                      onClick={() => void handleAddRepo()}
+                    >
                       Add project
                     </button>
                     <button
@@ -1326,6 +1440,8 @@ export function WorkOverviewView({
                 <button
                   type="button"
                   className="btn btn--ghost btn--sm"
+                  disabled={!canAddProject}
+                  title={!canAddProject ? capabilityReason : undefined}
                   onClick={() => { setAddingRepo((v) => !v); setAddError(null); }}
                 >
                   + Add project
@@ -1333,9 +1449,11 @@ export function WorkOverviewView({
                 <button
                   type="button"
                   className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
-                  disabled={pushState.active || pushState.authPending}
-                  onClick={() => pushRepos('all_ahead').catch(() => {})}
-                  title="Push all ahead branches + notes for all projects"
+                  disabled={pushState.active || pushState.authPending || !canPushAll}
+                  onClick={() => {
+                    if (canPushAll) void pushRepos('all_ahead').catch(() => {});
+                  }}
+                  title={!canPushAll ? capabilityReason : 'Push all ahead branches + notes for all projects'}
                 >
                   {pushState.authPending
                     ? 'Authenticating...'
@@ -1343,6 +1461,11 @@ export function WorkOverviewView({
                       ? `Pushing... (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
                       : '\u2191\u2191 Push All'}
                 </button>
+                {!canAddProject || !canPushAll ? (
+                  <span className="work-sidebar__capability-note" role="status">
+                    Some project actions are {capabilityReason.toLowerCase()}
+                  </span>
+                ) : null}
               </div>
             </>
           )}
@@ -1420,6 +1543,18 @@ export function WorkOverviewView({
             const isExcluded = Boolean(repo.excluded);
             const isSettingsOpen = settingsOpenFor === repoId;
             const currentEditName = editName[repoId] ?? repo.name ?? repoTitle;
+            const repoOperationPath = `/api/work/repos/${encodeURIComponent(repoId)}`;
+            const canUpdateMetadata = (patch: { name?: string; excluded?: boolean }) =>
+              canPerformOperation(instance, 'PUT', repoOperationPath, patch);
+            const canRemoveProject = canPerformOperation(instance, 'DELETE', repoOperationPath);
+            const canPushProject = canPerformOperation(
+              instance,
+              'POST',
+              `${repoOperationPath}/push`,
+              { scope: 'current' },
+            );
+            const canRunAudit = canPerformOperation(instance, 'GET', `${repoOperationPath}/audit`);
+            const canCompare = canPerformOperation(instance, 'GET', `${repoOperationPath}/compare`);
 
             return (
               <DetailPaneShell
@@ -1465,9 +1600,9 @@ export function WorkOverviewView({
                         <button
                           type="button"
                           className="work-repo-push-btn"
-                          disabled={pushState.active || pushState.repoProgress.get(repoId) === 'pushing'}
+                    disabled={pushState.active || pushState.repoProgress.get(repoId) === 'pushing' || !canPushProject}
                           onClick={() => void handlePushRepo(repoId, repoTitle)}
-                          title="Push this repo"
+                          title={!canPushProject ? capabilityReason : 'Push this repo'}
                         >
                           <span className="work-repo-push-btn__label">
                             {pushState.repoProgress.get(repoId) === 'pushing' ? 'Pushing...' : '\u2191 Push'}
@@ -1477,6 +1612,7 @@ export function WorkOverviewView({
                           <button
                             type="button"
                             className="btn btn--xs"
+                            disabled={!canUpdateMetadata({ excluded: false })}
                             onClick={() => {
                               void handleUpdateRepo(repoId, { excluded: false });
                             }}
@@ -1517,6 +1653,7 @@ export function WorkOverviewView({
                           <button
                             type="button"
                             className="btn btn--xs"
+                            disabled={!canUpdateMetadata({ name: currentEditName })}
                             onClick={() => void handleUpdateRepo(repoId, { name: currentEditName }).then(() =>
                               setEditName((prev) => { const next = { ...prev }; delete next[repoId]; return next; })
                             )}
@@ -1526,6 +1663,7 @@ export function WorkOverviewView({
                           <button
                             type="button"
                             className="btn btn--xs btn--ghost"
+                            disabled={!canUpdateMetadata({ name: '' })}
                             onClick={() => void handleUpdateRepo(repoId, { name: '' }).then(() =>
                               setEditName((prev) => { const next = { ...prev }; delete next[repoId]; return next; })
                             )}
@@ -1539,6 +1677,7 @@ export function WorkOverviewView({
                             <input
                               type="checkbox"
                               checked={isExcluded}
+                              disabled={!canUpdateMetadata({ excluded: !isExcluded })}
                               onChange={(e) => void handleUpdateRepo(repoId, { excluded: e.currentTarget.checked })}
                               style={{ marginRight: '4px' }}
                             />
@@ -1552,6 +1691,8 @@ export function WorkOverviewView({
                               <button
                                 type="button"
                                 className="btn btn--xs btn--danger"
+                                disabled={!canRemoveProject}
+                                title={!canRemoveProject ? capabilityReason : undefined}
                                 onClick={() => void handleRemoveRepo(repoId)}
                               >
                                 Confirm remove
@@ -1568,6 +1709,8 @@ export function WorkOverviewView({
                             <button
                               type="button"
                               className="btn btn--xs btn--danger-outline"
+                              disabled={!canRemoveProject}
+                              title={!canRemoveProject ? capabilityReason : undefined}
                               onClick={() => setConfirmRemove(repoId)}
                             >
                               Remove repo
@@ -1581,8 +1724,11 @@ export function WorkOverviewView({
               >
                   <BranchAuditPanel
                     repoTitle={repoTitle}
-                    audit={audits[repoId] ?? null}
+                    audit={canRunAudit ? audits[repoId] ?? null : null}
                     loadState={auditLoadStates[repoId] ?? { loading: false, error: null }}
+                    unavailableReason={canRunAudit ? null : `Live branch audit is ${capabilityReason.toLowerCase()}`}
+                    capabilityReason={capabilityReason}
+                    instance={instance}
                     open={auditOpenByRepo[repoId] !== false}
                     confirmingKey={auditConfirmingKey}
                     actingKey={auditActingKey}
@@ -1639,9 +1785,15 @@ export function WorkOverviewView({
                       commitPage?.commits.find((commit) => commit.hash === selectedCommitHash) ??
                       commitPage?.commits[0] ??
                       null;
-                    const compareValue = compareFrom ? `${compareFrom}..${compareTo ?? ''}` : null;
+                                  const compareValue = compareFrom ? `${compareFrom}..${compareTo ?? ''}` : null;
+                                  const canReadCommits = Boolean(branchName) && canPerformOperation(
+                                      instance,
+                                      'GET',
+                                      `${repoOperationPath}/branches/${encodeURIComponent(branchName)}/commits`,
+                                    );
 
-                    const writeCompare = (from: string | null, to: string | null, mode: WorkCompareMode = compareMode) => {
+                                    const writeCompare = (from: string | null, to: string | null, mode: WorkCompareMode = compareMode) => {
+                                      if (!canCompare && (from !== null || to !== null)) return;
                       setCompareFrom(from);
                       setCompareTo(to);
                       setCompareMode(mode);
@@ -1717,13 +1869,21 @@ export function WorkOverviewView({
                                 <div>
                                   <h4>{branchName}</h4>
                                   <span className="text-muted">
-                                    {commitPage ? `${commitPage.total} commits` : 'Loading commits'}
+                                    {!canReadCommits
+                                      ? capabilityReason
+                                      : commitPage
+                                        ? `${commitPage.total} commits`
+                                      : loadState?.loading
+                                        ? 'Loading commits'
+                                        : 'No commit history loaded'}
                                   </span>
                                 </div>
                                 <div className="work-commit-toolbar__actions">
                                   <button
                                     type="button"
                                     className="btn btn--xs"
+                                    disabled={!canCompare}
+                                    title={!canCompare ? capabilityReason : undefined}
                                     onClick={() => writeCompare(defaultBranch as string, branchName, 'merge-base')}
                                   >
                                     Branch point
@@ -1731,6 +1891,8 @@ export function WorkOverviewView({
                                   <button
                                     type="button"
                                     className="btn btn--xs btn--ghost"
+                                    disabled={!canCompare}
+                                    title={!canCompare ? capabilityReason : undefined}
                                     onClick={() => writeCompare(defaultBranch as string, branchName, 'range')}
                                   >
                                     vs {defaultBranch}
@@ -1747,6 +1909,8 @@ export function WorkOverviewView({
                                   <select
                                     className="work-compare-tray__mode"
                                     value={compareMode}
+                                    disabled={!canCompare}
+                                    title={!canCompare ? capabilityReason : undefined}
                                     onChange={(event) => writeCompare(compareFrom, compareTo, event.currentTarget.value as WorkCompareMode)}
                                   >
                                     <option value="merge-base">Merge base</option>
@@ -1755,7 +1919,8 @@ export function WorkOverviewView({
                                   <button
                                     type="button"
                                     className="btn btn--xs btn--ghost"
-                                    disabled={!compareFrom || !compareTo}
+                                    disabled={!canCompare || !compareFrom || !compareTo}
+                                    title={!canCompare ? capabilityReason : undefined}
                                     onClick={() => writeCompare(compareTo, compareFrom)}
                                   >
                                     Swap
@@ -1770,7 +1935,11 @@ export function WorkOverviewView({
                                   </button>
                                 </div>
                               </div>
-                              {loadState?.error ? (
+                              {!canReadCommits ? (
+                                <div className="empty-state" role="status">
+                                  Commit history is {capabilityReason.toLowerCase()}
+                                </div>
+                              ) : loadState?.error ? (
                                 <div className="empty-state">{loadState.error}</div>
                               ) : loadState?.loading && !commitPage ? (
                                 <div className="empty-state">Loading commits...</div>
@@ -1812,6 +1981,8 @@ export function WorkOverviewView({
                                             <button
                                               type="button"
                                               className="btn btn--xs"
+                                              disabled={!canCompare}
+                                              title={!canCompare ? capabilityReason : undefined}
                                               onClick={() => addCommitToCompare(selectedCommit)}
                                             >
                                               Add to compare
@@ -1819,7 +1990,8 @@ export function WorkOverviewView({
                                             <button
                                               type="button"
                                               className="btn btn--xs btn--ghost"
-                                              disabled={selectedCommit.parents.length === 0}
+                                              disabled={!canCompare || selectedCommit.parents.length === 0}
+                                              title={!canCompare ? capabilityReason : undefined}
                                               onClick={() => {
                                                 const parent = selectedCommit.parents[0];
                                                 if (parent) writeCompare(parent, selectedCommit.hash, 'range');
@@ -1849,9 +2021,13 @@ export function WorkOverviewView({
                               <section className="work-compare-output" aria-label="Compare result">
                                 <div className="work-compare-output__header">
                                   <h4>Compare</h4>
-                                  {compareResult ? <span className="text-muted">{compareResult.range}</span> : null}
+                                  {canCompare && compareResult ? <span className="text-muted">{compareResult.range}</span> : null}
                                 </div>
-                                {compareLoading ? (
+                                {!canCompare && compareFrom && compareTo ? (
+                                  <div className="empty-state" role="status">
+                                    Compare results are {capabilityReason.toLowerCase()}
+                                  </div>
+                                ) : compareLoading ? (
                                   <div className="empty-state">Loading diff...</div>
                                 ) : compareError ? (
                                   <div className="empty-state">{compareError}</div>

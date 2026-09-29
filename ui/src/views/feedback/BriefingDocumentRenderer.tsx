@@ -21,6 +21,7 @@ import {
 import { useAppShell } from '../../app-shell';
 import { DetailHeaderIdentity } from '../../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
+import { DetailPaneMenuTrigger } from '../../components/shared/DetailPaneMenuTrigger';
 import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
@@ -659,17 +660,12 @@ export function BriefingDocumentRenderer({
           } : undefined}
           actions={round ? (
             <>
-              <button
-                ref={actionsTriggerRef}
-                type="button"
-                className="briefing-detail__actions-trigger"
-                aria-label="Briefing actions"
-                aria-haspopup="menu"
-                aria-expanded={actionsOpen}
+              <DetailPaneMenuTrigger
+                buttonRef={actionsTriggerRef}
+                label="Briefing actions"
+                expanded={actionsOpen}
                 onClick={() => setActionsOpen((open) => !open)}
-              >
-                <HorizontalDotsIcon />
-              </button>
+              />
               {actionsOpen ? (
                 <div
                   ref={actionsMenuRef}
@@ -845,10 +841,6 @@ export function BriefingDocumentRenderer({
       {body}
     </DetailPaneShell>
   );
-}
-
-function HorizontalDotsIcon(): JSX.Element {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></svg>;
 }
 
 export default BriefingDocumentRenderer;

@@ -5,7 +5,7 @@ import {
   triggerExactPathIngest,
   type TargetedIngestResult,
 } from "../ingestion.js";
-import { ConversationSourceStore } from "./source-store.js";
+import { ConversationSourceChangedError, ConversationSourceStore } from "./source-store.js";
 import {
   observeStableSourceAlias,
   observeStableSourceAliasExtent,
@@ -88,7 +88,18 @@ export interface FreshConversationResult {
   refreshed: boolean;
 }
 
-type ExactIngest = (path: string) => Promise<TargetedIngestResult>;
+export type ExactIngest = (path: string) => Promise<TargetedIngestResult>;
+
+export interface ExactConversationFreshnessOptions {
+  timeoutMs?: number;
+  ingest?: ExactIngest;
+  /** Check the indexed extent without waiting; queue an exact-source refresh when stale. */
+  waitForFresh?: boolean;
+  /** Schedule one exact selected-source reparse without blocking the read. */
+  scheduleReparse?: (path: string, sourceId: string, conversationId: string) => boolean;
+  /** Bounded observer instrumentation used by large-source regressions. */
+  sourceReadInstrumentation?: SourceReadInstrumentation;
+}
 
 const flights = new Map<string, Promise<FreshConversationResult>>();
 
@@ -476,16 +487,7 @@ async function converge(
 export async function ensureExactConversationFresh(
   db: Db,
   ref: string,
-  options: {
-    timeoutMs?: number;
-    ingest?: ExactIngest;
-    /** Check the indexed extent without waiting; queue an exact-source refresh when stale. */
-    waitForFresh?: boolean;
-    /** Test seam for the production actor's nonblocking selected-source reparse. */
-    scheduleReparse?: (path: string, sourceId: string, conversationId: string) => boolean;
-    /** Bounded observer instrumentation used by large-source regressions. */
-    sourceReadInstrumentation?: SourceReadInstrumentation;
-  } = {},
+  options: ExactConversationFreshnessOptions = {},
 ): Promise<FreshConversationResult> {
   let pinned: PinnedConversationSource;
   try {
@@ -504,12 +506,13 @@ export async function ensureExactConversationFresh(
     `).get(pinned.sourceId) as {
       parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number;
     } | undefined;
-    const outdated = epochs && pinned.sourcePath && (
+    const outdated = !epochs || !pinned.sourcePath || (
       epochs.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
       || epochs.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
       || epochs.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
       || epochs.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
     );
+    const parserEpochOutdated = Boolean(outdated);
     let sourceNeedsRefresh = Boolean(outdated);
     if (!sourceNeedsRefresh && pinned.sourcePath) {
       try {
@@ -525,6 +528,18 @@ export async function ensureExactConversationFresh(
     if (sourceNeedsRefresh && pinned.sourcePath) {
       try {
         if ((options.scheduleReparse ?? scheduleExactPathReparse)(pinned.sourcePath, pinned.sourceId, pinned.conversationId)) {
+          if (!parserEpochOutdated) {
+            // Let the selected source reader prove its requested page against
+            // the sealed indexed prefix. This keeps an active append from
+            // blocking historical pages; the reader still rejects a rewrite,
+            // truncation, replacement, or unavailable source version.
+            return {
+              conversationId: pinned.conversationId,
+              sourceId: pinned.sourceId,
+              sourcePath: pinned.sourcePath,
+              refreshed: false,
+            };
+          }
           throw new ConversationFreshnessError("freshness_pending", "conversation source refresh is pending");
         }
         throw new ConversationFreshnessError("freshness_error", "conversation source refresh worker is unavailable");
@@ -533,8 +548,9 @@ export async function ensureExactConversationFresh(
         throw new ConversationFreshnessError("freshness_error", error instanceof Error ? error.message : String(error));
       }
     }
-    // Each selected read checks the exact indexed extent and parser epoch;
-    // demand refreshes join the same exact-path actor as watcher events.
+    // Exact extent checks schedule the same path-scoped refresh as watcher
+    // events. A source-backed page read verifies its selected bytes against
+    // the sealed version before it can serve a growing source.
     return {
       conversationId: pinned.conversationId,
       sourceId: pinned.sourceId,
@@ -553,6 +569,12 @@ export async function ensureExactConversationFresh(
     )
       .catch((error: unknown) => {
         if (error instanceof ConversationFreshnessError) throw error;
+        if (error instanceof ConversationSourceChangedError) {
+          throw new ConversationFreshnessError(
+            "freshness_pending",
+            "conversation source changed during refresh; retry selected read",
+          );
+        }
         throw new ConversationFreshnessError("freshness_error", error instanceof Error ? error.message : String(error));
       })
       .finally(() => flights.delete(sourceId));

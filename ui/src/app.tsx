@@ -58,6 +58,7 @@ import {
 } from './client-auth-token';
 import { keepSubmittedBriefingAnnotations } from './views/feedback/briefing-preferences';
 import { DetailPaneNotice } from './components/shared/DetailPaneNotice';
+import { PreviewCopyNotice } from './components/shared/PreviewCopyNotice';
 import {
   daemonEpochChanged,
   daemonCommitChanged,
@@ -1087,6 +1088,7 @@ function App(): JSX.Element {
           await getInboxGlobal().then((data) => dispatch({ type: 'setInboxData', data }));
           return;
         case 'settings':
+          dispatch({ type: 'setSettingsLoadError', error: null });
           await getSettings().then((settings) => dispatch({ type: 'setSettings', settings }));
           return;
         case 'work':
@@ -1098,8 +1100,10 @@ function App(): JSX.Element {
         default:
           return;
       }
-    } catch {
-      if (tab === 'inbox') dispatch({ type: 'setInboxLoading', loading: false });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (tab === 'inbox') dispatch({ type: 'setInboxLoadError', error: message });
+      if (tab === 'settings') dispatch({ type: 'setSettingsLoadError', error: message });
     }
   }, [accessReady, loadWorkData]);
   loadVisibleRouteDataRef.current = loadVisibleRouteData;
@@ -1973,7 +1977,10 @@ function App(): JSX.Element {
     dispatch({ type: 'setInboxLoading', loading: true });
     getInboxGlobal()
       .then((data) => dispatch({ type: 'setInboxData', data }))
-      .catch(() => dispatch({ type: 'setInboxLoading', loading: false }));
+      .catch((error: unknown) => dispatch({
+        type: 'setInboxLoadError',
+        error: error instanceof Error ? error.message : String(error),
+      }));
   };
 
   // ── Console handlers ── Bug: b949700
@@ -2513,23 +2520,30 @@ function App(): JSX.Element {
 
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
   // Bug: 645f8a8 — also covers the mid-startup / not-ready daemon case.
-  if (splashActive) {
-    return <RebuildingSplash
-      reason={rebuilding ? 'rebuilding' : 'starting'}
-      epochStalled={epochStalled}
-      stallEscape={stallEscape}
-      onContinue={continuePastStall}
-    />;
-  }
-
-  return (
+  const renderAppShell = (children: ComponentChildren): JSX.Element => (
     <div
-      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${leftShadowEnabled ? ' app-shell--left-shadow' : ''}`}
+      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${leftShadowEnabled ? ' app-shell--left-shadow' : ''}${instanceInfo?.role === 'preview' ? ' app-shell--preview' : ''}`}
       style={{
         '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
         ...typographyCssVariables(typography),
       } as JSX.CSSProperties}
     >
+      <PreviewCopyNotice instance={instanceInfo} />
+      <div className="app-shell__workspace">{children}</div>
+    </div>
+  );
+
+  if (splashActive) {
+    return renderAppShell(<RebuildingSplash
+      reason={rebuilding ? 'rebuilding' : 'starting'}
+      epochStalled={epochStalled}
+      stallEscape={stallEscape}
+      onContinue={continuePastStall}
+    />);
+  }
+
+  return renderAppShell(
+    <>
       {!daemonWarm && (
         <div className="daemon-warm-status" role="status" aria-live="polite">
           Still loading workspace data…
@@ -2737,6 +2751,7 @@ function App(): JSX.Element {
                 repos={state.workRepos}
                 branchesByRepo={state.workBranches}
                 onRescan={handleRescan}
+                instance={instanceInfo}
                 params={tabRoute.params}
               />
             );
@@ -2776,6 +2791,7 @@ function App(): JSX.Element {
             <LazyInboxView
               data={state.inboxData}
               loading={state.inboxLoading}
+              error={state.inboxLoadError}
               selectedItemId={state.selectedInboxItemId}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
               onSelectItem={handleSelectInboxItem}
@@ -2784,7 +2800,7 @@ function App(): JSX.Element {
               onAckManagedReminderOccurrence={handleAckManagedReminderOccurrence}
               onAckAll={handleAckAll}
               onRefresh={handleInboxRefresh}
-              mutationsAllowed={!previewMutationsRejected}
+              instance={instanceInfo}
             />
           );
         })())}
@@ -2808,6 +2824,8 @@ function App(): JSX.Element {
           <LazySettingsView
             settings={effectiveSettings}
             onSave={handleSettingsSave}
+            loadError={state.settingsLoadError}
+            onRefresh={() => void loadVisibleRouteData('settings')}
             typography={typography}
             onTypographySave={handleTypographySave}
             onClose={handleSettingsClose}
@@ -2893,7 +2911,7 @@ function App(): JSX.Element {
           ) : null}
         </div>
       </AppShellProvider>
-    </div>
+    </>
   );
 }
 

@@ -19,7 +19,6 @@ let tempDir = "";
 let db: Db;
 let previousCodexHome: string | undefined;
 const TEST_APPEND_BATCH_BYTES = 16 * 1024 * 1024;
-const TEST_HIGH_APPEND_OFFSET = 2_147_483_647 + 8192;
 
 function row(record: unknown): string {
   return `${JSON.stringify(record)}\n`;
@@ -177,6 +176,56 @@ describe("incremental tail ingestion", () => {
     ).toMatchObject({ byte_offset: fs.statSync(sessionPath).size, line_count: 4 });
   });
 
+  it("indexes the exact incremental append prefix when the writer grows during source capture", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows(), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const conversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
+      .get(sessionPath) as { id: string };
+    const priorVersion = db.prepare(`
+      SELECT version.byte_length
+        FROM conversation_sources source
+        JOIN conversation_source_versions version ON version.id = source.current_version_id
+       WHERE source.conversation_id = ?
+    `).get(conversation.id) as { byte_length: number };
+
+    const parsedTail = assistantRow("parsed tail", 3);
+    const concurrentTail = assistantRow("writer tail", 4);
+    await appendWithMtime(sessionPath, parsedTail, 2);
+    const expectedByteLength = fs.statSync(sessionPath).size;
+    const originalRecordConversation = ConversationSourceStore.prototype.recordConversation;
+    let capturedByteLength: number | null = null;
+    vi.spyOn(ConversationSourceStore.prototype, "recordConversation").mockImplementation(async function (input) {
+      if (input.sourceSnapshot?.kind === "append" && capturedByteLength === null) {
+        capturedByteLength = input.sourceSnapshot.byteLength;
+        await fsp.appendFile(sessionPath, concurrentTail, "utf8");
+      }
+      return originalRecordConversation.call(this, input);
+    });
+
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+
+    expect(capturedByteLength).toBe(expectedByteLength);
+    expect(fs.statSync(sessionPath).size).toBeGreaterThan(expectedByteLength);
+    const currentVersion = db.prepare(`
+      SELECT version.content_sha256, version.byte_length
+        FROM conversation_sources source
+        JOIN conversation_source_versions version ON version.id = source.current_version_id
+       WHERE source.conversation_id = ?
+    `).get(conversation.id) as { content_sha256: string; byte_length: number };
+    const capturedBytes = fs.readFileSync(sessionPath).subarray(0, expectedByteLength);
+    expect(currentVersion).toEqual({
+      content_sha256: crypto.createHash("sha256").update(capturedBytes).digest("hex"),
+      byte_length: expectedByteLength,
+    });
+
+    const page = await new ConversationSourceReader(db).readAll(conversation.id);
+    expect(page.status).toBe("source");
+    if (page.status === "source") {
+      expect(page.value.map((block) => block.content)).toEqual(["hello", "hi", "parsed tail"]);
+    }
+  });
+
   it("fully reindexes an unchanged source when the normalization epoch advances", async () => {
     const sessionPath = await makeCodexSession();
     await writeWithMtime(sessionPath, initialCodexRows(), 1);
@@ -224,6 +273,14 @@ describe("incremental tail ingestion", () => {
     const sessionPath = await makeCodexSession();
     await writeWithMtime(sessionPath, initialCodexRows(), 1);
     await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const conversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
+      .get(sessionPath) as { id: string };
+    const sealedBase = db.prepare(`
+      SELECT version.byte_length
+        FROM conversation_sources source
+        JOIN conversation_source_versions version ON version.id = source.current_version_id
+       WHERE source.conversation_id = ?
+    `).get(conversation.id) as { byte_length: number };
 
     const records: string[] = [];
     let appendedBytes = 0;
@@ -232,22 +289,18 @@ describe("incremental tail ingestion", () => {
       records.push(record);
       appendedBytes += Buffer.byteLength(record);
     }
-    await fsp.truncate(sessionPath, TEST_HIGH_APPEND_OFFSET);
-    db.prepare(`
-      UPDATE conversation_ingest_state
-         SET byte_offset = ?, tail_hash = ?, partial_line = ''
-       WHERE file_path = ?
-    `).run(
-      TEST_HIGH_APPEND_OFFSET,
-      crypto.createHash("sha256").update(Buffer.alloc(4096)).digest("hex"),
-      sessionPath,
-    );
     await appendWithMtime(sessionPath, records.join(""), 2);
 
     const fullParse = vi.spyOn(CodexParser.prototype, "parse").mockRejectedValue(
       new Error("unbounded whole-file reparse invoked"),
     );
-    vi.spyOn(ConversationSourceStore.prototype, "recordConversation").mockResolvedValue("test-source");
+    let capturedRanges: Array<{ byteStart: number; byteEnd: number; contentHash: string }> | undefined;
+    vi.spyOn(ConversationSourceStore.prototype, "recordConversation").mockImplementation(async (input) => {
+      if (input.sourceSnapshot?.kind === "append") {
+        capturedRanges = input.sourceSnapshot.appendRanges;
+      }
+      return "test-source";
+    });
     const appendBatchBytes: number[] = [];
     await triggerReconcileForTest({
       watchConfigs: watchConfigs(),
@@ -261,6 +314,13 @@ describe("incremental tail ingestion", () => {
     expect(fullParse).not.toHaveBeenCalled();
     expect(appendBatchBytes.length).toBeGreaterThan(1);
     expect(Math.max(...appendBatchBytes)).toBeLessThanOrEqual(TEST_APPEND_BATCH_BYTES);
+    if (!capturedRanges) throw new Error("append range proof was not passed to the source store");
+    expect(capturedRanges.length).toBeGreaterThan(1);
+    expect(capturedRanges[0].byteStart).toBe(sealedBase.byte_length);
+    for (let index = 1; index < capturedRanges.length; index += 1) {
+      expect(capturedRanges[index].byteStart).toBe(capturedRanges[index - 1].byteEnd);
+    }
+    expect(capturedRanges.at(-1)?.byteEnd).toBe(fs.statSync(sessionPath).size);
     expect(db.prepare("SELECT block_count FROM conversations WHERE source_path = ?")
       .get(sessionPath)).toEqual({ block_count: 2 + records.length });
     expect(db.prepare("SELECT byte_offset, line_count FROM conversation_ingest_state WHERE file_path = ?")

@@ -10,6 +10,7 @@ import type {
   ConversationBlock,
   ConversationParser,
   IncrementalParseInput,
+  ParserSourceSnapshot,
   ParseResult,
 } from "./types.js";
 import { attachTranscriptChatItem } from "./types.js";
@@ -169,7 +170,7 @@ export class ClaudeParser implements ConversationParser {
   }
 
   async parse(filePath: string): Promise<ParseResult | null> {
-    const { records, sourceHash } = await readJsonlFileRecords<ClaudeRecord>(filePath);
+    const { records, sourceHash, sourceSnapshot } = await readJsonlFileRecords<ClaudeRecord>(filePath);
     let sourceMtime = 0;
     try {
       const stat = await fs.promises.stat(filePath);
@@ -182,6 +183,7 @@ export class ClaudeParser implements ConversationParser {
       baseRecordCount: 0,
       sourceHash,
       sourceMtime,
+      sourceSnapshot,
     });
   }
 
@@ -198,7 +200,14 @@ export class ClaudeParser implements ConversationParser {
   private async parseRecords(
     filePath: string,
     records: ClaudeRecord[],
-    options: { baseBlockCount: number; baseRecordCount: number; nativeSessionId?: string; sourceHash: string; sourceMtime: number },
+    options: {
+      baseBlockCount: number;
+      baseRecordCount: number;
+      nativeSessionId?: string;
+      sourceHash: string;
+      sourceMtime: number;
+      sourceSnapshot?: ParserSourceSnapshot;
+    },
   ): Promise<ParseResult | null> {
     let hasSidechainRecord = false;
     for (const record of records) {
@@ -615,6 +624,7 @@ export class ClaudeParser implements ConversationParser {
         agent_id: subagentPath?.agentId ?? null,
       },
       blocks,
+      ...(options.sourceSnapshot ? { sourceSnapshot: options.sourceSnapshot } : {}),
       ...(providerTitle ? { providerTitle: title } : {}),
       ...(providerTitleSource ? { providerTitleSource } : {}),
     };

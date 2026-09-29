@@ -129,6 +129,53 @@ describe("versioned conversation source reader", () => {
     db.close();
   });
 
+  it("seals the parser extent when the writer appends before source indexing", async () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    const parsed = await parse(filePath);
+    const sourceSnapshot = parsed.sourceSnapshot;
+    if (!sourceSnapshot || sourceSnapshot.kind !== "full") {
+      throw new Error("full parse did not return its source snapshot");
+    }
+    insertConversation(db, "conversation-a", filePath, parsed);
+
+    fs.appendFileSync(filePath, `${JSON.stringify({
+      type: "response_item",
+      timestamp: "2026-08-17T00:00:04Z",
+      payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "writer tail" }] },
+    })}\n`);
+
+    const versionId = await new ConversationSourceStore(db).recordConversation({
+      conversationId: "conversation-a",
+      provider: "codex",
+      nativeSessionId: "duplicate-session",
+      filePath,
+      expectedContentHash: parsed.conversation.source_hash,
+      sourceSnapshot,
+      blocks: parsed.blocks.map((block) => ({
+        ...block,
+        legacyId: `legacy-conversation-a-${block.position}`,
+      })),
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+
+    expect(db.prepare(`
+      SELECT content_sha256, byte_length FROM conversation_source_versions WHERE id = ?
+    `).get(versionId)).toEqual({
+      content_sha256: sourceSnapshot.contentHash,
+      byte_length: sourceSnapshot.byteLength,
+    });
+    expect(fs.statSync(filePath).size).toBeGreaterThan(sourceSnapshot.byteLength);
+
+    const read = await new ConversationSourceReader(db).readAll("conversation-a");
+    expect(read.status).toBe("source");
+    if (read.status !== "source") throw new Error("expected parser-sealed source read");
+    expect(read.value.map((block) => block.content)).toEqual(parsed.blocks.map((block) => block.content));
+    db.close();
+  });
+
   it("reads verified multi-record tool linkage and resolves every legacy block id", async () => {
     const db = new Database(":memory:");
     migrate(db);
@@ -199,6 +246,46 @@ describe("versioned conversation source reader", () => {
     const direct = await reader.readBlock(sparseConversationBlockId("conversation-a", 2));
     expect(direct.status).toBe("source");
     if (direct.status === "source") expect(direct.value.content).toBe(parsed.blocks[2].content);
+    db.close();
+  });
+
+  it("serves the sealed sparse prefix during append growth and rejects an in-place rewrite", async () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const filePath = rolloutPath();
+    writeRecords(filePath, records());
+    const parsed = await parse(filePath);
+    insertConversation(db, "conversation-a", filePath, parsed);
+    const versionId = await record(db, "conversation-a", filePath);
+    const cache = getConversationStructureCache(db);
+    expect(cache.captureDenseRows(db, "conversation-a", "replace")).toMatchObject({
+      cached: parsed.blocks.length,
+      sourceVersionId: versionId,
+    });
+    db.exec(`
+      DELETE FROM conversation_block_aliases;
+      DELETE FROM conversation_structural_blocks;
+      DELETE FROM conversation_blocks;
+      DELETE FROM conversation_normalization_checkpoints;
+    `);
+
+    fs.appendFileSync(filePath, `${JSON.stringify({
+      type: "response_item",
+      timestamp: "2026-08-17T00:00:04Z",
+      payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "new tail" }] },
+    })}\n`);
+    const reader = new ConversationSourceReader(db);
+    const appended = await reader.readPage("conversation-a", { offset: 0, limit: 3 });
+    expect(appended.status).toBe("source");
+    if (appended.status !== "source") throw new Error("expected verified sparse prefix read");
+    expect(appended.sourceVersionId).toBe(versionId);
+    expect(appended.value.total).toBe(parsed.blocks.length);
+    expect(appended.value.blocks.map((block) => block.content)).toEqual(parsed.blocks.map((block) => block.content));
+
+    const grownBytes = fs.readFileSync(filePath, "utf8");
+    fs.writeFileSync(filePath, grownBytes.replace("hello result", "jello result"));
+    const rewritten = await reader.readPage("conversation-a", { offset: 1, limit: 1 });
+    expect(rewritten.status).toBe("stale");
     db.close();
   });
 

@@ -8,6 +8,7 @@ import {
 } from "./ingestion.js";
 import type { IngestionWorkerRequest, IngestionWorkerResponse } from "./ingestion-worker-protocol.js";
 import { IngestionPriorityQueue } from "./ingestion-priority-queue.js";
+import { isConversationSourceChangedError } from "./conversations/source-store.js";
 import type { Logger } from "./types.js";
 
 const port = parentPort;
@@ -65,7 +66,13 @@ async function handle(
     });
     send({ kind: "result", id: request.id, ok: true, value });
   } catch (error) {
-    send({ kind: "result", id: request.id, ok: false, error: String(error) });
+    send({
+      kind: "result",
+      id: request.id,
+      ok: false,
+      error: String(error),
+      ...(isConversationSourceChangedError(error) ? { errorCode: "conversation_source_changed" as const } : {}),
+    });
   }
 }
 

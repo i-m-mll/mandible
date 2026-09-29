@@ -84,7 +84,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     if (!Number.isInteger(index)) {
       return undefined;
     }
-    const repos = workScanner.getRepos();
+    const repos = workScanner.getCachedRepos();
     return repos[index];
   };
   const enforceRepoAccess = (
@@ -126,26 +126,9 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     }).allowed;
   };
 
-  // Bug: d6f79a2 — fire-and-forget async scan; respond immediately with cached
-  // repo list so the UI is not blocked while branches are scanned. The first
-  // GET /api/work/repos used to call scanAll() synchronously, blocking the
-  // event loop for 3-5s (85+ branches × spawnSync) and causing all concurrent
-  // HTTP requests (including issue detail fetches) to queue up.
-  let hasScannedThisSession = false;
-  let startupScan: Promise<unknown> | null = null;
-  const ensureScan = () => {
-    if (hasScannedThisSession || startupScan) return;
-    startupScan = workScanner.scanAllAsync({ skip_recent: true });
-    void startupScan.then(
-      () => { hasScannedThisSession = true; },
-      () => { startupScan = null; },
-    );
-  };
-
   server.get("/api/work/repos", (req, res) => {
-    ensureScan();
     const includeExcluded = queryString(req, "include_excluded") === "true";
-    const repos = workScanner.getRepos();
+    const repos = workScanner.getCachedRepos();
     const visible = repos.filter((repo) => canRepoAccess(req, repo, "read"));
     const filtered = includeExcluded ? visible : visible.filter((r) => !r.excluded);
     sendJson(res, 200, filtered);
@@ -186,7 +169,6 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
   }, { fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/branches", (req, res) => {
-    ensureScan();
     const repoId = req.params.id;
     if (!repoId) {
       sendJson(res, 400, { error: "missing repo id" });
@@ -233,7 +215,6 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
   }, { fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/branches/:branch/commits", (req, res) => {
-    ensureScan();
     const repoId = req.params.id;
     const branchName = req.params.branch;
     if (!repoId || !branchName) {
@@ -257,7 +238,6 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
   }, { fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/compare", (req, res) => {
-    ensureScan();
     const repoId = req.params.id;
     if (!repoId) {
       sendJson(res, 400, { error: "missing repo id" });
@@ -280,7 +260,6 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
   }, { fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/worktrees", (req, res) => {
-    ensureScan();
     const repoId = req.params.id;
     if (!repoId) {
       sendJson(res, 400, { error: "missing repo id" });
@@ -296,7 +275,6 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
   }, { fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/branch/:name", (req, res) => {
-    ensureScan();
     const repoId = req.params.id;
     const branchName = req.params.name;
     if (!repoId || !branchName) {

@@ -22,6 +22,7 @@ import { act } from 'preact/test-utils';
 import { undo } from '@codemirror/commands';
 import { EditorSelection } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
+import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 
 import {
   DocumentBlockEditor,
@@ -50,10 +51,22 @@ import {
   deleteSpaceBlock,
   detachItemFromBlocks,
 } from '../../ui/src/views/spaces/spaceBlocksClient';
-import type { LedgerIssueDetailProjection, SpaceBlock, SpaceExport, SpaceItem } from '../../ui/src/api';
+import type { InstanceInfo, LedgerIssueDetailProjection, SpaceBlock, SpaceExport, SpaceItem } from '../../ui/src/api';
 import { __resetResourceRefRecognizers } from '../../ui/src/resource-refs';
 
 const NOW = 1_700_000_000_000;
+
+const mainInstance: InstanceInfo = {
+  role: 'main',
+  instance_id: 'main-editor-tests',
+  installation_id: 'test-installation',
+  public_origin: 'http://localhost:19420',
+  backend_generation: 'test-generation',
+  allowed_effects: ['ledger:read', 'ledger:write'],
+  writable_roots: ['/tmp'],
+  db_path: '/tmp/mandible-main.db',
+  db_path_source: 'test',
+};
 
 // --- SSE mock (matches the createSSEClient EventSource transport) ------------
 
@@ -150,6 +163,20 @@ function makeItem(over: Partial<SpaceItem> & Pick<SpaceItem, 'id'>): SpaceItem {
   };
 }
 
+function makePreviewInstance(allowedEffects: string[]): InstanceInfo {
+  return {
+    role: 'preview',
+    instance_id: 'preview-1',
+    installation_id: 'install-1',
+    public_origin: 'http://localhost:19420',
+    backend_generation: 'test-generation',
+    allowed_effects: allowedEffects,
+    writable_roots: ['/tmp/mandible-preview'],
+    db_path: '/tmp/mandible-preview/mandible.db',
+    db_path_source: 'iab-preview-copy',
+  };
+}
+
 /**
  * A mutable in-memory backend stub over the C11 block routes + the C13a exports
  * read. Records every write so the tests can assert the editor hit the right
@@ -168,6 +195,9 @@ function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = [], items: 
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    if (url === '/api/client-auth/whoami') {
+      return json({ authenticated: true, session: { csrf_token: 'test-csrf' } });
+    }
     calls.push({ method, url, body });
 
     const blockColl = url.match(/\/api\/spaces\/sp1\/blocks(?:\?.*)?$/);
@@ -297,6 +327,7 @@ function json(payload: unknown, status = 200): Response {
 
 beforeEach(() => {
   stubLocalStorage();
+  __resetBrowserSessionForTests();
   MockEventSource.instances = [];
   vi.stubGlobal('EventSource', MockEventSource);
   __resetSharedSseForTests();
@@ -330,6 +361,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   __resetResourceRefRecognizers();
@@ -491,7 +523,7 @@ describe('spaceBlocksClient', () => {
 async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor>[0]> & {
   backend: ReturnType<typeof makeBackend>;
 }) {
-  const { backend, ...rest } = props;
+  const { backend, instance = mainInstance, ...rest } = props;
   vi.stubGlobal('fetch', backend.fetchImpl);
   render(
     <DocumentBlockEditor
@@ -499,6 +531,7 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
       spaceId="sp1"
       renderer="document"
       fetchImpl={backend.fetchImpl}
+      instance={instance}
       {...rest}
     />,
   );
@@ -665,6 +698,9 @@ describe('DocumentBlockEditor (editable)', () => {
     let rejectOldBlocks: ((reason?: unknown) => void) | null = null;
     const fetchImpl = vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === '/api/client-auth/whoami') {
+        return Promise.resolve(json({ authenticated: true, session: { csrf_token: 'test-csrf' } }));
+      }
       if (/\/api\/spaces\/sp1\/blocks(?:\?.*)?$/.test(url)) {
         return new Promise<Response>((_resolve, reject) => {
           rejectOldBlocks = reject;
@@ -712,6 +748,7 @@ describe('DocumentBlockEditor (editable)', () => {
         spaceId="sp1"
         renderer="document"
         fetchImpl={fetchImpl as unknown as typeof fetch}
+        instance={mainInstance}
       />,
     );
     await waitFor(() => expect(rejectOldBlocks).toBeTruthy());
@@ -722,6 +759,7 @@ describe('DocumentBlockEditor (editable)', () => {
         spaceId="sp2"
         renderer="document"
         fetchImpl={fetchImpl as unknown as typeof fetch}
+        instance={mainInstance}
       />,
     );
     await waitFor(() => expect(screen.getByText('Fresh document.')).toBeTruthy());
@@ -1187,6 +1225,20 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(saveState.closest('.spaces-block-editor__list')).toBeNull();
   });
 
+  it('autosaves a prose edit to the copied preview ledger when ledger writes are allowed', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
+    await renderEditor({
+      backend,
+      instance: makePreviewInstance(['ledger:read', 'ledger:write', 'files:preview']),
+    });
+
+    setSourceText(0, 'edited in preview');
+    blurSource();
+
+    await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('edited in preview'));
+    expect(backend.calls.some((call) => call.method === 'PATCH')).toBe(true);
+  });
+
   it('debounces autosave while a prose block is being edited', async () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
     await renderEditor({ backend });
@@ -1331,6 +1383,7 @@ describe('DocumentBlockEditor (custody gating)', () => {
         spaceId="sp1"
         renderer="document"
         fetchImpl={backend.fetchImpl}
+        instance={mainInstance}
         onReimport={onReimport}
         onFork={onFork}
       />,

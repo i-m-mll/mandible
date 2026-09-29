@@ -120,8 +120,10 @@ type AppState = {
   issueRepos: IssueRepoSummary[];
   daemonReload: DaemonReloadInfo | null;
   settings: Record<string, string>;
+  settingsLoadError: string | null;
   inboxData: InboxData | null;
   inboxLoading: boolean;
+  inboxLoadError: string | null;
   consoleSessions: ConsoleSession[];
   consoleActiveSessionId: string | null;
   consoleUnreadBadge: number;
@@ -148,9 +150,11 @@ type Action =
   | { type: 'setIssueRepos'; repos: IssueRepoSummary[] }
   | { type: 'setDaemonReload'; reload: DaemonReloadInfo | null }
   | { type: 'setSettings'; settings: Record<string, string> }
+  | { type: 'setSettingsLoadError'; error: string | null }
   | { type: 'updateSetting'; key: string; value: string }
   | { type: 'setInboxData'; data: InboxData }
   | { type: 'setInboxLoading'; loading: boolean }
+  | { type: 'setInboxLoadError'; error: string }
   | { type: 'ackInboxContinuation'; sessionId: string }
   | { type: 'ackInboxAuthResult'; requestId: string }
   | { type: 'ackInboxManagedReminderOccurrence'; occurrenceId: string }
@@ -189,8 +193,10 @@ const initialState: AppState = {
   issueRepos: [],
   daemonReload: null,
   settings: {},
+  settingsLoadError: null,
   inboxData: null,
   inboxLoading: false,
+  inboxLoadError: null,
   consoleSessions: [],
   consoleActiveSessionId: null,
   consoleUnreadBadge: 0,
@@ -351,13 +357,21 @@ function appReducer(state: AppState, action: AppAction): AppState {
     case 'setDaemonReload':
       return { ...state, daemonReload: action.reload };
     case 'setSettings':
-      return { ...state, settings: action.settings };
+      return { ...state, settings: action.settings, settingsLoadError: null };
+    case 'setSettingsLoadError':
+      return { ...state, settingsLoadError: action.error };
     case 'updateSetting':
       return { ...state, settings: { ...state.settings, [action.key]: action.value } };
     case 'setInboxData':
-      return { ...state, inboxData: action.data, inboxLoading: false };
+      return { ...state, inboxData: action.data, inboxLoading: false, inboxLoadError: null };
     case 'setInboxLoading':
-      return { ...state, inboxLoading: action.loading };
+      return {
+        ...state,
+        inboxLoading: action.loading,
+        inboxLoadError: action.loading ? null : state.inboxLoadError,
+      };
+    case 'setInboxLoadError':
+      return { ...state, inboxLoading: false, inboxLoadError: action.error };
     case 'ackInboxContinuation': {
       if (!state.inboxData) return state;
       const continuations = state.inboxData.continuations.filter(

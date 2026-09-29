@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { getDb } from "../db.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import type { RouteRegistrar } from "../server.js";
+import type { InstanceRole } from "../types.js";
 import { readBody, sendJson } from "./http.js";
 
 const DEFAULT_PROTECTED_BRANCHES = ["main", "develop"];
@@ -25,6 +26,8 @@ type InstructionDeliveryResult = {
   targets: InstructionTarget[];
   postExport: string;
   configuredTargets: boolean;
+  preview_only?: boolean;
+  configuration_saved?: boolean;
   export: {
     ok: boolean;
     stdout: string;
@@ -154,12 +157,16 @@ function diffRemovedInstructionTargets(
   return previousTargets.filter((target) => !nextKeys.has(`${target.mode}\t${target.path}`));
 }
 
-function instructionDeliverySnapshot(exportResult = { ok: true, stdout: "", stderr: "" }): InstructionDeliveryResult {
+function instructionDeliverySnapshot(
+  exportResult = { ok: true, stdout: "", stderr: "" },
+  previewOnly = false,
+): InstructionDeliveryResult {
   const configured = getConfiguredInstructionTargets();
   return {
     targets: configured.targets,
     postExport: getSettingValue(INSTRUCTION_POST_EXPORT_KEY, ""),
     configuredTargets: configured.configured,
+    ...(previewOnly ? { preview_only: true } : {}),
     export: exportResult,
     cleanup: [],
   };
@@ -278,7 +285,7 @@ function clientAuthSettingForbidden(): { error: string; code: string; hint: stri
   };
 }
 
-export function registerSettingsRoutes(server: RouteRegistrar): void {
+export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: InstanceRole = "main"): void {
   const db = getDb();
 
   // GET /api/settings — returns all settings as { key: value } object.
@@ -299,7 +306,13 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
   }, { fileRpc: "deny" });
 
   server.get("/api/settings/instructions-delivery", (_req, res) => {
-    sendJson(res, 200, instructionDeliverySnapshot());
+    sendJson(res, 200, instanceRole === "preview"
+      ? instructionDeliverySnapshot({
+        ok: false,
+        stdout: "",
+        stderr: "Instruction export is not run by a preview instance.",
+      }, true)
+      : instructionDeliverySnapshot());
   }, { fileRpc: "deny" });
 
   server.put("/api/settings/instructions-delivery", globalCapabilityRoute("change_settings", (req, res) => {
@@ -333,6 +346,17 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
         return;
       }
       setSettingValue(INSTRUCTION_POST_EXPORT_KEY, body.postExport.trim());
+    }
+
+    if (instanceRole === "preview") {
+      const snapshot = instructionDeliverySnapshot({
+        ok: false,
+        stdout: "",
+        stderr: "Settings were saved to the preview database; instruction targets were not installed.",
+      }, true);
+      snapshot.configuration_saved = true;
+      sendJson(res, 200, snapshot);
+      return;
     }
 
     const cleanupResults: InstructionDeliveryResult["cleanup"] = [];
@@ -418,7 +442,7 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       prompt: "DOTFILES_PROMPT",
       multiplexer: "DOTFILES_MULTIPLEXER",
     };
-    if (key in TIER2_MAP) {
+    if (instanceRole !== "preview" && key in TIER2_MAP) {
       dualWriteDotfilesConf(TIER2_MAP[key], body.value);
     }
 

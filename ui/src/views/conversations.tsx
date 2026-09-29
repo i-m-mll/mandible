@@ -67,6 +67,7 @@ import {
   type ProviderLiveProjection,
 } from '../api.js';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
+import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigger';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
@@ -126,6 +127,7 @@ import {
   flattenConversationTranscript,
   reconcileConversationWindow,
   mergeSidebarPages,
+  type ConversationHistoryLoadResult,
   type ConversationTranscriptConsumer,
   type ConversationTranscriptData,
   type ConversationWithDetails,
@@ -154,6 +156,10 @@ export type ConversationLoadFailure = {
   message: string;
   retryable: boolean;
 };
+
+type ConversationHistoryRetry =
+  | { kind: 'edge'; direction: 'older' | 'newer' }
+  | { kind: 'around'; position: number };
 
 const TRANSIENT_CONVERSATION_CODES = new Set(['provider_metadata_unavailable', 'freshness_pending', 'freshness_error', 'source_unavailable']);
 
@@ -678,6 +684,16 @@ export function conversationAnchorHref(
   return `#/console?${params.toString()}`;
 }
 
+export function conversationLatestHref(currentHash: string, conversationId: string): string {
+  const query = currentHash.includes('?') ? currentHash.slice(currentHash.indexOf('?') + 1) : '';
+  const params = new URLSearchParams(query);
+  params.set('conversation', conversationId);
+  params.delete('block');
+  params.delete('turn');
+  params.delete('position');
+  return `#/console?${params.toString()}`;
+}
+
 // ── Props ──
 
 export type NewChatInput = {
@@ -716,6 +732,11 @@ export function ChatComposerSubmitIcon(): JSX.Element {
 }
 
 // ── Detail View ──
+
+async function resolveProviderSessionConversation(providerSessionId: string): Promise<Conversation | null> {
+  const result = await getConversations({ session_id: providerSessionId, limit: 1 });
+  return result.conversations.find((candidate) => candidate.session_id === providerSessionId) ?? null;
+}
 
 function formatActivityDuration(seconds: number | null): string | null {
   if (seconds == null) return null;
@@ -1103,6 +1124,7 @@ export function ConversationDetail({
   const navigateFromActivity = useCallback((id: string) => onNavigateRef.current(id), []);
   const [jumpingToLatest, setJumpingToLatest] = useState(false);
   const [edgeLoading, setEdgeLoading] = useState<'older' | 'newer' | null>(null);
+  const historyRetryRef = useRef<ConversationHistoryRetry | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [exportIntent, setExportIntent] = useState<'copy' | 'open' | null>(null);
   const [navigationError, setNavigationError] = useState<ConversationLoadFailure | null>(null);
@@ -1140,6 +1162,18 @@ export function ConversationDetail({
 
   // Fork/control state
   const [toast, setToast] = useState<ToastState>(null);
+  const navigateToCreatedTask = useCallback(async (providerSessionId: string) => {
+    try {
+      const target = await resolveProviderSessionConversation(providerSessionId);
+      if (target) onNavigateRef.current(target.id);
+      else setToast({ message: 'Created task conversation is not available yet.', type: 'info' });
+    } catch (error) {
+      setToast({
+        message: `Could not open created task: ${error instanceof Error ? error.message : String(error)}`,
+        type: 'error',
+      });
+    }
+  }, []);
   const [continueDraft, setContinueDraft] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
@@ -1165,26 +1199,42 @@ export function ConversationDetail({
     () => conversationKeys.window(conversationId, windowTarget),
     [conversationId, windowTarget],
   );
+  const readAndReconcileWindow = useCallback(async (
+    target: ReturnType<typeof normalizeWindowTarget>,
+    read: () => Promise<ConversationPositionWindow>,
+  ): Promise<ConversationPositionWindow> => {
+    const aggregateKey = conversationKeys.aggregate(conversationId);
+    const aggregateAtStart = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+    const incoming = await read();
+    if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
+    const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+    const aggregateAdvanced = current !== undefined
+      && (aggregateAtStart === undefined || current.source_version_id !== aggregateAtStart.source_version_id);
+    if (aggregateAdvanced && current.source_version_id !== incoming.source_version_id) {
+      throw new CancelledError();
+    }
+    if (current && current.source_version_id !== incoming.source_version_id) {
+      const currentWindowKey = conversationKeys.window(conversationId, target);
+      const currentWindowHash = queryClient.getQueryCache().find({
+        queryKey: currentWindowKey,
+        exact: true,
+      })?.queryHash;
+      queryClient.removeQueries({
+        queryKey: conversationKeys.windows(conversationId),
+        type: 'inactive',
+        // Keep the window that supplied the accepted replacement.
+        predicate: (query) => currentWindowHash !== undefined && query.queryHash !== currentWindowHash,
+      });
+    }
+    queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
+    return incoming;
+  }, [conversationId, queryClient, selectionGeneration]);
   const fetchConversationDetail = useCallback(
-    async ({ signal }: { signal: AbortSignal }) => {
-      const incoming = await readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal));
-      if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
-      const aggregateKey = conversationKeys.aggregate(conversationId);
-      const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
-      const merged = reconcileConversationWindow(
-        current,
-        incoming,
-      );
-      if (current && current.source_version_id !== incoming.source_version_id) {
-        queryClient.removeQueries({
-          queryKey: conversationKeys.windows(conversationId),
-          type: 'inactive',
-        });
-      }
-      queryClient.setQueryData(aggregateKey, merged);
-      return incoming;
-    },
-    [conversationId, queryClient, selectionGeneration, windowTarget],
+    async ({ signal }: { signal: AbortSignal }) => readAndReconcileWindow(
+      windowTarget,
+      () => readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal)),
+    ),
+    [conversationId, readAndReconcileWindow, windowTarget],
   );
   const windowQuery = useQuery({
     queryKey: conversationRequestKey,
@@ -1199,20 +1249,12 @@ export function ConversationDetail({
     target: ReturnType<typeof normalizeWindowTarget>,
   ): Promise<ConversationPositionWindow> => {
     const key = conversationKeys.window(conversationId, target);
-    const incoming = await queryClient.fetchQuery({
+    return readAndReconcileWindow(target, () => queryClient.fetchQuery({
       queryKey: key,
       queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(target, signal)),
       staleTime: 0,
-    });
-    if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
-    const aggregateKey = conversationKeys.aggregate(conversationId);
-    const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
-    if (current && current.source_version_id !== incoming.source_version_id) {
-      queryClient.removeQueries({ queryKey: conversationKeys.windows(conversationId), type: 'inactive' });
-    }
-    queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
-    return incoming;
-  }, [conversationId, queryClient, selectionGeneration]);
+    }));
+  }, [conversationId, queryClient, readAndReconcileWindow]);
 
   useEffect(() => () => {
     void queryClient.cancelQueries({ queryKey: conversationKeys.conversation(conversationId) });
@@ -1245,36 +1287,80 @@ export function ConversationDetail({
       : null
   );
 
-  const loadTranscriptEdge = useCallback(async (direction: 'older' | 'newer') => {
+  const loadTranscriptEdge = useCallback(async (direction: 'older' | 'newer'): Promise<ConversationHistoryLoadResult> => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
-    if (!aggregate || edgeLoading) return;
+    if (!aggregate || edgeLoading) return 'busy';
     const interval = direction === 'older' ? aggregate.loaded_intervals[0] : aggregate.loaded_intervals.at(-1);
-    if (!interval) return;
+    if (!interval) {
+      const failure = conversationLoadFailure(
+        new Error('Chat cannot find a loaded history interval to continue from.'),
+        true,
+        direction === 'older' ? 'edge-older' : 'edge-newer',
+      );
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+      return 'failed';
+    }
     const position = direction === 'older' ? interval.start - 1 : interval.end + 1;
-    if (position < 0 || position >= aggregate.total) return;
+    if (position < 0 || position >= aggregate.total) {
+      const reachedBoundary = direction === 'older' ? aggregate.start_reached : aggregate.end_reached;
+      if (reachedBoundary) return 'covered';
+      const failure = conversationLoadFailure(
+        new Error(`Chat reported more ${direction === 'older' ? 'earlier' : 'later'} history, but no next position is available.`),
+        true,
+        direction === 'older' ? 'edge-older' : 'edge-newer',
+      );
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+      return 'failed';
+    }
     setEdgeLoading(direction);
     setNavigationError(null);
+    historyRetryRef.current = { kind: 'edge', direction };
     try {
       await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
+      const updated = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
+      const nextInterval = direction === 'older' ? updated?.loaded_intervals[0] : updated?.loaded_intervals.at(-1);
+      const advanced = direction === 'older'
+        ? Boolean(nextInterval && nextInterval.start < interval.start)
+        : Boolean(nextInterval && nextInterval.end > interval.end);
+      if (!advanced) throw new Error(`Conversation history did not advance ${direction === 'older' ? 'toward the beginning' : 'toward the end'}.`);
+      historyRetryRef.current = null;
+      return 'loaded';
     } catch (cause) {
       const failure = conversationLoadFailure(cause, true, direction === 'older' ? 'edge-older' : 'edge-newer');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+      return failure ? 'failed' : 'busy';
     } finally {
       if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
   }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
-  const loadTranscriptAround = useCallback(async (position: number) => {
+  const loadTranscriptAround = useCallback(async (position: number): Promise<ConversationHistoryLoadResult> => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
-    if (!aggregate || edgeLoading || !Number.isSafeInteger(position) || position < 0 || position >= aggregate.total) return;
-    if (aggregate.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) return;
+    if (!aggregate || edgeLoading) return 'busy';
+    if (!Number.isSafeInteger(position) || position < 0 || position >= aggregate.total) {
+      const failure = conversationLoadFailure(new Error(`Chat cannot load history at position ${position}.`), true, 'edge-newer');
+      if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+      return 'failed';
+    }
+    if (aggregate.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) {
+      historyRetryRef.current = null;
+      return 'covered';
+    }
     setEdgeLoading('newer');
     setNavigationError(null);
+    historyRetryRef.current = { kind: 'around', position };
     try {
       await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
+      const updated = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
+      if (!updated?.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) {
+        throw new Error(`Conversation history did not include requested position ${position}.`);
+      }
+      historyRetryRef.current = null;
+      return 'loaded';
     } catch (cause) {
       const failure = conversationLoadFailure(cause, true, 'edge-newer');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+      return failure ? 'failed' : 'busy';
     } finally {
       if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
@@ -1284,6 +1370,9 @@ export function ConversationDetail({
     const aggregate = aggregateQuery.data;
     if (!aggregate) return undefined;
     return {
+      conversationId: aggregate.conversation.id,
+      sourceVersionId: aggregate.source_version_id,
+      historyLoading: edgeLoading !== null,
       loadedIntervals: aggregate.loaded_intervals,
       hasOlder: !aggregate.start_reached,
       hasNewer: !aggregate.end_reached,
@@ -1519,8 +1608,7 @@ export function ConversationDetail({
       }
       if (selectionRef.current.generation !== selectionGeneration) return;
       setEffectiveAnchor(null);
-      const params = new URLSearchParams({ conversation: conversationId });
-      window.history.replaceState(null, '', `#/console?${params.toString()}`);
+      window.history.replaceState(null, '', conversationLatestHref(window.location.hash, conversationId));
       setNavigationTarget({
         key: `${conversationId}:latest:${latest.source_version_id ?? 'legacy'}:${latest.revision}`,
         kind: 'latest',
@@ -1965,6 +2053,15 @@ export function ConversationDetail({
 
   const retryLoad = useCallback(() => {
     if (error) setNavigationError(error);
+    const historyRetry = historyRetryRef.current;
+    if (historyRetry?.kind === 'edge') {
+      void loadTranscriptEdge(historyRetry.direction);
+      return;
+    }
+    if (historyRetry?.kind === 'around') {
+      void loadTranscriptAround(historyRetry.position);
+      return;
+    }
     const operation = error?.operation === 'source-unavailable' ? error.retryOperation : error?.operation;
     if (operation === 'edge-older') {
       void loadTranscriptEdge('older');
@@ -1979,7 +2076,7 @@ export function ConversationDetail({
       return;
     }
     void windowQuery.refetch();
-  }, [error, exportIntent, loadTranscriptEdge, runMarkdownAction, windowQuery]);
+  }, [error, exportIntent, loadTranscriptAround, loadTranscriptEdge, runMarkdownAction, windowQuery]);
 
   const loadErrorNotice = error ? (
     <DetailPaneNotice
@@ -2001,6 +2098,7 @@ export function ConversationDetail({
     if (result.key !== navigationTarget?.key) return;
     if (result.status === 'revealed') {
       setNavigationError((current) => current?.operation === 'target' ? null : current);
+      setNavigationTarget((current) => current?.key === result.key ? null : current);
       return;
     }
     setNavigationError({
@@ -2070,18 +2168,12 @@ export function ConversationDetail({
       menuLabel="Conversation detail actions"
       menu={(
         <div className="conv-actions">
-          <button
-              ref={actionsTriggerRef}
-              type="button"
-              className="conv-actions__trigger"
-              onClick={() => setActionsOpen((prev) => !prev)}
-              title="Conversation actions"
-              aria-label="Conversation actions"
-              aria-haspopup="menu"
-              aria-expanded={actionsOpen}
-            >
-              <HorizontalDotsIcon />
-          </button>
+          <DetailPaneMenuTrigger
+            buttonRef={actionsTriggerRef}
+            label="Conversation actions"
+            expanded={actionsOpen}
+            onClick={() => setActionsOpen((prev) => !prev)}
+          />
           {actionsOpen && (
             <div
                 ref={actionsMenuRef}
@@ -2381,6 +2473,7 @@ export function ConversationDetail({
             navigationTarget={navigationTarget}
             onNavigationResult={handleNavigationResult}
             onFork={handleFork}
+            onCreatedTaskNavigate={navigateToCreatedTask}
             sessionInfo={{
               sessionId: conversation.session_id,
               backend: conversation.source,
@@ -2540,13 +2633,29 @@ function ChatEntryItem({
 function LiveSessionDetail({
   session,
   notice,
+  onNavigateConversation,
 }: {
   session: ConsoleSession;
   notice?: ComponentChildren;
+  onNavigateConversation: (conversationId: string) => void;
 }): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
   const [viewMode, setViewMode] = useState<ViewMode>('rich');
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
+  const [createdTaskError, setCreatedTaskError] = useState<string | null>(null);
+  const navigateToCreatedTask = useCallback(async (providerSessionId: string) => {
+    try {
+      const target = await resolveProviderSessionConversation(providerSessionId);
+      if (target) {
+        setCreatedTaskError(null);
+        onNavigateConversation(target.id);
+      } else {
+        setCreatedTaskError('Created task conversation is not available yet.');
+      }
+    } catch (error) {
+      setCreatedTaskError(error instanceof Error ? error.message : String(error));
+    }
+  }, [onNavigateConversation]);
   const providerSessionId = session.provider_session_id ?? '';
   const sessionConversationQuery = useQuery({
     queryKey: conversationKeys.bySession(providerSessionId),
@@ -2619,7 +2728,14 @@ function LiveSessionDetail({
       className="chat-live-detail"
       bodyClassName="chat-live-detail__pane"
       header={detailHeader}
-      notice={notice}
+      notice={notice || createdTaskError ? <>
+        {notice}
+        {createdTaskError ? (
+          <DetailPaneNotice severity="error" density="compact" title="Could not open created task">
+            {createdTaskError}
+          </DetailPaneNotice>
+        ) : null}
+      </> : null}
     >
       <TerminalPane
         sessionId={session.id}
@@ -2638,6 +2754,7 @@ function LiveSessionDetail({
         conversationControl={control}
         conversationMessageAnchor={messageAnchor}
         onConversationControlChange={setControl}
+        onCreatedTaskNavigate={navigateToCreatedTask}
         isVisible
         viewMode={viewMode}
         onViewModeChange={setViewMode}
@@ -4055,6 +4172,7 @@ export function ConversationsView({
           <LiveSessionDetail
             key={selectedLiveSession.id}
             session={selectedLiveSession}
+            onNavigateConversation={handleNavigateConversation}
           />
         ) : (
           <ChatDetailFrame

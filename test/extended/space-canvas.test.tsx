@@ -17,7 +17,7 @@ import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
-import type { SpaceItem, SpaceOccurrence } from '../../ui/src/api';
+import type { InstanceInfo, SpaceItem, SpaceOccurrence } from '../../ui/src/api';
 
 const canvasCss = readFileSync('ui/src/views/spaces/SpaceCanvas.css', 'utf8');
 
@@ -199,6 +199,20 @@ function item(id: string, title: string): SpaceItem {
     metadata: {},
     created_at: 0,
     updated_at: 0,
+  };
+}
+
+function previewInstance(allowedEffects: string[]): InstanceInfo {
+  return {
+    role: 'preview',
+    instance_id: 'preview-1',
+    installation_id: 'install-1',
+    public_origin: 'http://localhost:19420',
+    backend_generation: 'test-generation',
+    allowed_effects: allowedEffects,
+    writable_roots: ['/tmp/mandible-preview'],
+    db_path: '/tmp/mandible-preview/mandible.db',
+    db_path_source: 'iab-preview-copy',
   };
 }
 
@@ -809,13 +823,7 @@ describe('SpaceCanvas drag persistence + autosave', () => {
         initialModel: model,
         batchWrite,
         debounceMs: 50,
-        instance: {
-          role: 'preview',
-          operational_mutations: 'reject',
-          operational_mutations_overridden: false,
-          db_path: null,
-          db_path_source: null,
-        },
+        instance: previewInstance(['ledger:read']),
       }),
     );
 
@@ -1077,13 +1085,7 @@ describe('SpaceCanvas SSE reconciliation', () => {
         loadModel,
         createSse: () => client,
         debounceMs: 50,
-        instance: {
-          role: 'preview',
-          operational_mutations: 'reject',
-          operational_mutations_overridden: false,
-          db_path: null,
-          db_path_source: null,
-        },
+        instance: previewInstance(['ledger:read']),
       }),
     );
 

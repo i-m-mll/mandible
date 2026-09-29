@@ -100,27 +100,41 @@ describe("instance effect policy", () => {
       .toThrow("user-preferences directory escapes registered custody");
   });
 
-  it("allows only the known isolated preference writes in a standard preview", () => {
+  it("allows copied local data but denies external work and delivery effects", () => {
     const instance = preview();
     const identity = { effect_ceiling: STANDARD_PREVIEW_EFFECTS };
-    for (const pathname of [
-      "/api/host-preferences/app-theme",
-      "/api/host-preferences/sidebar-order",
-      "/api/user-settings/app_rail_order",
-      "/api/user-settings/ui_font_face",
-      "/api/user-settings/detail_font_size",
-    ]) {
-      expect(authorizeEffects(instance, identity, operationForRequest("PUT", pathname)))
-        .toEqual({ allowed: true });
+    const local = [
+      ["GET", "/api/work/repos", ["ledger:read"]],
+      ["GET", "/api/auth/queue", ["ledger:read"]],
+      ["POST", "/api/auth/request/request-1/reject", ["ledger:write"]],
+      ["GET", "/api/reminders", ["ledger:read"]],
+      ["GET", "/api/webhooks", ["ledger:read"]],
+      ["POST", "/api/webhooks/event-1/dismiss", ["ledger:write"]],
+      ["GET", "/api/console/pinned", ["ledger:read"]],
+      ["PUT", "/api/console/pinned", ["ledger:write"]],
+    ] as const;
+    for (const [method, pathname, effects] of local) {
+      const operation = operationForRequest(method, pathname, "preview");
+      expect(operation?.effects).toEqual(effects);
+      expect(authorizeEffects(instance, identity, operation)).toEqual({ allowed: true });
     }
-    for (const pathname of [
-      "/api/settings/app_theme",
-      "/api/user-settings/unknown",
-      "/api/projects",
-    ]) {
-      expect(authorizeEffects(instance, identity, operationForRequest("PUT", pathname)))
-        .toMatchObject({ allowed: false, missing: ["maintenance:shared"] });
+
+    for (const [method, pathname] of [
+      ["POST", "/api/auth/check"],
+      ["GET", "/api/work/repos/repo-1/audit"],
+      ["POST", "/api/work/scan"],
+      ["POST", "/api/reminders"],
+      ["POST", "/api/webhooks/event-1/deliver"],
+      ["GET", "/api/console/sessions"],
+    ] as const) {
+      expect(authorizeEffects(instance, identity, operationForRequest(method, pathname, "preview")))
+        .toMatchObject({ allowed: false });
     }
+
+    const main = resolveInstanceInfo({ env: {} });
+    const ledgerOnly = { effect_ceiling: ["ledger:read", "ledger:write"] as const };
+    expect(authorizeEffects(main, ledgerOnly, operationForRequest("GET", "/api/auth/queue", "main")))
+      .toMatchObject({ allowed: false, missing: ["auth:protected"] });
   });
 
   it("keeps preview theme, navigation, and font edits separate from production in both directions", async () => {

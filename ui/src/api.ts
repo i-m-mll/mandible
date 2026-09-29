@@ -1,4 +1,5 @@
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
+import { operationForRequest } from '../../src/security/operation-policy';
 import { browserSessionFetch } from './client-auth-token';
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
@@ -118,10 +119,39 @@ export type InstanceInfo = {
   source_db_path_source?: string | null;
 };
 
+export function canPerformOperation(
+  instance: InstanceInfo | null | undefined,
+  method: string,
+  pathname: string,
+  body?: unknown,
+): boolean {
+  if (!instance) return false;
+  const operation = operationForRequest(method, pathname, instance.role, body);
+  return operation !== null && operation.effects.every((effect) => instance.allowed_effects.includes(effect));
+}
+
+export function allowsInstanceEffect(
+  instance: InstanceInfo | null | undefined,
+  effect: string,
+): boolean {
+  return !instance || instance.allowed_effects.includes(effect);
+}
+
+export function canWriteLedger(instance: InstanceInfo | null | undefined): boolean {
+  return allowsInstanceEffect(instance, 'ledger:write');
+}
+
+export function canWritePreviewFiles(instance: InstanceInfo | null | undefined): boolean {
+  return canWriteLedger(instance) && allowsInstanceEffect(instance, 'files:preview');
+}
+
+export function canWriteProductionFiles(instance: InstanceInfo | null | undefined): boolean {
+  return allowsInstanceEffect(instance, 'files:production');
+}
+
 export function canEditUserPreferences(instance: InstanceInfo | null | undefined): boolean {
-  return !instance
-    || instance.allowed_effects.includes('preferences:instance')
-    || instance.allowed_effects.includes('maintenance:shared');
+  return allowsInstanceEffect(instance, 'preferences:instance')
+    || allowsInstanceEffect(instance, 'maintenance:shared');
 }
 
 export function normalizeInstanceInfo(value: unknown): InstanceInfo | null {
@@ -166,6 +196,8 @@ export type InstructionDeliverySettings = {
   targets: InstructionTarget[];
   postExport: string;
   configuredTargets: boolean;
+  preview_only?: boolean;
+  configuration_saved?: boolean;
   export?: {
     ok: boolean;
     stdout: string;

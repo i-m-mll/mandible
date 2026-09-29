@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DetailPaneHeader } from '../../ui/src/components/shared/DetailPaneHeader.js';
+import { DetailPaneMenuTrigger } from '../../ui/src/components/shared/DetailPaneMenuTrigger.js';
 import { DetailPaneShell } from '../../ui/src/components/shared/DetailPaneShell.js';
 import { EntityTimestamps } from '../../ui/src/components/shared/EntityTimestamps.js';
 import { CollapsiblePanel } from '../../ui/src/components/shared/CollapsiblePanel.js';
@@ -18,53 +19,25 @@ afterEach(() => {
 });
 
 describe('canonical detail pane header', () => {
-  it.each(['standard', 'versioned', 'compact'] as const)(
-    'keeps the %s right-sidebar action slot stable while the sidebar moves between surfaces',
-    (variant) => {
-      const descriptor = (open: boolean): AppRightSidebarDescriptor => ({
-        id: 'test-preview',
-        kind: 'panel',
-        title: 'Preview',
-        ariaLabel: 'Preview',
-        content: null,
-        open,
-        width: 360,
-        onOpenChange: () => undefined,
-        onWidthChange: () => undefined,
-      });
-      const renderHeader = (open: boolean) => (
-        <AppShellProvider value={{
-          active: true,
-          rightSidebar: descriptor(open),
-          registerRightSidebar: () => () => undefined,
-          updateRightSidebar: () => undefined,
-          setRightSidebarOpen: () => undefined,
-          setViewSidebarWidth: () => undefined,
-        }}>
-          <DetailPaneHeader
-            variant={variant}
-            identity={{ entityLabel: 'Briefing group', displayRef: 'agent-policy', canonicalRef: 'agent-policy' }}
-            title="Agent policy"
-          />
-        </AppShellProvider>
-      );
-      const view = render(renderHeader(false));
-      const collapsed = document.querySelector('.detail-pane-header')!;
-      expect(within(collapsed as HTMLElement).getByRole('button', { name: 'Show Preview' })).toBeTruthy();
-      expect(collapsed.querySelector('.detail-pane-header__right-sidebar-action-slot')).toBeNull();
+  it('uses the shared overflow trigger with menu semantics and the supplied anchor ref', () => {
+    const onClick = vi.fn();
+    const buttonRef = { current: null as HTMLButtonElement | null };
+    render(
+      <DetailPaneMenuTrigger
+        buttonRef={buttonRef}
+        label="Issue actions"
+        expanded
+        onClick={onClick}
+      />,
+    );
 
-      view.rerender(renderHeader(true));
-      const expanded = document.querySelector('.detail-pane-header')!;
-      expect(within(expanded as HTMLElement).queryByRole('button', { name: 'Show Preview' })).toBeNull();
-      expect(expanded.querySelector('.detail-pane-header__right-sidebar-action-slot')).toBeTruthy();
-      expect(expanded.querySelector(variant === 'compact'
-        ? '.detail-pane-header__actions'
-        : '.detail-pane-header__topline-controls')).toBeTruthy();
-
-      const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
-      expect(css).toMatch(/\.detail-pane-header__right-sidebar-action-slot\s*\{[^}]*flex:\s*0 0 34px;[^}]*width:\s*34px;[^}]*height:\s*34px;[^}]*visibility:\s*hidden;/s);
-    },
-  );
+    const trigger = screen.getByRole('button', { name: 'Issue actions' });
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(buttonRef.current).toBe(trigger);
+    fireEvent.click(trigger);
+    expect(onClick).toHaveBeenCalledOnce();
+  });
 
   it.each(['standard', 'versioned', 'compact'] as const)(
     'keeps %s identity and actions but omits the app-sidebar slot in sidebar presentation',
@@ -103,7 +76,7 @@ describe('canonical detail pane header', () => {
       expect(within(header as HTMLElement).getByText('4fb8d9b')).toBeTruthy();
       expect(within(header as HTMLElement).getByRole('button', { name: 'Meaningful action' })).toBeTruthy();
       expect(within(header as HTMLElement).queryByRole('button', { name: 'Show Preview' })).toBeNull();
-      expect(header.querySelector('.detail-pane-header__right-sidebar-action-slot')).toBeNull();
+      expect(header.querySelector('.app-right-sidebar-toggle')).toBeNull();
     },
   );
 
@@ -450,7 +423,7 @@ describe('detail pane composition migration boundary', () => {
       .map((path) => path.replace('/./', '/'));
     const bespokeConsumers = sourcePaths.filter((path) => {
       const source = readFileSync(resolve(process.cwd(), path), 'utf8');
-      return source.includes('<DetailPaneShell') && !source.includes('<DetailPaneHeader');
+      return /<DetailPaneShell\b[^>]*\bheader=/.test(source) && !source.includes('<DetailPaneHeader');
     });
 
     expect(bespokeConsumers).toEqual([]);

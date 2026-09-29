@@ -101,6 +101,7 @@
   --app-shadow-gutter-width: 0px;
   --app-boundary-shadow-paint-width: 17px;
   --app-boundary-shadow-gradient-stops: transparent 0%, rgba(0, 0, 0, calc(0.0054 * var(--app-boundary-shadow-intensity-scale))) 24%, rgba(0, 0, 0, calc(0.0156 * var(--app-boundary-shadow-intensity-scale))) 59%, var(--app-boundary-shadow-color) 100%;
+  --app-header-inline-inset: 18px;
   --app-divider: #434343;
   --app-divider-emphasis: #434343;
   --z-app-subdivision: 70;

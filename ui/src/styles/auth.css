@@ -180,32 +180,6 @@
   align-self: start;
 }
 
-.auth-detail__actions-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 0;
-}
-
-.auth-detail__actions-trigger:hover,
-.auth-detail__actions-trigger--active {
-  color: var(--text-primary);
-  background: var(--neutral-alpha-08);
-}
-
-.auth-detail__actions-trigger svg {
-  width: 17px;
-  height: 17px;
-  fill: currentColor;
-}
-
 .auth-detail__subtitle {
   display: flex;
   flex-direction: column;
