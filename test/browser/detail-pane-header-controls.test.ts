@@ -11,12 +11,14 @@ type HeaderCase = {
   toggle: boolean;
   visibleControlGap: number;
   menuGap: number;
+  toggleCenterY: number | null;
 };
 
 type Result = {
   native: boolean;
   cases: HeaderCase[];
   edgeInsets: { main: number; rightSidebar: number };
+  rightSidebarControlCenterY: number | null;
 };
 
 const chrome = [
@@ -77,14 +79,20 @@ function renderCase(native: boolean): Result {
           const paddingRight=parseFloat(getComputedStyle(header).paddingRight); const contentRight=rect(header).right-paddingRight;
           const trigger=header.querySelector('.detail-pane-menu-trigger'); const toggle=header.querySelector('.app-right-sidebar-toggle');
           const visibleControl=variant==='compact' ? (open ? trigger : toggle) : (open ? header.querySelector('[data-header-control]') : toggle);
-          return {variant,open,toggle:Boolean(toggle),visibleControlGap:contentRight-rect(visibleControl).right,menuGap:contentRight-rect(trigger).right};
+          const visibleGlyph=visibleControl?.classList.contains('app-right-sidebar-toggle') ? visibleControl.querySelector('svg') : visibleControl;
+          const toggleGlyph=toggle?.querySelector('svg');
+          const toggleCenterY=toggleGlyph ? (rect(toggleGlyph).top+rect(toggleGlyph).bottom)/2-rect(header).top : null;
+          return {variant,open,toggle:Boolean(toggle),visibleControlGap:contentRight-rect(visibleGlyph).right,menuGap:contentRight-rect(trigger).right,toggleCenterY};
         });
         const mainHeader=document.querySelector('.header-case[data-variant="compact"][data-open="false"] .detail-pane-header');
         const mainToggle=mainHeader?.querySelector('.app-right-sidebar-toggle');
         const rightHeader=document.querySelector('.app-right-sidebar__header');
         const rightToggle=rightHeader?.querySelector('.app-right-sidebar__toggle');
-        const edgeInsets={main:rect(mainHeader).right-rect(mainToggle).right,rightSidebar:rect(rightHeader).right-rect(rightToggle).right};
-        document.title=btoa(JSON.stringify({native:${native},cases,edgeInsets}));
+        const mainGlyph=mainToggle?.querySelector('svg');
+        const rightGlyph=rightToggle?.querySelector('svg');
+        const edgeInsets={main:rect(mainHeader).right-rect(mainGlyph).right,rightSidebar:rect(rightHeader).right-rect(rightGlyph).right};
+        const rightSidebarControlCenterY=rightGlyph ? (rect(rightGlyph).top+rect(rightGlyph).bottom)/2-rect(rightHeader).top : null;
+        document.title=btoa(JSON.stringify({native:${native},cases,edgeInsets,rightSidebarControlCenterY}));
       })();
     `;
     const path = join(directory, 'fixture.html');
@@ -127,6 +135,11 @@ describe('shared detail header controls', () => {
         expect(header.toggle).toBe(!header.open);
       }
       expect(Math.abs(result.edgeInsets.main - result.edgeInsets.rightSidebar), `${result.native ? 'native' : 'browser'} main and right-sidebar control edge padding`).toBeLessThanOrEqual(1);
+      const toggleCenters = [
+        ...result.cases.filter((header) => header.toggle).map((header) => header.toggleCenterY),
+        result.rightSidebarControlCenterY,
+      ].filter((center): center is number => center !== null);
+      expect(Math.max(...toggleCenters) - Math.min(...toggleCenters), `${result.native ? 'native' : 'browser'} toggle vertical alignment across headers`).toBeLessThanOrEqual(1);
     }
 
     expect(native.cases).toEqual(browser.cases);
