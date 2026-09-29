@@ -376,9 +376,6 @@
   padding: 0 3px;
 }
 
-.graph-token-select__input::placeholder {
-  color: var(--text-muted);
-}
 
 .graph-token-select__clear {
   border: none;

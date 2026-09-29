@@ -139,9 +139,6 @@
   font-size: 13px;
 }
 
-.settings-view__input::placeholder {
-  color: var(--text-muted);
-}
 
 .settings-view__input:disabled {
   opacity: 0.6;
@@ -570,6 +567,11 @@
   border: 1px solid var(--neutral-alpha-08);
   border-radius: 14px;
   background: var(--neutral-alpha-02);
+}
+
+.settings-view__local-connections {
+  display: grid;
+  gap: 14px;
 }
 
 .settings-view__daemon-status-row {

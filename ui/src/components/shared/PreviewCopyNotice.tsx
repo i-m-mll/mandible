@@ -1,4 +1,5 @@
 import type { InstanceInfo } from '../../api';
+import { InfoIcon } from '../icons/TabIcons';
 import './PreviewCopyNotice.css';
 
 export function PreviewCopyNotice({ instance }: { instance: InstanceInfo | null }): JSX.Element | null {
@@ -12,7 +13,11 @@ export function PreviewCopyNotice({ instance }: { instance: InstanceInfo | null 
       aria-live="polite"
       aria-atomic="true"
     >
-      Preview copy — edits stay here and do not change the main instance.
+      <span>Preview instance</span>
+      <span className="preview-copy-banner__info" tabIndex={0} aria-label="edits do not mutate the main DB, external files, or user settings">
+        <InfoIcon size={15} />
+        <span className="preview-copy-banner__tooltip" role="tooltip">edits do not mutate the main DB, external files, or user settings</span>
+      </span>
     </div>
   );
 }
