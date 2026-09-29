@@ -397,17 +397,19 @@ export function ChatSurface({
     const groupPositions = groups.map((group) => group.nodes
         .map((node) => renderNodePosition(node, null))
         .find((candidate): candidate is number => candidate !== null) ?? Number.MAX_SAFE_INTEGER);
-    const groupCountsByInterval = transcript?.loadedIntervals.map((interval) => groupPositions
-      .filter((position) => position >= interval.start && position <= interval.end).length) ?? [];
+    const groupIntervals = groupPositions.map((position) => transcript?.loadedIntervals.findIndex((interval) => (
+      position >= interval.start && position <= interval.end
+    )) ?? -1);
     const contentItems: Array<{ item: VirtualItem; position: number }> = groups.map((group, index) => {
       const position = groupPositions[index];
-      const intervalIndex = transcript?.loadedIntervals.findIndex((interval) => (
-        position >= interval.start && position <= interval.end
-      )) ?? -1;
+      const intervalIndex = groupIntervals[index];
       const interval = intervalIndex >= 0 ? transcript?.loadedIntervals[intervalIndex] : undefined;
-      const intervalGroupCount = intervalIndex >= 0 ? groupCountsByInterval[intervalIndex] : 0;
-      const estimatedSize = interval && intervalGroupCount > 0
-        ? estimatedRangeHeight(interval.start, interval.end) / intervalGroupCount
+      const nextPosition = groupIntervals[index + 1] === intervalIndex
+        ? groupPositions[index + 1]
+        : interval?.end === undefined ? position + 1 : interval.end + 1;
+      const spanStart = groupIntervals[index - 1] === intervalIndex ? position : interval?.start ?? position;
+      const estimatedSize = interval
+        ? Math.max(1, estimatedRangeHeight(spanStart, Math.max(spanStart, nextPosition) - 1))
         : ESTIMATED_ROW_HEIGHT;
       return {
         item: { kind: 'group', id: group.id, group, estimatedSize },
@@ -505,6 +507,14 @@ export function ChatSurface({
     followOnAppend: followingTail ? 'auto' : false,
     scrollEndThreshold: FOLLOW_THRESHOLD_PX,
   });
+  // A newly materialized group can be much taller than its structure estimate.
+  // Correct the viewport only when that entire row is above the reading edge;
+  // measuring a row that spans the edge must not move an upward-scrolling user.
+  // Keep TanStack's backward-scroll suppression for later remeasurements.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => (
+    item.end <= (instance.scrollElement?.scrollTop ?? instance.scrollOffset ?? 0) + instance.scrollAdjustments
+    && (!instance.itemSizeCache.has(item.key) || instance.scrollDirection !== 'backward')
+  );
   const virtualItems = virtualizer.getVirtualItems();
   useLayoutEffect(() => {
     items.forEach((item, index) => {

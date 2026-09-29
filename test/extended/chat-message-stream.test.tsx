@@ -762,6 +762,78 @@ describe('ChatSurface stream behavior', () => {
     expect(scrollTo.mock.calls.length).toBe(previousScrollCalls);
   });
 
+  it('does not jump down when a newly loaded group spanning the viewport is measured', () => {
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function clientHeight() {
+      return this.classList.contains('stream-renderer__scroll') ? 500 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function scrollHeight() {
+      if (!this.classList.contains('stream-renderer__scroll')) return 0;
+      return Number.parseFloat(this.querySelector<HTMLElement>('.stream-renderer__virtual-canvas')?.style.height ?? '0');
+    });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
+      if (this.classList.contains('stream-renderer__virtual-row')) {
+        return domRect(0, 0, 600, /:(18|19):0/.test(this.dataset.virtualKey ?? '') ? 600 : 150);
+      }
+      return domRect(0, 0, 600, this.classList.contains('stream-renderer__scroll') ? 500 : 0);
+    });
+    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = Number(options.top ?? 0);
+      this.dispatchEvent(new Event('scroll'));
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
+    const structure = {
+      conversation_id: 'measured-range', source_version_id: 'version-1', total: 30,
+      rows: Array.from({ length: 30 }, (_, position) => ({
+        id: `b${position}`, position, type: position % 2 ? 'assistant_message' : 'user_message',
+        role: position % 2 ? 'assistant' : 'user',
+        parent_position: null, record_offset: position * 1000, record_length: 1000,
+      })),
+    } as const;
+    const transcript = (start: number): ConversationTranscriptConsumer => ({
+      conversationId: 'measured-range', sourceVersionId: 'version-1', historyLoading: false,
+      total: 30, structure, loadedIntervals: [{ start, end: 29 }],
+      hasOlder: true, hasNewer: false, unmaterializedAfterCount: 0,
+      loadOlder: vi.fn(), loadNewer: vi.fn(), loadAround: vi.fn(),
+    });
+    const events = (start: number) => Array.from({ length: 30 - start }, (_, index) => {
+      const position = start + index;
+      return {
+        ...canonicalEvent(canonicalItem({
+          type: 'message', role: position % 2 ? 'assistant' : 'user',
+          parts: [{ type: 'text', text: `message ${position}` }],
+          ordinal: position,
+        }), `b${position}`),
+        source: { blockId: `b${position}`, position },
+      };
+    });
+    const view = render(<ChatSurface events={events(20)} streaming={false} transcript={transcript(20)} />);
+    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    scroll.scrollTop = 3600;
+    fireEvent.wheel(scroll, { deltaY: -300 });
+    scroll.scrollTop = 3300;
+    fireEvent.scroll(scroll);
+    expect(scroll.scrollTop).toBe(3300);
+    const previousScrollCalls = scrollTo.mock.calls.length;
+
+    view.rerender(<ChatSurface events={events(19)} streaming={false} transcript={transcript(19)} />);
+
+    const loadedRow = Array.from(view.container.querySelectorAll<HTMLElement>('[data-virtual-kind="group"]'))
+      .find((row) => row.dataset.virtualKey?.includes(':19:0'))!;
+    expect(loadedRow).toBeTruthy();
+    expect(Number.parseFloat(loadedRow.style.transform.replace(/[^\d.-]/g, ''))).toBeLessThan(3300);
+    expect(scroll.scrollTop).toBe(3300);
+    expect(scrollTo.mock.calls.length).toBe(previousScrollCalls);
+
+    const rowStart = Number.parseFloat(loadedRow.style.transform.replace(/[^\d.-]/g, ''));
+    const readingInset = scroll.scrollTop - rowStart;
+    view.rerender(<ChatSurface events={events(18)} streaming={false} transcript={transcript(18)} />);
+    const preservedRow = Array.from(view.container.querySelectorAll<HTMLElement>('[data-virtual-kind="group"]'))
+      .find((row) => row.dataset.virtualKey?.includes(':19:0'))!;
+    const preservedStart = Number.parseFloat(preservedRow.style.transform.replace(/[^\d.-]/g, ''));
+    expect(scroll.scrollTop).toBeGreaterThan(3300);
+    expect(scroll.scrollTop - preservedStart).toBeCloseTo(readingInset);
+  });
+
   it('anchors Chat-only message actions and restores focus on Escape', async () => {
     vi.stubGlobal('innerWidth', 800);
     vi.stubGlobal('innerHeight', 600);
