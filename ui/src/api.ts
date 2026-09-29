@@ -3514,64 +3514,6 @@ export async function deleteAuthHook(id: string): Promise<void> {
   await apiDelete(`/api/auth/hooks/${id}`);
 }
 
-// ── Runtime (Zone 2) types & API ── Bug: cc4688b
-
-export type InstallMode = 'dev' | 'release-zone2' | 'release-bundled' | 'npm-global';
-
-export type RuntimeStatus = {
-  installMode: InstallMode;
-  zone2Path: string | null;
-  available: boolean;
-  commit: string | null;
-  branch: string | null;
-  patchCount: number;
-};
-
-export type RuntimePatch = {
-  id: string;
-  fingerprint: string | null;
-  commit_hash: string;
-  parent_hash: string | null;
-  diff_summary: string | null;
-  diff_stat: string | null;
-  applied_at: number;
-  reverted_at: number | null;
-  source: string;
-  session_id: string | null;
-  submitted: number;
-  submission_url: string | null;
-};
-
-export async function getRuntimeStatus(): Promise<RuntimeStatus> {
-  const response = await apiGet('/api/runtime/status');
-  return (await parseMaybeJson(response)) as RuntimeStatus;
-}
-
-export async function getRuntimePatches(): Promise<RuntimePatch[]> {
-  const response = await apiGet('/api/runtime/patches');
-  return (await parseMaybeJson(response)) as RuntimePatch[];
-}
-
-export async function bootstrapRuntime(): Promise<{ ok: boolean; message: string }> {
-  const response = await apiPost('/api/runtime/bootstrap');
-  return (await parseMaybeJson(response)) as { ok: boolean; message: string };
-}
-
-export async function updateRuntime(): Promise<{ ok: boolean; updated: boolean; message?: string }> {
-  const response = await apiPost('/api/runtime/update');
-  return (await parseMaybeJson(response)) as { ok: boolean; updated: boolean; message?: string };
-}
-
-export async function rollbackRuntime(): Promise<{ ok: boolean }> {
-  const response = await apiPost('/api/runtime/rollback');
-  return (await parseMaybeJson(response)) as { ok: boolean };
-}
-
-export async function resetRuntime(): Promise<{ ok: boolean }> {
-  const response = await apiPost('/api/runtime/reset');
-  return (await parseMaybeJson(response)) as { ok: boolean };
-}
-
 // ---------------------------------------------------------------------------
 // Spaces (umbrella de56ffa) — typed client helpers over the C2 routes
 // (`src/routes/spaces.ts`). Each helper returns the unwrapped record(s) the

@@ -64,7 +64,6 @@ import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
-import { registerRuntimeRoutes } from "./routes/runtime.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
 // Umbrella 99b74d6 / issue ce22a3a — briefing review store, ingest, and sweep.
@@ -350,8 +349,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerAuthHookRoutes(router);
   // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
   registerWebhookRoutes(router, sessionManager);
-  // Bug: cc4688b — Zone 2 mutable runtime routes
-  registerRuntimeRoutes(router);
   registerTimelineRoutes(router);
   registerSpacesRoutes(router);
   // Issue: ce22a3a — briefing ingestion, review queue, and decision routes

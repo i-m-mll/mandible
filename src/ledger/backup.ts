@@ -68,7 +68,6 @@ export const METADATA_BACKUP_TABLES = [
   // parents restore first.
   "auth_hook_executions",
   "auth_hook_alerts",
-  "runtime_patches",
   "message_params",
   "providers",
   "artifact_blob",
@@ -225,6 +224,19 @@ export const METADATA_BACKUP_TABLES = [
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];
 
+// Older installs may retain patch history after self-modification is removed.
+// Include that inert table only when it exists; new databases never create it.
+const HISTORICAL_METADATA_BACKUP_TABLE = "runtime_patches";
+
+function metadataBackupTables(db: Db): readonly string[] {
+  const historical = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(HISTORICAL_METADATA_BACKUP_TABLE);
+  return historical
+    ? [...METADATA_BACKUP_TABLES, HISTORICAL_METADATA_BACKUP_TABLE]
+    : METADATA_BACKUP_TABLES;
+}
+
 export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
   // Local live-capability identity and exclusive daemon claims. Restoring this
   // table would make a copied database appear able to reconnect to authority
@@ -318,6 +330,7 @@ export function listUserTables(db: Db): string[] {
 export function getUnclassifiedBackupTables(db: Db): string[] {
   const classified = new Set<string>([
     ...METADATA_BACKUP_TABLES,
+    HISTORICAL_METADATA_BACKUP_TABLE,
     ...REPRODUCIBLE_OR_RUNTIME_TABLES,
   ]);
   return listUserTables(db).filter((table) => !classified.has(table));
@@ -357,7 +370,7 @@ export function writeMetadataBackup(db: Db, destination?: string | null): Metada
   return {
     path: outputPath,
     size_bytes: stat.size,
-    table_count: METADATA_BACKUP_TABLES.length,
+    table_count: metadataBackupTables(db).length,
   };
 }
 
@@ -379,10 +392,11 @@ export function buildMetadataBackupSql(db: Db): string {
 
 function* metadataBackupLines(db: Db): Generator<string> {
   const timestamp = new Date().toISOString();
+  const tables = metadataBackupTables(db);
   yield* [
     "-- Mandible metadata backup",
     `-- Generated: ${timestamp}`,
-    `-- Tables: ${METADATA_BACKUP_TABLES.join(" ")}`,
+    `-- Tables: ${tables.join(" ")}`,
     "-- Restore is intentionally deferred until the restore path has a tested round trip.",
     "",
     "PRAGMA foreign_keys=OFF;",
@@ -390,7 +404,7 @@ function* metadataBackupLines(db: Db): Generator<string> {
     "",
   ];
 
-  for (const table of METADATA_BACKUP_TABLES) {
+  for (const table of tables) {
     const tableInfo = db
       .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name = ?")
       .get(table) as SqliteMasterTable | undefined;

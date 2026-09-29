@@ -1718,6 +1718,7 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   { version: 184, name: "artifact_registered_sources", statements: [...ARTIFACT_SOURCE_SCHEMA_SQL, ...ARTIFACT_SOURCE_BACKFILL_SQL] },
   { version: 185, name: "artifact_two_custodies", statements: [...ARTIFACT_CUSTODY_MIGRATION_SQL, ...ARTIFACT_CUSTODY_TRIGGERS_SQL], requires_foreign_keys_off: true },
+  { version: 186, name: "retire_self_modification", statements: [] },
 ];
 
 /**
@@ -1930,6 +1931,19 @@ export function migrate(db: Db): void {
     if (!recovery.recovery_receipt_path) throw new Error('Artifact recovery did not preserve its audit receipt');
     reconcileRecoveredArtifactSources(db, { collisions: 'managed', receipt_path: `${recovery.recovery_receipt_path}.sources.json` });
     found = 184;
+  }
+  if (found < 186) {
+    const legacyTable = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_patches'",
+    ).get();
+    if (legacyTable) {
+      const { count } = db.prepare("SELECT count(*) AS count FROM runtime_patches").get() as { count: number };
+      if (count === 0) {
+        db.exec("DROP TABLE runtime_patches");
+      } else {
+        console.warn(`Retaining ${count} historical runtime_patches rows; the retired table has no application readers or writers.`);
+      }
+    }
   }
   applySchemaMigrations(db, MIGRATIONS.filter((migration) => migration.version > found));
 }
