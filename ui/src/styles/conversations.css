@@ -630,6 +630,10 @@
   padding-bottom: var(--detail-pane-overlay-control-scroll-space, var(--space-4));
 }
 
+.chat-detail-frame.detail-pane-shell--overlay-control .stream-renderer__scroll-btn {
+  bottom: calc(var(--detail-pane-overlay-control-height, 0px) + var(--space-3));
+}
+
 /* Conversation prose and its tool disclosures share one readable body size;
  * the generic detail-pane font setting must not shrink only assistant turns. */
 .conv-detail__body .msg-text-block.rendered-markdown,

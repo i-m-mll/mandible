@@ -420,28 +420,37 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     const gapRequestStart = exact.requests.length;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const value = await snapshot();
-      if (value.requests.slice(gapRequestStart).some((url) => new URL(url, origin).searchParams.get('position') === '204')) break;
+      if (value.requests.slice(gapRequestStart).some((url) => {
+        const position = Number(new URL(url, origin).searchParams.get('position'));
+        return position >= 204 && position <= 590;
+      })) break;
       await wheel(900);
     }
     await waitFor('automatic nearby gap fetch', async () => {
       const value = await snapshot();
-      return value.requests.slice(gapRequestStart)
-        .some((url) => new URL(url, origin).searchParams.get('position') === '204') ? value : null;
+      return value.requests.slice(gapRequestStart).some((url) => {
+        const position = Number(new URL(url, origin).searchParams.get('position'));
+        return position >= 204 && position <= 590;
+      }) ? value : null;
     }, browser, profile);
+    const fetchedBeforeGapFill = exact.fetchedBlockIds.length;
     for (let attempt = 0; attempt < 40; attempt += 1) {
       const value = await snapshot();
-      if (value.historyRows === 0 && !value.text.includes('Loading history…')) break;
+      if (value.fetchedBlockIds.length > fetchedBeforeGapFill
+          && !value.text.includes('Loading history…')) break;
       await wheel(900);
     }
-    const afterGapFill = await waitFor('automatic gap fill completion', async () => {
+    const afterGapFill = await waitFor('automatic nearby window completion', async () => {
       const value = await snapshot();
-      return value.historyRows === 0 && !value.text.includes('Loading history…') ? value : null;
+      return value.fetchedBlockIds.length > fetchedBeforeGapFill
+        && !value.text.includes('Loading history…') ? value : null;
     }, browser, profile);
     const gapTargets = afterGapFill.requests.slice(gapRequestStart)
       .map((url) => new URL(url, origin).searchParams.get('position'))
       .filter((position): position is string => position !== null)
       .map(Number);
-    expect(gapTargets.length).toBeGreaterThan(1);
+    expect(gapTargets.length).toBeGreaterThan(0);
+    expect(gapTargets.every((position) => position >= 204 && position <= 590)).toBe(true);
     expect(new Set(gapTargets).size).toBe(gapTargets.length);
     expect(gapTargets.every((position, index) => index === 0 || position > gapTargets[index - 1])).toBe(true);
     process.stdout.write('SOURCE_BACKED_CHAT_STAGE gap-auto-filled\n');
@@ -525,15 +534,15 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       if (atEnd
           && value.fetchedBlockIds.length === expectedBlockIds.length
           && value.seenBlockIds.length === expectedReadableBlockIds.length) break;
-      await evaluate(`(() => {
-        const scroll=document.querySelector('.stream-renderer__scroll');
-        const step=Math.max(1, Math.floor(scroll.clientHeight * 0.5));
-        scroll.scrollTop=Math.min(scroll.scrollHeight-scroll.clientHeight, scroll.scrollTop+step);
-      })()`);
-      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      await wheel(Math.max(1, Math.floor(value.clientHeight * 0.5)));
     }
     const complete = await snapshot();
-    process.stdout.write(`SOURCE_BACKED_CHAT_STAGE traversed ${complete.seenBlockIds.length} at ${complete.scrollTop}/${complete.scrollHeight} in ${traversalSteps} steps\n`);
+    process.stdout.write(`SOURCE_BACKED_CHAT_STAGE traversed ${complete.seenBlockIds.length} readable, fetched ${complete.fetchedBlockIds.length} blocks in ${traversalSteps} steps\n`);
+    const extentRatio = Math.max(cold.scrollHeight, complete.scrollHeight)
+      / Math.max(1, Math.min(cold.scrollHeight, complete.scrollHeight));
+    expect(afterGapFill.scrollHeight).toBeLessThanOrEqual(cold.scrollHeight + (2 * afterGapFill.clientHeight));
+    expect(extentRatio).toBeLessThan(4);
+    process.stdout.write(`SOURCE_BACKED_CHAT_EXTENT initial ${cold.scrollHeight} full ${complete.scrollHeight} ratio ${extentRatio.toFixed(2)}\n`);
     expect(new Set(complete.fetchedBlockIds)).toEqual(new Set(expectedBlockIds));
     expect(complete.fetchedBlockIds).toHaveLength(expectedBlockIds.length);
     const missingReadablePositions = expectedReadableBlockIds
@@ -552,7 +561,11 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       .map(Number);
     expect(edgeTargets).toContain(43);
     expect(new Set(edgeTargets).size).toBe(edgeTargets.length);
-    expect(edgeTargets.slice(-1)).toEqual([43]);
+    const prependTargetIndex = edgeTargets.indexOf(43);
+    const targetsAfterPrepend = edgeTargets.slice(prependTargetIndex + 1);
+    expect(targetsAfterPrepend.every((position, index) => (
+      index === 0 || position > targetsAfterPrepend[index - 1]
+    ))).toBe(true);
     for (const request of windowRequests) {
       const response = await fetch(new URL(request, origin));
       const payload = await response.json() as { blocks: unknown[]; total: number; window: { limit: number } };

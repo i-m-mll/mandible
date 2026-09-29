@@ -1373,6 +1373,7 @@ export function ConversationDetail({
       conversationId: aggregate.conversation.id,
       sourceVersionId: aggregate.source_version_id,
       historyLoading: edgeLoading !== null,
+      total: aggregate.total,
       loadedIntervals: aggregate.loaded_intervals,
       hasOlder: !aggregate.start_reached,
       hasNewer: !aggregate.end_reached,
