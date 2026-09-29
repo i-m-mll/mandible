@@ -6,12 +6,37 @@ import type { ProviderDirective } from '../message-blocks/providerDirectives';
 export type ProviderDirectiveActivity = {
   type: 'provider-directive';
   directive: ProviderDirective;
-  turnId: string;
+  turnId?: string;
+  sessionId: string;
+  provider?: string;
   blockId: string | null;
   sequence: number;
 };
 
-export type DisplayActivityItem = ActivityItem | ProviderDirectiveActivity;
+export type ToolCallActivity = {
+  type: 'tool-call-activity';
+  id: string;
+  name: string;
+  toolKind?: string;
+  input: Record<string, unknown> | string;
+  result: ToolResultContentBlock | null;
+  turnId?: string;
+  sessionId: string;
+  sourceIdentity?: {
+    provider: string;
+    sessionId: string;
+    turnId?: string;
+  };
+};
+
+export type ThinkingBlockActivity = {
+  type: 'thinking-block-activity';
+  content: string;
+  turnId?: string;
+  sessionId: string;
+};
+
+export type DisplayActivityItem = ActivityItem | ProviderDirectiveActivity | ToolCallActivity | ThinkingBlockActivity;
 
 // ---- Raw event types (as emitted by Claude Code --output-format stream-json) ----
 
@@ -27,6 +52,11 @@ export type PersistedBlockSource = {
 export type TextContentBlock = {
   type: 'text';
   text: string;
+  sourceIdentity?: {
+    provider: string;
+    sessionId: string;
+    turnId?: string;
+  };
   source?: PersistedBlockSource;
 };
 
@@ -46,7 +76,13 @@ export type ToolUseContentBlock = {
   type: 'tool_use';
   id: string;
   name: string;
+  toolKind?: string;
   input: Record<string, unknown> | string;
+  sourceIdentity?: {
+    provider: string;
+    sessionId: string;
+    turnId?: string;
+  };
   source?: PersistedBlockSource;
 };
 

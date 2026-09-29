@@ -25,6 +25,7 @@ export type ToolResultContentBlock = {
 
 export type ToolUseBlockProps = {
   toolName: string;
+  toolKind?: string;
   toolUseId?: string;
   input: Record<string, unknown> | string;
   result?: ToolResultContentBlock | null;
@@ -38,6 +39,7 @@ export type ToolUseBlockProps = {
   onToggleResultSelect?: (shiftKey: boolean) => void;
   onForkResult?: () => void;
   onResumeResult?: () => void;
+  memberRefs?: string;
 };
 
 export type ToolVisualKind = ToolCategory;
@@ -46,13 +48,14 @@ export type ToolVisual = {
   kind: ToolVisualKind;
   icon: string;
   verb: string;
+  target: string;
 };
 
 type ToolStatus = 'pending' | 'running' | 'success' | 'failed';
 
-export function getToolVisual(toolName: string): ToolVisual {
-  const presentation = presentTool(toolName, {});
-  return { kind: presentation.category, icon: presentation.icon, verb: presentation.phrase };
+export function getToolVisual(toolName: string, toolKind?: string): ToolVisual {
+  const presentation = presentTool(toolName, {}, toolKind);
+  return { kind: presentation.category, icon: presentation.icon, verb: presentation.phrase, target: presentation.target };
 }
 
 function firstString(input: Record<string, unknown>, keys: string[]): string {
@@ -70,9 +73,7 @@ export function getToolTarget(toolName: string, input: Record<string, unknown>):
 }
 
 export function leftTruncateTarget(target: string, maxChars = 72): string {
-  if (target.length <= maxChars) {
-    return target;
-  }
+  if (target.length <= maxChars) return target;
   const slashIndex = Math.max(target.lastIndexOf('/'), target.lastIndexOf('\\'));
   const filename = slashIndex >= 0 ? target.slice(slashIndex + 1) : '';
   if (filename && filename.length + 6 < maxChars) {
@@ -116,16 +117,6 @@ function statusFor(result?: ToolResultContentBlock | null, statusEmoji?: string)
     return 'pending';
   }
   return result.is_error ? 'failed' : 'success';
-}
-
-function isEditTool(toolName: string): boolean {
-  const normalized = toolName.trim().toLowerCase();
-  return normalized === 'edit' || normalized === 'multiedit';
-}
-
-function isCommandTool(toolName: string): boolean {
-  const normalized = toolName.trim().toLowerCase();
-  return ['bash', 'execute', 'run', 'shell', 'terminal', 'command', 'exec', 'exec_command'].includes(normalized);
 }
 
 function ansiClass(code: string): string | null {
@@ -235,6 +226,7 @@ function WriteInputPanel({ input }: { input: Record<string, unknown> }): JSX.Ele
 
 export function ToolCard({
   toolName,
+  toolKind,
   toolUseId,
   input,
   result,
@@ -248,14 +240,17 @@ export function ToolCard({
   onToggleResultSelect,
   onForkResult,
   onResumeResult,
+  memberRefs,
 }: ToolUseBlockProps): JSX.Element {
   const inputObj = useMemo(() => toolInputObject(input), [input]);
-  const visual = useMemo(() => getToolVisual(toolName), [toolName]);
-  const target = useMemo(() => getToolTarget(toolName, inputObj), [toolName, inputObj]);
-  const displayTarget = useMemo(() => leftTruncateTarget(target), [target]);
+  const visual = useMemo(() => {
+    const presentation = presentTool(toolName, input, toolKind);
+    return { kind: presentation.category, icon: presentation.icon, verb: presentation.phrase, target: presentation.target };
+  }, [toolName, input, toolKind]);
+  const displayTarget = useMemo(() => leftTruncateTarget(visual.target), [visual.target]);
   const status = statusFor(result, statusEmoji);
-  const commandLike = isCommandTool(toolName);
-  const editLike = isEditTool(toolName) && typeof inputObj.file_path === 'string';
+  const commandLike = visual.kind === 'execute';
+  const editLike = visual.kind === 'edit' && typeof inputObj.file_path === 'string';
 
   const diffStats = useMemo(() => {
     if (!editLike) return null;
@@ -280,7 +275,7 @@ export function ToolCard({
     if (commandLike) {
       return <CommandInputPanel input={input} inputObj={inputObj} />;
     }
-    if (toolName === 'Write') {
+    if (visual.kind === 'write') {
       return <WriteInputPanel input={inputObj} />;
     }
     return <JsonInputPanel input={input} />;
@@ -320,16 +315,18 @@ export function ToolCard({
   );
 
   return (
-    <section
+    <div
       className={`tool-card${compact ? ' tool-card--compact' : ''}`}
       data-tool={toolName}
       data-tool-kind={visual.kind}
       data-id={toolUseId}
       data-block-id={result?.source?.blockId}
+      data-member-refs={memberRefs}
     >
       <CompactActivityRow
         icon={<ToolActivityIcon icon={visual.icon} />}
         summary={summary}
+        memberRefs={memberRefs}
         disclosure={{
           content: details,
           regionLabel: `${visual.verb} details`,
@@ -338,7 +335,7 @@ export function ToolCard({
           onExpandedChange,
         }}
       />
-    </section>
+    </div>
   );
 }
 

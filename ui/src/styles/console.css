@@ -1089,6 +1089,48 @@
   z-index: 5;
 }
 
+/* Keep contextual actions beside each block's visible content. */
+.message-block-wrapper:has(> .message-actions) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.message-block-wrapper:has(> .message-actions) > :not(.message-actions) {
+  flex: 0 1 auto;
+  min-width: 0;
+  width: max-content;
+  max-width: calc(100% - 32px);
+}
+
+.message-block-wrapper:has(> .message-actions) > .message-actions {
+  position: static;
+  order: 1;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  width: max-content;
+  padding: 0;
+}
+
+.message-block-wrapper:has(> .message-actions) > .compact-activity,
+.message-block-wrapper:has(> .message-actions) > .tool-card,
+.message-block-wrapper:has(> .message-actions) > .tool-card > .compact-activity {
+  display: contents;
+}
+
+.message-block-wrapper:has(> .message-actions) .compact-activity__details {
+  order: 2;
+  flex: 1 0 100%;
+  width: 100%;
+  max-width: 100%;
+}
+
+.message-block-wrapper:has(> .message-actions) .compact-activity__row {
+  max-width: calc(100% - 32px);
+}
+
 /* Reveal only from the message that owns this action bar. */
 .message-block-wrapper:hover > .message-actions,
 .message-block-wrapper:has(.message-actions .contextual-action:focus-visible) > .message-actions {

@@ -3,6 +3,7 @@ import type {
   AssistantEvent,
   CanonicalChatItemEvent,
   ContentBlock,
+  DisplayActivityItem,
   DisplayGroup,
   RenderNode,
   RenderNodeAssistantTurn,
@@ -14,6 +15,8 @@ import type {
   SystemInitEvent,
   ToolResultContentBlock,
   TranscriptSemanticEvent,
+  ToolCallActivity,
+  ThinkingBlockActivity,
   UserEvent,
 } from '../components/stream-renderer/types';
 import type { ProviderDirectiveActivity } from '../components/stream-renderer/types';
@@ -209,7 +212,16 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
         }
         pendingAssistant.message.content.push(item.type === 'plan'
           ? { type: 'plan', text: chatItemText(item), source }
-          : { type: 'text', text: chatItemText(item), source });
+          : {
+              type: 'text',
+              text: chatItemText(item),
+              source,
+              sourceIdentity: {
+                provider: item.identity.provider,
+                sessionId: item.identity.session_id,
+                turnId: item.identity.native_turn_id,
+              },
+            });
       } else if (item.type === 'tool-call') {
         const toolItem = item as ToolCallItem;
         const toolId = toolItem.tool_id ?? toolItem.identity.native_tool_id ?? key;
@@ -228,7 +240,13 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
             type: 'tool_use',
             id: toolId,
             name: toolItem.tool_name ?? toolItem.tool_kind ?? 'tool',
+            toolKind: toolItem.tool_kind,
             input: toolItem.input === undefined ? '' : toolValueText(toolItem.input, ''),
+            sourceIdentity: {
+              provider: item.identity.provider,
+              sessionId: item.identity.session_id,
+              turnId: item.identity.native_turn_id,
+            },
             source,
           });
         } else {
@@ -416,7 +434,7 @@ export type ActivityDisplayEntry =
   | { kind: 'node'; node: RenderNode }
   | { kind: 'activity-group'; key: string; nodes: Array<Extract<RenderNode, { kind: 'activity' }>> };
 
-function expandProviderDirectiveActivities(nodes: readonly RenderNode[]): RenderNode[] {
+function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode[] {
   const expanded: RenderNode[] = [];
   for (const node of nodes) {
     if (node.kind !== 'assistant_turn') {
@@ -425,9 +443,10 @@ function expandProviderDirectiveActivities(nodes: readonly RenderNode[]): Render
     }
 
     const blocks = node.turn.assistantEvent.message.content;
-    const hasDirective = blocks.some((block) => block.type === 'text'
-      && splitProviderDirectives(block.text).some((segment) => segment.kind === 'activity'));
-    if (!hasDirective) {
+    const hasInlineActivity = blocks.some((block) => block.type === 'tool_use'
+      || block.type === 'thinking'
+      || (block.type === 'text' && splitProviderDirectives(block.text).some((segment) => segment.kind === 'activity')));
+    if (!hasInlineActivity) {
       expanded.push(node);
       continue;
     }
@@ -453,6 +472,49 @@ function expandProviderDirectiveActivities(nodes: readonly RenderNode[]): Render
     };
 
     blocks.forEach((block, blockIndex) => {
+      if (block.type === 'tool_use') {
+        flushFragment();
+        const item: ToolCallActivity = {
+          type: 'tool-call-activity',
+          id: block.id,
+          name: block.name,
+          toolKind: block.toolKind,
+          input: block.input,
+          result: node.turn.toolResults.get(block.id) ?? null,
+          turnId: block.sourceIdentity
+            ? block.sourceIdentity.turnId
+            : node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
+          sessionId: node.turn.assistantEvent.session_id,
+          sourceIdentity: block.sourceIdentity,
+        };
+        expanded.push({
+          kind: 'activity',
+          key: `tool-call:${node.turn.id}:${block.source?.blockId ?? block.id}`,
+          entity: 'assistant',
+          item,
+          source: block.source,
+        });
+        return;
+      }
+
+      if (block.type === 'thinking') {
+        flushFragment();
+        const item: ThinkingBlockActivity = {
+          type: 'thinking-block-activity',
+          content: block.thinking,
+          turnId: node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
+          sessionId: node.turn.assistantEvent.session_id,
+        };
+        expanded.push({
+          kind: 'activity',
+          key: `thinking:${node.turn.id}:${block.source?.blockId ?? blockIndex}`,
+          entity: 'assistant',
+          item,
+          source: block.source,
+        });
+        return;
+      }
+
       if (block.type !== 'text') {
         fragmentBlocks.push(block);
         return;
@@ -479,7 +541,11 @@ function expandProviderDirectiveActivities(nodes: readonly RenderNode[]): Render
         const item: ProviderDirectiveActivity = {
           type: 'provider-directive',
           directive: segment.directive,
-          turnId: node.turn.id,
+          turnId: block.sourceIdentity
+            ? block.sourceIdentity.turnId
+            : node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
+          sessionId: node.turn.assistantEvent.session_id,
+          provider: block.sourceIdentity?.provider,
           blockId: block.source?.blockId ?? null,
           sequence: directiveIndex,
         };
@@ -499,34 +565,59 @@ function expandProviderDirectiveActivities(nodes: readonly RenderNode[]): Render
   return expanded;
 }
 
-function knownTurnBoundary(left: ActivityItem | ProviderDirectiveActivity, right: ActivityItem | ProviderDirectiveActivity): boolean {
-  if (left.type === 'provider-directive' || right.type === 'provider-directive') {
-    return left.type === 'provider-directive'
-      && right.type === 'provider-directive'
-      && left.turnId !== right.turnId;
-  }
-  const leftTurn = left.identity.native_turn_id;
-  const rightTurn = right.identity.native_turn_id;
-  return Boolean(leftTurn && rightTurn && leftTurn !== rightTurn);
+type ActivityBoundaryIdentity = {
+  provider?: string;
+  sessionId?: string;
+  role: 'assistant' | 'system';
+  turnId?: string;
 }
 
-function sameActivityBoundary(left: ActivityItem | ProviderDirectiveActivity, right: ActivityItem | ProviderDirectiveActivity): boolean {
-  if (left.type === 'provider-directive' || right.type === 'provider-directive') {
-    return left.type === 'provider-directive'
-      && right.type === 'provider-directive'
-      && left.directive.kind === right.directive.kind
-      && !knownTurnBoundary(left, right);
+function activityBoundaryIdentity(item: DisplayActivityItem): ActivityBoundaryIdentity {
+  if (item.type === 'provider-directive') {
+    return { provider: item.provider, sessionId: item.sessionId, role: 'assistant', turnId: item.turnId };
   }
-  return left.identity.provider === right.identity.provider
-    && left.identity.session_id === right.identity.session_id
-    && left.role === right.role
-    && left.activity_kind === right.activity_kind
-    && !knownTurnBoundary(left, right);
+  if (item.type === 'tool-call-activity') {
+    return {
+      provider: item.sourceIdentity?.provider,
+      sessionId: item.sourceIdentity?.sessionId ?? item.sessionId,
+      role: 'assistant',
+      turnId: item.sourceIdentity?.turnId ?? item.turnId,
+    };
+  }
+  if (item.type === 'thinking-block-activity') {
+    return { sessionId: item.sessionId, role: 'assistant', turnId: item.turnId };
+  }
+  return {
+    provider: item.identity.provider,
+    sessionId: item.identity.session_id,
+    role: item.role,
+    turnId: item.identity.native_turn_id,
+  };
 }
 
-/** Groups only maximal same-kind activity runs; every other item is a boundary. */
+function isUnifiedActivity(item: DisplayActivityItem): boolean {
+  return item.type !== 'activity'
+    || item.activity_kind === 'thinking'
+    || item.activity_kind === 'reasoning-summary';
+}
+
+function sameActivityBoundary(left: DisplayActivityItem, right: DisplayActivityItem): boolean {
+  const mixedRun = isUnifiedActivity(left) && isUnifiedActivity(right);
+  const sameLegacyKind = left.type === 'activity'
+    && right.type === 'activity'
+    && left.activity_kind === right.activity_kind;
+  if (!mixedRun && !sameLegacyKind) return false;
+  const leftIdentity = activityBoundaryIdentity(left);
+  const rightIdentity = activityBoundaryIdentity(right);
+  return leftIdentity.role === rightIdentity.role
+    && (!leftIdentity.provider || !rightIdentity.provider || leftIdentity.provider === rightIdentity.provider)
+    && (!leftIdentity.sessionId || !rightIdentity.sessionId || leftIdentity.sessionId === rightIdentity.sessionId)
+    && (!leftIdentity.turnId || !rightIdentity.turnId || leftIdentity.turnId === rightIdentity.turnId);
+}
+
+/** Groups adjacent tool and provider-activity items without crossing prose or turn boundaries. */
 export function groupActivityItemsForDisplay(nodes: RenderNode[]): ActivityDisplayEntry[] {
-  nodes = expandProviderDirectiveActivities(nodes);
+  nodes = expandInlineActivities(nodes);
   const entries: ActivityDisplayEntry[] = [];
   let index = 0;
   while (index < nodes.length) {
@@ -603,7 +694,7 @@ export function renderNodeToMarkdown(node: RenderNode): string {
     return `## ${node.result.is_error ? 'Tool error' : 'Unmatched tool result'}\n\n${body}`;
   }
   if (node.kind === 'activity') {
-    if (node.item.type === 'provider-directive') return '';
+    if (node.item.type !== 'activity') return '';
     const body = chatItemText(node.item).trim();
     const status = [node.item.status, node.item.execution_outcome].filter(Boolean).join(' · ');
     return `## Activity: ${node.item.activity_kind}${status ? ` (${status})` : ''}\n\n${body}`;

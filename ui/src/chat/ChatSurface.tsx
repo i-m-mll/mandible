@@ -23,6 +23,8 @@ import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
 import { ActivityGroup, ActivityRow } from '../components/message-blocks/ActivityBlock';
+import { ThinkingBlock } from '../components/message-blocks/ThinkingBlock';
+import { ToolUseBlock } from '../components/message-blocks/ToolUseBlock';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
 import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import { openMarkdownDocument } from './markdownActions';
@@ -970,7 +972,7 @@ export function ChatSurface({
     }
   }
 
-  function renderNodeBody(node: RenderNode): JSX.Element | null {
+  function renderNodeBody(node: RenderNode, memberRef?: string): JSX.Element | null {
     switch (node.kind) {
       case 'user_message': {
         const source = node.persisted;
@@ -1034,18 +1036,61 @@ export function ChatSurface({
         const sourceBlockId = source?.blockId
           ?? (node.item.type === 'provider-directive' ? node.item.blockId ?? undefined : undefined);
         const disclosureKey = `activity:${node.key}`;
-        return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId}>
+        const defaultExpanded = node.item.type === 'thinking-block-activity'
+          && streaming
+          && node.item.turnId === lastAssistantTurnId;
+        const expanded = expandedBlocks[disclosureKey] ?? defaultExpanded;
+        let activity: JSX.Element;
+        if (node.item.type === 'tool-call-activity') {
+          const resultSource = node.item.result?.source;
+          activity = (
+            <ToolUseBlock
+              toolName={node.item.name}
+              toolKind={node.item.toolKind}
+              toolUseId={node.item.id}
+              input={node.item.input}
+              result={node.item.result}
+              defaultExpanded={false}
+              expanded={expanded}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+              resultSelected={resultSource ? selectedBlockIds?.has(resultSource.blockId) : false}
+              selectMode={selectMode}
+              onToggleResultSelect={resultSource && onToggleBlockSelect
+                ? (shiftKey) => onToggleBlockSelect(resultSource.blockId, shiftKey)
+                : undefined}
+              onForkResult={resultSource?.dagUuid && onFork ? () => onFork(resultSource.dagUuid!) : undefined}
+              onResumeResult={resultSource?.dagUuid && onResume ? () => onResume(resultSource.dagUuid!) : undefined}
+            />
+          );
+        } else if (node.item.type === 'thinking-block-activity') {
+          activity = (
+            <ThinkingBlock
+              content={node.item.content}
+              defaultCollapsed={!defaultExpanded}
+              expanded={expanded}
+              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
+            />
+          );
+        } else {
+          activity = (
             <ActivityRow
               item={node.item}
-              expanded={expandedBlocks[disclosureKey] ?? false}
+              expanded={expanded}
               onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
               onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
+          );
+        }
+        return (
+          <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId} data-member-refs={memberRef}>
+            {activity}
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
               selectMode={selectMode}
+              onFork={source?.dagUuid && onFork ? () => onFork(source.dagUuid!) : undefined}
+              onResume={source?.dagUuid && onResume ? () => onResume(source.dagUuid!) : undefined}
+              dagUuid={source?.dagUuid}
               metadata={{ timestamp: source?.timestamp }}
             />
           </div>
@@ -1114,19 +1159,25 @@ export function ChatSurface({
       >
         {groupActivityItemsForDisplay(group.nodes).map((entry) => {
           if (entry.kind === 'node') return renderNodeBody(entry.node);
+          const memberRefs = entry.nodes.map((node) => node.source?.blockId
+            ?? (node.item.type === 'provider-directive' ? node.item.blockId : null)
+            ?? node.key);
+          const groupDisclosureKey = `activity-group:${entry.key}`;
+          const defaultGroupExpanded = expandedBlocks[entry.key] ?? (streaming && entry.nodes.some((node) => (
+            node.item.type === 'thinking-block-activity' && node.item.turnId === lastAssistantTurnId
+          )));
           return (
             <div
               key={entry.key}
               className="message-block-wrapper"
-              data-member-refs={[...new Set(entry.nodes.map((node) => node.source?.blockId
-                ?? (node.item.type === 'provider-directive' ? node.item.blockId : null)
-                ?? node.key))].join(' ')}
+              data-member-refs={[...new Set(memberRefs)].join(' ')}
             >
               <ActivityGroup
                 items={entry.nodes.map((node) => node.item)}
-                expanded={expandedBlocks[entry.key] ?? false}
-                onExpandedChange={(next) => setBlockExpanded(entry.key, next)}
-                onCreatedTaskNavigate={onCreatedTaskNavigate}
+                memberRefs={memberRefs}
+                renderMember={(_, index) => renderNodeBody(entry.nodes[index], memberRefs[index])}
+                expanded={expandedBlocks[groupDisclosureKey] ?? defaultGroupExpanded}
+                onExpandedChange={(next) => setBlockExpanded(groupDisclosureKey, next)}
               />
             </div>
           );

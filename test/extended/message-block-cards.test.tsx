@@ -45,10 +45,13 @@ describe('message action cards', () => {
     expect(getToolVisual('Edit').kind).toBe('edit');
     expect(getToolVisual('Bash').kind).toBe('execute');
     expect(getToolVisual('WebFetch').kind).toBe('fetch');
-    expect(getToolVisual('mcp__github__search').kind).toBe('mcp');
+    expect(getToolVisual('mcp__github__search').kind).toBe('search');
     expect(getToolVisual('mcp__browser__navigate').kind).toBe('browser');
     expect(getToolVisual('web__run').kind).toBe('browser');
     expect(getToolVisual('switch_mode').kind).toBe('switch_mode');
+    expect(getToolVisual('exec').verb).toBe('Used exec');
+    expect(getToolVisual('wait').verb).toBe('Waited');
+    expect(getToolVisual('js').verb).toBe('Ran JavaScript');
   });
 
   it('left-truncates long targets while preserving the filename', () => {
@@ -59,31 +62,33 @@ describe('message action cards', () => {
     expect(truncated.length).toBeLessThanOrEqual(48);
   });
 
-  it('classifies commands and browser calls into deterministic phrases and targets', () => {
+  it('uses exact tool names for classification and only shows targets with a known meaning', () => {
     expect(presentTool('exec_command', { cmd: 'npm test' })).toMatchObject({
       category: 'execute', icon: 'terminal', phrase: 'Ran a command', target: 'npm test',
     });
     expect(presentTool('exec', {})).toMatchObject({
-      category: 'execute', icon: 'terminal', phrase: 'Ran a command', target: '',
+      category: 'other', icon: 'tool', phrase: 'Used exec', target: '',
     });
     expect(presentTool('web__run', { search_query: [{ q: 'Mandible docs' }] })).toMatchObject({
       category: 'browser', phrase: 'Used the browser', target: 'Mandible docs',
     });
     expect(summarizeToolRun([
-      { name: 'Read', input: { path: '/a' } },
-      { name: 'Read', input: { path: '/b' } },
-      { name: 'exec_command', input: { cmd: 'npm test' } },
+      { name: 'Read' },
+      { name: 'Read' },
+      { name: 'exec_command' },
     ])).toBe('Read some files, ran a command');
     expect(summarizeToolRun([
-      { name: 'exec', input: {} },
-      { name: 'exec', input: {} },
-    ])).toBe('Ran some commands');
+      { name: 'exec' },
+      { name: 'exec' },
+    ])).toBe('Used exec several times');
+    expect(presentTool('unknown_tool', { command: 'opaque payload' })).toMatchObject({
+      category: 'other', phrase: 'Used unknown_tool', target: '',
+    });
   });
 
-  it('renders the live Codex exec payload as a human command description', () => {
+  it('renders the live Codex exec tool by its explicit name without reading its payload', () => {
     render(<ToolUseBlock toolName="exec" input={{}} defaultExpanded={false} />);
-    expect(screen.getByRole('button', { name: /Ran a command/ })).toBeTruthy();
-    expect(screen.queryByText('exec')).toBeNull();
+    expect(screen.getByRole('button', { name: /Used exec/ })).toBeTruthy();
   });
 
   it('preserves a non-empty opaque Codex custom-tool payload', () => {
@@ -147,9 +152,14 @@ describe('message action cards', () => {
     }
     expect(css).toMatch(/\.compact-activity,\s*\.tool-card\s*\{[^}]*width:\s*100%;/s);
     expect(css).toMatch(/\.tool-card__body\s*\{[^}]*width:\s*100%;/s);
-    expect(css).toMatch(/\.compact-activity__row\s*\{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\) 16px;[^}]*gap:\s*6px;[^}]*min-height:\s*22px;[^}]*padding:\s*1px 0;[^}]*font:\s*400 var\(--text-lg\)\/1\.15 var\(--font-sans\);/s);
-    expect(css).not.toMatch(/\.compact-activity__row[^{}]*(?::hover|:focus-visible)[^{]*\{[^}]*color:/s);
-    expect(css).toMatch(/\.compact-activity__row--inert\s*\{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\);/s);
+    expect(css).toMatch(/\.compact-activity__row\s*\{[^}]*display:\s*flex;[^}]*width:\s*max-content;[^}]*gap:\s*6px;[^}]*min-height:\s*22px;[^}]*padding:\s*1px 0;[^}]*font:\s*400 var\(--text-lg\)\/1\.15 var\(--font-sans\);/s);
+    expect(css).toMatch(/\.compact-activity__row:hover,\s*\.compact-activity__row:focus-visible\s*\{[^}]*color:/s);
+    expect(css).toMatch(/\.compact-activity__row--inert\s*\{[^}]*cursor:\s*default;/s);
+    const consoleCss = readFileSync('ui/src/styles/console.css', 'utf8');
+    expect(consoleCss).toMatch(/\.message-block-wrapper:has\(> \.message-actions\)\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*gap:\s*6px;/s);
+    expect(consoleCss).toMatch(/\.message-block-wrapper:has\(> \.message-actions\) > \.message-actions\s*\{[^}]*position:\s*static;[^}]*flex:\s*0 0 auto;/s);
+    expect(consoleCss).toMatch(/\.message-block-wrapper:has\(> \.message-actions\) \.compact-activity__details\s*\{[^}]*order:\s*2;[^}]*flex:\s*1 0 100%;/s);
+    expect(consoleCss).toMatch(/\.message-block-wrapper:has\(> \.message-actions\) > \.message-actions\s*\{[^}]*order:\s*1;/s);
     expect(css).toMatch(/\.msg-text-block\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*var\(--text-lg\);/s);
     expect(css).toMatch(/\.compact-activity__details\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;[^}]*background:\s*transparent;[^}]*padding:\s*0;/s);
     expect(css).not.toContain('.message-group__content > .message-block-wrapper:has(> .tool-card)');
@@ -217,9 +227,9 @@ describe('message action cards', () => {
 
   it('gives grouped tool runs exactly one representative icon', () => {
     expect(toolRunIcon([
-      { name: 'Read', input: { path: 'one' } },
-      { name: 'Read', input: { path: 'two' } },
-      { name: 'Bash', input: { command: 'true' } },
+      { name: 'Read' },
+      { name: 'Read' },
+      { name: 'Bash' },
     ])).toBe('↗');
   });
 
