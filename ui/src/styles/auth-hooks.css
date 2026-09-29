@@ -157,6 +157,10 @@
   font-size: 12px;
 }
 
+.auth-hooks-panel__save-status--error {
+  color: var(--accent-red);
+}
+
 .auth-hooks-panel__empty {
   color: var(--text-secondary);
   font-size: 13px;
