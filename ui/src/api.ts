@@ -1111,6 +1111,39 @@ export type DelegatedSigningStatus = {
   missing_tools: string[];
 };
 
+export type OperatorSigningCredential = {
+  id: string;
+  type: string;
+  fingerprint: string;
+  label: string | null;
+};
+
+export type OperatorSigningKeyStatus = {
+  audit: {
+    status: 'ok' | 'no_operator' | 'unconfigured' | 'unresolvable' | 'missing_credential';
+    configured: boolean;
+    fingerprint: string | null;
+    operator_slug: string | null;
+    reason: string | null;
+    hint: string | null;
+  };
+  credentials: OperatorSigningCredential[];
+  git_config_read: boolean;
+};
+
+export async function getOperatorSigningKeyStatus(): Promise<OperatorSigningKeyStatus> {
+  const response = await apiGet('/api/users/operator/signing-key');
+  return (await parseMaybeJson(response)) as OperatorSigningKeyStatus;
+}
+
+export async function registerOperatorSigningKey(input:
+  | { source: 'configured' }
+  | { source: 'public_key'; public_key: string }
+): Promise<{ credential: OperatorSigningCredential; unchanged: boolean }> {
+  const response = await apiPost('/api/users/operator/signing-key', input);
+  return (await parseMaybeJson(response)) as { credential: OperatorSigningCredential; unchanged: boolean };
+}
+
 export async function getDelegatedSigningStatus(): Promise<DelegatedSigningStatus> {
   const response = await apiGet('/api/auth/clearances/signing');
   return (await parseMaybeJson(response)) as DelegatedSigningStatus;

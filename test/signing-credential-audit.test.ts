@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   auditOperatorSigningCredential,
+  discoverConfiguredPublicSigningKey,
   resolveSigningKeyFingerprint,
 } from "../src/signing-credential-audit.js";
 import type { Db } from "../src/db.js";
@@ -101,6 +102,28 @@ describe("resolveSigningKeyFingerprint", () => {
   it("reports an unreadable path instead of guessing", () => {
     const resolved = resolveSigningKeyFingerprint("/nonexistent/mandible-signing-key");
     expect(resolved).toEqual({ ok: false, reason: "signing_key_path_unreadable" });
+  });
+});
+
+describe("discoverConfiguredPublicSigningKey", () => {
+  it("reads a .pub sidecar without opening the configured private-key path", () => {
+    const { repo, keyPath, fingerprint, publicMaterial } = createRepoWithSigningKey(false);
+    execFileSync("git", ["config", "user.signingkey", keyPath], { cwd: repo });
+    fs.rmSync(keyPath);
+    const discovered = withIsolatedGitConfig(() => discoverConfiguredPublicSigningKey({ cwd: repo, global: false }));
+    expect(discovered).toMatchObject({
+      value: { material: publicMaterial, fingerprint },
+      reason: null,
+    });
+  });
+
+  it("does not derive public material from a private key when no .pub sidecar exists", () => {
+    const { repo, keyPath } = createRepoWithSigningKey(false);
+    fs.rmSync(`${keyPath}.pub`);
+    execFileSync("git", ["config", "user.signingkey", keyPath], { cwd: repo });
+    const discovered = withIsolatedGitConfig(() => discoverConfiguredPublicSigningKey({ cwd: repo, global: false }));
+    expect(discovered.value).toBeNull();
+    expect(discovered.reason).toBe("public_key_not_available_without_private_key_access");
   });
 });
 

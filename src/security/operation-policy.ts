@@ -146,6 +146,16 @@ export function operationForRequest(
       ? { id: "user.setup.copy", effects: ["auth:credentials"] }
       : { id: "installation.setup", effects: [] };
   }
+  if (pathname === "/api/users/operator/signing-key") {
+    if (normalizedMethod === "GET") {
+      return instanceRole === "preview" ? READ_OPERATION : { id: "auth.credentials", effects: ["auth:credentials"] };
+    }
+    if (normalizedMethod === "POST") {
+      return instanceRole === "preview"
+        ? { id: "user.signing_key.copy", effects: ["ledger:write"] }
+        : { id: "auth.credentials", effects: ["auth:credentials"] };
+    }
+  }
   const exact = EXACT_OPERATIONS.get(`${normalizedMethod} ${pathname}`);
   if (exact) return exact;
   if (!pathname.startsWith("/api/")) return null;
