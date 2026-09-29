@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
+  getBriefing,
   getBriefingSidebarSnapshot,
   getCachedBriefingSidebarSnapshot,
   ApiError,
@@ -9,20 +10,32 @@ import {
   type BriefingSidebarSnapshot,
   type InstanceInfo,
 } from '../api';
+import { writePersistedDetail } from '../detail-cache';
 import { useAppShell } from '../app-shell';
 import { briefingGroupRoute, briefingRoute } from '../routing';
+import { readPersistedViewState } from '../hooks/usePersistedViewState';
 import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
 import { BriefingGroupDetail } from './feedback/BriefingGroupDetail';
 import { CollectionShell } from './feedback/CollectionShell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { resolveFeedbackCollection, type FeedbackCollection } from './feedback/collection-model';
-import { useBriefingCollectionViewState } from './feedback/collection-view-state';
+import {
+  BRIEFING_VIEW_STATE_KEY,
+  DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
+  normalizeBriefingCollectionViewState,
+  useBriefingCollectionViewState,
+  type BriefingCollectionViewState,
+} from './feedback/collection-view-state';
 import {
   briefingGroupOwnsUpdate,
   indexBriefingGroupBundleOwners,
   resolveBriefingGroupProjection,
 } from './feedback/briefing-group-projection';
 import { subscribeClientAccessState } from '../client-auth-token';
+import {
+  briefingProjectionCacheKey,
+  BRIEFING_PROJECTION_CACHE_NAMESPACE,
+} from './feedback/briefing-projection-cache';
 
 export type BriefingViewProps = {
   instance: InstanceInfo | null;
@@ -36,6 +49,82 @@ export type BriefingViewProps = {
 
 function replaceBriefingRoute(briefingId: string, roundId?: string | null): void {
   window.history.replaceState(null, '', briefingRoute(briefingId, roundId));
+}
+
+function resolveBriefingRouteGroup(groups: readonly BriefingGroup[], groupId?: string | null): BriefingGroup | null {
+  if (!groupId) return null;
+  const exact = groups.find((group) => group.id === groupId);
+  const prefixMatches = exact ? [] : groups.filter((group) => group.id.startsWith(groupId));
+  return exact ?? (prefixMatches.length === 1 ? prefixMatches[0] : null);
+}
+
+function defaultBriefingGroup(
+  groups: readonly BriefingGroup[],
+  lifecycle: BriefingCollectionViewState['collectionLifecycle'],
+): BriefingGroup | null {
+  return groups.find((group) => lifecycle === 'all'
+    || (lifecycle === 'archived' ? group.archivedAt != null : group.archivedAt == null)) ?? null;
+}
+
+function resolveBriefingSelection(
+  sidebar: BriefingSidebarSnapshot,
+  viewState: BriefingCollectionViewState,
+  params: Record<string, string | null | undefined>,
+): { briefing: FeedbackCollection | null; group: BriefingGroup | null; roundId: string | null } {
+  const routeGroup = resolveBriefingRouteGroup(sidebar.groups, params.group);
+  if (routeGroup) return { briefing: null, group: routeGroup, roundId: null };
+
+  const routeBriefing = params.briefing
+    ? resolveFeedbackCollection(sidebar.briefings, params.briefing)
+    : null;
+  if (routeBriefing) {
+    return {
+      briefing: routeBriefing,
+      group: null,
+      roundId: params.round || viewState.selectedRoundIds[routeBriefing.id] || null,
+    };
+  }
+
+  const savedGroup = sidebar.groups.find((group) => group.id === viewState.selectedGroupId) ?? null;
+  if (savedGroup) return { briefing: null, group: savedGroup, roundId: null };
+  const savedBriefing = sidebar.briefings.find((entry) => entry.id === viewState.selectedCollectionId) ?? null;
+  if (savedBriefing) {
+    return {
+      briefing: savedBriefing,
+      group: null,
+      roundId: viewState.selectedRoundIds[savedBriefing.id] ?? null,
+    };
+  }
+
+  if (params.group || params.briefing) return { briefing: null, group: null, roundId: null };
+  const fallbackGroup = defaultBriefingGroup(sidebar.groups, viewState.collectionLifecycle);
+  if (fallbackGroup) return { briefing: null, group: fallbackGroup, roundId: null };
+  const fallbackBriefing = sidebar.briefings[0] ?? null;
+  return {
+    briefing: fallbackBriefing,
+    group: null,
+    roundId: fallbackBriefing ? viewState.selectedRoundIds[fallbackBriefing.id] ?? null : null,
+  };
+}
+
+function briefingDisplayContext(
+  selected: FeedbackCollection | null,
+  groups: readonly BriefingGroup[],
+  viewState: BriefingCollectionViewState,
+): { groupId: string; proposalBundleId: string | null } | undefined {
+  if (!selected) return undefined;
+  const groupBundleOwners = indexBriefingGroupBundleOwners(groups);
+  for (const group of groups) {
+    const projection = resolveBriefingGroupProjection(
+      group,
+      viewState.selectedGroupUpdateIds[group.id],
+      groupBundleOwners,
+    );
+    if (projection.layoutSource?.members.some((member) => member.briefing.id === selected.id)) {
+      return { groupId: group.id, proposalBundleId: projection.selectedUpdate?.id ?? null };
+    }
+  }
+  return undefined;
 }
 
 export function BriefingView({ instance, initialBriefingId, initialRoundId, initialGroupId, sidebarHidden = false, nowMs, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
@@ -67,9 +156,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
 
   useEffect(() => {
     if (!initialGroupId) return;
-    const exact = groups.find((group) => group.id === initialGroupId);
-    const prefixMatches = exact ? [] : groups.filter((group) => group.id.startsWith(initialGroupId));
-    const group = exact ?? (prefixMatches.length === 1 ? prefixMatches[0] : null);
+    const group = resolveBriefingRouteGroup(groups, initialGroupId);
     if (!group) return;
     setViewState((current) => ({ ...current, selectedGroupId: group.id, selectedCollectionId: null }));
   }, [groups, initialGroupId, setViewState]);
@@ -142,8 +229,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   useEffect(() => {
     const hasResolvedCollection = sidebarLoaded || groups.length > 0 || briefings.length > 0;
     if (!appShell.active || !hasResolvedCollection || initialBriefingId || initialGroupId || selected || selectedGroup) return;
-    const fallbackGroup = groups.find((group) => viewState.collectionLifecycle === 'all'
-      || (viewState.collectionLifecycle === 'archived' ? group.archivedAt != null : group.archivedAt == null));
+    const fallbackGroup = defaultBriefingGroup(groups, viewState.collectionLifecycle);
     if (fallbackGroup) {
       setViewState((current) => ({
         ...current,
@@ -176,20 +262,10 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     ).selectedUpdate?.id ?? null
     : null;
   const explicitRoundId = selected ? viewState.selectedRoundIds[selected.id] ?? null : null;
-  const selectedDisplayContext = useMemo(() => {
-    if (!selected) return undefined;
-    for (const group of groups) {
-      const projection = resolveBriefingGroupProjection(
-        group,
-        viewState.selectedGroupUpdateIds[group.id],
-        groupBundleOwners,
-      );
-      if (projection.layoutSource?.members.some((member) => member.briefing.id === selected.id)) {
-        return { groupId: group.id, proposalBundleId: projection.selectedUpdate?.id ?? null };
-      }
-    }
-    return undefined;
-  }, [groupBundleOwners, groups, selected, viewState.selectedGroupUpdateIds]);
+  const selectedDisplayContext = useMemo(
+    () => briefingDisplayContext(selected, groups, viewState),
+    [groups, selected, viewState.selectedGroupUpdateIds],
+  );
 
   const selectBriefing = (briefing: FeedbackCollection) => {
     setViewState((current) => ({ ...current, selectedCollectionId: briefing.id, selectedGroupId: null }));
@@ -288,6 +364,27 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
         />
       )}
     </CollectionShell>
+  );
+}
+
+/** Warm the Briefing sidebar and only its explicit, saved, or default selection. */
+export async function warmInitialData(params: Record<string, string>): Promise<void> {
+  const sidebar = await getBriefingSidebarSnapshot();
+  const viewState = readPersistedViewState(
+    BRIEFING_VIEW_STATE_KEY,
+    normalizeBriefingCollectionViewState,
+    DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
+  );
+  const selection = resolveBriefingSelection(sidebar, viewState, params);
+  if (!selection.briefing) return;
+
+  const briefingId = selection.briefing.collectionId;
+  const displayContext = briefingDisplayContext(selection.briefing, sidebar.groups, viewState);
+  const projection = await getBriefing(briefingId, selection.roundId, null, undefined, displayContext);
+  writePersistedDetail(
+    BRIEFING_PROJECTION_CACHE_NAMESPACE,
+    briefingProjectionCacheKey(briefingId, selection.roundId, null, displayContext),
+    projection,
   );
 }
 
