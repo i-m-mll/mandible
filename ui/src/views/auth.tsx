@@ -1410,6 +1410,12 @@ export function AuthHooksPanel({
   const [actionError, setActionError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const [editSaveState, setEditSaveState] = useState<'idle' | 'incomplete' | 'saving' | 'saved'>('idle');
+  const editSaveTimerRef = useRef<number | null>(null);
+  const editSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const editSaveRevisionRef = useRef(0);
+  const editSaveBaselineRef = useRef<string | null>(null);
+  const editSaveQueuedSignatureRef = useRef<string | null>(null);
   const updateAllowed = (id: string) => canPerformOperation(instance, 'PUT', `/api/auth/hooks/${id}`);
   const deleteAllowed = (id: string) => canPerformOperation(instance, 'DELETE', `/api/auth/hooks/${id}`);
   const formChangesAllowed = readAvailable && (editId ? updateAllowed(editId) : createAllowed);
@@ -1420,6 +1426,72 @@ export function AuthHooksPanel({
   const [formType, setFormType] = useState<AuthRequestType>('merge');
   const [formCommand, setFormCommand] = useState('');
   const [formLabel, setFormLabel] = useState('');
+
+  const editValues = { repo_pattern: formRepo, auth_type: formType, command: formCommand, label: formLabel };
+  const editSignature = JSON.stringify(editValues);
+  const editSignatureRef = useRef(editSignature);
+  editSignatureRef.current = editSignature;
+
+  const persistEdit = useCallback(async (
+    id: string,
+    values: typeof editValues,
+    signature: string,
+  ): Promise<boolean> => {
+    if (!values.repo_pattern.trim() || !values.command.trim()) {
+      setEditSaveState('incomplete');
+      return false;
+    }
+    if (signature === editSaveQueuedSignatureRef.current) {
+      await editSaveQueueRef.current;
+      return signature === editSaveBaselineRef.current;
+    }
+    const revision = ++editSaveRevisionRef.current;
+    editSaveQueuedSignatureRef.current = signature;
+    setActionError(null);
+    setEditSaveState('saving');
+    let succeeded = false;
+    editSaveQueueRef.current = editSaveQueueRef.current.catch(() => undefined).then(async () => {
+      try {
+        const saved = await updateAuthHook(id, values);
+        succeeded = true;
+        if (revision === editSaveRevisionRef.current) {
+          editSaveBaselineRef.current = signature;
+          setHooks((current) => current.map((hook) => hook.id === id ? saved : hook));
+          if (editSignatureRef.current === signature) setEditSaveState('saved');
+        }
+      } catch (err) {
+        if (revision === editSaveRevisionRef.current) {
+          setActionError(err instanceof Error ? err.message : 'Failed to update hook');
+          editSaveQueuedSignatureRef.current = editSaveBaselineRef.current;
+          setEditSaveState('idle');
+        }
+      }
+    });
+    await editSaveQueueRef.current;
+    return succeeded;
+  }, []);
+
+  useEffect(() => {
+    if (!showForm || !editId) return;
+    if (editSaveTimerRef.current !== null) window.clearTimeout(editSaveTimerRef.current);
+    if (editSignature === editSaveQueuedSignatureRef.current) {
+      setEditSaveState(editSignature === editSaveBaselineRef.current ? 'saved' : 'saving');
+      return;
+    }
+    if (!formRepo.trim() || !formCommand.trim()) {
+      setEditSaveState('incomplete');
+      return;
+    }
+    setEditSaveState('idle');
+    editSaveTimerRef.current = window.setTimeout(() => {
+      editSaveTimerRef.current = null;
+      void persistEdit(editId, editValues, editSignature);
+    }, 350);
+    return () => {
+      if (editSaveTimerRef.current !== null) window.clearTimeout(editSaveTimerRef.current);
+      editSaveTimerRef.current = null;
+    };
+  }, [showForm, editId, editSignature, formRepo, formCommand, persistEdit]);
 
   const loadHooks = useCallback(async () => {
     if (!readAvailable) {
@@ -1445,41 +1517,48 @@ export function AuthHooksPanel({
   useEffect(() => { void loadHooks(); }, [loadHooks]);
 
   const resetForm = () => {
+    if (editSaveTimerRef.current !== null) window.clearTimeout(editSaveTimerRef.current);
+    editSaveTimerRef.current = null;
+    editSaveRevisionRef.current += 1;
+    editSaveBaselineRef.current = null;
+    editSaveQueuedSignatureRef.current = null;
     setFormRepo('*');
     setFormType('merge');
     setFormCommand('');
     setFormLabel('');
     setEditId(null);
     setShowForm(false);
+    setEditSaveState('idle');
   };
 
-  const handleSave = async () => {
-    if (!formChangesAllowed) {
+  const handleCreate = async () => {
+    if (!createAllowed) {
       setActionError('Approval hook changes are unavailable in this instance.');
       return;
     }
     setActionError(null);
     try {
-      if (editId) {
-        await updateAuthHook(editId, {
-          repo_pattern: formRepo,
-          auth_type: formType,
-          command: formCommand,
-          label: formLabel,
-        });
-      } else {
-        await createAuthHook({
-          repo_pattern: formRepo,
-          auth_type: formType,
-          command: formCommand,
-          label: formLabel,
-        });
-      }
+      await createAuthHook(editValues);
       resetForm();
       await loadHooks();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to save hook');
+      setActionError(err instanceof Error ? err.message : 'Failed to create hook');
     }
+  };
+
+  const handleFinishEdit = async () => {
+    if (!editId) return true;
+    if (editSaveTimerRef.current !== null) window.clearTimeout(editSaveTimerRef.current);
+    editSaveTimerRef.current = null;
+    const saved = await persistEdit(editId, editValues, editSignature);
+    if (saved) resetForm();
+    return saved;
+  };
+
+  const handleAdd = async () => {
+    if (editId && !(await handleFinishEdit())) return;
+    resetForm();
+    setShowForm(true);
   };
 
   const handleEdit = (hook: AuthHook) => {
@@ -1489,6 +1568,14 @@ export function AuthHooksPanel({
     setFormCommand(hook.command);
     setFormLabel(hook.label);
     setEditId(hook.id);
+    editSaveBaselineRef.current = JSON.stringify({
+      repo_pattern: hook.repo_pattern,
+      auth_type: hook.auth_type,
+      command: hook.command,
+      label: hook.label,
+    });
+    editSaveQueuedSignatureRef.current = editSaveBaselineRef.current;
+    setEditSaveState('saved');
     setShowForm(true);
   };
 
@@ -1521,11 +1608,15 @@ export function AuthHooksPanel({
         <div className="auth-hooks-panel__actions">
           <button
             type="button"
-            className="btn btn--sm btn--ghost"
-            onClick={() => { resetForm(); setShowForm(true); }}
+            className="auth-hooks-panel__add-button"
+            onClick={() => void handleAdd()}
             disabled={!createAllowed}
+            aria-label="Add approval hook"
+            title="Add approval hook"
           >
-            + Add Hook
+            <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
+              <path d="M8 2.5v11M2.5 8h11" />
+            </svg>
           </button>
           {onClose && (
             <button
@@ -1566,6 +1657,7 @@ export function AuthHooksPanel({
               value={formLabel}
               onInput={(e) => setFormLabel((e.target as HTMLInputElement).value)}
               disabled={!formChangesAllowed}
+              aria-label="Hook label"
             />
           </div>
           <div className="auth-hooks-panel__form-row">
@@ -1576,6 +1668,7 @@ export function AuthHooksPanel({
               value={formRepo}
               onInput={(e) => setFormRepo((e.target as HTMLInputElement).value)}
               disabled={!formChangesAllowed}
+              aria-label="Repository pattern"
             />
           </div>
           <div className="auth-hooks-panel__form-row">
@@ -1584,6 +1677,7 @@ export function AuthHooksPanel({
               value={formType}
               onChange={(e) => setFormType((e.target as HTMLSelectElement).value as AuthRequestType)}
               disabled={!formChangesAllowed}
+              aria-label="Approval type"
             >
               <option value="merge">Merge</option>
               <option value="commit">Commit</option>
@@ -1601,24 +1695,38 @@ export function AuthHooksPanel({
               rows={3}
               onInput={(e) => setFormCommand((e.target as HTMLTextAreaElement).value)}
               disabled={!formChangesAllowed}
+              aria-label="Hook command"
             />
           </div>
           <div className="auth-hooks-panel__form-actions">
-            <button
-              type="button"
-              className="btn btn--sm btn--success"
-              onClick={() => void handleSave()}
-              disabled={!formChangesAllowed || !formCommand.trim()}
-            >
-              {editId ? 'Update' : 'Create'}
-            </button>
-            <button
-              type="button"
-              className="btn btn--sm btn--ghost"
-              onClick={resetForm}
-            >
-              Cancel
-            </button>
+            {editId ? (
+              <>
+                <span className="auth-hooks-panel__save-status" role="status" aria-live="polite">
+                  {editSaveState === 'saving' ? 'Saving…' : editSaveState === 'saved' ? 'Saved' : editSaveState === 'incomplete' ? 'Enter a repository pattern and command to save' : 'Changes save automatically'}
+                </span>
+                <button type="button" className="btn btn--sm btn--ghost" onClick={() => void handleFinishEdit()}>
+                  Done
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="auth-hooks-panel__add-button auth-hooks-panel__add-button--commit"
+                  onClick={() => void handleCreate()}
+                  disabled={!formChangesAllowed || !formRepo.trim() || !formCommand.trim()}
+                  aria-label="Create approval hook"
+                  title="Create approval hook"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
+                    <path d="M8 2.5v11M2.5 8h11" />
+                  </svg>
+                </button>
+                <button type="button" className="btn btn--sm btn--ghost" onClick={resetForm}>
+                  Cancel
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
