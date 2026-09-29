@@ -408,8 +408,43 @@ describe('chat message stream render model', () => {
 });
 
 describe('ChatSurface stream behavior', () => {
-  it('renders truthful history boundaries and an actionable explicit gap', () => {
+  it('keeps a long structured transcript virtualized at the loaded tail', async () => {
+    const total = 12_060;
+    const firstLoaded = total - 160;
+    const loadAround = vi.fn(() => Promise.resolve('covered' as const));
     const transcript: ConversationTranscriptConsumer = {
+      conversationId: 'long-structure', sourceVersionId: 'version-1', historyLoading: false,
+      total, loadedIntervals: [{ start: firstLoaded, end: total - 1 }],
+      structure: {
+        conversation_id: 'long-structure', source_version_id: 'version-1', total,
+        rows: Array.from({ length: total }, (_, position) => ({
+          id: `b${position}`, position, type: 'user_message', role: 'user',
+          parent_position: null, record_offset: position * 1000, record_length: 1000,
+        })),
+      },
+      hasOlder: true, hasNewer: false, unmaterializedAfterCount: 0,
+      loadOlder: vi.fn(), loadNewer: vi.fn(), loadAround,
+    };
+    const events = Array.from({ length: 160 }, (_, index) => ({
+      ...canonicalEvent(canonicalItem({
+        type: 'message', role: 'user', parts: [{ type: 'text', text: `message ${index}` }],
+        ordinal: firstLoaded + index,
+      }), `b${firstLoaded + index}`),
+      source: { blockId: `b${firstLoaded + index}`, position: firstLoaded + index },
+    }));
+    const view = render(<ChatSurface events={events} streaming={false} transcript={transcript} />);
+    expect(view.container.querySelectorAll('[data-virtual-kind="group"]').length).toBeLessThan(30);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(loadAround).not.toHaveBeenCalled();
+  });
+
+  it('loads a visible missing range without presenting it as an empty conversation', async () => {
+    const transcript: ConversationTranscriptConsumer = {
+      conversationId: 'gap-conversation',
+      sourceVersionId: 'version-1',
+      historyLoading: false,
+      total: 10,
+      structure: null,
       loadedIntervals: [{ start: 0, end: 2 }, { start: 7, end: 9 }],
       hasOlder: false,
       hasNewer: false,
@@ -420,32 +455,41 @@ describe('ChatSurface stream behavior', () => {
     };
     render(<ChatSurface events={[user('prompt', 'u1')]} streaming={false} transcript={transcript} />);
 
-    expect(screen.getByText('Start of conversation')).toBeTruthy();
-    expect(screen.getByText('End of conversation')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Load missing history from positions 3 to 6' }));
-    expect(transcript.loadAround).toHaveBeenCalledWith(3);
+    expect(screen.queryByText('No messages yet')).toBeNull();
+    expect(document.querySelector('[data-virtual-kind="history"]')).toBeTruthy();
+    await waitFor(() => expect(transcript.loadAround).toHaveBeenCalled());
+    const requested = vi.mocked(transcript.loadAround).mock.calls[0][0];
+    expect(requested).toBeGreaterThanOrEqual(3);
+    expect(requested).toBeLessThanOrEqual(6);
   });
 
-  it('continues edge loading when a page advances coverage without adding readable rows', async () => {
-    const loadOlder = vi.fn(() => Promise.resolve());
+  it('rechecks the remaining gap when coverage advances without readable rows', async () => {
+    const loadAround = vi.fn(() => Promise.resolve('loaded' as const));
     const consumer = (start: number): ConversationTranscriptConsumer => ({
+      conversationId: 'moving-gap',
+      sourceVersionId: 'version-1',
+      historyLoading: false,
+      total: 10,
+      structure: null,
       loadedIntervals: [{ start, end: 9 }],
       hasOlder: true,
       hasNewer: false,
       unmaterializedAfterCount: 0,
-      loadOlder,
+      loadOlder: vi.fn(),
       loadNewer: vi.fn(),
-      loadAround: vi.fn(),
+      loadAround,
     });
     const view = render(
       <ChatSurface events={[user('only readable row', 'u1')]} streaming={false} transcript={consumer(8)} />,
     );
-    await waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(loadAround).toHaveBeenCalled());
+    const callsBefore = loadAround.mock.calls.length;
 
     view.rerender(
       <ChatSurface events={[user('only readable row', 'u1')]} streaming={false} transcript={consumer(4)} />,
     );
-    await waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(loadAround.mock.calls.length).toBeGreaterThan(callsBefore));
+    expect(loadAround.mock.calls.at(-1)?.[0]).toBeLessThanOrEqual(3);
   });
 
   it('persists a canonical reading anchor instead of a raw scroll offset', () => {
@@ -455,6 +499,7 @@ describe('ChatSurface stream behavior', () => {
       }), 'persisted-anchor')]} streaming={false} sessionInfo={{ sessionId: 'reading-anchor' }} />,
     );
     const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    fireEvent.wheel(scroll);
     fireEvent.scroll(scroll);
     const stored = JSON.parse(localStorage.getItem('mandible:chat-scroll:reading-anchor')!);
 
