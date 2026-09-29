@@ -45,6 +45,7 @@ type BrowserSnapshot = {
   seenBlockIds: string[];
   sourceVersionId: string | null;
   anchorBlockLoaded: boolean;
+  anchorBlockPosition: number | null;
   mountedRows: number;
   historyRows: number;
   maximumMountedRows: number;
@@ -377,7 +378,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       requestAnimationFrame(()=>requestAnimationFrame(()=>row.append(probe)));
       return {rowIndex:Number(row.getAttribute('data-index')),beforeHeight};
     })()`);
-    const visibleAnchor = (blockId?: string, requireVisible = false) => evaluate<{ id: string; top: number; scrollTop: number; viewportTop: number } | null>(`(() => {
+    const visibleAnchor = (blockId?: string, requireVisible = false) => evaluate<{ id: string; text: string; top: number; scrollTop: number; viewportTop: number } | null>(`(() => {
       const scroll=document.querySelector('.stream-renderer__scroll');
       const viewport=scroll.getBoundingClientRect();
       const blocks=[...document.querySelectorAll('[data-block-id]')];
@@ -391,6 +392,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       if(${requireVisible ? 'true' : 'false'}&&(rect.bottom<=viewport.top||rect.top>=viewport.bottom)) return null;
       return {
         id:block.dataset.blockId,
+        text:(block.textContent||'').replace(/\\s+/g,' ').trim().slice(0,240),
         top:rect.top,
         scrollTop:scroll.scrollTop,
         viewportTop:viewport.top,
@@ -588,7 +590,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       const anchorPosition = value.readingAnchor?.position;
       if (anchorBlockId && typeof anchorPosition === 'number' && anchorPosition < 450
           && value.readingAnchor?.followingTail === false) {
-        const block = await visibleAnchor();
+        const block = await visibleAnchor(anchorBlockId, true);
         if (block) {
           sourceRefreshBeforeAnchor = block;
           sourceRefreshBeforeState = value;
@@ -599,6 +601,12 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     }
     expect(sourceRefreshBeforeAnchor, 'user scroll should place a stable anchor in older history').not.toBeNull();
     expect(sourceRefreshBeforeState?.readingAnchor?.followingTail).toBe(false);
+    expect(sourceRefreshBeforeAnchor!.id).toBe(sourceRefreshBeforeState!.readingAnchor?.blockId);
+    expect(sourceRefreshBeforeState!.anchorBlockPosition).toBe(sourceRefreshBeforeState!.readingAnchor?.position);
+    expect(Math.abs(
+      sourceRefreshBeforeAnchor!.top - sourceRefreshBeforeAnchor!.viewportTop
+        - sourceRefreshBeforeState!.readingAnchor!.viewportOffset!,
+    )).toBeLessThan(5);
     const sourceRefreshRequestStart = sourceRefreshBeforeState!.transformedSourceRequests.length;
     const sourceRefreshAnchorRequestStart = sourceRefreshBeforeState!.requests.length;
     await evaluate('window.__sourceBackedHistory.reloadWithNewSourceVersion()');
@@ -608,11 +616,11 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
         new URL(url, origin).searchParams.get('target') === 'initial'
       )) ? value : null;
     }, browser, profile);
-    const sourceRefreshAfterAnchor = await waitFor('same reading block is restored from the new source version', async () => {
+    const sourceRefreshRestored = await waitFor('same reading block is restored from the new source version', async () => {
       const value = await snapshot();
       const anchor = value.readingAnchor;
       const block = anchor?.blockId ? await visibleAnchor(anchor.blockId, true) : null;
-      if (!block || anchor?.blockId === sourceRefreshBeforeAnchor!.id
+      if (!block || anchor?.blockId !== sourceRefreshBeforeAnchor!.id
           || anchor.position !== sourceRefreshBeforeState!.readingAnchor!.position) return null;
       const requestedAnchorPosition = value.requests.slice(sourceRefreshAnchorRequestStart).some((url) => (
         new URL(url, origin).searchParams.get('position') === String(sourceRefreshBeforeState!.readingAnchor!.position)
@@ -621,12 +629,22 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
         && anchor.followingTail === false
         && value.sourceVersionId !== sourceRefreshBeforeState!.sourceVersionId
         && value.anchorBlockLoaded
-        ? block
+        && value.anchorBlockPosition === anchor.position
+        ? { block, value }
         : null;
     }, browser, profile);
-    expect(sourceRefreshAfterAnchor.id).not.toBe(sourceRefreshBeforeAnchor!.id);
-    expect(Math.abs(sourceRefreshAfterAnchor.top - sourceRefreshBeforeAnchor!.top)).toBeLessThan(5);
-    const sourceRefreshRestoredState = await snapshot();
+    const sourceRefreshAfterAnchor = sourceRefreshRestored.block;
+    const sourceRefreshRestoredState = sourceRefreshRestored.value;
+    expect(sourceRefreshAfterAnchor.id).toBe(sourceRefreshBeforeAnchor!.id);
+    expect(sourceRefreshAfterAnchor.text).toBe(sourceRefreshBeforeAnchor!.text);
+    expect(Math.abs(
+      sourceRefreshAfterAnchor.top - sourceRefreshAfterAnchor.viewportTop
+        - sourceRefreshRestoredState.readingAnchor!.viewportOffset!,
+    )).toBeLessThan(5);
+    expect(Math.abs(
+      sourceRefreshAfterAnchor.top - sourceRefreshAfterAnchor.viewportTop
+        - sourceRefreshBeforeAnchor!.top + sourceRefreshBeforeAnchor!.viewportTop,
+    )).toBeLessThan(5);
     const sourceRefreshExtentRatio = Math.max(
       sourceRefreshBeforeState!.scrollHeight,
       sourceRefreshRestoredState.scrollHeight,
