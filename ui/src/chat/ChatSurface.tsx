@@ -381,7 +381,7 @@ export function ChatSurface({
         : row.type === 'tool_use' || row.type === 'tool_result' ? 42
         : 48;
       const size = Math.min(90, Math.log2(1 + Math.max(0, row.record_length)) * 4);
-      prefix[row.position + 1] = Math.max(MIN_CANONICAL_POSITION_HEIGHT, base + size);
+      prefix[row.position + 1] = Math.max(MIN_CANONICAL_POSITION_HEIGHT, Math.round(base + size));
     }
     for (let i = 0; i < transcript.total; i += 1) prefix[i + 1] += prefix[i];
     return prefix;
@@ -464,14 +464,7 @@ export function ChatSurface({
   ]);
 
   const getItemKey = useCallback((index: number) => items[index]?.id ?? index, [items]);
-  const extractVirtualRows = useCallback((range: Range): number[] => {
-    const indices = new Set(defaultRangeExtractor(range));
-    // Keep one gap represented in the DOM so sparse history remains observable;
-    // the loader still hydrates only a gap intersecting the viewport buffer.
-    const firstGap = items.findIndex((item) => item.kind === 'history');
-    if (firstGap >= 0) indices.add(firstGap);
-    return [...indices].sort((left, right) => left - right);
-  }, [items]);
+  const extractVirtualRows = useCallback((range: Range): number[] => defaultRangeExtractor(range), []);
   const getScrollElement = useCallback(() => scrollRef.current, []);
   const initialEstimatedExtent = items.reduce((sum, item) => (
     sum + (item.kind === 'history'

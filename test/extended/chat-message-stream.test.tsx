@@ -408,6 +408,36 @@ describe('chat message stream render model', () => {
 });
 
 describe('ChatSurface stream behavior', () => {
+  it('keeps a long structured transcript virtualized at the loaded tail', async () => {
+    const total = 12_060;
+    const firstLoaded = total - 160;
+    const loadAround = vi.fn(() => Promise.resolve('covered' as const));
+    const transcript: ConversationTranscriptConsumer = {
+      conversationId: 'long-structure', sourceVersionId: 'version-1', historyLoading: false,
+      total, loadedIntervals: [{ start: firstLoaded, end: total - 1 }],
+      structure: {
+        conversation_id: 'long-structure', source_version_id: 'version-1', total,
+        rows: Array.from({ length: total }, (_, position) => ({
+          id: `b${position}`, position, type: 'user_message', role: 'user',
+          parent_position: null, record_offset: position * 1000, record_length: 1000,
+        })),
+      },
+      hasOlder: true, hasNewer: false, unmaterializedAfterCount: 0,
+      loadOlder: vi.fn(), loadNewer: vi.fn(), loadAround,
+    };
+    const events = Array.from({ length: 160 }, (_, index) => ({
+      ...canonicalEvent(canonicalItem({
+        type: 'message', role: 'user', parts: [{ type: 'text', text: `message ${index}` }],
+        ordinal: firstLoaded + index,
+      }), `b${firstLoaded + index}`),
+      source: { blockId: `b${firstLoaded + index}`, position: firstLoaded + index },
+    }));
+    const view = render(<ChatSurface events={events} streaming={false} transcript={transcript} />);
+    expect(view.container.querySelectorAll('[data-virtual-kind="group"]').length).toBeLessThan(30);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(loadAround).not.toHaveBeenCalled();
+  });
+
   it('loads a visible missing range without presenting it as an empty conversation', async () => {
     const transcript: ConversationTranscriptConsumer = {
       conversationId: 'gap-conversation',
