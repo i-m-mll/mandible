@@ -20,6 +20,7 @@ const legacyBlockId = (position: number) => `legacy-${position}`;
 const requests: string[] = [];
 const transformedSourceRequests: string[] = [];
 const fetchedBlockIds = new Set<string>();
+const detailReadBlockIds = new Set<string>();
 const seenBlockIds = new Set<string>();
 let maximumMountedRows = 0;
 let refreshedSourceGeneration = 0;
@@ -76,6 +77,12 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     void response.clone().json().then((payload: { blocks?: Array<{ id?: string }> }) => {
       for (const block of payload.blocks ?? []) {
         if (block.id) fetchedBlockIds.add(block.id);
+      }
+      const query = new URL(url, window.location.href).searchParams;
+      if (query.has('position') && query.get('view') !== 'display') {
+        for (const block of payload.blocks ?? []) {
+          if (block.id) detailReadBlockIds.add(block.id);
+        }
       }
     }).catch(() => undefined);
   }
@@ -172,6 +179,8 @@ window.__sourceBackedHistory = {
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const transcript = queryClient.getQueryData<{
       source_version_id?: string | null;
+      total?: number;
+      loaded_intervals?: Array<{ start: number; end: number }>;
       blocks?: Array<{ id: string; position?: number }>;
     }>(['chat', 'conversation', conversationId, 'aggregate']);
     const readingAnchor = (() => {
@@ -183,8 +192,11 @@ window.__sourceBackedHistory = {
       requests: [...requests],
       transformedSourceRequests: [...transformedSourceRequests],
       fetchedBlockIds: [...fetchedBlockIds],
+      detailReadBlockIds: [...detailReadBlockIds],
       seenBlockIds: [...seenBlockIds],
       sourceVersionId: transcript?.source_version_id ?? null,
+      totalPositions: transcript?.total ?? 0,
+      loadedIntervals: transcript?.loaded_intervals ?? [],
       anchorBlockLoaded: Boolean(readingAnchor?.blockId && transcript?.blocks?.some((block) => (
         block.id === readingAnchor.blockId
       ))),
@@ -199,6 +211,7 @@ window.__sourceBackedHistory = {
       focusedBlockId: focused?.dataset.blockId
         ?? focused?.closest<HTMLElement>('[data-block-id]')?.dataset.blockId
         ?? null,
+      expandedToolDetails: Boolean(document.querySelector('.tool-card__body')),
       text: document.getElementById('root')?.textContent ?? '',
     };
   },
