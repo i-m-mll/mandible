@@ -130,7 +130,13 @@ export function flattenConversationTranscript(payload: ConversationTranscriptDat
 function mergeBlocks(current: readonly ConversationBlock[], incoming: readonly ConversationBlock[]): ConversationBlock[] {
   const byId = new Map<string, ConversationBlock>();
   for (const block of current) byId.set(block.id, block);
-  for (const block of incoming) byId.set(block.id, block);
+  for (const block of incoming) {
+    const existing = byId.get(block.id);
+    // A same-version display refresh may be compact while the user has already
+    // expanded this block. Keep the fetched payload until the source changes.
+    if (block.details_loaded === false && existing && existing.details_loaded !== false) continue;
+    byId.set(block.id, block);
+  }
   return [...byId.values()].sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
 }
 

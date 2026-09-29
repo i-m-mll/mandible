@@ -43,6 +43,8 @@ export type DisplayActivityItem = ActivityItem | ProviderDirectiveActivity | Too
 export type PersistedBlockSource = {
   blockId: string;
   position?: number;
+  /** False when a display projection omitted expandable block payload. */
+  detailsLoaded?: boolean;
   /** Exact persisted parent link; a present value proves a result is not orphaned. */
   parentBlockId?: string;
   timestamp?: string;

@@ -52,6 +52,7 @@ export function MessageGroup({
               content={block.thinking}
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
+              detailsAvailable={block.source?.detailsLoaded === false}
               onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
             />
           );

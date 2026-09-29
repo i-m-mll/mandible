@@ -12,6 +12,7 @@ import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRe
 import type {
   ContentBlock,
   DisplayGroup,
+  PersistedBlockSource,
   RenderNode,
   StreamRendererProps,
 } from '../components/stream-renderer/types';
@@ -62,6 +63,7 @@ export type ChatSurfaceProps = StreamRendererProps & {
   onFork?: (dagUuid: string) => void;
   onResume?: (dagUuid: string) => void;
   onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
+  onExpandDetails?: (sources: readonly PersistedBlockSource[]) => void | Promise<void>;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
@@ -316,6 +318,7 @@ export function ChatSurface({
   onFork,
   onResume,
   onCreatedTaskNavigate,
+  onExpandDetails,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -347,6 +350,7 @@ export function ChatSurface({
     transcript?.conversationId ?? null,
     transcript?.sourceVersionId ?? null,
   ]);
+  const expansionOwnerScope = JSON.stringify([storageScope, transcript?.conversationId ?? null]);
   const extentScope = JSON.stringify([
     storageScope,
     transcript?.conversationId ?? null,
@@ -354,6 +358,7 @@ export function ChatSurface({
   const historyScopeRef = useRef(historyScope);
   historyScopeRef.current = historyScope;
   const historyStateScopeRef = useRef(historyScope);
+  const expansionOwnerScopeRef = useRef(expansionOwnerScope);
   const extentScopeRef = useRef(extentScope);
   extentScopeRef.current = extentScope;
   const estimatedPositionHeightRef = useRef<{
@@ -731,6 +736,12 @@ export function ChatSurface({
     setHistoryLoadStates({});
   }, [historyScope]);
 
+  useEffect(() => {
+    if (expansionOwnerScopeRef.current === expansionOwnerScope) return;
+    expansionOwnerScopeRef.current = expansionOwnerScope;
+    setExpandedBlocks({});
+  }, [expansionOwnerScope]);
+
   const setScrollNode = useCallback((node: HTMLDivElement | null) => {
     scrollEndCleanupRef.current?.();
     scrollEndCleanupRef.current = null;
@@ -973,6 +984,26 @@ export function ChatSurface({
     });
   }
 
+  useEffect(() => {
+    const sources: Array<PersistedBlockSource | undefined> = [];
+    for (const node of nodes) {
+      if (node.kind === 'activity' && expandedBlocks[`activity:${node.key}`]) {
+        sources.push(node.source, node.item.type === 'tool-call-activity' ? node.item.result?.source : undefined);
+      } else if (node.kind === 'assistant_turn') {
+        const blocks = node.turn.assistantEvent.message.content;
+        blocks.forEach((contentBlock, index) => {
+          if (!expandedBlocks[blockId(node.turn.id, contentBlock, index)]) return;
+          sources.push(contentBlock.source);
+          if (contentBlock.type === 'tool_use') {
+            sources.push(node.turn.toolResults.get(contentBlock.id)?.source);
+          }
+        });
+      }
+    }
+    const unloaded = sources.filter((source): source is PersistedBlockSource => source?.detailsLoaded === false);
+    if (unloaded.length > 0) void onExpandDetails?.(unloaded);
+  }, [expandedBlocks, historyScope, nodes, onExpandDetails]);
+
   function copyText(text: string): void {
     navigator.clipboard.writeText(text).catch(() => {});
   }
@@ -1082,6 +1113,7 @@ export function ChatSurface({
               content={node.item.content}
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
+              detailsAvailable={source?.detailsLoaded === false}
               onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
             />
           );
@@ -1090,6 +1122,7 @@ export function ChatSurface({
             <ActivityRow
               item={node.item}
               expanded={expanded}
+              detailsAvailable={source?.detailsLoaded === false}
               onExpandedChange={(next) => setBlockExpanded(disclosureKey, next)}
               onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
