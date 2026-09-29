@@ -637,6 +637,14 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     expect(sourceRefreshAfterAnchor.id).not.toBe(sourceRefreshBeforeAnchor!.id);
     expect(Math.abs(sourceRefreshAfterAnchor.top - sourceRefreshBeforeAnchor!.top)).toBeLessThan(5);
     const sourceRefreshRestoredState = await snapshot();
+    const sourceRefreshExtentRatio = Math.max(
+      sourceRefreshBeforeState!.scrollHeight,
+      sourceRefreshRestoredState.scrollHeight,
+    ) / Math.max(1, Math.min(
+      sourceRefreshBeforeState!.scrollHeight,
+      sourceRefreshRestoredState.scrollHeight,
+    ));
+    expect(sourceRefreshExtentRatio).toBeLessThan(1.25);
     const measurement = await scheduleDelayedGroupMeasurement(sourceRefreshAfterAnchor.id);
     expect(measurement, 'a mounted group above the reading anchor should be available for delayed measurement').not.toBeNull();
     const afterDelayedMeasurement = await waitFor('delayed group measurement preserves the visible message', async () => {
@@ -695,6 +703,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
         position: sourceRefreshBeforeState!.readingAnchor!.position,
         before: sourceRefreshBeforeAnchor,
         after: sourceRefreshAfterAnchor,
+        extentRatio: sourceRefreshExtentRatio,
       },
       delayedGroupMeasurement: {
         rowIndex: measurement!.rowIndex,

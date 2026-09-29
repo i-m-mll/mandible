@@ -64,7 +64,6 @@ export type ChatSurfaceProps = StreamRendererProps & {
 
 const ESTIMATED_ROW_HEIGHT = 168;
 const MIN_CANONICAL_POSITION_HEIGHT = 1;
-const FALLBACK_CANONICAL_POSITION_HEIGHT = ESTIMATED_ROW_HEIGHT / 4;
 const FOLLOW_THRESHOLD_PX = 80;
 const JUMP_RETURN_SECONDS = 2;
 const MANUAL_RETURN_PX_PER_SECOND = 600;
@@ -335,16 +334,20 @@ export function ChatSurface({
     transcript?.conversationId ?? null,
     transcript?.sourceVersionId ?? null,
   ]);
+  const extentScope = JSON.stringify([
+    storageScope,
+    transcript?.conversationId ?? null,
+  ]);
   const historyScopeRef = useRef(historyScope);
   historyScopeRef.current = historyScope;
   const historyStateScopeRef = useRef(historyScope);
-  const positionEstimateSeedRef = useRef<{
+  const extentScopeRef = useRef(extentScope);
+  extentScopeRef.current = extentScope;
+  const estimatedPositionHeightRef = useRef<{
     scope: string;
-    loadedPositions: number;
-    positionedGroupIds: readonly string[];
-    provisionalHeight: number;
+    height: number;
+    calibrated: boolean;
   } | null>(null);
-  const estimatedPositionHeightRef = useRef<{ scope: string; height: number } | null>(null);
 
   const groups = useMemo(() => groupMessagesForDisplay(nodes), [nodes]);
   const turns = useMemo(() => extractTurns(nodes), [nodes]);
@@ -352,55 +355,52 @@ export function ChatSurface({
   const tokenCount = deriveTokenCount(turns);
   const hasContent = nodes.length > 0;
   const hasPermissionCard = Boolean(activePermissionRequest && onPermissionRespond);
-  const measuredGroupSizes = measuredGroupSizesByScope.scope === historyScope
+  const measuredGroupSizes = measuredGroupSizesByScope.scope === extentScope
     ? measuredGroupSizesByScope.sizes
     : {};
-  if (positionEstimateSeedRef.current?.scope !== historyScope) {
-    positionEstimateSeedRef.current = null;
+  if (estimatedPositionHeightRef.current?.scope !== extentScope) {
     estimatedPositionHeightRef.current = null;
   }
-  if (!positionEstimateSeedRef.current && transcript && transcript.total > 0) {
-    const coveredPositions = loadedPositionCount(transcript.total, transcript.loadedIntervals);
-    const positionedGroupIds = groups
-      .filter((group) => groupPositionCount(group) > 0)
-      .map((group) => group.id);
-    if (coveredPositions > 0 && positionedGroupIds.length >= Math.min(3, coveredPositions)) {
-      positionEstimateSeedRef.current = {
-        scope: historyScope,
-        loadedPositions: coveredPositions,
-        positionedGroupIds,
-        provisionalHeight: Math.max(
-          MIN_CANONICAL_POSITION_HEIGHT,
-          (positionedGroupIds.length * ESTIMATED_ROW_HEIGHT) / coveredPositions,
-        ),
-      };
-    }
-  }
-  const estimateSeed = positionEstimateSeedRef.current?.scope === historyScope
-    ? positionEstimateSeedRef.current
+  const coveredPositions = transcript
+    ? loadedPositionCount(transcript.total, transcript.loadedIntervals)
+    : 0;
+  const positionedGroupIds = transcript
+    ? groups.filter((group) => groupPositionCount(group) > 0).map((group) => group.id)
+    : [];
+  const provisionalPositionHeight = coveredPositions > 0 && positionedGroupIds.length > 0
+    ? Math.max(
+      MIN_CANONICAL_POSITION_HEIGHT,
+      (positionedGroupIds.length * ESTIMATED_ROW_HEIGHT) / coveredPositions,
+    )
     : null;
-  if (!estimatedPositionHeightRef.current && estimateSeed) {
-    const samples = estimateSeed.positionedGroupIds
-      .map((id) => measuredGroupSizes[id])
-      .filter((size): size is number => typeof size === 'number' && size > 0);
-    const neededSamples = Math.min(3, estimateSeed.positionedGroupIds.length);
-    const measuredMedian = samples.length >= neededSamples ? median(samples) : null;
-    if (measuredMedian !== null) {
-      estimatedPositionHeightRef.current = {
-        scope: historyScope,
-        height: Math.max(
-          MIN_CANONICAL_POSITION_HEIGHT,
-          Math.min(
-            estimateSeed.provisionalHeight,
-            (measuredMedian * estimateSeed.positionedGroupIds.length) / estimateSeed.loadedPositions,
-          ),
-        ),
-      };
-    }
+  const samples = positionedGroupIds
+    .map((id) => measuredGroupSizes[id])
+    .filter((size): size is number => typeof size === 'number' && size > 0);
+  const neededSamples = Math.min(3, positionedGroupIds.length);
+  const measuredMedian = positionedGroupIds.length > 0
+      && samples.length >= neededSamples
+      && coveredPositions > 0
+    ? median(samples)
+    : null;
+  if (measuredMedian !== null && !estimatedPositionHeightRef.current?.calibrated) {
+    estimatedPositionHeightRef.current = {
+      scope: extentScope,
+      height: Math.max(
+        MIN_CANONICAL_POSITION_HEIGHT,
+        (measuredMedian * positionedGroupIds.length) / coveredPositions,
+      ),
+      calibrated: true,
+    };
+  } else if (!estimatedPositionHeightRef.current && provisionalPositionHeight !== null) {
+    estimatedPositionHeightRef.current = {
+      scope: extentScope,
+      height: provisionalPositionHeight,
+      calibrated: false,
+    };
   }
-  const estimatedPositionHeight = estimatedPositionHeightRef.current?.scope === historyScope
+  const estimatedPositionHeight = estimatedPositionHeightRef.current?.scope === extentScope
     ? estimatedPositionHeightRef.current.height
-    : estimateSeed?.provisionalHeight ?? FALLBACK_CANONICAL_POSITION_HEIGHT;
+    : provisionalPositionHeight ?? MIN_CANONICAL_POSITION_HEIGHT;
 
   const items = useMemo<VirtualItem[]>(() => {
     const groupPositions = groups.map((group) => group.nodes
@@ -493,11 +493,12 @@ export function ChatSurface({
   ), 0);
   const recordMeasuredGroupSize = useCallback((key: string, size: number) => {
     setMeasuredGroupSizesByScope((current) => {
-      const sizes = current.scope === historyScope ? current.sizes : {};
+      if (extentScopeRef.current !== extentScope) return current;
+      const sizes = current.scope === extentScope ? current.sizes : {};
       if (sizes[key] === size) return current;
-      return { scope: historyScope, sizes: { ...sizes, [key]: size } };
+      return { scope: extentScope, sizes: { ...sizes, [key]: size } };
     });
-  }, [historyScope]);
+  }, [extentScope]);
   const measureVirtualItem = useCallback((element: HTMLDivElement, entry?: ResizeObserverEntry) => {
     const size = measureVirtualRow(element, entry);
     if (element.dataset.virtualKind === 'group') {
