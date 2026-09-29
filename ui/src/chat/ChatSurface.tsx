@@ -309,6 +309,7 @@ export function ChatSurface({
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
   const [followingTail, setFollowingTail] = useState(false);
   const userScrollIntentRef = useRef(false);
+  const userScrollAwayFromTailRef = useRef(false);
   const lastUserScrollTopRef = useRef<number | null>(null);
   const scrollEndCleanupRef = useRef<(() => void) | null>(null);
   const [historyLoadStates, setHistoryLoadStates] = useState<Record<string, HistoryLoadState>>({});
@@ -567,6 +568,9 @@ export function ChatSurface({
       const positionIndex = items.findIndex((item) => item.kind === 'group'
         && item.group.nodes.some((node) => renderNodeBlockIdAtPosition(node, anchor.position!) !== null));
       if (positionIndex >= 0) return positionIndex;
+      const gapIndex = items.findIndex((item) => item.kind === 'history'
+        && anchor.position! >= item.state.start && anchor.position! <= item.state.end);
+      if (gapIndex >= 0) return gapIndex;
     }
     return items.findIndex((item) => item.id === anchor.itemId);
   }, [items]);
@@ -602,24 +606,27 @@ export function ChatSurface({
     const node = item.kind === 'group'
       ? item.group.nodes.find((candidate) => !blockIdValue || renderNodeContainsBlock(candidate, blockIdValue))
       : undefined;
+    const historyPosition = item.kind === 'history'
+      ? historyPositionAtOffset(item.state, virtualItem.start, virtualItem.size, offset)
+      : null;
     const anchor: ReadingAnchor = {
       version: 1,
       itemId: item.id,
       blockId: blockIdValue,
       position: node
         ? renderNodePosition(node, blockIdValue)
-        : item.kind === 'history'
-          ? historyPositionAtOffset(item.state, virtualItem.start, virtualItem.size, offset)
-          : null,
+        : historyPosition,
       viewportOffset: visibleBlock
         ? visibleBlock.getBoundingClientRect().top - scrollRect.top
+        : item.kind === 'history' && historyPosition !== null
+          ? virtualItem.start + estimatedRangeHeight(item.state.start, historyPosition - 1) - offset
         : virtualItem.start - offset,
       followingTail: followingTailOverride ?? followingTail,
     };
     readingAnchorRef.current = anchor;
     storageSet(scrollStorageKey, JSON.stringify(anchor));
     return anchor;
-  }, [followingTail, items, scrollStorageKey, virtualizer]);
+  }, [estimatedRangeHeight, followingTail, items, scrollStorageKey, virtualizer]);
 
   const restoreReadingAnchor = useCallback((anchor: ReadingAnchor): boolean => {
     const el = scrollRef.current;
@@ -657,6 +664,21 @@ export function ChatSurface({
       readingAnchorRef.current = resolvedAnchor;
       storageSet(scrollStorageKey, JSON.stringify(resolvedAnchor));
     }
+    if (item.kind === 'history' && anchor.position !== null) {
+      const measurement = virtualizer.measurementsCache[itemIndex];
+      if (!measurement) return false;
+      const currentOffset = measurement.start
+        + estimatedRangeHeight(item.state.start, anchor.position - 1) - el.scrollTop;
+      const delta = currentOffset - resolvedAnchor.viewportOffset;
+      if (Math.abs(delta) >= 0.5) {
+        const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+        pendingReadingAnchorRef.current = resolvedAnchor;
+        virtualizer.scrollToOffset(Math.max(0, Math.min(maxScrollTop, el.scrollTop + delta)), { behavior: 'auto' });
+        return false;
+      }
+      pendingReadingAnchorRef.current = null;
+      return true;
+    }
     const row = Array.from(el.querySelectorAll<HTMLElement>('[data-virtual-key]'))
       .find((candidate) => candidate.dataset.virtualKey === item.id);
     if (!row) {
@@ -686,7 +708,7 @@ export function ChatSurface({
     }
     pendingReadingAnchorRef.current = null;
     return true;
-  }, [findAnchorItemIndex, historyLoadStates, items, requestHistory, scrollStorageKey, transcript, virtualizer]);
+  }, [estimatedRangeHeight, findAnchorItemIndex, historyLoadStates, items, requestHistory, scrollStorageKey, transcript, virtualizer]);
 
   // Chat disclosures are transient reading state. A new conversation or page
   // refresh starts from each block's declared default instead of reviving old
@@ -699,6 +721,7 @@ export function ChatSurface({
     pendingReadingAnchorRef.current = null;
     readingAnchorRef.current = null;
     userScrollIntentRef.current = false;
+    userScrollAwayFromTailRef.current = false;
     lastUserScrollTopRef.current = null;
     inFlightHistoryRef.current.clear();
   }, [storageScope]);
@@ -723,6 +746,7 @@ export function ChatSurface({
     if (node) {
       const handleScrollEnd = () => {
         userScrollIntentRef.current = false;
+        userScrollAwayFromTailRef.current = false;
         lastUserScrollTopRef.current = null;
       };
       node.addEventListener('scrollend', handleScrollEnd);
@@ -907,10 +931,11 @@ export function ChatSurface({
     virtualizer,
   ]);
 
-  function handleUserScrollIntent(): void {
+  function handleUserScrollIntent(awayFromTail = false): void {
     // Direct scroll input supersedes a deferred virtual-row restore. The ensuing
     // scroll event captures the new anchor before data can change.
     userScrollIntentRef.current = true;
+    userScrollAwayFromTailRef.current = awayFromTail;
     lastUserScrollTopRef.current = scrollRef.current?.scrollTop ?? null;
     pendingReadingAnchorRef.current = null;
     setFollowingTail(false);
@@ -929,7 +954,7 @@ export function ChatSurface({
     if (event.defaultPrevented || (target instanceof HTMLElement
         && (target.isContentEditable || target.matches('input, textarea, select')))) return;
     if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
-      handleUserScrollIntent();
+      handleUserScrollIntent(['ArrowUp', 'PageUp', 'Home'].includes(event.key));
     }
   }
 
@@ -950,6 +975,7 @@ export function ChatSurface({
     lastUserScrollTopRef.current = el.scrollTop;
     const nextFollowingTail = nextDistance <= FOLLOW_THRESHOLD_PX
       && movingDown
+      && !userScrollAwayFromTailRef.current
       && !transcript?.hasNewer
       && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
     setFollowingTail(nextFollowingTail);
@@ -1324,8 +1350,8 @@ export function ChatSurface({
         className="stream-renderer__scroll"
         onScroll={handleScroll}
         onPointerDown={handleUserScrollPointer}
-        onWheel={handleUserScrollIntent}
-        onTouchMove={handleUserScrollIntent}
+        onWheel={(event) => handleUserScrollIntent(event.deltaY < 0)}
+        onTouchMove={() => handleUserScrollIntent()}
         onKeyDown={handleUserScrollKey}
       >
         <div className="stream-renderer__virtual-canvas" style={{ height: `${virtualizer.getTotalSize()}px` }}>

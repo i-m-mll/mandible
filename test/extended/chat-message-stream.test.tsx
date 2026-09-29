@@ -834,6 +834,84 @@ describe('ChatSurface stream behavior', () => {
     expect(scroll.scrollTop - preservedStart).toBeCloseTo(readingInset);
   });
 
+  it('keeps a reading position when an unloaded gap resolves into messages', () => {
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function clientHeight() {
+      return this.classList.contains('stream-renderer__scroll') ? 500 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function scrollHeight() {
+      if (!this.classList.contains('stream-renderer__scroll')) return 0;
+      return Number.parseFloat(this.querySelector<HTMLElement>('.stream-renderer__virtual-canvas')?.style.height ?? '0');
+    });
+    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = Number(options.top ?? 0);
+      this.dispatchEvent(new Event('scroll'));
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: scrollTo,
+    });
+    const total = 1_000;
+    const structure = {
+      conversation_id: 'gap-anchor', source_version_id: 'version-1', total,
+      rows: Array.from({ length: total }, (_, position) => ({
+        id: `b${position}`, position, type: 'user_message', role: 'user',
+        parent_position: null, record_offset: position * 1000, record_length: 1000,
+      })),
+    } as const;
+    const transcript = (withPage: boolean, withAdjacent = false): ConversationTranscriptConsumer => ({
+      conversationId: 'gap-anchor', sourceVersionId: 'version-1', historyLoading: false,
+      total, structure,
+      loadedIntervals: [
+        ...(withAdjacent ? [{ start: 400, end: 409 }] : []),
+        ...(withPage ? [{ start: 500, end: 509 }] : []),
+        { start: 900, end: 999 },
+      ],
+      hasOlder: true, hasNewer: false, unmaterializedAfterCount: 0,
+      loadOlder: vi.fn(), loadNewer: vi.fn(), loadAround: vi.fn(),
+    });
+    const events = (withPage: boolean, withAdjacent = false) => [
+      ...(withAdjacent ? Array.from({ length: 10 }, (_, index) => 400 + index) : []),
+      ...(withPage ? Array.from({ length: 10 }, (_, index) => 500 + index) : []),
+      ...Array.from({ length: 100 }, (_, index) => 900 + index),
+    ].map((position) => {
+      return {
+        ...canonicalEvent(canonicalItem({
+          type: 'message', role: 'user', parts: [{ type: 'text', text: `message ${position}` }],
+          ordinal: position,
+        }), `b${position}`),
+        source: { blockId: `b${position}`, position },
+      };
+    });
+    const view = render(<ChatSurface events={events(false)} streaming={false} transcript={transcript(false)} />);
+    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    scroll.scrollTop = 75_000;
+    fireEvent.wheel(scroll, { deltaY: -100 });
+    fireEvent.scroll(scroll);
+    fireEvent(scroll, new Event('scrollend'));
+    const saved = JSON.parse(localStorage.getItem('mandible:chat-scroll:default')!);
+    expect(saved.position).toBeGreaterThanOrEqual(500);
+    expect(saved.position).toBeLessThanOrEqual(509);
+    expect(saved.followingTail).toBe(false);
+    expect(saved.viewportOffset).toBeGreaterThan(-200);
+    expect(saved.viewportOffset).toBeLessThanOrEqual(0);
+    const previousScrollCalls = scrollTo.mock.calls.length;
+
+    view.rerender(<ChatSurface events={events(false, true)} streaming={false} transcript={transcript(false, true)} />);
+    expect(scroll.scrollTop).toBeGreaterThan(70_000);
+    expect(scroll.scrollTop).toBeLessThan(80_000);
+    expect(scrollTo.mock.calls.slice(previousScrollCalls).map(([options]) => options.top)
+      .filter((top) => Number(top) > 80_000)).toEqual([]);
+    const adjacentScrollCalls = scrollTo.mock.calls.length;
+
+    view.rerender(<ChatSurface events={events(true, true)} streaming={false} transcript={transcript(true, true)} />);
+
+    expect(view.container.querySelector(`[data-block-id="b${saved.position}"]`)).toBeTruthy();
+    expect(scrollTo.mock.calls.slice(adjacentScrollCalls).map(([options]) => options.top)
+      .filter((top) => Number(top) > 80_000)).toEqual([]);
+    expect(scroll.scrollTop).toBeGreaterThan(70_000);
+    expect(scroll.scrollTop).toBeLessThan(80_000);
+  });
+
   it('anchors Chat-only message actions and restores focus on Escape', async () => {
     vi.stubGlobal('innerWidth', 800);
     vi.stubGlobal('innerHeight', 600);
@@ -940,6 +1018,25 @@ describe('ChatSurface stream behavior', () => {
       />,
     );
     expect(scroll.scrollTop).toBe(8480);
+  });
+
+  it('does not re-arm tail follow from a correction during an upward wheel gesture', () => {
+    const view = render(
+      <ChatSurface events={[user('prompt', 'u1')]} streaming sessionInfo={{ sessionId: 'upward-correction' }} />,
+    );
+    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    Object.defineProperty(scroll, 'clientHeight', { value: 500, configurable: true });
+    Object.defineProperty(scroll, 'scrollHeight', { value: 9000, configurable: true });
+    scroll.scrollTop = 8500;
+    fireEvent.wheel(scroll, { deltaY: -300 });
+    scroll.scrollTop = 8200;
+    fireEvent.scroll(scroll);
+    fireEvent.wheel(scroll, { deltaY: -300 });
+    scroll.scrollTop = 8490;
+    fireEvent.scroll(scroll);
+
+    const anchor = JSON.parse(localStorage.getItem('mandible:chat-scroll:upward-correction')!);
+    expect(anchor.followingTail).toBe(false);
   });
 
   it('suppresses one-page local and unmaterialized displacement but exposes a distant tail', () => {
