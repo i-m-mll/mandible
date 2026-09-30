@@ -534,9 +534,16 @@ export function ChatSurface({
     const thumbHeight = drag?.thumbHeight ?? Math.min(scrollRect.height,
       Math.max(30, scrollRect.height * scroll.clientHeight / scroll.scrollHeight));
     const travel = Math.max(0, scrollRect.height - thumbHeight);
-    const progress = drag
-      ? Math.max(0, Math.min(1, (drag.pointerY - scrollRect.top - drag.grabOffset) / Math.max(1, travel)))
-      : Math.max(0, Math.min(1, scroll.scrollTop / maxTop));
+    let progress = Math.max(0, Math.min(1, scroll.scrollTop / maxTop));
+    if (drag) {
+      const thumbTop = drag.pointerY - scrollRect.top - drag.grabOffset;
+      // Subpixel pointer coordinates can leave a visually bottomed thumb many
+      // content pixels short in a long transcript. Snap only at track edges.
+      const edge = Math.min(1, travel / 2);
+      progress = thumbTop <= edge ? 0
+        : thumbTop >= travel - edge ? 1
+          : thumbTop / travel;
+    }
     thumb.style.height = `${thumbHeight}px`;
     thumb.style.transform = `translate3d(0, ${progress * travel}px, 0)`;
     thumb.setAttribute('aria-valuenow', String(Math.round(progress * 1000)));
