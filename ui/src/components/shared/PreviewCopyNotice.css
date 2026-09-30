@@ -14,6 +14,7 @@
 }
 
 .preview-copy-banner {
+  --preview-tooltip-bg: #3b2e14;
   position: relative;
   z-index: calc(var(--z-app-subdivision) + 1);
   display: flex;
@@ -32,6 +33,10 @@
   font-size: 0.8125rem;
   line-height: 1.35;
   text-align: center;
+}
+
+[data-theme='light'] .preview-copy-banner {
+  --preview-tooltip-bg: #fff0c7;
 }
 
 .preview-copy-banner__info {
@@ -54,9 +59,10 @@
   width: max-content;
   max-width: min(28rem, calc(100vw - 2rem));
   padding: 0.5rem 0.7rem;
+  border: 1px solid var(--status-warning-fg);
   border-radius: 6px;
-  background: var(--surface-chrome);
-  color: var(--text-primary);
+  background: var(--preview-tooltip-bg);
+  color: var(--status-warning-fg);
   box-shadow: 0 6px 20px var(--neutral-alpha-12);
   visibility: hidden;
   pointer-events: none;
