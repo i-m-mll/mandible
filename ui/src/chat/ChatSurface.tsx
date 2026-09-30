@@ -30,7 +30,6 @@ import { PermissionApprovalCard } from '../components/console/PermissionApproval
 import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
 import { openMarkdownDocument } from './markdownActions';
 import type {
-  ConversationHistoryLoadResult,
   ConversationNavigationCommand,
   ConversationNavigationResult,
   ConversationTranscriptConsumer,
@@ -67,6 +66,10 @@ export type ChatSurfaceProps = StreamRendererProps & {
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
+// Match --space-7: the virtualizer must include the top inset in its offsets.
+const SCROLL_TOP_INSET_PX = 32;
+const HISTORY_WINDOW_POSITIONS = 500;
+const HISTORY_WINDOW_BEFORE = Math.floor((HISTORY_WINDOW_POSITIONS - 1) / 2);
 const MIN_CANONICAL_POSITION_HEIGHT = 1;
 const FOLLOW_THRESHOLD_PX = 80;
 const JUMP_RETURN_SECONDS = 2;
@@ -109,25 +112,31 @@ type VirtualItem =
   | { kind: 'live'; id: string }
   | { kind: 'permission'; id: string };
 
-type HistoryLoadState = 'idle' | 'loading' | 'retry';
 type HistoryRowState = {
   kind: 'gap';
   key: string;
   start: number;
   end: number;
   extentHeight: number;
-  loadState: HistoryLoadState;
 };
 
 function historyPositionAtOffset(
   state: HistoryRowState,
   rowStart: number,
-  rowSize: number,
   offset: number,
+  prefix: Float64Array | null,
 ): number {
-  const span = state.end - state.start + 1;
-  const fraction = Math.max(0, Math.min(1, (offset - rowStart) / Math.max(1, rowSize)));
-  return Math.min(state.end, state.start + Math.floor(fraction * span));
+  const local = Math.max(0, Math.min(state.extentHeight - 1, offset - rowStart));
+  if (!prefix) return Math.min(state.end, state.start + Math.floor(local / ESTIMATED_ROW_HEIGHT));
+  const absolute = prefix[state.start] + local;
+  let low = state.start;
+  let high = state.end;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (prefix[middle] <= absolute) low = middle;
+    else high = middle - 1;
+  }
+  return low;
 }
 
 type ReadingAnchor = {
@@ -308,11 +317,16 @@ export function ChatSurface({
   const [viewportHeight, setViewportHeight] = useState(720);
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
   const [followingTail, setFollowingTail] = useState(false);
-  const userScrollIntentRef = useRef(false);
-  const userScrollAwayFromTailRef = useRef(false);
-  const lastUserScrollTopRef = useRef<number | null>(null);
-  const scrollEndCleanupRef = useRef<(() => void) | null>(null);
-  const [historyLoadStates, setHistoryLoadStates] = useState<Record<string, HistoryLoadState>>({});
+  const [historyFailure, setHistoryFailure] = useState<{ position: number; message: string } | null>(null);
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const inFlightHistoryRef = useRef(new Map<number, { start: number; end: number; controller: AbortController }>());
+  const attemptedHistoryRef = useRef(new Set<number>());
+  const waitingHistoryRef = useRef(new Set<number>());
+  const lastTranscriptRef = useRef(transcript);
+  const coverageSignatureRef = useRef('');
+  const previousScrollTopRef = useRef<number | null>(null);
+  const scrollDirectionRef = useRef<'up' | 'down'>('up');
+  const manualTowardTailRef = useRef(false);
   const [measuredGroupSizesByScope, setMeasuredGroupSizesByScope] = useState<{
     scope: string;
     sizes: Readonly<Record<string, number>>;
@@ -322,9 +336,6 @@ export function ChatSurface({
   const pendingFocusRef = useRef<{ key: string; blockId: string | null; itemId: string } | null>(null);
   const restoredScrollScopeRef = useRef<string | null>(null);
   const pendingReadingAnchorRef = useRef<ReadingAnchor | null>(null);
-  const readingAnchorRef = useRef<ReadingAnchor | null>(null);
-  const itemIdentitySignatureRef = useRef<string | null>(null);
-  const inFlightHistoryRef = useRef(new Map<string, Promise<void>>());
   const historyScope = JSON.stringify([
     storageScope,
     transcript?.conversationId ?? null,
@@ -335,9 +346,6 @@ export function ChatSurface({
     storageScope,
     transcript?.conversationId ?? null,
   ]);
-  const historyScopeRef = useRef(historyScope);
-  historyScopeRef.current = historyScope;
-  const historyStateScopeRef = useRef(historyScope);
   const expansionOwnerScopeRef = useRef(expansionOwnerScope);
   const extentScopeRef = useRef(extentScope);
   extentScopeRef.current = extentScope;
@@ -376,14 +384,23 @@ export function ChatSurface({
   const structureHeights = useMemo(() => {
     if (!transcript?.structure || transcript.structure.total !== transcript.total) return null;
     const prefix = new Float64Array(transcript.total + 1);
+    let activityParent: number | null = null;
+    let activityRun = false;
     for (const row of transcript.structure.rows) {
-      const base = row.type === 'user_message' ? 110
-        : row.type === 'assistant_message' ? 155
-        : row.type === 'thinking' ? 55
-        : row.type === 'tool_use' || row.type === 'tool_result' ? 42
-        : 48;
+      const message = row.type === 'user_message' || row.type === 'assistant_message';
+      const activity = row.type === 'tool_use' || row.type === 'thinking';
+      const base = row.type === 'user_message' ? 110 : 155;
       const size = Math.min(90, Math.log2(1 + Math.max(0, row.record_length)) * 4);
-      prefix[row.position + 1] = Math.max(MIN_CANONICAL_POSITION_HEIGHT, Math.round(base + size));
+      // Most structural records are invisible or merge into a nearby activity.
+      // Give them a locator without charging a full visible row to the scrollbar.
+      prefix[row.position + 1] = message ? Math.round(base + size)
+        : activity ? activityRun && activityParent === row.parent_position ? 2 : 64
+          : MIN_CANONICAL_POSITION_HEIGHT;
+      if (message) activityRun = false;
+      else if (activity) {
+        activityRun = true;
+        activityParent = row.parent_position;
+      }
     }
     for (let i = 0; i < transcript.total; i += 1) prefix[i + 1] += prefix[i];
     return prefix;
@@ -422,18 +439,16 @@ export function ChatSurface({
       const missingRanges = missingPositionRanges(transcript.total, transcript.loadedIntervals);
       const gaps: Array<{ item: VirtualItem; position: number }> = missingRanges.map((range) => {
         const key = `gap:${range.start}:${range.end}`;
-        const scopeKey = `${historyScope}:${key}`;
         return {
           item: {
             kind: 'history',
-            id: `history:${scopeKey}`,
+            id: `history:${historyScope}:${key}`,
             state: {
               kind: 'gap',
-              key: scopeKey,
+              key,
               start: range.start,
               end: range.end,
               extentHeight: estimatedRangeHeight(range.start, range.end),
-              loadState: historyLoadStates[scopeKey] ?? 'idle',
             },
           },
           position: range.start,
@@ -460,7 +475,6 @@ export function ChatSurface({
     activePermissionRequest,
     estimatedRangeHeight,
     groups,
-    historyLoadStates,
     historyScope,
     onPermissionRespond,
     streaming,
@@ -501,21 +515,14 @@ export function ChatSurface({
     getItemKey,
     initialOffset: Math.max(0, initialEstimatedExtent - 720),
     initialRect: INITIAL_VIRTUAL_RECT,
+    paddingStart: SCROLL_TOP_INSET_PX,
     observeElementRect: observeChatElementRect,
     rangeExtractor: extractVirtualRows,
     overscan: 4,
-    anchorTo: followingTail ? 'end' : 'start',
+    anchorTo: 'end',
     followOnAppend: followingTail ? 'auto' : false,
-    scrollEndThreshold: FOLLOW_THRESHOLD_PX,
+    scrollEndThreshold: followingTail ? FOLLOW_THRESHOLD_PX : -1,
   });
-  // A newly materialized group can be much taller than its structure estimate.
-  // Correct the viewport only when that entire row is above the reading edge;
-  // measuring a row that spans the edge must not move an upward-scrolling user.
-  // Keep TanStack's backward-scroll suppression for later remeasurements.
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => (
-    item.end <= (instance.scrollElement?.scrollTop ?? instance.scrollOffset ?? 0) + instance.scrollAdjustments
-    && (!instance.itemSizeCache.has(item.key) || instance.scrollDirection !== 'backward')
-  );
   const virtualItems = virtualizer.getVirtualItems();
   useLayoutEffect(() => {
     items.forEach((item, index) => {
@@ -531,33 +538,6 @@ export function ChatSurface({
     Math.max(distanceFromBottom, estimatedUnmaterializedDistance),
     viewportHeight,
   );
-  const requestHistory = useCallback((
-    key: string,
-    load: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>,
-  ): Promise<void> => {
-    const current = inFlightHistoryRef.current.get(key);
-    if (current) return current;
-    const scope = historyScope;
-    setHistoryLoadStates((states) => ({ ...states, [key]: 'loading' }));
-    const promise = Promise.resolve()
-      .then(load)
-      .then(
-        (): HistoryLoadState => 'retry',
-        (): HistoryLoadState => 'retry',
-      )
-      .then((nextState) => {
-        if (inFlightHistoryRef.current.get(key) !== promise) return;
-        inFlightHistoryRef.current.delete(key);
-        if (historyScopeRef.current !== scope) {
-          setHistoryLoadStates({});
-          return;
-        }
-        setHistoryLoadStates((states) => ({ ...states, [key]: nextState }));
-      });
-    inFlightHistoryRef.current.set(key, promise);
-    return promise;
-  }, [historyScope]);
-
   const findAnchorItemIndex = useCallback((anchor: Pick<ReadingAnchor, 'itemId' | 'blockId' | 'position'>): number => {
     if (anchor.blockId) {
       const blockIndex = items.findIndex((item) => item.kind === 'group'
@@ -578,6 +558,11 @@ export function ChatSurface({
   const captureReadingAnchor = useCallback((followingTailOverride?: boolean): ReadingAnchor | null => {
     const el = scrollRef.current;
     if (!el || items.length === 0) return null;
+    if (followingTailOverride === true) {
+      const anchor = tailReadingAnchor(items.at(-1)?.id ?? 'tail');
+      storageSet(scrollStorageKey, JSON.stringify(anchor));
+      return anchor;
+    }
     const offset = el.scrollTop;
     let virtualItem = virtualizer.getVirtualItemForOffset(offset) ?? virtualizer.getVirtualItems()[0];
     if (virtualItem && items[virtualItem.index]?.kind !== 'group') {
@@ -607,7 +592,7 @@ export function ChatSurface({
       ? item.group.nodes.find((candidate) => !blockIdValue || renderNodeContainsBlock(candidate, blockIdValue))
       : undefined;
     const historyPosition = item.kind === 'history'
-      ? historyPositionAtOffset(item.state, virtualItem.start, virtualItem.size, offset)
+      ? historyPositionAtOffset(item.state, virtualItem.start, offset, structureHeights)
       : null;
     const anchor: ReadingAnchor = {
       version: 1,
@@ -623,92 +608,47 @@ export function ChatSurface({
         : virtualItem.start - offset,
       followingTail: followingTailOverride ?? followingTail,
     };
-    readingAnchorRef.current = anchor;
     storageSet(scrollStorageKey, JSON.stringify(anchor));
     return anchor;
-  }, [estimatedRangeHeight, followingTail, items, scrollStorageKey, virtualizer]);
+  }, [estimatedRangeHeight, followingTail, items, scrollStorageKey, structureHeights, virtualizer]);
 
   const restoreReadingAnchor = useCallback((anchor: ReadingAnchor): boolean => {
     const el = scrollRef.current;
     if (!el) return false;
-    const requestAnchorPosition = () => {
-      if (anchor.position === null || !transcript) return;
-      const key = `anchor:${anchor.position}`;
-      if ((historyLoadStates[key] ?? 'idle') === 'idle') {
-        void requestHistory(key, () => transcript.loadAround(anchor.position!));
-      }
-    };
     const itemIndex = findAnchorItemIndex(anchor);
-    if (itemIndex < 0) {
-      requestAnchorPosition();
-      return false;
-    }
-    const item = items[itemIndex];
-    const hasSavedBlock = Boolean(anchor.blockId && item.kind === 'group'
-      && item.group.nodes.some((node) => renderNodeContainsBlock(node, anchor.blockId!)));
-    const positionBlockId = !hasSavedBlock && item.kind === 'group' && anchor.position !== null
-      ? item.group.nodes.map((node) => renderNodeBlockIdAtPosition(node, anchor.position!))
-        .find((candidate): candidate is string => candidate !== null) ?? null
-      : null;
-    const resolvedBlockId = hasSavedBlock ? anchor.blockId : positionBlockId;
-    if (anchor.blockId && !resolvedBlockId) {
-      requestAnchorPosition();
-      return false;
-    }
-    const resolvedAnchor: ReadingAnchor = {
-      ...anchor,
-      itemId: item.id,
-      blockId: resolvedBlockId,
-    };
-    if (resolvedAnchor.itemId !== anchor.itemId || resolvedAnchor.blockId !== anchor.blockId) {
-      readingAnchorRef.current = resolvedAnchor;
-      storageSet(scrollStorageKey, JSON.stringify(resolvedAnchor));
-    }
-    if (item.kind === 'history' && anchor.position !== null) {
-      const measurement = virtualizer.measurementsCache[itemIndex];
-      if (!measurement) return false;
-      const currentOffset = measurement.start
-        + estimatedRangeHeight(item.state.start, anchor.position - 1) - el.scrollTop;
-      const delta = currentOffset - resolvedAnchor.viewportOffset;
-      if (Math.abs(delta) >= 0.5) {
-        const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
-        pendingReadingAnchorRef.current = resolvedAnchor;
-        virtualizer.scrollToOffset(Math.max(0, Math.min(maxScrollTop, el.scrollTop + delta)), { behavior: 'auto' });
-        return false;
-      }
-      pendingReadingAnchorRef.current = null;
-      return true;
-    }
-    const row = Array.from(el.querySelectorAll<HTMLElement>('[data-virtual-key]'))
-      .find((candidate) => candidate.dataset.virtualKey === item.id);
-    if (!row) {
-      pendingReadingAnchorRef.current = resolvedAnchor;
-      virtualizer.scrollToIndex(itemIndex, { align: 'start', behavior: 'auto' });
-      return false;
-    }
-    const target = resolvedAnchor.blockId
+    const item = itemIndex < 0 ? null : items[itemIndex];
+    const measurement = itemIndex < 0 ? null : virtualizer.measurementsCache[itemIndex];
+    const row = item ? Array.from(el.querySelectorAll<HTMLElement>('[data-virtual-key]'))
+      .find((candidate) => candidate.dataset.virtualKey === item.id) : null;
+    const target = row && anchor.blockId
       ? Array.from(row.querySelectorAll<HTMLElement>('[data-block-id]'))
-        .find((candidate) => candidate.dataset.blockId === resolvedAnchor.blockId)
+        .find((candidate) => candidate.dataset.blockId === anchor.blockId)
         ?? Array.from(row.querySelectorAll<HTMLElement>('[data-member-refs]'))
-          .find((candidate) => hasMemberRef(candidate, resolvedAnchor.blockId!))
+          .find((candidate) => hasMemberRef(candidate, anchor.blockId!))
       : row;
-    if (!target) return false;
-    const currentOffset = resolvedAnchor.blockId
+    const currentOffset = target
       ? target.getBoundingClientRect().top - el.getBoundingClientRect().top
-      : (virtualizer.getVirtualItems().find((candidate) => candidate.index === itemIndex)?.start ?? el.scrollTop) - el.scrollTop;
-    const delta = currentOffset - resolvedAnchor.viewportOffset;
-    if (Math.abs(delta) >= 0.5) {
-      const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
-      const targetScrollTop = Math.max(0, Math.min(maxScrollTop, el.scrollTop + delta));
-      if (Math.abs(targetScrollTop - el.scrollTop) >= 0.5) {
-        pendingReadingAnchorRef.current = resolvedAnchor;
-        virtualizer.scrollToOffset(targetScrollTop, { behavior: 'auto' });
-        return false;
-      }
-    }
-    pendingReadingAnchorRef.current = null;
-    return true;
-  }, [estimatedRangeHeight, findAnchorItemIndex, historyLoadStates, items, requestHistory, scrollStorageKey, transcript, virtualizer]);
+      : item?.kind === 'history' && measurement && anchor.position !== null
+        ? measurement.start + estimatedRangeHeight(item.state.start, anchor.position - 1) - el.scrollTop
+        : measurement ? measurement.start - el.scrollTop
+          : anchor.position !== null && structureHeights
+            ? structureHeights[anchor.position] - el.scrollTop
+            : null;
+    if (currentOffset === null) return false;
+    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    // Reveal an unmounted destination before applying its saved position
+    // within the row. A tall message may span several viewports; applying
+    // that intra-message offset to its estimate would leave it unmounted.
+    const requestedTop = item?.kind === 'history' || (item?.kind === 'group' && !target)
+      ? el.scrollTop + currentOffset
+      : el.scrollTop + currentOffset - anchor.viewportOffset;
+    const targetTop = Math.max(0, Math.min(maxScrollTop, requestedTop));
+    if (Math.abs(targetTop - el.scrollTop) >= 0.5) el.scrollTo({ top: targetTop, behavior: 'auto' });
+    pendingReadingAnchorRef.current = item?.kind === 'history'
+      || (item?.kind === 'group' && (!target || !virtualizer.itemSizeCache.has(item.id)))
+      ? anchor : null;
+    return pendingReadingAnchorRef.current === null;
+  }, [estimatedRangeHeight, findAnchorItemIndex, items, structureHeights, virtualizer]);
 
   // Chat disclosures are transient reading state. A new conversation or page
   // refresh starts from each block's declared default instead of reviving old
@@ -717,19 +657,20 @@ export function ChatSurface({
   // reset runs after that restoration and would erase the anchor it just read.
   useLayoutEffect(() => {
     setExpandedBlocks({});
-    setHistoryLoadStates({});
     pendingReadingAnchorRef.current = null;
-    readingAnchorRef.current = null;
-    userScrollIntentRef.current = false;
-    userScrollAwayFromTailRef.current = false;
-    lastUserScrollTopRef.current = null;
-    inFlightHistoryRef.current.clear();
+    previousScrollTopRef.current = null;
+    manualTowardTailRef.current = false;
   }, [storageScope]);
 
   useEffect(() => {
-    if (historyStateScopeRef.current === historyScope) return;
-    historyStateScopeRef.current = historyScope;
-    setHistoryLoadStates({});
+    attemptedHistoryRef.current.clear();
+    waitingHistoryRef.current.clear();
+    coverageSignatureRef.current = '';
+    setHistoryFailure(null);
+    return () => {
+      for (const request of inFlightHistoryRef.current.values()) request.controller.abort();
+      inFlightHistoryRef.current.clear();
+    };
   }, [historyScope]);
 
   useEffect(() => {
@@ -739,20 +680,9 @@ export function ChatSurface({
   }, [expansionOwnerScope]);
 
   const setScrollNode = useCallback((node: HTMLDivElement | null) => {
-    scrollEndCleanupRef.current?.();
-    scrollEndCleanupRef.current = null;
     scrollRef.current = node;
     registerScrollOwner?.(node);
-    if (node) {
-      const handleScrollEnd = () => {
-        userScrollIntentRef.current = false;
-        userScrollAwayFromTailRef.current = false;
-        lastUserScrollTopRef.current = null;
-      };
-      node.addEventListener('scrollend', handleScrollEnd);
-      scrollEndCleanupRef.current = () => node.removeEventListener('scrollend', handleScrollEnd);
-      setViewportHeight(node.clientHeight || 720);
-    }
+    if (node) setViewportHeight(node.clientHeight || 720);
   }, [registerScrollOwner]);
 
   useLayoutEffect(() => {
@@ -761,11 +691,10 @@ export function ChatSurface({
     const storedAnchor = parseReadingAnchor(storageGet(scrollStorageKey));
     if (navigationTarget) return;
     if (storedAnchor) {
-      readingAnchorRef.current = storedAnchor;
       if (storedAnchor.followingTail) {
         pendingReadingAnchorRef.current = null;
         setFollowingTail(true);
-        virtualizer.scrollToEnd({ behavior: 'auto' });
+        scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'auto' });
       } else {
         pendingReadingAnchorRef.current = storedAnchor;
         setFollowingTail(false);
@@ -773,9 +702,9 @@ export function ChatSurface({
       }
     } else if (!navigationTarget) {
       setFollowingTail(!transcript?.hasNewer);
-      virtualizer.scrollToEnd({ behavior: 'auto' });
+      scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'auto' });
     }
-  }, [items.length, navigationTarget, restoreReadingAnchor, scrollStorageKey, transcript?.hasNewer, virtualizer]);
+  }, [items.length, navigationTarget, restoreReadingAnchor, scrollStorageKey, transcript?.hasNewer]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -810,9 +739,7 @@ export function ChatSurface({
     handledNavigationKeyRef.current = navigationTarget.key;
     if (navigationTarget.kind === 'latest') {
       pendingReadingAnchorRef.current = null;
-      userScrollIntentRef.current = false;
       const tailAnchor = tailReadingAnchor(items.at(-1)?.id ?? 'tail');
-      readingAnchorRef.current = tailAnchor;
       storageSet(scrollStorageKey, JSON.stringify(tailAnchor));
     }
     pendingFocusRef.current = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest'
@@ -821,10 +748,12 @@ export function ChatSurface({
     setFollowingTail(navigationTarget.kind === 'latest'
       || (navigationTarget.kind === 'initial' && !transcript?.hasNewer));
     if (navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest') {
-      virtualizer.scrollToEnd({ behavior });
+      manualTowardTailRef.current = true;
+      el.scrollTo({ top: el.scrollHeight, behavior });
       onNavigationResult?.({ key: navigationTarget.key, status: 'revealed' });
     } else {
-      virtualizer.scrollToIndex(itemIndex, { align: 'center', behavior });
+      const measurement = virtualizer.measurementsCache[itemIndex];
+      if (measurement) el.scrollTo({ top: Math.max(0, measurement.start - el.clientHeight / 2), behavior });
     }
     setDistanceFromBottom(navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest'
       ? 0
@@ -860,93 +789,107 @@ export function ChatSurface({
   useLayoutEffect(() => {
     const pending = pendingReadingAnchorRef.current;
     if (!pending || navigationTarget) return;
-    if (userScrollIntentRef.current) {
-      pendingReadingAnchorRef.current = null;
-      return;
-    }
     restoreReadingAnchor(pending);
-  }, [distanceFromBottom, expandedBlocks, items, navigationTarget, restoreReadingAnchor, virtualItems]);
-
-  useLayoutEffect(() => {
-    const signature = items.map((item) => item.kind === 'history'
-      ? `${item.id}:${Math.round(item.state.extentHeight)}`
-      : `${item.id}:${item.kind === 'group' ? measuredGroupSizes[item.id] ?? 0 : 0}`)
-      .join('\0');
-    const previous = itemIdentitySignatureRef.current;
-    itemIdentitySignatureRef.current = signature;
-    if (previous === null || previous === signature || navigationTarget) return;
-    if (userScrollIntentRef.current) return;
-    const anchor = readingAnchorRef.current;
-    if (!anchor || anchor.followingTail) return;
-    pendingReadingAnchorRef.current = anchor;
-    restoreReadingAnchor(anchor);
-  }, [items, measuredGroupSizes, navigationTarget, restoreReadingAnchor]);
+  }, [items, navigationTarget, restoreReadingAnchor, virtualItems]);
 
   useEffect(() => {
     if (!transcript) return;
     const el = scrollRef.current;
     if (!el) return;
-    const rendered = virtualizer.getVirtualItems();
-    if (rendered.length === 0) return;
+    if (lastTranscriptRef.current !== transcript) {
+      for (const start of waitingHistoryRef.current) attemptedHistoryRef.current.delete(start);
+      waitingHistoryRef.current.clear();
+      lastTranscriptRef.current = transcript;
+    }
+    const coverage = transcript.loadedIntervals.map((range) => `${range.start}:${range.end}`).join(',');
+    if (coverageSignatureRef.current !== coverage) {
+      coverageSignatureRef.current = coverage;
+      attemptedHistoryRef.current.clear();
+      waitingHistoryRef.current.clear();
+    }
     const scrollStart = el.scrollTop;
     const scrollEnd = scrollStart + el.clientHeight;
-    const prefetchDistance = Math.max(el.clientHeight * 1.5, 720);
-    const requestWithAnchor = (
-      key: string,
-      load: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>,
-    ) => {
-      if (!userScrollIntentRef.current) {
-        const anchor = captureReadingAnchor();
-        if (anchor && !anchor.followingTail) pendingReadingAnchorRef.current = anchor;
+    const before = el.clientHeight * 6;
+    const after = el.clientHeight * 6;
+    const candidates: Array<{ position: number; distance: number }> = [];
+    const demandRanges: Array<{ start: number; end: number }> = [];
+    // The read-ahead buffer spans pixels, so inspect the full measured layout.
+    // DOM overscan is a row count and can stop before a nearby gap.
+    for (const row of virtualizer.measurementsCache) {
+      const item = items[row.index];
+      if (item?.kind !== 'history' || row.end < scrollStart - before || row.start > scrollEnd + after) continue;
+      const state = item.state;
+      demandRanges.push({
+        start: historyPositionAtOffset(state, row.start, Math.max(row.start, scrollStart - before), structureHeights),
+        end: historyPositionAtOffset(state, row.start, Math.min(row.end - 1, scrollEnd + after), structureHeights),
+      });
+      const visibleCenter = (scrollStart + scrollEnd) / 2;
+      const sample = Math.max(row.start, Math.min(row.end - 1, visibleCenter));
+      let position = historyPositionAtOffset(state, row.start, sample, structureHeights);
+      if (row.end <= scrollStart) position = Math.max(state.start, state.end - HISTORY_WINDOW_BEFORE);
+      else if (row.start >= scrollEnd) position = Math.min(state.end, state.start + HISTORY_WINDOW_BEFORE);
+      candidates.push({ position, distance: Math.max(0, row.start - scrollEnd, scrollStart - row.end) });
+      if (row.start < scrollStart && row.end > scrollEnd) {
+        const leadPixel = scrollDirectionRef.current === 'up' ? scrollStart - before : scrollEnd + after;
+        const leadPosition = historyPositionAtOffset(state, row.start, leadPixel, structureHeights);
+        if (Math.abs(leadPosition - position) > HISTORY_WINDOW_BEFORE) candidates.push({ position: leadPosition, distance: el.clientHeight });
       }
-      void requestHistory(key, load);
-    };
-    for (const item of items) {
-      if (item.kind !== 'history') continue;
-      const { start, end, key, loadState } = item.state;
-      const row = rendered.find((candidate) => items[candidate.index]?.id === item.id);
-      if (!row || loadState !== 'idle'
-          || row.end < scrollStart - prefetchDistance
-          || row.start > scrollEnd + prefetchDistance) continue;
-      const visibleStart = Math.max(row.start, scrollStart);
-      const visibleEnd = Math.min(row.end, scrollEnd);
-      const targetOffset = visibleStart <= visibleEnd
-        ? (visibleStart + visibleEnd) / 2
-        : row.start > scrollEnd ? row.start : row.end;
-      const rowHeight = Math.max(1, row.end - row.start);
-      const fraction = Math.max(0, Math.min(1, (targetOffset - row.start) / rowHeight));
-      const position = Math.max(start, Math.min(end, Math.floor(start + fraction * (end - start + 1))));
-      requestWithAnchor(key, () => transcript.loadAround(position));
-      return;
+    }
+    candidates.sort((left, right) => left.distance - right.distance);
+    const desired = candidates.slice(0, 2);
+    if (historyFailure && !desired.some((candidate) => candidate.position === historyFailure.position)) {
+      setHistoryFailure(null);
+    }
+    for (const [key, request] of inFlightHistoryRef.current) {
+      if (demandRanges.some((range) => request.end >= range.start && request.start <= range.end)) continue;
+      request.controller.abort();
+      inFlightHistoryRef.current.delete(key);
+      attemptedHistoryRef.current.delete(key);
+    }
+    for (const candidate of desired) {
+      if (inFlightHistoryRef.current.size >= 2) break;
+      if (inFlightHistoryRef.current.size && [...inFlightHistoryRef.current.values()].some((request) =>
+        candidate.position >= request.start && candidate.position <= request.end)) continue;
+      const start = Math.max(0, candidate.position - HISTORY_WINDOW_BEFORE);
+      if (attemptedHistoryRef.current.has(start) || historyFailure?.position === candidate.position) continue;
+      attemptedHistoryRef.current.add(start);
+      const controller = new AbortController();
+      const request = { start, end: Math.min(transcript.total - 1, start + HISTORY_WINDOW_POSITIONS - 1), controller };
+      inFlightHistoryRef.current.set(start, request);
+      void Promise.resolve().then(() => transcript.loadAround(candidate.position, HISTORY_WINDOW_POSITIONS, controller.signal)).then((result) => {
+        if (inFlightHistoryRef.current.get(start) !== request) return;
+        if (result === 'failed') setHistoryFailure({ position: candidate.position, message: 'Could not load this part of the conversation.' });
+        else if (result === 'cancelled') {
+          attemptedHistoryRef.current.delete(start);
+        } else if (result === 'busy' || result === 'covered') waitingHistoryRef.current.add(start);
+      }, (cause) => {
+        if (inFlightHistoryRef.current.get(start) !== request || controller.signal.aborted) return;
+        setHistoryFailure({ position: candidate.position, message: cause instanceof Error ? cause.message : String(cause) });
+      }).finally(() => {
+        if (inFlightHistoryRef.current.get(start) !== request) return;
+        inFlightHistoryRef.current.delete(start);
+        setHistoryRevision((revision) => revision + 1);
+      });
     }
   }, [
-    captureReadingAnchor,
     distanceFromBottom,
-    historyLoadStates,
+    historyFailure,
+    historyRevision,
     items,
-    requestHistory,
+    structureHeights,
     transcript,
     virtualItems,
-    viewportHeight,
     virtualizer,
   ]);
 
-  function handleUserScrollIntent(awayFromTail = false): void {
-    // Direct scroll input supersedes a deferred virtual-row restore. The ensuing
-    // scroll event captures the new anchor before data can change.
-    userScrollIntentRef.current = true;
-    userScrollAwayFromTailRef.current = awayFromTail;
-    lastUserScrollTopRef.current = scrollRef.current?.scrollTop ?? null;
+  function handleUserScrollIntent(towardTail = false): void {
     pendingReadingAnchorRef.current = null;
-    setFollowingTail(false);
-    setHistoryLoadStates((states) => {
-      const pending = Object.entries(states).filter(([, state]) => state === 'loading');
-      return pending.length === Object.keys(states).length ? states : Object.fromEntries(pending);
-    });
+    pendingFocusRef.current = null;
+    manualTowardTailRef.current = towardTail;
   }
 
   function handleUserScrollPointer(event: PointerEvent): void {
-    if (event.target === event.currentTarget) handleUserScrollIntent();
+    if (event.target === event.currentTarget) handleUserScrollIntent(true);
   }
 
   function handleUserScrollKey(event: KeyboardEvent): void {
@@ -954,7 +897,7 @@ export function ChatSurface({
     if (event.defaultPrevented || (target instanceof HTMLElement
         && (target.isContentEditable || target.matches('input, textarea, select')))) return;
     if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
-      handleUserScrollIntent(['ArrowUp', 'PageUp', 'Home'].includes(event.key));
+      handleUserScrollIntent(['ArrowDown', 'PageDown', 'End', ' '].includes(event.key));
     }
   }
 
@@ -965,21 +908,19 @@ export function ChatSurface({
     }
     const nextViewportHeight = el.clientHeight || viewportHeight;
     const nextDistance = Math.max(0, el.scrollHeight - el.scrollTop - nextViewportHeight);
-    const userScrollIntent = userScrollIntentRef.current;
+    const previous = previousScrollTopRef.current;
+    if (previous !== null && el.scrollTop !== previous) {
+      scrollDirectionRef.current = el.scrollTop < previous ? 'up' : 'down';
+    }
+    previousScrollTopRef.current = el.scrollTop;
     setViewportHeight(nextViewportHeight);
     setDistanceFromBottom(nextDistance);
-    if (pendingReadingAnchorRef.current && !userScrollIntent) return;
-    if (!userScrollIntent) return;
-    pendingReadingAnchorRef.current = null;
-    const movingDown = lastUserScrollTopRef.current === null || el.scrollTop >= lastUserScrollTopRef.current;
-    lastUserScrollTopRef.current = el.scrollTop;
     const nextFollowingTail = nextDistance <= FOLLOW_THRESHOLD_PX
-      && movingDown
-      && !userScrollAwayFromTailRef.current
+      && (followingTail || (manualTowardTailRef.current && previous !== null && el.scrollTop > previous))
       && !transcript?.hasNewer
       && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
     setFollowingTail(nextFollowingTail);
-    captureReadingAnchor(nextFollowingTail);
+    if (!pendingReadingAnchorRef.current) captureReadingAnchor(nextFollowingTail);
   }
 
   function handleJumpToBottom(): void {
@@ -989,7 +930,7 @@ export function ChatSurface({
     }
     const el = scrollRef.current;
     if (!el) return;
-    virtualizer.scrollToEnd({ behavior: requestedScrollBehavior(true) });
+    el.scrollTo({ top: el.scrollHeight, behavior: requestedScrollBehavior(true) });
     setDistanceFromBottom(0);
     setFollowingTail(!transcript?.hasNewer);
     captureReadingAnchor(!transcript?.hasNewer);
@@ -1007,8 +948,6 @@ export function ChatSurface({
     expanded: boolean,
     sources: readonly (PersistedBlockSource | undefined)[] = [],
   ): void {
-    const anchor = captureReadingAnchor();
-    if (anchor) pendingReadingAnchorRef.current = anchor;
     if (expanded) requestExpandedDetails(sources);
     setExpandedBlocks((current) => {
       return { ...current, [id]: expanded };
@@ -1311,24 +1250,12 @@ export function ChatSurface({
   }
 
   function renderHistoryRow(state: HistoryRowState): JSX.Element {
-    if (state.loadState !== 'loading') {
-      return (
-        <div
-          className="stream-renderer__history-state"
-          style={{ height: `${state.extentHeight}px`, boxSizing: 'border-box' }}
-          aria-hidden="true"
-        />
-      );
-    }
     return (
       <div
         className="stream-renderer__history-state"
         style={{ height: `${state.extentHeight}px`, boxSizing: 'border-box' }}
-        role="status"
-        aria-live="polite"
-      >
-        Loading history…
-      </div>
+        aria-hidden="true"
+      />
     );
   }
 
@@ -1350,7 +1277,7 @@ export function ChatSurface({
         className="stream-renderer__scroll"
         onScroll={handleScroll}
         onPointerDown={handleUserScrollPointer}
-        onWheel={(event) => handleUserScrollIntent(event.deltaY < 0)}
+        onWheel={(event) => handleUserScrollIntent(event.deltaY > 0)}
         onTouchMove={() => handleUserScrollIntent()}
         onKeyDown={handleUserScrollKey}
       >
@@ -1385,6 +1312,18 @@ export function ChatSurface({
           })}
         </div>
       </div>
+      {historyFailure && (
+        <div className="stream-renderer__history-error" role="alert">
+          <span>{historyFailure.message}</span>
+          <button type="button" onClick={() => {
+            const start = Math.max(0, historyFailure.position - HISTORY_WINDOW_BEFORE);
+            attemptedHistoryRef.current.delete(start);
+            waitingHistoryRef.current.delete(start);
+            setHistoryFailure(null);
+            setHistoryRevision((revision) => revision + 1);
+          }}>Retry</button>
+        </div>
+      )}
       {showJumpToLatest && (
         <>
           <button

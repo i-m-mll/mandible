@@ -56,10 +56,10 @@ export type ConversationTranscriptConsumer = {
   unmaterializedAfterCount: number;
   loadOlder: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
   loadNewer: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
-  loadAround: (position: number) => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
+  loadAround: (position: number, limit: number, signal?: AbortSignal) => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
 };
 
-export type ConversationHistoryLoadResult = 'loaded' | 'covered' | 'busy' | 'failed';
+export type ConversationHistoryLoadResult = 'loaded' | 'covered' | 'busy' | 'cancelled' | 'failed';
 
 export type ConversationNavigationCommand = {
   key: string;

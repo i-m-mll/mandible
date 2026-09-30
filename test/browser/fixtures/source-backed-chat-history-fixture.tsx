@@ -44,6 +44,16 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.includes('/api/conversations')) requests.push(url);
   let response = await nativeFetch(input, init);
   const requestPath = new URL(url, window.location.href).pathname;
+  if (requestPath === `/api/conversations/${conversationId}/structure`
+      && response.ok && refreshedSourceGeneration > 0) {
+    const payload = await response.json() as { source_version_id?: string | null };
+    payload.source_version_id = `source-refresh-${refreshedSourceGeneration}`;
+    response = new Response(JSON.stringify(payload), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
   if (requestPath === `/api/conversations/${conversationId}` && response.ok) {
     const payload = await response.json() as {
       source_version_id?: string | null;

@@ -443,7 +443,7 @@ async function warmSelectedConversationWindow(
   }
   if (!conversationId) return;
 
-  const target = normalizeWindowTarget({ target: 'initial', view: 'display' });
+  const target = normalizeWindowTarget({ target: 'initial', limit: 500, view: 'display' });
   const aggregateKey = conversationKeys.aggregate(conversationId);
   const aggregateAtStart = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
   const [window, structure] = await Promise.all([
@@ -1361,7 +1361,7 @@ export function ConversationDetail({
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
   const handledAnchorKeyRef = useRef<string | null>(null);
   const windowTargetJson = JSON.stringify({
-    ...normalizeWindowTarget(effectiveAnchor ?? { target: 'initial' }),
+    ...normalizeWindowTarget(effectiveAnchor ?? { target: 'initial', limit: 500 }),
     view: 'display' as const,
   });
   const windowTarget = useMemo(
@@ -1434,28 +1434,15 @@ export function ConversationDetail({
     queryFn: () => Promise.reject(new Error('Conversation transcript aggregate has no direct transport.')),
     enabled: false,
   }, queryClient);
-  const activeRangeKeyRef = useRef<ReturnType<typeof conversationKeys.window> | null>(null);
   const fetchAndReconcileWindow = useCallback(async (
     target: ReturnType<typeof normalizeWindowTarget>,
+    signal?: AbortSignal,
   ): Promise<ConversationPositionWindow> => {
     const displayTarget = { ...target, view: 'display' as const };
-    const key = conversationKeys.window(conversationId, displayTarget);
-    const previous = activeRangeKeyRef.current;
-    if (previous && JSON.stringify(previous) !== JSON.stringify(key)) {
-      await queryClient.cancelQueries({ queryKey: previous, exact: true });
-    }
-    activeRangeKeyRef.current = key;
-    try {
-      return await readAndReconcileWindow(displayTarget, () => queryClient.fetchQuery({
-        queryKey: key,
-        queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(displayTarget, signal)),
-        staleTime: 0,
-      }));
-    } finally {
-      if (activeRangeKeyRef.current === key) activeRangeKeyRef.current = null;
-      queryClient.removeQueries({ queryKey: key, exact: true, type: 'inactive' });
-    }
-  }, [conversationId, queryClient, readAndReconcileWindow]);
+    return readAndReconcileWindow(displayTarget, () => readConversationWindowWhenReady(
+      conversationId, windowRequest(displayTarget, signal),
+    ));
+  }, [conversationId, readAndReconcileWindow]);
 
   const hydrateConversationDetails = useCallback(async (
     sources: readonly { blockId: string; position?: number; detailsLoaded?: boolean }[],
@@ -1586,7 +1573,11 @@ export function ConversationDetail({
     }
   }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
-  const loadTranscriptAround = useCallback(async (position: number): Promise<ConversationHistoryLoadResult> => {
+  const loadTranscriptAround = useCallback(async (
+    position: number,
+    limit = 500,
+    signal?: AbortSignal,
+  ): Promise<ConversationHistoryLoadResult> => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
     if (!aggregate) return 'busy';
     if (!Number.isSafeInteger(position) || position < 0 || position >= aggregate.total) {
@@ -1598,11 +1589,10 @@ export function ConversationDetail({
       historyRetryRef.current = null;
       return 'covered';
     }
-    setEdgeLoading('newer');
     setNavigationError(null);
     historyRetryRef.current = { kind: 'around', position };
     try {
-      await fetchAndReconcileWindow(normalizeWindowTarget({ position, limit: 240 }));
+      await fetchAndReconcileWindow(normalizeWindowTarget({ position, limit }), signal);
       const updated = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
       if (!updated?.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) {
         throw new Error(`Conversation history did not include requested position ${position}.`);
@@ -1610,13 +1600,13 @@ export function ConversationDetail({
       historyRetryRef.current = null;
       return 'loaded';
     } catch (cause) {
+      if (signal?.aborted || cause instanceof CancelledError
+          || (cause instanceof Error && cause.name === 'AbortError')) return 'cancelled';
       const failure = conversationLoadFailure(cause, true, 'edge-newer');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
       return failure ? 'failed' : 'busy';
-    } finally {
-      if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
-  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
+  }, [conversationId, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
   const transcriptConsumer = useMemo<ConversationTranscriptConsumer | undefined>(() => {
     const aggregate = aggregateQuery.data;
