@@ -200,9 +200,12 @@ function fixtureHtml(): string {
     body { font: 14px system-ui; }
     .detail-pane-shell,.chat-detail-frame { display:flex; flex-direction:column; height:100%; min-height:0; }
     .detail-pane-shell__body,.chat-detail-frame__body,.conv-transcript,.chat-entity-link-boundary,.stream-renderer { display:flex; flex:1; flex-direction:column; min-height:0; }
-    .stream-renderer__scroll { flex:1; min-height:0; overflow-y:auto; scrollbar-width:auto; }
-    .stream-renderer__scroll::-webkit-scrollbar { width:14px; background:#eee; }
-    .stream-renderer__scroll::-webkit-scrollbar-thumb { background:#888; min-height:30px; }
+    .stream-renderer { position:relative; }
+    .stream-renderer__scroll { flex:1; min-height:0; overflow-y:auto; }
+    .stream-renderer__scroll--overlay-bar { scrollbar-width:none; padding-right:12px; }
+    .stream-renderer__scroll--overlay-bar::-webkit-scrollbar { display:none; }
+    .stream-renderer__scrollbar-track { position:absolute; right:0; width:12px; touch-action:none; }
+    .stream-renderer__scrollbar-thumb { width:6px; margin-left:3px; }
     .stream-renderer__virtual-canvas { position:relative; min-height:100%; }
     .stream-renderer__virtual-row { position:absolute; left:0; right:0; }
     .turn-group,.message-block-wrapper,.stream-renderer__history-state { min-height:48px; padding:8px 12px; box-sizing:border-box; }
@@ -728,6 +731,44 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
     expect(afterDelayedMeasurement.value.scrollTop).toBeGreaterThan(beforeUpwardState.scrollTop + 200);
     expect(afterDelayedMeasurement.value.readingAnchor).toEqual(beforeUpwardState.readingAnchor);
     expect(afterDelayedMeasurement.value.readingAnchor?.followingTail).toBe(false);
+
+    const scrollbar = await evaluate<{ x: number; thumbY: number; middleY: number }>(`(() => {
+      const track=document.querySelector('.stream-renderer__scrollbar-track').getBoundingClientRect();
+      const thumb=document.querySelector('.stream-renderer__scrollbar-thumb').getBoundingClientRect();
+      return {x:thumb.left+thumb.width/2,thumbY:thumb.top+thumb.height/2,middleY:track.top+track.height/2};
+    })()`);
+    await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: scrollbar.x, y: scrollbar.thumbY });
+    await client.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: scrollbar.x, y: scrollbar.thumbY,
+      button: 'left', buttons: 1, clickCount: 1 });
+    await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: scrollbar.x, y: scrollbar.middleY,
+      button: 'left', buttons: 1 });
+    const beforeDragGrowth = await snapshot();
+    await evaluate(`(() => {
+      const style=document.createElement('style');
+      style.id='held-thumb-row-growth';
+      style.textContent='.stream-renderer__virtual-row[data-virtual-kind="group"] { padding-bottom: 320px !important; box-sizing: border-box !important; }';
+      document.head.append(style);
+    })()`);
+    const duringDragGrowth = await waitFor('held thumb stays with pointer through row growth', async () => {
+      const value = await snapshot();
+      if (value.scrollHeight < beforeDragGrowth.scrollHeight + 200) return null;
+      return evaluate<{ thumbY: number; scrollTop: number }>(`(() => {
+        const thumb=document.querySelector('.stream-renderer__scrollbar-thumb').getBoundingClientRect();
+        const scroll=document.querySelector('.stream-renderer__scroll');
+        return {thumbY:thumb.top+thumb.height/2,scrollTop:scroll.scrollTop};
+      })()`);
+    }, browser, profile);
+    expect(Math.abs(duringDragGrowth.thumbY - scrollbar.middleY)).toBeLessThan(1);
+    expect(Math.abs(duringDragGrowth.scrollTop - beforeDragGrowth.scrollTop)).toBeGreaterThan(100);
+    await client.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: scrollbar.x, y: scrollbar.middleY,
+      button: 'left', buttons: 0, clickCount: 1 });
+    await client.call('Input.dispatchMouseEvent', { type: 'mouseWheel', x: scrollbar.x, y: scrollbar.middleY,
+      deltaX: 0, deltaY: -80 });
+    await waitFor('wheel over released thumb scrolls immediately', async () => {
+      const value = await snapshot();
+      return value.scrollTop < duringDragGrowth.scrollTop - 20 ? value : null;
+    }, browser, profile);
+    await evaluate(`document.getElementById('held-thumb-row-growth').remove()`);
 
     const latestRequestStart = afterDelayedMeasurement.value.requests.length;
     expect(await clickJumpToLatest(), 'the older reading position should expose Jump to latest').toBe(true);

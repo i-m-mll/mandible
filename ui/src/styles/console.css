@@ -887,6 +887,46 @@
   scrollbar-color: var(--text-chrome-faint) transparent;
 }
 
+.stream-renderer__scroll--overlay-bar {
+  scrollbar-width: none;
+  padding-right: calc(var(--space-5) + 12px);
+}
+
+.stream-renderer__scroll--overlay-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.stream-renderer__scrollbar-track {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  width: 12px;
+  touch-action: none;
+  cursor: default;
+}
+
+.stream-renderer__scrollbar-thumb {
+  width: 6px;
+  margin-left: 3px;
+  border-radius: 6px;
+  background: var(--text-chrome-faint);
+  opacity: 0;
+  cursor: grab;
+  outline-offset: 1px;
+}
+
+.stream-renderer__scroll--overlay-bar:hover + .stream-renderer__scrollbar-track .stream-renderer__scrollbar-thumb,
+.stream-renderer__scroll--overlay-bar:focus-within + .stream-renderer__scrollbar-track .stream-renderer__scrollbar-thumb,
+.stream-renderer__scrollbar-track:hover .stream-renderer__scrollbar-thumb,
+.stream-renderer__scrollbar-track--dragging .stream-renderer__scrollbar-thumb,
+.stream-renderer__scrollbar-thumb:focus-visible {
+  opacity: 1;
+}
+
+.stream-renderer__scrollbar-track--dragging .stream-renderer__scrollbar-thumb {
+  cursor: grabbing;
+}
+
 .stream-renderer__virtual-canvas {
   position: relative;
   min-height: 100%;

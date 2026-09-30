@@ -313,6 +313,7 @@ export function ChatSurface({
   const registerScrollOwner = overlayContext?.registerScrollOwner;
   const storageScope = sessionInfo?.sessionId ?? 'default';
   const scrollStorageKey = `mandible:chat-scroll:${storageScope}`;
+  const scrollElementId = `chat-scroll-${storageScope.replace(/[^A-Za-z0-9_-]/g, '-')}`;
 
   const [viewportHeight, setViewportHeight] = useState(720);
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
@@ -327,8 +328,16 @@ export function ChatSurface({
   const previousScrollTopRef = useRef<number | null>(null);
   const scrollDirectionRef = useRef<'up' | 'down'>('up');
   const manualTowardTailRef = useRef(false);
-  const nativeScrollbarPointerRef = useRef<number | null>(null);
-  const [nativeScrollbarDrag, setNativeScrollbarDrag] = useState(false);
+  const scrollbarTrackRef = useRef<HTMLDivElement>(null);
+  const scrollbarThumbRef = useRef<HTMLDivElement>(null);
+  const scrollbarDragRef = useRef<{
+    pointerId: number;
+    pointerY: number;
+    grabOffset: number;
+    thumbHeight: number;
+  } | null>(null);
+  const finishScrollbarDragRef = useRef<(event?: PointerEvent) => void>(() => {});
+  const [scrollbarDragging, setScrollbarDragging] = useState(false);
   const [measuredGroupSizesByScope, setMeasuredGroupSizesByScope] = useState<{
     scope: string;
     sizes: Readonly<Record<string, number>>;
@@ -509,6 +518,34 @@ export function ChatSurface({
     }
     return size;
   }, [recordMeasuredGroupSize]);
+  const syncScrollbar = useCallback(() => {
+    const scroll = scrollRef.current;
+    const track = scrollbarTrackRef.current;
+    const thumb = scrollbarThumbRef.current;
+    if (!scroll || !track || !thumb || !track.parentElement) return;
+    const scrollRect = scroll.getBoundingClientRect();
+    const parentRect = track.parentElement.getBoundingClientRect();
+    track.style.top = `${scrollRect.top - parentRect.top}px`;
+    track.style.height = `${scrollRect.height}px`;
+    const maxTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+    track.style.display = maxTop > 0 ? '' : 'none';
+    if (maxTop <= 0) return;
+    const drag = scrollbarDragRef.current;
+    const thumbHeight = drag?.thumbHeight ?? Math.min(scrollRect.height,
+      Math.max(30, scrollRect.height * scroll.clientHeight / scroll.scrollHeight));
+    const travel = Math.max(0, scrollRect.height - thumbHeight);
+    const progress = drag
+      ? Math.max(0, Math.min(1, (drag.pointerY - scrollRect.top - drag.grabOffset) / Math.max(1, travel)))
+      : Math.max(0, Math.min(1, scroll.scrollTop / maxTop));
+    thumb.style.height = `${thumbHeight}px`;
+    thumb.style.transform = `translate3d(0, ${progress * travel}px, 0)`;
+    thumb.setAttribute('aria-valuenow', String(Math.round(progress * 1000)));
+    thumb.setAttribute('aria-valuetext', `${Math.round(progress * 100)}%`);
+    if (drag) {
+      const target = progress * maxTop;
+      if (Math.abs(scroll.scrollTop - target) >= 0.5) scroll.scrollTop = target;
+    }
+  }, []);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: items.length,
     getScrollElement,
@@ -522,12 +559,13 @@ export function ChatSurface({
     rangeExtractor: extractVirtualRows,
     overscan: 4,
     directDomUpdates: true,
-    anchorTo: nativeScrollbarDrag ? 'start' : 'end',
-    followOnAppend: followingTail && !nativeScrollbarDrag ? 'auto' : false,
-    scrollEndThreshold: followingTail && !nativeScrollbarDrag ? FOLLOW_THRESHOLD_PX : -1,
+    anchorTo: scrollbarDragging ? 'start' : 'end',
+    followOnAppend: followingTail && !scrollbarDragging ? 'auto' : false,
+    scrollEndThreshold: followingTail && !scrollbarDragging ? FOLLOW_THRESHOLD_PX : -1,
+    onChange: syncScrollbar,
   });
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
-    if (nativeScrollbarPointerRef.current !== null) return false;
+    if (scrollbarDragRef.current !== null) return false;
     const readingPoint = (instance.scrollElement?.scrollTop ?? instance.scrollOffset ?? 0)
       + instance.scrollAdjustments;
     // First measurements replace an estimate; later growth only moves the
@@ -794,7 +832,7 @@ export function ChatSurface({
 
   useLayoutEffect(() => {
     const pending = pendingReadingAnchorRef.current;
-    if (!pending || navigationTarget) return;
+    if (!pending || navigationTarget || scrollbarDragRef.current) return;
     restoreReadingAnchor(pending);
   }, [items, navigationTarget, restoreReadingAnchor, virtualItems]);
 
@@ -894,41 +932,100 @@ export function ChatSurface({
     manualTowardTailRef.current = towardTail;
   }
 
-  function handleUserScrollPointer(event: PointerEvent): void {
-    if (event.target !== event.currentTarget) return;
-    handleUserScrollIntent(true);
-    const el = scrollRef.current;
-    if (!el || event.pointerType !== 'mouse' || event.button !== 0) return;
-    const rect = el.getBoundingClientRect();
-    const gutterWidth = Math.max(el.offsetWidth - el.clientWidth, 12);
-    if (event.clientX < rect.right - gutterWidth) return;
-    nativeScrollbarPointerRef.current = event.pointerId;
-    setNativeScrollbarDrag(true);
+  function handleScrollbarPointerDown(event: PointerEvent): void {
+    if (event.button !== 0 || !scrollRef.current || !scrollbarThumbRef.current) return;
+    const thumbRect = scrollbarThumbRef.current.getBoundingClientRect();
+    const onThumb = scrollbarThumbRef.current.contains(event.target as Node);
+    scrollbarDragRef.current = {
+      pointerId: event.pointerId,
+      pointerY: event.clientY,
+      grabOffset: onThumb ? event.clientY - thumbRect.top : thumbRect.height / 2,
+      thumbHeight: thumbRect.height,
+    };
+    handleUserScrollIntent();
     setFollowingTail(false);
+    setScrollbarDragging(true);
+    scrollbarTrackRef.current?.setPointerCapture(event.pointerId);
+    syncScrollbar();
+    event.preventDefault();
+    event.stopPropagation();
   }
 
+  finishScrollbarDragRef.current = (event?: PointerEvent) => {
+    const drag = scrollbarDragRef.current;
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+    scrollbarDragRef.current = null;
+    setScrollbarDragging(false);
+    manualTowardTailRef.current = false;
+    pendingReadingAnchorRef.current = null;
+    const scroll = scrollRef.current;
+    const atLatest = !!scroll && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 1
+      && !transcript?.hasNewer
+      && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
+    setFollowingTail(atLatest);
+    captureReadingAnchor(atLatest);
+    syncScrollbar();
+  };
+
   useLayoutEffect(() => {
-    const release = (event: PointerEvent) => {
-      if (event.pointerId !== nativeScrollbarPointerRef.current) return;
-      nativeScrollbarPointerRef.current = null;
-      setNativeScrollbarDrag(false);
+    const move = (event: PointerEvent) => {
+      const drag = scrollbarDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      drag.pointerY = event.clientY;
+      syncScrollbar();
     };
-    const releaseOnBlur = () => {
-      nativeScrollbarPointerRef.current = null;
-      setNativeScrollbarDrag(false);
-    };
+    const release = (event: PointerEvent) => finishScrollbarDragRef.current(event);
+    const releaseOnBlur = () => finishScrollbarDragRef.current();
+    window.addEventListener('pointermove', move, true);
     window.addEventListener('pointerup', release, true);
     window.addEventListener('pointercancel', release, true);
     window.addEventListener('lostpointercapture', release, true);
     window.addEventListener('blur', releaseOnBlur);
     return () => {
+      window.removeEventListener('pointermove', move, true);
       window.removeEventListener('pointerup', release, true);
       window.removeEventListener('pointercancel', release, true);
       window.removeEventListener('lostpointercapture', release, true);
       window.removeEventListener('blur', releaseOnBlur);
-      nativeScrollbarPointerRef.current = null;
+      scrollbarDragRef.current = null;
     };
-  }, []);
+  }, [syncScrollbar]);
+
+  useLayoutEffect(() => { syncScrollbar(); });
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(syncScrollbar);
+    observer.observe(scroll);
+    const canvas = scroll.querySelector('.stream-renderer__virtual-canvas');
+    if (canvas) observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [syncScrollbar]);
+
+  function handleScrollbarKey(event: KeyboardEvent): void {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const page = scroll.clientHeight;
+    const delta = event.key === 'ArrowUp' ? -40
+      : event.key === 'ArrowDown' ? 40
+        : event.key === 'PageUp' ? -page
+          : event.key === 'PageDown' ? page : null;
+    if (delta === null && event.key !== 'Home' && event.key !== 'End') return;
+    handleUserScrollIntent(delta !== null ? delta > 0 : event.key === 'End');
+    scroll.scrollTop = event.key === 'Home' ? 0
+      : event.key === 'End' ? scroll.scrollHeight : scroll.scrollTop + (delta ?? 0);
+    syncScrollbar();
+    event.preventDefault();
+  }
+
+  function handleScrollbarWheel(event: WheelEvent): void {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    handleUserScrollIntent(event.deltaY > 0);
+    const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroll.clientHeight : 1;
+    scroll.scrollBy({ top: event.deltaY * scale, behavior: 'auto' });
+    event.preventDefault();
+  }
 
   function handleUserScrollKey(event: KeyboardEvent): void {
     const target = event.target;
@@ -953,13 +1050,14 @@ export function ChatSurface({
     previousScrollTopRef.current = el.scrollTop;
     setViewportHeight(nextViewportHeight);
     setDistanceFromBottom(nextDistance);
-    const nextFollowingTail = nativeScrollbarPointerRef.current === null
+    const nextFollowingTail = scrollbarDragRef.current === null
       && nextDistance <= FOLLOW_THRESHOLD_PX
       && (followingTail || (manualTowardTailRef.current && previous !== null && el.scrollTop > previous))
       && !transcript?.hasNewer
       && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
     setFollowingTail(nextFollowingTail);
-    if (!pendingReadingAnchorRef.current) captureReadingAnchor(nextFollowingTail);
+    if (!scrollbarDragRef.current && !pendingReadingAnchorRef.current) captureReadingAnchor(nextFollowingTail);
+    syncScrollbar();
   }
 
   function handleJumpToBottom(): void {
@@ -1313,9 +1411,9 @@ export function ChatSurface({
     <div className="stream-renderer">
       <div
         ref={setScrollNode}
-        className="stream-renderer__scroll"
+        id={scrollElementId}
+        className="stream-renderer__scroll stream-renderer__scroll--overlay-bar"
         onScroll={handleScroll}
-        onPointerDown={handleUserScrollPointer}
         onWheel={(event) => handleUserScrollIntent(event.deltaY > 0)}
         onTouchMove={() => handleUserScrollIntent()}
         onKeyDown={handleUserScrollKey}
@@ -1350,6 +1448,26 @@ export function ChatSurface({
             );
           })}
         </div>
+      </div>
+      <div
+        ref={scrollbarTrackRef}
+        className={`stream-renderer__scrollbar-track${scrollbarDragging ? ' stream-renderer__scrollbar-track--dragging' : ''}`}
+        onPointerDown={handleScrollbarPointerDown}
+        onWheel={handleScrollbarWheel}
+      >
+        <div
+          ref={scrollbarThumbRef}
+          className="stream-renderer__scrollbar-thumb"
+          role="scrollbar"
+          tabIndex={0}
+          aria-label="Conversation scroll position"
+          aria-controls={scrollElementId}
+          aria-orientation="vertical"
+          aria-valuemin={0}
+          aria-valuemax={1000}
+          aria-valuenow={0}
+          onKeyDown={handleScrollbarKey}
+        />
       </div>
       {historyFailure && (
         <div className="stream-renderer__history-error" role="alert">
