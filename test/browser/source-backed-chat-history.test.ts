@@ -391,7 +391,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       const row=[...document.querySelectorAll('.stream-renderer__virtual-row')]
         .filter(candidate=>Number(candidate.getAttribute('data-index'))<anchorIndex)
         .filter(candidate=>candidate.querySelector('.turn-group'))
-        .filter(candidate=>candidate.getBoundingClientRect().top<viewport.top)
+        .filter(candidate=>candidate.getBoundingClientRect().bottom<=viewport.top)
         .sort((left,right)=>Number(right.getAttribute('data-index'))-Number(left.getAttribute('data-index')))[0];
       if(!row) return null;
       const beforeHeight=row.getBoundingClientRect().height;
@@ -711,18 +711,22 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       sourceRefreshRestoredState.scrollHeight,
     ));
     expect(sourceRefreshExtentRatio).toBeLessThan(1.6);
-    const measurement = await scheduleDelayedGroupMeasurement(sourceRefreshAfterAnchor.id);
+    await wheel(-40);
+    const beforeUpwardMeasurement = await visibleAnchor(sourceRefreshAfterAnchor.id, true);
+    expect(beforeUpwardMeasurement, 'the reading block should remain visible during upward input').not.toBeNull();
+    const beforeUpwardState = await snapshot();
+    const measurement = await scheduleDelayedGroupMeasurement(beforeUpwardMeasurement!.id);
     expect(measurement, 'a mounted group above the reading anchor should be available for delayed measurement').not.toBeNull();
     const afterDelayedMeasurement = await waitFor('delayed group measurement preserves the visible message', async () => {
       const value = await snapshot();
-      const block = await visibleAnchor(sourceRefreshAfterAnchor.id, true);
-      if (!block || value.scrollHeight < sourceRefreshRestoredState.scrollHeight + 200) return null;
+      const block = await visibleAnchor(beforeUpwardMeasurement!.id, true);
+      if (!block || value.scrollHeight < beforeUpwardState.scrollHeight + 200) return null;
       return { value, block };
     }, browser, profile);
-    expect(afterDelayedMeasurement.block.id).toBe(sourceRefreshAfterAnchor.id);
-    expect(Math.abs(afterDelayedMeasurement.block.top - sourceRefreshAfterAnchor.top)).toBeLessThan(5);
-    expect(afterDelayedMeasurement.value.scrollTop).toBeGreaterThan(sourceRefreshRestoredState.scrollTop + 200);
-    expect(afterDelayedMeasurement.value.readingAnchor).toEqual(sourceRefreshRestoredState.readingAnchor);
+    expect(afterDelayedMeasurement.block.id).toBe(beforeUpwardMeasurement!.id);
+    expect(Math.abs(afterDelayedMeasurement.block.top - beforeUpwardMeasurement!.top)).toBeLessThan(5);
+    expect(afterDelayedMeasurement.value.scrollTop).toBeGreaterThan(beforeUpwardState.scrollTop + 200);
+    expect(afterDelayedMeasurement.value.readingAnchor).toEqual(beforeUpwardState.readingAnchor);
     expect(afterDelayedMeasurement.value.readingAnchor?.followingTail).toBe(false);
 
     const latestRequestStart = afterDelayedMeasurement.value.requests.length;

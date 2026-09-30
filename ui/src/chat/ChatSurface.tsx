@@ -327,6 +327,8 @@ export function ChatSurface({
   const previousScrollTopRef = useRef<number | null>(null);
   const scrollDirectionRef = useRef<'up' | 'down'>('up');
   const manualTowardTailRef = useRef(false);
+  const nativeScrollbarPointerRef = useRef<number | null>(null);
+  const [nativeScrollbarDrag, setNativeScrollbarDrag] = useState(false);
   const [measuredGroupSizesByScope, setMeasuredGroupSizesByScope] = useState<{
     scope: string;
     sizes: Readonly<Record<string, number>>;
@@ -519,18 +521,22 @@ export function ChatSurface({
     observeElementRect: observeChatElementRect,
     rangeExtractor: extractVirtualRows,
     overscan: 4,
-    anchorTo: 'end',
-    followOnAppend: followingTail ? 'auto' : false,
-    scrollEndThreshold: followingTail ? FOLLOW_THRESHOLD_PX : -1,
+    directDomUpdates: true,
+    anchorTo: nativeScrollbarDrag ? 'start' : 'end',
+    followOnAppend: followingTail && !nativeScrollbarDrag ? 'auto' : false,
+    scrollEndThreshold: followingTail && !nativeScrollbarDrag ? FOLLOW_THRESHOLD_PX : -1,
   });
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+    if (nativeScrollbarPointerRef.current !== null) return false;
+    const readingPoint = (instance.scrollElement?.scrollTop ?? instance.scrollOffset ?? 0)
+      + instance.scrollAdjustments;
+    // First measurements replace an estimate; later growth only moves the
+    // reading point when the entire old row is above it, even while moving up.
+    return instance.itemSizeCache.has(item.key)
+      ? item.end <= readingPoint
+      : item.start < readingPoint;
+  };
   const virtualItems = virtualizer.getVirtualItems();
-  useLayoutEffect(() => {
-    items.forEach((item, index) => {
-      if (item.kind === 'history') {
-        virtualizer.resizeItem(index, Math.max(1, Math.round(item.state.extentHeight)));
-      }
-    });
-  }, [items, virtualizer]);
   const estimatedUnmaterializedDistance = transcript
     ? 0
     : Math.max(0, unmaterializedAfterCount) * ESTIMATED_ROW_HEIGHT;
@@ -889,8 +895,40 @@ export function ChatSurface({
   }
 
   function handleUserScrollPointer(event: PointerEvent): void {
-    if (event.target === event.currentTarget) handleUserScrollIntent(true);
+    if (event.target !== event.currentTarget) return;
+    handleUserScrollIntent(true);
+    const el = scrollRef.current;
+    if (!el || event.pointerType !== 'mouse' || event.button !== 0) return;
+    const rect = el.getBoundingClientRect();
+    const gutterWidth = Math.max(el.offsetWidth - el.clientWidth, 12);
+    if (event.clientX < rect.right - gutterWidth) return;
+    nativeScrollbarPointerRef.current = event.pointerId;
+    setNativeScrollbarDrag(true);
+    setFollowingTail(false);
   }
+
+  useLayoutEffect(() => {
+    const release = (event: PointerEvent) => {
+      if (event.pointerId !== nativeScrollbarPointerRef.current) return;
+      nativeScrollbarPointerRef.current = null;
+      setNativeScrollbarDrag(false);
+    };
+    const releaseOnBlur = () => {
+      nativeScrollbarPointerRef.current = null;
+      setNativeScrollbarDrag(false);
+    };
+    window.addEventListener('pointerup', release, true);
+    window.addEventListener('pointercancel', release, true);
+    window.addEventListener('lostpointercapture', release, true);
+    window.addEventListener('blur', releaseOnBlur);
+    return () => {
+      window.removeEventListener('pointerup', release, true);
+      window.removeEventListener('pointercancel', release, true);
+      window.removeEventListener('lostpointercapture', release, true);
+      window.removeEventListener('blur', releaseOnBlur);
+      nativeScrollbarPointerRef.current = null;
+    };
+  }, []);
 
   function handleUserScrollKey(event: KeyboardEvent): void {
     const target = event.target;
@@ -915,7 +953,8 @@ export function ChatSurface({
     previousScrollTopRef.current = el.scrollTop;
     setViewportHeight(nextViewportHeight);
     setDistanceFromBottom(nextDistance);
-    const nextFollowingTail = nextDistance <= FOLLOW_THRESHOLD_PX
+    const nextFollowingTail = nativeScrollbarPointerRef.current === null
+      && nextDistance <= FOLLOW_THRESHOLD_PX
       && (followingTail || (manualTowardTailRef.current && previous !== null && el.scrollTop > previous))
       && !transcript?.hasNewer
       && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
@@ -1281,19 +1320,19 @@ export function ChatSurface({
         onTouchMove={() => handleUserScrollIntent()}
         onKeyDown={handleUserScrollKey}
       >
-        <div className="stream-renderer__virtual-canvas" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+        <div ref={virtualizer.containerRef} className="stream-renderer__virtual-canvas">
           {virtualItems.map((virtualItem) => {
             const item = items[virtualItem.index];
             if (!item) return null;
             return (
               <div
                 key={virtualItem.key}
-                ref={item.kind === 'history' ? undefined : virtualizer.measureElement}
+                ref={virtualizer.measureElement}
                 className="stream-renderer__virtual-row"
                 data-index={virtualItem.index}
                 data-virtual-key={item.id}
                 data-virtual-kind={item.kind}
-                style={{ top: 0, transform: `translateY(${virtualItem.start}px)` }}
+                style={{ top: 0 }}
               >
                 {item.kind === 'group' && renderGroup(item.group)}
                 {item.kind === 'history' && renderHistoryRow(item.state)}
