@@ -134,6 +134,7 @@ import { chatItemIdentityKey, mergeProviderLiveProjection } from '../../../src/c
 import type { ChatItem } from '../../../src/parsers/types';
 import {
   CHAT_DETAIL_PREVIEW_MIN_WIDTH,
+  useAppShell,
   useRegisterInitialRouteLoad,
   useRegisterAppRightSidebar,
 } from '../app-shell';
@@ -2101,9 +2102,10 @@ export function ConversationDetail({
     return controlPresentation.title;
   }, [control, controlPresentation, conversation, creationReceipt, latestDagUuid]);
 
-  const composerWritable = !isReadOnlyChild && !continueBusy && !submitIntent
+  const { active: chatViewActive } = useAppShell();
+  const composerWritable = chatViewActive && !isReadOnlyChild && !continueBusy && !submitIntent
     && !continueDisabledReason && controlPresentation?.composer === 'enabled';
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!composerWritable) return undefined;
     return registerWritableChatTarget(conversationId);
   }, [composerWritable, conversationId]);
