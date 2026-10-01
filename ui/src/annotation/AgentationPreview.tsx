@@ -6,7 +6,7 @@ import { captureSelection } from './capture';
 import './AgentationPreview.css';
 
 export function AgentationPreview(): JSX.Element {
-  const [status, setStatus] = useState('Send to Agent stages notes in the open Chat draft.');
+  const [status, setStatus] = useState<string | null>(null);
 
   const handleSubmit = async (_output: string, annotations: Annotation[]): Promise<void> => {
     if (!annotations.length) {
@@ -41,7 +41,7 @@ export function AgentationPreview(): JSX.Element {
   };
 
   return <>
-    <Agentation appName="Mandible" useHashLocation onSubmit={handleSubmit} />
-    <div className="agentation-preview-status" role="status" aria-live="polite">{status}</div>
+    <Agentation appName="Mandible" onSubmit={handleSubmit} />
+    {status && <div className="agentation-preview-status" role="status" aria-live="polite">{status}</div>}
   </>;
 }
