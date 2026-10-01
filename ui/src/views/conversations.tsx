@@ -74,6 +74,15 @@ import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigger';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { OverflowFade } from '../components/shared/OverflowFade';
+import { MAX_MESSAGE_ATTACHMENTS, type ChatAttachment } from '../../../src/conversation-control/attachments';
+import { attachmentContentUrl, importAttachment } from '../chat/attachmentApi';
+import {
+  addDraftAttachments, clearAcceptedDraft, getAttachmentDraftSnapshot, getConversationDraft,
+  getPendingSubmitIntent, registerWritableChatTarget, removeDraftAttachment,
+  savePendingSubmitIntent, setDraftText, subscribeAttachmentDrafts, type DraftSubmitIntent,
+} from '../chat/attachmentDrafts';
+import { browserSessionFetch } from '../client-auth-token';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { SessionControls } from '../components/console/SessionControls';
@@ -1344,18 +1353,19 @@ export function ConversationDetail({
       });
     }
   }, []);
-  const [continueDraft, setContinueDraft] = useState('');
+  const [attachmentStore, setAttachmentStore] = useState(getAttachmentDraftSnapshot);
+  useEffect(() => subscribeAttachmentDrafts(() => setAttachmentStore(getAttachmentDraftSnapshot())), []);
+  const continueDraft = attachmentStore.drafts[conversationId]?.text ?? '';
+  const draftAttachments = attachmentStore.drafts[conversationId]?.attachments ?? [];
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
+  const [attachmentPreviewText, setAttachmentPreviewText] = useState<string | null>(null);
+  const attachmentPickerRef = useRef<HTMLInputElement>(null);
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
   const [runOptionsError, setRunOptionsError] = useState<string | null>(null);
   const [controlFailure, setControlFailure] = useState<ChatFailureNoticeModel | null>(null);
-  const [submitIntent, setSubmitIntent] = useState<{
-    id: string;
-    message: string;
-    messageAnchor?: string;
-    runtimeOptions: ConversationRuntimeOptions;
-    state: 'waiting' | 'submitting' | 'failed' | 'uncertain';
-  } | null>(null);
+  const [submitIntent, setSubmitIntent] = useState<DraftSubmitIntent | null>(() => getPendingSubmitIntent(conversationId));
   const submittingIntentRef = useRef<string | null>(null);
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
@@ -1715,7 +1725,8 @@ export function ConversationDetail({
     setControl(null);
     setLiveProjection(null);
     pendingDurableReconciliationsRef.current = [];
-    setSubmitIntent(null);
+    setSubmitIntent(getPendingSubmitIntent(conversationId));
+    setContinueBusy(false);
     submittingIntentRef.current = null;
     const cancelControl = refreshControl();
     let active = true;
@@ -2090,6 +2101,51 @@ export function ConversationDetail({
     return controlPresentation.title;
   }, [control, controlPresentation, conversation, creationReceipt, latestDagUuid]);
 
+  const composerWritable = !isReadOnlyChild && !continueBusy && !submitIntent
+    && !continueDisabledReason && controlPresentation?.composer === 'enabled';
+  useEffect(() => {
+    if (!composerWritable) return undefined;
+    return registerWritableChatTarget(conversationId);
+  }, [composerWritable, conversationId]);
+
+  const importFiles = useCallback(async (files: FileList | File[]) => {
+    if (!composerWritable || attachmentBusy) return;
+    if (getConversationDraft(conversationId).attachments.length + files.length > MAX_MESSAGE_ATTACHMENTS) {
+      setContinueError(`A message can have at most ${MAX_MESSAGE_ATTACHMENTS} attachments.`);
+      return;
+    }
+    setAttachmentBusy(true);
+    setContinueError(null);
+    try {
+      for (const file of Array.from(files)) {
+        const stored = await importAttachment(file);
+        const attachment: ChatAttachment = {
+          kind: stored.media_type.startsWith('image/') ? 'image' : 'file', file: stored,
+        };
+        const result = addDraftAttachments(conversationId, [attachment]);
+        if (!result.ok) throw new Error(result.error);
+      }
+    } catch (error) {
+      setContinueError(error instanceof Error ? error.message : String(error));
+    } finally { setAttachmentBusy(false); }
+  }, [attachmentBusy, composerWritable, conversationId]);
+
+  useEffect(() => {
+    if (!attachmentPreview || attachmentPreview.kind === 'annotation' || attachmentPreview.kind === 'image') {
+      setAttachmentPreviewText(null);
+      return undefined;
+    }
+    let active = true;
+    void browserSessionFetch(attachmentContentUrl(attachmentPreview.file))
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Preview unavailable (${response.status}).`);
+        return response.text();
+      })
+      .then((content) => { if (active) setAttachmentPreviewText(content.slice(0, 20000)); })
+      .catch((error) => { if (active) setAttachmentPreviewText(error instanceof Error ? error.message : String(error)); });
+    return () => { active = false; };
+  }, [attachmentPreview]);
+
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
   const modelRunOption = sessionRunOptions?.options.find((option) => option.id === 'model');
   const thinkingRunOption = sessionRunOptions?.options.find((option) => option.category === 'thought_level');
@@ -2157,7 +2213,10 @@ export function ConversationDetail({
     if (!control || submittingIntentRef.current === intent.id) return;
     if (creationReceipt?.state === 'starting') return;
     if (!['live-send', 'live-steer', 'owned-queue', 'provider-session-resume', 'message-anchor-resume'].includes(control.capability.kind)) return;
+    const stillSelected = () => selectionRef.current.conversationId === conversationId;
     submittingIntentRef.current = intent.id;
+    const persisted = savePendingSubmitIntent(conversationId, { ...intent, state: 'submitting' });
+    if (!persisted.ok) { submittingIntentRef.current = null; setContinueError(persisted.error); return; }
     setSubmitIntent((current) => current?.id === intent.id ? { ...current, state: 'submitting' } : current);
     setContinueBusy(true);
     setContinueError(null);
@@ -2169,15 +2228,19 @@ export function ConversationDetail({
         intent.messageAnchor,
         intent.runtimeOptions,
         intent.id,
+        intent.attachments,
       );
-      setControl(result.snapshot);
-      setSubmitIntent((current) => current?.id === intent.id ? null : current);
+      if (stillSelected()) setControl(result.snapshot);
+      const cleared = clearAcceptedDraft(conversationId, { text: intent.draftText, attachments: intent.attachments });
+      if (stillSelected()) {
+        if (!cleared.ok) setContinueError(`Message accepted, but the local draft could not be cleared: ${cleared.error}`);
+        setSubmitIntent((current) => current?.id === intent.id ? null : current);
+      }
     } catch (err) {
       const apiError = err as Partial<ConversationControlApiError>;
-      if (apiError.snapshot) setControl(apiError.snapshot);
+      if (apiError.snapshot && stillSelected()) setControl(apiError.snapshot);
       const uncertain = apiError.controlError?.kind === 'delivery-uncertain';
       if (!uncertain) {
-        setContinueDraft(intent.message);
         const provider = conversation?.source ?? creationReceipt?.request.provider;
         const providerSessionId = conversation?.session_id
           ?? creationReceipt?.provider_session_id
@@ -2185,7 +2248,7 @@ export function ConversationDetail({
         const optimisticIdentity = provider && providerSessionId
           ? chatItemIdentityKey(optimisticPromptItem(intent, provider, providerSessionId))
           : null;
-        if (providerSessionId && optimisticIdentity) {
+        if (providerSessionId && optimisticIdentity && stillSelected()) {
           setLiveProjection((current) => mergeProviderLiveProjection(current, {
             kind: 'durable-reconciliation',
             conversation_id: conversationId,
@@ -2198,14 +2261,20 @@ export function ConversationDetail({
           }));
         }
       }
-      setSubmitIntent((current) => current?.id === intent.id
+      if (stillSelected()) setSubmitIntent((current) => current?.id === intent.id
         ? { ...current, state: uncertain ? 'uncertain' : 'failed' }
         : current);
-      if (apiError.controlError) setControlFailure(chatControlFailureNotice(apiError.controlError));
-      else setContinueError(err instanceof Error ? err.message : String(err));
+      const savedFailure = savePendingSubmitIntent(conversationId, { ...intent, state: uncertain ? 'uncertain' : 'failed' });
+      if (stillSelected()) {
+        if (!savedFailure.ok) setContinueError(`Could not retain retry state: ${savedFailure.error}`);
+        if (apiError.controlError) setControlFailure(chatControlFailureNotice(apiError.controlError));
+        else setContinueError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      submittingIntentRef.current = null;
-      setContinueBusy(false);
+      if (stillSelected()) {
+        submittingIntentRef.current = null;
+        setContinueBusy(false);
+      }
     }
   }, [control, conversation?.session_id, conversation?.source, conversationId, creationReceipt?.native_session_id,
     creationReceipt?.provider_session_id, creationReceipt?.request.provider, creationReceipt?.state]);
@@ -2217,16 +2286,16 @@ export function ConversationDetail({
   const handleContinueSubmit = useCallback((event: JSX.TargetedEvent<HTMLFormElement, Event>) => {
     event.preventDefault();
     const prompt = continueDraft.trim();
-    if (!prompt || submitIntent) return;
+    if ((!prompt && !draftAttachments.length) || submitIntent) return;
     if (continueDisabledReason && creationReceipt?.state !== 'starting') {
       setContinueError(continueDisabledReason);
       return;
     }
-    setContinueError(null);
-    setControlFailure(null);
     const intent = {
       id: crypto.randomUUID(),
       message: prompt,
+      draftText: continueDraft,
+      attachments: structuredClone(draftAttachments),
       ...(control?.capability.kind === 'message-anchor-resume' && latestDagUuid ? { messageAnchor: latestDagUuid } : {}),
       runtimeOptions: {
         ...(composerModel ? { model: composerModel } : {}),
@@ -2235,10 +2304,13 @@ export function ConversationDetail({
       },
       state: 'waiting' as const,
     };
-    setContinueDraft('');
+    const savedIntent = savePendingSubmitIntent(conversationId, intent);
+    if (!savedIntent.ok) { setContinueError(savedIntent.error); return; }
+    setContinueError(null);
+    setControlFailure(null);
     projectPendingIntent(intent);
     setSubmitIntent(intent);
-  }, [composerEffort, composerModel, composerPermission, continueDisabledReason, continueDraft, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent]);
+  }, [composerEffort, composerModel, composerPermission, continueDisabledReason, continueDraft, draftAttachments, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent, conversationId]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter') return;
@@ -2246,6 +2318,15 @@ export function ConversationDetail({
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
   }, []);
+
+  const retrySubmitIntent = useCallback(() => {
+    if (!submitIntent || !['failed', 'uncertain'].includes(submitIntent.state)) return;
+    const waiting = { ...submitIntent, state: 'waiting' as const };
+    const result = savePendingSubmitIntent(conversationId, waiting);
+    if (!result.ok) { setContinueError(result.error); return; }
+    projectPendingIntent(waiting);
+    setSubmitIntent(waiting);
+  }, [conversationId, projectPendingIntent, submitIntent]);
 
   const handleComposerModelChange = useCallback(async (value: string) => {
     setComposerModel(value);
@@ -2520,12 +2601,32 @@ export function ConversationDetail({
       ) : ((controlPresentation && controlPresentation.composer !== 'hidden')
         || creationReceipt?.state === 'starting'
         || (creationReceipt?.state === 'ready' && !controlPresentation)) ? (
-      <div className="conv-compose" data-detail-pane-overlay-visual>
+      <div className="conv-compose" data-detail-pane-overlay-visual
+        onDragOver={(event) => { if (composerWritable && event.dataTransfer?.types.includes('Files')) event.preventDefault(); }}
+        onDrop={(event) => { if (!composerWritable) return; event.preventDefault(); if (event.dataTransfer?.files) void importFiles(event.dataTransfer.files); }}
+      >
+        {draftAttachments.length > 0 && (
+          <OverflowFade direction="horizontal" className="conv-compose__attachment-overflow">
+            <div className="conv-compose__attachments" aria-label="Draft attachments">
+              {draftAttachments.map((attachment, index) => {
+                const label = attachment.kind === 'annotation' ? `Annotation ${attachment.ordinal}` : attachment.file.name;
+                return <div className="conv-compose__attachment" key={`${attachment.kind}:${attachment.kind === 'annotation' ? attachment.id : attachment.file.id}:${index}`}>
+                  <button type="button" className="conv-compose__attachment-body" title={label} onClick={() => setAttachmentPreview(attachment)}>
+                    <span aria-hidden="true">{attachment.kind === 'annotation' ? '✎' : attachment.kind === 'image' ? '▧' : '▤'}</span>
+                    <span className="conv-compose__attachment-name">{label}</span>
+                  </button>
+                  <button type="button" className="conv-compose__attachment-remove" aria-label={`Remove ${label}`} title={`Remove ${label}`}
+                    disabled={Boolean(submitIntent)} onClick={() => { const result = removeDraftAttachment(conversationId, index); if (!result.ok) setContinueError(result.error); }}>×</button>
+                </div>;
+              })}
+            </div>
+          </OverflowFade>
+        )}
         <form id={`conversation-compose-${conversation.id}`} className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
             className="conv-compose__input"
             value={continueDraft}
-            onInput={(event) => setContinueDraft(event.currentTarget.value)}
+            onInput={(event) => { const result = setDraftText(conversationId, event.currentTarget.value); if (!result.ok) setContinueError(result.error); }}
             onKeyDown={handleComposerKeyDown}
             placeholder="Message..."
             disabled={continueBusy
@@ -2549,6 +2650,11 @@ export function ConversationDetail({
           </div>
         )}
         <div className="conv-compose__controls">
+          <input ref={attachmentPickerRef} type="file" multiple hidden
+            accept="text/*,image/png,image/jpeg,image/webp,image/gif,.js,.jsx,.ts,.tsx,.json,.yaml,.yml,.toml,.py,.rs,.go,.sh,.sql,.md,.txt"
+            onChange={(event) => { void importFiles(event.currentTarget.files ?? []); event.currentTarget.value = ''; }} />
+          <button type="button" className="conv-compose__add-attachment" aria-label="Add attachments" title="Add attachments"
+            disabled={!composerWritable || attachmentBusy} onClick={() => attachmentPickerRef.current?.click()}>+</button>
           <div
             ref={runOptionsGeometry.containerRef}
             className={`conv-compose__runtime${runOptionsGeometry.overflowed ? ' conv-compose__runtime--run-options-overflow' : ''}`}
@@ -2585,7 +2691,7 @@ export function ConversationDetail({
                 type="submit"
                 form={`conversation-compose-${conversation.id}`}
                 className="chat-circle-action conv-compose__send"
-                disabled={continueBusy || Boolean(submitIntent) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || !continueDraft.trim()}
+                disabled={continueBusy || Boolean(submitIntent) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || (!continueDraft.trim() && !draftAttachments.length)}
                 title={controlPresentation?.submitLabel ?? 'Send'}
                 aria-label={controlPresentation?.submitLabel ?? 'Send'}
               >
@@ -2611,6 +2717,22 @@ export function ConversationDetail({
             {continueDisabledReason}
           </div>
         )}
+        {continueError && <div className="conv-compose__status conv-compose__status--error" role="alert">{continueError}</div>}
+        {(submitIntent?.state === 'uncertain' || (submitIntent?.state === 'failed' && !controlFailure?.retryable)) && (
+          <button type="button" className="btn btn--ghost btn--sm" onClick={retrySubmitIntent}>
+            Retry message
+          </button>
+        )}
+        <DetailPaneModal open={Boolean(attachmentPreview)} onClose={() => setAttachmentPreview(null)}
+          titleId="chat-attachment-preview-title" title={attachmentPreview?.kind === 'annotation' ? `Annotation ${attachmentPreview.ordinal}` : attachmentPreview?.file.name ?? 'Attachment'}
+          closeLabel="Close attachment preview" panelClassName="conv-compose__preview">
+          {attachmentPreview?.kind === 'annotation' ? <>
+            <p>{attachmentPreview.text}</p>
+            <p>{attachmentPreview.target.url}</p>
+            {attachmentPreview.screenshot && <img src={attachmentContentUrl(attachmentPreview.screenshot)} alt={`Screenshot for annotation ${attachmentPreview.ordinal}`} />}
+          </> : attachmentPreview?.kind === 'image' ? <img src={attachmentContentUrl(attachmentPreview.file)} alt={attachmentPreview.file.name} />
+            : <pre>{attachmentPreviewText ?? 'Loading preview…'}</pre>}
+        </DetailPaneModal>
       </div>
       ) : null;
 
@@ -2618,11 +2740,7 @@ export function ConversationDetail({
     <ChatFailureNotice
       failure={controlFailure}
       busy={continueBusy}
-      onRetry={controlFailure.retryable && submitIntent?.state === 'failed' ? () => {
-        setContinueDraft('');
-        projectPendingIntent(submitIntent);
-        setSubmitIntent({ ...submitIntent, state: 'waiting' });
-      } : undefined}
+      onRetry={controlFailure.retryable && submitIntent?.state === 'failed' ? retrySubmitIntent : undefined}
     />
   ) : null;
 

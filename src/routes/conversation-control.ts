@@ -1,4 +1,5 @@
 import { operatorOnlyManagedSessionRoute } from "../client-auth/authz.js";
+import { AttachmentValidationError, ChatAttachmentStore } from "../conversation-control/attachment-store.js";
 import type { ConversationControlService } from "../conversation-control/service.js";
 import type { ConversationControlError, ConversationSubmitRequest } from "../conversation-control/types.js";
 import type { Db } from "../db.js";
@@ -51,6 +52,7 @@ export function registerConversationControlRoutes(
   control: ConversationControlService,
   options: { db?: Db; instance?: InstanceInfo } = {},
 ): void {
+  const attachmentStore = options.db ? new ChatAttachmentStore(options.db) : null;
   const previewControlAllowed = async (conversationId: string, generation: number): Promise<boolean> => {
     if (options.instance?.role !== "preview") return true;
     if (!options.db || options.instance.role !== "preview") return false;
@@ -67,6 +69,35 @@ export function registerConversationControlRoutes(
       message: "This preview can control only a Chat created and still owned by this preview.",
     });
   };
+
+  server.post("/api/chat-attachments", operatorOnlyManagedSessionRoute((req, res) => {
+    if (!attachmentStore) return sendJson(res, 503, { error: "attachment_store_unavailable" });
+    const body = bodyRecord(req);
+    try {
+      const file = attachmentStore.put(body as { name: string; media_type: string; data_base64: string });
+      sendJson(res, 201, file);
+    } catch (error) {
+      if (!(error instanceof AttachmentValidationError)) throw error;
+      sendJson(res, 400, { error: "invalid_attachment", message: error.message });
+    }
+  }), { fileRpc: "deny" });
+
+  server.get("/api/chat-attachments/:id/content", operatorOnlyManagedSessionRoute((req, res) => {
+    if (!attachmentStore) return sendJson(res, 503, { error: "attachment_store_unavailable" });
+    const file = attachmentStore.get(req.params.id);
+    if (!file) return sendJson(res, 404, { error: "attachment_not_found" });
+    res.binary?.(attachmentStore.content(file), file.media_type);
+  }), { fileRpc: "deny" });
+
+  server.get("/api/conversations/:id/control/attachments", operatorOnlyManagedSessionRoute((req, res) => {
+    if (!options.db) return sendJson(res, 503, { error: "attachment_store_unavailable" });
+    const snapshot = control.getSnapshot(req.params.id);
+    if (!snapshot.ok) return sendJson(res, statusFor(snapshot.error), snapshot);
+    const rows = options.db.prepare(`SELECT id AS delivery_id, turn_id, attachments_json, state, created_at
+      FROM conversation_control_outbox WHERE conversation_id = ? AND attachments_json != '[]' ORDER BY created_at, id`)
+      .all(req.params.id) as { delivery_id: string; turn_id: string; attachments_json: string; state: string; created_at: number }[];
+    sendJson(res, 200, rows.map(({ attachments_json, ...row }) => ({ ...row, attachments: JSON.parse(attachments_json) })));
+  }), { fileRpc: "deny" });
 
   server.get("/api/conversations/:id/control", (req, res) => {
     const result = control.getSnapshot(req.params.id);
@@ -100,6 +131,7 @@ export function registerConversationControlRoutes(
       expected_revision: Number(body.expected_revision),
       expected_generation: Number(body.expected_generation),
       message: typeof body.message === "string" ? body.message : "",
+      attachments: body.attachments as ConversationSubmitRequest["attachments"],
       message_anchor: typeof body.message_anchor === "string" ? body.message_anchor : undefined,
       runtime_options: parsedRuntimeOptions,
       idempotency_key: typeof body.idempotency_key === "string" ? body.idempotency_key : "",

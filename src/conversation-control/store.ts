@@ -194,6 +194,7 @@ export class ConversationControlStore {
   prepareSubmission(request: ConversationSubmitRequest, capabilities: ControllerAdapterCapabilities, adapterId: string): Result<PreparedSubmission, ConversationControlError> {
     const transaction = this.db.transaction((): Result<PreparedSubmission, ConversationControlError> => {
       const runtimeOptionsJson = JSON.stringify(request.runtime_options ?? {});
+      const attachmentsJson = JSON.stringify(request.attachments ?? []);
       const boundaryResult = this.getBoundary(request.conversation_id);
       if (!boundaryResult.ok) return boundaryResult;
       const boundary = boundaryResult.value;
@@ -205,7 +206,8 @@ export class ConversationControlStore {
       if (existing) {
         if (existing.message !== request.message || existing.operation !== request.operation
             || (existing.message_anchor ?? null) !== (request.message_anchor ?? null)
-            || String(existing.runtime_options_json ?? "{}") !== runtimeOptionsJson) {
+            || String(existing.runtime_options_json ?? "{}") !== runtimeOptionsJson
+            || String(existing.attachments_json ?? "[]") !== attachmentsJson) {
           return { ok: false, error: { kind: "invalid-request", field: "idempotency_key", message: "Idempotency key was already used for a different submission" } };
         }
         const current = this.row(request.conversation_id)!;
@@ -277,11 +279,11 @@ export class ConversationControlStore {
         `).run(revision, turnId, deliveryId, now, request.conversation_id, generation);
       }
       this.db.prepare(`INSERT INTO conversation_control_outbox (
-        id, conversation_id, generation, turn_id, operation, message, message_anchor, runtime_options_json,
+        id, conversation_id, generation, turn_id, operation, message, message_anchor, runtime_options_json, attachments_json,
         idempotency_key, state, attempts, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
       `).run(deliveryId, request.conversation_id, generation, turnId, request.operation, request.message,
-        request.message_anchor ?? null, runtimeOptionsJson, request.idempotency_key, now, now);
+        request.message_anchor ?? null, runtimeOptionsJson, attachmentsJson, request.idempotency_key, now, now);
       this.journal(request.conversation_id, revision, generation, "turn-queued", { turn_id: turnId, delivery_id: deliveryId, operation: request.operation }, now);
       const current = this.row(request.conversation_id)!;
       return {
@@ -737,6 +739,8 @@ export class ConversationControlStore {
       turn_id: String(row.turn_id),
       operation: row.operation as ConversationControlOperation,
       message: String(row.message),
+      attachments: JSON.parse(String(row.attachments_json ?? "[]")) as ConversationOutboxItem["attachments"],
+      attachment_db_path: this.db.name,
       message_anchor: row.message_anchor == null ? null : String(row.message_anchor),
       runtime_options: parseObject<ConversationOutboxItem["runtime_options"]>(
         row.runtime_options_json == null ? "{}" : String(row.runtime_options_json),

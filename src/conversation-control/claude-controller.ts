@@ -16,6 +16,7 @@ import type {
 import { AdapterLifecycle, AdapterProviderEvents, adapterFailure, type AdapterLifecycleEvent } from "./provider-adapter.js";
 import { CLAUDE_SDK_MANAGED_PROFILE } from "./provider-capabilities.js";
 import { chatItemIdentityKey } from "./provider-live.js";
+import { claudeAttachmentContent } from "./attachment-delivery.js";
 import { StructuredJsonProcess, type StructuredProcessExit, type StructuredProcessSpawner } from "./structured-process.js";
 import type {
   ConversationControlError,
@@ -144,6 +145,13 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       return { ok: false, error: adapterFailure(this.id, "unsupported-operation", item.operation) };
     }
 
+    let content: ReturnType<typeof claudeAttachmentContent>;
+    try {
+      content = claudeAttachmentContent(item.message, item.attachments ?? [], item.attachment_db_path);
+    } catch (error) {
+      return { ok: false, error: adapterFailure(this.id, "attachment-custody-failed", error) };
+    }
+
     const acknowledged = new Promise<ProviderDeliveryReceipt>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (controller.value.pending?.item.id === item.id) controller.value.pending = null;
@@ -156,7 +164,7 @@ export class ClaudeStreamControllerAdapter implements ConversationControllerAdap
       controller.value.process.write({
         type: "user",
         uuid: item.idempotency_key,
-        message: { role: "user", content: [{ type: "text", text: item.message }] },
+        message: { role: "user", content },
         parent_tool_use_id: null,
       });
       const receipt = await acknowledged;
