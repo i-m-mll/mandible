@@ -1,0 +1,14 @@
+.agentation-preview-status {
+  position: fixed;
+  z-index: 99999;
+  left: 1.25rem;
+  bottom: 1.25rem;
+  max-width: min(24rem, calc(100vw - 2.5rem));
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  background: #1a1a1a;
+  color: #fff;
+  font: 0.75rem/1.4 system-ui, sans-serif;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+}
