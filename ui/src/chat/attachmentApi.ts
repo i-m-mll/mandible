@@ -1,4 +1,4 @@
-import type { StoredAttachmentFile } from '../../../src/conversation-control/attachments';
+import { MAX_ATTACHMENT_BYTES, type StoredAttachmentFile } from '../../../src/conversation-control/attachments';
 import { browserSessionFetch } from '../client-auth-token';
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -15,7 +15,7 @@ function supportedType(file: File): boolean {
 
 export async function importAttachment(file: File): Promise<StoredAttachmentFile> {
   if (!supportedType(file)) throw new Error(`${file.name}: choose a text/code file or PNG, JPEG, WebP, or GIF image.`);
-  if (file.size > 5 * 1024 * 1024) throw new Error(`${file.name}: files must be 5 MiB or smaller.`);
+  if (file.size > MAX_ATTACHMENT_BYTES) throw new Error(`${file.name}: files must be 5 MiB or smaller.`);
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = '';
   for (let offset = 0; offset < bytes.length; offset += 0x8000) {

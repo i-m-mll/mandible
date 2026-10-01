@@ -1,4 +1,4 @@
-import type { ChatAttachment } from '../../../src/conversation-control/attachments';
+import { MAX_MESSAGE_ATTACHMENTS, type ChatAttachment } from '../../../src/conversation-control/attachments';
 import type { ConversationRuntimeOptions } from '../api';
 
 type Annotation = Extract<ChatAttachment, { kind: 'annotation' }>;
@@ -65,6 +65,7 @@ export function addDraftAttachments(conversationId: string, attachments: ChatAtt
   if (!attachments.length) return { ok: true, value: undefined };
   const old = current();
   const draft = getConversationDraft(conversationId);
+  if (draft.attachments.length + attachments.length > MAX_MESSAGE_ATTACHMENTS) return { ok: false, error: `A message can have at most ${MAX_MESSAGE_ATTACHMENTS} attachments.` };
   return update({ ...old, drafts: { ...old.drafts, [conversationId]: {
     ...draft, attachments: [...draft.attachments, ...attachments],
   } } }, undefined);
@@ -125,6 +126,7 @@ export function pasteAnnotationsToVisibleChat(): AttachmentDraftResult<boolean> 
   const old = current();
   if (!target || !old.annotations.length) return { ok: true, value: false };
   const draft = getConversationDraft(target);
+  if (draft.attachments.length + old.annotations.length > MAX_MESSAGE_ATTACHMENTS) return { ok: false, error: `A message can have at most ${MAX_MESSAGE_ATTACHMENTS} attachments.` };
   return update({ ...old, annotations: [], lastCleared: old.annotations, drafts: {
     ...old.drafts,
     [target]: { ...draft, attachments: [...draft.attachments, ...old.annotations.map((entry) => structuredClone(entry))] },
