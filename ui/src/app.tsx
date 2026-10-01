@@ -157,6 +157,7 @@ import {
 import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
 import { queryClient } from './query/client';
 import { applyConversationSse } from './query/conversationSse';
+import { AgentationPreview } from './annotation/AgentationPreview';
 import type { ConversationAppendPayload } from './query/conversationData';
 import {
   APP_RAIL_ORDER_SETTING_KEY,
@@ -3130,6 +3131,7 @@ function App(): JSX.Element {
           ) : null}
         </div>
       </AppShellProvider>
+      <AgentationPreview />
     </>
   );
 }
