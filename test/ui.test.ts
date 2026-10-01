@@ -2311,7 +2311,11 @@ describe('app shell', () => {
   });
 
   it('resolves an empty hash to the first navigation destination on mount', async () => {
-    stubAppShellFetch();
+    window.__MANDIBLE_BOOTSTRAP__ = { instance: mainInstance };
+    stubRailSettingsFetch(JSON.stringify({
+      version: 1,
+      groups: { primary: ['issues', 'console'], secondary: [] },
+    }));
     stubEventSource();
     window.history.replaceState(null, '', '');
     expect(window.location.hash).toBe('');
@@ -2320,8 +2324,8 @@ describe('app shell', () => {
 
     const nav = await screen.findByLabelText('Main navigation');
     await waitFor(() => {
-      const firstDestination = within(nav).getAllByRole('link')[0];
-      expect(firstDestination.getAttribute('aria-current')).toBe('page');
+      expect(within(nav).getByLabelText('Issues').getAttribute('aria-current')).toBe('page');
+      expect(window.location.hash).toBe('#/issues');
     });
     const graphNav = within(nav).getByLabelText('Graph');
     expect(graphNav.getAttribute('aria-current')).toBeNull();
