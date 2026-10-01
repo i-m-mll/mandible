@@ -300,13 +300,6 @@
       ],
       "syntax": "mandible issue-file write [--cwd <path>] <issue>..."
     },
-    "commit.trailer": {
-      "route": [
-        "commit",
-        "trailer"
-      ],
-      "syntax": "mandible commit trailer [issue...]"
-    },
     "session.link-issue": {
       "route": [
         "session",

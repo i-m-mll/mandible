@@ -379,28 +379,22 @@ describe("ledger mechanism CLI client", () => {
     }
   });
 
-  it("supports sourceable issue-file helpers and trailer rendering", async () => {
+  it("supports sourceable issue-file helpers", async () => {
     const repo = makeGitRepo();
     const result = await run(["issue-file", "write", "abc123", "def456"], 9, repo);
     expect(result.status).toBe(0);
 
     fs.appendFileSync(path.join(repo, ".issue"), "\n# comment\n\n", "utf8");
     expect((await run(["issue-file", "read"], 9, repo)).stdout).toBe("abc123\ndef456\n");
-    expect((await run(["commit", "trailer"], 9, repo)).stdout).toBe(
-      "Mandible-Issue: abc123\nMandible-Issue: def456\n",
-    );
-    expect((await run(["commit", "trailer", "xyz789"], 9, repo)).stdout).toBe("Mandible-Issue: xyz789\n");
-
     const sourced = await runBash(
       [
         `source ${JSON.stringify(path.join(process.cwd(), "cli", "ledger-client.sh"))}`,
         "mandible_issue_file_read",
-        "mandible_commit_trailers extra123",
       ].join("\n"),
       repo,
     );
     expect(sourced.status).toBe(0);
-    expect(sourced.stdout).toBe("abc123\ndef456\nMandible-Issue: extra123\n");
+    expect(sourced.stdout).toBe("abc123\ndef456\n");
   });
 
   it("makes daemon-unreachable operations non-fatal when graceful is requested", async () => {
@@ -411,7 +405,7 @@ describe("ledger mechanism CLI client", () => {
         "printf done",
       ].join("\n"),
       process.cwd(),
-      { MANDIBLE_PORT: "9" },
+      { MANDIBLE_PORT: "9", MANDIBLE_BASE: "http://127.0.0.1:9" },
     );
 
     expect(result.status).toBe(0);

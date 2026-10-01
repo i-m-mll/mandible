@@ -65,8 +65,8 @@ Key optional fields:
 - `session_id` — Links the request to the agent session that submitted it.
 - `repo`, `base_branch`, `head_branch` — Branch metadata for merge requests.
 - `diff_summary` — Unified diff content; merge submission replaces it with the server capture.
-- `commit_message` — The proposed merge commit message. `Mandible-Issue:` trailers are work-tracking references, not closure signals.
-- `canonical_message` — Declares `commit_message` to be the agent-authored canonical change message. The daemon validates the machine-owned envelope (reference-only `Mandible-Issue:` trailer set matching the structured issue fields, a `Verification:` section matching the `verification` field, no `Closes-Mandible-Issue:` trailer, no `#`-leading lines), canonicalizes the bytes, stores them back, and records the SHA-256 of those exact bytes in `commit_message_digest`; `mandible auth merge` then commits exactly those bytes. Both are immutable once the request leaves `pending`; an explicit `canonical_message: false` demotes the message back to free-form review text while still pending.
+- `commit_message` — The proposed merge commit message. Its prose does not establish issue links or closure intent.
+- `canonical_message` — Declares `commit_message` to be the agent-authored canonical change message. The daemon validates the machine-owned envelope (a `Verification:` section matching the `verification` field, no `#`-leading lines), canonicalizes the bytes, stores them back, and records the SHA-256 of those exact bytes in `commit_message_digest`; `mandible auth merge` then commits exactly those bytes. Both are immutable once the request leaves `pending`; an explicit `canonical_message: false` demotes the message back to free-form review text while still pending.
 - `verification` — The `Verification:` section text. Required whenever `canonical_message` is true.
 - `spec_content` — A specification explaining the intent and design decisions.
 - `issue_references` — Issue IDs attached for review context/provenance; these do not close on merge.
@@ -122,7 +122,7 @@ rebased or consolidated onto an integration branch.
 
 ### Mandible Issue Reference Verification
 
-For merge requests, the queue verifies that every non-merge commit in the branch range contains a `Mandible-Issue:` trailer linking it to an issue. Commits missing this reference cause the submission to be rejected with a descriptive error listing the offending commits. This enforces the work-tracking convention that every unit of work has an associated issue. `Mandible-Issue:` trailers are reference-only; closure requires `issue_closures` or an explicit `Closes-Mandible-Issue:` trailer.
+Merge requests use structured issue references and explicit issue-closure actions. Commit messages are not inspected for issue metadata.
 
 ## Reviewing and Acting on Requests
 

@@ -47,7 +47,7 @@ export type SpaceExportDialogProps = {
   /** Explicit project-checkout id; defaults to the Space's project checkout. */
   repoId?: string;
   /**
-   * Issue refs for the docs-commit `Mandible-Issue:` trailer. At least one is
+   * Issue refs for ledger links to the exported commit. At least one is
    * required for a tracked export's linked commit (custody-doc §3 step 3).
    */
   issues?: string[];

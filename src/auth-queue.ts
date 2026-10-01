@@ -103,8 +103,6 @@ import {
   authSnapshotDigest,
   listAuthLifecycleEvents,
 } from "./auth-lifecycle.js";
-// Issue 1624ee9 — shared Mandible-Issue trailer parsing.
-import { extractMandibleIssueRefs } from "./utils/bug-refs.js";
 import type {
   AuthConvergence,
   AuthDependencyProjection,
@@ -1751,8 +1749,6 @@ export class AuthQueue {
       payload.canonical_message === true,
       {
         verification: payload.verification,
-        issueReferences: payload.issue_references,
-        issueClosures: payload.issue_closures ?? payload.issues,
       },
     );
     const request: AuthRequest = {
@@ -1788,7 +1784,7 @@ export class AuthQueue {
       post_merge_handoff: payload.post_merge_handoff ?? null,
       issue_references: payload.issue_references ?? null,
       issue_closures: payload.issue_closures ?? payload.issues ?? null,
-      issue_ids: extractIssueIdsFromCommitMessage(canonical.message),
+      issue_ids: null,
       issues: payload.issues ?? null,
       depends_on_id: payload.depends_on_id ?? null,
       execution_mode: payload.execution_mode ?? "daemon",
@@ -2950,16 +2946,6 @@ export class AuthQueue {
         declaredCanonical && (nextRaw ?? "").length > 0,
         {
           verification: payload.verification as string | null | undefined,
-          issueReferences:
-            "issue_references" in payload
-              ? (payload.issue_references as string[] | null)
-              : request.issue_references,
-          issueClosures:
-            "issue_closures" in payload
-              ? (payload.issue_closures as string[] | null)
-              : "issues" in payload
-                ? (payload.issues as string[] | null)
-                : request.issue_closures,
         },
       );
       updates.push("commit_message = ?");
@@ -5170,7 +5156,6 @@ export class AuthQueue {
     const preserve = /(^|\s)--preserve-head-branch(?:\s|$)/.test(request.command) ? "1" : "0";
     const issueIds = [...new Set([
       ...(request.issue_closures ?? []),
-      ...(request.issue_ids ?? []),
     ])].join("\n");
     const result = await execFileAsync(
       "bash",
@@ -6845,7 +6830,7 @@ export class AuthQueue {
       }
     }
 
-    // 4. Match by explicit close-on-merge issue IDs. Mandible-Issue trailers and
+    // 4. Match by explicit close-on-merge issue IDs. Commit messages and
     // issue_references are provenance links, not completion signals.
     const allIssueIds = [...explicitClosureIssueRefs];
 
@@ -7584,13 +7569,6 @@ function stringPayload(payload: Record<string, unknown>, key: string): string {
   return value;
 }
 
-// Issue 1624ee9 — trailer grammar lives in utils/bug-refs; this wrapper keeps
-// the call site's "no trailers means null" contract.
-function extractIssueIdsFromCommitMessage(commitMessage: string | null | undefined): string[] | null {
-  const refs = extractMandibleIssueRefs(commitMessage);
-  return refs.length > 0 ? refs : null;
-}
-
 function outputFromExecError(error: unknown): string {
   if (!error || typeof error !== "object") {
     return String(error ?? "");
@@ -7649,7 +7627,6 @@ function atomicMergeResultLine(request: AuthRequest, mergeSha: string): string {
   return `MANDIBLE_MERGE_RESULT ${JSON.stringify({
     merge_sha: mergeSha,
     repo_id: request.repo ?? null,
-    auto_close_issues: [],
     declared_issues: request.issue_closures ?? [],
   })}`;
 }
@@ -7710,15 +7687,6 @@ function normalizeRepoRef(repo: string | null | undefined): string | null {
 }
 
 function mapRow(row: Record<string, unknown>): AuthRequest {
-  // Bug: ba9687f — parse issue_ids JSON array from DB
-  let issueIds: string[] | null = null;
-  if (row.issue_ids != null) {
-    try {
-      issueIds = JSON.parse(String(row.issue_ids));
-    } catch {
-      issueIds = null;
-    }
-  }
 
   let issueReferences: string[] | null = null;
   if (row.issue_references != null) {
@@ -7799,7 +7767,7 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     post_merge_handoff: row.post_merge_handoff == null ? null : String(row.post_merge_handoff),
     issue_references: issueReferences,
     issue_closures: issueClosures ?? parsedIssues,
-    issue_ids: issueIds,
+    issue_ids: null,
     issues: parsedIssues,
     depends_on_id: row.depends_on_id == null ? null : String(row.depends_on_id),
     execution_mode:

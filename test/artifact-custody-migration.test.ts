@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { expect, it } from 'vitest';
-import { MIGRATIONS, migrate } from '../src/db-migrations.js';
+import { CURRENT_SCHEMA_VERSION, MIGRATIONS, migrate } from '../src/db-migrations.js';
 import { readArtifactBytesFull } from '../src/artifact-content.js';
 
 it('recovers populated v184 custody before installing v185 and preserves exact version identity',()=>{
@@ -44,7 +44,7 @@ it('recovers populated v184 custody before installing v185 and preserves exact v
       const rows=db.prepare(`SELECT metadata_json FROM ${table}`).all() as {metadata_json:string}[];
       for(const row of rows) expect(JSON.parse(row.metadata_json)).toEqual({title:'keep',custom:{caption:'keep'},provenance:{author:'keep'},nested:{description:'keep'}});
     }
-    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({value:'185'});
+    expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({value:String(CURRENT_SCHEMA_VERSION)});
     expect(db.prepare('SELECT id,custody_mode,source_project_id FROM artifact_version ORDER BY id').all()).toEqual([
       {id:'artifact-version:collision-a',custody_mode:'git',source_project_id:'prj_fixture'},
       {id:'artifact-version:collision-b',custody_mode:'git',source_project_id:'prj_fixture'},

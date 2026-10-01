@@ -1,94 +1,10 @@
-# commit-linked / agent-commit
+# Issue-aware commits
 
-Dotfiles commit wrapper that enforces issue linkage. `commit-linked` is the
-primary command; `agent-commit` is a compatibility shim that delegates to it.
+`commit-linked` is a dotfiles policy wrapper. Mandible supplies issue-file,
+issue-title, session-link, and work-unit APIs. The wrapper owns staging,
+signing, commit prose, and attribution.
 
-The forward Mandible trailer contract is `Mandible-Issue: <issue-ref>` for
-work/reference tracking and `Closes-Mandible-Issue: <issue-ref>` only for
-explicit closure. Mandible owns the trailer grammar and exposes
-`mandible commit trailer` to render grammar-correct Mandible trailers.
-Dotfiles owns the policy choice to require those trailers for local commits,
-plus staging, signing, attribution, and summary conventions.
-
-`commit-linked` lives in `~/.dotfiles/bin/`, not in the Mandible repo. It uses
-the Mandible ledger mechanism client for issue-title lookup, `.issue`
-discovery, trailer rendering, session-issue linking, and work-unit activation.
-The wrapper is expected to degrade according to dotfiles policy when that client
-is unreachable or absent.
-
-## Usage
-
-```
-commit-linked --issue <id> [-m <message>] [--amend] [--user] [--identity-profile <profile>] [--] [<path>...]
-commit-linked --issue <id1> --issue <id2> [-m <message>] [--] [<path>...]
-agent-commit --issue <id> [-m <message>] [--amend] [--] [<path>...]
-```
-
-## Options
-
-| Flag | Description |
-|---|---|
-| `--issue <id>` | Issue ID (required, repeatable for multi-issue commits) |
-| `-m <message>` | Commit summary line (falls back to the Mandible issue title if omitted) |
-| `--amend` | Amend the previous commit |
-| `--user` | Use the user's/default Git signing configuration instead of the agent signing policy |
-| `--identity-profile <profile>` | Override the attribution profile, such as `agent:codex`, `agent:claude`, `agent:gemini`, `user:<name>`, or `unknown` |
-| `<path>...` | Paths to stage before committing |
-
-## Commit Message Format
-
-The wrapper constructs commit messages in this shape:
-
-```
-<summary>
-
-Mandible-Issue: <id1>
-Mandible-Issue: <id2>
-Co-authored-by: <agent attribution, when known/configured>
-```
-
-Mandible renders only the Mandible trailers. Co-author and identity-profile
-lines are dotfiles policy. Absence of reliable agent evidence is represented as
-`unknown`, not as a user identity or a guessed provider/model.
-
-## Behavior
-
-1. **Issue discovery**: If no `--issue` flags are passed, asks the Mandible
-   client to read the nearest git-root `.issue` file, usually written by
-   `wt --issue`.
-
-2. **Protected branch guard**: Refuses to commit to the protected branch (`develop` if it exists, otherwise `main`).
-
-3. **Staging check**: Stages explicit paths when provided and verifies that
-   changes are staged (unless `--amend`).
-
-4. **Message resolution**: If `-m` is omitted, asks the Mandible client for the
-   issue title.
-
-5. **Trailer rendering**: Asks the Mandible client to render
-   `Mandible-Issue:` trailers, then appends dotfiles-owned attribution when a
-   profile is known/configured.
-
-6. **Commit**: Runs `git commit` with the constructed message and dotfiles
-   signing policy.
-
-7. **Mandible integration** (policy wrapper treats failures as non-fatal):
-   - Links the session to the issue(s) with `mandible session link-issue`
-   - Activates work units with `mandible work-unit activate`
-
-## Environment
-
-| Variable | Description |
-|---|---|
-| `MANDIBLE_SESSION_ID` | Session ID for issue linking (set by `mandible wrap`) |
-| `MANDIBLE_LEDGER_CLIENT` / `MANDIBLE_CLI_DIR` / `MANDIBLE_REPO` | Optional ways for policy wrappers to locate `cli/ledger-client.sh` |
-| `MANDIBLE_LEDGER_GRACEFUL` | Allows policy callers to continue when ledger mechanism calls cannot reach Mandible |
-
-## Related Tools
-
-- **`wt`** (dotfiles): Creates worktrees with `--issue` flag that calls
-  `mandible work-unit claim` and writes a `.issue` file for auto-discovery.
-- **`mandible issue-file`**: Resolves, reads, or writes the `.issue` helper file.
-- **`mandible commit trailer`**: Renders Mandible-owned issue trailers.
-- **`mandible issue`**: Issue management CLI.
-- **`mandible auth request`**: Submits merge requests that use structured `issue_references` / `issue_closures` fields plus Mandible-specific trailers when commit metadata is needed.
+Issue associations live in structured ledger records. Commit messages have no
+issue-linking or closure semantics. Use explicit issue references with auth
+requests and explicit closure actions when a successful merge should close an
+issue. Ordinary Git commits do not require Mandible metadata in their messages.

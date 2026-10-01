@@ -1718,6 +1718,7 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   { version: 184, name: "artifact_registered_sources", statements: [...ARTIFACT_SOURCE_SCHEMA_SQL, ...ARTIFACT_SOURCE_BACKFILL_SQL] },
   { version: 185, name: "artifact_two_custodies", statements: [...ARTIFACT_CUSTODY_MIGRATION_SQL, ...ARTIFACT_CUSTODY_TRIGGERS_SQL], requires_foreign_keys_off: true },
+  { version: 186, name: "remove_commit_message_closure_setting", statements: ["DELETE FROM settings WHERE key = 'auto_close_issues_on_merge'"] },
 ];
 
 /**

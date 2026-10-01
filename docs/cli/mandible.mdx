@@ -203,19 +203,6 @@ mandible issue-file read [cwd]
 mandible issue-file write [--cwd <path>] <issue>...
 ```
 
-### mandible commit trailer
-
-Render Mandible-owned commit trailers for explicit issues, or from the nearest
-worktree `.issue` file when no issues are passed.
-
-```
-mandible commit trailer [issue...]
-```
-
-This command renders only `Mandible-Issue:` trailers. `Closes-Mandible-Issue:`
-usage, co-author trailers, summaries, signing, and attribution profiles are
-caller policy.
-
 ### mandible session link-issue
 
 Link an existing Mandible session to an issue/repo pair through the supported
@@ -342,22 +329,12 @@ set locally.
 the outcome, and the rest is the body where the agent writes `Why:` and an
 optional `Caveats:` section. The CLI owns the rest of the template — the
 `Merge <branch>: ` subject prefix, the `Verification:` section from
-`--verification` (default `Not recorded`), and the trailers derived from
-`--issue` and `--closes-issue`. Authoring those machine-owned lines (or any
-`#`-leading line, which git's message cleanup would strip) is refused.
+`--verification` (default `Not recorded`). Authoring the Verification heading
+or a `#`-leading line is refused. Issue references and closure targets are
+separate structured fields; commit messages have no operational semantics.
 
-Trailers are **reference-only** `Mandible-Issue:` lines, for closure issues as
-well as reference issues. A canonical change message never carries
-`Closes-Mandible-Issue:`: closure is carried solely by the request's structured
-`issue_closures` field, which stays editable after approval while the message is
-frozen. Since `auth-merge` reads `Closes-Mandible-Issue:` out of commit messages
-as a live closure instruction, allowing that trailer inside a frozen signed
-message would let the signed text and the executed authorization disagree.
-
-The daemon validates that machine-owned envelope against the structured fields —
-trailer set, `Verification:` section, no `#`-leading lines, no whitespace inside
-issue refs — before anything is digested, so a raw API client cannot smuggle
-control text past the CLI. It then records the SHA-256 of the exact stored bytes
+The daemon validates canonical formatting and the Verification section.
+It then records the SHA-256 of the exact stored bytes
 and freezes both once the request leaves `pending`. `mandible auth merge`
 re-verifies that digest against the exact bytes it fetched, asserts they are
 already canonical, and commits them on every merge path, aborting rather than
@@ -388,7 +365,7 @@ they serve different contracts. The canonical message is concise, validated,
 SHA-256-bound, frozen review input that becomes the merge commit message. The
 specification is the detailed Markdown packet used to review intent, choices,
 scope, evidence, and activation. Supplying `--spec-file` does not alter message
-composition, verification-envelope ownership, digesting, freezing, trailers,
+composition, verification-envelope ownership, digesting, freezing,
 closure behavior, or stored spec semantics.
 
 **Pre-flight checks:**
@@ -443,7 +420,7 @@ mandible auth merge <source-branch> --into <target>
 6. Performs `git merge --no-ff --no-edit -S` (signed merge).
 7. Auto-resolves conflicts in generated dist files (takes `--theirs`).
 8. Verifies the merge is not empty (tree differs from parent).
-9. Auto-closes issues referenced via explicit `Closes-Mandible-Issue:` trailers in merged commits.
+9. Applies explicitly authorized structured issue closure actions.
 10. Closes issues declared in the auth request's `issue_closures` field.
 11. Cleans up merged branch worktrees through the configured worktree removal
     policy (`wt rm` in the reference dotfiles profile; `dwt` is a compatibility

@@ -1183,65 +1183,6 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
     void fakeRouter;
   });
 
-  it("requires Mandible-Issue trailers for auth merge validation", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-trailers-"));
-    try {
-      const repoRoot = path.join(tempDir, "repo");
-      execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
-      const git = (...args: string[]) => execFileSync(
-        "git",
-        [
-          "-C",
-          repoRoot,
-          "-c",
-          "user.name=Mandible Test",
-          "-c",
-          "user.email=test@example.invalid",
-          ...args,
-        ],
-        { stdio: "ignore" },
-      );
-      git("commit", "--allow-empty", "-m", "init");
-      git("checkout", "-b", "feature/bug-only");
-      git("commit", "--allow-empty", "-m", "legacy trailer\n\nBug: abc1234");
-      git("checkout", "main");
-      git("checkout", "-b", "feature/mandible-issue");
-      git("commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234");
-      git("checkout", "main");
-
-      const db = setupInMemoryDb();
-      const queue = new AuthQueue({ db });
-      registerWorkRepo(db, repoRoot);
-      const app = new TestRouteRegistrar();
-      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
-
-      const rejected = await app.invoke("POST", "/api/auth/request", {
-        body: {
-          command: "mandible auth merge feature/bug-only --into main",
-          title: "Legacy trailer request",
-          cwd: repoRoot,
-          base_branch: "main",
-          head_branch: "feature/bug-only",
-        },
-      });
-      expect(rejected.statusCode).toBe(400);
-      expect(String((rejected.body as { error?: string }).error)).toContain("missing Mandible-Issue references");
-
-      const accepted = await app.invoke("POST", "/api/auth/request", {
-        body: {
-          command: "mandible auth merge feature/mandible-issue --into main",
-          title: "Typed trailer request",
-          cwd: repoRoot,
-          base_branch: "main",
-          head_branch: "feature/mandible-issue",
-          issue_references: ["abc1234"],
-        },
-      });
-      expect(accepted.statusCode, JSON.stringify(accepted.body)).toBe(201);
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
 
   it("rejects raw auth merge submissions without cwd or target repo context", async () => {
     const db = setupInMemoryDb();

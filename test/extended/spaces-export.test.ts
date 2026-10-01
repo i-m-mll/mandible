@@ -4,7 +4,7 @@
 //     export-and-track.
 //   - export-and-track produces an agent-key linked commit (Mandible-Issue
 //     trailer) — asserted via the injected commit runner that the route uses the
-//     linked-commit surface, never a bare git commit.
+//     document commit operation, never a bare git commit.
 //   - untracked export-of-copy creates no row; surfaces a `local_only` warning
 //     when written untracked inside a repo.
 //   - the docs worktree dirty-rejection + serialized-write lock.
@@ -16,6 +16,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { systemAction } from '../../src/identity/resolver.js';
+import { LedgerStore } from '../../src/ledger/store.js';
 import { spawnSync } from 'node:child_process';
 
 import { migrate, setDb, type Db } from '../../src/db.js';
@@ -47,6 +49,8 @@ function seedProjectAndCheckout(root: string): void {
     `INSERT INTO ledger_project_checkouts (id, project_id, root, name, default_branch, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(CHECKOUT_ID, PROJECT_ID, root, 'export', 'main', Date.now(), Date.now());
+  new LedgerStore(db).createIssue({ project_id: PROJECT_ID, title: 'Export document', body: '', kind: 'feature', attribution: systemAction(), aliases: [{ alias_kind: 'git_bug_short', alias: '8730bf9', source: 'git_bug', is_primary: true }] });
+
 }
 
 async function call(method: string, url: string, body?: unknown) {
@@ -76,7 +80,7 @@ async function makeSpaceWithBlocks(): Promise<string> {
 
 /**
  * A fully-injected git runner: it records the commit calls (so we can assert the
- * linked-commit path was used, not a bare git commit) and simulates worktree
+ * document commit path was used, not a bare git commit) and simulates worktree
  * dirtiness via a mutable flag. The managed worktree is a real temp dir so the
  * file write + snapshot path are exercised.
  */
@@ -96,7 +100,7 @@ function makeStubRunner(worktreeDir: string): {
     hasDirtyUnrelated() {
       return dirty;
     },
-    commitLinked(args) {
+    commitDocument(args) {
       commits.push({ relativePath: args.relativePath, message: args.message, issues: args.issues });
       counter += 1;
       return { commit: `commit${counter}`, blobSha: `blob${counter}` };
@@ -134,7 +138,7 @@ describe('default custody (no row until explicit commit)', () => {
 });
 
 describe('export-and-track (linked commit + tracking row)', () => {
-  it('creates a row via an agent-key linked commit carrying the issue trailer', async () => {
+  it('creates a row via an agent-key linked commit with a ledger issue link', async () => {
     const spaceId = await makeSpaceWithBlocks();
     const worktreeDir = path.join(tmpRoot, '.docs-wt');
     const { runner, commits } = makeStubRunner(worktreeDir);
@@ -145,7 +149,7 @@ describe('export-and-track (linked commit + tracking row)', () => {
       { git: runner, now: 1000 },
     );
 
-    // Linked-commit path used (issue trailer carried), never a bare git commit.
+    // Commit context is supplied explicitly; issue associations are ledger records.
     expect(commits).toHaveLength(1);
     expect(commits[0].issues).toEqual(['8730bf9']);
     expect(commits[0].relativePath).toBe('docs/spaces/doc.md');
@@ -159,8 +163,8 @@ describe('export-and-track (linked commit + tracking row)', () => {
     expect(row.last_export_commit).toBe('commit1');
     expect(row.last_export_blob_sha).toBe('blob1');
     expect(row.last_export_content_sha256).toBe(result.document_content_sha256);
-    expect(row.pre_export_snapshot_artifact_id).toMatch(/^artifact:[a-f0-9]{12}$/);
-    expect(row.last_export_artifact_id).toMatch(/^artifact:[a-f0-9]{12}$/);
+    expect(row.pre_export_snapshot_artifact_id).toMatch(/^artifact-blob:[a-f0-9]{64}$/);
+    expect(row.last_export_artifact_id).toMatch(/^artifact-blob:[a-f0-9]{64}$/);
     expect(JSON.stringify(result)).not.toContain("artifact:sha256:");
     expect(row).not.toHaveProperty('last_export_blob_id');
     expect(row).not.toHaveProperty('pre_export_snapshot_blob_id');
@@ -202,10 +206,10 @@ describe('export-and-track (linked commit + tracking row)', () => {
   });
 });
 
-describe('export-and-track over the real git + linked-commit path', () => {
-  it('lands an agent-key linked commit with a Mandible-Issue trailer on the docs branch', async () => {
+describe('export-and-track over the real git + document commit path', () => {
+  it('lands an agent-key linked commit with a structured ledger issue link on the docs branch', async () => {
     // Make the checkout root a real git repo so the default runner provisions a
-    // real docs worktree and commits through `mandible commit linked`.
+    // real docs worktree and commits through Git.
     const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
     const g = (args: string[]) => spawnSync('git', args, { cwd: tmpRoot, encoding: 'utf8', env });
     g(['init', '-q', '-b', 'main']);
@@ -229,7 +233,8 @@ describe('export-and-track over the real git + linked-commit path', () => {
     // Read the commit message from the provisioned docs worktree.
     const wt = path.join(tmpRoot, '.git', 'mandible-docs-worktrees', 'docs_spaces');
     const msg = spawnSync('git', ['log', '-1', '--format=%B'], { cwd: wt, encoding: 'utf8', env }).stdout;
-    expect(msg).toContain('Mandible-Issue: 8730bf9');
+    expect(msg).not.toContain('Mandible-Issue:');
+    expect(db.prepare('SELECT commit_sha FROM ledger_commit_issue_links').all()).toContainEqual({ commit_sha: result.commit });
     const tracked = spawnSync('git', ['ls-files', 'docs/spaces/real.md'], { cwd: wt, encoding: 'utf8', env }).stdout;
     expect(tracked.trim()).toBe('docs/spaces/real.md');
   });
@@ -297,7 +302,7 @@ describe('export routes + events + allowlist', () => {
   it('a tracked-export route requires an issue ref for the linked commit', async () => {
     const spaceId = await makeSpaceWithBlocks();
     const res = await call('POST', `/api/spaces/${spaceId}/exports`, { path: 'docs/x.md' });
-    // No `issues` → 400 (the linked commit must carry a Mandible-Issue trailer).
+    // No `issues` → 400 (the export requires an explicit issue relationship).
     expect(res.status).toBe(400);
   });
 

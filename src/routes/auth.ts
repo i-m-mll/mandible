@@ -5,8 +5,6 @@ import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import { AuthClearanceError, AuthClearanceManager } from "../auth-clearance.js";
 import { DelegatedSigningResource } from "../delegated-signing-resource.js";
 import {
-  authGitEnv,
-  classifyGitFailure,
   computeAuthMergeReviewMetadata,
   describeGitFailure,
   isAuthMergeCommand,
@@ -199,15 +197,6 @@ export function registerAuthRoutes(
           : payload.repo;
     }
     if (isAuthMerge && !enforceAuthProjectWrite(req, res, payload.repo)) return;
-
-    // Auth merge gate: verify Mandible issue references in non-merge commits.
-    if (isAuthMerge) {
-      const gateError = verifyMandibleIssueReferences(payload);
-      if (gateError) {
-        res.status(400).json({ error: gateError });
-        return;
-      }
-    }
 
     // Bug: 16985e8 — detect duplicate submissions. Return 409 with the existing
     // request_id so the agent can PUT to update it rather than creating a new one.
@@ -1328,132 +1317,4 @@ function tailLines(text: string, n: number): string | null {
   const tail = lines.slice(-n);
   const result = tail.join("\n").trim();
   return result || null;
-}
-
-const SAFE_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
-const FULL_GIT_SHA = /^[0-9a-f]{40}$/i;
-
-function validateAuthGateBranch(field: "base_branch" | "head_branch", value: string): string | null {
-  if (
-    !value ||
-    !SAFE_BRANCH_NAME.test(value) ||
-    value.startsWith("-") ||
-    value.includes("..") ||
-    value.includes("//") ||
-    value.endsWith("/") ||
-    value.endsWith(".")
-  ) {
-    return `Invalid '${field}' for auth merge verification; manual review required.`;
-  }
-  return null;
-}
-
-/**
- * The action-bearing `Mandible-Issue:` trailer gate: a non-null return refuses
- * the submission.
- *
- * Issue 2205073 (review F8, residual) — this gate used to resolve the repo root
- * through the lossy null-returning wrapper and report every null as
- * "Invalid 'cwd'". Two of the three ways git can fail (killed by timeout, never
- * spawned at all — EMFILE/EAGAIN/ENOMEM from daemon fd exhaustion) say nothing
- * about the cwd, so a healthy repository was blamed for a daemon-health
- * failure and the operator was sent to fix a path that was never wrong. Only
- * git's own answer (a real non-zero exit, "not a git repository") may claim the
- * cwd is invalid; the gate still fails closed either way.
- *
- * Exported for regression tests: the honest-failure branches are unreachable
- * through the route, because a git that cannot run fails execution-context
- * resolution earlier in the request.
- */
-export function verifyMandibleIssueReferences(
-  payload: AuthRequestInput
-): string | null {
-  const { cwd, head_branch, base_branch } = payload;
-  if (!cwd || !head_branch || !base_branch) {
-    return "Auth merge verification requires server-resolved cwd, base_branch, and head_branch; raw-route submissions must include target_repo_root or cwd.";
-  }
-
-  const baseError = validateAuthGateBranch("base_branch", base_branch);
-  if (baseError) return baseError;
-  const headError = validateAuthGateBranch("head_branch", head_branch);
-  if (headError) return headError;
-
-  const repoRootProbe = probeRepoRootFromGitCommonDir(cwd);
-  if (repoRootProbe.failure && repoRootProbe.failure.kind !== "exit") {
-    return (
-      `Unable to verify Mandible issue references for 'cwd' ${cwd}: ` +
-      `${describeGitFailure(repoRootProbe.failure, "submission")} ` +
-      "This is a daemon-health failure, not an invalid cwd; the request was not submitted."
-    );
-  }
-  if (!repoRootProbe.root) {
-    return "Invalid 'cwd' for auth merge verification; manual review required.";
-  }
-
-  try {
-    const output = execFileSync(
-      "git",
-      ["log", "--no-merges", "--format=%H", `${base_branch}..${head_branch}`],
-      { cwd, encoding: "utf-8", timeout: 10000, env: authGitEnv() }
-    ).trim();
-
-    if (!output) {
-      return null;
-    }
-
-    const commits = output.split("\n").filter(Boolean);
-    const missing: string[] = [];
-
-    for (const sha of commits) {
-      if (!FULL_GIT_SHA.test(sha)) {
-        return "Auth merge verification returned an invalid commit id; manual review required.";
-      }
-
-      const body = execFileSync("git", ["log", "-1", "--format=%B", sha], {
-        cwd,
-        encoding: "utf-8",
-        timeout: 5000,
-        env: authGitEnv(),
-      }).trim();
-
-      if (!body.split("\n").some((line: string) => line.startsWith("Mandible-Issue:"))) {
-        const oneline = execFileSync("git", ["log", "-1", "--oneline", sha], {
-          cwd,
-          encoding: "utf-8",
-          timeout: 5000,
-          env: authGitEnv(),
-        }).trim();
-        missing.push(oneline);
-      }
-    }
-
-    if (missing.length > 0) {
-      return (
-        `${missing.length} commit(s) missing Mandible-Issue references:\n` +
-        missing.map((m) => `  ${m}`).join("\n") +
-        "\n\nUse Mandible-Issue: <issue-ref> trailers for work-tracking commits."
-      );
-    }
-
-    return null;
-  } catch (err) {
-    // Issue 2205073 — the same three worlds apply to the `git log` probes: an
-    // exit is git's own answer about this history, a timeout or spawn errno is
-    // a daemon-health failure that learned nothing. Both still refuse the
-    // submission (the gate fails closed), but they must not read alike.
-    const failure = classifyGitFailure(err);
-    authRouteLog("error", "auth_issue_reference_verification_failed", {
-      subsystem: "auth",
-      failure_kind: failure.kind,
-      error: String(err),
-    });
-    if (failure.kind === "exit") {
-      return "Mandible issue reference verification failed; manual review required.";
-    }
-    return (
-      "Mandible issue reference verification could not run: " +
-      `${describeGitFailure(failure, "submission")} ` +
-      "This is a daemon-health failure, not a verdict on the branch; the request was not submitted."
-    );
-  }
 }
