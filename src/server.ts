@@ -150,6 +150,7 @@ export interface ResponseLike {
   empty?(): void;
   html?(payload: string): void;
   text?(payload: string, contentType?: string): void;
+  binary?(payload: Buffer, contentType: string): void;
 }
 
 export type RouteHandler = (req: RequestLike, res: ResponseLike) => unknown;
@@ -295,6 +296,14 @@ class HttpResponse implements ResponseLike {
     });
     this.res.end(payload);
   }
+
+  binary(payload: Buffer, contentType: string): void {
+    if (this._sent) return;
+    this._sent = true;
+    this.res.writeHead(this._statusCode, { ...this.headers, "Content-Type": contentType,
+      "Content-Length": payload.length, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+    this.res.end(payload);
+  }
 }
 
 class CapturedResponse implements ResponseLike {
@@ -330,6 +339,12 @@ class CapturedResponse implements ResponseLike {
   }
 
   text(payload: string): void {
+    if (this.sent) return;
+    this.sent = true;
+    this.body = payload;
+  }
+
+  binary(payload: Buffer): void {
     if (this.sent) return;
     this.sent = true;
     this.body = payload;
@@ -434,7 +449,7 @@ export class Router implements RouteRegistrar {
     const method = req.method ?? "GET";
     let body: unknown = undefined;
     if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
-      const rawBody = await readIncomingBody(req);
+      const rawBody = await readIncomingBody(req, req.url?.split("?")[0] === "/api/chat-attachments" ? 7 * 1024 * 1024 : MAX_BODY_BYTES);
       if (rawBody) {
         try { body = JSON.parse(rawBody); } catch { body = rawBody; }
       }
@@ -957,13 +972,13 @@ function parseTopics(searchParams: URLSearchParams | null | undefined, body: str
   return topics;
 }
 
-function readIncomingBody(req: http.IncomingMessage): Promise<string | null> {
+function readIncomingBody(req: http.IncomingMessage, limit = MAX_BODY_BYTES): Promise<string | null> {
   return new Promise((resolve) => {
     let total = 0;
     let data = "";
     req.on("data", (chunk) => {
       total += chunk.length;
-      if (total > MAX_BODY_BYTES) {
+      if (total > limit) {
         req.destroy();
         resolve(null);
         return;

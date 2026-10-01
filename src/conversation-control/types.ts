@@ -1,4 +1,5 @@
 import type { ChatItem } from "../parsers/types.js";
+import type { ChatAttachment } from "./attachments.js";
 
 export type Result<T, E> =
   | { ok: true; value: T }
@@ -119,6 +120,7 @@ export type ConversationSubmitRequest = {
   expected_revision: number;
   expected_generation: number;
   message: string;
+  attachments?: ChatAttachment[];
   message_anchor?: string;
   runtime_options?: ConversationRuntimeOptions;
   idempotency_key: string;
@@ -280,6 +282,9 @@ export type ConversationOutboxItem = {
   turn_id: string;
   operation: ConversationControlOperation;
   message: string;
+  attachments: ChatAttachment[];
+  /** Internal source database location, used to resolve this instance's retained bytes. */
+  attachment_db_path: string;
   message_anchor: string | null;
   runtime_options: ConversationRuntimeOptions;
   idempotency_key: string;
