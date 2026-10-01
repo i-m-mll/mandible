@@ -448,6 +448,40 @@
   opacity: 1;
 }
 
+.overflow-fade--horizontal {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.overflow-fade--horizontal .overflow-fade__scroll {
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.overflow-fade--horizontal .overflow-fade__scroll::-webkit-scrollbar { display: none; }
+
+.overflow-fade--horizontal::before,
+.overflow-fade--horizontal::after {
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  height: auto;
+}
+
+.overflow-fade--horizontal::before {
+  left: 0;
+  right: auto;
+  background: linear-gradient(to right, var(--overflow-fade-color, var(--surface-app)), transparent);
+}
+
+.overflow-fade--horizontal::after {
+  right: 0;
+  left: auto;
+  background: linear-gradient(to left, var(--overflow-fade-color, var(--surface-app)), transparent);
+}
+
 .tool-card__secondary-action,
 .diff-review__close {
   border: 1px solid var(--neutral-alpha-10);
