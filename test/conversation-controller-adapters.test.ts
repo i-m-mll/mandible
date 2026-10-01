@@ -53,6 +53,8 @@ function delivery(operation: "resume-provider-session" | "send" | "steer", turnI
     turn_id: turnId,
     operation,
     message,
+    attachments: [],
+    attachment_db_path: "/tmp/mandible-test.db",
     message_anchor: null,
     runtime_options: {},
     idempotency_key: `key-${turnId}`,

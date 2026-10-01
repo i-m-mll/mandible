@@ -54,6 +54,20 @@ describe('attachment draft ownership and recovery', () => {
     expect(store.getConversationDraft('chat-a').text).toBe('');
   });
 
+  it('preserves annotations and recovery when a paste would exceed the message limit', async () => {
+    const store = await import('../ui/src/chat/attachmentDrafts');
+    store.saveAnnotation(annotation('recovery', 1));
+    store.clearAnnotations();
+    store.saveAnnotation(annotation('active', 2));
+    store.addDraftAttachments('chat-a', Array.from({ length: 16 }, (_, i) => annotation(`draft-${i}`, i + 1)));
+    store.registerWritableChatTarget('chat-a');
+    expect(store.pasteAnnotationsToVisibleChat().ok).toBe(false);
+    expect(store.addDraftAttachments('chat-a', [annotation('extra', 20)]).ok).toBe(false);
+    expect(store.getConversationDraft('chat-a').attachments).toHaveLength(16);
+    expect(store.getAttachmentDraftSnapshot().annotations[0].id).toBe('active');
+    expect(store.getAttachmentDraftSnapshot().lastCleared?.[0].id).toBe('recovery');
+  });
+
   it('retains one pending idempotency key across a reload and clears it after acceptance', async () => {
     let store = await import('../ui/src/chat/attachmentDrafts');
     store.setDraftText('chat-a', 'Message');

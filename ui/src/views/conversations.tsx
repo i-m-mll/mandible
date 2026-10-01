@@ -75,7 +75,7 @@ import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigge
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { OverflowFade } from '../components/shared/OverflowFade';
-import type { ChatAttachment } from '../../../src/conversation-control/attachments';
+import { MAX_MESSAGE_ATTACHMENTS, type ChatAttachment } from '../../../src/conversation-control/attachments';
 import { attachmentContentUrl, importAttachment } from '../chat/attachmentApi';
 import {
   addDraftAttachments, clearAcceptedDraft, getAttachmentDraftSnapshot, getConversationDraft,
@@ -2110,8 +2110,8 @@ export function ConversationDetail({
 
   const importFiles = useCallback(async (files: FileList | File[]) => {
     if (!composerWritable || attachmentBusy) return;
-    if (getConversationDraft(conversationId).attachments.length + files.length > 16) {
-      setContinueError('A message can have at most 16 attachments.');
+    if (getConversationDraft(conversationId).attachments.length + files.length > MAX_MESSAGE_ATTACHMENTS) {
+      setContinueError(`A message can have at most ${MAX_MESSAGE_ATTACHMENTS} attachments.`);
       return;
     }
     setAttachmentBusy(true);

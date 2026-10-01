@@ -43,7 +43,9 @@ Use one shared discriminated attachment contract in src/conversation-control/att
 
 Storage and delivery owns the shared attachment types, custody/upload/content routes, validation, conversation request/outbox changes, provider translation, and faithful history evidence. Composer owns the actual Chat composer in ui/src/views/conversations.tsx (not the old Console-only composer), its attachment/draft store and UI API, pills/modal/import, and submit plumbing in ui/src/api.ts. Annotator owns selection, pins/popovers, rail/strip integration, capture, deterministic export, and any required desktop capture/dialog bridge. Annotation state is consumed from the composer-owned store. Coordinate shared type or API changes before making parallel incompatible edits.
 
-The parent owns specification, integration, browser acceptance, the final default/browser/build gates, production-daemon plus packaged-app candidate gate, and one protected delivery request. Workers own bounded implementation and focused useful regression checks. No pushes or protected merges by workers. Use GPT-6 Sol at medium, user-visible tasks, no subagents. Every worker invokes begood and work-on-issues.
+The parent owns specification, integration, and two persistent browser previews on separate branches. One uses the custom Mandible interface described above; the other uses Agentation's bundled toolbar, popovers, selection, and state behavior through a lean public-API adapter. Both share attachment custody, composer, typed payloads, and provider delivery. The Agentation preview retains recognizable upstream interaction and documents actual differences in persistence, routing, recovery, screenshots, and export rather than pretending to provide exact feature parity. Its Submit stages individual attachments in the currently visible writable Chat draft; it never sends an agent message directly. Failures and changed destinations preserve feedback.
+
+The user compares these first implementations before choosing how to proceed. Protected delivery and its production-daemon plus packaged-app candidate gate wait for that decision. Workers own bounded implementation and focused useful regression checks. No pushes or protected merges by workers. Use GPT-6 Sol at medium, user-visible tasks, no subagents. Every worker invokes begood and work-on-issues.
 
 ## Verification
 
@@ -51,6 +53,6 @@ Keep tests sparse at failure-prone boundaries: file custody and unsupported inpu
 
 ## Deferred
 
-PDF and other rich-document interpretation is separate follow-up work. No in-app browser, arbitrary website injection, document review replacement, or provider UI reverse engineering belongs here. Evaluate Agentation reuse for selection but do not import a second toolbar/store or violate the accepted UX; report any dependency/license/Preact mismatch before choosing a simpler owned implementation.
+PDF and other rich-document interpretation is separate follow-up work. No in-app browser, arbitrary website injection, document review replacement, or provider UI reverse engineering belongs here. The two annotation interfaces are explicit comparison branches, not simultaneous competing state authorities in one running app. Verify Agentation's actual Preact compatibility and public API before calling its preview ready.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>

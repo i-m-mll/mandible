@@ -1719,6 +1719,17 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 184, name: "artifact_registered_sources", statements: [...ARTIFACT_SOURCE_SCHEMA_SQL, ...ARTIFACT_SOURCE_BACKFILL_SQL] },
   { version: 185, name: "artifact_two_custodies", statements: [...ARTIFACT_CUSTODY_MIGRATION_SQL, ...ARTIFACT_CUSTODY_TRIGGERS_SQL], requires_foreign_keys_off: true },
   { version: 186, name: "remove_commit_message_closure_setting", statements: ["DELETE FROM settings WHERE key = 'auto_close_issues_on_merge'"] },
+  { version: 187, name: "chat_attachment_custody", statements: [
+    `CREATE TABLE chat_attachment_files (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      media_type TEXT NOT NULL,
+      byte_length INTEGER NOT NULL CHECK(byte_length > 0),
+      sha256 TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )`,
+    `ALTER TABLE conversation_control_outbox ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(attachments_json) AND json_type(attachments_json) = 'array')`,
+  ] },
 ];
 
 /**

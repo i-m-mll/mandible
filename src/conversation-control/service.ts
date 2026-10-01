@@ -13,6 +13,8 @@ import {
   type ConversationControllerAdapter,
 } from "./adapter.js";
 import { ConversationControlStore } from "./store.js";
+import { AttachmentValidationError, ChatAttachmentStore } from "./attachment-store.js";
+import type { ChatAttachment } from "./attachments.js";
 import { chatItemIdentityKey, emptyProviderLiveProjection, mergeProviderLiveProjection } from "./provider-live.js";
 import type {
   AcceptedConversationSubmission,
@@ -50,6 +52,7 @@ function isActiveTurn(turn: TurnState): turn is ActiveTurn {
 export class ConversationControlService {
   readonly adapters = new ConversationControllerRegistry();
   private readonly store: ConversationControlStore;
+  private readonly attachments: ChatAttachmentStore;
 
   private readonly onChange: ((snapshot: ConversationControlSnapshot) => void) | undefined;
   private readonly onProviderEvent: ((event: ProviderAdapterEvent) => void) | undefined;
@@ -69,6 +72,7 @@ export class ConversationControlService {
     onReconciliationDiagnostic?: (details: Record<string, unknown>) => void;
   } = {}) {
     this.store = new ConversationControlStore(db, options.now);
+    this.attachments = new ChatAttachmentStore(db);
     this.onChange = options.onChange;
     this.onProviderEvent = options.onProviderEvent;
     this.onTerminalTurn = options.onTerminalTurn;
@@ -207,6 +211,15 @@ export class ConversationControlService {
   }
 
   async submit(request: ConversationSubmitRequest): Promise<Result<AcceptedConversationSubmission, ConversationControlError>> {
+    let resolvedAttachments: ChatAttachment[];
+    try {
+      resolvedAttachments = this.attachments.resolve(request.attachments);
+    } catch (error) {
+      if (!(error instanceof AttachmentValidationError)) throw error;
+      return { ok: false, error: { kind: "invalid-request", field: "attachments", message: error.message } };
+    }
+    request = { ...request, attachments: resolvedAttachments,
+      message: !request.message.trim() && resolvedAttachments.length > 0 ? "Please review the attached context." : request.message };
     const boundary = this.store.getBoundary(request.conversation_id);
     if (!boundary.ok) return boundary;
     const adapter = this.adapters.forProvider(boundary.value.source);
