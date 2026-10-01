@@ -2310,7 +2310,7 @@ describe('app shell', () => {
     expect(reactFlowMockState.unmountCount).toBe(0);
   });
 
-  it('resolves an empty hash to the Spaces workspace on mount', async () => {
+  it('resolves an empty hash to the first navigation destination on mount', async () => {
     stubAppShellFetch();
     stubEventSource();
     window.history.replaceState(null, '', '');
@@ -2320,8 +2320,8 @@ describe('app shell', () => {
 
     const nav = await screen.findByLabelText('Main navigation');
     await waitFor(() => {
-      const spacesNav = within(nav).getByLabelText('Spaces');
-      expect(spacesNav.getAttribute('aria-current')).toBe('page');
+      const firstDestination = within(nav).getAllByRole('link')[0];
+      expect(firstDestination.getAttribute('aria-current')).toBe('page');
     });
     const graphNav = within(nav).getByLabelText('Graph');
     expect(graphNav.getAttribute('aria-current')).toBeNull();
@@ -2424,9 +2424,9 @@ describe('app shell', () => {
 describe('SettingsView', () => {
   it('offers only the native setup handoff from the browser', () => {
     render(h(SettingsView, { instance: mainInstance, settings: {}, onSave: async () => undefined }));
-    const action = screen.getByRole('link', { name: 'Open macOS setup action' });
+    const action = screen.getByRole('link', { name: 'Open macOS setup' });
     expect(action.getAttribute('href')).toBe('mandible://connections/setup');
-    const handoff = action.closest('.settings-view__daemon-card');
+    const handoff = action.closest('section');
     expect(handoff).not.toBeNull();
     expect(within(handoff!).queryByRole('button')).toBeNull();
   });
