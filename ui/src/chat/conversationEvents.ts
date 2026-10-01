@@ -123,6 +123,7 @@ export function conversationBlocksToStreamEvents(
       blockId: block.id,
       ...(Number.isSafeInteger(block.position) ? { position: block.position } : {}),
       ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded }),
+      ...(typeof metadata.display_has_body === 'boolean' ? { hasBody: metadata.display_has_body } : {}),
       ...(block.parent_id ? { parentBlockId: block.parent_id } : {}),
       timestamp: block.timestamp || undefined,
       dagUuid: block.dag_uuid ?? undefined,

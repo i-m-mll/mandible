@@ -297,13 +297,20 @@ function projectDisplayBlock(row: SourceBackedConversationBlock): SourceBackedCo
     && (item as Record<string, unknown>).type === "activity";
   const targeted = row.type === "tool_use" || row.type === "tool_result" || row.type === "thinking" || activity;
   if (!targeted) return row;
+  const reasoningSummary = row.type === "thinking" && metadata.source_event_type === "reasoning_summary";
+  const reasoningLines = reasoningSummary
+    ? row.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    : [];
+  if (reasoningSummary) metadata.display_has_body = reasoningLines.length > 1;
   delete metadata.tool_input;
   delete metadata.tool_output;
   if (item && typeof item === "object" && !Array.isArray(item)) {
     const compactItem = { ...(item as Record<string, unknown>) };
     delete compactItem.input;
     delete compactItem.output;
-    if (row.type === "thinking" && metadata.source_event_type !== "reasoning_summary") {
+    if (reasoningSummary) {
+      compactItem.parts = reasoningLines.length > 0 ? [{ type: "text", text: reasoningLines[0] }] : [];
+    } else if (row.type === "thinking") {
       compactItem.parts = [];
     } else if (row.type === "tool_use" || row.type === "tool_result" || activity) {
       compactItem.parts = [];
@@ -311,9 +318,8 @@ function projectDisplayBlock(row: SourceBackedConversationBlock): SourceBackedCo
     metadata.chat_item = compactItem;
   }
 
-  const preserveThinkingSummary = row.type === "thinking" && metadata.source_event_type === "reasoning_summary";
-  const content = preserveThinkingSummary
-    ? row.content
+  const content = reasoningSummary
+    ? (reasoningLines[0] ?? "")
     : row.type === "tool_use"
       ? (typeof metadata.tool_name === "string" ? metadata.tool_name : "Tool call")
       : row.type === "tool_result"

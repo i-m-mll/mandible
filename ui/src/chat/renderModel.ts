@@ -3,7 +3,6 @@ import type {
   AssistantEvent,
   CanonicalChatItemEvent,
   ContentBlock,
-  DisplayActivityItem,
   DisplayGroup,
   RenderNode,
   RenderNodeAssistantTurn,
@@ -383,6 +382,11 @@ export function extractTurns(nodes: RenderNode[]): RenderedTurn[] {
 
 export const MAX_DISPLAY_GROUP_NODES = 12;
 
+function activityEdges(node: RenderNode): { starts: boolean; ends: boolean } {
+  const parts = expandInlineActivities([node]);
+  return { starts: parts[0]?.kind === 'activity', ends: parts.at(-1)?.kind === 'activity' };
+}
+
 export function groupMessagesForDisplay(nodes: RenderNode[]): DisplayGroup[] {
   const runs: Array<{ speaker: DisplayGroup['speaker']; nodes: RenderNode[] }> = [];
 
@@ -396,11 +400,30 @@ export function groupMessagesForDisplay(nodes: RenderNode[]): DisplayGroup[] {
   }
 
   const groups = runs.flatMap((run): DisplayGroup[] => {
-    const firstChunkSize = run.nodes.length % MAX_DISPLAY_GROUP_NODES || MAX_DISPLAY_GROUP_NODES;
-    const chunks: RenderNode[][] = [run.nodes.slice(0, firstChunkSize)];
-    for (let index = firstChunkSize; index < run.nodes.length; index += MAX_DISPLAY_GROUP_NODES) {
-      chunks.push(run.nodes.slice(index, index + MAX_DISPLAY_GROUP_NODES));
+    const units: RenderNode[][] = [];
+    let previousEndsInActivity = false;
+    for (const node of run.nodes) {
+      const edges = activityEdges(node);
+      const previous = units.at(-1);
+      if (edges.starts && previousEndsInActivity && previous) {
+        previous.push(node);
+      } else {
+        units.push([node]);
+      }
+      previousEndsInActivity = edges.ends;
     }
+    const reversedChunks: RenderNode[][] = [];
+    let chunk: RenderNode[] = [];
+    for (let index = units.length - 1; index >= 0; index -= 1) {
+      const unit = units[index];
+      if (chunk.length > 0 && chunk.length + unit.length > MAX_DISPLAY_GROUP_NODES) {
+        reversedChunks.push(chunk);
+        chunk = [];
+      }
+      chunk = [...unit, ...chunk];
+    }
+    if (chunk.length > 0) reversedChunks.push(chunk);
+    const chunks = reversedChunks.reverse();
     return chunks.map((chunk) => ({
       id: `${run.speaker}-${chunk.at(-1)!.key}`,
       speaker: run.speaker,
@@ -572,57 +595,7 @@ function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode[] {
   return expanded;
 }
 
-type ActivityBoundaryIdentity = {
-  provider?: string;
-  sessionId?: string;
-  role: 'assistant' | 'system';
-  turnId?: string;
-}
-
-function activityBoundaryIdentity(item: DisplayActivityItem): ActivityBoundaryIdentity {
-  if (item.type === 'provider-directive') {
-    return { provider: item.provider, sessionId: item.sessionId, role: 'assistant', turnId: item.turnId };
-  }
-  if (item.type === 'tool-call-activity') {
-    return {
-      provider: item.sourceIdentity?.provider,
-      sessionId: item.sourceIdentity?.sessionId ?? item.sessionId,
-      role: 'assistant',
-      turnId: item.sourceIdentity?.turnId ?? item.turnId,
-    };
-  }
-  if (item.type === 'thinking-block-activity') {
-    return { sessionId: item.sessionId, role: 'assistant', turnId: item.turnId };
-  }
-  return {
-    provider: item.identity.provider,
-    sessionId: item.identity.session_id,
-    role: item.role,
-    turnId: item.identity.native_turn_id,
-  };
-}
-
-function isUnifiedActivity(item: DisplayActivityItem): boolean {
-  return item.type !== 'activity'
-    || item.activity_kind === 'thinking'
-    || item.activity_kind === 'reasoning-summary';
-}
-
-function sameActivityBoundary(left: DisplayActivityItem, right: DisplayActivityItem): boolean {
-  const mixedRun = isUnifiedActivity(left) && isUnifiedActivity(right);
-  const sameLegacyKind = left.type === 'activity'
-    && right.type === 'activity'
-    && left.activity_kind === right.activity_kind;
-  if (!mixedRun && !sameLegacyKind) return false;
-  const leftIdentity = activityBoundaryIdentity(left);
-  const rightIdentity = activityBoundaryIdentity(right);
-  return leftIdentity.role === rightIdentity.role
-    && (!leftIdentity.provider || !rightIdentity.provider || leftIdentity.provider === rightIdentity.provider)
-    && (!leftIdentity.sessionId || !rightIdentity.sessionId || leftIdentity.sessionId === rightIdentity.sessionId)
-    && (!leftIdentity.turnId || !rightIdentity.turnId || leftIdentity.turnId === rightIdentity.turnId);
-}
-
-/** Groups adjacent tool and provider-activity items without crossing prose or turn boundaries. */
+/** Groups every consecutive activity run without crossing visible prose or speaker boundaries. */
 export function groupActivityItemsForDisplay(nodes: RenderNode[]): ActivityDisplayEntry[] {
   nodes = expandInlineActivities(nodes);
   const entries: ActivityDisplayEntry[] = [];
@@ -637,10 +610,7 @@ export function groupActivityItemsForDisplay(nodes: RenderNode[]): ActivityDispl
     let end = index + 1;
     while (end < nodes.length) {
       const next = nodes[end];
-      const previous = nodes[end - 1];
-      if (next.kind !== 'activity'
-        || previous.kind !== 'activity'
-        || !sameActivityBoundary(previous.item, next.item)) break;
+      if (next.kind !== 'activity') break;
       end += 1;
     }
     const run = nodes.slice(index, end) as Array<Extract<RenderNode, { kind: 'activity' }>>;
