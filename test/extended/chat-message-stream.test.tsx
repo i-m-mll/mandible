@@ -307,7 +307,7 @@ describe('chat message stream render model', () => {
     expect(state.nodes[2]).toMatchObject({ kind: 'activity', item: { activity_kind: 'status' } });
   });
 
-  it('groups only consecutive same-kind activities inside known turn boundaries', () => {
+  it('groups consecutive activities across internal kinds and turns', () => {
     const activities = [
       canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'thinking', parts: [], ordinal: 0, turn: 't1' }),
       canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'thinking', parts: [], ordinal: 1, turn: 't1' }),
@@ -315,9 +315,49 @@ describe('chat message stream render model', () => {
       canonicalItem<ActivityItem>({ type: 'activity', role: 'assistant', activity_kind: 'status', parts: [], ordinal: 3, turn: 't2' }),
     ];
     const nodes = buildStreamState(activities.map((item, index) => canonicalEvent(item, `a${index}`))).nodes;
-    expect(groupActivityItemsForDisplay(nodes).map((entry) => entry.kind)).toEqual([
-      'activity-group', 'node', 'node',
-    ]);
+    const entries = groupActivityItemsForDisplay(nodes);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'activity-group', nodes });
+  });
+
+  it('keeps a long consecutive activity run in one expandable group with every member', () => {
+    const activities = Array.from({ length: 25 }, (_, ordinal) => canonicalEvent(canonicalItem<ActivityItem>({
+      type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary',
+      parts: [{ type: 'text', text: `Step ${ordinal}` }], ordinal, turn: `internal-${ordinal}`,
+    }), `activity-${ordinal}`));
+    const events = [assistantText('Before', 'before'), ...activities, assistantText('After', 'after')];
+    const groups = groupMessagesForDisplay(buildStreamState(events).nodes);
+    expect(groups.some((group) => group.nodes.length === 25)).toBe(true);
+    expect(groups.flatMap((group) => groupActivityItemsForDisplay(group.nodes))
+      .filter((entry) => entry.kind === 'activity-group')).toHaveLength(1);
+
+    const view = render(<ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'long-activity' }} />);
+    expect(view.container.querySelectorAll('.activity-group')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Thought' }));
+    const details = view.container.querySelector('.activity-group__members')!;
+    expect(details.querySelectorAll('.activity-block')).toHaveLength(25);
+    expect(details.textContent).toContain('Step 0');
+    expect(details.textContent).toContain('Step 24');
+  });
+
+  it('keeps trailing inline activity with the next activity across a display chunk boundary', () => {
+    const before = Array.from({ length: 12 }, (_, index) => assistantText(`Prose ${index}`, `prose-${index}`));
+    const mixed: StreamEvent = {
+      type: 'assistant', uuid: 'mixed-edge', session_id: 's1', parent_tool_use_id: null,
+      message: { role: 'assistant', content: [
+        { type: 'text', text: 'Prose before tools' },
+        { type: 'tool_use', id: 'edge-tool', name: 'Read', input: {} },
+      ] },
+    };
+    const following = canonicalEvent(canonicalItem<ActivityItem>({
+      type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary',
+      parts: [{ type: 'text', text: 'Reviewing the result' }], ordinal: 13, turn: 'different-internal-turn',
+    }), 'following-activity');
+    const groups = groupMessagesForDisplay(buildStreamState([...before, mixed, following]).nodes);
+    expect(groups.at(-1)?.nodes.map((node) => node.key)).toContain('mixed-edge');
+    expect(groups.at(-1)?.nodes.map((node) => node.key)).toContain('codex:canonical-session:13:0');
+    expect(groups.flatMap((group) => groupActivityItemsForDisplay(group.nodes))
+      .filter((entry) => entry.kind === 'activity-group')).toHaveLength(1);
   });
 
   it('groups reasoning summaries and thinking under Thought while preserving the short label', () => {
@@ -340,6 +380,28 @@ describe('chat message stream render model', () => {
     fireEvent.click(summary);
     expect(screen.getByText('Reviewing history limits')).toBeTruthy();
     expect(screen.getByText('private thought two')).toBeTruthy();
+  });
+
+  it('shows compact thinking titles without an empty leaf disclosure', () => {
+    const title = 'Inspecting the transcript boundaries';
+    const item = canonicalItem<ActivityItem>({
+      type: 'activity', role: 'assistant', activity_kind: 'reasoning-summary',
+      parts: [{ type: 'text', text: title }], ordinal: 0, turn: 'summary',
+    });
+    const block = {
+      ...persistedBlock('summary-only', item), details_loaded: false,
+      metadata_json: JSON.stringify({ chat_item: item, display_has_body: false }),
+    };
+    const view = render(<ChatSurface events={conversationBlocksToStreamEvents('s1', [block])}
+      streaming={false} sessionInfo={{ sessionId: 'compact-summary' }} />);
+    expect(screen.getByText(title)).toBeTruthy();
+    expect(view.container.querySelector('.activity-block button')).toBeNull();
+    view.unmount();
+
+    const withBody = { ...block, metadata_json: JSON.stringify({ chat_item: item, display_has_body: true }) };
+    const expandedView = render(<ChatSurface events={conversationBlocksToStreamEvents('s1', [withBody])}
+      streaming={false} sessionInfo={{ sessionId: 'compact-summary-body' }} />);
+    expect(expandedView.container.querySelector('.activity-block button')).toBeTruthy();
   });
 
   it('preserves distinct reasoning identities while folding exact-adjacent visible duplicates', () => {
@@ -570,13 +632,13 @@ describe('ChatSurface stream behavior', () => {
       canonicalEvent(activity(1, 'Outer activity after prose'), 'outer-activity-2'),
     ]} streaming={false} sessionInfo={{ sessionId: 'mixed-boundaries' }} />);
 
-    expect(screen.getByRole('button', { name: 'Read some files, thought' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Read some files, thought' }));
+    expect(screen.getByRole('button', { name: 'Read some files; thought' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Read some files; thought' }));
     const mixedDetails = view.container.querySelector('.activity-group__members')!;
     expect(mixedDetails.querySelectorAll('.tool-card')).toHaveLength(2);
     expect(mixedDetails.querySelectorAll('.thinking-block')).toHaveLength(1);
     const renderedText = view.container.querySelector('.turn-group__body')!.textContent ?? '';
-    const orderedLabels = ['Prose before activity', 'Read some files, thought', 'Prose after activity', 'Outer activity before prose', 'Outer prose', 'Outer activity after prose'];
+    const orderedLabels = ['Prose before activity', 'Read some files; thought', 'Prose after activity', 'Outer activity before prose', 'Outer prose', 'Outer activity after prose'];
     const positions = orderedLabels.map((label) => renderedText.indexOf(label));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((left, right) => left - right));

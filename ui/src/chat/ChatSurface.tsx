@@ -1263,7 +1263,7 @@ export function ChatSurface({
             <ActivityRow
               item={node.item}
               expanded={expanded}
-              detailsAvailable={source?.detailsLoaded === false}
+              detailsAvailable={source?.detailsLoaded === false && source.hasBody !== false}
               onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
               onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
