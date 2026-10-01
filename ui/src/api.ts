@@ -1,6 +1,7 @@
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import { operationForRequest } from '../../src/security/operation-policy';
 import { browserSessionFetch } from './client-auth-token';
+import type { ChatAttachment } from '../../src/conversation-control/attachments';
 import type { InboxData } from './views/inbox';
 import type { GraphEdge, GraphNode, GraphMode, GraphPayload } from './types/graph';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
@@ -2779,6 +2780,7 @@ export async function submitConversationControl(
   messageAnchor?: string,
   runtimeOptions?: ConversationRuntimeOptions,
   idempotencyKey: string = crypto.randomUUID(),
+  attachments?: ChatAttachment[],
 ): Promise<AcceptedConversationSubmission> {
   const capability = snapshot.capability;
   const operation: ConversationControlOperation = capability.kind === 'live-send'
@@ -2804,6 +2806,7 @@ export async function submitConversationControl(
       expected_revision: capability.revision,
       expected_generation: snapshot.ownership.generation,
       message,
+      ...(attachments?.length ? { attachments } : {}),
       ...(operation === 'resume-message-anchor' ? { message_anchor: messageAnchor } : {}),
       ...(runtimeOptions && Object.keys(runtimeOptions).length > 0 ? { runtime_options: runtimeOptions } : {}),
       idempotency_key: idempotencyKey,
