@@ -14,7 +14,6 @@ import type {
   GraphPayload,
   GraphQueryParams,
 } from "../types.js";
-import { extractMandibleIssueRefs } from "../utils/bug-refs.js";
 import { graphSpecForMode, parseSince } from "./spec.js";
 import { selectGraphForDisplay } from "./selection.js";
 import { parseJsonObject } from "../row-coerce.js";
@@ -274,11 +273,8 @@ function addAuthNodesAndEdges(
 
   for (const auth of authRows) {
     const refs = new Set<string>();
-    if (auth.commit_message) {
-      extractMandibleIssueRefs(auth.commit_message).forEach((ref) => refs.add(ref));
-    }
     try {
-      for (const field of [auth.issue_references, auth.issue_closures, auth.issue_ids, auth.issues]) {
+      for (const field of [auth.issue_references, auth.issue_closures, auth.issues]) {
         const parsed = field ? JSON.parse(field) : [];
         if (Array.isArray(parsed)) parsed.forEach((ref) => typeof ref === "string" && refs.add(ref));
       }

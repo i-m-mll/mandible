@@ -17,7 +17,7 @@ import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 185;
+export const BASELINE_SCHEMA_VERSION = 186;
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -758,10 +758,6 @@ const DEFAULT_SETTINGS: ReadonlyArray<readonly [string, string]> = [
   [
     "multiplexer",
     "both"
-  ],
-  [
-    "auto_close_issues_on_merge",
-    "true"
   ],
   [
     "console_pinned_sessions",

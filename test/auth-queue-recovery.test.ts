@@ -77,7 +77,6 @@ describe("auth queue", () => {
       const emittedResult = `MANDIBLE_MERGE_RESULT ${JSON.stringify({
         merge_sha: mergeSha,
         repo_id: path.basename(repo),
-        auto_close_issues: [],
         declared_issues: [],
       })}\n`;
       db.prepare("UPDATE auth_requests SET output = ? WHERE id = ?")
@@ -145,7 +144,7 @@ describe("auth queue", () => {
 
       expect(recovered.exit_code).toBe(0);
       expect(recovered.output).toContain(`"merge_sha":"${mergeSha}"`);
-      expect(recovered.output).toContain('"auto_close_issues":["abc1234"]');
+      expect(recovered.output).not.toContain("auto_close_issues");
       expect(git(repo, ["write-tree"])).toBe(pinned.merge_candidate_tree_sha);
       expect(git(repo, ["status", "--porcelain", "--untracked-files=no"])).toBe("");
       const evidence = db.prepare(

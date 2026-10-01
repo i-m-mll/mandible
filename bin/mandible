@@ -40,7 +40,6 @@
 #   work-unit <subcommand>           Policy-free work-unit lifecycle client
 #   trash <subcommand>               Reversible branch/worktree trash custody
 #   issue-file <subcommand>          Read/write the .issue helper file
-#   commit trailer [issue...]        Render Mandible-Issue trailers
 #   session link-issue <id> ...      Link sessions to issues
 #   search "<query>" [opts]          Search chat history across providers
 #   help                             Show this help
@@ -96,8 +95,6 @@ Commands:
   work-unit <subcommand>           Policy-free work-unit lifecycle client
   trash <subcommand>               Reversible branch/worktree trash custody
   issue-file <subcommand>          Read/write the .issue helper file
-  commit trailer [issue...]        Render Mandible-Issue trailers
-  commit linked --issue <id> ...   Agent-key linked commit (Mandible-Issue trailers)
   session link-issue <id> ...      Link sessions to issues
   search "<query>" [opts]          Search chat history across providers
   help                             Show this help
@@ -161,7 +158,6 @@ case "${1:-}" in
   work-unit) shift; exec "$MANDIBLE_CLI_DIR/work-unit.sh" "$@" ;;
   trash) shift; exec "$MANDIBLE_CLI_DIR/trash.sh" "$@" ;;
   issue-file) shift; exec "$MANDIBLE_CLI_DIR/issue-file.sh" "$@" ;;
-  commit) shift; exec "$MANDIBLE_CLI_DIR/commit.sh" "$@" ;;
   session) shift; exec "$MANDIBLE_CLI_DIR/session.sh" "$@" ;;
   search)  shift; exec "$MANDIBLE_CLI_DIR/search.sh" "$@" ;;
   help) shift; if (( $# )); then exec "${NODE_BIN:-node}" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help "$@"; else usage; fi ;;

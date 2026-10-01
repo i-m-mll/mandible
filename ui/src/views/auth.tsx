@@ -222,17 +222,6 @@ function formatNumber(value: number): string {
   return value.toLocaleString();
 }
 
-function extractMandibleIssueRefs(message: string): string[] {
-  if (!message) return [];
-  const refs: string[] = [];
-  const regex = /^Mandible-Issue:\s+(\S+)/gm;
-  let match;
-  while ((match = regex.exec(message)) !== null) {
-    refs.push(match[1]);
-  }
-  return refs;
-}
-
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean)));
 }
@@ -850,13 +839,11 @@ function AuthRequestDetail({
 
   const sessionId = request.session_id;
   const structuredReferenceIds = request.issue_references;
-  const structuredLegacyIds = request.issue_ids;
   const referenceRefs = useMemo(
     () => uniqueStrings([
       ...(Array.isArray(structuredReferenceIds) ? structuredReferenceIds : []),
-      ...(Array.isArray(structuredLegacyIds) ? structuredLegacyIds : extractMandibleIssueRefs(commitMsg)),
     ]),
-    [structuredReferenceIds, structuredLegacyIds, commitMsg]
+    [structuredReferenceIds]
   );
   const closureRefs = useMemo(
     () => uniqueStrings([

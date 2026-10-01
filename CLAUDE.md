@@ -173,7 +173,6 @@ The auth queue is the mechanism for protected-branch merges. Full protocol is in
 - Auth results arrive in the session inbox at next session start
 - `--issue` / `--ref-issue` attach reference-only issue context for review and tracking; they do not close issues on merge
 - Use `--closes-issue <id>` only when a successful protected-branch merge should close that issue
-- `Bug:` commit trailers are work-tracking references. Only explicit `Closes:` / `Resolves:` trailers or `--closes-issue` are closure signals
 
 ### Production runtime gate
 

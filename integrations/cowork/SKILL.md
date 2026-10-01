@@ -122,12 +122,6 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - `mandible instructions targets list|add|rm <path> [--mode managed-block|standalone]` - Configure where the generated Mandible instruction fragment is written.
 - `mandible instructions post-export get|set|clear <command>` - Configure an optional command to run after instruction targets refresh, such as a module compiler.
 
-## Commit Trailers
-
-- `Mandible-Issue: <ref>` is a work-tracking reference link.
-- `Closes-Mandible-Issue: <ref>` is an explicit closure signal.
-- Commit trailers are optional interface metadata; commits without trailers are valid but unlinked.
-
 ## Auth Requests
 
 - Protected-branch merges are asynchronous: submit an auth request, stop, and let the user approve in Mandible.

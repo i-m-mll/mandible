@@ -3905,7 +3905,7 @@ export type ExportAndTrackRequest = {
   branch?: string | null;
   /** Explicit project-checkout id; defaults to the Space's project checkout. */
   repo_id?: string | null;
-  /** Issue refs for the `Mandible-Issue:` trailer on the docs commit (required). */
+  /** Issue refs for ledger links to the exported commit (required). */
   issues: string[];
   /** Commit subject; a deterministic default is used when omitted. */
   message?: string | null;

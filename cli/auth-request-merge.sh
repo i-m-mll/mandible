@@ -53,38 +53,7 @@ read_mandible_toml_value() {
   ' "$config_file"
 }
 
-# --- Canonical change message composition (issue 7d64d8f) ---
-#
-# Machine-owned parts (the "Merge <branch>: " subject prefix, the
-# "Verification:" section, and the Mandible issue trailers) are composed here
-# from explicit flags. They are never recovered by parsing agent prose, so an
-# agent cannot smuggle a closure trailer or a forged verification claim into
-# the durable merge record through the message body.
-
-# Trailers are reference-only. Closure is carried exclusively by the request's
-# structured issue_closures field: it stays editable after approval while the
-# message is frozen, and cli/auth-merge.sh reads `Closes-Mandible-Issue:` out of
-# commit messages as a live closure instruction, so a closure trailer inside a
-# signed message could disagree with the authorization actually executed.
-# Issue 529f0f2 tracks freezing the structured field; until then the trailer
-# must not exist. A plain `Mandible-Issue:` trailer has no control effect.
-change_message_trailers() {
-  local ref
-  local emitted=""
-  for ref in ${ISSUE_REFERENCES[@]+"${ISSUE_REFERENCES[@]}"} ${ISSUE_CLOSURES[@]+"${ISSUE_CLOSURES[@]}"}; do
-    case "
-${emitted}" in
-      *"
-${ref}
-"*) continue ;;
-    esac
-    emitted="${emitted}${ref}
-"
-    printf 'Mandible-Issue: %s\n' "$ref"
-  done
-}
-
-# A ref carrying whitespace or a newline could forge extra trailer lines.
+# Canonical message fields are composed from explicit inputs.
 validate_issue_ref_tokens() {
   local ref
   for ref in ${ISSUE_REFERENCES[@]+"${ISSUE_REFERENCES[@]}"} ${ISSUE_CLOSURES[@]+"${ISSUE_CLOSURES[@]}"}; do
@@ -95,8 +64,8 @@ validate_issue_ref_tokens() {
   done
 }
 
-# The Verification section is machine-owned: single non-empty paragraph, no
-# trailer-shaped lines, no '#'-leading lines. Mirrors the daemon-side check in
+# The Verification section is machine-owned: single non-empty paragraph,
+# no '#'-leading lines. Mirrors the daemon-side check in
 # src/auth-change-message.ts.
 validate_verification_text() {
   local text="$1"
@@ -111,9 +80,9 @@ validate_verification_text() {
     exit 2
   fi
   local offending
-  offending=$(printf '%s\n' "$trimmed" | grep -nE '^#|^[A-Za-z][A-Za-z0-9_-]*:([[:space:]].*)?$' || true)
+  offending=$(printf '%s\n' "$trimmed" | grep -nE '^#' || true)
   if [[ -n "$offending" ]]; then
-    echo "Error: --verification text must not contain '#'-leading or trailer-shaped lines:" >&2
+    echo "Error: --verification text must not contain '#'-leading lines:" >&2
     printf '%s\n' "$offending" >&2
     exit 2
   fi
@@ -134,16 +103,16 @@ canonicalize_verification_text() {
   '
 }
 
-# Refuse agent-authored text that claims a machine-owned section or trailer.
+# Refuse agent-authored text that claims a machine-owned section.
 reject_machine_owned_lines() {
   local body="$1"
   local offending
   offending=$(printf '%s\n' "$body" |
-    grep -nE '^(Verification:|Mandible-Issue:|Closes-Mandible-Issue:)' || true)
+    grep -nE '^Verification:' || true)
   if [[ -n "$offending" ]]; then
     echo "Error: the change message may not author machine-owned lines:" >&2
     printf '%s\n' "$offending" >&2
-    echo "Use --verification for the Verification section and --issue/--closes-issue for trailers." >&2
+    echo "Use --verification for the Verification section." >&2
     exit 2
   fi
   # git's commit-message cleanup can drop a '#'-leading line, which would make
@@ -162,19 +131,16 @@ compose_change_message() {
   local branch_name="$1"
   local body="$2"
   local verification="$3"
-  local trailers="$4"
 
   # Multi-line values travel through the environment: BSD awk rejects embedded
   # newlines in -v assignments.
   printf '%s\n' "$body" | \
     MANDIBLE_CM_BRANCH="$branch_name" \
     MANDIBLE_CM_VERIFICATION="$verification" \
-    MANDIBLE_CM_TRAILERS="$trailers" \
     awk '
     BEGIN {
       branch = ENVIRON["MANDIBLE_CM_BRANCH"]
       verification = ENVIRON["MANDIBLE_CM_VERIFICATION"]
-      trailers = ENVIRON["MANDIBLE_CM_TRAILERS"]
     }
     { sub(/\r$/, ""); lines[++n] = $0 }
     END {
@@ -212,7 +178,6 @@ compose_change_message() {
         }
         printf "\nVerification:\n%s\n", verification
       }
-      if (trailers != "") printf "\n%s", trailers
     }
   '
 }
@@ -582,7 +547,7 @@ if [[ $change_message_set -eq 1 ]]; then
   verification_text=$(printf '%s\n' "$verification_text" | canonicalize_verification_text)
 
   commit_message=$(compose_change_message \
-    "$branch" "$change_message_body" "$verification_text" "$(change_message_trailers)")
+    "$branch" "$change_message_body" "$verification_text")
   if [[ -z "$commit_message" ]]; then
     echo "Error: the change message could not be composed" >&2
     exit 1

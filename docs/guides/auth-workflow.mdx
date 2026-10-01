@@ -22,7 +22,7 @@ This guide walks through the complete lifecycle of an authenticated operation, f
 
 ## 1. Agent Completes Work on a Feature Branch
 
-The agent has been working in a feature branch worktree — say `feature/add-dark-mode`. It has made commits using the agent signing key, each with a `Mandible-Issue:` trailer linking to the tracking issue. The work is done, tests pass, and the agent is ready to merge into the protected branch.
+The agent has been working in a feature branch worktree — say `feature/add-dark-mode`. It has made commits using the agent signing key, with the work unit linked to its tracking issue in the ledger. The work is done, tests pass, and the agent is ready to merge into the protected branch.
 
 At this point, the agent cannot merge directly. The protected branch requires user authentication (a YubiKey signature). If the agent needs to check whether a request already exists and does not know the request ID, it first runs `mandible auth list --repo <repo> --head <branch> --base <branch>`. If other requests are already queued for the repo, it can run `mandible auth check --branch <branch> --repo <repo>` to confirm pairwise independence before submitting. Then it submits an auth request.
 
@@ -38,7 +38,7 @@ mandible auth request feature/add-dark-mode \
   --no-watch
 ```
 
-For merges, the `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, runs Mandible's read-only merge preflight, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close. To replace reviewed bytes, pass `--supersedes <request>` and carry every staged action identically or dispose it with repeatable `--drop-superseded-action <ordinal>:<reason>`.
+For merges, the `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, runs Mandible's read-only merge preflight, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close. To replace reviewed bytes, pass `--supersedes <request>` and carry every staged action identically or dispose it with repeatable `--drop-superseded-action <ordinal>:<reason>`.
 
 The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results are delivered asynchronously via the inbox.
 
@@ -111,7 +111,7 @@ The API receives a payload roughly like:
   "additions": 340,
   "deletions": 45,
   "diff_summary": "src/theme.ts | 120 ++++...\nsrc/settings.tsx | 85 +++...",
-  "commit_message": "feat: dark mode support\n\nMandible-Issue: abc1234",
+  "commit_message": "feat: dark mode support",
   "spec_content": "Adds dark mode toggle to the settings panel...",
   "issues": ["abc1234"],
   "session_id": "sess-xyz",
@@ -223,7 +223,7 @@ Other requests are marked `superseded` only when Mandible can prove they identif
 Mandible resolves associated work units:
 1. Any work unit with `auth_request_id` matching this request.
 2. Any work unit whose `branch` matches `feature/add-dark-mode`.
-3. Any work unit linked to issue `abc1234` (from the `Mandible-Issue:` trailer).
+3. Any work unit linked to issue `abc1234` through structured ledger records.
 
 This closes the loop between the auth queue, the issue tracker, and the work-unit lifecycle.
 

@@ -3,8 +3,6 @@ import type { SSEEvent, SseEvent, StartupCommitInfo } from "./types.js";
 import type { ResolvedClientIdentity } from "./server.js";
 import { getDb } from "./db.js";
 import { isSpaceEvent, type SpaceEvent } from "./spaces/events.js";
-// Issue 1624ee9 — shared Mandible-Issue trailer parsing.
-import { extractMandibleIssueRefs } from "./utils/bug-refs.js";
 
 const MAX_CLIENT_BUFFER_BYTES = 1024 * 1024;
 
@@ -130,17 +128,17 @@ export class SseManager {
       const db = getDb();
       const cutoff = Date.now() - 60_000;
       const rows = db.prepare(
-        `SELECT id, title, commit_message, repo FROM auth_requests
+        `SELECT id, title, repo FROM auth_requests
          WHERE status = 'completed' AND exit_code = 0 AND resolved_at > ?
          ORDER BY resolved_at DESC`
-      ).all(cutoff) as Array<{ id: string; title: string; commit_message: string; repo: string | null }>;
+      ).all(cutoff) as Array<{ id: string; title: string; repo: string | null }>;
       recentRequests = rows.map((r) => ({ id: r.id, title: r.title }));
       for (const row of rows) {
         if (!row.repo) continue;
-        // Issue 1624ee9 — was a single-match regex that dropped every trailer
-        // after the first. The reload banner already renders "See N issues",
-        // so a multi-issue merge must contribute all of its refs.
-        for (const issueId of extractMandibleIssueRefs(row.commit_message)) {
+        const links = db.prepare(
+          "SELECT issue_id FROM ledger_auth_issue_links WHERE auth_request_id = ?"
+        ).all(row.id) as Array<{ issue_id: string }>;
+        for (const { issue_id: issueId } of links) {
           issueRefs.push({ repo_id: row.repo, issue_id: issueId });
         }
       }
