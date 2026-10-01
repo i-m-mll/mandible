@@ -757,10 +757,6 @@ const DEFAULT_SETTINGS: ReadonlyArray<readonly [string, string]> = [
     "both"
   ],
   [
-    "auto_close_issues_on_merge",
-    "true"
-  ],
-  [
     "console_pinned_sessions",
     "[]"
   ],

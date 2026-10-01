@@ -33,17 +33,10 @@
 #       Caveats:
 #       <agent-authored; omitted when empty>
 #
-#       Mandible-Issue: <ref>
-#
 #   The machine-owned "Verification:" section is inserted immediately before a
 #   "Caveats:" heading when one is present, otherwise appended after the body.
-#   Trailers are derived from --issue / --closes-issue only, never parsed from
-#   prose, and are always reference-only "Mandible-Issue:" lines. A canonical
-#   message never carries "Closes-Mandible-Issue:": closure is carried solely by
-#   the request's structured issue_closures field, so the frozen signed message
-#   can never disagree with the authorization that actually runs (issue
-#   529f0f2). Authoring a "Verification:" heading or any Mandible issue trailer
-#   inside the message is an error, as is a "#"-leading line.
+#   Issue associations and closures are carried only in structured fields.
+#   Authoring a "Verification:" heading or a "#"-leading line is an error.
 #
 #   With no message flag, no change message is submitted and the merge keeps
 #   git's own default merge message.

@@ -463,21 +463,3 @@ mandible_issue_file_write() {
     done
   } > "$path"
 }
-
-mandible_commit_trailers() {
-  local issues=("$@")
-  if (( ${#issues[@]} == 0 )); then
-    local discovered_issue
-    while IFS= read -r discovered_issue; do
-      issues+=("$discovered_issue")
-    done < <(mandible_issue_file_read "$PWD")
-  fi
-  if (( ${#issues[@]} == 0 )); then
-    mandible_ledger_die "No issues provided and no .issue file found." 2
-    return $?
-  fi
-  local issue
-  for issue in "${issues[@]}"; do
-    [[ -z "$issue" ]] || printf 'Mandible-Issue: %s\n' "$issue"
-  done
-}

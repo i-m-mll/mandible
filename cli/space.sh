@@ -477,8 +477,7 @@ cmd_promote_docs() {
 
   # Delegate submission to the standard auth-request CLI. The proxy carries the
   # docs-branch commits, each of which is an agent-key linked commit with a
-  # Mandible-Issue trailer (export backend contract), so the auth.ts trailer
-  # gate passes; a bare-commit docs branch would be rejected.
+  # structured ledger association.
   "$auth_request" "$proxy" --title "$title" --issue "$issue" --no-watch
 }
 

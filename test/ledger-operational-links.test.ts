@@ -216,7 +216,7 @@ describe("ledger operational links", () => {
 	const authResults = syncAuthRequestLedgerLinks(db, {
 	  auth_request_id: "auth_1",
 	  repo_ref: project.checkout.root,
-	  issue_ids: ["abc1234"],
+	  issue_references: ["abc1234"],
 	  commit_message: "Merge work\n\nMandible-Issue: abc1234\n",
     });
 
@@ -235,7 +235,7 @@ describe("ledger operational links", () => {
 	).toEqual({ issue_id: issue.id, link_type: "references" });
   });
 
-  it("extracts only Mandible-specific trailers from auth commit messages", () => {
+  it("ignores all issue-looking text in auth commit messages", () => {
     const project = createProject("trailers");
     const referenced = createIssue(project.project.id, "abc1234");
     const closed = createIssue(project.project.id, "def5678");
@@ -268,16 +268,8 @@ describe("ledger operational links", () => {
       ].join("\n"),
     });
 
-    expect(results.map((result) => result.ok ? result.issue_id : result.issue_ref).sort())
-      .toEqual([closed.id, referenced.id].sort());
-    expect(
-      db.prepare(
-        "SELECT issue_id, link_type FROM ledger_auth_issue_links WHERE auth_request_id = 'auth_trailers' ORDER BY issue_id",
-      ).all(),
-    ).toEqual([
-      { issue_id: referenced.id, link_type: "references" },
-      { issue_id: closed.id, link_type: "resolves" },
-    ].sort((a, b) => a.issue_id.localeCompare(b.issue_id)));
+    expect(results).toEqual([]);
+    expect(db.prepare("SELECT * FROM ledger_auth_issue_links WHERE auth_request_id = 'auth_trailers'").all()).toEqual([]);
   });
 
   it("backfills legacy operational rows and persists unresolved mismatches", () => {
@@ -384,7 +376,7 @@ describe("ledger operational links", () => {
     expect(completedEvent!.occurred_at).toBeLessThanOrEqual(timelineEvents[0].occurred_at);
   });
 
-  it("closes merge-output trailer issues during auth completion", () => {
+  it("ignores retired automatic-closure metadata", () => {
     const project = createProject("repo");
     const resolvedIssue = createIssue(project.project.id, "done789", "Trailer issue");
     insertAuthRequest({
@@ -400,14 +392,13 @@ describe("ledger operational links", () => {
     });
 
     expect(new LedgerStore(db).getIssue(resolvedIssue.id)).toMatchObject({
-      status: "closed",
-      resolution: "delivered",
+      status: "open",
     });
     expect(
       db.prepare(
         "SELECT link_type FROM ledger_auth_issue_links WHERE auth_request_id = ? AND issue_id = ?",
       ).get("auth_3", resolvedIssue.id),
-    ).toEqual({ link_type: "resolves" });
+    ).toBeUndefined();
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM ledger_comments WHERE issue_id = ?")
         .get(resolvedIssue.id),

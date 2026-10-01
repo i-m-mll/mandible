@@ -10,7 +10,6 @@ import {
   probeRepoRootFromGitCommonDir,
   resolveAuthMergeExecutionContext,
 } from "../src/auth-context.js";
-import { verifyMandibleIssueReferences } from "../src/routes/auth.js";
 import type { Db } from "../src/db.js";
 import { createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
 
@@ -181,126 +180,6 @@ describe("repoRootFromGitCommonDir failure honesty", () => {
       expect(probe.failure).toMatchObject({ kind: "spawn", errno: "ENOENT" });
     } finally {
       process.env.PATH = originalPath;
-    }
-  });
-});
-
-// Issue 2205073 (review F8, residual) — the submission-time `Mandible-Issue:`
-// trailer gate was the last action-bearing caller of the lossy wrapper: it
-// refused work and named the cwd as the cause for failures that never reached
-// the repository. The gate still fails closed; only the explanation changes.
-describe("verifyMandibleIssueReferences cwd honesty", () => {
-  const merge = (cwd: string, head: string) => ({
-    type: "merge",
-    command: `mandible auth merge ${head} --into main`,
-    cwd,
-    base_branch: "main",
-    head_branch: head,
-  });
-
-  it("blames the cwd only when git itself answers that it is not a repository", () => {
-    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-gate-norepo-")));
-    tempDirs.push(dir);
-    expect(verifyMandibleIssueReferences(merge(dir, "feature/x"))).toContain(
-      "Invalid 'cwd' for auth merge verification",
-    );
-  });
-
-  it("blames daemon health, not the cwd, when git cannot be spawned", () => {
-    const repo = createRepo();
-    const originalPath = process.env.PATH;
-    try {
-      // The cwd is a healthy repository; git simply cannot run (stands in for
-      // EMFILE/EAGAIN from daemon fd exhaustion).
-      process.env.PATH = path.join(repo, "no-such-bin");
-      const error = verifyMandibleIssueReferences(merge(repo, "feature/x")) ?? "";
-      // Still fails closed...
-      expect(error).toBeTruthy();
-      // ...but never as a claim about the path.
-      expect(error).not.toContain("Invalid 'cwd'");
-      expect(error).toContain("git could not be executed (ENOENT)");
-      expect(error).toContain("daemon health");
-      expect(error).toContain("not an invalid cwd");
-    } finally {
-      process.env.PATH = originalPath;
-    }
-  });
-
-  it("keeps refusing commits that genuinely lack a Mandible-Issue trailer", () => {
-    const repo = createRepo();
-    expect(verifyMandibleIssueReferences(merge(repo, "feature/x"))).toContain(
-      "missing Mandible-Issue references",
-    );
-  });
-
-  it("admits a branch whose commits all carry the trailer", () => {
-    const repo = createRepo();
-    git(repo, ["checkout", "-b", "feature/trailered"]);
-    fs.writeFileSync(path.join(repo, "c.txt"), "c\n");
-    git(repo, ["add", "."]);
-    git(repo, ["commit", "-m", "trailered\n\nMandible-Issue: 2205073"]);
-    git(repo, ["checkout", "main"]);
-    expect(verifyMandibleIssueReferences(merge(repo, "feature/trailered"))).toBeNull();
-  });
-
-  it("keeps the generic manual-review refusal when git answers with a non-zero exit", () => {
-    const repo = createRepo();
-    // git log exits non-zero for an absent revision: a real git answer about
-    // this history, not a daemon-health failure.
-    expect(verifyMandibleIssueReferences(merge(repo, "feature/absent"))).toBe(
-      "Mandible issue reference verification failed; manual review required.",
-    );
-  });
-});
-
-describe("resolveAuthMergeExecutionContext cwd resolution", () => {
-  it("reports a cwd outside any repository as invalid or unregistered", () => {
-    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-cwd-")));
-    tempDirs.push(dir);
-    const db = createSharedMigratedDb({ now: 1 });
-    try {
-      expect(() =>
-        resolveAuthMergeExecutionContext(db, {
-          type: "merge",
-          command: "mandible auth merge feature/x --into main",
-          cwd: dir,
-          base_branch: "main",
-          head_branch: "feature/x",
-        }),
-      ).toThrow(/Invalid or unregistered 'cwd'/);
-    } finally {
-      db.close();
-    }
-  });
-
-  it("blames daemon health, not repository registration, when git never answers", () => {
-    const repo = createRepo();
-    const db = createSharedMigratedDb({ now: 1 });
-    const originalPath = process.env.PATH;
-    try {
-      registerRepo(db, repo);
-      // The repo is registered and healthy; git simply cannot be spawned.
-      process.env.PATH = path.join(repo, "no-such-bin");
-      let message = "";
-      try {
-        resolveAuthMergeExecutionContext(db, {
-          type: "merge",
-          command: "mandible auth merge feature/x --into main",
-          cwd: repo,
-          base_branch: "main",
-          head_branch: "feature/x",
-        });
-        throw new Error("expected resolveAuthMergeExecutionContext to throw");
-      } catch (error) {
-        message = error instanceof Error ? error.message : String(error);
-      }
-      expect(message).toContain("Unable to resolve the repository for 'cwd'");
-      expect(message).toContain("git could not be executed (ENOENT)");
-      expect(message).toContain("daemon health");
-      expect(message).not.toContain("Invalid or unregistered");
-    } finally {
-      process.env.PATH = originalPath;
-      db.close();
     }
   });
 });

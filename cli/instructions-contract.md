@@ -48,7 +48,6 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - {{command issue-file.path}} - Resolve the git-root .issue helper file path for a caller-supplied or current working directory.
 - {{command issue-file.read}} - Read newline-delimited issue refs from the git-root .issue helper file. Blank lines and # comments are ignored.
 - {{command issue-file.write}} - Write newline-delimited issue refs to the git-root .issue helper file for policy wrapper auto-discovery.
-- {{command commit.trailer}} - Render Mandible-Issue trailers for explicit issues, or from the nearest worktree .issue file when no issues are passed.
 - {{command session.link-issue}} - Link an existing Mandible session to an issue/repo pair through the supported client surface.
 - {{command conversations.star}} - Star exactly one durable conversation resolved by exact conversation id, exact provider session id, or the ambient provider session.
 - {{command conversations.unstar}} - Unstar exactly one durable conversation resolved without prefix ambiguity.
@@ -117,12 +116,6 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - {{command user.grant.add-or-rm-or-list}} - Manage direct user or group project-role and global-capability grants.
 - {{command user.access}} - Report a user's effective project role and global capabilities, including group grants and operator implicit admin.
 
-## Commit Trailers
-
-- `Mandible-Issue: <ref>` is a work-tracking reference link.
-- `Closes-Mandible-Issue: <ref>` is an explicit closure signal.
-- Commit trailers are optional interface metadata; commits without trailers are valid but unlinked.
-
 ## Authored Markdown References
 
 - Authored ledger Markdown issue refs use `[issue:<id>]` or `[issue:<project>/<id>]`. These refs create normal text-reference relationships.
@@ -138,7 +131,7 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - Approval and merge execution are user actions. Agents do not approve, merge, or bypass the auth queue.
 - Multiple pending merge requests may coexist when they are pairwise independent. Run `mandible auth check` before submitting when unsure; submission rejects clashes with file-level conflict context. Planned related branches still integrate first.
 - Auth request rows are durable reviewed records. The operator may reject a pending request or use an audited recovery path. Ordinary withdrawal, revision, and replacement authority follows the request-bound delivery work unit's current user and active credential, not a provider session. Every mutation is guarded by lifecycle revision and custody generation. Changed reviewed bytes require explicit atomic supersession with exact terminal carry-or-dispose handling for every staged action. Delete and dismiss are not lifecycle operations.
-- A request may carry one canonical change message: the agent authors the outcome line, a `Why:` paragraph, and optional `Caveats:`, while the CLI owns the `Merge <branch>: ` subject prefix, the `Verification:` section, and the trailers. Trailers are reference-only `Mandible-Issue:` lines for every --issue and --closes-issue ref; a canonical message never carries `Closes-Mandible-Issue:`, so closure is carried solely by the structured issue_closures field and a frozen signed message can never disagree with the authorization that runs. The daemon validates that envelope against the structured fields before digesting, stores the canonical bytes with their SHA-256, and freezes both once the request leaves pending; `mandible auth merge` verifies that digest against the exact stored bytes and commits them, or aborts. Without a message the merge keeps git's own default merge message.
+- A request may carry one canonical change message: the author supplies the outcome, Why paragraph, and optional Caveats; the CLI composes the subject prefix and Verification section. Issue relationships and closure actions are carried exclusively by structured request fields. Commit messages have no issue-linking or closure semantics. Canonical message bytes and their digest are frozen after approval and verified at execution.
 
 ## Coordination
 
@@ -150,7 +143,7 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - Mutating work-unit requests may carry allowlisted ambient provider identity as `{provider, provider_session_id}`; Mandible persists only those fields on work units and never stores the caller environment.
 - Successful auth merges archive reliably linked terminal Codex worker threads. A resolved request-linked work unit can archive directly without `console_sessions` only when its `worker_provider_session_id` was explicitly bound by `work-unit activate --worker`; generic `provider` and `provider_session_id` remain ambient attribution only. Assigned stopped console or registered-session links remain valid. Live parent-role holders and active sessions are not archived. Codex resume dispatch unarchives the provider thread before sending follow-up work.
 - Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate.
-- The sourceable policy-free ledger mechanism client is `cli/ledger-client.sh`; it exposes work-unit, trash-custody, issue-title, session-link, issue-file, and commit-trailer helpers for policy wrappers.
+- The sourceable policy-free ledger mechanism client is `cli/ledger-client.sh`; it exposes work-unit, trash-custody, issue-title, session-link, and issue-file helpers for policy wrappers.
 
 ## Transports
 

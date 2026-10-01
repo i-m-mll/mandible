@@ -1,3 +1,4 @@
+import { linkCommitToLedgerIssue, resolveOperationalIssueRef } from "../ledger/operational-links.js";
 /**
  * Spaces document export/custody backend (Spaces child C13b, issue 8730bf9,
  * umbrella de56ffa).
@@ -15,15 +16,13 @@
  *   - C13a schema (`space_exports`, `src/db.ts` v85): the mutable tracking row.
  *     There is NO row until an explicit user commit — Mandible custody is the
  *     default (§2.2).
- *   - The new linked-commit surface (`cli/commit.sh` → `mandible commit
- *     linked`): every docs-branch commit is an AGENT-KEY linked commit carrying
- *     a `Mandible-Issue:` trailer (§3.2), never a bare `git commit`.
+ *   - Signed Git commits and explicit ledger issue links.
  *
  * ## Custody contract (FROZEN for C13c drift / C13d UI / C16 promotion)
  *
  *   - `exportAndTrack` is the ONLY path that creates/refreshes a `space_exports`
  *     row. It writes the serialized document to the managed docs-branch
- *     worktree, commits it with the linked-commit path, retains an immutable
+ *     worktree, commits it with the document commit path, retains an immutable
  *     pre-export snapshot artifact, and records `authority='repo'` +
  *     `status='clean'` + the export pointers.
  *   - `exportUntrackedCopy` writes a one-shot copy and NEVER touches
@@ -35,14 +34,13 @@
  *
  * Git/filesystem effects are injected through {@link ExportGitRunner} so the
  * custody + locking + tracking logic is unit-testable without a real repo. The
- * default runner shells out to git and to `mandible commit linked`.
+ * default runner shells out to git and to the signed Git commit path.
  */
 
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { Db } from "../db.js";
 import { getArtifact, ingestArtifact, projectArtifactPublicValue } from "../provider-artifacts.js";
@@ -78,6 +76,8 @@ export function serializeSpaceDocument(db: Db, spaceId: string, now = Date.now()
 // --- errors ------------------------------------------------------------------
 
 export type ExportErrorCode =
+  | "invalid_issue"
+  | "issue_link_failed"
   | "space_not_found"
   | "checkout_not_found"
   | "invalid_path"
@@ -252,7 +252,7 @@ export interface ExportGitRunner {
   /** True when the worktree has uncommitted changes outside `ignorePath`. */
   hasDirtyUnrelated(worktreeDir: string, ignorePath: string): boolean;
   /** Run an agent-key linked commit in `worktreeDir` for `path`/`issues`. */
-  commitLinked(args: {
+  commitDocument(args: {
     worktreeDir: string;
     relativePath: string;
     message: string;
@@ -275,15 +275,8 @@ function runGit(cwd: string, args: string[]): { ok: boolean; stdout: string; std
   };
 }
 
-/** Locate the repo `cli/commit.sh` from this module's location. */
-function commitScriptPath(): string {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  // dist/spaces/export.js → repo root is two levels up; cli/ sits beside src/.
-  return path.resolve(here, "..", "..", "cli", "commit.sh");
-}
-
 /**
- * Default runner: real git + the `mandible commit linked` linked-commit surface.
+ * Default runner: real git + the the signed Git commit path document commit operation.
  * Worktrees live under `<repoRoot>/.git/mandible-docs-worktrees/<branch>` so the
  * managed checkout is stable and isolated from feature worktrees.
  */
@@ -315,23 +308,13 @@ export const defaultExportGitRunner: ExportGitRunner = {
     return false;
   },
 
-  commitLinked(args) {
-    const script = commitScriptPath();
-    const result = spawnSync(
-      "bash",
-      [
-        script,
-        "linked",
-        "-C",
-        args.worktreeDir,
-        "--add",
-        args.relativePath,
-        "-m",
-        args.message,
-        ...args.issues.flatMap((id) => ["--issue", id]),
-      ],
-      { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } },
-    );
+  commitDocument(args) {
+    const staged = runGit(args.worktreeDir, ["add", "--", args.relativePath]);
+    if (!staged.ok) throw new ExportError("git_failed", "failed to stage exported document");
+    const result = spawnSync("git", ["commit", "-m", args.message], {
+      cwd: args.worktreeDir, encoding: "utf8",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
     if (result.status !== 0) {
       throw new ExportError("commit_failed", `linked commit failed: ${(result.stderr || result.stdout || "").trim()}`);
     }
@@ -390,7 +373,7 @@ export interface ExportAndTrackInput {
   path?: string | null;
   /** Docs branch override; defaults to the resolved per-repo/global branch. */
   branch?: string | null;
-  /** Issue refs for the `Mandible-Issue:` trailer on the docs commit. */
+  /** Issue refs linked to the exported commit in the ledger. */
   issues: string[];
   /** Commit subject; a deterministic default is used when omitted. */
   message?: string | null;
@@ -496,6 +479,11 @@ export async function exportAndTrack(
   const space = getSpace(db, input.spaceId);
   if (!space) throw new ExportError("space_not_found", `space not found: ${input.spaceId}`);
   const checkout = resolveCheckoutForSpace(db, space, input.repoId);
+  for (const issue of input.issues) {
+    if (!resolveOperationalIssueRef(db, issue, checkout.project_id).ok) {
+      throw new ExportError("invalid_issue", `Cannot resolve issue: ${issue}`);
+    }
+  }
   const settings = resolveDocsSettings(db, checkout.id, space.id);
   const branch = (input.branch ?? settings.branch).trim() || settings.branch;
   const relativePath = normalizeRepoRelativePath(input.path ?? settings.path);
@@ -544,12 +532,20 @@ export async function exportAndTrack(
     fs.writeFileSync(absPath, docText, "utf8");
 
     const message = (input.message ?? "").trim() || `Export Spaces document ${space.title} (${space.id})`;
-    const { commit, blobSha } = git.commitLinked({
+    const { commit, blobSha } = git.commitDocument({
       worktreeDir,
       relativePath,
       message,
       issues: input.issues,
     });
+
+    for (const issue of input.issues) {
+      const linked = linkCommitToLedgerIssue(db, {
+        commit_sha: commit, issue_ref: issue, repo_ref: checkout.project_id,
+        link_type: "references", source: "spaces_export", recordEvent: true,
+      });
+      if (!linked.ok) throw new ExportError("issue_link_failed", `Cannot link committed export to issue: ${issue}`);
+    }
 
     // The committed bytes become an immutable "last export" artifact too.
     const lastExport = ingestArtifact(

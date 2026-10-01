@@ -67,7 +67,6 @@ mandible issue title <id> [--json] [--graceful]
 mandible issue-file path [cwd]
 mandible issue-file read [cwd]
 mandible issue-file write [--cwd P] I...
-mandible commit trailer [I...]
 mandible session link-issue SESSION --issue I --repo R [--repo-name N] [--graceful]
 
 ## LOGS  (raw provider files, not DB)
@@ -170,7 +169,7 @@ supported sourceable functions are `mandible_work_unit_claim`,
 `mandible_work_unit_resolve`, `mandible_work_unit_release`,
 `mandible_issue_title`, `mandible_session_link_issue`,
 `mandible_issue_file_path`, `mandible_issue_file_read`,
-`mandible_issue_file_write`, and `mandible_commit_trailers`.
+and `mandible_issue_file_write`.
 
 The client takes explicit mechanism inputs such as issue, repo, branch, session,
 and work-unit IDs. It does not encode worktree layout, branch naming, signing,
@@ -179,10 +178,7 @@ daemon or file-RPC spool is unavailable can pass `--graceful` or set
 `MANDIBLE_LEDGER_GRACEFUL=1`.
 
 `.issue` files are newline-delimited issue refs at the git root. Blank lines and
-`#` comments are ignored when reading. `mandible commit trailer` renders only
-`Mandible-Issue:` trailers; any co-author or attribution trailers remain
-caller-supplied policy. `mandible issue title` exists so policy wrappers can
-derive default commit summaries without directly reading issue storage.
+`#` comments are ignored when reading. Issue relationships are structured ledger records; commit prose is not interpreted.
 
 ## Does NOT Exist (confirmed absent from source)
 

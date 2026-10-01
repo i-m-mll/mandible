@@ -5,11 +5,6 @@ import { LedgerStore, type ResolveIssueRefResult } from "./store.js";
 import { assertEvidenceMethod, systemAction } from "../identity/resolver.js";
 import { getAttributionEvidence } from "../users/store.js";
 import type { LedgerActorInput, LedgerIssueResolution } from "./types.js";
-// Issue 1624ee9 — shared trailer parsing (was two local regex copies here).
-import {
-  extractMandibleIssueRefs as extractMandibleIssueRefsFromCommitMessage,
-  extractMandibleClosingIssueRefs as extractMandibleClosingIssueRefsFromCommitMessage,
-} from "../utils/bug-refs.js";
 import { parseJsonObject } from "../row-coerce.js";
 
 export type OperationalLinkMismatchType = "unavailable" | "not_found" | "ambiguous";
@@ -290,9 +285,6 @@ export function syncAuthRequestLedgerLinks(
 ): OperationalLinkResult[] {
   const refs = new Map<string, "references" | "resolves">();
   const actionIssueClosures = authRequestActionIssueCloseRefs(db, input.auth_request_id);
-  for (const ref of input.issue_ids ?? []) refs.set(ref, "references");
-  for (const ref of extractMandibleIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "references");
-  for (const ref of extractMandibleClosingIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "resolves");
   for (const ref of input.issue_references ?? []) refs.set(ref, "references");
   for (const ref of input.issue_closures ?? []) refs.set(ref, "resolves");
   // Legacy issues were documented as close-on-merge; preserve that meaning.
@@ -912,11 +904,8 @@ function sourceFieldsForAuthRef(
   const fields: string[] = [];
   if ((input.issue_references ?? []).includes(ref)) fields.push("issue_references");
   if ((input.issue_closures ?? []).includes(ref)) fields.push("issue_closures");
-  if ((input.issue_ids ?? []).includes(ref)) fields.push("issue_ids");
   if ((input.issues ?? []).includes(ref)) fields.push("issues");
   if ((input.action_issue_closures ?? []).includes(ref)) fields.push("auth_request_actions");
-  if (extractMandibleIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message");
-  if (extractMandibleClosingIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message_closure");
   if (extractMergeResultIssueRefs(input.merge_output).includes(ref)) fields.push("merge_output");
   return fields;
 }
@@ -936,7 +925,6 @@ function authRequestActionIssueCloseRefs(db: Db, authRequestId: string): string[
 interface MergeResult {
   merge_sha?: string;
   declared_issues?: string[];
-  auto_close_issues?: string[];
 }
 
 function parseMergeResult(output?: string | null): MergeResult | null {
@@ -950,7 +938,6 @@ function parseMergeResult(output?: string | null): MergeResult | null {
     return {
       merge_sha: typeof parsed.merge_sha === "string" ? parsed.merge_sha : undefined,
       declared_issues: stringArray(parsed.declared_issues),
-      auto_close_issues: stringArray(parsed.auto_close_issues),
     };
   } catch {
     return null;
@@ -960,7 +947,7 @@ function parseMergeResult(output?: string | null): MergeResult | null {
 function extractMergeResultIssueRefs(output?: string | null): string[] {
   const result = parseMergeResult(output);
   if (!result) return [];
-  return [...(result.declared_issues ?? []), ...(result.auto_close_issues ?? [])];
+  return result.declared_issues ?? [];
 }
 
 function stringArray(value: unknown): string[] {

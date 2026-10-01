@@ -14,10 +14,6 @@ import {
 } from "../src/auth-change-message.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { migrate } from "../src/db.js";
-import {
-  extractMandibleClosingIssueRefs,
-  extractMandibleIssueRefs,
-} from "../src/utils/bug-refs.js";
 import { setupOperator } from "../src/users/store.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
@@ -316,26 +312,8 @@ describe("canonical change message envelope validation", () => {
     expect(validateCanonicalChangeMessage(VALID, FIELDS)).toBeNull();
   });
 
-  it("refuses a Closes-Mandible-Issue trailer outright", () => {
-    const forged = VALID.replace("Mandible-Issue: abc1234", "Closes-Mandible-Issue: abc1234");
-    expect(validateCanonicalChangeMessage(forged, FIELDS)).toContain("Closes-Mandible-Issue");
-  });
 
-  it("refuses a trailer set that does not match the structured issue fields", () => {
-    const forged = VALID.replace("Mandible-Issue: abc1234", "Mandible-Issue: deadbee");
-    expect(validateCanonicalChangeMessage(forged, FIELDS)).toContain("do not match");
 
-    const extra = VALID.replace(
-      "Mandible-Issue: abc1234",
-      "Mandible-Issue: abc1234\nMandible-Issue: deadbee",
-    );
-    expect(validateCanonicalChangeMessage(extra, FIELDS)).toContain("exactly 2");
-  });
-
-  it("refuses an issue trailer smuggled outside the trailer block", () => {
-    const forged = VALID.replace("Because.", "Because.\nMandible-Issue: deadbee");
-    expect(validateCanonicalChangeMessage(forged, FIELDS)).not.toBeNull();
-  });
 
   it("refuses a Verification section that does not match the structured field", () => {
     const forged = VALID.replace("Focused suites pass.", "I promise it works.");
@@ -353,17 +331,9 @@ describe("canonical change message envelope validation", () => {
     expect(validateCanonicalChangeMessage(forged, FIELDS)).toContain("'#'");
   });
 
-  it("refuses newline- or space-bearing issue refs", () => {
-    expect(
-      validateCanonicalChangeMessage(VALID, {
-        ...FIELDS,
-        issueClosures: ["abc1234\nMandible-Issue: deadbee"],
-      }),
-    ).toContain("whitespace or newlines");
-  });
 
   it("constrains the verification text itself", () => {
-    for (const verification of ["", "   ", "one\n\ntwo", "Why: sneaky", "#comment"]) {
+    for (const verification of ["", "   ", "one\n\ntwo", "#comment"]) {
       expect(validateCanonicalChangeMessage(VALID, { ...FIELDS, verification })).not.toBeNull();
     }
     expect(validateCanonicalChangeMessage(VALID, { ...FIELDS, verification: undefined }))
@@ -502,9 +472,6 @@ describe("auth request CLI change message composition", () => {
           "",
           "Caveats:",
           "Legacy requests keep git's default message.",
-          "",
-          "Mandible-Issue: 7d64d8f",
-          "Mandible-Issue: abc1234",
         ].join("\n"),
       );
       expect(String(body.commit_message)).not.toContain("Closes-Mandible-Issue");
@@ -544,8 +511,6 @@ describe("auth request CLI change message composition", () => {
           "",
           "Verification:",
           "Not recorded",
-          "",
-          "Mandible-Issue: 7d64d8f",
         ].join("\n"),
       );
     } finally {
@@ -579,13 +544,11 @@ describe("auth request CLI change message composition", () => {
     }
   });
 
-  it("refuses agent-authored machine-owned sections and trailers", async () => {
+  it("refuses agent-authored Verification headings and comment lines", async () => {
     const server = await submitServer();
     try {
       for (const offending of [
         "outcome\n\nVerification:\nI promise it works.",
-        "outcome\n\nWhy:\nBecause.\n\nMandible-Issue: deadbee",
-        "outcome\n\nWhy:\nBecause.\n\nCloses-Mandible-Issue: deadbee",
         "outcome\n\n# a comment line",
       ]) {
         const result = await submitAndCapture(
@@ -641,7 +604,7 @@ describe("auth request CLI change message composition", () => {
   it("constrains the machine-owned verification text", async () => {
     const server = await submitServer();
     try {
-      for (const verification of ["   ", "one\n\ntwo", "Why: sneaky", "#comment"]) {
+      for (const verification of ["   ", "one\n\ntwo", "#comment"]) {
         const result = await submitAndCapture(
           [
             "auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f",
@@ -659,7 +622,7 @@ describe("auth request CLI change message composition", () => {
     }
   });
 
-  it("refuses an issue ref that could forge an extra trailer", async () => {
+  it("refuses whitespace in structured issue references", async () => {
     const server = await submitServer();
     try {
       const result = await submitAndCapture(
@@ -734,17 +697,14 @@ describe("auth queue canonical message storage", () => {
   it("refuses a canonical submission whose envelope does not match the structured fields", () => {
     const { db, queue } = newQueue();
     try {
-      // A raw API client trying to smuggle a closure instruction into the
-      // signed bytes is rejected at the daemon boundary, not just by the CLI.
-      expect(() =>
-        queue.submit({
-          ...canonicalSubmission("outcome"),
-          commit_message: message("outcome").replace(
-            "Mandible-Issue: 7d64d8f",
-            "Closes-Mandible-Issue: 7d64d8f",
-          ),
-        }),
-      ).toThrow(expect.objectContaining({ status: 400 }));
+      const opaque = queue.submit({
+        ...canonicalSubmission("opaque issue-looking text"),
+        commit_message: message("opaque issue-looking text").replace(
+          "Mandible-Issue: 7d64d8f", "Closes-Mandible-Issue: deadbee"),
+      });
+      expect(opaque.issue_references).toEqual(["7d64d8f"]);
+      expect(opaque.issue_closures).toBeNull();
+      expect(opaque.issue_ids).toBeNull();
 
       expect(() =>
         queue.submit({
@@ -761,28 +721,19 @@ describe("auth queue canonical message storage", () => {
         queue.submit({ ...canonicalSubmission("outcome"), verification: undefined }),
       ).toThrow(expect.objectContaining({ status: 400 }));
 
-      expect(() =>
-        queue.submit({
-          ...canonicalSubmission("outcome"),
-          issue_references: ["7d64d8f", "deadbee"],
-        }),
-      ).toThrow(expect.objectContaining({ status: 400 }));
+      expect(queue.submit({
+        ...canonicalSubmission("new references"), issue_references: ["7d64d8f", "deadbee"],
+      }).issue_references).toEqual(["7d64d8f", "deadbee"]);
     } finally {
       db.close();
     }
   });
 
-  it("gives the reference trailers no closure effect on the ledger link graph", () => {
+  it("uses structured fields for reference-only ledger links", () => {
     const { db, queue } = newQueue();
     try {
-      // `applyAuthRequestLedgerCompletion` closes exactly the issues whose auth
-      // link is 'resolves'/'fixed_by', and `Closes-Mandible-Issue:` in a stored
-      // commit_message is what mints a 'resolves' link from message text. A
-      // canonical message can no longer carry that trailer, so its own trailers
-      // can never close anything; only the structured field can.
+      // Reference-only structured fields never create closure links.
       const request = queue.submit(canonicalSubmission("outcome"));
-      expect(extractMandibleClosingIssueRefs(request.commit_message)).toEqual([]);
-      expect(extractMandibleIssueRefs(request.commit_message)).toEqual(["7d64d8f"]);
 
       const links = db.prepare(
         "SELECT issue_id, link_type FROM ledger_auth_issue_links WHERE auth_request_id = ?",
@@ -1088,31 +1039,10 @@ describe("auth merge canonical message consumption", () => {
   });
 });
 
-describe("closure safety of merge-message trailers", () => {
-  // The auto-close scan reads `git log --format=%b base..HEAD`, a range that
-  // includes the merge commit itself, so the canonical message's own trailers
-  // are in scope. Reference-only trailers must stay inert.
-  function scan(): string {
-    return sourceHelper('collect_auto_close_issues "$(git rev-parse ORIG_HEAD)"', {
-      MANDIBLE_BASE: "http://127.0.0.1:9",
-      MANDIBLE_PORT: "9",
-    });
-  }
-
-  it("does not auto-close from a reference-only Mandible-Issue trailer", () => {
+describe("commit prose cannot select issue closures", () => {
+  it("ignores historical closure text during merge cleanup", () => {
     git(["-c", "commit.gpgsign=false", "merge", "--no-ff", "-m",
-      "Merge feature/canonical: outcome\n\nMandible-Issue: 7d64d8f", "feature/canonical"]);
-    expect(git(["log", "-1", "--format=%B", "HEAD"])).toContain("Mandible-Issue: 7d64d8f");
-    expect(scan().trim()).toBe("");
-  });
-
-  it("still honours a Closes-Mandible-Issue trailer that a branch commit carries", () => {
-    // The scan itself is unchanged; what changed is that a canonical change
-    // message can no longer produce this trailer, so a frozen signed message
-    // can never disagree with the request's structured issue_closures.
-    git(["-c", "commit.gpgsign=false", "merge", "--no-ff", "-m",
-      "Merge feature/canonical: outcome\n\nMandible-Issue: 7d64d8f\nCloses-Mandible-Issue: abc1234",
-      "feature/canonical"]);
-    expect(scan().trim()).toBe("abc1234");
+      "Merge feature/canonical: outcome\n\nCloses-Mandible-Issue: abc1234", "feature/canonical"]);
+    expect(sourceHelper('collect_cleanup_issue_ids', { MANDIBLE_AUTH_REQUEST_ID: "" }).trim()).toBe("");
   });
 });

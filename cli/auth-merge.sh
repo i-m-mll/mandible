@@ -1256,31 +1256,6 @@ current_repo_id() {
   basename "$root"
 }
 
-collect_auto_close_issues() {
-  local base_commit="$1"  # commit before merge (ORIG_HEAD)
-  # Check if auto-close is enabled via Mandible setting
-  local setting
-  # Issue 70dffb8 — same contract as the previous `curl -sf --max-time 2`:
-  # a single quiet 2s attempt; any failure leaves the setting empty, which
-  # keeps auto-close enabled by default.
-  setting=$(auth_merge_http_request GET "/api/settings/auto_close_issues_on_merge" "" 2 2>/dev/null) || setting=""
-  if [[ -n "$setting" ]]; then
-    local enabled
-    enabled=$(printf '%s' "$setting" | jq -r '.value // "true"' 2>/dev/null)
-    if [[ "$enabled" == "false" ]]; then
-      return 0
-    fi
-  fi
-
-  # Extract explicit Mandible closure trailers from merged commits.
-  local issue_ids
-  issue_ids=$(git log --format='%b' "${base_commit}..HEAD" 2>/dev/null \
-    | grep -oE '^Closes-Mandible-Issue: [^[:space:]]+' \
-    | awk '{print $2}' \
-    | sort -u)
-  printf "%s" "$issue_ids"
-}
-
 # Bug: 297677f — include issues declared in the auth request's issues field.
 # Bug: 7b83c1f — prefer issue_closures; issues remains legacy close-on-merge.
 collect_declared_issues() {
@@ -1320,12 +1295,7 @@ collect_declared_issues() {
 }
 
 collect_cleanup_issue_ids() {
-  local base_commit="$1"
-  {
-    collect_auto_close_issues "$base_commit"
-    printf '\n'
-    collect_declared_issues
-  } | sed '/^$/d' | sort -u
+  collect_declared_issues | sed '/^$/d' | sort -u
 }
 
 issue_ids_to_json() {
@@ -1341,16 +1311,13 @@ record_auth_merge_result() {
   local pre_merge_head="$1"
   local merge_sha
   merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-  local auto_ids
   local declared_ids
-  auto_ids=$(collect_auto_close_issues "$pre_merge_head")
   declared_ids=$(collect_declared_issues)
   err "MANDIBLE_MERGE_RESULT $(jq -nc \
     --arg merge_sha "$merge_sha" \
     --arg repo_id "$(current_repo_id)" \
-    --argjson auto_close_issues "$(issue_ids_to_json "$auto_ids")" \
     --argjson declared_issues "$(issue_ids_to_json "$declared_ids")" \
-    '{merge_sha:$merge_sha, repo_id:$repo_id, auto_close_issues:$auto_close_issues, declared_issues:$declared_issues}')"
+    '{merge_sha:$merge_sha, repo_id:$repo_id, declared_issues:$declared_issues}')"
 }
 
 # Bug: 4afab83 — post-merge build/restart logic has been moved to the auth_hooks

@@ -14,7 +14,7 @@ Agents work on feature branches freely. Protected-branch operations require expl
 4. You review and approve — Mandible executes the operation with your hardware key.
 5. The result is delivered to the agent's next session via the inbox.
 
-Auth types are generalized beyond merges: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, and `data-delete` are all supported. Requests support dependency chains, custom commit messages, post-action handoff notes, automatic `Mandible-Issue:` trailer extraction for reference-only issue links, and explicit close-on-merge issue links.
+Auth types are generalized beyond merges: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, and `data-delete` are all supported. Requests support dependency chains, custom commit messages, post-action handoff notes, structured reference-only issue links, and explicit close-on-merge issue links.
 
 ### Auth Hook System
 
@@ -91,7 +91,7 @@ Aggregates Mandible ledger issues from all registered repos:
 - Grouped by repo with open/closed counts
 - Issue detail view with title, labels, comments
 - Deep-linkable views
-- Auth request issue links distinguish reference-only `Mandible-Issue:`/`--issue` context from explicit `Closes-Mandible-Issue:`/`--closes-issue` closure targets
+- Auth request issue links distinguish reference-only `--issue` context from explicit `--closes-issue` closure targets
 - "Resume Work" spawns a first-class SDK session for any issue
 
 ### Project & Branch Tracking
@@ -264,7 +264,6 @@ Persisted in the `settings` table, configurable from Settings tab:
 | `notification_sound` / `quiet_hours` | macOS notification preferences |
 | `push_same_name_upstream` | Push branches to same-name remote refs |
 | `pretool_hooks_enabled` | Claude Code PreToolUse hooks |
-| `auto_close_issues_on_merge` | Close explicit `Closes-Mandible-Issue:` targets on auth merge |
 
 ## API Quick Reference
 
