@@ -19,6 +19,21 @@ export const DEFAULT_APP_RAIL_ORDER: AppRailOrderPreference = {
   },
 };
 
+export function hasExplicitStartupDestination(hash: string): boolean {
+  return /^#\/[^/?#]+/.test(hash);
+}
+
+export function startupRailDestination(
+  hash: string,
+  primary: readonly string[],
+  secondary: readonly string[],
+  showSecondary: boolean,
+): string | null {
+  if (hasExplicitStartupDestination(hash)) return null;
+  const first = primary[0] ?? (showSecondary ? secondary[0] : undefined);
+  return first ? `#/${first}` : null;
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }

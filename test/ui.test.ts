@@ -2310,8 +2310,12 @@ describe('app shell', () => {
     expect(reactFlowMockState.unmountCount).toBe(0);
   });
 
-  it('resolves an empty hash to the Spaces workspace on mount', async () => {
-    stubAppShellFetch();
+  it('resolves an empty hash to the first navigation destination on mount', async () => {
+    window.__MANDIBLE_BOOTSTRAP__ = { instance: mainInstance };
+    stubRailSettingsFetch(JSON.stringify({
+      version: 1,
+      groups: { primary: ['issues', 'console'], secondary: [] },
+    }));
     stubEventSource();
     window.history.replaceState(null, '', '');
     expect(window.location.hash).toBe('');
@@ -2320,8 +2324,8 @@ describe('app shell', () => {
 
     const nav = await screen.findByLabelText('Main navigation');
     await waitFor(() => {
-      const spacesNav = within(nav).getByLabelText('Spaces');
-      expect(spacesNav.getAttribute('aria-current')).toBe('page');
+      expect(within(nav).getByLabelText('Issues').getAttribute('aria-current')).toBe('page');
+      expect(window.location.hash).toBe('#/issues');
     });
     const graphNav = within(nav).getByLabelText('Graph');
     expect(graphNav.getAttribute('aria-current')).toBeNull();
@@ -2424,9 +2428,9 @@ describe('app shell', () => {
 describe('SettingsView', () => {
   it('offers only the native setup handoff from the browser', () => {
     render(h(SettingsView, { instance: mainInstance, settings: {}, onSave: async () => undefined }));
-    const action = screen.getByRole('link', { name: 'Open macOS setup action' });
+    const action = screen.getByRole('link', { name: 'Open macOS setup' });
     expect(action.getAttribute('href')).toBe('mandible://connections/setup');
-    const handoff = action.closest('.settings-view__daemon-card');
+    const handoff = action.closest('section');
     expect(handoff).not.toBeNull();
     expect(within(handoff!).queryByRole('button')).toBeNull();
   });
@@ -2493,6 +2497,12 @@ describe('SettingsView', () => {
       if (url === '/api/projects') {
         return new Response(JSON.stringify({ projects: [] }), { headers: { 'content-type': 'application/json' } });
       }
+      if (url === '/api/users/operator/signing-key') {
+        return new Response(JSON.stringify({
+          audit: { status: 'unconfigured', configured: false, fingerprint: null, operator_slug: 'operator', reason: null, hint: null },
+          credentials: [], git_config_read: true,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       return new Response('{}', { headers: { 'content-type': 'application/json' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -2527,7 +2537,6 @@ describe('SettingsView', () => {
     const chatLimit = screen.getByRole('spinbutton', { name: 'Chats per group' }) as HTMLInputElement;
     expect(chatLimit.value).toBe('5');
     fireEvent.input(chatLimit, { target: { value: '6' } });
-    fireEvent.click(chatLimit.parentElement?.querySelector('button') as HTMLButtonElement);
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('conversations.sidebar_group_limit', '6'));
   });
 
@@ -2563,6 +2572,12 @@ describe('SettingsView', () => {
       if (url === '/api/projects') {
         return new Response(JSON.stringify({ projects: [] }), { headers: { 'content-type': 'application/json' } });
       }
+      if (url === '/api/users/operator/signing-key') {
+        return new Response(JSON.stringify({
+          audit: { status: 'unconfigured', configured: false, fingerprint: null, operator_slug: 'operator', reason: null, hint: null },
+          credentials: [], git_config_read: true,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       return new Response('{}', { headers: { 'content-type': 'application/json' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -2575,7 +2590,7 @@ describe('SettingsView', () => {
 
     expect(await screen.findByDisplayValue('/tmp/old-codex.md')).toBeTruthy();
     const targetRow = screen.getByLabelText('Instruction target /tmp/old-codex.md').closest('.settings-view__instruction-target') as HTMLElement;
-    fireEvent.click(within(targetRow).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(within(targetRow).getByRole('button', { name: 'Remove instruction target /tmp/old-codex.md' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/settings/instructions-delivery',
@@ -2712,7 +2727,7 @@ describe('SettingsView', () => {
     fireEvent.input(screen.getByLabelText('New instruction target path'), {
       target: { value: '/tmp/50-mandible.generated.md' },
     });
-    fireEvent.click(screen.getByText('Add target'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add instruction target' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/settings/instructions-delivery',
@@ -2728,11 +2743,11 @@ describe('SettingsView', () => {
         }),
       }),
     ));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.targets', expect.any(String)));
 
     fireEvent.input(screen.getByLabelText('Instructions post-export hook'), {
       target: { value: 'bin/compile-agent-instructions' },
     });
-    fireEvent.click(screen.getByLabelText('Save instructions post-export hook'));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/settings/instructions-delivery',

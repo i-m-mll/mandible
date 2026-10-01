@@ -202,6 +202,26 @@ describe('Chat Query authority', () => {
     expect(replaced.blocks.map((item) => item.id)).toEqual(['replacement', 'b5']);
   });
 
+  it('evicts distant content while retaining the requested reading range', () => {
+    const large = (position: number) => ({ ...block(`b${position}`, position), content: 'x'.repeat(20_000) });
+    const first = window(
+      { kind: 'position', requested_value: 120, position: 120, block_id: 'b120', turn_id: null },
+      Array.from({ length: 241 }, (_, position) => large(position)),
+      601,
+    );
+    const distant = window(
+      { kind: 'position', requested_value: 600, position: 600, block_id: 'b600', turn_id: null },
+      Array.from({ length: 241 }, (_, index) => large(index + 360)),
+      601,
+    );
+    const merged = reconcileConversationWindow(conversationTranscriptFromWindow(first), distant);
+    expect(merged.blocks.at(-1)?.position).toBe(600);
+    expect(merged.blocks.find((item) => item.position === 0)).toBeUndefined();
+    expect(merged.blocks.reduce((bytes, item) => bytes + JSON.stringify(item).length * 2, 0))
+      .toBeLessThanOrEqual(16 * 1024 * 1024);
+    expect(merged.loaded_intervals.at(-1)).toEqual({ start: 360, end: 600 });
+  });
+
   it('merges each sidebar continuation without disturbing the existing prefix', () => {
     const merged = mergeSidebarPages(
       { limit: 1, groups: [group('pinned', ['a'], 'p1'), group('chats', ['x'], 'c1')] },

@@ -26,6 +26,7 @@ import type {
   ConversationChild,
   InstanceInfo,
   ConversationPositionWindow,
+  ConversationStructure,
   ConversationSource,
   ConversationSidebarGroup,
   ConversationSidebarConversation,
@@ -38,6 +39,7 @@ import {
   getConsoleSessionOptions,
   getConsoleRunOptions,
   getConversationWindow,
+  getConversationStructure,
   exportConversationBlocks,
   getConversationControl,
   getConversationLiveProjection,
@@ -441,22 +443,26 @@ async function warmSelectedConversationWindow(
   }
   if (!conversationId) return;
 
-  const target = normalizeWindowTarget({ target: 'initial' });
+  const target = normalizeWindowTarget({ target: 'initial', limit: 500, view: 'display' });
   const aggregateKey = conversationKeys.aggregate(conversationId);
   const aggregateAtStart = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
-  const window = await appQueryClient.fetchQuery({
-    queryKey: conversationKeys.window(conversationId, target),
-    queryFn: ({ signal }) => readConversationWindowWhenReady(
-      conversationId,
-      windowRequest(target, signal),
-    ),
-    staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
-  });
+  const [window, structure] = await Promise.all([
+    appQueryClient.fetchQuery({
+      queryKey: conversationKeys.window(conversationId, target),
+      queryFn: ({ signal }) => readConversationWindowWhenReady(
+        conversationId, windowRequest(target, signal)),
+      staleTime: WARMED_CHAT_QUERY_STALE_TIME_MS,
+    }),
+    readConversationStructureWhenReady(conversationId),
+  ]);
+  if (window.source_version_id !== structure.source_version_id || window.total !== structure.total) return;
   const current = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
   const aggregateAdvanced = current !== undefined
     && (aggregateAtStart === undefined || current.source_version_id !== aggregateAtStart.source_version_id);
   if (aggregateAdvanced && current.source_version_id !== window.source_version_id) return;
-  appQueryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, window));
+  appQueryClient.setQueryData(aggregateKey, {
+    ...reconcileConversationWindow(current, window), structure,
+  });
 }
 
 export async function warmInitialData(
@@ -790,6 +796,20 @@ async function readConversationWindowWhenReady(
         throw new ApiError('Chat content is temporarily unavailable. Retry to check again.', 503, 'freshness_pending');
       }
       await waitForConversationSourceUpdate(id, request.signal, remaining);
+    }
+  }
+}
+
+async function readConversationStructureWhenReady(id: string, signal?: AbortSignal): Promise<ConversationStructure> {
+  const deadline = Date.now() + CONVERSATION_WINDOW_PENDING_LIMIT_MS;
+  for (;;) {
+    try {
+      return await getConversationStructure(id, signal);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== 'freshness_pending') throw error;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw error;
+      await waitForConversationSourceUpdate(id, signal, remaining);
     }
   }
 }
@@ -1341,7 +1361,7 @@ export function ConversationDetail({
   const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
   const handledAnchorKeyRef = useRef<string | null>(null);
   const windowTargetJson = JSON.stringify({
-    ...normalizeWindowTarget(effectiveAnchor ?? { target: 'initial' }),
+    ...normalizeWindowTarget(effectiveAnchor ?? { target: 'initial', limit: 500 }),
     view: 'display' as const,
   });
   const windowTarget = useMemo(
@@ -1355,6 +1375,7 @@ export function ConversationDetail({
   const readAndReconcileWindow = useCallback(async (
     target: ReturnType<typeof normalizeWindowTarget>,
     read: () => Promise<ConversationPositionWindow>,
+    finalize?: (data: ConversationTranscriptData) => ConversationTranscriptData,
   ): Promise<ConversationPositionWindow> => {
     const aggregateKey = conversationKeys.aggregate(conversationId);
     const aggregateAtStart = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
@@ -1379,16 +1400,26 @@ export function ConversationDetail({
         predicate: (query) => currentWindowHash !== undefined && query.queryHash !== currentWindowHash,
       });
     }
-    queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
+    const reconciled = reconcileConversationWindow(current, incoming);
+    queryClient.setQueryData(aggregateKey, finalize ? finalize(reconciled) : reconciled);
     return incoming;
   }, [conversationId, queryClient, selectionGeneration]);
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const fetchConversationDetail = useCallback(
     ({ signal }: { signal: AbortSignal }) => {
-      const initialLoad = readAndReconcileWindow(
-        windowTarget,
-        () => readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal)),
-      );
+      let structure: ConversationStructure;
+      const initialLoad = readAndReconcileWindow(windowTarget, async () => {
+        const [window, selectedStructure] = await Promise.all([
+          readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal)),
+          readConversationStructureWhenReady(conversationId, signal),
+        ]);
+        if (selectedStructure.source_version_id !== window.source_version_id
+            || selectedStructure.total !== window.total) {
+          throw new ApiError('Conversation changed while opening; retry the reading position.', 409, 'freshness_pending');
+        }
+        structure = selectedStructure;
+        return window;
+      }, (data) => ({ ...data, structure }));
       registerInitialRouteLoad(initialLoad);
       return initialLoad;
     },
@@ -1405,15 +1436,13 @@ export function ConversationDetail({
   }, queryClient);
   const fetchAndReconcileWindow = useCallback(async (
     target: ReturnType<typeof normalizeWindowTarget>,
+    signal?: AbortSignal,
   ): Promise<ConversationPositionWindow> => {
     const displayTarget = { ...target, view: 'display' as const };
-    const key = conversationKeys.window(conversationId, displayTarget);
-    return readAndReconcileWindow(displayTarget, () => queryClient.fetchQuery({
-      queryKey: key,
-      queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(displayTarget, signal)),
-      staleTime: 0,
-    }));
-  }, [conversationId, queryClient, readAndReconcileWindow]);
+    return readAndReconcileWindow(displayTarget, () => readConversationWindowWhenReady(
+      conversationId, windowRequest(displayTarget, signal),
+    ));
+  }, [conversationId, readAndReconcileWindow]);
 
   const hydrateConversationDetails = useCallback(async (
     sources: readonly { blockId: string; position?: number; detailsLoaded?: boolean }[],
@@ -1434,6 +1463,7 @@ export function ConversationDetail({
         ),
         staleTime: 0,
       });
+      queryClient.removeQueries({ queryKey: conversationKeys.window(conversationId, target), exact: true, type: 'inactive' });
       const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
       if (!current) return;
       if (incoming.source_version_id !== current.source_version_id) {
@@ -1445,7 +1475,10 @@ export function ConversationDetail({
       if (!incoming.blocks.some((block) => block.id === source.blockId && block.details_loaded !== false)) {
         throw new Error('The expanded conversation block did not return its complete details.');
       }
-      queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, incoming));
+      queryClient.setQueryData(aggregateKey, reconcileConversationWindow(current, {
+        ...incoming,
+        blocks: incoming.blocks.map((block) => ({ ...block, details_loaded: true })),
+      }));
     }));
   }, [conversationId, conversationRequestKey, queryClient]);
   const handleExpandConversationDetails = useCallback(async (
@@ -1540,9 +1573,13 @@ export function ConversationDetail({
     }
   }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
-  const loadTranscriptAround = useCallback(async (position: number): Promise<ConversationHistoryLoadResult> => {
+  const loadTranscriptAround = useCallback(async (
+    position: number,
+    limit = 500,
+    signal?: AbortSignal,
+  ): Promise<ConversationHistoryLoadResult> => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
-    if (!aggregate || edgeLoading) return 'busy';
+    if (!aggregate) return 'busy';
     if (!Number.isSafeInteger(position) || position < 0 || position >= aggregate.total) {
       const failure = conversationLoadFailure(new Error(`Chat cannot load history at position ${position}.`), true, 'edge-newer');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
@@ -1552,11 +1589,10 @@ export function ConversationDetail({
       historyRetryRef.current = null;
       return 'covered';
     }
-    setEdgeLoading('newer');
     setNavigationError(null);
     historyRetryRef.current = { kind: 'around', position };
     try {
-      await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
+      await fetchAndReconcileWindow(normalizeWindowTarget({ position, limit }), signal);
       const updated = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
       if (!updated?.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) {
         throw new Error(`Conversation history did not include requested position ${position}.`);
@@ -1564,13 +1600,13 @@ export function ConversationDetail({
       historyRetryRef.current = null;
       return 'loaded';
     } catch (cause) {
+      if (signal?.aborted || cause instanceof CancelledError
+          || (cause instanceof Error && cause.name === 'AbortError')) return 'cancelled';
       const failure = conversationLoadFailure(cause, true, 'edge-newer');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
       return failure ? 'failed' : 'busy';
-    } finally {
-      if (selectionRef.current.generation === selectionGeneration) setEdgeLoading(null);
     }
-  }, [conversationId, edgeLoading, fetchAndReconcileWindow, queryClient, selectionGeneration]);
+  }, [conversationId, fetchAndReconcileWindow, queryClient, selectionGeneration]);
 
   const transcriptConsumer = useMemo<ConversationTranscriptConsumer | undefined>(() => {
     const aggregate = aggregateQuery.data;
@@ -1580,6 +1616,7 @@ export function ConversationDetail({
       sourceVersionId: aggregate.source_version_id,
       historyLoading: edgeLoading !== null,
       total: aggregate.total,
+      structure: aggregate.structure,
       loadedIntervals: aggregate.loaded_intervals,
       hasOlder: !aggregate.start_reached,
       hasNewer: !aggregate.end_reached,

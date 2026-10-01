@@ -123,6 +123,38 @@ describe("conversation blocks route pagination", () => {
 });
 
 describe("indexed conversation position window", () => {
+  it("keeps a reasoning title in compact display data and marks title-only leaves inert", async () => {
+    insertIndexedConversation(3);
+    const reasoning = (content: string, position: number): void => {
+      db.prepare(`UPDATE conversation_blocks SET type = 'thinking', content = ?, metadata_json = ?
+        WHERE conversation_id = 'conv-indexed' AND position = ?`).run(content, JSON.stringify({
+        source_event_type: "reasoning_summary",
+        chat_item: { type: "activity", activity_kind: "reasoning-summary", parts: [{ type: "text", text: content }] },
+      }), position);
+    };
+    reasoning("Check the source records", 2);
+    reasoning("Review the grouped rows\nA longer explanation stays lazy", 3);
+
+    const router = new Router();
+    registerConversationRoutes(router);
+    const response = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed?view=display" });
+    expect(response.status).toBe(200);
+    const blocks = (response.body as { blocks: Array<{ position: number; content: string; metadata_json: string; details_loaded?: boolean }> }).blocks;
+    const compact = blocks.filter((block) => block.position >= 2).map((block) => ({
+      content: block.content,
+      detailsLoaded: block.details_loaded,
+      metadata: JSON.parse(block.metadata_json),
+    }));
+    expect(compact).toMatchObject([
+      { content: "Check the source records", detailsLoaded: false, metadata: {
+        display_has_body: false, chat_item: { parts: [{ text: "Check the source records" }] },
+      } },
+      { content: "Review the grouped rows", detailsLoaded: false, metadata: {
+        display_has_body: true, chat_item: { parts: [{ text: "Review the grouped rows" }] },
+      } },
+    ]);
+  });
+
   it("expands the default tail to include the complete latest turn within the cap", async () => {
     insertIndexedConversation(260);
     db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = 'conv-indexed' AND type = 'user_message' AND position > 1").run();
@@ -216,6 +248,16 @@ describe("indexed conversation position window", () => {
       window: { start_position: 9841, end_position: 10_000, has_before: true, has_after: false, after_count: 0, limit: 160 },
     });
     expect((initial.body as { blocks: unknown[] }).blocks).toHaveLength(160);
+
+    const display = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed?view=display&position=5000&limit=80" });
+    expect(display.status).toBe(200);
+    expect(display.body).toMatchObject({ total: 10_000, target: { position: 5000 } });
+    expect((display.body as { blocks: unknown[] }).blocks).toHaveLength(80);
+
+    const structure = await router.invoke({ method: "GET", url: "/api/conversations/conv-indexed/structure" });
+    expect(structure.status).toBe(200);
+    expect(structure.body).toMatchObject({ total: 10_000 });
+    expect((structure.body as { rows: unknown[] }).rows).toHaveLength(10_000);
 
     const start = await router.invoke({
       method: "GET",

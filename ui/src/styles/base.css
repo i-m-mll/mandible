@@ -19,6 +19,12 @@ body {
   overscroll-behavior: none;
 }
 
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-chrome-faint);
+  opacity: 1;
+}
+
 .app-shell {
   --font-sans: var(--font-ui);
   font-family: var(--font-ui);

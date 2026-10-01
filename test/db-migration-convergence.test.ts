@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { CURRENT_SCHEMA_VERSION, MINIMUM_SUPPORTED_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
 import { MIGRATIONS } from "../src/db-migrations.js";
+import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { insertRawLedgerIssue, insertRawLedgerProject } from "./helpers/ledger-fixtures.js";
 import {
   builtinAuthHooks,
@@ -295,6 +296,7 @@ describe.sequential("schema convergence", () => {
       }
 
       expect(sqliteMaster(migrated)).toEqual(sqliteMaster(fresh));
+      expect(migrated.prepare("SELECT name FROM sqlite_master WHERE name = 'runtime_patches'").get()).toBeUndefined();
       expect(tableInfo(migrated)).toEqual(tableInfo(fresh));
       expect(metaRows(migrated)).toEqual(metaRows(fresh));
       expect(settingsRows(migrated)).toEqual(settingsRows(fresh));
@@ -303,6 +305,32 @@ describe.sequential("schema convergence", () => {
     } finally {
       migrated.close();
       fresh.close();
+    }
+  });
+
+  it("keeps nonempty retired patch history in place and in metadata backups", () => {
+    const dbPath = path.join(tempDir, "patch-history.db");
+    createFloorDatabase(dbPath);
+    const seed = new Database(dbPath);
+    try {
+      seed.prepare(`INSERT INTO runtime_patches
+        (id, fingerprint, commit_hash, diff_summary, applied_at, source, submitted)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run("historical-patch", "fingerprint", "commit", "unique patch history", 123, "manual", 1);
+    } finally {
+      seed.close();
+    }
+
+    const db = openDb(dbPath);
+    try {
+      expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
+      expect(db.prepare("SELECT id, diff_summary FROM runtime_patches").all())
+        .toEqual([{ id: "historical-patch", diff_summary: "unique patch history" }]);
+      const backup = buildMetadataBackupSql(db);
+      expect(backup).toContain('INSERT INTO "runtime_patches"');
+      expect(backup).toContain("unique patch history");
+    } finally {
+      db.close();
     }
   });
 

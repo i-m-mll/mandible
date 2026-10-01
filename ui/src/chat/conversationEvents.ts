@@ -111,13 +111,19 @@ export function conversationBlocksToStreamEvents(
     & Partial<Pick<ConversationBlock, 'parent_id'>>>,
 ): StreamEvent[] {
   const events: StreamEvent[] = [];
+  let lastPosition: number | null = null;
 
   for (const block of blocks) {
+    if (lastPosition !== null && block.position !== undefined && block.position > lastPosition + 1) {
+      events.push({ type: 'transcript:boundary' });
+    }
+    if (block.position !== undefined) lastPosition = block.position;
     const metadata = parseMetadata(block.metadata_json);
     const source = {
       blockId: block.id,
       ...(Number.isSafeInteger(block.position) ? { position: block.position } : {}),
       ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded }),
+      ...(typeof metadata.display_has_body === 'boolean' ? { hasBody: metadata.display_has_body } : {}),
       ...(block.parent_id ? { parentBlockId: block.parent_id } : {}),
       timestamp: block.timestamp || undefined,
       dagUuid: block.dag_uuid ?? undefined,

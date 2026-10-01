@@ -62,7 +62,6 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   { prefix: "/api/projects", category: "projects" },
   { prefix: "/api/provider-manifests", category: "providers" },
   { prefix: "/api/providers", category: "providers" },
-  { prefix: "/api/runtime", category: "runtime" },
   { prefix: "/api/settings", category: "settings" },
   { prefix: "/api/sessions", category: "sessions" },
   { prefix: "/api/spaces", category: "spaces" },

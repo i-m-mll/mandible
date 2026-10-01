@@ -14,12 +14,14 @@
 }
 
 .preview-copy-banner {
+  --preview-tooltip-bg: #3b2e14;
   position: relative;
   z-index: calc(var(--z-app-subdivision) + 1);
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
+  gap: 0.4rem;
   width: 100%;
   min-width: 0;
   min-height: 2.4rem;
@@ -31,6 +33,43 @@
   font-size: 0.8125rem;
   line-height: 1.35;
   text-align: center;
+}
+
+[data-theme='light'] .preview-copy-banner {
+  --preview-tooltip-bg: #fff0c7;
+}
+
+.preview-copy-banner__info {
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+}
+
+.preview-copy-banner__info:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 50%;
+}
+
+.preview-copy-banner__tooltip {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(28rem, calc(100vw - 2rem));
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--status-warning-fg);
+  border-radius: 6px;
+  background: var(--preview-tooltip-bg);
+  color: var(--status-warning-fg);
+  box-shadow: 0 6px 20px var(--neutral-alpha-12);
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.preview-copy-banner__info:is(:hover, :focus-visible) .preview-copy-banner__tooltip {
+  visibility: visible;
 }
 
 .app-shell__workspace > .rebuilding-splash {

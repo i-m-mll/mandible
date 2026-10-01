@@ -1111,6 +1111,39 @@ export type DelegatedSigningStatus = {
   missing_tools: string[];
 };
 
+export type OperatorSigningCredential = {
+  id: string;
+  type: string;
+  fingerprint: string;
+  label: string | null;
+};
+
+export type OperatorSigningKeyStatus = {
+  audit: {
+    status: 'ok' | 'no_operator' | 'unconfigured' | 'unresolvable' | 'missing_credential';
+    configured: boolean;
+    fingerprint: string | null;
+    operator_slug: string | null;
+    reason: string | null;
+    hint: string | null;
+  };
+  credentials: OperatorSigningCredential[];
+  git_config_read: boolean;
+};
+
+export async function getOperatorSigningKeyStatus(): Promise<OperatorSigningKeyStatus> {
+  const response = await apiGet('/api/users/operator/signing-key');
+  return (await parseMaybeJson(response)) as OperatorSigningKeyStatus;
+}
+
+export async function registerOperatorSigningKey(input:
+  | { source: 'configured' }
+  | { source: 'public_key'; public_key: string }
+): Promise<{ credential: OperatorSigningCredential; unchanged: boolean }> {
+  const response = await apiPost('/api/users/operator/signing-key', input);
+  return (await parseMaybeJson(response)) as { credential: OperatorSigningCredential; unchanged: boolean };
+}
+
 export async function getDelegatedSigningStatus(): Promise<DelegatedSigningStatus> {
   const response = await apiGet('/api/auth/clearances/signing');
   return (await parseMaybeJson(response)) as DelegatedSigningStatus;
@@ -2612,6 +2645,13 @@ export type ConversationWindowRequest =
   | { turn: string; limit?: number; view?: 'display'; signal?: AbortSignal }
   | { position: number; limit?: number; view?: 'display'; signal?: AbortSignal };
 
+export type ConversationStructure = import('../../src/contracts').ConversationStructure;
+
+export async function getConversationStructure(id: string, signal?: AbortSignal): Promise<ConversationStructure> {
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}/structure`, { signal });
+  return (await parseMaybeJson(resp)) as ConversationStructure;
+}
+
 export async function getConversationWindow(
   id: string,
   request: ConversationWindowRequest = {},
@@ -3479,64 +3519,6 @@ export async function updateAuthHook(id: string, fields: Partial<AuthHookInput> 
 
 export async function deleteAuthHook(id: string): Promise<void> {
   await apiDelete(`/api/auth/hooks/${id}`);
-}
-
-// ── Runtime (Zone 2) types & API ── Bug: cc4688b
-
-export type InstallMode = 'dev' | 'release-zone2' | 'release-bundled' | 'npm-global';
-
-export type RuntimeStatus = {
-  installMode: InstallMode;
-  zone2Path: string | null;
-  available: boolean;
-  commit: string | null;
-  branch: string | null;
-  patchCount: number;
-};
-
-export type RuntimePatch = {
-  id: string;
-  fingerprint: string | null;
-  commit_hash: string;
-  parent_hash: string | null;
-  diff_summary: string | null;
-  diff_stat: string | null;
-  applied_at: number;
-  reverted_at: number | null;
-  source: string;
-  session_id: string | null;
-  submitted: number;
-  submission_url: string | null;
-};
-
-export async function getRuntimeStatus(): Promise<RuntimeStatus> {
-  const response = await apiGet('/api/runtime/status');
-  return (await parseMaybeJson(response)) as RuntimeStatus;
-}
-
-export async function getRuntimePatches(): Promise<RuntimePatch[]> {
-  const response = await apiGet('/api/runtime/patches');
-  return (await parseMaybeJson(response)) as RuntimePatch[];
-}
-
-export async function bootstrapRuntime(): Promise<{ ok: boolean; message: string }> {
-  const response = await apiPost('/api/runtime/bootstrap');
-  return (await parseMaybeJson(response)) as { ok: boolean; message: string };
-}
-
-export async function updateRuntime(): Promise<{ ok: boolean; updated: boolean; message?: string }> {
-  const response = await apiPost('/api/runtime/update');
-  return (await parseMaybeJson(response)) as { ok: boolean; updated: boolean; message?: string };
-}
-
-export async function rollbackRuntime(): Promise<{ ok: boolean }> {
-  const response = await apiPost('/api/runtime/rollback');
-  return (await parseMaybeJson(response)) as { ok: boolean };
-}
-
-export async function resetRuntime(): Promise<{ ok: boolean }> {
-  const response = await apiPost('/api/runtime/reset');
-  return (await parseMaybeJson(response)) as { ok: boolean };
 }
 
 // ---------------------------------------------------------------------------

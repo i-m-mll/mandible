@@ -595,9 +595,6 @@
   font-family: var(--font-sans);
 }
 
-.work-search::placeholder {
-  color: var(--text-muted);
-}
 
 .work-sort {
   width: 100%;
@@ -653,9 +650,6 @@
   font-size: 13px;
 }
 
-.repo-card__filter::placeholder {
-  color: var(--text-muted);
-}
 
 .repo-card__sort {
   min-width: 150px;

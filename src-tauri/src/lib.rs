@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -634,79 +633,6 @@ fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("desktop.json"))
 }
 
-/// The Zone 2 runtime path: `~/.mandible/runtime/`.
-/// Bug: cc4688b — Zone 2 mutable runtime infrastructure
-/// Issue 24f0316 — Zone 2 holds agent-authored patches, which is durable
-/// state, so it moved under the durable root along with the rest of it.
-/// Mirrors `computeZone2Path()` in `src/runtime-manager.ts`.
-fn zone2_runtime_path() -> PathBuf {
-    mandible_home().join("runtime")
-}
-
-/// Bug: cc4688b — Zone 2 status: returns path and whether it exists
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-struct Zone2Status {
-    path: String,
-    available: bool,
-}
-
-#[command]
-fn zone2_status() -> Zone2Status {
-    let zone2 = zone2_runtime_path();
-    let available = zone2.join("dist").join("index.js").exists();
-    Zone2Status {
-        path: zone2.display().to_string(),
-        available,
-    }
-}
-
-/// Bug: cc4688b — trigger Zone 2 bootstrap by calling the daemon API
-#[command]
-async fn zone2_bootstrap(app: AppHandle) -> Result<String, String> {
-    let status = run_local_runtime(&app, "status", &read_desktop_config(&app)?)?;
-    if !status.healthy {
-        return Err(status
-            .detail
-            .unwrap_or_else(|| "The local Mandible backend is not ready.".to_string()));
-    }
-    let port = status.port;
-    if port == 0 {
-        return Err("The runtime controller did not report a backend port.".to_string());
-    }
-
-    // Use a simple TCP-based HTTP POST (no external HTTP crate dependency)
-    let addr = format!("127.0.0.1:{port}");
-    let addr = addr
-        .to_socket_addrs()
-        .map_err(|e| format!("failed to resolve address: {e}"))?
-        .next()
-        .ok_or_else(|| "no address resolved".to_string())?;
-
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(2000))
-        .map_err(|e| format!("failed to connect to daemon: {e}"))?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-
-    let request = format!(
-        "POST /api/runtime/bootstrap HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    );
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("failed to send request: {e}"))?;
-
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|e| format!("failed to read response: {e}"))?;
-
-    if response.contains("200") {
-        Ok("Bootstrap request sent successfully".to_string())
-    } else {
-        Err(format!("Bootstrap request failed: {response}"))
-    }
-}
-
 fn resolve_node_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let bundled = app.path().resource_dir().ok().map(|dir| dir.join("node"));
     if let Some(path) = bundled {
@@ -1026,8 +952,6 @@ pub fn run() {
             navigate_to_desktop_dashboard,
             secure_local_connections_status,
             secure_local_connections_setup,
-            zone2_status,
-            zone2_bootstrap,
             native_window_capabilities
         ])
         .run(context)

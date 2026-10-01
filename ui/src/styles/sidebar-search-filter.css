@@ -41,9 +41,6 @@
   outline: none;
 }
 
-.sidebar-search-filter__input::placeholder {
-  color: var(--text-muted);
-}
 
 .sidebar-search-filter__input:focus {
   border-color: rgba(77, 163, 255, 0.45);

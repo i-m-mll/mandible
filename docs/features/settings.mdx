@@ -87,18 +87,3 @@ Automatic metadata dumps to the configured Mandible backup file.
 Status shows when the last backup ran and its file size.
 
 Restore is deferred until Mandible has a tested restore round trip.
-
-## Runtime
-
-Zone 2 mutable runtime for self-modification and patching. See [Desktop App](/docs/guides/desktop-app) for the full Zone 2 explanation.
-
-| Setting | Type | Description |
-|---------|------|-------------|
-| Install mode | Read-only | How Mandible was installed (dev, bundled, zone2). |
-| Zone 2 path | Read-only | Filesystem path to the mutable runtime directory. |
-| Commit / Branch | Read-only | Current git state of the Zone 2 checkout. |
-| Local patches | Read-only | Number of patches applied on top of upstream. |
-| Initialize Runtime | Button | Bootstrap Zone 2 (clone repo, build, activate). |
-| Check for Updates | Button | Pull latest upstream and rebuild. |
-| Rollback Last Patch | Button | Revert the most recent local patch. |
-| Reset to Upstream | Button | Discard all local patches and reset to upstream HEAD. |

@@ -441,6 +441,32 @@ export class ConversationStructureCache {
     };
   }
 
+  readStructure(conversationId: string, sourceVersionId: string): Array<{
+    position: number;
+    type: BlockType;
+    role: Role;
+    parentPosition: number | null;
+    recordOffset: number;
+    recordLength: number;
+  }> | null {
+    const conversation = this.cachedConversation(conversationId, sourceVersionId);
+    if (!conversation) return null;
+    const rows = this.cache.prepare(`
+      SELECT position, type_code, role_code, parent_position, record_offset, record_length
+        FROM cache_blocks WHERE cache_conversation_id = ? ORDER BY position
+    `).all(conversation.cache_id) as Array<Pick<CacheBlockRow,
+      "position" | "type_code" | "role_code" | "parent_position" | "record_offset" | "record_length">>;
+    if (rows.length !== conversation.block_count) return null;
+    return rows.map((row) => ({
+      position: row.position,
+      type: decodeType(row.type_code),
+      role: decodeRole(row.role_code),
+      parentPosition: row.parent_position,
+      recordOffset: row.record_offset,
+      recordLength: row.record_length,
+    }));
+  }
+
   readPosition(
     conversationId: string,
     sourceVersionId: string,

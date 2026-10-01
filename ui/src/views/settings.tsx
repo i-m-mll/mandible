@@ -1,21 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { AppOperationalNoticeOutlet } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import SigningSettings from '../components/settings/SigningSettings';
 import { formatRelativeTime } from '../lib/format';
 import {
-  bootstrapRuntime,
   getBackupStatus,
   getDelegatedSigningStatus,
   getDesktopDaemonStatus,
   getSecureLocalConnectionsStatus,
-  getRuntimeStatus,
   isDesktopShell,
   navigateToDesktopBootstrap,
-  resetRuntime,
   removeDelegatedSigning,
   restartDesktopDaemon,
-  rollbackRuntime,
   runBackupNow,
   setDesktopDaemonLaunchMode,
   setupDelegatedSigning,
@@ -25,7 +22,6 @@ import {
   getInstructionDeliverySettings,
   updateBackupSettings,
   updateInstructionDeliverySettings,
-  updateRuntime,
   getProjectAccessSettings,
   listProjectsForPicker,
   updateProjectAccessSettings,
@@ -38,7 +34,6 @@ import {
   type InstructionTargetMode,
   type DesktopDaemonStatus,
   type SecureLocalConnectionsStatus,
-  type RuntimeStatus,
   type ProjectAccessSettings,
   type ProjectPickerItem,
 } from '../api';
@@ -69,6 +64,13 @@ import {
   AUTH_AUTO_SHOW_CONSOLE_SETTING,
   AUTH_RETAIN_FINALIZED_SELECTION_SETTING,
 } from '../auth-preferences';
+import {
+  createOrderedSettingSave,
+  normalizeProtectedBranches,
+  normalizeQuietHours,
+  shouldFlushPendingSettingWrite,
+  shouldPersistSettingValue,
+} from './settings-behavior';
 
 export type SettingsViewProps = {
   settings: Record<string, string>;
@@ -145,10 +147,10 @@ const SETTINGS_SECTIONS = {
   appearance: { id: 'settings-appearance', title: 'Appearance' },
   auth: { id: 'auth-settings', title: 'Approvals' },
   authHooks: { id: 'settings-auth-hooks', title: 'Approval Hooks' },
+  signing: { id: 'settings-signing', title: 'Signing keys' },
   versionControl: { id: 'settings-version-control', title: 'Version Control' },
   maintenance: { id: 'settings-maintenance', title: 'Maintenance' },
   backup: { id: 'settings-backup', title: 'Backup' },
-  runtime: { id: 'settings-runtime', title: 'Runtime' },
 } as const;
 
 const SETTINGS_SECTION_LIST: readonly SettingsSectionDefinition[] = Object.values(SETTINGS_SECTIONS);
@@ -173,15 +175,13 @@ function SettingsSectionShell(props: {
 function SettingsSectionHeader(props: {
   section: SettingsSectionDefinition;
   description: string;
-  action?: ComponentChildren;
 }): JSX.Element {
   return (
-    <div className={`settings-view__section-header${props.action ? ' settings-view__section-header--action' : ''}`}>
+    <div className="settings-view__section-header">
       <div>
         <h3 className="settings-view__section-title" id={`${props.section.id}-title`}>{props.section.title}</h3>
         <p className="settings-view__section-desc">{props.description}</p>
       </div>
-      {props.action}
     </div>
   );
 }
@@ -290,7 +290,7 @@ function ToggleRow(props: {
   }, [enabled, props.onSave, props.settingKey]);
 
   return (
-    <div className="settings-view__toggle-row">
+    <div className="settings-view__toggle-row" data-settings-searchable>
       <div className="settings-view__toggle-info">
         <h3 className="settings-view__section-title">{props.title}</h3>
         <p className="settings-view__section-desc">{props.desc}</p>
@@ -301,6 +301,92 @@ function ToggleRow(props: {
       <Toggle enabled={enabled} onToggle={handleToggle} disabled={toggling} label={`Toggle ${props.title}`} />
     </div>
   );
+}
+
+const normalizeTextValue = (value: string): string | null => value.trim();
+const normalizeIssueDefaultFilter = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed) return 'status:open';
+  for (const token of trimmed.split(/\s+/)) {
+    const match = /^(status|kind|priority|resolution):(.*)$/i.exec(token);
+    if (!match) continue;
+    const [, key, values] = match;
+    if (!values || values.split(',').some((part) => !/^[a-z0-9_-]+$/i.test(part))) return null;
+    if (key.toLowerCase() === 'status' && !['all', 'open', 'closed'].includes(values.toLowerCase())) return null;
+  }
+  return trimmed;
+};
+const normalizeBackupDestination = (value: string): string | null => value.trim() || null;
+
+function useDebouncedSettingSave(
+  key: string,
+  value: string,
+  persistedValue: string,
+  onSave: (key: string, value: string) => Promise<void>,
+  normalize: (value: string) => string | null = normalizeTextValue,
+  ready = true,
+): { saving: boolean; error: string | null } {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const sequence = useRef(0);
+  const generation = useRef(0);
+  const inFlight = useRef<string | null>(null);
+  const mounted = useRef(true);
+  const lastSaved = useRef(normalize(persistedValue));
+
+  useEffect(() => () => {
+    mounted.current = false;
+  }, []);
+
+  useEffect(() => {
+    const currentGeneration = ++generation.current;
+    if (!ready) return;
+    const normalized = normalize(value);
+    if (normalized == null) {
+      setError(null);
+      return;
+    }
+    if (!shouldPersistSettingValue(normalized, normalize(persistedValue), lastSaved.current, inFlight.current)) return;
+    const currentSequence = ++sequence.current;
+    let pending = true;
+    const persist = async () => {
+      pending = false;
+      inFlight.current = normalized;
+      if (mounted.current) {
+        setSaving(true);
+        setError(null);
+      }
+      try {
+        await onSave(key, normalized);
+        lastSaved.current = normalized;
+        if (mounted.current && sequence.current === currentSequence) setError(null);
+      } catch (err) {
+        if (mounted.current && sequence.current === currentSequence) {
+          setError(err instanceof Error ? err.message : 'Failed to save');
+        }
+      } finally {
+        if (inFlight.current === normalized) inFlight.current = null;
+        if (mounted.current && sequence.current === currentSequence) setSaving(false);
+      }
+    };
+    const timer = window.setTimeout(() => { void persist(); }, 450);
+    return () => {
+      window.clearTimeout(timer);
+      queueMicrotask(() => {
+        if (shouldFlushPendingSettingWrite(pending, currentGeneration, generation.current)) void persist();
+      });
+    };
+  }, [key, normalize, onSave, persistedValue, ready, value]);
+
+  return { saving, error };
+}
+
+function PlusIcon(): JSX.Element {
+  return <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>;
+}
+
+function MinusIcon(): JSX.Element {
+  return <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>;
 }
 
 function NumberInput(props: {
@@ -314,13 +400,25 @@ function NumberInput(props: {
   suffix?: string;
   defaultValue?: number;
   normalize?: (value: string) => number;
-  onErrorChange?: (message: string | null) => void;
 }) {
   const [value, setValue] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<FeedbackState>(null);
-  const feedbackTimer = useRef<number | null>(null);
   const initialized = useRef(false);
+  const persistedValue = props.settings[props.settingKey]
+    ?? (props.defaultValue != null ? String(props.defaultValue) : '');
+  const normalizeValue = useCallback((next: string): string | null => {
+    if (!/^\d+$/.test(next)) return null;
+    const number = Number(next);
+    if ((props.min != null && number < props.min) || (props.max != null && number > props.max)) return null;
+    return String(props.normalize ? props.normalize(next) : number);
+  }, [props.max, props.min, props.normalize]);
+  const saveState = useDebouncedSettingSave(
+    props.settingKey,
+    value,
+    persistedValue,
+    props.onSave,
+    normalizeValue,
+    initialized.current,
+  );
 
   useEffect(() => {
     const incoming = props.settings[props.settingKey] ?? (props.defaultValue != null ? String(props.defaultValue) : undefined);
@@ -330,40 +428,8 @@ function NumberInput(props: {
     }
   }, [props.settings[props.settingKey]]);
 
-  const showFeedback = useCallback((state: FeedbackState) => {
-    if (feedbackTimer.current != null) window.clearTimeout(feedbackTimer.current);
-    setFeedback(state);
-    if (state?.type === 'success') {
-      feedbackTimer.current = window.setTimeout(() => {
-        setFeedback(null);
-        feedbackTimer.current = null;
-      }, 3000);
-    }
-  }, []);
-
-  const handleSave = useCallback(async () => {
-    setSaving(true);
-    try {
-      const savedValue = props.normalize ? String(props.normalize(value)) : value;
-      setValue(savedValue);
-      await props.onSave(props.settingKey, savedValue);
-      props.onErrorChange?.(null);
-      showFeedback({ type: 'success', message: 'Saved' });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed';
-      props.onErrorChange?.(message);
-      showFeedback({ type: 'error', message });
-    } finally {
-      setSaving(false);
-    }
-  }, [value, props.onSave, props.settingKey, props.normalize, showFeedback]);
-
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void handleSave();
-  }, [handleSave]);
-
   return (
-    <div className="settings-view__number-row">
+    <div className="settings-view__number-row" data-settings-searchable>
       <div className="settings-view__number-info">
         <span className="settings-view__number-label">{props.label}</span>
         {props.desc && <span className="settings-view__number-desc">{props.desc}</span>}
@@ -373,18 +439,21 @@ function NumberInput(props: {
           type="number"
           className="settings-view__number-input"
           aria-label={props.label}
+          aria-invalid={saveState.error != null || (value !== '' && normalizeValue(value) == null)}
           value={value}
-          onInput={(e) => setValue((e.target as HTMLInputElement).value)}
-          onKeyDown={handleKeyDown}
+          onInput={(e) => {
+            initialized.current = true;
+            setValue((e.target as HTMLInputElement).value);
+          }}
           min={props.min}
           max={props.max}
-          disabled={saving}
         />
         {props.suffix && <span className="settings-view__number-suffix">{props.suffix}</span>}
-        <button type="button" className="btn btn--active btn--sm" onClick={handleSave} disabled={saving}>
-          {saving ? '...' : 'Save'}
-        </button>
-        {feedback?.type === 'success' && <SettingsFeedback feedback={feedback} />}
+        {saveState.saving && <span className="settings-view__text-desc" role="status">Saving</span>}
+        {saveState.error && <SettingsFeedback feedback={{ type: 'error', message: saveState.error }} />}
+        {!saveState.error && value !== '' && normalizeValue(value) == null && (
+          <span className="settings-view__warning" role="status">Enter a whole number within the allowed range.</span>
+        )}
       </div>
     </div>
   );
@@ -415,7 +484,7 @@ function SelectInput(props: {
   }, [props.onSave, props.settingKey]);
 
   return (
-    <div className="settings-view__select-row">
+    <div className="settings-view__select-row" data-settings-searchable>
       <div className="settings-view__select-info">
         <span className="settings-view__select-label">{props.label}</span>
         {props.desc && <span className="settings-view__select-desc">{props.desc}</span>}
@@ -515,16 +584,21 @@ function InstructionsDeliverySection(props: {
       showFeedback({ type: 'success', message: formatInstructionExportFeedback(result, successMessage) });
     } catch (err) {
       showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to update instruction delivery' });
+      throw err;
     } finally {
       setSaving(null);
     }
   }, [props.onSave, props.settingsAllowed, showFeedback]);
 
   const saveTargets = useCallback(async (nextTargets: InstructionTarget[], cleanupRemovedTargets: boolean) => {
-    await applyInstructionDelivery(
-      { targets: nextTargets, cleanupRemovedTargets },
-      'Targets saved and exported',
-    );
+    try {
+      await applyInstructionDelivery(
+        { targets: nextTargets, cleanupRemovedTargets },
+        'Targets saved and exported',
+      );
+    } catch {
+      // The section feedback already reports the failed update.
+    }
   }, [applyInstructionDelivery]);
 
   const requestTargetSave = useCallback((nextTargets: InstructionTarget[]) => {
@@ -600,37 +674,20 @@ function InstructionsDeliverySection(props: {
       value.trim() ? 'Hook saved and exported' : 'Hook cleared and exported',
     );
   }, [applyInstructionDelivery]);
-
-  const resetToDefaults = useCallback(() => {
-    setConfirmAction({
-      title: 'Reset instruction delivery?',
-      body: props.exportRunsOnSave
-        ? 'This will restore the default Claude and Codex instruction targets and refresh the export immediately.'
-        : 'This will restore the default instruction targets in this preview copy. Target files are not changed, and the post-export command is not run.',
-      confirmLabel: 'Reset to defaults',
-      onConfirm: () => {
-        setConfirmAction(null);
-        void applyInstructionDelivery(
-          { resetToDefaults: true, cleanupRemovedTargets: props.exportRunsOnSave },
-          'Defaults restored and exported',
-        );
-      },
-    });
-  }, [applyInstructionDelivery, props.exportRunsOnSave]);
+  const postExportSaveState = useDebouncedSettingSave(
+    'instructions.post_export',
+    postExport,
+    props.settings['instructions.post_export'] ?? '',
+    useCallback((_key, value) => savePostExport(value), [savePostExport]),
+    normalizeTextValue,
+    targetsLoaded,
+  );
 
   return (
     <SettingsSectionShell section={props.section}>
       <SettingsSectionHeader
         section={props.section}
         description="Where Mandible writes its generated instruction fragment after rebuilds."
-        action={<button
-          type="button"
-          className="btn btn--sm"
-          onClick={resetToDefaults}
-          disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
-        >
-          Reset
-        </button>}
       />
 
       <div className="settings-view__section-body">
@@ -643,7 +700,7 @@ function InstructionsDeliverySection(props: {
             <div className="settings-view__empty">No instruction targets are configured.</div>
           ) : (
             targets.map((target) => (
-              <div className="settings-view__instruction-target" key={target.path}>
+              <div className="settings-view__instruction-target" data-settings-searchable data-settings-search-text={targetPathDrafts[target.path] ?? target.path} key={target.path}>
                 <input
                   type="text"
                   className="settings-view__input settings-view__input--wide"
@@ -677,18 +734,19 @@ function InstructionsDeliverySection(props: {
                 </select>
                 <button
                   type="button"
-                  className="btn btn--sm"
+                  className="btn btn--sm settings-view__collection-action"
                   onClick={() => void removeTarget(target.path)}
                   disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
+                  aria-label={`Remove instruction target ${target.path}`}
                 >
-                  Remove
+                  <MinusIcon />
                 </button>
               </div>
             ))
           )}
         </div>
 
-        <div className="settings-view__instruction-target">
+        <div className="settings-view__instruction-target" data-settings-searchable data-settings-search-text={`add instruction target path mode ${targetPath}`}>
           <input
             type="text"
             className="settings-view__input settings-view__input--wide"
@@ -712,15 +770,16 @@ function InstructionsDeliverySection(props: {
           </select>
           <button
             type="button"
-            className="btn btn--active btn--sm"
+            className="btn btn--active btn--sm settings-view__collection-action"
             onClick={() => void addTarget()}
             disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
+            aria-label="Add instruction target"
           >
-            Add target
+            <PlusIcon />
           </button>
         </div>
 
-        <div className="settings-view__text-row">
+        <div className="settings-view__text-row" data-settings-searchable>
           <div className="settings-view__text-info">
             <span className="settings-view__text-label">Post-export hook</span>
             <span className="settings-view__text-desc">
@@ -738,28 +797,17 @@ function InstructionsDeliverySection(props: {
               disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
               aria-label="Instructions post-export hook"
             />
-            <button
-              type="button"
-              className="btn btn--active btn--sm"
-              aria-label="Save instructions post-export hook"
-              onClick={() => void savePostExport(postExport)}
-              disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              className="btn btn--sm"
-              aria-label="Clear instructions post-export hook"
-              onClick={() => void savePostExport('')}
-              disabled={!props.settingsAllowed || saving === 'instructions.delivery' || postExport.length === 0}
-            >
-              Clear
-            </button>
+            {postExportSaveState.saving && <span className="settings-view__text-desc" role="status">Saving</span>}
           </div>
         </div>
 
-        <SettingsFeedback feedback={feedback} />
+        {(postExportSaveState.error || feedback) && (
+          <div data-settings-searchable data-settings-search-text="instruction targets post-export hook">
+            <SettingsFeedback feedback={postExportSaveState.error
+              ? { type: 'error', message: postExportSaveState.error }
+              : feedback} />
+          </div>
+        )}
       </div>
 
       {confirmAction && (
@@ -845,7 +893,7 @@ export function DelegatedSigningSection({ instance }: { instance?: InstanceInfo 
 
   return (
     <div className="settings-view__delegated-signing">
-      <div className="settings-view__number-row">
+      <div className="settings-view__number-row" data-settings-searchable>
         <div className="settings-view__number-info">
           <span className="settings-view__number-label">Delegated signing key</span>
           <span className="settings-view__number-desc">
@@ -904,7 +952,7 @@ export function DelegatedSigningSection({ instance }: { instance?: InstanceInfo 
         </DetailPaneNotice>
       ) : null}
       {readAllowed && signing?.public_key && (
-        <div className="settings-view__field">
+        <div className="settings-view__field" data-settings-searchable data-settings-search-text="delegated signing public key">
           <textarea
             className="settings-view__input settings-view__input--mono"
             value={signing.public_key}
@@ -913,7 +961,11 @@ export function DelegatedSigningSection({ instance }: { instance?: InstanceInfo 
           />
         </div>
       )}
-      <SettingsFeedback feedback={feedback} />
+      {feedback && (
+        <div data-settings-searchable data-settings-search-text="delegated signing key">
+          <SettingsFeedback feedback={feedback} />
+        </div>
+      )}
     </div>
   );
 }
@@ -935,8 +987,9 @@ function formatDaemonState(state: DesktopDaemonStatus['state']): string {
 
 function DesktopDaemonSection(props: { section: SettingsSectionDefinition; instance?: InstanceInfo | null }): JSX.Element | null {
   const desktopShell = isDesktopShell();
-  const hostStatusAllowed = canPerformOperation(props.instance, 'GET', '/api/runtime/status');
-  const hostActionsAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/bootstrap');
+  const hostStatusAllowed = Boolean(props.instance?.allowed_effects.includes('files:production')
+    && props.instance.allowed_effects.includes('process:external'));
+  const hostActionsAllowed = hostStatusAllowed;
   const connectionSetupAllowed = canPerformOperation(props.instance, 'POST', '/api/system/open-path');
   const [status, setStatus] = useState<DesktopDaemonStatus | null>(null);
   const [loading, setLoading] = useState(desktopShell && hostStatusAllowed);
@@ -1081,13 +1134,9 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
       <SettingsSectionShell section={props.section}>
         <SettingsSectionHeader section={props.section} description="Set up the trusted local HTTPS connection before using a new browser origin." />
         <div className="settings-view__section-body">
-          <div className="settings-view__daemon-card">
-            <div className="settings-view__daemon-title">Secure local connections</div>
-            <p className="settings-view__daemon-footer">If the new secure page cannot load yet, open Mandible's installed macOS app for a one-time setup for secure local connections on this Mac account. The browser cannot complete this setup or sign you in.</p>
-            {connectionSetupAllowed ? (
-              <a className="btn btn--active btn--sm" href="mandible://connections/setup">Open macOS setup action</a>
-            ) : null}
-            <p className="settings-view__daemon-footer">This is a one-time setup for secure local connections on this Mac account. macOS may ask you to authorize it. New previews reuse this setup.</p>
+          <div data-settings-searchable data-settings-search-text="secure local connections HTTPS trust setup">
+            <p className="settings-view__daemon-footer">Open the installed macOS app to set up secure local connections for this Mac account. macOS may ask you to authorize the one-time setup; new previews reuse it.</p>
+            <a className="btn btn--active btn--sm" href="mandible://connections/setup">Open macOS setup</a>
           </div>
         </div>
       </SettingsSectionShell>
@@ -1113,7 +1162,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
       ) : null}
 
       <div className="settings-view__section-body">
-        <div className="settings-view__select-row">
+        <div className="settings-view__select-row" data-settings-searchable>
           <div className="settings-view__select-info">
             <span className="settings-view__select-label">Launch mode</span>
             <span className="settings-view__select-desc">
@@ -1134,7 +1183,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
           </select>
         </div>
 
-        <div className="settings-view__daemon-card">
+        <div className="settings-view__daemon-card" data-settings-searchable data-settings-search-text="local backend dashboard gateway daemon">
           <div className="settings-view__daemon-status-row">
             <div>
               <div className="settings-view__daemon-title">
@@ -1205,7 +1254,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
             Check status
           </button>
         </div>
-        <div className="settings-view__daemon-card">
+        <div className="settings-view__local-connections" data-settings-searchable data-settings-search-text="secure local connections HTTPS certificate trust">
           <div className="settings-view__daemon-status-row">
             <div>
               <div className="settings-view__daemon-title">Secure local connections</div>
@@ -1246,8 +1295,6 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
   const [runError, setRunError] = useState<string | null>(null);
   const [toggling, setToggling] = useState(false);
   const [destinationInput, setDestinationInput] = useState('');
-  const [savingDestination, setSavingDestination] = useState(false);
-  const [destinationFeedback, setDestinationFeedback] = useState<string | null>(null);
 
   const refreshStatus = useCallback(async () => {
     if (!readAllowed) {
@@ -1306,26 +1353,15 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
     }
   }, [settingsAllowed]);
 
-  const handleDestinationSave = useCallback(async () => {
+  const saveDestination = useCallback(async (_key: string, destination: string) => {
     if (!settingsAllowed) return;
-    const destination = destinationInput.trim();
-    if (!destination) {
-      setDestinationFeedback('Destination is required');
-      return;
-    }
-    setSavingDestination(true);
     setActionError(null);
-    setDestinationFeedback(null);
-    try {
-      await updateBackupSettings({ destination });
-      setStatus((prev) => prev ? { ...prev, destination } : prev);
-      setDestinationFeedback('Saved');
-    } catch (err) {
-      setDestinationFeedback(err instanceof Error ? err.message : 'Failed to save destination');
-    } finally {
-      setSavingDestination(false);
-    }
-  }, [destinationInput, settingsAllowed]);
+    await updateBackupSettings({ destination });
+    setStatus((prev) => prev ? { ...prev, destination } : prev);
+  }, [settingsAllowed]);
+  const destinationSaveState = useDebouncedSettingSave(
+    'backup.destination', destinationInput, status?.destination ?? '', saveDestination, normalizeBackupDestination, Boolean(status),
+  );
 
   const handleRunNow = useCallback(async () => {
     if (!runAllowed) return;
@@ -1374,7 +1410,7 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
       {readAllowed && !loading && !loadError && status && (
       <div className="settings-view__section-body">
         {/* Toggle row */}
-        <div className="settings-view__toggle-row">
+        <div className="settings-view__toggle-row" data-settings-searchable>
           <div className="settings-view__toggle-info">
             <h3 className="settings-view__section-title">Automatic backup</h3>
             <p className="settings-view__section-desc">Run Mandible's metadata dump on a schedule.</p>
@@ -1389,7 +1425,7 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
 
         {/* Interval selector — only shown when enabled */}
         {status.enabled && (
-          <div className="settings-view__select-row">
+          <div className="settings-view__select-row" data-settings-searchable>
             <div className="settings-view__select-info">
               <span className="settings-view__select-label">Interval</span>
             </div>
@@ -1406,7 +1442,7 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
           </div>
         )}
 
-        <div className="settings-view__text-row">
+        <div className="settings-view__text-row" data-settings-searchable>
           <div className="settings-view__text-info">
             <span className="settings-view__text-label">Destination</span>
           </div>
@@ -1416,26 +1452,20 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
               type="text"
               value={destinationInput}
               onInput={(e) => setDestinationInput((e.target as HTMLInputElement).value)}
-              disabled={!settingsAllowed || savingDestination}
+              aria-label="Backup destination"
+              aria-invalid={destinationSaveState.error != null || normalizeBackupDestination(destinationInput) == null}
+              disabled={!settingsAllowed}
             />
-            <button
-              type="button"
-              className="btn btn--sm"
-              onClick={handleDestinationSave}
-              disabled={!settingsAllowed || savingDestination || destinationInput.trim() === status.destination}
-            >
-              {savingDestination ? '...' : 'Save'}
-            </button>
-            {destinationFeedback && (
-              <span className="settings-view__feedback">
-                {destinationFeedback}
-              </span>
+            {destinationSaveState.saving && <span className="settings-view__text-desc" role="status">Saving</span>}
+            {destinationSaveState.error && <span className="settings-view__warning" role="alert">{destinationSaveState.error}</span>}
+            {!destinationSaveState.error && normalizeBackupDestination(destinationInput) == null && (
+              <span className="settings-view__warning" role="status">Enter a backup destination.</span>
             )}
           </div>
         </div>
 
         {/* Status row */}
-        <div className="settings-view__number-row">
+        <div className="settings-view__number-row" data-settings-searchable>
           <div className="settings-view__number-info">
             <span className="settings-view__number-label">Last backup</span>
           </div>
@@ -1459,7 +1489,7 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
         </div>
 
         {/* Run Now button */}
-        <div className="settings-view__number-row">
+        <div className="settings-view__number-row" data-settings-searchable>
           <div className="settings-view__number-info">
             <span className="settings-view__number-label">Manual run</span>
           </div>
@@ -1479,278 +1509,6 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
       {readAllowed && !loading && !loadError && !status && (
         <div className="settings-view__section-body settings-view__empty">Backup status is unavailable.</div>
       )}
-    </SettingsSectionShell>
-  );
-}
-
-// Bug: cc4688b — Zone 2 mutable runtime section
-function RuntimeSection(props: { section: SettingsSectionDefinition; instance?: InstanceInfo | null }): JSX.Element {
-  const readAllowed = canPerformOperation(props.instance, 'GET', '/api/runtime/status');
-  const bootstrapAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/bootstrap');
-  const updateAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/update');
-  const rollbackAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/rollback');
-  const resetAllowed = canPerformOperation(props.instance, 'POST', '/api/runtime/reset');
-  const [status, setStatus] = useState<RuntimeStatus | null>(null);
-  const [loading, setLoading] = useState(readAllowed);
-  const [action, setAction] = useState<string | null>(null);
-  const [statusError, setStatusError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
-
-  const refreshStatus = useCallback(async () => {
-    if (!readAllowed) {
-      setStatus(null);
-      setStatusError(null);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setStatusError(null);
-    try {
-      const next = await getRuntimeStatus();
-      setStatus(next);
-    } catch (err) {
-      setStatus(null);
-      setStatusError(err instanceof Error ? err.message : 'Failed to load runtime status');
-    } finally {
-      setLoading(false);
-    }
-  }, [readAllowed]);
-
-  useEffect(() => {
-    void refreshStatus();
-  }, [refreshStatus]);
-
-  const handleBootstrap = useCallback(async () => {
-    if (!bootstrapAllowed) return;
-    setAction('bootstrap');
-    setActionError(null);
-    setFeedback(null);
-    try {
-      await bootstrapRuntime();
-      setFeedback('Bootstrap started. This may take a minute...');
-      // Poll for completion
-      const timer = window.setInterval(async () => {
-        try {
-          const next = await getRuntimeStatus();
-          setStatus(next);
-          setStatusError(null);
-          if (next.available) {
-            window.clearInterval(timer);
-            setFeedback('Zone 2 runtime initialized successfully.');
-            setAction(null);
-          }
-        } catch {
-          // keep polling
-        }
-      }, 3000);
-      // Safety timeout: stop polling after 3 minutes
-      window.setTimeout(() => {
-        window.clearInterval(timer);
-        setAction(null);
-      }, 180_000);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Bootstrap failed');
-      setAction(null);
-    }
-  }, [bootstrapAllowed]);
-
-  const handleUpdate = useCallback(async () => {
-    if (!updateAllowed) return;
-    setAction('update');
-    setActionError(null);
-    setFeedback(null);
-    try {
-      const result = await updateRuntime();
-      if (result.updated) {
-        setFeedback('Update applied successfully.');
-      } else {
-        setFeedback(result.message ?? 'Already up to date.');
-      }
-      await refreshStatus();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Update failed');
-    } finally {
-      setAction(null);
-    }
-  }, [refreshStatus, updateAllowed]);
-
-  const handleRollback = useCallback(async () => {
-    if (!rollbackAllowed) return;
-    setAction('rollback');
-    setActionError(null);
-    setFeedback(null);
-    try {
-      await rollbackRuntime();
-      setFeedback('Last patch rolled back.');
-      await refreshStatus();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Rollback failed');
-    } finally {
-      setAction(null);
-    }
-  }, [refreshStatus, rollbackAllowed]);
-
-  const handleReset = useCallback(async () => {
-    if (!resetAllowed) return;
-    setAction('reset');
-    setActionError(null);
-    setFeedback(null);
-    try {
-      await resetRuntime();
-      setFeedback('Reset to upstream complete.');
-      await refreshStatus();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Reset failed');
-    } finally {
-      setAction(null);
-    }
-  }, [refreshStatus, resetAllowed]);
-
-  return (
-    <SettingsSectionShell section={props.section}>
-      <SettingsSectionHeader
-        section={props.section}
-        description="Zone 2 mutable runtime for self-modification and patching."
-      />
-      {!readAllowed ? (
-        <DetailPaneNotice severity="info" density="compact" title="Runtime unavailable">
-          Runtime status and controls require production-file access and external processes, which are unavailable in this instance.
-        </DetailPaneNotice>
-      ) : null}
-      {statusError && readAllowed && (
-        <DetailPaneNotice severity="error" density="compact" title="Runtime status could not be loaded" actions={
-          <button type="button" className="btn btn--ghost btn--sm" onClick={() => void refreshStatus()}>Retry</button>
-        }>{statusError}</DetailPaneNotice>
-      )}
-      {actionError && <DetailPaneNotice severity="error" density="compact" title="Runtime action failed">{actionError}</DetailPaneNotice>}
-
-      <div className="settings-view__section-body">
-        {/* Install mode */}
-        <div className="settings-view__number-row">
-          <div className="settings-view__number-info">
-            <span className="settings-view__number-label">Install mode</span>
-          </div>
-          <div className="settings-view__number-controls">
-            {loading ? (
-              <span className="text-muted">Loading...</span>
-            ) : !readAllowed || statusError ? (
-              <span className="text-muted">Unavailable in this instance</span>
-            ) : (
-              <span>{status?.installMode ?? 'Unavailable'}</span>
-            )}
-          </div>
-        </div>
-
-        {/* Zone 2 path */}
-        <div className="settings-view__number-row">
-          <div className="settings-view__number-info">
-            <span className="settings-view__number-label">Zone 2 path</span>
-          </div>
-          <div className="settings-view__number-controls">
-            {loading ? (
-              <span className="text-muted">Loading...</span>
-            ) : !readAllowed || statusError ? (
-              <span className="text-muted">Unavailable in this instance</span>
-            ) : (
-              <span className="text-muted" style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>
-                {status ? `${status.zone2Path ?? 'N/A'}${status.available ? ' (active)' : ' (not initialized)'}` : 'Unavailable'}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Git info (only when available) */}
-        {status?.available && (
-          <>
-            <div className="settings-view__number-row">
-              <div className="settings-view__number-info">
-                <span className="settings-view__number-label">Commit</span>
-              </div>
-              <div className="settings-view__number-controls">
-                <span className="text-muted" style={{ fontFamily: 'monospace', fontSize: '0.85em' }}>
-                  {status.commit ? status.commit.slice(0, 12) : 'unknown'}
-                </span>
-                {status.branch && (
-                  <span className="text-muted" style={{ marginLeft: '0.5rem' }}>
-                    ({status.branch})
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="settings-view__number-row">
-              <div className="settings-view__number-info">
-                <span className="settings-view__number-label">Local patches</span>
-              </div>
-              <div className="settings-view__number-controls">
-                <span>{status.patchCount}</span>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* Actions */}
-        <div className="settings-view__number-row">
-          <div className="settings-view__number-info">
-            <span className="settings-view__number-label">Actions</span>
-          </div>
-          <div className="settings-view__number-controls" style={{ gap: '0.5rem', display: 'flex', flexWrap: 'wrap' }}>
-            {!readAllowed ? (
-              <span className="text-muted">Unavailable in this instance</span>
-            ) : !statusError && !status?.available && (
-              <button
-                type="button"
-                className="btn btn--active btn--sm"
-                onClick={handleBootstrap}
-                disabled={!bootstrapAllowed || loading || action != null}
-              >
-                {action === 'bootstrap' ? '...' : 'Initialize Runtime'}
-              </button>
-            )}
-            {readAllowed && status?.available && (
-              <>
-                <button
-                  type="button"
-                  className="btn btn--active btn--sm"
-                  onClick={handleUpdate}
-                  disabled={!updateAllowed || loading || action != null}
-                >
-                  {action === 'update' ? '...' : 'Check for Updates'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  onClick={handleRollback}
-                  disabled={!rollbackAllowed || loading || action != null || (status.patchCount ?? 0) === 0}
-                >
-                  {action === 'rollback' ? '...' : 'Rollback Last Patch'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  onClick={handleReset}
-                  disabled={!resetAllowed || loading || action != null}
-                >
-                  {action === 'reset' ? '...' : 'Reset to Upstream'}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Feedback / error */}
-        {feedback && (
-          <div className="settings-view__number-row">
-            <div className="settings-view__number-info" />
-            <div className="settings-view__number-controls">
-              <span className="settings-view__feedback settings-view__feedback--success">
-                {feedback}
-              </span>
-            </div>
-          </div>
-        )}
-      </div>
     </SettingsSectionShell>
   );
 }
@@ -1817,7 +1575,7 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition; 
       ) : null}
       {error && <DetailPaneNotice severity="error" density="compact" title="Project permissions unavailable">{error}</DetailPaneNotice>}
       <div className="settings-view__section-body">
-        <div className="settings-view__select-row">
+        <div className="settings-view__select-row" data-settings-searchable>
           <div className="settings-view__select-info">
             <span className="settings-view__select-label">Project</span>
           </div>
@@ -1832,7 +1590,7 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition; 
         </div>
         {access && (
           <>
-            <div className="settings-view__toggle-row">
+            <div className="settings-view__toggle-row" data-settings-searchable>
               <div className="settings-view__toggle-info">
                 <h3 className="settings-view__section-title">Restricted</h3>
                 <p className="settings-view__section-desc">Require an explicit read, write, or admin grant.</p>
@@ -1840,7 +1598,7 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition; 
               <Toggle enabled={access.restricted} onToggle={() => void toggleRestricted()}
                 disabled={!mutationsAllowed || busy} label="Toggle project restriction" />
             </div>
-            <div className="settings-view__text-row">
+            <div className="settings-view__text-row" data-settings-searchable>
               <div className="settings-view__text-info">
                 <span className="settings-view__text-label">Grants</span>
                 {access.grants.length === 0 ? (
@@ -1869,6 +1627,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     typography = DEFAULT_TYPOGRAPHY_SETTINGS,
     onTypographySave = async () => undefined,
   } = props;
+  const onSaveRef = useRef(onSave);
+  const onTypographySaveRef = useRef(onTypographySave);
+  onSaveRef.current = onSave;
+  onTypographySaveRef.current = onTypographySave;
+  const saveSetting = useMemo(() => createOrderedSettingSave((key, value) => onSaveRef.current(key, value)), []);
+  const saveTypographySetting = useMemo(() => createOrderedSettingSave(
+    (key, value) => onTypographySaveRef.current(key as UserTypographySettingKey, value),
+  ), []);
   const canSaveTypography = (key: UserTypographySettingKey) => canPerformOperation(instance, 'PUT', `/api/user-settings/${key}`);
   const appThemeAllowed = canPerformOperation(instance, 'PUT', '/api/host-preferences/app-theme');
   const instructionReadAllowed = canPerformOperation(instance, 'GET', '/api/settings/instructions-delivery');
@@ -1883,12 +1649,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');
   const [saving, setSaving] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
-  const [numberErrors, setNumberErrors] = useState<Record<string, string>>({});
+  const issueFilterInitialized = useRef(false);
   const feedbackTimer = useRef<number | null>(null);
   const initialized = useRef(false);
   const quietInitialized = useRef(false);
   const viewRef = useRef<HTMLDivElement | null>(null);
   const [activeSection, setActiveSection] = useState<string>(SETTINGS_SECTIONS.notifications.id);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchMatches, setSearchMatches] = useState(0);
   const desktopShell = isDesktopShell();
   const visibleSections = SETTINGS_SECTION_LIST.filter((section) => !section.desktopOnly || desktopShell);
 
@@ -1907,8 +1675,31 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   }, [settings.quiet_hours]);
 
   useEffect(() => {
-    setIssueDefaultFilter(settings['issues.default_filter']?.trim() || 'status:open');
+    if (!issueFilterInitialized.current && settings['issues.default_filter'] != null) {
+      setIssueDefaultFilter(settings['issues.default_filter'].trim() || 'status:open');
+      issueFilterInitialized.current = true;
+    }
   }, [settings['issues.default_filter']]);
+
+  const quietHoursSaveState = useDebouncedSettingSave(
+    'quiet_hours', quietHours, settings.quiet_hours ?? '', saveSetting, normalizeQuietHours, quietInitialized.current,
+  );
+  const issueFilterSaveState = useDebouncedSettingSave(
+    'issues.default_filter',
+    issueDefaultFilter,
+    settings['issues.default_filter']?.trim() || 'status:open',
+    saveSetting,
+    normalizeIssueDefaultFilter,
+    issueFilterInitialized.current,
+  );
+  const protectedBranchesSaveState = useDebouncedSettingSave(
+    'protected_branches',
+    protectedBranches,
+    normalizeProtectedBranches(settings.protected_branches ?? '') ?? '',
+    saveSetting,
+    normalizeProtectedBranches,
+    initialized.current,
+  );
 
   const showFeedback = useCallback((state: FeedbackState) => {
     if (feedbackTimer.current != null) window.clearTimeout(feedbackTimer.current);
@@ -1921,37 +1712,18 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     }
   }, []);
 
-  const handleSaveField = useCallback(async (key: string, value: string) => {
-    setSaving(key);
-    try {
-      await onSave(key, value);
-      showFeedback({ type: 'success', message: 'Saved' });
-    } catch (err) {
-      showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed' });
-    } finally {
-      setSaving(null);
-    }
-  }, [onSave, showFeedback]);
-
   const handleTypographyField = useCallback(async (key: UserTypographySettingKey, value: string) => {
     if (!canSaveTypography(key)) return;
     setSaving(key);
     try {
-      await onTypographySave(key, value);
+      await saveTypographySetting(key, value);
       showFeedback({ type: 'success', message: 'Saved' });
     } catch (err) {
       showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed' });
     } finally {
       setSaving(null);
     }
-  }, [instance, onTypographySave, showFeedback]);
-
-  const handleKeyDown = useCallback(
-    (key: string, value: string) => (e: KeyboardEvent) => {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void handleSaveField(key, value);
-    },
-    [handleSaveField],
-  );
+  }, [instance, saveTypographySetting, showFeedback]);
 
   const handleSectionNavigation = useCallback((sectionId: string) => {
     setActiveSection(sectionId);
@@ -1960,13 +1732,67 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
 
   useEffect(() => {
     const root = viewRef.current;
+    const content = root?.querySelector('.settings-view__content');
+    if (!root || !content) return;
+    const query = searchQuery.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const rowSelector = '[data-settings-searchable]';
+    const update = () => {
+      let matches = 0;
+      for (const section of Array.from(content.querySelectorAll<HTMLElement>('.settings-view__section'))) {
+        const candidates = Array.from(section.querySelectorAll<HTMLElement>(rowSelector)).filter((row) => (
+          !row.parentElement?.closest(rowSelector)
+        ));
+        let sectionMatches = 0;
+        for (const row of candidates) {
+          const sectionTitle = section.querySelector('.settings-view__section-title')?.textContent ?? '';
+          const searchableText = `${sectionTitle} ${row.textContent ?? ''} ${row.dataset.settingsSearchText ?? ''}`.toLocaleLowerCase();
+          const matched = query.length === 0 || query.every((term) => searchableText.includes(term));
+          row.hidden = !matched;
+          if (matched) {
+            sectionMatches += 1;
+            matches += 1;
+          }
+        }
+        section.hidden = query.length > 0 && sectionMatches === 0;
+        const tocLink = root.querySelector<HTMLElement>(`[aria-controls="${section.id}"]`);
+        if (tocLink) tocLink.hidden = section.hidden;
+      }
+      setSearchMatches(matches);
+      const firstVisibleSection = visibleSections.find((section) => {
+        const element = content.querySelector<HTMLElement>(`#${section.id}`);
+        return element && !element.hidden;
+      });
+      if (firstVisibleSection) {
+        setActiveSection((current) => content.querySelector<HTMLElement>(`#${current}`)?.hidden
+          ? firstVisibleSection.id
+          : current);
+      }
+    };
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(content, {
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['data-settings-search-text'],
+      subtree: true,
+    });
+    return () => observer.disconnect();
+  }, [searchQuery, desktopShell]);
+
+  useEffect(() => {
+    const root = viewRef.current;
     if (!root) return;
     let frame = 0;
     const updateActiveSection = () => {
       frame = 0;
       const rootTop = root.getBoundingClientRect().top;
-      let current = visibleSections[0]?.id ?? SETTINGS_SECTIONS.notifications.id;
-      for (const section of visibleSections) {
+      const currentlyVisibleSections = visibleSections.filter((section) => {
+        const element = document.getElementById(section.id);
+        return element && !element.hidden;
+      });
+      let current = currentlyVisibleSections[0]?.id ?? SETTINGS_SECTIONS.notifications.id;
+      for (const section of currentlyVisibleSections) {
         const element = document.getElementById(section.id);
         if (element && element.getBoundingClientRect().top - rootTop <= 112) current = section.id;
         else break;
@@ -1984,7 +1810,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       root.removeEventListener('scroll', scheduleUpdate);
       window.removeEventListener('resize', scheduleUpdate);
     };
-  }, [desktopShell]);
+  }, [desktopShell, searchMatches]);
 
   return (
     <div className="settings-view" ref={viewRef}>
@@ -2005,7 +1831,17 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
 
       <div className="settings-view__layout">
         <nav className="settings-view__toc" aria-label="Settings sections">
-          {SETTINGS_SECTION_LIST.map((section) => {
+          <div className="settings-view__search-label">
+            <input
+              type="search"
+              className="settings-view__input"
+              value={searchQuery}
+              onInput={(event) => setSearchQuery((event.target as HTMLInputElement).value)}
+              aria-label="Search individual settings"
+              placeholder="Find a setting"
+            />
+          </div>
+          {visibleSections.map((section) => {
             if (section.desktopOnly && !desktopShell) return null;
             const isActive = activeSection === section.id;
             return (
@@ -2024,6 +1860,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </nav>
 
         <div className="settings-view__content">
+          {searchQuery.trim() && searchMatches === 0 && (
+            <p className="settings-view__empty" role="status">No settings match “{searchQuery.trim()}”.</p>
+          )}
 
       {/* ── Section 1: Notifications ── */}
       <SettingsSectionShell section={SETTINGS_SECTIONS.notifications}>
@@ -2038,24 +1877,24 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Show desktop notification when Claude Code stops."
             settingKey="claude_notifications_enabled"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
           />
           <ToggleRow
             title="Codex notifications"
             desc="Show desktop notification when Codex CLI stops."
             settingKey="codex_notifications_enabled"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
           />
           <SelectInput
             label="Sound"
             desc="macOS notification sound"
             settingKey="notification_sound"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             options={SOUNDS}
           />
-          <div className="settings-view__text-row">
+          <div className="settings-view__text-row" data-settings-searchable>
             <div className="settings-view__text-info">
               <span className="settings-view__text-label">Quiet hours</span>
               <span className="settings-view__text-desc">Suppress notifications during this window (HH:MM-HH:MM)</span>
@@ -2065,19 +1904,18 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                 type="text"
                 className="settings-view__input settings-view__input--narrow"
                 value={quietHours}
-                onInput={(e) => setQuietHours((e.target as HTMLInputElement).value)}
-                onKeyDown={handleKeyDown('quiet_hours', quietHours)}
+                onInput={(e) => {
+                  quietInitialized.current = true;
+                  setQuietHours((e.target as HTMLInputElement).value);
+                }}
                 placeholder="22:00-08:00"
-                disabled={saving === 'quiet_hours'}
+                aria-invalid={quietHoursSaveState.error != null || normalizeQuietHours(quietHours) == null}
               />
-              <button
-                type="button"
-                className="btn btn--active btn--sm"
-                onClick={() => void handleSaveField('quiet_hours', quietHours)}
-                disabled={saving === 'quiet_hours'}
-              >
-                {saving === 'quiet_hours' ? '...' : 'Save'}
-              </button>
+              {quietHoursSaveState.saving && <span className="settings-view__text-desc" role="status">Saving</span>}
+              {quietHoursSaveState.error && <span className="settings-view__warning" role="alert">{quietHoursSaveState.error}</span>}
+              {!quietHoursSaveState.error && normalizeQuietHours(quietHours) == null && (
+                <span className="settings-view__warning" role="status">Use HH:MM-HH:MM with valid times.</span>
+              )}
             </div>
           </div>
         </div>
@@ -2098,7 +1936,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Safety hooks that block dangerous git operations (merge into protected branch, raw commit, etc)."
             settingKey="pretool_hooks_enabled"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             warning="Disabling hooks removes safety guards. Agents may execute dangerous operations unchecked."
           />
           <ToggleRow
@@ -2106,7 +1944,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Spawn Zellij panes for subagent output streams. Requires Zellij and a working zj-control plugin."
             settingKey="subagent_panes_enabled"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
           />
         </div>
       </SettingsSectionShell>
@@ -2114,7 +1952,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <InstructionsDeliverySection
         section={SETTINGS_SECTIONS.instructionDelivery}
         settings={settings}
-        onSave={onSave}
+        onSave={saveSetting}
         readAllowed={instructionReadAllowed}
         settingsAllowed={instructionSettingsAllowed}
         exportRunsOnSave={exportRunsOnSave}
@@ -2133,7 +1971,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Leave the annotations from a just-submitted Briefing visible instead of clearing the document overlay."
             settingKey={BRIEFING_KEEP_SUBMITTED_ANNOTATIONS_SETTING}
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
           />
         </div>
       </SettingsSectionShell>
@@ -2143,30 +1981,24 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           section={SETTINGS_SECTIONS.conversations}
           description="Disclosure defaults for the Chat sidebar."
         />
-        {numberErrors['conversations.sidebar_group_limit'] && (
-          <DetailPaneNotice severity="error" density="compact" title="Conversation setting not saved">
-            {numberErrors['conversations.sidebar_group_limit']}
-          </DetailPaneNotice>
-        )}
         <div className="settings-view__section-body">
           <NumberInput
             label="Chats per group"
             desc="Initial rows and rows added each time Show more is used."
             settingKey="conversations.sidebar_group_limit"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             min={SIDEBAR_GROUP_LIMIT_MIN}
             max={SIDEBAR_GROUP_LIMIT_MAX}
             defaultValue={SIDEBAR_GROUP_LIMIT_DEFAULT}
             normalize={normalizeSidebarGroupLimit}
-            onErrorChange={(message) => setNumberErrors((current) => ({ ...current, 'conversations.sidebar_group_limit': message ?? '' }))}
           />
           <SelectInput
             label="Chat entity links"
             desc="Choose what an ordinary click does. The context menu and keyboard menu always offer both actions."
             settingKey="chat_entity_link_action"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             options={['preview', 'open']}
           />
         </div>
@@ -2180,7 +2012,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         />
 
         <div className="settings-view__section-body">
-          <div className="settings-view__select-row">
+          <div className="settings-view__select-row" data-settings-searchable>
             <div className="settings-view__select-info">
               <span className="settings-view__select-label">Resume conflict policy</span>
               <span className="settings-view__select-desc">
@@ -2192,7 +2024,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               value={settings.resume_conflict_policy ?? 'prompt'}
               onChange={async (e) => {
                 try {
-                  await onSave('resume_conflict_policy', (e.target as HTMLSelectElement).value);
+                  await saveSetting('resume_conflict_policy', (e.target as HTMLSelectElement).value);
                 } catch { /* ignore */ }
               }}
             >
@@ -2212,7 +2044,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         />
 
         <div className="settings-view__section-body">
-          <div className="settings-view__select-row">
+          <div className="settings-view__select-row" data-settings-searchable>
             <div className="settings-view__select-info">
               <span className="settings-view__select-label">Auto-resume policy</span>
               <span className="settings-view__select-desc">
@@ -2224,7 +2056,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               value={settings.auto_resume_policy ?? 'manual'}
               onChange={async (e) => {
                 try {
-                  await onSave('auto_resume_policy', (e.target as HTMLSelectElement).value);
+                  await saveSetting('auto_resume_policy', (e.target as HTMLSelectElement).value);
                 } catch { /* ignore */ }
               }}
             >
@@ -2249,10 +2081,10 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Warn, reject, or allow issue and comment bodies that look like Markdown accidentally submitted with literal \\n escapes."
             settingKey="ledger.markdown_body_escape_policy"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             options={MARKDOWN_BODY_ESCAPE_POLICIES}
           />
-          <div className="settings-view__text-row">
+          <div className="settings-view__text-row" data-settings-searchable>
             <div className="settings-view__text-info">
               <span className="settings-view__text-label">Default filter</span>
               <span className="settings-view__text-desc">
@@ -2264,19 +2096,18 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                 type="text"
                 className="settings-view__input settings-view__input--wide"
                 value={issueDefaultFilter}
-                onInput={(e) => setIssueDefaultFilter((e.target as HTMLInputElement).value)}
-                onKeyDown={handleKeyDown('issues.default_filter', issueDefaultFilter)}
+                onInput={(e) => {
+                  issueFilterInitialized.current = true;
+                  setIssueDefaultFilter((e.target as HTMLInputElement).value);
+                }}
                 placeholder="status:open"
-                disabled={saving === 'issues.default_filter'}
+                aria-invalid={issueFilterSaveState.error != null || normalizeIssueDefaultFilter(issueDefaultFilter) == null}
               />
-              <button
-                type="button"
-                className="btn btn--active btn--sm"
-                onClick={() => void handleSaveField('issues.default_filter', issueDefaultFilter.trim() || 'status:open')}
-                disabled={saving === 'issues.default_filter'}
-              >
-                {saving === 'issues.default_filter' ? '...' : 'Save'}
-              </button>
+              {issueFilterSaveState.saving && <span className="settings-view__text-desc" role="status">Saving</span>}
+              {issueFilterSaveState.error && <span className="settings-view__warning" role="alert">{issueFilterSaveState.error}</span>}
+              {!issueFilterSaveState.error && normalizeIssueDefaultFilter(issueDefaultFilter) == null && (
+                <span className="settings-view__warning" role="status">Complete any status, kind, or priority token.</span>
+              )}
             </div>
           </div>
         </div>
@@ -2298,7 +2129,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               ['system-ui', 'System UI'], ['space-grotesk', 'Space Grotesk'],
             ]],
           ] as const).map(([key, label, desc, options]) => (
-            <div className="settings-view__select-row" key={key}>
+            <div className="settings-view__select-row" data-settings-searchable key={key}>
               <div className="settings-view__select-info">
                 <label className="settings-view__select-label" for={`settings-${key}`}>{label}</label>
                 <span className="settings-view__select-desc" id={`settings-${key}-description`}>{desc}</span>
@@ -2314,13 +2145,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                 >
                   {options.map(([value, text]) => <option value={value} key={value}>{text}</option>)}
                 </select>
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  aria-label={`Reset ${label}`}
-                  disabled={!canSaveTypography(key) || saving === key}
-                  onClick={() => void handleTypographyField(key, typographySettingValue(DEFAULT_TYPOGRAPHY_SETTINGS, key))}
-                >Reset</button>
               </div>
             </div>
           ))}
@@ -2328,7 +2152,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             ['ui_font_size', 'UI size', 'Base size for chrome and controls.'],
             ['detail_font_size', 'Detail content size', 'Base size for ordinary entity-detail prose.'],
           ] as const).map(([key, label, desc]) => (
-            <div className="settings-view__text-row" key={key}>
+            <div className="settings-view__text-row" data-settings-searchable key={key}>
               <div className="settings-view__text-info">
                 <label className="settings-view__text-label" for={`settings-${key}`}>{label}</label>
                 <span className="settings-view__text-desc" id={`settings-${key}-description`}>{desc}</span>
@@ -2351,17 +2175,10 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                     }
                   }}
                 />
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  aria-label={`Reset ${label}`}
-                  disabled={!canSaveTypography(key) || saving === key}
-                  onClick={() => void handleTypographyField(key, typographySettingValue(DEFAULT_TYPOGRAPHY_SETTINGS, key))}
-                >Reset</button>
               </div>
             </div>
           ))}
-          <div className="settings-view__select-row">
+          <div className="settings-view__select-row" data-settings-searchable>
             <div className="settings-view__select-info">
               <label className="settings-view__select-label" htmlFor="settings-app-theme">App theme</label>
               <span id="settings-app-theme-description" className="settings-view__select-desc">Follow the system appearance or pin Mandible to dark or light</span>
@@ -2375,7 +2192,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               onChange={async (e) => {
                 if (!appThemeAllowed) return;
                 try {
-                  await onSave('app_theme', normalizeAppThemeMode((e.target as HTMLSelectElement).value));
+                  await saveSetting('app_theme', normalizeAppThemeMode((e.target as HTMLSelectElement).value));
                 } catch { /* ignore */ }
               }}
             >
@@ -2392,7 +2209,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             const themeAllowed = canPerformOperation(instance, 'PUT', `/api/settings/${key}`);
             const descriptionId = `settings-${key}-description`;
             return (
-              <div className="settings-view__select-row" key={key}>
+              <div className="settings-view__select-row" data-settings-searchable key={key}>
                 <div className="settings-view__select-info">
                   <label className="settings-view__select-label" htmlFor={`settings-${key}`}>{label}</label>
                   <span id={descriptionId} className="settings-view__select-desc">{description}</span>
@@ -2406,7 +2223,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   onChange={async (event) => {
                     if (!themeAllowed) return;
                     try {
-                      await onSave(key, normalizeTerminalThemeId((event.target as HTMLSelectElement).value));
+                      await saveSetting(key, normalizeTerminalThemeId((event.target as HTMLSelectElement).value));
                     } catch { /* ignore */ }
                   }}
                 >
@@ -2422,11 +2239,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Show Timeline, Graph, and Workspaces in the experimental navigation group."
             settingKey="show_experimental_features"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             defaultEnabled
           />
           {/* Bug: 914e9d7 — Header tab display mode */}
-          <div className="settings-view__select-row">
+          <div className="settings-view__select-row" data-settings-searchable>
             <div className="settings-view__select-info">
               <span className="settings-view__select-label">Header tabs</span>
               <span className="settings-view__select-desc">Show text labels, icons, or both in header tabs</span>
@@ -2436,7 +2253,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               value={settings.header_display_mode ?? 'text'}
               onChange={async (e) => {
                 try {
-                  await onSave('header_display_mode', (e.target as HTMLSelectElement).value);
+                  await saveSetting('header_display_mode', (e.target as HTMLSelectElement).value);
                 } catch { /* ignore */ }
               }}
             >
@@ -2450,7 +2267,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Color theme for Neovim, Zellij, and tmux"
             settingKey="theme"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             options={THEMES}
             requiresRestart
           />
@@ -2459,7 +2276,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Shell prompt engine"
             settingKey="prompt"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             options={PROMPTS}
             requiresRestart
           />
@@ -2468,10 +2285,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Terminal multiplexer preference"
             settingKey="multiplexer"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             options={MULTIPLEXERS}
             requiresRestart
           />
+          <SettingsFeedback feedback={feedback} />
         </div>
       </SettingsSectionShell>
 
@@ -2486,7 +2304,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Switch to Console when approval execution starts."
             settingKey={AUTH_AUTO_SHOW_CONSOLE_SETTING}
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             defaultEnabled
           />
           <ToggleRow
@@ -2494,7 +2312,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="Switch back to the request overview after approval finishes successfully."
             settingKey={AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING}
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             defaultEnabled
           />
           <ToggleRow
@@ -2502,7 +2320,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             desc="When Active requests are shown, keep a just-finalized request visible until another request is selected."
             settingKey={AUTH_RETAIN_FINALIZED_SELECTION_SETTING}
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             defaultEnabled
           />
           <DelegatedSigningSection instance={instance} />
@@ -2521,33 +2339,40 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </SettingsSectionShell>
 
+      <SettingsSectionShell section={SETTINGS_SECTIONS.signing}>
+        <SettingsSectionHeader
+          section={SETTINGS_SECTIONS.signing}
+          description="Register the public key Git uses to sign commits."
+        />
+        <div className="settings-view__section-body" data-testid="settings-signing-content">
+          <SigningSettings instance={instance} />
+        </div>
+      </SettingsSectionShell>
+
       {/* ── Section 5: Version Control ── */}
       <SettingsSectionShell section={SETTINGS_SECTIONS.versionControl}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.versionControl}
           description="Comma-separated branch names that are pinned in the Work tab and used as the baseline for ahead/behind counts."
         />
-        <div className="settings-view__field">
+        <div className="settings-view__field" data-settings-searchable data-settings-search-text="protected branches pinned Work tab baseline counts">
           <input
             type="text"
             className="settings-view__input"
             value={protectedBranches}
-            onInput={(e) => setProtectedBranches((e.target as HTMLInputElement).value)}
-            onKeyDown={handleKeyDown('protected_branches', protectedBranches)}
+            onInput={(e) => {
+              initialized.current = true;
+              setProtectedBranches((e.target as HTMLInputElement).value);
+            }}
             placeholder="main, develop"
-            disabled={saving === 'protected_branches'}
+            aria-label="Protected branches"
+            aria-invalid={protectedBranchesSaveState.error != null || normalizeProtectedBranches(protectedBranches) == null}
           />
-          <div className="settings-view__field-actions">
-            <button
-              type="button"
-              className="btn btn--active"
-              onClick={() => void handleSaveField('protected_branches', protectedBranches)}
-              disabled={saving === 'protected_branches'}
-            >
-              {saving === 'protected_branches' ? 'Saving...' : 'Save'}
-            </button>
-            <SettingsFeedback feedback={feedback} />
-          </div>
+          {protectedBranchesSaveState.saving && <span className="settings-view__text-desc" role="status">Saving</span>}
+          {protectedBranchesSaveState.error && <span className="settings-view__warning" role="alert">{protectedBranchesSaveState.error}</span>}
+          {!protectedBranchesSaveState.error && normalizeProtectedBranches(protectedBranches) == null && (
+            <span className="settings-view__warning" role="status">Complete each branch name between commas.</span>
+          )}
         </div>
       </SettingsSectionShell>
 
@@ -2557,23 +2382,16 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           section={SETTINGS_SECTIONS.maintenance}
           description="Log retention and housekeeping."
         />
-        {numberErrors.log_retention_days && (
-          <DetailPaneNotice severity="error" density="compact" title="Maintenance setting not saved">
-            {numberErrors.log_retention_days}
-          </DetailPaneNotice>
-        )}
-
         <div className="settings-view__section-body">
           <NumberInput
             label="Log retention"
             desc="Days to keep Mandible logs"
             settingKey="log_retention_days"
             settings={settings}
-            onSave={onSave}
+            onSave={saveSetting}
             min={1}
             max={365}
             suffix="days"
-            onErrorChange={(message) => setNumberErrors((current) => ({ ...current, log_retention_days: message ?? '' }))}
           />
         </div>
       </SettingsSectionShell>
@@ -2581,8 +2399,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       {/* ── Section 7: Backup ── */}
       <BackupSection section={SETTINGS_SECTIONS.backup} instance={instance} />
 
-      {/* ── Section 8: Runtime ── Bug: cc4688b */}
-      <RuntimeSection section={SETTINGS_SECTIONS.runtime} instance={instance} />
         </div>
       </div>
     </div>

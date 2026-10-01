@@ -182,9 +182,6 @@
   padding: 2px 4px;
 }
 
-.inbox-chip-input__input::placeholder {
-  color: var(--text-muted);
-}
 
 .inbox-chip {
   display: inline-flex;

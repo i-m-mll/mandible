@@ -101,7 +101,6 @@ const RESTRICTED_PREFIXES: ReadonlyArray<[string, Operation]> = [
   ["/api/conversation-spawns", { id: "provider.send", effects: ["provider:send"] }],
   ["/api/reminders", { id: "delivery.background", effects: ["delivery:background"] }],
   ["/api/webhooks", { id: "network.publish", effects: ["network:publish"] }],
-  ["/api/runtime", { id: "runtime.files", effects: ["files:production", "process:external"] }],
   ["/api/backup", { id: "backup.production", effects: ["files:production"] }],
   ["/api/v1/trash", { id: "trash.files", effects: ["files:production"] }],
   ["/api/conversation-custody", { id: "conversation.custody", effects: ["files:production"] }],
@@ -145,6 +144,16 @@ export function operationForRequest(
     return instanceRole === "preview"
       ? { id: "user.setup.copy", effects: ["auth:credentials"] }
       : { id: "installation.setup", effects: [] };
+  }
+  if (pathname === "/api/users/operator/signing-key") {
+    if (normalizedMethod === "GET") {
+      return instanceRole === "preview" ? READ_OPERATION : { id: "auth.credentials", effects: ["auth:credentials"] };
+    }
+    if (normalizedMethod === "POST") {
+      return instanceRole === "preview"
+        ? { id: "user.signing_key.copy", effects: ["ledger:write"] }
+        : { id: "auth.credentials", effects: ["auth:credentials"] };
+    }
   }
   const exact = EXACT_OPERATIONS.get(`${normalizedMethod} ${pathname}`);
   if (exact) return exact;

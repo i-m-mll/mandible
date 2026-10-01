@@ -167,6 +167,8 @@ import {
   clearAppRailPreviewOrder,
   reconcileAppRailOrder,
   serializeAppRailOrderSetting,
+  hasExplicitStartupDestination,
+  startupRailDestination,
   writeAppRailPreviewOrder,
   type AppRailGroup,
   type AppRailOrderPreference,
@@ -667,12 +669,16 @@ function App(): JSX.Element {
     ...loadCachedState(),
   }));
   const [route, setRoute] = useState<Route>(() => parseHashRoute());
+  const [startupDestinationPending, setStartupDestinationPending] = useState(() =>
+    typeof window !== 'undefined' && !hasExplicitStartupDestination(window.location.hash));
+  const [startupSettingsReady, setStartupSettingsReady] = useState(false);
   const [hostAppTheme, setHostAppTheme] = useState<'system' | 'light' | 'dark' | null>(null);
   const hostAppThemeRevisionRef = useRef(0);
   const [railDrag, setRailDrag] = useState<AppRailDrag | null>(null);
   const railDragRef = useRef<AppRailDrag | null>(null);
   const [pendingRailOrder, setPendingRailOrder] = useState<AppRailPreviewOrder | null>(null);
   const [railOrderReady, setRailOrderReady] = useState(false);
+  const [railOrderLoadError, setRailOrderLoadError] = useState<string | null>(null);
   const [railOrderSetting, setRailOrderSetting] = useState<string | undefined>(undefined);
   const [previewRailOrder, setPreviewRailOrder] = useState<AppRailOrderPreference | null>(() => {
     if (typeof window === 'undefined') return null;
@@ -925,6 +931,7 @@ function App(): JSX.Element {
       window.history.pushState(null, '', boundHash);
     }
     setRoute(parseRouteFromHash(boundHash));
+    setStartupDestinationPending(false);
   }, []);
 
   const navigateToSettings = useCallback(() => {
@@ -969,6 +976,7 @@ function App(): JSX.Element {
   );
 
   useEffect(() => {
+    if (startupDestinationPending) return;
     if (route.tab !== 'spaces') return;
     const { project, space, renderer } = route.params;
     if (space) {
@@ -983,7 +991,7 @@ function App(): JSX.Element {
       spaceId: last.spaceId,
       renderer: null,
     });
-  }, [route, navigateToSpace]);
+  }, [route, navigateToSpace, startupDestinationPending]);
 
   useEffect(() => {
     const handleChange = () => {
@@ -993,6 +1001,7 @@ function App(): JSX.Element {
         window.history.replaceState(null, '', boundHash);
       }
       setRoute(parseRouteFromHash(boundHash));
+      if (hasExplicitStartupDestination(window.location.hash)) setStartupDestinationPending(false);
     };
     window.addEventListener('hashchange', handleChange);
     window.addEventListener('popstate', handleChange);
@@ -1216,6 +1225,7 @@ function App(): JSX.Element {
     railRequestRef.current = request;
     const mutationAtStart = railMutationRef.current;
     setRailOrderReady(false);
+    setRailOrderLoadError(null);
     try {
       let setting = await getUserAppRailOrderSetting();
       if (legacyPreviewOrder) {
@@ -1232,8 +1242,11 @@ function App(): JSX.Element {
       railRevisionRef.current = setting.revision;
       setRailOrderSetting(setting.value ?? undefined);
       setRailOrderReady(true);
-    } catch {
-      if (railRequestRef.current === request) setRailOrderReady(false);
+    } catch (error) {
+      if (railRequestRef.current === request) {
+        setRailOrderReady(false);
+        setRailOrderLoadError(error instanceof Error ? error.message : 'Navigation preferences could not be loaded.');
+      }
     } finally {
       if (legacyPreviewOrder) previewOrderMigrationRef.current = false;
     }
@@ -1294,6 +1307,7 @@ function App(): JSX.Element {
       setPendingRailOrder(null);
       setRailOrderSetting(undefined);
       setRailOrderReady(true);
+      setRailOrderLoadError(null);
       return;
     }
     if (canEditUserPreferences(instanceInfo)) {
@@ -1329,8 +1343,9 @@ function App(): JSX.Element {
           sidebarGroupLimit: normalizeSidebarGroupLimit(settings['conversations.sidebar_group_limit']),
         };
         dispatch({ type: 'setSettings', settings });
+        setStartupSettingsReady(true);
       })
-      .catch(() => undefined);
+      .catch(() => setStartupSettingsReady(true));
     routeWarmupSettingsLoadRef.current = settingsLoad;
     void loadDashboardBadges();
   }, [accessReady, route.tab, loadDashboardBadges, loadVisibleRouteData]);
@@ -2361,6 +2376,26 @@ function App(): JSX.Element {
       .filter((item): item is NavItem => Boolean(item) && experimentalTabs.has(item!.tab) === experimental);
   };
 
+  useEffect(() => {
+    if (!startupDestinationPending || !railOrderReady || !startupSettingsReady) return;
+    if (hasExplicitStartupDestination(window.location.hash)) {
+      setStartupDestinationPending(false);
+      return;
+    }
+    const destination = startupRailDestination(
+      window.location.hash,
+      orderedRailItems(false).map((item) => item.tab),
+      orderedRailItems(true).map((item) => item.tab),
+      state.settings.show_experimental_features !== 'false',
+    );
+    if (destination) {
+      const hash = hashWithAgentSession(destination, getAgentPageBinding());
+      window.history.replaceState(null, '', hash);
+      setRoute(parseRouteFromHash(hash));
+      setStartupDestinationPending(false);
+    }
+  }, [startupDestinationPending, railOrderReady, startupSettingsReady, railOrderSetting, previewRailOrder, state.settings.show_experimental_features, agentPageBinding]);
+
   const focusRailItem = (itemId: string) => {
     window.setTimeout(() => {
       const target = Array.from(railNavRef.current?.querySelectorAll<HTMLAnchorElement>('[data-rail-item]') ?? [])
@@ -2559,7 +2594,7 @@ function App(): JSX.Element {
 
   const renderRailItem = (item: NavItem, reorderable = false, group: AppRailGroup = 'primary'): JSX.Element => {
     const Icon = item.icon;
-    const active = route.tab === item.tab;
+    const active = !startupDestinationPending && route.tab === item.tab;
     const dragging = railDrag?.active && railDrag.itemId === item.tab;
     const dropTarget = railDrag?.active && railDrag.overId === item.tab;
     return (
@@ -2621,7 +2656,7 @@ function App(): JSX.Element {
       icon: SettingsIcon,
     }].find((item) => item.tab === route.tab)?.title ?? 'Mandible'
   );
-  const rightSidebarAvailable = true;
+  const rightSidebarAvailable = route.tab !== 'settings';
   const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
   const viewSidebarAvailable = Boolean(viewSidebarGeometry);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
@@ -2672,7 +2707,7 @@ function App(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [rightSidebarOpen]);
   const renderTabPanel = (tab: RenderableTab, children: ComponentChildren): JSX.Element | null => {
-    if (!accessEverReady || !visitedTabs.has(tab)) return null;
+    if (startupDestinationPending || !accessEverReady || !visitedTabs.has(tab)) return null;
     const active = route.tab === tab;
     return (
       <AppShellProvider key={tab} value={active ? appShellContext : INACTIVE_APP_SHELL_CONTEXT}>
@@ -2882,6 +2917,16 @@ function App(): JSX.Element {
             actions={<button type="button" onClick={() => { void retryClientAccess(); }}>Retry</button>}
           >
             {clientAccess.failure}
+          </DetailPaneNotice>
+        ) : null}
+        {startupDestinationPending ? (
+          <DetailPaneNotice
+            severity={railOrderLoadError ? 'error' : 'info'}
+            source="startup-navigation"
+            title={railOrderLoadError ? 'Navigation preferences could not be loaded' : undefined}
+            actions={railOrderLoadError ? <button type="button" onClick={() => { void refreshRailOrder(); }}>Retry</button> : undefined}
+          >
+            {railOrderLoadError ?? 'Loading navigation preferences…'}
           </DetailPaneNotice>
         ) : null}
         {rightSidebarAvailable && !rightSidebarOpen ? (

@@ -66,9 +66,6 @@
   font-size: 13px;
 }
 
-.artifacts-advanced__input::placeholder {
-  color: var(--text-muted);
-}
 
 .artifacts-advanced__field {
   display: grid;
@@ -821,9 +818,6 @@ code.inbox-detail__meta-value {
   font-size: 13px;
 }
 
-.issues-filter__input::placeholder {
-  color: var(--text-muted);
-}
 
 /* Status filter pills */
 .issues-status-filters {
@@ -1170,9 +1164,6 @@ code.inbox-detail__meta-value {
   min-height: 80px;
 }
 
-.issue-comment-form__input::placeholder {
-  color: var(--text-muted);
-}
 
 .issue-comment-form .btn {
   align-self: flex-end;

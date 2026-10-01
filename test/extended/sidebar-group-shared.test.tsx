@@ -25,6 +25,7 @@ describe('shared sidebar group presentation', () => {
     };
     render(<CollectionsSidebar
       collections={[briefing]}
+      confirmedLoaded
       selectedCollectionId={briefing.id}
       viewState={{
         collectionSourceFilter: '', pinnedOnly: true, collectionSort: 'activity', pinnedCollectionIds: [briefing.id],
@@ -38,7 +39,7 @@ describe('shared sidebar group presentation', () => {
     const sidebar = screen.getByTestId('feedback-collections-sidebar');
     expect(screen.queryByRole('button', { name: /^Pinned/ })).toBeNull();
     expect(screen.queryByRole('region', { name: /^Pinned/ })).toBeNull();
-    expect(sidebar.querySelectorAll('ul.feedback-collections-sidebar__list')).toHaveLength(1);
+    expect(sidebar.querySelectorAll('.feedback-collections-sidebar__list')).toHaveLength(1);
     const row = screen.getByRole('button', { name: 'Select briefing One' })
       .closest('.feedback-collection-row');
     expect(row?.classList.contains('feedback-collection-row--pinned')).toBe(false);
@@ -250,7 +251,6 @@ describe('shared sidebar group presentation', () => {
     vi.spyOn(api, 'getInstructionDeliverySettings').mockResolvedValue({ targets: [], postExport: '' });
     vi.spyOn(api, 'listProjectsForPicker').mockResolvedValue([]);
     vi.spyOn(api, 'getBackupStatus').mockResolvedValue({} as Awaited<ReturnType<typeof api.getBackupStatus>>);
-    vi.spyOn(api, 'getRuntimeStatus').mockResolvedValue({} as Awaited<ReturnType<typeof api.getRuntimeStatus>>);
     vi.spyOn(api, 'getDelegatedSigningStatus').mockResolvedValue({
       provider: 'test', configured: false, public_key: null, public_key_path: '',
       encrypted_passphrase_path: '', recipient_path: '', missing_tools: [],
@@ -265,7 +265,9 @@ describe('shared sidebar group presentation', () => {
     const input = screen.getByRole('spinbutton', { name: 'Chats per group' }) as HTMLInputElement;
     expect(input.value).toBe('5');
     fireEvent.input(input, { target: { value: '80' } });
-    fireEvent.click(input.parentElement?.querySelector('button') as HTMLButtonElement);
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(onSave).not.toHaveBeenCalledWith('conversations.sidebar_group_limit', '80');
+    fireEvent.input(input, { target: { value: '50' } });
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('conversations.sidebar_group_limit', '50'));
     expect(input.value).toBe('50');
     const keepAnnotations = screen.getByRole('switch', { name: 'Toggle Keep submitted annotations displayed' });

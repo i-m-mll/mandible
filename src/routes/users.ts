@@ -47,6 +47,10 @@ import {
   type PermissionSubjectType,
 } from "../permissions/store.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
+import {
+  discoverConfiguredPublicSigningKey,
+  resolveOpenSshPublicKey,
+} from "../signing-credential-audit.js";
 
 
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
@@ -97,6 +101,92 @@ export function registerUserRoutes(router: RouteRegistrar): void {
       handleError(res, error);
     }
   }, { fileRpc: "allow" });
+
+  router.get("/api/users/operator/signing-key", (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      const operator = getOperator(db);
+      const credentials = operator
+        ? listCredentials(db, operator.id).filter((credential) =>
+            credential.type === "ssh_key" || credential.type === "delegated_ssh_key")
+          .map(({ id, type, fingerprint, label }) => ({ id, type, fingerprint, label }))
+        : [];
+      const configured = discoverConfiguredPublicSigningKey();
+      const registered = Boolean(configured.value && credentials.some((credential) =>
+        credential.fingerprint === configured.value!.fingerprint));
+      sendJson(res, 200, {
+        audit: {
+          status: !operator
+            ? "no_operator"
+            : !configured.configured_key
+              ? "unconfigured"
+              : !configured.value
+                ? "unresolvable"
+                : registered
+                  ? "ok"
+                  : "missing_credential",
+          configured: Boolean(configured.configured_key),
+          fingerprint: configured.value?.fingerprint ?? null,
+          operator_slug: operator?.slug ?? null,
+          reason: configured.reason,
+          hint: configured.configured_key && configured.value && !registered
+            ? "Register the configured public key."
+            : null,
+        },
+        credentials,
+        git_config_read: true,
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
+  router.post("/api/users/operator/signing-key", (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      const operator = getOperator(db);
+      if (!operator) throw new UserRegistryError("not_found", "The local operator is not set up.");
+      const body = bodyRecord(req);
+      const source = optionalString(body, "source");
+      let resolved: ReturnType<typeof resolveOpenSshPublicKey>;
+      if (source === "public_key") {
+        const publicKey = optionalString(body, "public_key");
+        if (!publicKey) throw new UserRegistryError("invalid", "Paste or upload an OpenSSH public key.");
+        resolved = resolveOpenSshPublicKey(publicKey);
+      } else if (source === "configured") {
+        const configured = discoverConfiguredPublicSigningKey();
+        if (!configured.configured_key) {
+          throw new UserRegistryError("invalid", "Global Git user.signingkey is not configured. Paste or upload an OpenSSH public key instead.");
+        }
+        resolved = configured.value
+          ? { ok: true, value: configured.value }
+          : { ok: false, reason: configured.reason ?? "public_key_not_available_without_private_key_access" };
+      } else {
+        throw new UserRegistryError("invalid", "Choose an available OpenSSH public key source.");
+      }
+      if (!resolved.ok) {
+        const message = resolved.reason === "expected_one_openssh_public_key_line"
+          ? "Provide exactly one OpenSSH public-key line."
+          : "The selected value is not a readable OpenSSH public key.";
+        throw new UserRegistryError("invalid", message);
+      }
+
+      const existing = listCredentials(db, operator.id).find((credential) =>
+        credential.fingerprint === resolved.value.fingerprint
+        && (credential.type === "ssh_key" || credential.type === "delegated_ssh_key"));
+      const credential = existing ?? addCredential(db, operator.id, {
+        type: "ssh_key",
+        fingerprint: resolved.value.fingerprint,
+        public_material: resolved.value.material,
+        label: source === "configured" ? "global git user.signingkey" : "Settings public-key import",
+      });
+      sendJson(res, existing ? 200 : 201, { credential, unchanged: Boolean(existing) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
 
   router.post("/api/users/setup", (req, res) => {
     try {

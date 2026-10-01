@@ -1,6 +1,6 @@
 # Mandible
 
-A local-first agent control plane for AI coding agents. Mandible runs as a daemon on your workstation, providing an async auth queue for protected-branch operations, a web dashboard for managing sessions and conversations, a split-runtime architecture that supports safe self-modification.
+A local-first agent control plane for AI coding agents. Mandible runs as a daemon on your workstation, providing an async auth queue for protected-branch operations, a web dashboard for managing sessions and conversations.
 
 ## Features
 
@@ -106,19 +106,6 @@ D3 force-directed graph connecting session, issue, and auth-request nodes with c
 
 Collects continuations (handoff notes from ended sessions), auth results (merge outcomes with linked issues), and open issues. Items are acknowledged individually or in bulk.
 
-### Zone 2 Self-Modification Infrastructure
-
-Mandible's runtime is split into two zones:
-
-- **Zone 1** (immutable): the installed binary or repo checkout — never modified at runtime.
-- **Zone 2** (mutable): a separate runtime directory (`~/.mandible/runtime/`) that can receive patches from agents.
-
-Zone 2 patches are tracked in the database with fingerprint, commit hash, diff summary, source (agent/known_fix/manual/upstream_update), and session linkage. Patches can be applied, reverted, and submitted upstream.
-
-The Tauri shell resolves the daemon entry point in priority order: **Zone 2 -> bundled sidecar -> dev path**, ensuring that Zone 2 patches always take effect.
-
-The daemon exposes `/api/runtime/status`, `/api/runtime/patches`, and `/api/runtime/bootstrap` endpoints for managing Zone 2.
-
 ### IndexedDB Stream Cache
 
 SDK session stream events are cached in IndexedDB on the client for instant hydration on tab switch or page reload. Uses LRU eviction (default: 20 sessions) with debounced cleanup to avoid write amplification during active streaming.
@@ -167,6 +154,11 @@ pre-split location (`~/.cache/mandible/mandible.db`) is copied forward to the
 durable root, with its `-wal`/`-shm` sidecars, on the first daemon start after
 upgrading; the originals are retained and a receipt is written beside them.
 
+The retired self-modification feature no longer creates or uses a patch table.
+During upgrade, an empty `runtime_patches` table is dropped. A nonempty table
+stays in the database solely to preserve historical rows and remains included
+in metadata backups; no application route reads or changes those rows.
+
 ### Operator setup and the signing credential
 
 ```bash
@@ -208,8 +200,7 @@ Channel-connected sessions get tool-mediated access to inbox, issues, work units
 |  |    auth, auth-hooks, sessions, artifacts,   |  |
 |  |    console, conversations, chats, inbox,    |  |
 |  |    issues, work-units, work, graph, review, |  |
-|  |    runtime, settings, system, backup,       |  |
-|  |    webhooks                                 |  |
+|  |    settings, system, backup, webhooks       |  |
 |  |                                             |  |
 |  |  Core services:                             |  |
 |  |    SSE Manager     - real-time broadcast    |  |
@@ -217,7 +208,6 @@ Channel-connected sessions get tool-mediated access to inbox, issues, work units
 |  |    Session Registry - lifecycle tracking    |  |
 |  |    Auth Queue      - request state machine  |  |
 |  |    Auth Hooks      - post-action pipeline   |  |
-|  |    Runtime Manager - Zone 2 patches         |  |
 |  |    Channel Registry - MCP channel sessions  |  |
 |  |    Work Scanner    - git repo/branch scan   |  |
 |  |    Issue Ledger    - local issue storage    |  |
@@ -229,10 +219,6 @@ Channel-connected sessions get tool-mediated access to inbox, issues, work units
 |  +---------------------------------------------+ |
 +--------------------------------------------------+
 
-Zone 2 Runtime (mutable, outside repo):
-  ~/.mandible/runtime/
-    dist/index.js   <- patched daemon entry point
-    patches/        <- tracked patch metadata
 ```
 
 ### Agent Interaction Tiers
@@ -308,14 +294,6 @@ DELETE /api/auth/hooks/<id>       Delete hook
 GET    /api/sessions              List sessions
 PATCH  /api/sessions/<id>         Update session
 DELETE /api/sessions/<id>         Remove session
-```
-
-### Runtime (Zone 2)
-
-```
-GET    /api/runtime/status        Zone 2 runtime status
-GET    /api/runtime/patches       List applied patches
-POST   /api/runtime/bootstrap     Bootstrap Zone 2 from current install
 ```
 
 ### Other

@@ -283,9 +283,6 @@ function mapReadableBlock(row: BlockRow | SourceBackedConversationBlock) {
 }
 
 function projectDisplayBlock(row: SourceBackedConversationBlock): SourceBackedConversationBlock & { details_loaded?: false } {
-  const targeted = row.type === "tool_use" || row.type === "tool_result" || row.type === "thinking";
-  if (!targeted) return row;
-
   let metadata: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(row.metadata_json);
@@ -295,29 +292,39 @@ function projectDisplayBlock(row: SourceBackedConversationBlock): SourceBackedCo
   } catch {
     throw new Error(`block ${row.id} has invalid metadata and cannot be safely projected`);
   }
+  const item = metadata.chat_item;
+  const activity = item && typeof item === "object" && !Array.isArray(item)
+    && (item as Record<string, unknown>).type === "activity";
+  const targeted = row.type === "tool_use" || row.type === "tool_result" || row.type === "thinking" || activity;
+  if (!targeted) return row;
+  const reasoningSummary = row.type === "thinking" && metadata.source_event_type === "reasoning_summary";
+  const reasoningLines = reasoningSummary
+    ? row.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    : [];
+  if (reasoningSummary) metadata.display_has_body = reasoningLines.length > 1;
   delete metadata.tool_input;
   delete metadata.tool_output;
-  const item = metadata.chat_item;
   if (item && typeof item === "object" && !Array.isArray(item)) {
     const compactItem = { ...(item as Record<string, unknown>) };
     delete compactItem.input;
     delete compactItem.output;
-    if (row.type === "thinking" && metadata.source_event_type !== "reasoning_summary") {
+    if (reasoningSummary) {
+      compactItem.parts = reasoningLines.length > 0 ? [{ type: "text", text: reasoningLines[0] }] : [];
+    } else if (row.type === "thinking") {
       compactItem.parts = [];
-    } else if (row.type === "tool_use" || row.type === "tool_result") {
+    } else if (row.type === "tool_use" || row.type === "tool_result" || activity) {
       compactItem.parts = [];
     }
     metadata.chat_item = compactItem;
   }
 
-  const preserveThinkingSummary = row.type === "thinking" && metadata.source_event_type === "reasoning_summary";
-  const content = preserveThinkingSummary
-    ? row.content
+  const content = reasoningSummary
+    ? (reasoningLines[0] ?? "")
     : row.type === "tool_use"
       ? (typeof metadata.tool_name === "string" ? metadata.tool_name : "Tool call")
       : row.type === "tool_result"
         ? ""
-        : "Thought";
+        : row.type === "thinking" ? "Thought" : "";
   return {
     id: row.id,
     conversation_id: row.conversation_id,
@@ -555,6 +562,7 @@ export function registerConversationRoutes(
 ): void {
   const db = getDb();
   const sourceReader = new ConversationSourceReader(db);
+  const displaySourceReader = new ConversationSourceReader(db, { legacyFallback: false });
   const ensureFresh = (ref: string, waitForFresh?: boolean) => ensureExactConversationFresh(db, ref, {
     ...sourceFreshness,
     ...(waitForFresh === undefined ? {} : { waitForFresh }),
@@ -1295,6 +1303,68 @@ export function registerConversationRoutes(
     sendJson(res, result.ok ? 200 : 409, result.ok ? result : { error: result.message });
   }, { fileRpc: "deny" });
 
+  server.get("/api/conversations/:id/structure", async (req, res) => {
+    const requestedRef = req.params.id;
+    if (!requestedRef) return sendJson(res, 400, { error: "Missing conversation id" });
+    let id: string;
+    try {
+      id = (await ensureFresh(requestedRef, false)).conversationId;
+    } catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      return sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
+    }
+    const source = db.prepare(`
+      SELECT current_version_id FROM conversation_sources
+       WHERE conversation_id = ? AND current_version_id IS NOT NULL
+       ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1
+    `).get(id) as { current_version_id: string } | undefined;
+    const version = source?.current_version_id ?? null;
+    const cached = version === null ? null : getConversationStructureCache(db).readStructure(id, version);
+    const dense = cached === null ? db.prepare(`
+      SELECT id, position, type, role, parent_block_id, record_offset, record_length
+        FROM conversation_structural_blocks
+       WHERE conversation_id = ? AND status = 'current' ORDER BY position
+    `).all(id) as Array<{ id: string; position: number; type: string; role: string;
+      parent_block_id: string | null; record_offset: number | null; record_length: number | null }> : [];
+    const densePositionById = new Map(dense.map((row) => [row.id, row.position]));
+    const legacy = cached === null && dense.length === 0 ? db.prepare(`
+      SELECT id, position, type, role, parent_id, length(content) AS record_length
+        FROM conversation_blocks WHERE conversation_id = ? ORDER BY position
+    `).all(id) as Array<{ id: string; position: number; type: string; role: string;
+      parent_id: string | null; record_length: number }> : [];
+    const rows = cached ?? (dense.length > 0 ? dense.map((row) => ({
+      id: row.id, position: row.position, type: row.type, role: row.role,
+      parent_position: row.parent_block_id ? densePositionById.get(row.parent_block_id) ?? null : null,
+      record_offset: row.record_offset, record_length: row.record_length ?? 0,
+    })) : legacy.map((row) => ({
+      id: row.id, position: row.position, type: row.type, role: row.role,
+      parent_position: null, record_offset: null, record_length: row.record_length,
+    })));
+    const expected = db.prepare("SELECT block_count FROM conversations WHERE id = ?")
+      .get(id) as { block_count: number } | undefined;
+    if (!expected) return sendJson(res, 404, { error: "Conversation not found" });
+    if (rows.length !== expected.block_count) {
+      return sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending",
+        message: "conversation structure is incomplete; retry after indexing" });
+    }
+    const current = db.prepare(`SELECT current_version_id FROM conversation_sources
+      WHERE conversation_id = ? AND current_version_id IS NOT NULL
+      ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`
+    ).get(id) as { current_version_id: string } | undefined;
+    if ((current?.current_version_id ?? null) !== version) {
+      return sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending",
+        message: "conversation source changed during structure read" });
+    }
+    sendJson(res, 200, { conversation_id: id, source_version_id: version, total: rows.length,
+      rows: rows.map((row) => ({
+        id: "id" in row ? row.id : sparseConversationBlockId(id, row.position),
+        position: row.position, type: row.type, role: row.role,
+        parent_position: "parentPosition" in row ? row.parentPosition : row.parent_position,
+        record_offset: "recordOffset" in row ? row.recordOffset : row.record_offset,
+        record_length: "recordLength" in row ? row.recordLength : row.record_length,
+      })) });
+  }, { fileRpc: "allow" });
+
   // GET /api/conversations/:id — bounded, indexed conversation-position window.
   server.get("/api/conversations/:id", async (req, res) => {
     const requestedRef = req.params.id;
@@ -1377,130 +1447,6 @@ export function registerConversationRoutes(
          LIMIT 1
       `).get(id) as { current_version_id: string } | undefined;
       sourceVersionId = source?.current_version_id ?? null;
-      if (displayView) {
-        const displayBlocks: SourceBackedConversationBlock[] = [];
-        let offset = 0;
-        let displayTotal: number | null = null;
-        let displayBodySource: "source" | "legacy" | null = null;
-        let displaySourceVersion: string | null = null;
-        let lastPosition = -1;
-        while (displayTotal === null || offset < displayTotal) {
-          const page = await sourceReader.readPage(id, { offset, limit: 500 });
-          if (page.status !== "source" && page.status !== "legacy") {
-            if (page.status === "stale") {
-              try {
-                await ensureFresh(id, false);
-                sendFreshnessError(res, new ConversationFreshnessError(
-                  "freshness_pending", "conversation source refreshed; retry display projection",
-                ));
-              } catch (error) {
-                if (!sendFreshnessError(res, error)) {
-                  sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
-                }
-              }
-              return;
-            }
-            sendJson(res, page.status === "not_found" ? 404 : 409, { error: page.reason, status: page.status });
-            return;
-          }
-          if (displayTotal === null) {
-            displayTotal = page.value.total;
-            displayBodySource = page.status;
-            displaySourceVersion = page.status === "source" ? page.sourceVersionId : null;
-            if (sourceVersionId !== null && displaySourceVersion !== sourceVersionId) {
-              sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation source changed before display projection; retry" });
-              return;
-            }
-          } else if (page.value.total !== displayTotal || page.status !== displayBodySource
-              || (page.status === "source" && page.sourceVersionId !== displaySourceVersion)) {
-            sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation source changed during display projection; retry" });
-            return;
-          }
-          if (page.value.offset !== offset || (page.value.blocks.length === 0 && page.value.total > 0)) {
-            sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation display coverage changed; retry" });
-            return;
-          }
-          try {
-            for (const block of page.value.blocks) {
-              if (block.position <= lastPosition) {
-                sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation display positions changed; retry" });
-                return;
-              }
-              lastPosition = block.position;
-              displayBlocks.push(projectDisplayBlock(block));
-            }
-          } catch (error) {
-            sendJson(res, 409, {
-              error: "display_projection_error",
-              message: error instanceof Error ? error.message : String(error),
-            });
-            return;
-          }
-          offset += page.value.blocks.length;
-        }
-        if (displayBlocks.length !== (displayTotal ?? 0)) {
-          sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation display coverage changed; retry" });
-          return;
-        }
-        const current = db.prepare(`
-          SELECT current_version_id FROM conversation_sources
-           WHERE conversation_id = ? AND current_version_id IS NOT NULL
-           ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC
-           LIMIT 1
-        `).get(id) as { current_version_id: string } | undefined;
-        if (displaySourceVersion !== null && current?.current_version_id !== displaySourceVersion) {
-          sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending", message: "conversation source changed during display projection; retry" });
-          return;
-        }
-        readableBlocks = displayBlocks;
-        bodySource = displayBodySource ?? "legacy";
-        sourceVersionId = displaySourceVersion;
-        total = displayTotal ?? 0;
-        limit = Math.max(1, total);
-        windowOffset = 0;
-        let anchorPosition: number | null = null;
-        if (targetKind === "initial" || targetKind === "latest") {
-          anchorPosition = displayBlocks[displayBlocks.length - 1]?.position ?? null;
-        } else if (targetKind === "position") {
-          anchorPosition = Number(requestedValue);
-        } else if (typeof requestedValue === "string") {
-          anchorPosition = displayBlocks.find((block) => block.id === requestedValue)?.position ?? null;
-          if (anchorPosition === null) {
-            anchorPosition = sparseConversationBlockPosition(id, requestedValue);
-          }
-          if (anchorPosition === null) {
-            const dense = db.prepare(`
-              SELECT position FROM conversation_structural_blocks
-               WHERE conversation_id = ? AND status = 'current'
-                 AND id = COALESCE((
-                   SELECT block_id FROM conversation_block_aliases WHERE alias = ?
-                 ), ?)
-            `).get(id, requestedValue, requestedValue) as { position: number } | undefined;
-            anchorPosition = dense?.position ?? null;
-          }
-        }
-        resolvedBlock = anchorPosition === null
-          ? null
-          : displayBlocks.find((block) => block.position === anchorPosition) ?? null;
-        if (targetKind !== "initial" && targetKind !== "latest" && !resolvedBlock) {
-          sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
-          return;
-        }
-        const preceding = anchorPosition === null
-          ? []
-          : displayBlocks.filter((block) => block.position <= anchorPosition!);
-        const previousUser = [...preceding].reverse()
-          .find((block) => block.type === "user_message")?.position ?? -1;
-        resolvedTurnId = resolvedBlock?.type === "user_message"
-          ? resolvedBlock.id
-          : preceding.find((block) => block.position > previousUser && block.type !== "user_message")?.id
-            ?? resolvedBlock?.id
-            ?? null;
-        if (targetKind === "turn" && resolvedTurnId !== requestedValue) {
-          sendJson(res, 404, { error: "Turn anchor not found" });
-          return;
-        }
-      } else {
       const structureCache = getConversationStructureCache(db);
       const cachedTotal = source
         ? structureCache.blockCount(id, source.current_version_id)
@@ -1557,7 +1503,8 @@ export function registerConversationRoutes(
         : targetKind === "initial" || targetKind === "latest"
         ? Math.max(0, retainedTotal - limit)
         : Math.max(0, anchorPosition! - Math.floor((limit - 1) / 2));
-      const sourcePage = await sourceReader.readPage(id, { offset: windowOffset, limit });
+      const sourcePage = await (displayView && source ? displaySourceReader : sourceReader)
+        .readPage(id, { offset: windowOffset, limit });
       if (sourcePage.status !== "source" && sourcePage.status !== "legacy") {
         if (sourcePage.status === "stale") {
           // The source can append after the pre-read extent check. Reconcile
@@ -1618,7 +1565,6 @@ export function registerConversationRoutes(
       if (targetKind === "turn" && resolvedTurnId !== requestedValue) {
         sendJson(res, 404, { error: "Turn anchor not found" });
         return;
-      }
       }
     } else {
       const resolved = resolvePositionTarget(db, id, targetKind, requestedValue);
@@ -1773,7 +1719,9 @@ export function registerConversationRoutes(
         after_count: afterCount,
         limit,
       },
-      blocks: readableBlocks.map(mapReadableBlock),
+      blocks: readableBlocks.map((block) => displayView
+        ? projectDisplayBlock(mapReadableBlock(block) as SourceBackedConversationBlock)
+        : mapReadableBlock(block)),
     });
   }, { fileRpc: "allow" });
 

@@ -3,6 +3,7 @@ import type {
   ConversationBlock,
   ConversationChild,
   ConversationPositionWindow,
+  ConversationStructure,
   ConversationSidebarGroup,
   ConversationSidebarResponse,
 } from '../api';
@@ -40,6 +41,7 @@ export type ConversationTranscriptData = {
   end_reached: boolean;
   after_count: number;
   blocks: ConversationBlock[];
+  structure: ConversationStructure | null;
 };
 
 export type ConversationTranscriptConsumer = {
@@ -47,16 +49,17 @@ export type ConversationTranscriptConsumer = {
   sourceVersionId: string | null;
   historyLoading: boolean;
   total: number;
+  structure: ConversationStructure | null;
   loadedIntervals: readonly ConversationLoadedInterval[];
   hasOlder: boolean;
   hasNewer: boolean;
   unmaterializedAfterCount: number;
   loadOlder: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
   loadNewer: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
-  loadAround: (position: number) => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
+  loadAround: (position: number, limit: number, signal?: AbortSignal) => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
 };
 
-export type ConversationHistoryLoadResult = 'loaded' | 'covered' | 'busy' | 'failed';
+export type ConversationHistoryLoadResult = 'loaded' | 'covered' | 'busy' | 'cancelled' | 'failed';
 
 export type ConversationNavigationCommand = {
   key: string;
@@ -93,6 +96,9 @@ export function mergeLoadedIntervals(
 }
 
 export function conversationTranscriptFromWindow(payload: ConversationPositionWindow): ConversationTranscriptData {
+  const blocks = boundedBlocks(payload.blocks,
+    payload.target.position ?? payload.window.end_position ?? 0);
+  const intervals = intervalsForBlocks(blocks);
   return {
     conversation: payload.conversation,
     body_source: payload.body_source,
@@ -101,11 +107,12 @@ export function conversationTranscriptFromWindow(payload: ConversationPositionWi
     parent: payload.parent,
     revision: payload.revision,
     total: payload.total,
-    loaded_intervals: intervalForWindow(payload),
-    start_reached: !payload.window.has_before,
-    end_reached: !payload.window.has_after,
+    loaded_intervals: intervals,
+    start_reached: payload.total === 0 || (intervals[0]?.start === 0 && !payload.window.has_before),
+    end_reached: payload.total === 0 || (intervals.at(-1)?.end === payload.total - 1 && !payload.window.has_after),
     after_count: payload.window.after_count,
-    blocks: payload.blocks,
+    blocks,
+    structure: null,
   };
 }
 
@@ -140,6 +147,61 @@ function mergeBlocks(current: readonly ConversationBlock[], incoming: readonly C
   return [...byId.values()].sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
 }
 
+const MAX_TRANSCRIPT_CACHE_BYTES = 16 * 1024 * 1024;
+const MAX_VISIBLE_DETAIL_BYTES = 64 * 1024 * 1024;
+const PROTECTED_READING_RADIUS = 240;
+const blockBytes = new WeakMap<ConversationBlock, number>();
+
+function measuredBlockBytes(block: ConversationBlock): number {
+  const cached = blockBytes.get(block);
+  if (cached !== undefined) return cached;
+  const size = JSON.stringify(block).length * 2;
+  blockBytes.set(block, size);
+  return size;
+}
+
+function boundedBlocks(blocks: ConversationBlock[], target: number): ConversationBlock[] {
+  let bytes = 0;
+  const sized = blocks.map((block) => {
+    const size = measuredBlockBytes(block);
+    bytes += size;
+    return { block, size };
+  });
+  const protectedDetailBytes = sized.reduce((sum, candidate) =>
+    sum + (candidate.block.details_loaded === true
+      && Math.abs(candidate.block.position - target) <= PROTECTED_READING_RADIUS
+      ? candidate.size : 0), 0);
+  if (protectedDetailBytes > MAX_VISIBLE_DETAIL_BYTES) {
+    throw new Error('Expanded detail exceeds the reading cache limit.');
+  }
+  const budget = MAX_TRANSCRIPT_CACHE_BYTES + protectedDetailBytes;
+  if (bytes <= budget) return blocks;
+  const byDistance = [...sized].sort((left, right) =>
+    Number(right.block.details_loaded === true) - Number(left.block.details_loaded === true)
+    || Math.abs(right.block.position - target) - Math.abs(left.block.position - target));
+  const evicted = new Set<string>();
+  for (const candidate of byDistance) {
+    if (bytes <= budget) break;
+    if (Math.abs(candidate.block.position - target) <= PROTECTED_READING_RADIUS) continue;
+    evicted.add(candidate.block.id);
+    bytes -= candidate.size;
+  }
+  if (bytes > budget) {
+    throw new Error('Visible conversation content exceeds the reading cache limit.');
+  }
+  return blocks.filter((block) => !evicted.has(block.id));
+}
+
+function intervalsForBlocks(blocks: readonly ConversationBlock[]): ConversationLoadedInterval[] {
+  const intervals: ConversationLoadedInterval[] = [];
+  for (const block of blocks) {
+    const last = intervals.at(-1);
+    if (last && block.position <= last.end + 1) last.end = Math.max(last.end, block.position);
+    else intervals.push({ start: block.position, end: block.position });
+  }
+  return intervals;
+}
+
 export function reconcileConversationWindow(
   current: ConversationTranscriptData | undefined,
   incoming: ConversationPositionWindow,
@@ -148,10 +210,13 @@ export function reconcileConversationWindow(
       || current.source_version_id !== incoming.source_version_id) {
     return conversationTranscriptFromWindow(incoming);
   }
-  const blocks = mergeBlocks(current.blocks, incoming.blocks);
+  const blocks = boundedBlocks(
+    mergeBlocks(current.blocks, incoming.blocks),
+    incoming.target.position ?? incoming.window.end_position ?? 0,
+  );
   const total = Math.max(current.total, incoming.total);
   const incomingIntervals = intervalForWindow(incoming);
-  const loadedIntervals = mergeLoadedIntervals([...current.loaded_intervals, ...incomingIntervals]);
+  const loadedIntervals = intervalsForBlocks(blocks);
   const first = loadedIntervals[0];
   const last = loadedIntervals.at(-1);
   const currentFirst = current.loaded_intervals[0];
@@ -177,12 +242,11 @@ export function reconcileConversationWindow(
     revision: Math.max(current.revision, incoming.revision),
     total,
     blocks,
+    structure: current.structure,
     loaded_intervals: loadedIntervals,
     start_reached: startReached,
     end_reached: endReached,
-    after_count: incomingReachesCurrentEnd
-      ? incoming.window.after_count
-      : current.after_count,
+    after_count: last ? Math.max(0, total - last.end - 1) : total,
   };
 }
 

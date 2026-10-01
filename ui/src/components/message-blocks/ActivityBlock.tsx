@@ -291,7 +291,7 @@ function summarizeActivityRun(
   });
   const toolStates = [...new Set(tools.flatMap(activityState))]
     .map((state) => state.charAt(0).toLowerCase() + state.slice(1));
-  const summary = [...toolLabels, ...activityLabels, ...toolStates].join(', ');
+  const summary = [...toolLabels, ...activityLabels, ...toolStates].join('; ');
   return summary.charAt(0).toUpperCase() + summary.slice(1);
 }
 

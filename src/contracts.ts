@@ -576,6 +576,21 @@ export type ConversationPositionWindow = {
   blocks: StoredConversationBlock[];
 };
 
+export type ConversationStructure = {
+  conversation_id: string;
+  source_version_id: string | null;
+  total: number;
+  rows: Array<{
+    id: string;
+    position: number;
+    type: string;
+    role: string;
+    parent_position: number | null;
+    record_offset: number | null;
+    record_length: number;
+  }>;
+};
+
 export type WorkflowRunStatus = "pending" | "running" | "completed" | "failed" | "warning";
 export type WorkflowWorkerStatus = "pending" | "running" | "completed" | "failed" | "warning";
 
