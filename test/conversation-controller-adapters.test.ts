@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ControllerAcquisitionRequest } from "../src/conversation-control/adapter.js";
+import { codexAppServerExecutable } from "../src/conversation-control/codex-app-server-client.js";
 import { ClaudeStreamControllerAdapter } from "../src/conversation-control/claude-controller.js";
 import { CodexAppServerControllerAdapter } from "../src/conversation-control/codex-controller.js";
 import { chatItemIdentityKey } from "../src/conversation-control/provider-live.js";
@@ -16,6 +17,17 @@ import type { ConversationLifecycleEvent, ConversationOutboxItem, ProviderAdapte
 
 const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "structured-controller-process.mjs");
 const adapters: Array<{ close(): Promise<void> }> = [];
+
+it("selects the desktop Codex runtime for paginated threads and fails visibly when it is unavailable", () => {
+  const checked: string[] = [];
+  expect(codexAppServerExecutable({ platform: "darwin", override: "", checkExecutable: (value) => { checked.push(value); } }))
+    .toBe("/Applications/ChatGPT.app/Contents/Resources/codex");
+  expect(checked).toEqual(["/Applications/ChatGPT.app/Contents/Resources/codex"]);
+  expect(codexAppServerExecutable({ platform: "darwin", override: "/custom/codex", checkExecutable: () => {} }))
+    .toBe("/custom/codex");
+  expect(() => codexAppServerExecutable({ platform: "darwin", override: "", checkExecutable: () => { throw new Error("missing"); } }))
+    .toThrow("Set MANDIBLE_CODEX_APP_SERVER_BIN");
+});
 
 afterEach(async () => {
   await Promise.all(adapters.splice(0).map((adapter) => adapter.close()));
@@ -151,7 +163,7 @@ describe("structured conversation controller adapters", () => {
 
   it("uses Codex managed auth and exact App Server turn identity for steering", async () => {
     const calls: Array<{ command: string; args: readonly string[] }> = [];
-    const adapter = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", calls) });
+    const adapter = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", calls), codexExecutable: "codex" });
     adapters.push(adapter);
     const events = lifecycle(adapter);
 
@@ -169,7 +181,7 @@ describe("structured conversation controller adapters", () => {
 
   it("accepts initial messages only with exact provider protocol receipts", async () => {
     const claude = new ClaudeStreamControllerAdapter({ spawnProcess: spawner("claude", []) });
-    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []) });
+    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []), codexExecutable: "codex" });
     adapters.push(claude, codex);
     expect((await claude.acquire(acquisition("claude-session"))).ok).toBe(true);
     expect((await codex.acquire(acquisition("codex-thread"))).ok).toBe(true);
@@ -189,7 +201,7 @@ describe("structured conversation controller adapters", () => {
 
   it("projects provider deltas provisionally using stable message identities", async () => {
     const claude = new ClaudeStreamControllerAdapter({ spawnProcess: spawner("claude", []) });
-    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []) });
+    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []), codexExecutable: "codex" });
     adapters.push(claude, codex);
     const claudeEvents = providerEvents(claude);
     const codexEvents = providerEvents(codex);
@@ -267,7 +279,7 @@ describe("structured conversation controller adapters", () => {
   });
 
   it("adapts Codex reasoning, plans, and tool snapshots without hidden provider payloads", async () => {
-    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []) });
+    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []), codexExecutable: "codex" });
     adapters.push(codex);
     const events = providerEvents(codex);
     expect((await codex.acquire(acquisition("codex-thread"))).ok).toBe(true);
@@ -295,7 +307,7 @@ describe("structured conversation controller adapters", () => {
   });
 
   it("classifies Codex spawn lineage only with exact sender and receiver identities", async () => {
-    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []) });
+    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []), codexExecutable: "codex" });
     adapters.push(codex);
     const events = providerEvents(codex);
     expect((await codex.acquire(acquisition("codex-thread"))).ok).toBe(true);
@@ -330,7 +342,7 @@ describe("structured conversation controller adapters", () => {
     const claudeCalls: Array<{ command: string; args: readonly string[] }> = [];
     const codexCalls: Array<{ command: string; args: readonly string[] }> = [];
     const claude = new ClaudeStreamControllerAdapter({ spawnProcess: spawner("claude", claudeCalls) });
-    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", codexCalls) });
+    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", codexCalls), codexExecutable: "codex" });
     adapters.push(claude, codex);
 
     const start = {
@@ -358,9 +370,10 @@ describe("structured conversation controller adapters", () => {
 
   it("fails restart probes closed except for explicit Codex provider-authoritative idle state", async () => {
     const claude = new ClaudeStreamControllerAdapter({ spawnProcess: spawner("claude", []) });
-    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []) });
+    const codex = new CodexAppServerControllerAdapter({ spawnProcess: spawner("codex", []), codexExecutable: "codex" });
     const unloadedCodex = new CodexAppServerControllerAdapter({
       spawnProcess: spawner("codex", [], { FAKE_CODEX_THREAD_STATUS: "notLoaded" }),
+      codexExecutable: "codex",
     });
     adapters.push(claude, codex, unloadedCodex);
     const probe = {
@@ -373,5 +386,16 @@ describe("structured conversation controller adapters", () => {
     expect(await claude.probe(probe)).toEqual({ ok: true, value: { kind: "unknown", reason: "probe-ambiguous" } });
     expect(await codex.probe(probe)).toEqual({ ok: true, value: { kind: "released" } });
     expect(await unloadedCodex.probe(probe)).toEqual({ ok: true, value: { kind: "unknown", reason: "probe-ambiguous" } });
+  });
+
+  it("classifies an already active Codex thread as ambiguous acquisition", async () => {
+    const codex = new CodexAppServerControllerAdapter({
+      spawnProcess: spawner("codex", [], { FAKE_CODEX_RESUME_STATUS: "active" }),
+      codexExecutable: "codex",
+    });
+    adapters.push(codex);
+    expect(await codex.acquire(acquisition("codex-thread"))).toMatchObject({
+      ok: false, error: { kind: "adapter-failure", code: "acquisition-ambiguous" },
+    });
   });
 });

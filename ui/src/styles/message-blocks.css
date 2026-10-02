@@ -204,6 +204,14 @@
   --tool-activity-box-text: #919191;
 }
 
+/* Space activity entries in the main stream without expanding their nested members. */
+:is(.turn-group__body, .message-group__content) > :is(
+  .message-block-wrapper:has(> .compact-activity, > .tool-card),
+  .tool-call-group
+) {
+  padding-block: 3px;
+}
+
 .compact-activity__row {
   display: flex;
   align-items: center;

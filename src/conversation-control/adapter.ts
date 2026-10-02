@@ -31,6 +31,7 @@ export interface ConversationControllerAdapter {
   readonly id: string;
   readonly provider: string;
   readonly capabilities: ControllerAdapterCapabilities;
+  // A startup-failed result means the adapter retained no controller lease or process.
   acquire(input: ControllerAcquisitionRequest): Promise<Result<ControllerLease, ConversationControlError>>;
   deliver(item: ConversationOutboxItem): Promise<Result<ProviderDeliveryReceipt, ConversationControlError>>;
   probe(input: {
