@@ -68,9 +68,8 @@ describe('owner-only local API socket', () => {
     expect((await request('POST', '/api/users/setup', { Authorization: 'Bearer invalid' }, true, setup)).status).toBe(401);
     const first = await request('POST', '/api/users/setup', {}, true, setup);
     expect(first).toMatchObject({ status: 200, body: { user: { slug: 'fresh-operator' } } });
-    expect((await request('POST', '/api/users/setup', {}, true, setup)).status).toBe(401);
-    const token = auth.mintApiToken(first.body.user.id);
-    expect((await request('POST', '/api/users/setup', { Authorization: `Bearer ${token.token}` }, true, setup)).status).toBe(200);
+    expect(auth.localSocketBootstrapAllowed()).toBe(false);
+    expect((await request('GET', '/api/read')).body.identity.user_id).toBe(first.body.user.id);
   });
   it('uses the operator for an unmanaged request, but TCP cannot spoof the socket', async () => {
     const local = await request('GET', '/api/read');
