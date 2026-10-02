@@ -5,8 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ChatFailureNotice,
   chatControlFailureNotice,
+  chatSubmissionFailureNotice,
   chatSpawnFailureNotice,
 } from '../../ui/src/chat/ChatFailureNotice.js';
+import { ApiError } from '../../ui/src/api.js';
 
 afterEach(cleanup);
 
@@ -49,5 +51,18 @@ describe('Chat provider failure notice', () => {
 
     expect(screen.getByRole('alert').textContent).toContain('avoid a duplicate message');
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  it('explains preview send denial without exposing the raw policy code', () => {
+    const dismiss = vi.fn();
+    const model = chatSubmissionFailureNotice(new ApiError('effect_forbidden', 403, 'effect_forbidden'));
+    render(<ChatFailureNotice failure={model} onDismiss={dismiss} />);
+
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('cannot send messages to agents');
+    expect(alert.textContent).toContain('saved draft');
+    expect(alert.textContent).not.toContain('effect_forbidden');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss error' }));
+    expect(dismiss).toHaveBeenCalledOnce();
   });
 });
