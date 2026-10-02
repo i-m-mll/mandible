@@ -51,7 +51,11 @@ For Chat acceptance, file drops anywhere within the conversation detail pane use
 
 Submission failures appear once in the anchored Chat notice, with an icon-only dismiss action and a single line when space permits. The composer has no separate error or retry button. Known failures preserve an editable draft; normal Send retries safely. Uncertain delivery retains its exact idempotent intent to prevent duplicates. Preview instances continue to block real provider messages and explain that restriction in ordinary language.
 
-The user compares these first implementations before choosing how to proceed. Protected delivery and its production-daemon plus packaged-app candidate gate wait for that decision. Workers own bounded implementation and focused useful regression checks. No pushes or protected merges by workers. Use GPT-6 Sol at medium, user-visible tasks, no subagents. Every worker invokes begood and work-on-issues.
+The accepted production implementation uses Agentation and the shared Chat attachment flow. The custom annotator remains a separate comparison preview and is excluded from this delivery. Protected delivery uses a disposable branch from the accepted integration revision, leaving both preview worktrees and servers available. Workers own bounded implementation and focused useful regression checks. No pushes or protected merges by workers. Use GPT-6 Sol at medium, user-visible tasks, no subagents. Every worker invokes begood and work-on-issues.
+
+## Codex question replies
+
+Only Codex conversations interpret the `send_user_message_question_reply` envelope as question-and-answer pairs. Render each question in the shared theme-aware muted text color used by tool entries, followed by its answer in normal user-message typography. Preserve ordering and full text. Do not apply this interpretation to other providers; malformed or unrelated content remains visible.
 
 ## Verification
 
