@@ -1,4 +1,4 @@
-import { requireIdentity, ClientAuthzError } from "../client-auth/authz.js";
+import { attributionForRequest, requireIdentity, ClientAuthzError } from "../client-auth/authz.js";
 import { MANAGED_REMINDER_EVENTS, type ManagedReminderLifecycle } from "../contracts.js";
 import { getDb, type Db } from "../db.js";
 import {
@@ -54,6 +54,18 @@ function admitProjectWrite(db: Db, req: RequestLike, projectId: string): Resolve
   return identity;
 }
 
+function reminderEvidence(db: Db, req: RequestLike, identity: ResolvedClientIdentity):
+  "api_token" | "ephemeral" | "local_default" | "session_claim" {
+  if (identity.method === "api_token") return "api_token";
+  if (identity.method !== "local_socket") return "ephemeral";
+  const attribution = attributionForRequest(db, req);
+  if (attribution?.user_id !== identity.user_id
+      || (attribution.evidence_method !== "local_default" && attribution.evidence_method !== "session_claim")) {
+    throw new ClientAuthzError(403, "managed_identity_required", "Local reminder attribution requires one active caller identity.");
+  }
+  return attribution.evidence_method;
+}
+
 function lifecycleFilter(value: string | undefined): ManagedReminderLifecycle | undefined {
   if (value === undefined || value === "") return undefined;
   if (value === "armed" || value === "completed" || value === "cancelled") return value;
@@ -72,7 +84,7 @@ export function registerManagedReminderRoutes(server: RouteRegistrar, db: Db = g
       const result = createManagedReminder(
         db,
         request,
-        { userId: identity.user_id, evidenceMethod: identity.method === "api_token" ? "api_token" : "ephemeral" },
+        { userId: identity.user_id, evidenceMethod: reminderEvidence(db, req, identity) },
         { projectId: project.id },
       );
       if (result.stored) {
@@ -123,7 +135,7 @@ export function registerManagedReminderRoutes(server: RouteRegistrar, db: Db = g
       const identity = admitProjectWrite(db, req, current.project_id);
       const reminder = cancelManagedReminder(db, current.id, {
         userId: identity.user_id,
-        evidenceMethod: identity.method === "api_token" ? "api_token" : "ephemeral",
+        evidenceMethod: reminderEvidence(db, req, identity),
       });
       broadcast(MANAGED_REMINDER_EVENTS.changed, {
         task_id: reminder.id,

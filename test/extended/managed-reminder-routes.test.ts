@@ -12,7 +12,7 @@ import { addGrant, setProjectRestricted } from "../../src/permissions/store.js";
 import { registerManagedReminderRoutes } from "../../src/routes/reminders.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../../src/server.js";
 import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
-import { createUser } from "../../src/users/store.js";
+import { addBinding, createUser } from "../../src/users/store.js";
 
 const NOW = Date.parse("2026-08-14T12:00:00Z");
 let db: Db;
@@ -24,15 +24,17 @@ class SlugGate implements ClientAuthGate {
     source: ResolvedClientIdentity["source"] = "in_process",
   ): ResolvedClientIdentity | null {
     if (!credential) return null;
+    const socket = credential.startsWith("socket:");
+    const slug = socket ? credential.slice("socket:".length) : credential;
     const row = db.prepare("SELECT id, slug FROM users WHERE slug = ? AND status = 'active'")
-      .get(credential) as { id: string; slug: string } | undefined;
+      .get(slug) as { id: string; slug: string } | undefined;
     return row
       ? {
           user_id: row.id,
           slug: row.slug,
-          method: "api_token",
+          method: socket ? "local_socket" : "api_token",
           credential_id: null,
-          source,
+          source: socket ? "local_socket" : source,
           effect_ceiling: PRODUCTION_EFFECTS,
         }
       : null;
@@ -75,6 +77,24 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe("managed reminder route admission", () => {
+  it("records a socket agent claim without relabeling it as ephemeral", async () => {
+    addBinding(db, "route-agent", { binding_type: "provider_session_env", value: "CODEX_THREAD_ID" });
+    addGrant(db, { subject_type: "user", subject: "route-agent", resource_type: "project",
+      resource: "route-project", permission: "write" }, NOW);
+    const ambient_identity = { provider: "codex", provider_session_id: "reminder-agent-session" };
+    const created = await router.invoke({ method: "POST", url: "/api/reminders",
+      body: body("socket-agent"), credential: "socket:route-agent", ambient_identity });
+    expect(created.status).toBe(201);
+    const id = (created.body as { reminder: { id: string } }).reminder.id;
+    expect(db.prepare("SELECT evidence_method FROM managed_task_events WHERE task_id = ?").get(id))
+      .toEqual({ evidence_method: "session_claim" });
+    const cancelled = await router.invoke({ method: "POST", url: `/api/reminders/${id}/cancel`,
+      body: {}, credential: "socket:route-agent", ambient_identity });
+    expect(cancelled.status).toBe(200);
+    expect(db.prepare("SELECT evidence_method FROM managed_task_events WHERE task_id = ? AND event_type = 'cancelled'")
+      .get(id)).toEqual({ evidence_method: "session_claim" });
+  });
+
   it("requires an attributable active human/agent and project write access", async () => {
     const anonymous = await router.invoke({ method: "POST", url: "/api/reminders", body: body("anon") });
     expect(anonymous).toMatchObject({ status: 401, body: { code: "authentication_required" } });

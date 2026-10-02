@@ -292,7 +292,7 @@ function appendAuditEvent(
     projectId: string;
     eventType: "created" | "completed" | "cancelled";
     actorUserId: string;
-    evidenceMethod: "api_token" | "ephemeral" | "system_internal";
+    evidenceMethod: "api_token" | "ephemeral" | "local_default" | "session_claim" | "system_internal";
     payload?: Record<string, unknown>;
     now: number;
   },
@@ -419,7 +419,7 @@ function capabilityFor(
 export function createManagedReminder(
   db: Db,
   request: ManagedReminderCreateRequest,
-  actor: { userId: string; evidenceMethod: "api_token" | "ephemeral" },
+  actor: { userId: string; evidenceMethod: "api_token" | "ephemeral" | "local_default" | "session_claim" },
   options: { now?: number; projectId?: string } = {},
 ): ManagedReminderCreateResult {
   const now = options.now ?? Date.now();
@@ -521,7 +521,7 @@ export function createManagedReminder(
 export function cancelManagedReminder(
   db: Db,
   ref: string,
-  actor: { userId: string; evidenceMethod: "api_token" | "ephemeral" },
+  actor: { userId: string; evidenceMethod: "api_token" | "ephemeral" | "local_default" | "session_claim" },
   now: number = Date.now(),
 ): ManagedReminder {
   return db.transaction(() => {
