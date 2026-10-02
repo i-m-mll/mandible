@@ -374,7 +374,7 @@
   flex-direction: column;
   gap: 8px;
   margin: 0 var(--conversation-composer-inline-margin, 18px) 16px;
-  padding: 10px;
+  padding: 10px 10px 6px;
   border: 1px solid var(--neutral-alpha-10);
   border-radius: var(--radius-chat-surface);
   background: var(--bg-card);
@@ -419,17 +419,18 @@
 
 .conv-compose__attachment-overflow { --overflow-fade-color: var(--surface-app); }
 .conv-compose__attachments { display: flex; flex-wrap: nowrap; gap: 6px; width: max-content; padding: 2px 0 5px; }
-.conv-compose__attachment { display: inline-flex; align-items: center; flex: 0 0 auto; max-width: 190px; border: 1px solid var(--neutral-alpha-10); border-radius: 7px; background: var(--neutral-alpha-04); }
+.conv-compose__attachment { display: inline-flex; align-items: center; flex: 0 0 auto; max-width: 190px; border: 1px solid var(--neutral-alpha-10); border-radius: 13px; background: var(--surface-app); }
 .conv-compose__attachment--new { animation: conv-annotation-new 1s ease-out both; }
 @keyframes conv-annotation-new {
   from { background: rgba(59, 130, 246, 0.3); border-color: #3b82f6; }
-  to { background: var(--neutral-alpha-04); border-color: var(--neutral-alpha-10); }
+  to { background: var(--surface-app); border-color: var(--neutral-alpha-10); }
 }
 .conv-compose__attachment-body, .conv-compose__attachment-remove { border: 0; color: var(--fg-default); background: transparent; cursor: pointer; }
 .conv-compose__attachment-body { display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 4px 3px 4px 7px; }
 .conv-compose__attachment-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15ch; }
 .conv-compose__attachment-remove { padding: 4px 7px; font-size: 16px; line-height: 1; }
-.conv-compose__add-attachment { flex: 0 0 auto; border: 0; background: transparent; color: var(--text-muted); font-size: 24px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.conv-compose__add-attachment { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 32px; min-height: 32px; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; padding: 0; }
+.conv-compose__add-attachment svg { width: 20px; height: 20px; }
 .conv-compose__add-attachment:disabled { opacity: 0.4; cursor: default; }
 .conv-compose__preview { grid-template-columns: minmax(0, 1fr); overflow-wrap: anywhere; }
 .conv-compose__preview-modal { align-items: center; }
@@ -527,8 +528,6 @@
 }
 
 .conv-compose__controls {
-  padding-top: 8px;
-  border-top: 1px solid var(--neutral-alpha-06);
   color: var(--text-muted);
   font-size: 12px;
   min-width: 0;
