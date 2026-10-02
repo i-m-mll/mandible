@@ -6,7 +6,7 @@ import path from "node:path";
 import { createHmac } from "node:crypto";
 import type { InstanceInfo } from "../types.js";
 import { PRODUCTION_EFFECTS } from "../security/effect-policy.js";
-import { getOperator, getUserById } from "../users/store.js";
+import { getOperator, getOperatorId, getUserById } from "../users/store.js";
 import { resolveProviderSessionAttributionResult, resolveSessionIdAttributionResult } from "../identity/resolver.js";
 import type { AmbientProviderIdentity } from "../ambient-provider-identity.js";
 import type {
@@ -173,6 +173,10 @@ export class ClientAuthenticator implements ClientAuthGate {
       source: "local_socket",
       effect_ceiling: this.instance?.allowed_effects ?? PRODUCTION_EFFECTS,
     };
+  }
+
+  localSocketBootstrapAllowed(): boolean {
+    return this.instance?.role === "main" && getOperatorId(this.db) === null;
   }
 
   instanceRegistration(instanceId: string): InstanceRegistration | null {

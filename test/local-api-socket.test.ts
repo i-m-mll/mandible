@@ -11,8 +11,9 @@ import { createLocalSocketServer, createServer, Router } from '../src/server.js'
 import { localApiSocketPath, startLocalApiSocket } from '../src/local-api-socket.js';
 import { SseManager } from '../src/sse.js';
 import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../src/security/effect-policy.js';
-import { addBinding, createUser, setupOperator } from '../src/users/store.js';
+import { addBinding, createUser, OPERATOR_SETTING_KEY, setupOperator } from '../src/users/store.js';
 import { PRODUCTION_ORIGIN } from '../src/canonical-origin.js';
+import { registerUserRoutes } from '../src/routes/users.js';
 import type { InstanceInfo } from '../src/types.js';
 
 let root: string; let db: Db; let auth: ClientAuthenticator; let router: Router;
@@ -25,14 +26,14 @@ function instance(): InstanceInfo {
     user_preferences_root: path.join(root, 'prefs'), db_path: path.join(root, 'db'),
     db_path_source: 'test', source_db_path: null, source_db_path_source: null };
 }
-function request(method: string, route: string, headers: Record<string, string> = {}, local = true): Promise<{ status: number; body: any }> {
+function request(method: string, route: string, headers: Record<string, string> = {}, local = true, body?: unknown): Promise<{ status: number; body: any }> {
   return new Promise((resolve, reject) => {
     const req = http.request(local ? { socketPath, path: route, method, headers } :
       { hostname: '127.0.0.1', port, path: route, method, headers }, (res) => {
       let raw = ''; res.on('data', chunk => raw += chunk);
       res.on('end', () => resolve({ status: res.statusCode ?? 500, body: raw ? JSON.parse(raw) : null }));
     });
-    req.on('error', reject); req.end();
+    req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
 }
 beforeEach(async () => {
@@ -41,6 +42,7 @@ beforeEach(async () => {
   setupOperator(db, { display_name: 'Operator', email: 'operator@example.invalid' });
   auth = new ClientAuthenticator(db, { instance: instance(), secretsDir: path.join(root, 'auth'), sessionAuthorityDir: path.join(root, 'sessions') });
   router = new Router({ clientAuth: auth, instance: instance() });
+  registerUserRoutes(router);
   router.get('/api/read', (req, res) => res.json({ identity: req.client_identity, ambient: req.ambient_identity, managed: req.managed_client }), { fileRpc: 'allow' });
   router.post('/api/write', (req, res) => res.json({ identity: req.client_identity }), { fileRpc: 'allow' });
   const serverOptions: Parameters<typeof createServer>[0] = { db, sse: new SseManager(), logger: () => undefined, version: 'test', router,
@@ -58,6 +60,18 @@ afterEach(async () => {
 });
 
 describe('owner-only local API socket', () => {
+  it('bootstraps the first operator only from an unmanaged bearer-free production socket', async () => {
+    db.prepare('DELETE FROM settings WHERE key = ?').run(OPERATOR_SETTING_KEY);
+    expect((await request('GET', '/api/read')).status).toBe(401);
+    const setup = { slug: 'fresh-operator', display_name: 'Fresh Operator', email: 'fresh@example.invalid' };
+    expect((await request('POST', '/api/users/setup', { 'X-Mandible-Managed-Client': '1' }, true, setup)).status).toBe(401);
+    expect((await request('POST', '/api/users/setup', { Authorization: 'Bearer invalid' }, true, setup)).status).toBe(401);
+    const first = await request('POST', '/api/users/setup', {}, true, setup);
+    expect(first).toMatchObject({ status: 200, body: { user: { slug: 'fresh-operator' } } });
+    expect((await request('POST', '/api/users/setup', {}, true, setup)).status).toBe(401);
+    const token = auth.mintApiToken(first.body.user.id);
+    expect((await request('POST', '/api/users/setup', { Authorization: `Bearer ${token.token}` }, true, setup)).status).toBe(200);
+  });
   it('uses the operator for an unmanaged request, but TCP cannot spoof the socket', async () => {
     const local = await request('GET', '/api/read');
     expect(local).toMatchObject({ status: 200, body: { identity: { method: 'local_socket', source: 'local_socket', credential_id: null } } });

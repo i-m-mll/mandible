@@ -115,6 +115,7 @@ export interface UnattributedWriteRecord {
 export interface ClientAuthGate {
   localBrowserIdentity?(): ResolvedClientIdentity | null;
   localSocketIdentity?(ambient: AmbientProviderIdentity | null, managed: boolean): ResolvedClientIdentity | null;
+  localSocketBootstrapAllowed?(): boolean;
   authenticate(
     credential: string | null | undefined,
     source: ResolvedClientIdentity["source"],
@@ -536,7 +537,11 @@ export class Router implements RouteRegistrar {
                 clientAuthSourceForTransport(transport),
                 { method: normalizedMethod, pathname },
               ) : null;
-        if (transport === "local-socket" && !clientIdentity && pathname !== "/api/health") {
+        const localBootstrap = transport === "local-socket"
+          && normalizedMethod === "POST" && pathname === "/api/users/setup"
+          && !credential && !httpAuth?.managed && !requestAmbientIdentity
+          && gate.localSocketBootstrapAllowed?.() === true;
+        if (transport === "local-socket" && !clientIdentity && pathname !== "/api/health" && !localBootstrap) {
           response.status(401).json({ error: "authentication_required", reason: "local_identity_unknown" });
           return true;
         }
@@ -561,7 +566,7 @@ export class Router implements RouteRegistrar {
           response.status(403).json({ error: "csrf_required" });
           return true;
         }
-        if (transport !== "in-process" && UNSAFE_METHODS.has(normalizedMethod) && !clientIdentity
+        if (transport !== "in-process" && UNSAFE_METHODS.has(normalizedMethod) && !clientIdentity && !localBootstrap
             && !STRICT_ANONYMOUS_HTTP_ROUTES.has(pathname)) {
           const telemetryTransport = transport === "http" ? "http" : "file-rpc";
           if (gate.mode() === "strict") {
