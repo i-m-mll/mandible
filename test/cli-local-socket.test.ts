@@ -31,12 +31,14 @@ describe("CLI private local transport", () => {
       { method: "POST", path: "/api/users/setup", credential_optional: true },
       { method: "POST", path: "/api/briefing-groups", body_nonempty: "sharing_reason" },
     ]));
-    const seen: Array<{ method: string; auth?: string; managed?: string; provider?: string; session?: string }> = [];
+    const seen: Array<{ method: string; auth?: string; managed?: string; provider?: string; session?: string; managedApp?: string; managedSession?: string }> = [];
     const server = http.createServer((req, res) => {
       seen.push({ method: req.method!, auth: req.headers.authorization,
         managed: req.headers["x-mandible-managed-client"] as string | undefined,
         provider: req.headers["x-mandible-ambient-provider"] as string | undefined,
-        session: req.headers["x-mandible-ambient-provider-session-id"] as string | undefined });
+        session: req.headers["x-mandible-ambient-provider-session-id"] as string | undefined,
+        managedApp: req.headers["x-mandible-managed-app"] as string | undefined,
+        managedSession: req.headers["x-mandible-managed-session-id"] as string | undefined });
       res.writeHead(200, { "Content-Type": "application/json" }); res.end('{"ok":true}');
     });
     await new Promise<void>((resolve) => server.listen(socket, resolve));
@@ -48,7 +50,8 @@ describe("CLI private local transport", () => {
       const read = await runShell('source "$API_HELPER"; out=$(api_temp_file); api_http_exchange GET /api/health "" "$out"', env);
       expect(read.code, read.stderr).toBe(0);
       expect(read.stdout).toBe("200");
-      expect(seen[0]).toEqual({ method: "GET", auth: undefined, managed: "1", provider: "codex", session: "task-123" });
+      expect(seen[0]).toEqual({ method: "GET", auth: undefined, managed: "1", provider: "codex", session: "task-123",
+        managedApp: undefined, managedSession: undefined });
       const gated = await runShell('source "$API_HELPER"; secret_account_for_service() { printf codex; }; secret_get() { printf durable-token; }; out=$(api_temp_file); api_http_exchange POST /api/auth/request "{}" "$out"', env);
       expect(gated.code, gated.stderr).toBe(0);
       expect(gated.stdout).toBe("200");
@@ -63,6 +66,14 @@ describe("CLI private local transport", () => {
       expect(briefing.code, briefing.stderr).toBe(0);
       expect(briefing.stdout).toBe("200");
       expect(seen[3]?.auth).toBeUndefined();
+      const wrapper = await runShell('source "$API_HELPER"; out=$(api_temp_file); api_http_exchange GET /api/health "" "$out"', {
+        ...env, CODEX_THREAD_ID: "", CODEX_SESSION_ID: "", MANDIBLE_MANAGED_CLIENT: "1",
+        MANDIBLE_MANAGED_APP: "claude", MANDIBLE_SESSION_ID: "wrapper-123",
+      });
+      expect(wrapper.code, wrapper.stderr).toBe(0);
+      expect(wrapper.stdout).toBe("200");
+      expect(seen[4]).toMatchObject({ managed: "1", provider: undefined, session: undefined,
+        managedApp: "claude", managedSession: "wrapper-123" });
     } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
   });
 });

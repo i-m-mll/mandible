@@ -63,6 +63,9 @@ fi
 
 # Export so Claude hooks can discover and reuse the same session ID
 export MANDIBLE_SESSION_ID="$SESSION_ID"
+# A wrapper starts a new provider task. Parent task markers belong to the
+# launching shell and must not be attributed to the wrapped process.
+unset CODEX_THREAD_ID CODEX_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID GEMINI_SESSION_ID
 
 # Signal to shell init (lib/agent-signing.sh) that this is an AI agent
 # session — use software signing key instead of YubiKey.
@@ -71,6 +74,7 @@ export AI_AGENT_SIGNING=1
 # The wrapped process inherits provider and task markers, which the local socket
 # carries as claimed attribution. Never project a durable bearer into its env.
 export MANDIBLE_MANAGED_CLIENT=1
+export MANDIBLE_MANAGED_APP="$APP"
 unset MANDIBLE_TOKEN
 
 # Detect if the wrapped command uses --dangerously-* flags (YOLO mode).

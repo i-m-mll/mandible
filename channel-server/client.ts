@@ -32,6 +32,23 @@ export function ambientHeaders(): Record<string, string> {
     headers["X-Mandible-Ambient-Provider"] = "claude";
     headers["X-Mandible-Ambient-Provider-Session-Id"] = providerId;
   }
+  const managedApp = process.env.MANDIBLE_MANAGED_APP;
+  const managedSessionId = process.env.MANDIBLE_SESSION_ID;
+  if (managedApp && /^[A-Za-z0-9._-]+$/.test(managedApp)
+      && managedSessionId && !/[\x00-\x1f\x7f]/.test(managedSessionId)) {
+    headers["X-Mandible-Managed-App"] = managedApp;
+    headers["X-Mandible-Managed-Session-Id"] = managedSessionId;
+  }
+  return headers;
+}
+
+export function channelTransportHeaders(kind: "socket" | "http"): Record<string, string> {
+  const headers = ambientHeaders();
+  if (kind === "http") {
+    const token = process.env.MANDIBLE_TOKEN?.trim()
+      || (process.env.MANDIBLE_MANAGED_CLIENT === "1" ? localCredential() : "");
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
   return headers;
 }
 
@@ -73,7 +90,7 @@ async function socketRequest<T>(method: string, route: string, body: unknown): P
   const transport = resolveTransport();
   if (transport.kind !== "socket") throw new Error("Expected local socket transport");
   const payload = body === undefined ? undefined : JSON.stringify(body);
-  const headers: Record<string, string> = { ...ambientHeaders(), "Content-Type": "application/json" };
+  const headers: Record<string, string> = { ...channelTransportHeaders("socket"), "Content-Type": "application/json" };
   const credentialRule = localRouteCredentialRule(method, route, body);
   if (credentialRule) {
     try { headers.Authorization = `Bearer ${localCredential()}`; }
@@ -124,19 +141,12 @@ async function request<T>(
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const explicitToken = process.env.MANDIBLE_TOKEN?.trim();
-    const managedHttpToken = !explicitToken && process.env.MANDIBLE_MANAGED_CLIENT === "1"
-      ? localCredential()
-      : explicitToken;
     const opts: RequestInit = {
       method,
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        ...ambientHeaders(),
-        ...(managedHttpToken
-          ? { Authorization: `Bearer ${managedHttpToken}` }
-          : {}),
+        ...channelTransportHeaders("http"),
       },
     };
     if (body !== undefined) {

@@ -20,7 +20,7 @@ describe("agent client-auth provisioning", () => {
     setDb(db);
   });
 
-  afterEach(() => db.close());
+  afterEach(() => { db.close(); vi.unstubAllEnvs(); });
 
   function fakeAuthenticator() {
     const issued: Array<{ identity: { user_id: string; slug: string }; purpose: string }> = [];
@@ -40,7 +40,7 @@ describe("agent client-auth provisioning", () => {
     return { value, issued, revoked };
   }
 
-  it("binds SDK and MCP child credentials to the unique active app user without persisting raw tokens", () => {
+  it("binds explicit HTTP SDK credentials to the unique active app user without persisting raw tokens", () => {
     const agent = createUser(db, {
       slug: "claude-agent",
       kind: "agent",
@@ -54,7 +54,7 @@ describe("agent client-auth provisioning", () => {
       label: "Claude",
       command: "claude",
       backend_type: "sdk",
-      env: { MANDIBLE_TOKEN: "caller-supplied-token" },
+      env: { MANDIBLE_TOKEN: "caller-supplied-token", MANDIBLE_BASE: "http://127.0.0.1:31337" },
     });
     const backend = manager.get(session.id) as unknown as {
       buildClientEnv(): Record<string, string | undefined>;
@@ -75,6 +75,42 @@ describe("agent client-auth provisioning", () => {
     expect(auth.revoked).toEqual(["token-for-claude-agent"]);
   });
 
+  it("projects no bearer for an ordinary local SDK child", () => {
+    const agent = createUser(db, { slug: "claude-agent", kind: "agent", display_name: "Claude Agent" });
+    addBinding(db, agent.id, { binding_type: "app_name", value: "claude" });
+    const auth = fakeAuthenticator();
+    const manager = new SessionManager(db, () => undefined, undefined, undefined, auth.value);
+    const session = manager.create({ label: "Claude", command: "claude", backend_type: "sdk",
+      env: { MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_TOKEN: "inherited-stale" } });
+    const clientEnv = (manager.get(session.id) as unknown as {
+      buildClientEnv(): Record<string, string | undefined>;
+    }).buildClientEnv();
+    expect(clientEnv.MANDIBLE_TOKEN).toBeUndefined();
+    expect(clientEnv.MANDIBLE_MANAGED_APP).toBe("claude");
+    expect(clientEnv.MANDIBLE_SESSION_ID).toBe(session.id);
+    expect(auth.issued).toEqual([]);
+  });
+
+  it("uses a distinct local alias for a fresh native child and the recorded provider ID on resume", () => {
+    const manager = new SessionManager(db, () => undefined);
+    const fresh = manager.create({ label: "Codex", command: "codex", backend_type: "spawn",
+      env: { CODEX_THREAD_ID: "parent-task", MANDIBLE_SESSION_ID: "parent-session" } });
+    const build = (id: string) => (manager.get(id) as unknown as {
+      buildCleanEnv(env: Record<string, string>): Record<string, string>;
+    }).buildCleanEnv({ MANDIBLE_BASE: "https://app.mandible.localhost:19420" });
+    const freshEnv = build(fresh.id);
+    expect(freshEnv.CODEX_THREAD_ID).toBeUndefined();
+    expect(freshEnv.MANDIBLE_MANAGED_APP).toBe("codex");
+    expect(freshEnv.MANDIBLE_SESSION_ID).toBe(fresh.id);
+
+    const providerId = "12345678-1234-4234-8234-123456789abc";
+    const resumed = manager.create({ label: "Resumed", command: "codex", backend_type: "spawn",
+      provider_session_id: providerId });
+    const resumedEnv = build(resumed.id);
+    expect(resumedEnv.CODEX_THREAD_ID).toBe(providerId);
+    expect(resumedEnv.MANDIBLE_SESSION_ID).toBe(resumed.id);
+  });
+
   it("never falls back to the operator when an agent binding is missing", () => {
     setupOperator(db, { slug: "operator", display_name: "Operator" });
     const auth = fakeAuthenticator();
@@ -82,10 +118,9 @@ describe("agent client-auth provisioning", () => {
     const manager = new SessionManager(db, logger, undefined, undefined, auth.value);
 
     const missing = manager.create({ label: "Shell", command: "bash", backend_type: "spawn" });
-    const buildEnv = (id: string) => (manager.get(id) as unknown as {
+    (manager.get(missing.id) as unknown as {
       buildCleanEnv(env: Record<string, string>): Record<string, string>;
-    }).buildCleanEnv({});
-    buildEnv(missing.id);
+    }).buildCleanEnv({ MANDIBLE_BASE: "http://127.0.0.1:31337" });
 
     expect(auth.issued).toEqual([]);
     expect(logger).toHaveBeenCalledWith(
@@ -119,7 +154,7 @@ describe("agent client-auth provisioning", () => {
     expect(manager.isCredentialBearing(unbound.id)).toBe(false);
     (manager.get(unbound.id) as unknown as {
       buildCleanEnv(env: Record<string, string>): Record<string, string>;
-    }).buildCleanEnv({});
+    }).buildCleanEnv({ MANDIBLE_BASE: "http://127.0.0.1:31337" });
 
     // Model a legacy/corrupt database that predates active-binding uniqueness;
     // the runtime resolver deliberately remains fail-closed for this state.
@@ -142,7 +177,7 @@ describe("agent client-auth provisioning", () => {
     expect(manager.isCredentialBearing(ambiguous.id)).toBe(false);
     (manager.get(ambiguous.id) as unknown as {
       buildCleanEnv(env: Record<string, string>): Record<string, string>;
-    }).buildCleanEnv({});
+    }).buildCleanEnv({ MANDIBLE_BASE: "http://127.0.0.1:31337" });
 
     expect(auth.issued).toEqual([]);
   });
@@ -176,7 +211,7 @@ describe("agent client-auth provisioning", () => {
     expect(manager.isCredentialBearing(session.id)).toBe(true);
     (manager.get(session.id) as unknown as {
       buildCleanEnv(env: Record<string, string>): Record<string, string>;
-    }).buildCleanEnv({});
+    }).buildCleanEnv({ MANDIBLE_BASE: "http://127.0.0.1:31337" });
 
     expect(auth.issued).toEqual([{
       identity: { user_id: original.id, slug: original.slug },
@@ -204,6 +239,7 @@ describe("agent client-auth provisioning", () => {
     manager.startOperator();
     const session = manager.getAll().find((backend) => backend.meta.is_operator)?.meta;
     expect(session).toBeDefined();
+    vi.stubEnv("MANDIBLE_BASE", "http://127.0.0.1:31337");
     (manager.get(session!.id) as unknown as {
       buildClientEnv(): Record<string, string | undefined>;
     }).buildClientEnv();

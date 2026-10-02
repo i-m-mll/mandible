@@ -10,7 +10,7 @@ export function resolveTransport(env: NodeJS.ProcessEnv = process.env): ChannelT
   const explicit = env.MANDIBLE_BASE?.trim();
   if (explicit && (explicit.replace(/\/+$/, "") !== PRODUCTION_ORIGIN || env.MANDIBLE_TRANSPORT === "http")) {
     const url = new URL(explicit);
-    if (url.protocol !== "http:") {
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
       throw new Error(`Unsupported channel transport: ${url.protocol}`);
     }
     return { kind: "http", baseUrl: explicit.replace(/\/+$/, "") };

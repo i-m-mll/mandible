@@ -37,6 +37,17 @@ fi
 mandible_hook_transport || exit 0
 base=$MANDIBLE_HOOK_BASE
 if [ -n "$MANDIBLE_HOOK_SOCKET" ]; then set -- --unix-socket "$MANDIBLE_HOOK_SOCKET"; else set --; fi
+# Hook input owns the Claude provider ID; sessionRef may be a Mandible alias.
+set -- "$@" -H 'X-Mandible-Managed-Client: 1'
+hook_provider_id=$(mandible_hook_provider_session_id "$(json_field session_id)" 2>/dev/null) || hook_provider_id=
+if [ -n "$hook_provider_id" ]; then
+  set -- "$@" -H 'X-Mandible-Ambient-Provider: claude' \
+    -H "X-Mandible-Ambient-Provider-Session-Id: $hook_provider_id"
+fi
+if mandible_hook_alias_valid "${MANDIBLE_MANAGED_APP:-}" "${MANDIBLE_SESSION_ID:-}"; then
+  set -- "$@" -H "X-Mandible-Managed-App: $MANDIBLE_MANAGED_APP" \
+    -H "X-Mandible-Managed-Session-Id: $MANDIBLE_SESSION_ID"
+fi
 url="$base/api/hooks/statusline"
 if [ -n "$session_ref" ]; then
   url="$url?sessionRef=$(urlencode "$session_ref")"

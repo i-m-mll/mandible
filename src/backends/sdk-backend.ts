@@ -1,4 +1,4 @@
-import { needsManagedHttpCredential } from "./mandible-transport.js";
+import { needsManagedHttpCredential, projectManagedProviderIdentity } from "./mandible-transport.js";
 // Bug: 9bf8b4c — Claude Agent SDK backend for Console
 import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -167,13 +167,20 @@ export function getSdkRunOptionDeclaration(command: string): BackendRunOptionDec
 export function buildMandibleChannelEnvironment(
   sessionId: string,
   cwd: string,
+  providerSessionId: string,
   mandibleToken: string | null,
+  transportEnv: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
   return {
     MANDIBLE_SESSION_ID: sessionId,
+    MANDIBLE_MANAGED_APP: "claude",
+    CLAUDE_CODE_SESSION_ID: providerSessionId,
     MANDIBLE_MANAGED_CLIENT: "1",
     CLAUDE_CWD: cwd,
-    ...(needsManagedHttpCredential(process.env) && mandibleToken ? { MANDIBLE_TOKEN: mandibleToken } : {}),
+    ...(transportEnv.MANDIBLE_BASE ? { MANDIBLE_BASE: transportEnv.MANDIBLE_BASE } : {}),
+    ...(transportEnv.MANDIBLE_SOCKET ? { MANDIBLE_SOCKET: transportEnv.MANDIBLE_SOCKET } : {}),
+    ...(transportEnv.MANDIBLE_TRANSPORT ? { MANDIBLE_TRANSPORT: transportEnv.MANDIBLE_TRANSPORT } : {}),
+    ...(needsManagedHttpCredential(transportEnv) && mandibleToken ? { MANDIBLE_TOKEN: mandibleToken } : {}),
   };
 }
 
@@ -203,6 +210,7 @@ implements
   private warmQuery: ClaudeWarmQuery | null = null;
   private warmAbortController: AbortController | null = null;
   private destroyed = false;
+  private expectedProviderSessionId: string | null = null;
   /** Issue 8aadf70 — log the API-key/subscription posture once per backend. */
   private billingPostureLogged = false;
   private readonly mandibleTokenSource: string | (() => string | null) | null;
@@ -753,6 +761,8 @@ implements
     // subsequent prompts so the SDK continues the same session instead of creating
     // a new one per prompt.
     const resumeOpts: Record<string, unknown> = {};
+    const providerSessionId = this.meta.provider_session_id ?? randomUUID();
+    this.expectedProviderSessionId = providerSessionId;
     if (this.meta.provider_session_id) {
       resumeOpts.resume = this.meta.provider_session_id;
       if (this.meta.resume_at_message) {
@@ -780,14 +790,15 @@ implements
     // Bug: a432b63 — Inject Mandible channel MCP server into SDK sessions
     // for inside-out integration (agent queries Mandible via channel tools).
     // Complementary to SDK hooks which provide outside-in control.
-    const mcpServers = this.buildChannelMcpServers();
+    const mcpServers = this.buildChannelMcpServers(providerSessionId);
 
     const provenance = this.getStartupProvenance();
     return {
       abortController,
       pathToClaudeCodeExecutable: provenance.implementation.entrypoint,
       cwd,
-      env: this.buildClientEnv(),
+      env: this.buildClientEnv(providerSessionId),
+      ...(!this.meta.provider_session_id ? { sessionId: providerSessionId } : {}),
       model: this.options.model ?? extractModel(this.meta.args) ?? undefined,
       systemPrompt,
       permissionMode,
@@ -822,7 +833,7 @@ implements
    * both the SDK hook (ensureMandibleSession) and the channel server startup
    * is safe — the channel server's registration becomes a no-op update.
    */
-  private buildChannelMcpServers(): Record<string, McpStdioServerConfig> | null {
+  private buildChannelMcpServers(providerSessionId: string): Record<string, McpStdioServerConfig> | null {
     // Resolve the channel server path relative to the compiled output.
     // At runtime, __dirname is dist/backends/ and the channel server is at
     // dist/channel-server/index.js.
@@ -838,19 +849,22 @@ implements
 
     const sessionId = this.meta.mandible_session_id ?? this.id;
     const cwd = this.meta.cwd ?? process.cwd();
+    const transportEnv = { ...process.env, ...this.meta.env };
 
     return {
       mandible: {
         type: "stdio",
         command: process.execPath,
         args: [channelServerPath],
-        env: buildMandibleChannelEnvironment(sessionId, cwd, needsManagedHttpCredential(process.env) ? this.currentMandibleToken() : null),
+        env: buildMandibleChannelEnvironment(sessionId, cwd, providerSessionId,
+          needsManagedHttpCredential(transportEnv) ? this.currentMandibleToken() : null, transportEnv),
       },
     };
   }
 
-  private buildClientEnv(): Record<string, string | undefined> {
+  private buildClientEnv(providerSessionId?: string): Record<string, string | undefined> {
     const env = { ...process.env, ...this.meta.env };
+    projectManagedProviderIdentity(env, this.meta.command, providerSessionId, this.meta.mandible_session_id ?? this.id);
     // The daemon may itself have been launched from a token-bearing CLI. Never
     // leak that credential into an SDK child; only the session's provisioned
     // agent credential may cross this boundary.
@@ -886,6 +900,9 @@ implements
     return {
       SessionStart: [{
         hooks: [async (input) => {
+          if (this.expectedProviderSessionId && input.session_id !== this.expectedProviderSessionId) {
+            throw new Error(`Claude SDK session ID differed from the one supplied to its channel (${input.session_id} != ${this.expectedProviderSessionId})`);
+          }
           const now = Date.now();
           const mandibleSessionId = this.ensureMandibleSession(input.session_id);
           this.meta = {

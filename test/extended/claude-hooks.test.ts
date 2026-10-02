@@ -431,6 +431,11 @@ describe("Claude statusline relay script", () => {
         received.push({
           url: req.url,
           body: JSON.parse(body),
+          managed: req.headers["x-mandible-managed-client"],
+          provider: req.headers["x-mandible-ambient-provider"],
+          providerSessionId: req.headers["x-mandible-ambient-provider-session-id"],
+          managedApp: req.headers["x-mandible-managed-app"],
+          managedSessionId: req.headers["x-mandible-managed-session-id"],
         });
         res.writeHead(202, { "Content-Type": "application/json", Connection: "close" });
         res.end("{\"ok\":true}");
@@ -447,7 +452,7 @@ describe("Claude statusline relay script", () => {
         "../../cli/hooks/mandible-claude-statusline.sh",
       );
       const input = JSON.stringify({
-        session_id: "claude-relay-1",
+        session_id: "12345678-1234-4234-8234-123456789abc",
         model: { display_name: "Sonnet" },
         context_window: { used_percentage: 42 },
       });
@@ -455,15 +460,38 @@ describe("Claude statusline relay script", () => {
         env: {
           ...process.env,
           MANDIBLE_BASE: `http://127.0.0.1:${address.port}`,
+          MANDIBLE_SESSION_REF: "console-alias",
+          MANDIBLE_MANAGED_APP: "claude",
+          MANDIBLE_SESSION_ID: "wrapper-123",
           MANDIBLE_CHAINED_STATUSLINE: "cat >/dev/null; printf chained-output",
         },
       });
 
       expect(stdout).toBe("chained-output");
+      const aliasOnlyInput = JSON.stringify({ session_id: "not-a-provider-uuid", model: "Sonnet" });
+      await runScriptWithInput("sh", [script], aliasOnlyInput, {
+        env: { ...process.env, MANDIBLE_BASE: `http://127.0.0.1:${address.port}`,
+          MANDIBLE_SESSION_REF: "console-alias", MANDIBLE_MANAGED_APP: "claude",
+          MANDIBLE_SESSION_ID: "wrapper-123" },
+      });
       expect(received).toEqual([
         {
-          url: "/api/hooks/statusline?sessionRef=claude-relay-1",
+          url: "/api/hooks/statusline?sessionRef=console-alias",
           body: JSON.parse(input),
+          managed: "1",
+          provider: "claude",
+          providerSessionId: "12345678-1234-4234-8234-123456789abc",
+          managedApp: "claude",
+          managedSessionId: "wrapper-123",
+        },
+        {
+          url: "/api/hooks/statusline?sessionRef=console-alias",
+          body: JSON.parse(aliasOnlyInput),
+          managed: "1",
+          provider: undefined,
+          providerSessionId: undefined,
+          managedApp: "claude",
+          managedSessionId: "wrapper-123",
         },
       ]);
     } finally {
