@@ -1056,6 +1056,7 @@ describe('ChatSurface stream behavior', () => {
     fireEvent.scroll(scroll);
     expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
 
+    fireEvent.wheel(scroll, { deltaY: -20 });
     scroll.scrollTop = 8480;
     fireEvent.scroll(scroll);
     rerender(
@@ -1100,6 +1101,51 @@ describe('ChatSurface stream behavior', () => {
     view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24'), user('near latest', 'entry-25'), user('latest', 'entry-26')]}
       streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
     expect(scrollTo).toHaveBeenCalledWith({ top: 9000, behavior: 'auto' });
+  });
+
+  it('keeps an explicit latest jump through a paged source refresh', () => {
+    let height = 100_000;
+    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = options.behavior === 'smooth'
+        ? (this.scrollTop + Number(options.top ?? 0)) / 2
+        : Number(options.top ?? 0);
+      this.dispatchEvent(new Event('scroll'));
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
+    const transcript = (start: number, total: number): ConversationTranscriptConsumer => ({
+      conversationId: 'paged-latest', sourceVersionId: `version-${total}`,
+      historyLoading: false, total, structure: null,
+      loadedIntervals: [{ start, end: total - 1 }],
+      hasOlder: true, hasNewer: false, unmaterializedAfterCount: 0,
+      loadOlder: vi.fn(), loadNewer: vi.fn(), loadAround: vi.fn(() => 'busy'),
+    });
+    const events = (start: number, total: number) => Array.from({ length: total - start }, (_, index) => {
+      const position = start + index;
+      return { ...canonicalEvent(canonicalItem({
+        type: 'message', role: 'user', parts: [{ type: 'text', text: `entry ${position}` }], ordinal: position,
+      }), `block-${position}`), source: { blockId: `block-${position}`, position } };
+    });
+    const view = render(<ChatSurface events={events(990, 1000)} streaming={false}
+      transcript={transcript(990, 1000)} sessionInfo={{ sessionId: 'paged-latest' }} />);
+    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => height });
+    scroll.scrollTop = 20_000;
+    fireEvent.scroll(scroll);
+
+    view.rerender(<ChatSurface events={events(990, 1000)} streaming={false}
+      transcript={transcript(990, 1000)} sessionInfo={{ sessionId: 'paged-latest' }}
+      navigationTarget={{ key: 'jump-latest', kind: 'latest', turnId: null, blockId: null, smooth: true }} />);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 100_000, behavior: 'auto' });
+    view.rerender(<ChatSurface events={events(990, 1000)} streaming={false}
+      transcript={transcript(990, 1000)} sessionInfo={{ sessionId: 'paged-latest' }} />);
+
+    height = 140_000;
+    view.rerender(<ChatSurface events={events(1190, 1200)} streaming={false}
+      transcript={transcript(1190, 1200)} sessionInfo={{ sessionId: 'paged-latest' }} />);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 140_000, behavior: 'auto' });
+    expect(scroll.scrollTop).toBe(140_000);
+    expect(JSON.parse(localStorage.getItem('mandible:chat-scroll:paged-latest')!).followingTail).toBe(true);
   });
 
   it('does not re-arm tail follow from a correction during an upward wheel gesture', () => {

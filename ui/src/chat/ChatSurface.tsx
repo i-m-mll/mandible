@@ -327,7 +327,7 @@ export function ChatSurface({
   const coverageSignatureRef = useRef('');
   const previousScrollTopRef = useRef<number | null>(null);
   const scrollDirectionRef = useRef<'up' | 'down'>('up');
-  const manualTowardTailRef = useRef(false);
+  const tailIntentRef = useRef(false);
   const scrollbarTrackRef = useRef<HTMLDivElement>(null);
   const scrollbarThumbRef = useRef<HTMLDivElement>(null);
   const scrollbarDragRef = useRef<{
@@ -715,8 +715,8 @@ export function ChatSurface({
     pendingReadingAnchorRef.current = null;
     streamUpdateAnchorRef.current = null;
     currentReadingAnchorRef.current = null;
+    tailIntentRef.current = false;
     previousScrollTopRef.current = null;
-    manualTowardTailRef.current = false;
   }, [storageScope]);
 
   useEffect(() => {
@@ -750,14 +750,17 @@ export function ChatSurface({
     if (storedAnchor) {
       if (storedAnchor.followingTail) {
         pendingReadingAnchorRef.current = null;
+        tailIntentRef.current = true;
         setFollowingTail(true);
         scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'auto' });
       } else {
         pendingReadingAnchorRef.current = storedAnchor;
+        tailIntentRef.current = false;
         setFollowingTail(false);
         restoreReadingAnchor(storedAnchor);
       }
     } else if (!navigationTarget) {
+      tailIntentRef.current = !transcript?.hasNewer;
       setFollowingTail(!transcript?.hasNewer);
       scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'auto' });
     }
@@ -792,20 +795,23 @@ export function ChatSurface({
       return;
     }
 
-    const behavior = requestedScrollBehavior(navigationTarget.smooth);
+    const behavior = navigationTarget.kind === 'latest' || navigationTarget.kind === 'initial'
+      ? 'auto' : requestedScrollBehavior(navigationTarget.smooth);
     handledNavigationKeyRef.current = navigationTarget.key;
     if (navigationTarget.kind === 'latest') {
       pendingReadingAnchorRef.current = null;
       const tailAnchor = tailReadingAnchor(items.at(-1)?.id ?? 'tail');
       storageSet(scrollStorageKey, JSON.stringify(tailAnchor));
+      currentReadingAnchorRef.current = tailAnchor;
     }
+    tailIntentRef.current = navigationTarget.kind === 'latest'
+      || (navigationTarget.kind === 'initial' && !transcript?.hasNewer);
     pendingFocusRef.current = navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest'
       ? null
       : { key: navigationTarget.key, blockId: navigationTarget.blockId ?? null, itemId: items[itemIndex].id };
     setFollowingTail(navigationTarget.kind === 'latest'
       || (navigationTarget.kind === 'initial' && !transcript?.hasNewer));
     if (navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest') {
-      manualTowardTailRef.current = true;
       el.scrollTo({ top: el.scrollHeight, behavior });
       onNavigationResult?.({ key: navigationTarget.key, status: 'revealed' });
     } else {
@@ -862,13 +868,19 @@ export function ChatSurface({
     }
   }, [items, navigationTarget, restoreReadingAnchor, transcript?.hasNewer]);
 
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !tailIntentRef.current || scrollbarDragRef.current || transcript?.hasNewer
+        || (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) > 0) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_THRESHOLD_PX) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+    }
+  }, [items, virtualItems, transcript?.hasNewer, transcript?.unmaterializedAfterCount, unmaterializedAfterCount]);
+
   useLayoutEffect(() => () => {
     const el = scrollRef.current;
     if (!el || navigationTarget || scrollbarDragRef.current) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 1
-      && !transcript?.hasNewer
-      && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
-    streamUpdateAnchorRef.current = atBottom
+    streamUpdateAnchorRef.current = tailIntentRef.current
       ? tailReadingAnchor(items.at(-1)?.id ?? 'tail')
       : currentReadingAnchorRef.current?.followingTail === false
         ? currentReadingAnchorRef.current
@@ -968,7 +980,10 @@ export function ChatSurface({
   function handleUserScrollIntent(towardTail = false): void {
     pendingReadingAnchorRef.current = null;
     pendingFocusRef.current = null;
-    manualTowardTailRef.current = towardTail;
+    if (!towardTail) {
+      tailIntentRef.current = false;
+      setFollowingTail(false);
+    }
   }
 
   function handleScrollbarPointerDown(event: PointerEvent): void {
@@ -995,13 +1010,13 @@ export function ChatSurface({
     if (!drag || (event && event.pointerId !== drag.pointerId)) return;
     scrollbarDragRef.current = null;
     setScrollbarDragging(false);
-    manualTowardTailRef.current = false;
     pendingReadingAnchorRef.current = null;
     const scroll = scrollRef.current;
     const atLatest = !!scroll && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 1
       && !transcript?.hasNewer
       && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
     setFollowingTail(atLatest);
+    tailIntentRef.current = atLatest;
     captureReadingAnchor(atLatest);
     syncScrollbar();
   };
@@ -1089,13 +1104,14 @@ export function ChatSurface({
     previousScrollTopRef.current = el.scrollTop;
     setViewportHeight(nextViewportHeight);
     setDistanceFromBottom(nextDistance);
+    if (previous !== null && el.scrollTop > previous
+        && nextDistance <= FOLLOW_THRESHOLD_PX) tailIntentRef.current = true;
     const nextFollowingTail = scrollbarDragRef.current === null
-      && nextDistance <= FOLLOW_THRESHOLD_PX
-      && (followingTail || (manualTowardTailRef.current && previous !== null && el.scrollTop > previous))
+      && tailIntentRef.current
       && !transcript?.hasNewer
       && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
     setFollowingTail(nextFollowingTail);
-    if (!scrollbarDragRef.current && !pendingReadingAnchorRef.current) captureReadingAnchor(nextFollowingTail);
+    if (!scrollbarDragRef.current && !pendingReadingAnchorRef.current) captureReadingAnchor(tailIntentRef.current);
     syncScrollbar();
   }
 
@@ -1106,8 +1122,9 @@ export function ChatSurface({
     }
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: requestedScrollBehavior(true) });
+    el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
     setDistanceFromBottom(0);
+    tailIntentRef.current = !transcript?.hasNewer;
     setFollowingTail(!transcript?.hasNewer);
     captureReadingAnchor(!transcript?.hasNewer);
   }
