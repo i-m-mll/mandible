@@ -1,4 +1,4 @@
-import { ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity } from "../client-auth/authz.js";
+import { attributionForRequest, ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity } from "../client-auth/authz.js";
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson } from "../canonical-json.js";
 import { artifactRequiredProjects, getArtifactCurrentSource } from "../artifact-source.js";
@@ -89,6 +89,16 @@ type PublicationPrincipal = {
   operator: boolean;
 };
 
+function localAgent(db: Db, req: RequestLike): boolean {
+  const identity = req.client_identity;
+  if (identity?.method !== "local_socket") return false;
+  const user = getUserById(db, identity.user_id);
+  const attribution = attributionForRequest(db, req);
+  return user?.status === "active" && user.kind === "agent"
+    && attribution?.evidence_method === "session_claim"
+    && attribution.user_id === user.id;
+}
+
 function publicationPrincipal(
   db: Db,
   req: RequestLike,
@@ -105,6 +115,9 @@ function publicationPrincipal(
       && (identity.method === "api_token" || identity.method === "local_os_user"
         || isLocalHumanRequest(req))) {
     return { publisherUserId: caller.id, kind: "human", operator: isOperator(db, identity) };
+  }
+  if (localAgent(db, req)) {
+    return { publisherUserId: caller!.id, kind: "agent", operator: false };
   }
   if (caller?.status === "active" && caller.kind === "human"
       && req.body && typeof req.body === "object" && !Array.isArray(req.body)
@@ -125,6 +138,10 @@ function configuredHumanOperator(db: Db, code: string, message: string) {
 }
 
 function destinationPrincipal(db: Db, req: RequestLike) {
+  if (localAgent(db, req)) {
+    throw new ClientAuthzError(403, "briefing_destination_route_credential_required",
+      "Briefing destination receipts require a durable API token.");
+  }
   const principal = publicationPrincipal(db, req, {
     credentialCode: "briefing_destination_route_credential_required",
     credentialMessage: "Agent destination writes require a durable API token.",
@@ -302,13 +319,15 @@ function briefingLayoutViewer(db: Db, req: RequestLike): {
   userId: string; operator: boolean; humanReviewOperator: boolean;
 } {
   const identity = requireIdentity(req);
-  if (identity.method === "local_socket" && !isLocalHumanRequest(req)) {
+  const socketAgent = localAgent(db, req);
+  if (identity.method === "local_socket" && !isLocalHumanRequest(req) && !socketAgent) {
     throw new ClientAuthzError(403, "briefing_layout_operator_required",
       "Operator-visible Briefing layout reads require an authenticated publisher.");
   }
   const caller = getUserById(db, identity.user_id);
-  if (identity.method === "api_token" && caller?.status === "active" && caller.kind === "agent") {
-    requireDurableAgentPublisher(db, req, {
+  if ((identity.method === "api_token" || socketAgent)
+      && caller?.status === "active" && caller.kind === "agent") {
+    if (!socketAgent) requireDurableAgentPublisher(db, req, {
       credentialCode: "briefing_layout_publisher_credential_required",
       credentialMessage: "Operator-visible Briefing layout reads require a durable API token.",
       agentCode: "briefing_layout_publisher_agent_required",
@@ -329,11 +348,29 @@ function briefingLayoutViewer(db: Db, req: RequestLike): {
   };
 }
 
+function briefingReadViewer(db: Db, req: RequestLike) {
+  if (!localAgent(db, req)) {
+    const actor = activeHuman(db, req);
+    return { userId: actor.user.id, operator: actor.operator, projectScoped: false };
+  }
+  const operator = configuredHumanOperator(db, "briefing_layout_operator_required",
+    "Agent Briefing reads require a configured active human responder.");
+  return { userId: operator.id, operator: true, projectScoped: true };
+}
+
+function agentMayReadBriefing(db: Db, req: RequestLike, artifactId: string | null): boolean {
+  if (!artifactId) return false;
+  const scope = resolveArtifactProject(db, artifactId);
+  if (!scope.ok) return false;
+  return evaluateProjectAccess(db, { identity: req.client_identity ?? null,
+    project_id: scope.project_id, required_role: "read" }).allowed;
+}
+
 function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
   publisherUserId: string;
   responderUserId: string;
   operator: boolean;
-  evidenceMethod: "api_token" | "local_default";
+  evidenceMethod: "api_token" | "local_default" | "session_claim";
   credentialId: string | null;
 } {
   const identity = requireIdentity(req);
@@ -361,7 +398,7 @@ function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
     publisherUserId: publisher.publisherUserId,
     responderUserId: operator.id,
     operator: true,
-    evidenceMethod: "api_token",
+    evidenceMethod: identity.method === "api_token" ? "api_token" : "session_claim",
     credentialId: identity.credential_id,
   };
 }
@@ -1069,11 +1106,11 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
 
   server.get("/api/briefings", (req, res) => {
     try {
-      const actor = activeHuman(db, req);
-      sendJson(res, 200, { briefings: listBriefings(db, {
-        userId: actor.user.id,
-        operator: actor.operator,
-      }) });
+      const viewer = briefingReadViewer(db, req);
+      const briefings = listBriefings(db, viewer) as Array<{ logical_artifact_id: string | null }>;
+      sendJson(res, 200, { briefings: viewer.projectScoped
+        ? briefings.filter((briefing) => agentMayReadBriefing(db, req, briefing.logical_artifact_id))
+        : briefings });
     } catch (error) {
       handleError(res, error);
     }
@@ -1081,7 +1118,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
 
   server.get("/api/briefings/:briefingId", (req, res) => {
     try {
-      const actor = activeHuman(db, req);
+      const viewer = briefingReadViewer(db, req);
       const values = new URL(req.url, "http://localhost").searchParams.getAll("round");
       const submissionValues = new URL(req.url, "http://localhost").searchParams.getAll("submission");
       const groupValues = new URL(req.url, "http://localhost").searchParams.getAll("group");
@@ -1108,10 +1145,14 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
           groupRef: groupValues[0],
           proposalBundleRef: proposalValues[0] ?? null,
         } } : {}),
-        actorUserId: actor.user.id,
-        operator: actor.operator,
+        actorUserId: viewer.userId,
+        operator: viewer.operator,
       });
       if (!projection) throw new BriefingStoreError("briefing not found", 404, "not_found");
+      if (viewer.projectScoped && !agentMayReadBriefing(db, req,
+        projection.briefing.logical_artifact_id as string | null)) {
+        throw new ClientAuthzError(403, "project_permission_required", "Project read permission is required.");
+      }
       sendJson(res, 200, projection);
     } catch (error) {
       handleError(res, error);

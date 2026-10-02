@@ -45,6 +45,24 @@ it("does not turn a managed local claim into operator authority", () => {
   expect(attributionForRequest(db, req)).toEqual({ user_id: agent.id, evidence_method: "session_claim" });
 });
 
+it("attributes a validated managed app/session alias before a provider task exists", () => {
+  const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
+  const agent = createUser(db, { slug: "codex", kind: "agent", display_name: "Codex" });
+  const req = socketRequest(agent, true) as RequestLike & {
+    local_managed_identity: { app_name: string; session_id: string };
+  };
+  req.local_managed_identity = { app_name: "codex", session_id: "managed-session-1" };
+  expect(isLocalHumanRequest(req)).toBe(false);
+  expect(attributionForRequest(db, req)).toEqual({ user_id: agent.id, evidence_method: "session_claim" });
+  expect(() => requireOperator(db, req)).toThrow();
+
+  const mislabeledOperator = socketRequest(operator) as typeof req;
+  mislabeledOperator.local_managed_identity = req.local_managed_identity;
+  expect(isLocalHumanRequest(mislabeledOperator)).toBe(false);
+  expect(attributionForRequest(db, mislabeledOperator)).toBeNull();
+  expect(() => authorizeOperatorSetup(db, mislabeledOperator)).toThrow();
+});
+
 it("allows first-run human setup and requires durable evidence thereafter", () => {
   const initial = socketRequest({ id: "", slug: "" });
   initial.client_identity = null;

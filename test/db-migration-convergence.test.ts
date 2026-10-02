@@ -9,6 +9,8 @@ import { CURRENT_SCHEMA_VERSION, MINIMUM_SUPPORTED_SCHEMA_VERSION, migrate, open
 import { MIGRATIONS } from "../src/db-migrations.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { insertRawLedgerIssue, insertRawLedgerProject } from "./helpers/ledger-fixtures.js";
+import { addProject } from "../src/ledger/project-registry.js";
+import { setupOperator } from "../src/users/store.js";
 import {
   builtinAuthHooks,
   metaRows,
@@ -57,6 +59,54 @@ function migrateFixtureThrough(db: Database.Database, targetVersion: number): vo
     }).immediate();
   }
 }
+
+it("preserves v187 reminder events while admitting truthful local attribution", () => {
+  const db = new Database(":memory:");
+  try {
+    migrate(db);
+    const project = addProject(db, { project_key: "reminder-upgrade", display_name: "Reminder upgrade" });
+    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
+    db.transaction(() => {
+      db.prepare(`INSERT INTO managed_tasks
+        (id, project_id, kind, lifecycle, active_revision_id, created_by_user_id, created_at, updated_at)
+        VALUES ('reminder', ?, 'mandible-reminder', 'armed', 'revision', ?, 1, 1)`)
+        .run(project.id, operator.id);
+      db.prepare(`INSERT INTO managed_task_revisions
+        (id, task_id, revision_no, schema_id, payload_json, payload_digest, created_by_user_id, created_at)
+        VALUES ('revision', 'reminder', 1, 'mandible-reminder@1', ?, ?, ?, 1)`)
+        .run('{"schema":"mandible-reminder@1","effect":{"kind":"inbox_occurrence"}}', "a".repeat(64), operator.id);
+      db.prepare(`INSERT INTO managed_task_events
+        (id, task_id, revision_id, project_id, event_type, actor_user_id, evidence_method, occurred_at)
+        VALUES ('old-event', 'reminder', 'revision', ?, 'created', ?, 'api_token', 1)`)
+        .run(project.id, operator.id);
+    })();
+    db.exec(`CREATE TABLE managed_task_events_v187 (
+      id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
+      revision_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+      event_type TEXT NOT NULL CHECK(event_type IN ('created','completed','cancelled')),
+      actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','ephemeral','system_internal')),
+      payload_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(payload_json) AND json_type(payload_json) = 'object'),
+      occurred_at INTEGER NOT NULL,
+      FOREIGN KEY(task_id, revision_id) REFERENCES managed_task_revisions(task_id, id) ON DELETE RESTRICT
+    );
+    INSERT INTO managed_task_events_v187 SELECT * FROM managed_task_events;
+    DROP TABLE managed_task_events;
+    ALTER TABLE managed_task_events_v187 RENAME TO managed_task_events;
+    CREATE INDEX idx_managed_task_events_task ON managed_task_events(task_id, occurred_at, id);
+    UPDATE meta SET value = '187' WHERE key = 'schema_version'`);
+    migrate(db);
+    expect(db.prepare("SELECT evidence_method FROM managed_task_events WHERE id = 'old-event'").get())
+      .toEqual({ evidence_method: "api_token" });
+    db.prepare(`INSERT INTO managed_task_events
+      (id, task_id, revision_id, project_id, event_type, actor_user_id, evidence_method, occurred_at)
+      VALUES ('local-event', 'reminder', 'revision', ?, 'cancelled', ?, 'session_claim', 2)`)
+      .run(project.id, operator.id);
+    expect(db.prepare("SELECT evidence_method FROM managed_task_events WHERE id = 'local-event'").get())
+      .toEqual({ evidence_method: "session_claim" });
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+  } finally { db.close(); }
+});
 
 function createLegacyMetadataDatabase(): Db {
   const dbPath = path.join(tempDir, "metadata-v182.db");

@@ -1730,6 +1730,30 @@ export const MIGRATIONS: readonly Migration[] = [
     )`,
     `ALTER TABLE conversation_control_outbox ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(attachments_json) AND json_type(attachments_json) = 'array')`,
   ] },
+  { version: 188, name: "local_reminder_attribution", statements: [
+    "ALTER TABLE managed_task_events RENAME TO managed_task_events_v187",
+    `CREATE TABLE managed_task_events (
+        id              TEXT PRIMARY KEY,
+        task_id         TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
+        revision_id     TEXT NOT NULL,
+        project_id      TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        event_type      TEXT NOT NULL CHECK(event_type IN ('created','completed','cancelled')),
+        actor_user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','ephemeral','local_default','session_claim','system_internal')),
+        payload_json    TEXT NOT NULL DEFAULT '{}' CHECK(
+                          json_valid(payload_json) AND json_type(payload_json) = 'object'
+                        ),
+        occurred_at     INTEGER NOT NULL,
+        FOREIGN KEY(task_id, revision_id)
+          REFERENCES managed_task_revisions(task_id, id) ON DELETE RESTRICT
+    )`,
+    `INSERT INTO managed_task_events
+      (id, task_id, revision_id, project_id, event_type, actor_user_id, evidence_method, payload_json, occurred_at)
+      SELECT id, task_id, revision_id, project_id, event_type, actor_user_id, evidence_method, payload_json, occurred_at
+      FROM managed_task_events_v187`,
+    "DROP TABLE managed_task_events_v187",
+    "CREATE INDEX idx_managed_task_events_task\n        ON managed_task_events(task_id, occurred_at, id)",
+  ] },
 ];
 
 /**

@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
-import { Router } from "../src/server.js";
+import { Router, type ClientAuthGate } from "../src/server.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { addCredential, createUser } from "../src/users/store.js";
 
 let db: Db;
 let router: Router;
@@ -23,6 +25,32 @@ afterEach(() => {
 });
 
 describe("work unit routes", () => {
+  it("retains the exact credential owner from claim through activation", async () => {
+    const agent = createUser(db, { slug: "custodian", kind: "agent", display_name: "Custodian" });
+    const credential = addCredential(db, agent.id, { type: "api_token", fingerprint: "test-custody-token" });
+    const gate: ClientAuthGate = {
+      authenticate: (token) => token === "test-token" ? {
+        user_id: agent.id, slug: agent.slug, method: "api_token", source: "in_process",
+        credential_id: credential.id, effect_ceiling: PRODUCTION_EFFECTS,
+      } : null,
+      mode: () => "strict",
+      recordUnattributedWrite: () => undefined,
+    };
+    const credentialRouter = new Router({ clientAuth: gate });
+    registerWorkUnitRoutes(credentialRouter, {} as never, {} as never);
+    const request = { issue_id: "custody-issue", repo_id: "mandible", branch: "feature/custody" };
+    const claimed = await credentialRouter.invoke({ method: "POST", url: "/api/work-units/claim",
+      credential: "test-token", body: request });
+    expect(claimed.status).toBe(201);
+    const id = (claimed.body as { id: string }).id;
+    const activated = await credentialRouter.invoke({ method: "POST", url: "/api/work-units/activate",
+      credential: "test-token", body: request });
+    expect(activated.status).toBe(200);
+    expect(db.prepare("SELECT owner_user_id, owner_credential_id, custody_generation, state FROM work_units WHERE id = ?")
+      .get(id)).toEqual({ owner_user_id: agent.id, owner_credential_id: credential.id,
+        custody_generation: 1, state: "committed" });
+  });
+
   async function createBoundWorkUnit(
     issueId: string,
     branch: string,
