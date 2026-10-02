@@ -77,9 +77,11 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
   private readonly providerEvents = new AdapterProviderEvents();
   private readonly controllers = new Map<string, CodexController>();
   private readonly spawnProcess: StructuredProcessSpawner | undefined;
+  private readonly codexExecutable: string | undefined;
 
-  constructor(options: { spawnProcess?: StructuredProcessSpawner } = {}) {
+  constructor(options: { spawnProcess?: StructuredProcessSpawner; codexExecutable?: string } = {}) {
     this.spawnProcess = options.spawnProcess;
+    this.codexExecutable = options.codexExecutable;
   }
 
   async acquire(input: ControllerAcquisitionRequest): Promise<Result<ControllerLease, ConversationControlError>> {
@@ -316,7 +318,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
   }
 
   private async connectedClient(): Promise<CodexAppServerClient> {
-    const client = await CodexAppServerClient.connect({ spawnProcess: this.spawnProcess });
+    const client = await CodexAppServerClient.connect({ spawnProcess: this.spawnProcess, executable: this.codexExecutable });
     try {
       const account = object(await client.request("account/read", { refreshToken: false }));
       if (!object(account?.account)) {

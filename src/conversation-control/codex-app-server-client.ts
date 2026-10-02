@@ -1,3 +1,5 @@
+import { accessSync, constants } from "node:fs";
+import { platform } from "node:os";
 import type {
   ClientNotification,
   GetAccountParams,
@@ -35,6 +37,26 @@ function object(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
 }
 
+export function codexAppServerExecutable(options: {
+  platform?: NodeJS.Platform;
+  override?: string;
+  checkExecutable?: (path: string) => void;
+} = {}): string {
+  const override = options.override ?? process.env.MANDIBLE_CODEX_APP_SERVER_BIN;
+  // Desktop owns the paginated thread format; its bundled CLI tracks that protocol.
+  const command = override || ((options.platform ?? platform()) === "darwin"
+    ? "/Applications/ChatGPT.app/Contents/Resources/codex"
+    : "codex");
+  if (command !== "codex") {
+    try {
+      (options.checkExecutable ?? ((path) => accessSync(path, constants.X_OK)))(command);
+    } catch {
+      throw new Error(`Codex App Server executable is unavailable: ${command}. Set MANDIBLE_CODEX_APP_SERVER_BIN to the compatible desktop runtime.`);
+    }
+  }
+  return command;
+}
+
 export class CodexAppServerClient {
   private nextRequestId = 1;
   private readonly pending = new Map<number, PendingRequest>();
@@ -55,9 +77,10 @@ export class CodexAppServerClient {
     });
   }
 
-  static async connect(options: { spawnProcess?: StructuredProcessSpawner } = {}): Promise<CodexAppServerClient> {
+  static async connect(options: { spawnProcess?: StructuredProcessSpawner; executable?: string } = {}): Promise<CodexAppServerClient> {
+    const command = codexAppServerExecutable({ override: options.executable });
     const processOwner = await StructuredJsonProcess.start(
-      "codex",
+      command,
       ["app-server", "--listen", "stdio://"],
       { spawnProcess: options.spawnProcess },
     );
