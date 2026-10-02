@@ -110,7 +110,7 @@ export function chatSubmissionFailureNotice(error: unknown): ChatFailureNoticeMo
   if (error instanceof ApiError && error.code === 'effect_forbidden') {
     return {
       title: 'This preview cannot send messages to agents.',
-      detail: 'Copy your saved draft into normal Mandible to send.',
+      detail: '',
       retryable: false,
       diagnostics: null,
     };
@@ -144,7 +144,7 @@ export function ChatFailureNotice({
         {onDismiss ? <button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss error" title="Dismiss error" onClick={onDismiss}>×</button> : null}
       </> : undefined}
     >
-      <span>{failure.detail}</span>
+      {failure.detail ? <span>{failure.detail}</span> : null}
       {failure.diagnostics ? (
         <details className="chat-failure-notice__diagnostics">
           <summary>Provider diagnostics</summary>
