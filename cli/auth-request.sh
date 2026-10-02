@@ -574,9 +574,10 @@ fi
 _mandible_sse_token=""
 (( _mandible_sse_traced == 0 )) || set -x
 _mandible_sse_curl_args=(-sN --max-time "$timeout" -X POST -H 'Content-Type: application/json' --data-binary '{"topics":["auth:"]}')
+api_is_local_socket && _mandible_sse_curl_args+=(--unix-socket "$MANDIBLE_SOCKET")
 [[ -z "$_mandible_sse_config" ]] || _mandible_sse_curl_args+=(--config "$_mandible_sse_config")
 curl "${_mandible_sse_curl_args[@]}" \
-  "${MANDIBLE_BASE}/api/events/subscribe" 2>/dev/null | \
+  "$(api_base)/api/events/subscribe" 2>/dev/null | \
 while IFS= read -r line; do
   # Skip heartbeat comments and empty lines
   [[ "$line" =~ ^: ]] && continue

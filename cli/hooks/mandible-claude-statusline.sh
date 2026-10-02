@@ -33,14 +33,17 @@ if [ -z "$session_ref" ]; then
   session_ref=$(json_field sessionId)
 fi
 
-base=${MANDIBLE_BASE:-${MANDIBLE_PUBLIC_ORIGIN:-https://app.mandible.localhost:19420}}
+. "$(dirname "$0")/local-transport.sh"
+mandible_hook_transport || exit 0
+base=$MANDIBLE_HOOK_BASE
+if [ -n "$MANDIBLE_HOOK_SOCKET" ]; then set -- --unix-socket "$MANDIBLE_HOOK_SOCKET"; else set --; fi
 url="$base/api/hooks/statusline"
 if [ -n "$session_ref" ]; then
   url="$url?sessionRef=$(urlencode "$session_ref")"
 fi
 
 if [ -n "$INPUT" ]; then
-  curl -fsS --connect-timeout 0.25 --max-time "${MANDIBLE_HOOK_TIMEOUT:-1}" \
+  curl "$@" -fsS --connect-timeout 0.25 --max-time "${MANDIBLE_HOOK_TIMEOUT:-1}" \
     -H 'Content-Type: application/json' \
     -d "$INPUT" \
     "$url" >/dev/null 2>&1 || true

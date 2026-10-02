@@ -1,3 +1,4 @@
+import { needsManagedHttpCredential } from "./mandible-transport.js";
 import { EventEmitter } from "node:events";
 import type { IPty, IDisposable } from "node-pty";
 import pty from "node-pty";
@@ -808,10 +809,12 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
     // from promoting the child to some other identity.
     delete cleaned["MANDIBLE_TOKEN"];
     cleaned["MANDIBLE_MANAGED_CLIENT"] = "1";
-    const mandibleToken = typeof this.mandibleTokenSource === "function"
-      ? this.mandibleTokenSource()
-      : this.mandibleTokenSource;
-    if (mandibleToken) cleaned["MANDIBLE_TOKEN"] = mandibleToken;
+    if (needsManagedHttpCredential(cleaned)) {
+      const mandibleToken = typeof this.mandibleTokenSource === "function"
+        ? this.mandibleTokenSource()
+        : this.mandibleTokenSource;
+      if (mandibleToken) cleaned["MANDIBLE_TOKEN"] = mandibleToken;
+    }
     // Bug: b5aba0e — channel-enabled PTY: expose session ID for channel server discovery
     if (this.meta.channel_enabled) {
       cleaned["MANDIBLE_SESSION_ID"] = this.meta.mandible_session_id ?? this.id;

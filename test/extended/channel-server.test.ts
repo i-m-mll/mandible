@@ -5,6 +5,7 @@
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
@@ -12,14 +13,15 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 // --- Base URL resolution (issue 70dffb8) ---
 
 describe("channel-server base URL", () => {
-  it("defaults to the internal loopback daemon", async () => {
+  it("defaults to the private socket", async () => {
     const { resolveBaseUrl } = await import("../../channel-server/base-url.js");
-    expect(resolveBaseUrl({})).toBe("http://127.0.0.1:29420");
+    expect(resolveBaseUrl({})).toBe("http://localhost");
   });
 
-  it("honors MANDIBLE_PORT for non-default daemons", async () => {
-    const { resolveBaseUrl } = await import("../../channel-server/base-url.js");
-    expect(resolveBaseUrl({ MANDIBLE_PORT: "31337" })).toBe("http://127.0.0.1:31337");
+  it("honors an absolute socket override", async () => {
+    const { resolveTransport } = await import("../../channel-server/base-url.js");
+    expect(resolveTransport({ MANDIBLE_SOCKET: "/tmp/mandible-preview.sock" }))
+      .toEqual({ kind: "socket", socketPath: "/tmp/mandible-preview.sock" });
   });
 
   it("prefers an explicit MANDIBLE_BASE over MANDIBLE_PORT and trims it", async () => {
@@ -30,13 +32,46 @@ describe("channel-server base URL", () => {
     })).toBe("http://127.0.0.1:12345");
   });
 
-  it("falls back to the port default for transports it cannot speak", async () => {
+  it("refuses unsupported explicit transports", async () => {
     const { resolveBaseUrl } = await import("../../channel-server/base-url.js");
-    // No file:// spool transport here, and the SSE bridge drives node:http.
-    expect(resolveBaseUrl({ MANDIBLE_BASE: "file:///tmp/spool", MANDIBLE_PORT: "31337" }))
-      .toBe("http://127.0.0.1:31337");
-    expect(resolveBaseUrl({ MANDIBLE_BASE: "not a url" })).toBe("http://127.0.0.1:29420");
-    expect(resolveBaseUrl({ MANDIBLE_BASE: "   " })).toBe("http://127.0.0.1:29420");
+    expect(() => resolveBaseUrl({ MANDIBLE_BASE: "file:///tmp/spool" })).toThrow();
+    expect(() => resolveBaseUrl({ MANDIBLE_BASE: "not a url" })).toThrow();
+    expect(resolveBaseUrl({ MANDIBLE_BASE: "   " })).toBe("http://localhost");
+  });
+});
+
+describe("channel-server local socket", () => {
+  it("uses the socket and ignores an inherited bearer on ordinary reads", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-socket-"));
+    const socket = path.join(root, "daemon.sock");
+    const routes = path.join(root, "routes.json");
+    fs.writeFileSync(routes, JSON.stringify([{ method: "POST", path: "/api/auth/request" }]));
+    const original = { base: process.env.MANDIBLE_BASE, socket: process.env.MANDIBLE_SOCKET,
+      token: process.env.MANDIBLE_TOKEN, routes: process.env.MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE };
+    const received: Array<{ url?: string; auth?: string; managed?: string }> = [];
+    const server = http.createServer((req, res) => {
+      received.push({ url: req.url, auth: req.headers.authorization,
+        managed: req.headers["x-mandible-managed-client"] as string | undefined });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end('{"continuations":[],"auth_results":[],"open_issues":[],"work_units":[],"work_unit_continuations":[],"total":0}');
+    });
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    try {
+      process.env.MANDIBLE_BASE = "https://app.mandible.localhost:19420";
+      process.env.MANDIBLE_SOCKET = socket;
+      process.env.MANDIBLE_TOKEN = "stale-token";
+      process.env.MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE = routes;
+      const { checkInboxGlobal } = await import("../../channel-server/client.js");
+      await checkInboxGlobal();
+      expect(received).toEqual([{ url: "/api/inbox/global", auth: undefined, managed: "1" }]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      for (const [key, value] of Object.entries({ MANDIBLE_BASE: original.base, MANDIBLE_SOCKET: original.socket,
+        MANDIBLE_TOKEN: original.token, MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE: original.routes })) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -44,6 +79,7 @@ describe("channel-server base URL", () => {
 
 describe("channel-server client", () => {
   const originalFetch = globalThis.fetch;
+  beforeEach(() => { process.env.MANDIBLE_BASE = "http://127.0.0.1:29420"; });
 
   function mockFetch(
     status: number,
@@ -84,7 +120,7 @@ describe("channel-server client", () => {
 
   // Issue 70dffb8 — the client used to hardcode http://localhost:19420.
   it("sends requests to the resolved daemon base URL", async () => {
-    delete process.env.MANDIBLE_BASE;
+    process.env.MANDIBLE_BASE = "http://127.0.0.1:31337";
     process.env.MANDIBLE_PORT = "31337";
     mockFetch(200, {
       continuations: [], auth_results: [], open_issues: [], work_units: [],
@@ -264,10 +300,14 @@ describe("channel-server client", () => {
 
 describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
   const originalFetch = globalThis.fetch;
+  const originalBase = process.env.MANDIBLE_BASE;
   const tempDirs: string[] = [];
+
+  beforeEach(() => { process.env.MANDIBLE_BASE = "http://127.0.0.1:29420"; });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    originalBase === undefined ? delete process.env.MANDIBLE_BASE : (process.env.MANDIBLE_BASE = originalBase);
     for (const dir of tempDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
