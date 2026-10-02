@@ -43,8 +43,11 @@ if [ -n "$transcript_path" ]; then
 fi
 payload="${payload}}"
 
-base=${MANDIBLE_BASE:-${MANDIBLE_PUBLIC_ORIGIN:-https://app.mandible.localhost:19420}}
-curl -fsS --connect-timeout 0.25 --max-time "${MANDIBLE_HOOK_TIMEOUT:-1}" \
+. "$(dirname "$0")/local-transport.sh"
+mandible_hook_transport || exit 0
+base=$MANDIBLE_HOOK_BASE
+if [ -n "$MANDIBLE_HOOK_SOCKET" ]; then set -- --unix-socket "$MANDIBLE_HOOK_SOCKET"; else set --; fi
+curl "$@" -fsS --connect-timeout 0.25 --max-time "${MANDIBLE_HOOK_TIMEOUT:-1}" \
   -H 'Content-Type: application/json' \
   -d "$payload" \
   "$base/api/hooks/ingest-nudge" >/dev/null 2>&1 || true

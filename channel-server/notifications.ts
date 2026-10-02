@@ -19,7 +19,8 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import http from "node:http";
 import type { MandibleSSEEvent } from "./types.js";
-import { resolveBaseUrl } from "./base-url.js";
+import { resolveBaseUrl, resolveTransport } from "./base-url.js";
+import { ambientHeaders } from "./client.js";
 
 const RECONNECT_DELAY_MS = 5_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
@@ -38,13 +39,15 @@ export interface NotificationBridge {
 export function markDelivered(requestId: string): void {
   if (!requestId) return;
   const url = new URL(`/api/inbox/delivered/${encodeURIComponent(requestId)}`, resolveBaseUrl());
+  const transport = resolveTransport();
   const req = http.request(
     {
       method: "POST",
       hostname: url.hostname,
       port: url.port,
       path: url.pathname,
-      headers: { "Content-Length": "0" },
+      ...(transport.kind === "socket" ? { socketPath: transport.socketPath } : {}),
+      headers: { "Content-Length": "0", ...ambientHeaders() },
     },
     (res) => {
       // Drain to free the socket; status codes are advisory only.
@@ -239,7 +242,14 @@ export function createNotificationBridge(
 
     const url = new URL("/api/events", resolveBaseUrl());
 
-    currentReq = http.get(url, (res) => {
+    const transport = resolveTransport();
+    currentReq = http.get({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      ...(transport.kind === "socket" ? { socketPath: transport.socketPath } : {}),
+      headers: ambientHeaders(),
+    }, (res) => {
       if (res.statusCode !== 200) {
         res.destroy();
         scheduleReconnect();

@@ -195,5 +195,7 @@ describe("session and work-unit ownership", () => {
       provider: "gemini",
       provider_session_id: "gemini-1",
     });
+    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1", CODEX_SESSION_ID: "codex-2" })).toBeNull();
+    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1", CLAUDE_SESSION_ID: "claude-1" })).toBeNull();
   });
 });

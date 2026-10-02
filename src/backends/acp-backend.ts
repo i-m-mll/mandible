@@ -1,3 +1,4 @@
+import { needsManagedHttpCredential } from "./mandible-transport.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { WebSocket } from "ws";
@@ -1134,10 +1135,12 @@ implements
     Object.assign(cleaned, extraEnv);
     delete cleaned.MANDIBLE_TOKEN;
     cleaned.MANDIBLE_MANAGED_CLIENT = "1";
-    const mandibleToken = typeof this.mandibleTokenSource === "function"
-      ? this.mandibleTokenSource()
-      : this.mandibleTokenSource;
-    if (mandibleToken) cleaned.MANDIBLE_TOKEN = mandibleToken;
+    if (needsManagedHttpCredential(cleaned)) {
+      const mandibleToken = typeof this.mandibleTokenSource === "function"
+        ? this.mandibleTokenSource()
+        : this.mandibleTokenSource;
+      if (mandibleToken) cleaned.MANDIBLE_TOKEN = mandibleToken;
+    }
     return cleaned;
   }
 

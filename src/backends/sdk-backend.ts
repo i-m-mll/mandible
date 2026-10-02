@@ -1,3 +1,4 @@
+import { needsManagedHttpCredential } from "./mandible-transport.js";
 // Bug: 9bf8b4c — Claude Agent SDK backend for Console
 import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -172,7 +173,7 @@ export function buildMandibleChannelEnvironment(
     MANDIBLE_SESSION_ID: sessionId,
     MANDIBLE_MANAGED_CLIENT: "1",
     CLAUDE_CWD: cwd,
-    ...(mandibleToken ? { MANDIBLE_TOKEN: mandibleToken } : {}),
+    ...(needsManagedHttpCredential(process.env) && mandibleToken ? { MANDIBLE_TOKEN: mandibleToken } : {}),
   };
 }
 
@@ -843,7 +844,7 @@ implements
         type: "stdio",
         command: process.execPath,
         args: [channelServerPath],
-        env: buildMandibleChannelEnvironment(sessionId, cwd, this.currentMandibleToken()),
+        env: buildMandibleChannelEnvironment(sessionId, cwd, needsManagedHttpCredential(process.env) ? this.currentMandibleToken() : null),
       },
     };
   }
@@ -855,8 +856,10 @@ implements
     // agent credential may cross this boundary.
     delete env.MANDIBLE_TOKEN;
     env.MANDIBLE_MANAGED_CLIENT = "1";
-    const mandibleToken = this.currentMandibleToken();
-    if (mandibleToken) env.MANDIBLE_TOKEN = mandibleToken;
+    if (needsManagedHttpCredential(env)) {
+      const mandibleToken = this.currentMandibleToken();
+      if (mandibleToken) env.MANDIBLE_TOKEN = mandibleToken;
+    }
     // Issue 8aadf70 — the environment we are about to hand the SDK decides
     // whether this session bills to the Anthropic API or to the operator's
     // Claude subscription. Say so once per backend rather than inheriting it

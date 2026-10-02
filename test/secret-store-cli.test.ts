@@ -574,9 +574,9 @@ describe("secret backend seam", () => {
       expect(result.stderr).toContain("+"); // tracing really was on
     }, 20_000);
 
-    it(`never echoes the injected agent token from wrap.sh under ${shell}`, async () => {
-      // inject_agent_token captures and exports; both lines would echo the
-      // token under -x. The wrapped command proves the injection still works.
+    it(`never exports an agent token from wrap.sh under ${shell}`, async () => {
+      // A stored credential must stay outside the wrapped agent's environment,
+      // including under xtrace.
       seedItem("mandible-agent-claude", "claude-code", "wrapped-agent-token");
       const port = await startUserServer({ slug: "claude-code", kind: "agent" }, []);
 
@@ -594,7 +594,7 @@ describe("secret backend seam", () => {
               "--",
               "/bin/sh",
               "-c",
-              'test -n "$MANDIBLE_TOKEN" && printf "injected_len=%s" "${#MANDIBLE_TOKEN}"',
+              'printf "token=%s managed=%s" "${MANDIBLE_TOKEN-unset}" "$MANDIBLE_MANAGED_CLIENT"',
             ],
             { cwd: process.cwd(), env: { ...cliEnv(port), MANDIBLE_NO_KEYCHAIN_TOKEN: "" } },
           );
@@ -612,7 +612,7 @@ describe("secret backend seam", () => {
         },
       );
 
-      expect(result.stdout).toContain("injected_len=19");
+      expect(result.stdout).toContain("token=unset managed=1");
       expect(result.stderr).not.toContain("wrapped-agent-token");
     }, 20_000);
   }
@@ -810,7 +810,7 @@ describe("direct CLI agent credential resolution", () => {
 
     let result = await runCli(["user", "list", "--json"], port, {
       CODEX_THREAD_ID: "thread-id",
-      CODEX_SESSION_ID: "session-id",
+      CODEX_SESSION_ID: "thread-id",
       MANDIBLE_NO_KEYCHAIN_TOKEN: "",
     });
     expect(result.status, result.stderr).toBe(0);

@@ -10,6 +10,7 @@ interface AmbientProviderDescriptor {
 
 const PROVIDER_DESCRIPTORS: readonly AmbientProviderDescriptor[] = [
   { provider: "codex", envVar: "CODEX_THREAD_ID" },
+  { provider: "codex", envVar: "CODEX_SESSION_ID" },
   { provider: "claude", envVar: "CLAUDE_CODE_SESSION_ID" },
   { provider: "claude", envVar: "CLAUDE_SESSION_ID" },
   { provider: "gemini", envVar: "GEMINI_SESSION_ID" },
@@ -55,16 +56,17 @@ export function providerSessionEnvBindingValues(provider: string): string[] {
 export function resolveAmbientProviderIdentity(
   env: NodeJS.ProcessEnv = process.env,
 ): AmbientProviderIdentity | null {
+  let resolved: AmbientProviderIdentity | null = null;
   for (const descriptor of PROVIDER_DESCRIPTORS) {
     const providerSessionId = normalizeProviderSessionId(env[descriptor.envVar]);
     if (providerSessionId) {
-      return {
-        provider: descriptor.provider,
-        provider_session_id: providerSessionId,
-      };
+      if (resolved && (resolved.provider !== descriptor.provider || resolved.provider_session_id !== providerSessionId)) {
+        return null;
+      }
+      resolved = { provider: descriptor.provider, provider_session_id: providerSessionId };
     }
   }
-  return null;
+  return resolved;
 }
 
 /**
