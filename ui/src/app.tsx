@@ -158,6 +158,7 @@ import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-se
 import { queryClient } from './query/client';
 import { applyConversationSse } from './query/conversationSse';
 import { AgentationPreview } from './annotation/AgentationPreview';
+import { AgentationToggleButton } from './annotation/AgentationToggleButton';
 import type { ConversationAppendPayload } from './query/conversationData';
 import {
   APP_RAIL_ORDER_SETTING_KEY,
@@ -644,6 +645,14 @@ function MandibleHeaderLogo(): JSX.Element {
 }
 
 function App(): JSX.Element {
+  const [agentationVisible, setAgentationVisible] = useState(() => {
+    try { return window.localStorage.getItem('mandible.agentation.visible:v1') === 'true'; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem('mandible.agentation.visible:v1', String(agentationVisible)); }
+    catch { /* Annotation availability does not depend on view preference storage. */ }
+  }, [agentationVisible]);
   const [clientAccess, setClientAccess] = useState(getClientAccessState);
   const [accessEverReady, setAccessEverReady] = useState(clientAccess.phase === 'ready');
   const accessReady = clientAccess.phase === 'ready';
@@ -2884,6 +2893,11 @@ function App(): JSX.Element {
                   {railDisplayMode !== 'both' && <span className="app-rail__tooltip">App theme: {appThemeLabel}</span>}
                 </button>
                 {renderRailItem(logsNavItem)}
+                <AgentationToggleButton
+                  visible={agentationVisible}
+                  expandedRail={railDisplayMode === 'both'}
+                  onToggle={() => setAgentationVisible(visible => !visible)}
+                />
                 {renderRailItem({
                   tab: 'settings',
                   href: '#/settings',
@@ -3131,7 +3145,7 @@ function App(): JSX.Element {
           ) : null}
         </div>
       </AppShellProvider>
-      <AgentationPreview />
+      {agentationVisible && <AgentationPreview />}
     </>
   );
 }
