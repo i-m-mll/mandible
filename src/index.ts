@@ -27,7 +27,8 @@ import { NavMetadataEnricher } from "./nav-enrichment.js";
 import { SessionRegistry } from "./registry.js";
 import { SessionDiscovery, ReaperTimer } from "./session-discovery.js";
 import { broadcast, SseManager, setSseManager } from "./sse.js";
-import { Router, createServer, startServer, attachWebSocketUpgrade } from "./server.js";
+import { Router, createServer, createLocalSocketServer, startServer, attachWebSocketUpgrade } from "./server.js";
+import { localApiSocketPath, startLocalApiSocket } from "./local-api-socket.js";
 import { FileRpcTransport } from "./file-rpc-transport.js";
 import {
   isDaemonReady,
@@ -297,7 +298,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   const sessionDiscovery = new SessionDiscovery(db, sessionRegistry, workScanner, logger);
   const reaperTimer = new ReaperTimer(sessionDiscovery, logger);
-  registerSessionRoutes(router, sessionRegistry, sessionDiscovery, workScanner, clientAuth);
+  registerSessionRoutes(router, sessionRegistry, sessionDiscovery, workScanner);
 
   registerGraphRoutes(router);
   registerProviderRoutes(router);
@@ -397,7 +398,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: 4db692a — expose auth queue's rebuilding state to the health endpoint
   // so the UI doesn't reload while the daemon is still alive but about to restart.
   const fileRpcTransport = new FileRpcTransport({ router, logger, instance });
-  const server = createServer({
+  const socketPath = localApiSocketPath(instance);
+  const serverOptions: Parameters<typeof createServer>[0] = {
     db, sse, logger, version, router,
     startupEpoch,
     getStartupInfo: () => startupInfo,
@@ -413,9 +415,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     getEventLoopDiagnostics: () => eventLoopDiagnostics.snapshot(),
     instance,
     fileRpcDir: fileRpcTransport.dir,
+    localSocketPath: socketPath,
     clientAuth,
-  });
-  fileRpcTransport.start();
+  };
+  const server = createServer(serverOptions);
 
   // Attach WebSocket upgrade handler for console backend sessions (Bug: e980dd8)
   const wss = new WebSocketServer({ noServer: true });
@@ -470,6 +473,23 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }, instance);
 
   const actualPort = await startServer(server, port, { logger });
+  const localServer = createLocalSocketServer(serverOptions);
+  let closeLocalSocket: () => Promise<void>;
+  try {
+    closeLocalSocket = await startLocalApiSocket(localServer, socketPath);
+  } catch (error) {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw error;
+  }
+  try {
+    fileRpcTransport.start();
+  } catch (error) {
+    await closeLocalSocket();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw error;
+  }
   // A failed bind must not replace the healthy daemon's gateway target.
   // Register the port the listener actually owns, including when port 0 was requested.
   if (instance.role === "main") {
@@ -732,6 +752,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     workUnitReconciler.stop();
     navEnricher.stop();
     fileRpcTransport.stop();
+    await closeLocalSocket();
     authQueue.dispose();
     if (startupDiscoveryTimer) clearTimeout(startupDiscoveryTimer);
     clearInterval(channelPruneTimer);
