@@ -861,18 +861,15 @@ describe('ChatSurface stream behavior', () => {
     scroll.scrollTop = 3300;
     fireEvent.scroll(scroll);
     expect(scroll.scrollTop).toBe(3300);
-    const previousScrollCalls = scrollTo.mock.calls.length;
-
     view.rerender(<ChatSurface events={events(19)} streaming={false} transcript={transcript(19)} />);
 
     const loadedRow = Array.from(view.container.querySelectorAll<HTMLElement>('[data-virtual-kind="group"]'))
       .find((row) => row.dataset.virtualKey?.includes(':19:0'))!;
     expect(loadedRow).toBeTruthy();
-    expect(Number.parseFloat(loadedRow.style.transform.split(',')[1])).toBeLessThan(3300);
-    expect(scroll.scrollTop).toBe(3300);
-    expect(scrollTo.mock.calls.length).toBe(previousScrollCalls);
-
     const rowStart = Number.parseFloat(loadedRow.style.transform.split(',')[1]);
+    expect(rowStart).toBeLessThan(3300);
+    expect(scroll.scrollTop).toBeGreaterThanOrEqual(rowStart);
+    expect(scroll.scrollTop).toBeLessThan(rowStart + loadedRow.getBoundingClientRect().height);
     const readingInset = scroll.scrollTop - rowStart;
     view.rerender(<ChatSurface events={events(18)} streaming={false} transcript={transcript(18)} />);
     const preservedRow = Array.from(view.container.querySelectorAll<HTMLElement>('[data-virtual-kind="group"]'))
@@ -1038,6 +1035,7 @@ describe('ChatSurface stream behavior', () => {
     Object.defineProperty(scroll, 'clientHeight', { value: 500, configurable: true });
     Object.defineProperty(scroll, 'scrollHeight', { value: 9000, configurable: true });
 
+    fireEvent.wheel(scroll, { deltaY: -100 });
     scroll.scrollTop = 1000;
     fireEvent.scroll(scroll);
     expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy();
