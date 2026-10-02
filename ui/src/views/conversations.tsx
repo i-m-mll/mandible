@@ -77,6 +77,7 @@ import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { OverflowFade } from '../components/shared/OverflowFade';
 import { MAX_MESSAGE_ATTACHMENTS, type ChatAttachment } from '../../../src/conversation-control/attachments';
 import { attachmentContentUrl, importAttachment } from '../chat/attachmentApi';
+import { AnnotationPreviewContent } from '../chat/AnnotationPreviewContent';
 import {
   activateDraftAttachmentHighlights, addDraftAttachments, clearAcceptedDraft, getAttachmentDraftSnapshot, getConversationDraft,
   getDraftAttachmentHighlights,
@@ -2741,11 +2742,7 @@ export function ConversationDetail({
         <DetailPaneModal open={Boolean(attachmentPreview)} onClose={() => setAttachmentPreview(null)}
           titleId="chat-attachment-preview-title" title={attachmentPreview?.kind === 'annotation' ? `Annotation ${attachmentPreview.ordinal}` : attachmentPreview?.file.name ?? 'Attachment'}
           closeLabel="Close attachment preview" panelClassName="conv-compose__preview">
-          {attachmentPreview?.kind === 'annotation' ? <>
-            <p>{attachmentPreview.text}</p>
-            <p>{attachmentPreview.target.url}</p>
-            {attachmentPreview.screenshot && <img src={attachmentContentUrl(attachmentPreview.screenshot)} alt={`Screenshot for annotation ${attachmentPreview.ordinal}`} />}
-          </> : attachmentPreview?.kind === 'image' ? <img src={attachmentContentUrl(attachmentPreview.file)} alt={attachmentPreview.file.name} />
+          {attachmentPreview?.kind === 'annotation' ? <AnnotationPreviewContent annotation={attachmentPreview} screenshotUrl={attachmentContentUrl} /> : attachmentPreview?.kind === 'image' ? <img src={attachmentContentUrl(attachmentPreview.file)} alt={attachmentPreview.file.name} />
             : <pre>{attachmentPreviewText ?? 'Loading preview…'}</pre>}
         </DetailPaneModal>
       </div>
