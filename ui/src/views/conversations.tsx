@@ -78,9 +78,11 @@ import { OverflowFade } from '../components/shared/OverflowFade';
 import { MAX_MESSAGE_ATTACHMENTS, type ChatAttachment } from '../../../src/conversation-control/attachments';
 import { attachmentContentUrl, importAttachment } from '../chat/attachmentApi';
 import {
-  addDraftAttachments, clearAcceptedDraft, getAttachmentDraftSnapshot, getConversationDraft,
+  activateDraftAttachmentHighlights, addDraftAttachments, clearAcceptedDraft, getAttachmentDraftSnapshot, getConversationDraft,
+  getDraftAttachmentHighlights,
   getPendingSubmitIntent, registerWritableChatTarget, removeDraftAttachment,
-  savePendingSubmitIntent, setDraftText, subscribeAttachmentDrafts, type DraftSubmitIntent,
+  savePendingSubmitIntent, setDraftText, subscribeAttachmentDrafts,
+  subscribeDraftAttachmentHighlights, type DraftSubmitIntent,
 } from '../chat/attachmentDrafts';
 import { browserSessionFetch } from '../client-auth-token';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
@@ -1358,6 +1360,12 @@ export function ConversationDetail({
   useEffect(() => subscribeAttachmentDrafts(() => setAttachmentStore(getAttachmentDraftSnapshot())), []);
   const continueDraft = attachmentStore.drafts[conversationId]?.text ?? '';
   const draftAttachments = attachmentStore.drafts[conversationId]?.attachments ?? [];
+  const [highlightedAttachmentIds, setHighlightedAttachmentIds] = useState(() => getDraftAttachmentHighlights(conversationId));
+  useEffect(() => {
+    const refresh = () => setHighlightedAttachmentIds(getDraftAttachmentHighlights(conversationId));
+    refresh();
+    return subscribeDraftAttachmentHighlights(refresh);
+  }, [conversationId]);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
   const [attachmentPreviewText, setAttachmentPreviewText] = useState<string | null>(null);
@@ -2103,12 +2111,16 @@ export function ConversationDetail({
   }, [control, controlPresentation, conversation, creationReceipt, latestDagUuid]);
 
   const { active: chatViewActive } = useAppShell();
-  const composerWritable = chatViewActive && !isReadOnlyChild && !continueBusy && !submitIntent
+  const selectedComposerWritable = !isReadOnlyChild && !continueBusy && !submitIntent
     && !continueDisabledReason && controlPresentation?.composer === 'enabled';
+  const composerWritable = chatViewActive && selectedComposerWritable;
   useLayoutEffect(() => {
-    if (!composerWritable) return undefined;
-    return registerWritableChatTarget(conversationId);
-  }, [composerWritable, conversationId]);
+    if (!selectedComposerWritable) return undefined;
+    return registerWritableChatTarget(conversationId, chatViewActive);
+  }, [selectedComposerWritable, chatViewActive, conversationId]);
+  useLayoutEffect(() => {
+    if (chatViewActive) activateDraftAttachmentHighlights(conversationId);
+  }, [chatViewActive, conversationId]);
 
   const importFiles = useCallback(async (files: FileList | File[]) => {
     if (!composerWritable || attachmentBusy) return;
@@ -2612,7 +2624,7 @@ export function ConversationDetail({
             <div className="conv-compose__attachments" aria-label="Draft attachments">
               {draftAttachments.map((attachment, index) => {
                 const label = attachment.kind === 'annotation' ? `Annotation ${attachment.ordinal}` : attachment.file.name;
-                return <div className="conv-compose__attachment" key={`${attachment.kind}:${attachment.kind === 'annotation' ? attachment.id : attachment.file.id}:${index}`}>
+                return <div className={`conv-compose__attachment${attachment.kind === 'annotation' && highlightedAttachmentIds.has(attachment.id) ? ' conv-compose__attachment--new' : ''}`} key={`${attachment.kind}:${attachment.kind === 'annotation' ? attachment.id : attachment.file.id}:${index}`}>
                   <button type="button" className="conv-compose__attachment-body" title={label} onClick={() => setAttachmentPreview(attachment)}>
                     <span aria-hidden="true">{attachment.kind === 'annotation' ? '✎' : attachment.kind === 'image' ? '▧' : '▤'}</span>
                     <span className="conv-compose__attachment-name">{label}</span>

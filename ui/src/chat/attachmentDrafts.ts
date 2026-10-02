@@ -15,7 +15,9 @@ const STORAGE_KEY = 'mandible.chat.attachment-drafts.v1';
 const emptyState = (): State => ({ annotations: [], lastCleared: null, drafts: {}, pending: {} });
 let state: State | null = null;
 const listeners = new Set<() => void>();
-let writableTarget: string | null = null;
+let writableTarget: { conversationId: string; visible: boolean } | null = null;
+const highlightedAttachments = new Map<string, Map<string, number | null>>();
+const highlightListeners = new Set<() => void>();
 
 function current(): State {
   if (state) return state;
@@ -112,17 +114,61 @@ export function undoClearAnnotations(): AttachmentDraftResult<boolean> {
   return update({ ...old, annotations: [...old.lastCleared.filter((entry) => !existing.has(entry.id)), ...old.annotations], lastCleared: null }, true);
 }
 
-export function registerWritableChatTarget(conversationId: string): () => void {
-  writableTarget = conversationId;
+export function registerWritableChatTarget(conversationId: string, visible = true): () => void {
+  const registration = { conversationId, visible };
+  writableTarget = registration;
   listeners.forEach((listener) => listener());
   return () => {
-    if (writableTarget === conversationId) writableTarget = null;
+    if (writableTarget === registration) writableTarget = null;
     listeners.forEach((listener) => listener());
   };
 }
-export function getWritableChatTarget(): string | null { return writableTarget; }
+export function getWritableChatTarget(): string | null {
+  return writableTarget?.visible ? writableTarget.conversationId : null;
+}
+export function getSelectedWritableChatTarget(): string | null {
+  return writableTarget?.conversationId ?? null;
+}
+
+export function subscribeDraftAttachmentHighlights(listener: () => void): () => void {
+  highlightListeners.add(listener);
+  return () => highlightListeners.delete(listener);
+}
+export function getDraftAttachmentHighlights(conversationId: string): ReadonlySet<string> {
+  const now = Date.now();
+  return new Set([...(highlightedAttachments.get(conversationId)?.entries() ?? [])]
+    .filter((entry): entry is [string, number] => entry[1] !== null && entry[1] > now)
+    .map(([id]) => id));
+}
+export function highlightDraftAttachments(conversationId: string, ids: readonly string[]): void {
+  if (!ids.length) return;
+  const highlights = highlightedAttachments.get(conversationId) ?? new Map<string, number | null>();
+  for (const id of ids) highlights.set(id, null);
+  highlightedAttachments.set(conversationId, highlights);
+  if (getWritableChatTarget() === conversationId) activateDraftAttachmentHighlights(conversationId);
+}
+export function activateDraftAttachmentHighlights(conversationId: string): void {
+  const highlights = highlightedAttachments.get(conversationId);
+  if (!highlights) return;
+  const expiresAt = Date.now() + 1000;
+  let activated = false;
+  for (const [id, expiry] of highlights) {
+    if (expiry === null) {
+      highlights.set(id, expiresAt);
+      activated = true;
+    }
+  }
+  if (!activated) return;
+  highlightListeners.forEach((listener) => listener());
+  window.setTimeout(() => {
+    const now = Date.now();
+    for (const [id, expiry] of highlights) if (expiry !== null && expiry <= now) highlights.delete(id);
+    if (!highlights.size) highlightedAttachments.delete(conversationId);
+    highlightListeners.forEach((listener) => listener());
+  }, 1000);
+}
 export function pasteAnnotationsToVisibleChat(): AttachmentDraftResult<boolean> {
-  const target = writableTarget;
+  const target = getWritableChatTarget();
   const old = current();
   if (!target || !old.annotations.length) return { ok: true, value: false };
   const draft = getConversationDraft(target);
