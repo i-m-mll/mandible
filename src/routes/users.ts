@@ -7,7 +7,6 @@ import {
   addCredential,
   createUser,
   getOperator,
-  getOperatorId,
   listBindings,
   listCredentials,
   listUsers,
@@ -26,7 +25,8 @@ import type {
 } from "../users/types.js";
 import {
   ClientAuthzError,
-  requireOperator,
+  authorizeOperatorSetup,
+  requireProtectedOperator as requireOperator,
   requireSelfOrOperator,
 } from "../client-auth/authz.js";
 import { bodyRecord, sendJson } from "./http.js";
@@ -194,7 +194,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
       // First-run setup is the explicit bootstrap path. Once an operator
       // exists, every identity/configuration update requires that operator's
       // authenticated token; generic settings can never reassign it.
-      if (getOperatorId(db) !== null) requireOperator(db, req);
+      authorizeOperatorSetup(db, req);
       const body = bodyRecord(req);
       const setupAgents = body.setup_agents === true;
       const { user, agents } = db.transaction(() => {

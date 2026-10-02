@@ -1,4 +1,5 @@
 import { getDb } from "../db.js";
+import { ClientAuthzError, requireDurableIdentity } from "../client-auth/authz.js";
 import type { RequestLike, RouteHandler } from "../server.js";
 import {
   PermissionError,
@@ -14,6 +15,17 @@ export function globalCapabilityRoute(
   options: { authenticated?: boolean } = {},
 ): RouteHandler {
   return (req, res) => {
+    if (capability === "approve_auth" && req.client_identity?.method === "local_socket") {
+      try {
+        requireDurableIdentity(req);
+      } catch (error) {
+        if (error instanceof ClientAuthzError) {
+          res.status(error.status).json({ error: error.message, code: error.code });
+          return;
+        }
+        throw error;
+      }
+    }
     if (options.authenticated && !req.client_identity) {
       res.status(401).json({
         error: "This endpoint requires an authenticated client token.",

@@ -39,7 +39,7 @@ export function requireIdentity(req: RequestLike): ResolvedClientIdentity {
     throw new ClientAuthzError(
       401,
       "authentication_required",
-      "This endpoint requires an authenticated client token.",
+      "This endpoint requires an authenticated client.",
     );
   }
   return identity;
@@ -48,6 +48,21 @@ export function requireIdentity(req: RequestLike): ResolvedClientIdentity {
 export function isOperator(db: Db, identity: ResolvedClientIdentity): boolean {
   const operatorId = getOperatorId(db);
   return operatorId !== null && identity.user_id === operatorId;
+}
+
+export function isLocalHumanRequest(req: RequestLike): boolean {
+  return req.client_identity?.method === "local_socket"
+    && (req as RequestLike & { managed_client?: boolean }).managed_client !== true
+    && !req.ambient_identity;
+}
+
+export function requireDurableIdentity(req: RequestLike): ResolvedClientIdentity {
+  const identity = requireIdentity(req);
+  if (identity.method !== "api_token" || !identity.credential_id) {
+    throw new ClientAuthzError(401, "durable_credential_required",
+      "This action requires an authenticated durable client credential.");
+  }
+  return identity;
 }
 
 /**
@@ -76,14 +91,15 @@ export function isOperator(db: Db, identity: ResolvedClientIdentity): boolean {
 export function attributionForRequest(db: Db, req: unknown): AttributionContext | null {
   const record = req && typeof req === "object" ? (req as RequestLike) : null;
   const identity = record?.client_identity ?? null;
-  if (identity) {
+  const ambient: AmbientProviderIdentity | null = record?.ambient_identity ?? null;
+  const managed = (record as RequestLike & { managed_client?: boolean } | null)?.managed_client === true;
+  if (identity && identity.method !== "local_socket") {
     return {
       user_id: identity.user_id,
       evidence_method: identity.source === "local_os_user" ? "local_default" : "api_token",
     };
   }
-  const ambient: AmbientProviderIdentity | null = record?.ambient_identity ?? null;
-  if (ambient?.provider) {
+  if (ambient?.provider && (!identity || identity.method === "local_socket")) {
     // resolveProviderSessionAttributionResult only resolves to an agent-kind
     // owner (enforced in the resolver), so a forged provider header cannot
     // impersonate a human. ambient.provider_session_id is intentionally NOT
@@ -94,6 +110,9 @@ export function attributionForRequest(db: Db, req: unknown): AttributionContext 
     if (resolution.status === "resolved") {
       return resolution.attribution;
     }
+  }
+  if (identity?.method === "local_socket" && !managed) {
+    return { user_id: identity.user_id, evidence_method: "local_default" };
   }
   return null;
 }
@@ -113,7 +132,7 @@ export function authorizeManagedSessionWebSocket(
 /** Require an authenticated OPERATOR (401 if anonymous, 403 if non-operator). */
 export function requireOperator(db: Db, req: RequestLike): ResolvedClientIdentity {
   const identity = requireIdentity(req);
-  if (!isOperator(db, identity)) {
+  if (!isOperator(db, identity) || (identity.method === "local_socket" && !isLocalHumanRequest(req))) {
     throw new ClientAuthzError(
       403,
       "operator_required",
@@ -121,6 +140,31 @@ export function requireOperator(db: Db, req: RequestLike): ResolvedClientIdentit
     );
   }
   return identity;
+}
+
+export function requireDurableOperator(db: Db, req: RequestLike): ResolvedClientIdentity {
+  const identity = requireDurableIdentity(req);
+  if (!isOperator(db, identity)) {
+    throw new ClientAuthzError(403, "operator_required", "Only the local operator may perform this action.");
+  }
+  return identity;
+}
+
+export function requireProtectedOperator(db: Db, req: RequestLike): ResolvedClientIdentity {
+  return req.client_identity?.method === "local_socket"
+    ? requireDurableOperator(db, req)
+    : requireOperator(db, req);
+}
+
+export function authorizeOperatorSetup(db: Db, req: RequestLike): void {
+  if (getOperatorId(db) !== null) {
+    requireProtectedOperator(db, req);
+    return;
+  }
+  if ((req as RequestLike & { managed_client?: boolean }).managed_client === true || req.ambient_identity) {
+    throw new ClientAuthzError(403, "operator_setup_human_required",
+      "Initial operator setup requires a local human invocation.");
+  }
 }
 
 /**
@@ -153,6 +197,7 @@ export function requireSelfOrOperator(
   targetUserId: string,
 ): ResolvedClientIdentity {
   const identity = requireIdentity(req);
+  if (identity.method === "local_socket") return requireDurableOperator(db, req);
   if (identity.user_id === targetUserId) return identity;
   if (isOperator(db, identity)) return identity;
   throw new ClientAuthzError(
