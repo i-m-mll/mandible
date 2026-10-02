@@ -42,10 +42,16 @@ it("keeps file content out of provider prose while delivering annotation text an
     { kind: "file", file },
     { kind: "annotation", id: "a1", ordinal: 1, text: "Make this clearer", target: {
       url: "http://localhost:19420/#/chat", rect: { x: 1, y: 2, width: 3, height: 4 }, viewport: { width: 800, height: 600 }, element_text: "Send",
+      element: "button", selector: "main > button.send", source_file: "ui/src/views/conversations.tsx",
+      react_components: "ChatComposer", selected_text: "Send", css_classes: "send primary", computed_styles: "padding: 8px",
     }, screenshot },
   ]);
   const context = attachmentProviderContext("Review", attachments, dbPath);
   expect(context.text).toContain("Make this clearer");
+  expect(context.text).toContain("Page URL: http://localhost:19420/#/chat");
+  expect(context.text).toContain("Location: main > button.send");
+  expect(context.text).toContain("React: ChatComposer");
+  expect(context.text).toContain("Computed styles: padding: 8px");
   expect(context.text).toContain("Retained readable path:");
   expect(context.text).not.toContain(secret);
   expect(context.images).toHaveLength(1);
@@ -56,6 +62,17 @@ it("keeps file content out of provider prose while delivering annotation text an
   const claude = claudeAttachmentContent("Review", attachments, dbPath);
   expect(claude).toMatchObject([{ type: "text" }, { type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }]);
   expect(JSON.stringify(claude)).not.toContain(secret);
+});
+
+it("keeps older annotation drafts valid and rejects oversized new context", () => {
+  const store = new ChatAttachmentStore(db);
+  const annotation = { kind: "annotation", id: "old", ordinal: 1, text: "Older feedback", target: {
+    url: "/chat", rect: { x: 1, y: 2, width: 0, height: 0 }, viewport: { width: 800, height: 600 },
+  } };
+  expect(store.resolve([annotation])).toMatchObject([annotation]);
+  expect(attachmentProviderContext("", store.resolve([annotation]), dbPath).text).toContain("Page URL: /chat");
+  expect(() => store.resolve([{ ...annotation, target: { ...annotation.target, computed_styles: "x".repeat(2_001) } }]))
+    .toThrow(/metadata is invalid/);
 });
 
 it("serves original upload bytes through the operator-only content route", async () => {
