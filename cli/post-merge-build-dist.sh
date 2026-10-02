@@ -67,11 +67,13 @@ else
   instruction_install_needed=true
 fi
 
+# Keep the daemon-selected runtime PATH. A login shell can silently switch
+# Node versions and invalidate the native modules used by production.
 if [[ "$build_needed" == "true" ]]; then
   err "[post-merge-build] aligning dependencies from package-lock.json"
-  bash -lc "$dependency_command"
+  bash -c "$dependency_command"
   err "[post-merge-build] running: ${build_command}"
-  bash -lc "$build_command"
+  bash -c "$build_command"
   err "[post-merge-build] generated local build artifacts"
 else
   err "[post-merge-build] no Mandible source changes detected; skipping build"
@@ -79,7 +81,7 @@ fi
 
 if [[ "$desktop_build_needed" == "true" ]]; then
   err "[post-merge-build] running native desktop deployment: ${desktop_command}"
-  bash -lc "$desktop_command"
+  bash -c "$desktop_command"
   err "[post-merge-build] installed native desktop bundle"
 else
   err "[post-merge-build] no native desktop changes detected; skipping desktop deployment"

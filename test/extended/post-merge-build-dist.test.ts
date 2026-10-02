@@ -138,7 +138,8 @@ exec "$REAL_GIT" "$@"
       ...hookEnv,
       HOME: home,
       MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND: 'printf "dependencies\\n" >> "$MANDIBLE_TEST_TRACE"',
-      MANDIBLE_POST_MERGE_BUILD_COMMAND: 'printf "build\\n" >> "$MANDIBLE_TEST_TRACE"',
+      MANDIBLE_POST_MERGE_BUILD_COMMAND: 'test "$PATH" = "$MANDIBLE_TEST_RUNTIME_PATH" && printf "build\\n" >> "$MANDIBLE_TEST_TRACE"',
+      MANDIBLE_TEST_RUNTIME_PATH: hookEnv.PATH,
       MANDIBLE_POST_MERGE_DESKTOP_COMMAND:
         'printf "desktop\\n" >> "$MANDIBLE_TEST_DESKTOP_TRACE"',
       MANDIBLE_TEST_TRACE: tracePath,

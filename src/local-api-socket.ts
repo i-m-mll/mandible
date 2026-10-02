@@ -35,7 +35,12 @@ function requirePrivateDirectory(directory: string, leaf = true): void {
   if (stat.uid !== 0 && stat.uid !== process.getuid?.()) {
     throw new Error(`Foreign-owned local socket ancestor: ${directory}`);
   }
-  if (stat.isSymbolicLink() && stat.uid === 0 && fs.statSync(directory).isDirectory()) return;
+  // macOS /tmp and /var are root-owned aliases. They may be ancestors, never
+  // the private containing directory, and their targets need the same checks.
+  if (!leaf && stat.isSymbolicLink() && stat.uid === 0) {
+    requirePrivateDirectory(fs.realpathSync(directory), false);
+    return;
+  }
   if (!stat.isDirectory() || stat.isSymbolicLink() || ((created || leaf) && stat.uid !== process.getuid?.())) {
     throw new Error(`Unsafe local socket directory: ${directory}`);
   }
