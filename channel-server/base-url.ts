@@ -1,40 +1,28 @@
-// Issue 70dffb8 — one base-URL resolution for the channel server.
-//
-// client.ts and notifications.ts each used to hardcode
-// "http://localhost:19420", so a channel server pointed at a non-default
-// daemon (an IAB preview on a free port, `MANDIBLE_PORT`, an explicit
-// `MANDIBLE_BASE`) silently talked to the wrong instance. Precedence matches
-// the internal transport contract: an explicit HTTP MANDIBLE_BASE wins,
-// otherwise the backend listener selected by MANDIBLE_PORT is used.
+import path from "node:path";
+import os from "node:os";
+import { PRODUCTION_ORIGIN } from "./canonical-origin.js";
 
-import { DEFAULT_BACKEND_PORT } from "./canonical-origin.js";
+export type ChannelTransport =
+  | { kind: "socket"; socketPath: string }
+  | { kind: "http"; baseUrl: string };
 
-const DEFAULT_PORT = String(DEFAULT_BACKEND_PORT);
-const DEFAULT_HOST = "http://127.0.0.1";
-
-/**
- * Resolve the Mandible daemon base URL for HTTP requests.
- *
- * Read per call rather than captured at module load so a test (or a spawner
- * that sets the environment late) sees the current value.
- *
- * `MANDIBLE_BASE` is honored only when it is an http: URL. The SSE bridge in
- * notifications.ts drives `node:http` directly, which rejects any other
- * protocol, and there is no file:// spool transport here. A file://, https:,
- * or malformed base therefore falls back to the port-derived default rather
- * than throwing inside a stdio MCP server.
- */
-export function resolveBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveTransport(env: NodeJS.ProcessEnv = process.env): ChannelTransport {
   const explicit = env.MANDIBLE_BASE?.trim();
-  if (explicit) {
-    try {
-      if (new URL(explicit).protocol === "http:") {
-        return explicit.replace(/\/+$/, "");
-      }
-    } catch {
-      // Malformed base: fall through to the port-derived default.
+  if (explicit && (explicit.replace(/\/+$/, "") !== PRODUCTION_ORIGIN || env.MANDIBLE_TRANSPORT === "http")) {
+    const url = new URL(explicit);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error(`Unsupported channel transport: ${url.protocol}`);
     }
+    return { kind: "http", baseUrl: explicit.replace(/\/+$/, "") };
   }
-  const port = env.MANDIBLE_PORT?.trim() || DEFAULT_PORT;
-  return `${DEFAULT_HOST}:${port}`;
+  const socketPath = env.MANDIBLE_SOCKET?.trim()
+    || path.join(env.HOME || os.homedir(), ".cache/mandible/local-api/production.sock");
+  if (!path.isAbsolute(socketPath)) throw new Error("MANDIBLE_SOCKET must be absolute");
+  return { kind: "socket", socketPath };
+}
+
+/** HTTP endpoint used for request framing; the socket path selects the daemon. */
+export function resolveBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const transport = resolveTransport(env);
+  return transport.kind === "socket" ? "http://localhost" : transport.baseUrl;
 }

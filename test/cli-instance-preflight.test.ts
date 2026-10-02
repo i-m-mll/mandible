@@ -886,7 +886,8 @@ describe("CLI instance mutation preflight", () => {
       expect(result.stderr).toContain("temporarily unavailable after bounded retries");
       expect(target.requests.some((request) => request.method === "POST")).toBe(false);
       expect(target.requests.filter((request) => request.url === "/api/instance")).toHaveLength(2);
-      expect(target.requests.filter((request) => request.url === "/api/health").length).toBeGreaterThanOrEqual(2);
+      // A successful health response is read once; only the 503 instance route retries.
+      expect(target.requests.filter((request) => request.url === "/api/health")).toHaveLength(1);
     } finally {
       await target.close();
     }

@@ -1,3 +1,4 @@
+import { needsManagedHttpCredential, projectManagedProviderIdentity } from "./mandible-transport.js";
 import { EventEmitter } from "node:events";
 import type { IPty, IDisposable } from "node-pty";
 import pty from "node-pty";
@@ -802,16 +803,19 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
       cleaned[k] = v;
     }
     Object.assign(cleaned, extraEnv);
+    projectManagedProviderIdentity(cleaned, this.meta.command, this.meta.provider_session_id, this.meta.mandible_session_id ?? this.id);
     // Issue 708dc4c — never inherit or accept a caller-supplied daemon token.
     // SessionManager provisions the token for the resolved agent user and this
     // final assignment prevents either process.env or persisted session env
     // from promoting the child to some other identity.
     delete cleaned["MANDIBLE_TOKEN"];
     cleaned["MANDIBLE_MANAGED_CLIENT"] = "1";
-    const mandibleToken = typeof this.mandibleTokenSource === "function"
-      ? this.mandibleTokenSource()
-      : this.mandibleTokenSource;
-    if (mandibleToken) cleaned["MANDIBLE_TOKEN"] = mandibleToken;
+    if (needsManagedHttpCredential(cleaned)) {
+      const mandibleToken = typeof this.mandibleTokenSource === "function"
+        ? this.mandibleTokenSource()
+        : this.mandibleTokenSource;
+      if (mandibleToken) cleaned["MANDIBLE_TOKEN"] = mandibleToken;
+    }
     // Bug: b5aba0e — channel-enabled PTY: expose session ID for channel server discovery
     if (this.meta.channel_enabled) {
       cleaned["MANDIBLE_SESSION_ID"] = this.meta.mandible_session_id ?? this.id;

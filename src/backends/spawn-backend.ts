@@ -1,3 +1,4 @@
+import { needsManagedHttpCredential, projectManagedProviderIdentity } from "./mandible-transport.js";
 /**
  * SpawnBackend — process-based backend for Codex/Gemini/shell.
  * Bug: 8d3328c — Uses child_process.spawn() with JSON stdout parsing.
@@ -613,12 +614,15 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
       cleaned[k] = v;
     }
     Object.assign(cleaned, extraEnv);
+    projectManagedProviderIdentity(cleaned, this.meta.command, this.meta.provider_session_id, this.meta.mandible_session_id ?? this.id);
     delete cleaned.MANDIBLE_TOKEN;
     cleaned.MANDIBLE_MANAGED_CLIENT = "1";
-    const mandibleToken = typeof this.mandibleTokenSource === "function"
-      ? this.mandibleTokenSource()
-      : this.mandibleTokenSource;
-    if (mandibleToken) cleaned.MANDIBLE_TOKEN = mandibleToken;
+    if (needsManagedHttpCredential(cleaned)) {
+      const mandibleToken = typeof this.mandibleTokenSource === "function"
+        ? this.mandibleTokenSource()
+        : this.mandibleTokenSource;
+      if (mandibleToken) cleaned.MANDIBLE_TOKEN = mandibleToken;
+    }
     return cleaned;
   }
 

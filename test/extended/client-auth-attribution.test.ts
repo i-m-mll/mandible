@@ -89,6 +89,7 @@ describe("client-auth durable attribution", () => {
         url: "/api/issues/mandible",
         body: {
           title: `Attributed ${method}`,
+          kind: "feature",
           body: "A durable token-authenticated write.",
           project: projectId,
         },

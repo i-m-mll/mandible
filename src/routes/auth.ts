@@ -23,7 +23,7 @@ import {
   AttributionReadResolver,
   authAttributionReadFields,
 } from "../identity/read-projection.js";
-import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
+import { ClientAuthzError, requireProtectedOperator as requireOperator } from "../client-auth/authz.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -37,6 +37,15 @@ import {
 } from "../auth-preview-policy.js";
 
 const authRouteLog = getDaemonLogger();
+
+function rejectTokenlessSocketExecution(req: RequestLike, res: ResponseLike): boolean {
+  if (req.client_identity?.method !== "local_socket") return false;
+  res.status(401).json({
+    error: "Auth execution updates require an authenticated durable client credential.",
+    code: "durable_credential_required",
+  });
+  return true;
+}
 
 export function registerAuthRoutes(
   app: RouteRegistrar,
@@ -73,6 +82,7 @@ export function registerAuthRoutes(
   }, { fileRpc: "allow" });
 
   app.post("/api/auth/request", async (req, res) => {
+    if (rejectTokenlessSocketExecution(req, res)) return;
     const payload = parseAuthRequestPayload(readBody<Record<string, unknown>>(req));
     if (!payload) {
       res.status(400).json({ error: "Invalid auth request payload." });
@@ -479,6 +489,7 @@ export function registerAuthRoutes(
   // does not need (and must not imply) a fresh merge authorization.
   app.post("/api/auth/request/:id/retry-convergence", async (req, res) => {
     try {
+      if (rejectTokenlessSocketExecution(req, res)) return;
       const body = readBody<Record<string, unknown>>(req);
       const hookId = typeof body.hook_id === "string" && body.hook_id.trim()
         ? body.hook_id.trim()
@@ -492,6 +503,7 @@ export function registerAuthRoutes(
 
   app.post("/api/auth/request/:id/replay-codex-archives", async (req, res) => {
     try {
+      if (rejectTokenlessSocketExecution(req, res)) return;
       // Issue 75f52ac — archiving is now async (off-loop codex CLI spawn).
       const result = await authQueue.replayCodexThreadArchives(req.params.id);
       res.status(200).json(result);
@@ -588,6 +600,7 @@ export function registerAuthRoutes(
 
   app.post("/api/auth/request/:id/skip", (req, res) => {
     try {
+      if (rejectTokenlessSocketExecution(req, res)) return;
       const request = authQueue.skip(req.params.id);
       res.json({ request_id: request.id, status: request.status });
     } catch (error) {
@@ -597,6 +610,7 @@ export function registerAuthRoutes(
 
   app.post("/api/auth/request/:id/retry", (req, res) => {
     try {
+      if (rejectTokenlessSocketExecution(req, res)) return;
       const request = authQueue.retry(req.params.id);
       res.status(200).json({ request_id: request.id, status: request.status });
     } catch (error) {
@@ -606,6 +620,7 @@ export function registerAuthRoutes(
 
   app.post("/api/auth/request/:id/requeue", (req, res) => {
     try {
+      if (rejectTokenlessSocketExecution(req, res)) return;
       const request = authQueue.requeue(req.params.id);
       res.status(200).json({ request_id: request.id, status: request.status });
     } catch (error) {
@@ -621,6 +636,7 @@ export function registerAuthRoutes(
   }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/output", (req, res) => {
+    if (rejectTokenlessSocketExecution(req, res)) return;
     const body = readBody<Record<string, unknown>>(req);
     if (typeof body.chunk !== "string") {
       res.status(400).json({ error: "Invalid output payload." });
@@ -636,6 +652,7 @@ export function registerAuthRoutes(
   }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/result", (req, res) => {
+    if (rejectTokenlessSocketExecution(req, res)) return;
     const body = readBody<Record<string, unknown>>(req);
     if (typeof body.exit_code !== "number" || typeof body.output !== "string") {
       res.status(400).json({ error: "Invalid result payload." });
@@ -922,6 +939,7 @@ function authMutationControl(
   body: Record<string, unknown>,
   requireGoverned = false,
 ): { actor: AuthLifecycleActor | undefined } | null {
+  if (rejectTokenlessSocketExecution(req, res)) return null;
   const governed = requireGoverned || Boolean(request.custody_work_unit_id) || isAuthMergeCommand(request);
   if (!governed) return { actor: undefined };
   const requester = resolveAuthRequester(req, { command: "mutate", title: "mutate" }, true);

@@ -71,13 +71,17 @@ async function waitForNoHealth(
 describe.sequential("mandible daemon", () => {
   let temp: TempPaths | null = null;
   const priorSessionAuthorityDir = process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
+const priorSocket = process.env.MANDIBLE_SOCKET;
 
   beforeEach(() => {
     temp = createTempPaths();
     process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = path.join(temp.dir, "local-sessions");
+    process.env.MANDIBLE_SOCKET = path.join(temp.dir, "api.sock");
   });
 
   afterEach(() => {
+    if (priorSocket === undefined) delete process.env.MANDIBLE_SOCKET;
+    else process.env.MANDIBLE_SOCKET = priorSocket;
     if (priorSessionAuthorityDir === undefined) delete process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
     else process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = priorSessionAuthorityDir;
     if (temp) {

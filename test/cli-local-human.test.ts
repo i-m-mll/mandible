@@ -29,7 +29,7 @@ fi
 printf 200
 `); fs.chmodSync(curl, 0o755);
       const env = { ...process.env, HOME: root, PATH: `${bin}:${process.env.PATH}`,
-        CURL_LOG: log, MANDIBLE_BASE: 'https://app.mandible.localhost:19420',
+        CURL_LOG: log, MANDIBLE_BASE: 'https://app.mandible.localhost:19420', MANDIBLE_TRANSPORT: 'http',
         MANDIBLE_NO_KEYCHAIN_TOKEN: '1', MANDIBLE_TOKEN: '',
         CODEX_THREAD_ID: '', CODEX_SESSION_ID: '', CLAUDE_CODE_SESSION_ID: '',
         CLAUDE_SESSION_ID: '', GEMINI_SESSION_ID: '', MANDIBLE_SESSION_ID: '',

@@ -14,9 +14,111 @@ import type {
   UndeliveredResponse,
   UndeliveredAuthResult,
 } from "./types.js";
-import { resolveBaseUrl } from "./base-url.js";
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { resolveBaseUrl, resolveTransport } from "./base-url.js";
 
 const TIMEOUT_MS = 10_000;
+
+export function ambientHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "X-Mandible-Managed-Client": "1" };
+  const codeId = process.env.CLAUDE_CODE_SESSION_ID;
+  const sessionId = process.env.CLAUDE_SESSION_ID;
+  const providerId = codeId && sessionId && codeId !== sessionId ? null : (codeId || sessionId);
+  if (providerId) {
+    headers["X-Mandible-Ambient-Provider"] = "claude";
+    headers["X-Mandible-Ambient-Provider-Session-Id"] = providerId;
+  }
+  const managedApp = process.env.MANDIBLE_MANAGED_APP;
+  const managedSessionId = process.env.MANDIBLE_SESSION_ID;
+  if (managedApp && /^[A-Za-z0-9._-]+$/.test(managedApp)
+      && managedSessionId && !/[\x00-\x1f\x7f]/.test(managedSessionId)) {
+    headers["X-Mandible-Managed-App"] = managedApp;
+    headers["X-Mandible-Managed-Session-Id"] = managedSessionId;
+  }
+  return headers;
+}
+
+export function channelTransportHeaders(kind: "socket" | "http"): Record<string, string> {
+  const headers = ambientHeaders();
+  if (kind === "http") {
+    const token = process.env.MANDIBLE_TOKEN?.trim()
+      || (process.env.MANDIBLE_MANAGED_CLIENT === "1" ? localCredential() : "");
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+function localRouteCredentialRule(method: string, route: string, body?: unknown): { optional: boolean } | null {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    process.env.MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE,
+    path.resolve(moduleDir, "../../cli/local-credential-routes.json"),
+    path.resolve(moduleDir, "../cli/local-credential-routes.json"),
+  ].filter((value): value is string => Boolean(value));
+  const manifest = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!manifest) throw new Error("Mandible local credential route manifest is unavailable");
+  const routes = JSON.parse(fs.readFileSync(manifest, "utf8")) as Array<{ method: string; path: string; body_nonempty?: string; credential_optional?: boolean }>;
+  if (!Array.isArray(routes)) throw new Error("Invalid Mandible local credential route manifest");
+  const pathname = route.split("?", 1)[0];
+  const match = routes.find((entry) => entry.method === method &&
+    entry.path.split("/").length === pathname.split("/").length &&
+    entry.path.split("/").every((part, index) => part.startsWith(":") || part === pathname.split("/")[index]) &&
+    (!entry.body_nonempty || (typeof body === "object" && body !== null &&
+      typeof (body as Record<string, unknown>)[entry.body_nonempty] === "string" &&
+      Boolean((body as Record<string, string>)[entry.body_nonempty]))));
+  return match ? { optional: match.credential_optional === true } : null;
+}
+
+function localCredential(): string {
+  if (process.env.MANDIBLE_NO_KEYCHAIN_TOKEN === "1") {
+    throw new Error("Mandible Keychain credential use is disabled");
+  }
+  try {
+    return execFileSync("/usr/bin/security", ["find-generic-password", "-s", "mandible-agent-claude", "-w"], {
+      encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    throw new Error("Mandible durable Claude credential is required in Keychain");
+  }
+}
+
+async function socketRequest<T>(method: string, route: string, body: unknown): Promise<T> {
+  const transport = resolveTransport();
+  if (transport.kind !== "socket") throw new Error("Expected local socket transport");
+  const payload = body === undefined ? undefined : JSON.stringify(body);
+  const headers: Record<string, string> = { ...channelTransportHeaders("socket"), "Content-Type": "application/json" };
+  const credentialRule = localRouteCredentialRule(method, route, body);
+  if (credentialRule) {
+    try { headers.Authorization = `Bearer ${localCredential()}`; }
+    catch (error) { if (!credentialRule.optional) throw error; }
+  }
+  return new Promise<T>((resolve, reject) => {
+    const req = http.request({ socketPath: transport.socketPath, host: "localhost", path: route, method, headers, timeout: TIMEOUT_MS }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        if ((res.statusCode ?? 500) >= 400) {
+          reject(new MandibleClientError(`${method} ${route} returned ${res.statusCode}: ${raw}`, res.statusCode ?? null));
+          return;
+        }
+        try { resolve(raw ? JSON.parse(raw) as T : undefined as T); }
+        catch (error) { reject(error); }
+      });
+    });
+    req.on("error", (error) => reject(new MandibleClientError(
+      `${method} ${route} failed on local socket ${transport.socketPath}: ${error.message}`,
+      null,
+      error,
+    )));
+    req.on("timeout", () => req.destroy(new Error("Mandible socket request timed out")));
+    req.end(payload);
+  });
+}
 
 export class MandibleClientError extends Error {
   constructor(
@@ -34,6 +136,7 @@ async function request<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
+  if (resolveTransport().kind === "socket") return socketRequest<T>(method, path, body);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -43,9 +146,7 @@ async function request<T>(
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        ...(process.env.MANDIBLE_TOKEN?.trim()
-          ? { Authorization: `Bearer ${process.env.MANDIBLE_TOKEN.trim()}` }
-          : {}),
+        ...channelTransportHeaders("http"),
       },
     };
     if (body !== undefined) {

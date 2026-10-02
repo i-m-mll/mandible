@@ -49,22 +49,60 @@ function makeLogger(): Logger {
 }
 
 describe("SDKBackend lifecycle", () => {
-  it("injects the provisioned token into SDK and channel-server environments", () => {
+  it("reserves a real Claude session ID for a fresh SDK channel without exporting a token", () => {
+    const originalBase = process.env.MANDIBLE_BASE;
+    const originalCodexId = process.env.CODEX_THREAD_ID;
+    process.env.MANDIBLE_BASE = "https://app.mandible.localhost:19420";
+    process.env.CODEX_THREAD_ID = "parent-codex-task";
+    try {
     const backend = new SDKBackend(
-      makeMeta({ env: { MANDIBLE_TOKEN: "caller-token" } }),
+      makeMeta({ env: { MANDIBLE_TOKEN: "caller-token", CLAUDE_SESSION_ID: "unrelated-claude-task" } }),
       makeLogger(),
       undefined,
       "agent-token",
     );
     const sdkEnv = (backend as unknown as { buildClientEnv(): Record<string, string> }).buildClientEnv();
-    expect(sdkEnv.MANDIBLE_TOKEN).toBe("agent-token");
+    expect(sdkEnv.MANDIBLE_TOKEN).toBeUndefined();
     expect(sdkEnv.MANDIBLE_MANAGED_CLIENT).toBe("1");
-    expect(buildMandibleChannelEnvironment("session-1", "/repo", "agent-token")).toEqual({
+    const options = (backend as unknown as { buildQueryOptions(abort: AbortController): Record<string, unknown> })
+      .buildQueryOptions(new AbortController());
+    const providerId = options.sessionId as string;
+    expect(providerId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(options.resume).toBeUndefined();
+    const launchedEnv = options.env as Record<string, string>;
+    expect(launchedEnv.CLAUDE_CODE_SESSION_ID).toBe(providerId);
+    expect(launchedEnv.CLAUDE_SESSION_ID).toBeUndefined();
+    expect(launchedEnv.CODEX_THREAD_ID).toBeUndefined();
+    expect(launchedEnv.MANDIBLE_MANAGED_APP).toBe("claude");
+    expect(launchedEnv.MANDIBLE_SESSION_ID).toBe("sdk-test-id");
+    expect(buildMandibleChannelEnvironment("session-1", "/repo", providerId, null,
+      { MANDIBLE_SOCKET: "/tmp/preview.sock" })).toEqual({
       MANDIBLE_SESSION_ID: "session-1",
+      MANDIBLE_MANAGED_APP: "claude",
+      CLAUDE_CODE_SESSION_ID: providerId,
       MANDIBLE_MANAGED_CLIENT: "1",
       CLAUDE_CWD: "/repo",
-      MANDIBLE_TOKEN: "agent-token",
+      MANDIBLE_SOCKET: "/tmp/preview.sock",
     });
+    } finally {
+      if (originalBase === undefined) delete process.env.MANDIBLE_BASE;
+      else process.env.MANDIBLE_BASE = originalBase;
+      if (originalCodexId === undefined) delete process.env.CODEX_THREAD_ID;
+      else process.env.CODEX_THREAD_ID = originalCodexId;
+    }
+  });
+
+  it("uses the known Claude ID on resume without requesting a new one", () => {
+    const providerId = "12345678-1234-4234-8234-123456789abc";
+    const backend = new SDKBackend(makeMeta({ provider_session_id: providerId }), makeLogger());
+    const options = (backend as unknown as { buildQueryOptions(abort: AbortController): Record<string, unknown> })
+      .buildQueryOptions(new AbortController());
+    expect(options.resume).toBe(providerId);
+    expect(options.sessionId).toBeUndefined();
+    expect((options.env as Record<string, string>).CLAUDE_CODE_SESSION_ID).toBe(providerId);
+    expect((options.env as Record<string, string>).MANDIBLE_MANAGED_APP).toBe("claude");
+    expect(buildMandibleChannelEnvironment("mandible-session", "/repo", providerId, null, {}).CLAUDE_CODE_SESSION_ID)
+      .toBe(providerId);
   });
 
   it("turns SDK setup failures into structured error results", async () => {

@@ -53,7 +53,7 @@ MANDIBLE_BIN_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 export MANDIBLE_CLI_DIR="$(cd "$MANDIBLE_BIN_DIR/../cli" && pwd -P)"
 source "$MANDIBLE_CLI_DIR/canonical-origin.sh"
 export MANDIBLE_PORT="${MANDIBLE_PORT:-$MANDIBLE_DEFAULT_BACKEND_PORT}"
-export MANDIBLE_BASE="${MANDIBLE_BASE:-${MANDIBLE_PUBLIC_ORIGIN:-$MANDIBLE_CANONICAL_ORIGIN}}"
+# api.sh selects the private socket when no transport was explicitly chosen.
 
 usage() {
   cat <<'EOF'

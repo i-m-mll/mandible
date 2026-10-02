@@ -2,7 +2,17 @@
 
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/canonical-origin.sh"
 : "${MANDIBLE_PORT:=${MANDIBLE_DEFAULT_BACKEND_PORT}}"
-: "${MANDIBLE_BASE:=${MANDIBLE_PUBLIC_ORIGIN:-$MANDIBLE_CANONICAL_ORIGIN}}"
+if [[ -z "${MANDIBLE_BASE:-}" || ( "${MANDIBLE_BASE%/}" == "${MANDIBLE_CANONICAL_ORIGIN%/}" && "${MANDIBLE_TRANSPORT:-}" != "http" ) ]]; then
+  MANDIBLE_LOCAL_SOCKET=1
+else
+  MANDIBLE_LOCAL_SOCKET=0
+fi
+if [[ "$MANDIBLE_LOCAL_SOCKET" == 1 ]]; then
+  MANDIBLE_SOCKET="${MANDIBLE_SOCKET:-${HOME}/.cache/mandible/local-api/production.sock}"
+  [[ "$MANDIBLE_SOCKET" == /* ]] || { printf 'MANDIBLE_SOCKET must be an absolute path.\n' >&2; return 2 2>/dev/null || exit 2; }
+fi
+
+api_is_local_socket() { [[ "$MANDIBLE_LOCAL_SOCKET" == 1 ]]; }
 
 # Run a jq filter with the shared human-facing identity contract loaded. JSON
 # output deliberately bypasses this helper so exact API authority is preserved.
@@ -172,11 +182,11 @@ trap 'api_cleanup_temp_files; exit 130' INT
 trap 'api_cleanup_temp_files; exit 143' TERM
 
 api_base() {
-  printf '%s' "$MANDIBLE_BASE"
+  if api_is_local_socket; then printf 'http://localhost'; else printf '%s' "$MANDIBLE_BASE"; fi
 }
 
-# The unmarked human shell uses the registered local origin as the same OS
-# account's browser does. Managed agent shells must present their own token.
+# Explicit canonical HTTP retains browser-origin CSRF behavior. The ordinary
+# local path uses the private socket instead.
 api_local_human_http() {
   [[ "$(api_base)" == "$MANDIBLE_CANONICAL_ORIGIN" ]] \
     && ! api_managed_client_markers_present \
@@ -198,7 +208,33 @@ api_local_operator_csrf() {
 }
 
 api_is_file_rpc() {
-  [[ "${MANDIBLE_BASE}" == file://* ]]
+  [[ "${MANDIBLE_BASE:-}" == file://* ]]
+}
+
+api_local_credential_routes_file() {
+  printf '%s' "${MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE:-${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/local-credential-routes.json}"
+}
+
+# The policy lane owns this exact method/path manifest. A missing manifest is a
+# packaging error: do not guess which calls may require durable identity.
+api_local_route_requires_credential() {
+  local method="$1" pathname="${2%%\?*}" body="${3:-}" file route_method route_path body_nonempty optional routes
+  file="$(api_local_credential_routes_file)"
+  [[ -r "$file" ]] || { printf 'Mandible local credential route manifest is unavailable: %s\n' "$file" >&2; return 2; }
+  routes="$(jq -er 'if type == "array" then .[] | select(.method and .path) | [.method, .path, (.body_nonempty // ""), (.credential_optional // false | tostring)] | join("|") else error("invalid routes") end' "$file")" || return 2
+  while IFS='|' read -r route_method route_path body_nonempty optional; do
+    [[ "$route_method" == "$method" ]] || continue
+    api_route_template_matches "$route_path" "$pathname" || continue
+    if [[ -n "$body_nonempty" ]]; then
+      jq -e --arg key "$body_nonempty" '.[$key] | type == "string" and length > 0' <<< "$body" >/dev/null 2>&1 || continue
+    fi
+    if [[ "$optional" == true ]]; then
+      return 3
+    else
+      return 0
+    fi
+  done <<< "$routes"
+  return 1
 }
 
 # Managed-session marker guard for the durable operator keychain credential: any
@@ -222,6 +258,8 @@ api_agent_provider() {
   local hint="${1:-}" provider="" count=0
   local has_codex=0 has_claude=0 has_gemini=0
   [[ -z "$hint" ]] || secret_material_valid "$hint" || return 1
+  [[ -z "${CODEX_THREAD_ID:-}" || -z "${CODEX_SESSION_ID:-}" || "$CODEX_THREAD_ID" == "$CODEX_SESSION_ID" ]] || return 1
+  [[ -z "${CLAUDE_CODE_SESSION_ID:-}" || -z "${CLAUDE_SESSION_ID:-}" || "$CLAUDE_CODE_SESSION_ID" == "$CLAUDE_SESSION_ID" ]] || return 1
 
   [[ -z "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}" ]] || has_codex=1
   [[ -z "${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}" ]] || has_claude=1
@@ -725,7 +763,9 @@ api_http_probe_health() {
   local health_base="${1:-$(api_base)}"
   local health_tmp http_status curl_exit=0 ready rebuilding
   health_tmp=$(api_temp_file)
-  if http_status=$(curl -s --max-time "${MANDIBLE_HEALTH_TIMEOUT:-2}" -o "$health_tmp" \
+  local socket_args=()
+  api_is_local_socket && socket_args=(--unix-socket "$MANDIBLE_SOCKET")
+  if http_status=$(curl -s --max-time "${MANDIBLE_HEALTH_TIMEOUT:-2}" "${socket_args[@]}" -o "$health_tmp" \
       -w "%{http_code}" "${health_base}/api/health" 2>/dev/null); then
     :
   else
@@ -797,28 +837,64 @@ api_report_terminal_response() {
 api_http_exchange() {
   local method="$1" request_path="$2" data="$3" output_file="$4"
   local retry_limit="${MANDIBLE_HTTP_RETRIES:-2}" attempt=0 http_status curl_exit
-  local body_tmp="" stderr_tmp retryable empty_response token token_cfg="" local_human=0 csrf=""
+  local body_tmp="" stderr_tmp retryable empty_response token token_cfg="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service account
   local ambient_headers=() curl_args=()
 
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
+  while IFS= read -r -d '' header_arg; do
+    ambient_headers+=("$header_arg")
+  done < <(api_curl_ambient_headers)
   if [[ "$method" != "GET" ]]; then
-    while IFS= read -r -d '' header_arg; do
-      ambient_headers+=("$header_arg")
-    done < <(api_curl_ambient_headers "$method")
     body_tmp=$(api_temp_file)
     printf '%s' "$data" > "$body_tmp"
   fi
   stderr_tmp=$(api_temp_file)
 
-  # Issue 708dc4c (finding 6) — present the client-auth bearer token via a 0600
-  # curl config file, never on argv (which is visible in `ps`). Resolve it from
-  # MANDIBLE_TOKEN or the operator Keychain token.
+  # Deliberate durable credentials travel via a 0600 curl config, never argv.
+  # Ordinary socket calls skip inherited tokens and Keychain entirely.
   #
   # xtrace is suspended across the capture and the config write (issue e2cb93f):
   # both the assignment and the printf would otherwise echo the bearer token.
   local token_traced=0
   case "$-" in *x*) token_traced=1; { set +x; } 2>/dev/null ;; esac
-  token="$(api_client_token "$method")"
+  if api_is_local_socket; then
+    if api_local_route_requires_credential "$method" "$request_path" "$data"; then
+      gated=1
+    else
+      gate_status=$?
+      if (( gate_status == 3 )); then
+        gated=1
+        optional_gate=1
+      elif (( gate_status != 1 )); then
+        (( token_traced == 0 )) || set -x
+        rm -f "$body_tmp" "$stderr_tmp" 2>/dev/null || true
+        printf '000'
+        return 0
+      fi
+    fi
+    if (( gated )); then
+      if [[ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" == "1" ]]; then
+        token=""
+      elif provider="$(api_agent_provider)"; then
+        service="mandible-agent-$provider"
+        account="$(secret_account_for_service "$service")" || account=""
+        if [[ -n "$account" ]]; then
+          token="$(secret_get "$service" "$account")" || token=""
+        fi
+      elif ! api_managed_client_markers_present; then
+        token="$(api_keychain_operator_token)"
+      fi
+      if [[ -z "$token" && "$optional_gate" == 0 ]]; then
+        printf 'Mandible durable credential required for %s %s; no matching Keychain credential was found.\n' "$method" "$request_path" >&2
+        (( token_traced == 0 )) || set -x
+        rm -f "$body_tmp" "$stderr_tmp" 2>/dev/null || true
+        printf '000'
+        return 0
+      fi
+    fi
+  else
+    token="$(api_client_token "$method")"
+  fi
   if [[ -n "$token" ]]; then
     token_cfg=$(api_temp_file)
     printf 'header = "Authorization: Bearer %s"\n' "$token" > "$token_cfg"
@@ -840,14 +916,15 @@ api_http_exchange() {
     : > "$output_file"
     : > "$stderr_tmp"
     curl_args=(-s --max-time "${MANDIBLE_HTTP_TIMEOUT:-15}" -o "$output_file" -w "%{http_code}")
+    api_is_local_socket && curl_args+=(--unix-socket "$MANDIBLE_SOCKET")
     [[ -n "$token_cfg" ]] && curl_args+=(--config "$token_cfg")
+    (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
     if (( local_human )); then
       curl_args+=(-H "Origin: $MANDIBLE_CANONICAL_ORIGIN" -H 'Sec-Fetch-Site: same-origin')
       [[ -z "$csrf" ]] || curl_args+=(-H "X-Mandible-CSRF: $csrf")
     fi
     if [[ "$method" != "GET" ]]; then
       curl_args+=(-X "$method" -H 'Content-Type: application/json')
-      (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
       curl_args+=(--data-binary "@$body_tmp")
     fi
     curl_args+=("$(api_base)$request_path")
@@ -868,7 +945,7 @@ api_http_exchange() {
     if [[ "$retryable" != "true" ]]; then
       break
     fi
-    if (( attempt >= retry_limit )) || { (( local_human )) && [[ "$method" != "GET" ]]; }; then
+    if (( attempt >= retry_limit )) || { [[ "$method" != "GET" ]] && ( api_is_local_socket || (( gated || local_human )) ); }; then
       api_report_final_http_failure "$request_path" "$http_status" "$curl_exit"
       break
     fi
@@ -899,15 +976,20 @@ api_ambient_session_id() {
 }
 
 api_curl_ambient_headers() {
-  local method="$1"
-  local provider session_id
-  [[ "$method" != "GET" ]] || return 0
+  local provider session_id managed_app="${MANDIBLE_MANAGED_APP:-}" managed_session="${MANDIBLE_SESSION_ID:-}"
   provider=$(api_ambient_provider)
   session_id=$(api_ambient_session_id)
-  [[ -n "$provider" && -n "$session_id" ]] || return 0
-  printf '%s\0%s\0%s\0%s\0' \
-    '-H' "X-Mandible-Ambient-Provider: ${provider}" \
-    '-H' "X-Mandible-Ambient-Provider-Session-Id: ${session_id}"
+  if api_managed_client_markers_present || [[ -n "$provider" ]]; then
+    printf '%s\0%s\0' '-H' 'X-Mandible-Managed-Client: 1'
+  fi
+  [[ -z "$provider" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Ambient-Provider: ${provider}"
+  [[ -z "$session_id" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Ambient-Provider-Session-Id: ${session_id}"
+  if [[ -n "$managed_app" && -n "$managed_session" ]] \
+      && secret_material_valid "$managed_app" && secret_material_valid "$managed_session"; then
+    printf '%s\0%s\0%s\0%s\0' \
+      '-H' "X-Mandible-Managed-App: ${managed_app}" \
+      '-H' "X-Mandible-Managed-Session-Id: ${managed_session}"
+  fi
 }
 
 api_route_mutation_category_file() {

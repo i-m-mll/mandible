@@ -827,12 +827,12 @@ describe("plural Briefing routes", () => {
     const artifact = recordArtifactVersion(db, { source_kind: "local_only", path: source,
       logical_name: "review.md", role: "review-document", media_type: "text/markdown" });
     expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
-      body: { artifact_version_ref: artifact.artifact.id, title: "Review" } })).toMatchObject({
+      body: { artifact_version_ref: artifact.artifact.reference.canonical_artifact_id, title: "Review" } })).toMatchObject({
       status: 404, body: { code: "artifact_version_not_found" },
     });
     expect(await router.invoke({ method: "POST", url: "/api/briefings", credential: "human",
       body: { artifact_version_ref: artifact.version.id,
-        comparison_base_artifact_version_ref: artifact.artifact.id, title: "Review" } })).toMatchObject({
+        comparison_base_artifact_version_ref: artifact.artifact.reference.canonical_artifact_id, title: "Review" } })).toMatchObject({
       status: 404, body: { code: "artifact_version_not_found" },
     });
   });
