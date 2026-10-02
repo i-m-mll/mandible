@@ -70,6 +70,11 @@
   background: #F3F3F4;
 }
 
+.user-bubble--question-replies { gap: var(--space-3); }
+.user-bubble__question-reply { display: flex; flex-direction: column; gap: var(--space-1); }
+.user-bubble__question { color: var(--text-muted); font-size: var(--text-lg); word-break: break-word; }
+.user-bubble__question > :last-child { margin-block-end: 0; }
+
 .instruction-message-block {
   width: 100%;
   color: var(--text-primary);
@@ -446,6 +451,40 @@
 
 .overflow-fade--below::after {
   opacity: 1;
+}
+
+.overflow-fade--horizontal {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.overflow-fade--horizontal .overflow-fade__scroll {
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.overflow-fade--horizontal .overflow-fade__scroll::-webkit-scrollbar { display: none; }
+
+.overflow-fade--horizontal::before,
+.overflow-fade--horizontal::after {
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  height: auto;
+}
+
+.overflow-fade--horizontal::before {
+  left: 0;
+  right: auto;
+  background: linear-gradient(to right, var(--overflow-fade-color, var(--surface-app)), transparent);
+}
+
+.overflow-fade--horizontal::after {
+  right: 0;
+  left: auto;
+  background: linear-gradient(to left, var(--overflow-fade-color, var(--surface-app)), transparent);
 }
 
 .tool-card__secondary-action,

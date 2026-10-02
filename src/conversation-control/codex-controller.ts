@@ -7,6 +7,7 @@ import type {
   ToolCallItem,
 } from "../parsers/types.js";
 import { chatItemIdentityKey } from "./provider-live.js";
+import { codexAttachmentInput } from "./attachment-delivery.js";
 import type {
   AdapterProbe,
   ConversationControllerAdapter,
@@ -152,6 +153,12 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     const controller = current.value;
     const priorReceipt = controller.delivered.get(item.id);
     if (priorReceipt) return { ok: true, value: priorReceipt };
+    let input: TurnStartParams["input"];
+    try {
+      input = codexAttachmentInput(item.message, item.attachments ?? [], item.attachment_db_path);
+    } catch (error) {
+      return { ok: false, error: adapterFailure(this.id, "attachment-custody-failed", error) };
+    }
     controller.activeDelivery = item;
     try {
       let providerTurnId: string;
@@ -164,7 +171,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
           threadId: controller.providerSessionId,
           clientUserMessageId: item.idempotency_key,
           expectedTurnId,
-          input: [{ type: "text", text: item.message, text_elements: [] }],
+          input,
         };
         const result = await controller.client.request("turn/steer", params);
         const turnId = stringField(result, "turnId");
@@ -177,7 +184,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         const params: TurnStartParams = {
           threadId: controller.providerSessionId,
           clientUserMessageId: item.idempotency_key,
-          input: [{ type: "text", text: item.message, text_elements: [] }],
+          input,
           ...(item.runtime_options?.model ? { model: item.runtime_options.model } : {}),
           ...(item.runtime_options?.effort ? { effort: item.runtime_options.effort } : {}),
           ...(item.runtime_options?.permission_mode === "read-only" ? {

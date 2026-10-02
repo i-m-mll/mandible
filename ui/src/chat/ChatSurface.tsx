@@ -1163,7 +1163,7 @@ export function ChatSurface({
             className="message-block-wrapper contextual-action-owner"
             data-block-id={source?.blockId}
           >
-            <UserBubble text={node.text} />
+            <UserBubble text={node.text} provider={sessionInfo?.backend} />
             <MessageActions
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}

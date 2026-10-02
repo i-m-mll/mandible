@@ -1,4 +1,4 @@
-import type { ConversationControlError, ConversationSpawnFailure } from '../api.js';
+import { ApiError, type ConversationControlError, type ConversationSpawnFailure } from '../api.js';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
 const MAX_DETAIL_LENGTH = 280;
@@ -106,25 +106,45 @@ export function chatControlFailureNotice(error: ConversationControlError): ChatF
   }
 }
 
+export function chatSubmissionFailureNotice(error: unknown): ChatFailureNoticeModel {
+  if (error instanceof ApiError && error.code === 'effect_forbidden') {
+    return {
+      title: 'This preview cannot send messages to agents.',
+      detail: '',
+      retryable: false,
+      diagnostics: null,
+    };
+  }
+  return {
+    title: 'Message was not sent.',
+    detail: bounded(error instanceof Error ? error.message : String(error), MAX_DETAIL_LENGTH),
+    retryable: false,
+    diagnostics: null,
+  };
+}
+
 export function ChatFailureNotice({
   failure,
   busy = false,
   onRetry,
+  onDismiss,
 }: {
   failure: ChatFailureNoticeModel;
   busy?: boolean;
   onRetry?: () => void;
+  onDismiss?: () => void;
 }): JSX.Element {
   return (
     <DetailPaneNotice
       severity="error"
       density="compact"
       title={failure.title}
-      actions={failure.retryable && onRetry ? (
-        <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={onRetry}>Retry</button>
-      ) : undefined}
+      actions={(failure.retryable && onRetry) || onDismiss ? <>
+        {failure.retryable && onRetry ? <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={onRetry}>Retry</button> : null}
+        {onDismiss ? <button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss error" title="Dismiss error" onClick={onDismiss}>×</button> : null}
+      </> : undefined}
     >
-      <span>{failure.detail}</span>
+      {failure.detail ? <span>{failure.detail}</span> : null}
       {failure.diagnostics ? (
         <details className="chat-failure-notice__diagnostics">
           <summary>Provider diagnostics</summary>

@@ -9,6 +9,7 @@ export type { ChatOverlayProps } from './ChatOverlay';
 export {
   ChatFailureNotice,
   chatControlFailureNotice,
+  chatSubmissionFailureNotice,
   chatSpawnFailureNotice,
 } from './ChatFailureNotice';
 export type { ChatFailureNoticeModel } from './ChatFailureNotice';

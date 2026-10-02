@@ -20,6 +20,26 @@
   font-size: 0.75rem;
 }
 
+.chat-failure-notice__dismiss {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.25rem;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.chat-failure-notice__dismiss:hover,
+.chat-failure-notice__dismiss:focus-visible {
+  background: var(--neutral-alpha-08);
+}
+
 /* Dense conversation lists remain scannable without spending a full control
  * row on each title. This is intentionally scoped to Chat's sidebar. */
 .chat-history-sidebar .sidebar-item-row,
@@ -397,6 +417,30 @@
   gap: 8px;
 }
 
+.conv-compose__attachment-overflow { --overflow-fade-color: var(--surface-app); }
+.conv-compose__attachments { display: flex; flex-wrap: nowrap; gap: 6px; width: max-content; padding: 2px 0 5px; }
+.conv-compose__attachment { display: inline-flex; align-items: center; flex: 0 0 auto; max-width: 190px; border: 1px solid var(--neutral-alpha-10); border-radius: 7px; background: var(--neutral-alpha-04); }
+.conv-compose__attachment--new { animation: conv-annotation-new 1s ease-out both; }
+@keyframes conv-annotation-new {
+  from { background: rgba(59, 130, 246, 0.3); border-color: #3b82f6; }
+  to { background: var(--neutral-alpha-04); border-color: var(--neutral-alpha-10); }
+}
+.conv-compose__attachment-body, .conv-compose__attachment-remove { border: 0; color: var(--fg-default); background: transparent; cursor: pointer; }
+.conv-compose__attachment-body { display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 4px 3px 4px 7px; }
+.conv-compose__attachment-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15ch; }
+.conv-compose__attachment-remove { padding: 4px 7px; font-size: 16px; line-height: 1; }
+.conv-compose__add-attachment { flex: 0 0 auto; border: 0; background: transparent; color: var(--text-muted); font-size: 24px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.conv-compose__add-attachment:disabled { opacity: 0.4; cursor: default; }
+.conv-compose__preview { grid-template-columns: minmax(0, 1fr); overflow-wrap: anywhere; }
+.conv-compose__preview-modal { align-items: center; }
+.conv-compose__preview > * { min-width: 0; }
+.conv-compose__preview img { display: block; max-width: 100%; max-height: 50vh; object-fit: contain; }
+.conv-compose__preview pre { max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.conv-compose__annotation-context { margin: 0; }
+.conv-compose__annotation-context > div { margin-top: .5rem; }
+.conv-compose__annotation-context dt { font-weight: 600; }
+.conv-compose__annotation-context dd { margin: 0; white-space: pre-wrap; }
+
 .conv-compose__input {
   flex: 1;
   min-width: 0;
@@ -441,10 +485,6 @@
 .conv-compose__status {
   color: var(--text-muted);
   font-size: 12px;
-}
-
-.conv-compose__status--error {
-  color: var(--accent-red);
 }
 
 .conv-compose__actions {

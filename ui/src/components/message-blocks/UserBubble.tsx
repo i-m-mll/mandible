@@ -10,7 +10,24 @@ import { linkifyResourceRefs } from '../../resource-refs';
 
 export type UserBubbleProps = {
   text: string;
+  provider?: string;
 };
+
+type QuestionReply = { question: string; answer: string };
+
+function codexQuestionReplies(text: string): QuestionReply[] | null {
+  const match = text.match(/^\s*<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>\s*$/);
+  if (!match) return null;
+  try {
+    const value: unknown = JSON.parse(match[1]);
+    if (!Array.isArray(value) || !value.length || !value.every((item) => item && typeof item === 'object'
+      && !Array.isArray(item) && typeof item.question === 'string' && item.question.trim()
+      && typeof item.answer === 'string' && item.answer.trim())) return null;
+    return value as QuestionReply[];
+  } catch {
+    return null;
+  }
+}
 
 export type InstructionMessageMeta = {
   filename: 'AGENTS.md' | 'CLAUDE.md';
@@ -28,11 +45,23 @@ export function getInstructionMessageMeta(content: string): InstructionMessageMe
   return { filename, scope, path };
 }
 
-export function UserBubble({ text }: UserBubbleProps): JSX.Element {
+export function UserBubble({ text, provider }: UserBubbleProps): JSX.Element {
   const instruction = getInstructionMessageMeta(text);
+  const replies = useMemo(() => provider === 'codex' ? codexQuestionReplies(text) : null, [provider, text]);
   const html = useMemo(() => {
     return linkifyResourceRefs(renderMarkdown(text));
   }, [text]);
+
+  if (replies) {
+    return <div className="user-bubble user-bubble--question-replies">
+      {replies.map(({ question, answer }, index) => <div className="user-bubble__question-reply" key={index}>
+        <div className="user-bubble__question rendered-markdown"
+          dangerouslySetInnerHTML={{ __html: linkifyResourceRefs(renderMarkdown(question)) }} />
+        <div className="user-bubble__text rendered-markdown"
+          dangerouslySetInnerHTML={{ __html: linkifyResourceRefs(renderMarkdown(answer)) }} />
+      </div>)}
+    </div>;
+  }
 
   if (instruction) {
     return (

@@ -42,6 +42,8 @@ export type DetailPaneShellProps = {
   overlays?: ComponentChildren;
   children: ComponentChildren;
   ariaBusy?: boolean;
+  onDragOverCapture?: (event: JSX.TargetedDragEvent<HTMLElement>) => void;
+  onDropCapture?: (event: JSX.TargetedDragEvent<HTMLElement>) => void;
 };
 
 export type DetailPaneOverlayContextValue = {
@@ -91,6 +93,8 @@ export function DetailPaneShell({
   overlays,
   children,
   ariaBusy,
+  onDragOverCapture,
+  onDropCapture,
 }: DetailPaneShellProps): JSX.Element {
   const [bodyScrollOwner, setBodyScrollOwner] = useState<HTMLDivElement | null>(null);
   const [registeredScrollOwner, setRegisteredScrollOwner] = useState<HTMLElement | null>(null);
@@ -189,6 +193,8 @@ export function DetailPaneShell({
         data-app-surface={presentation === 'main' ? 'main' : undefined}
         data-detail-pane-presentation={presentation}
         aria-busy={ariaBusy === undefined ? undefined : ariaBusy ? 'true' : 'false'}
+        onDragOverCapture={onDragOverCapture}
+        onDropCapture={onDropCapture}
       >
         {(header !== undefined && header !== null) || (subheader !== undefined && subheader !== null) ? (
           <header

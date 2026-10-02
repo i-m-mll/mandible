@@ -9,6 +9,7 @@ import type {
   ControllerAdapterCapabilities,
 } from "../src/conversation-control/adapter.js";
 import { ConversationControlService } from "../src/conversation-control/service.js";
+import { ChatAttachmentStore } from "../src/conversation-control/attachment-store.js";
 import {
   chatItemIdentityKey,
   emptyProviderLiveProjection,
@@ -331,6 +332,23 @@ describe("authoritative conversation control", () => {
     expect(retried.ok).toBe(true);
     expect(adapter.acquisitions).toBe(1);
     expect(adapter.deliveries).toBe(1);
+  });
+
+  it("persists exact attachment intent and rejects idempotency reuse with changed attachments", async () => {
+    const service = new ConversationControlService(db);
+    service.registerAdapter(new FakeAdapter());
+    const attachmentStore = new ChatAttachmentStore(db);
+    const file = attachmentStore.put({ name: "context.txt", media_type: "text/plain", data_base64: Buffer.from("read only when useful").toString("base64") });
+    const snapshot = service.getSnapshot("conversation-1");
+    if (!snapshot.ok) throw new Error("missing test conversation");
+    const submitted = { ...request(snapshot.value.revision, "same-intent"), message: "", attachments: [{ kind: "file" as const, file }] };
+    const accepted = await service.submit(submitted);
+    expect(accepted.ok).toBe(true);
+    expect(JSON.parse((db.prepare("SELECT attachments_json FROM conversation_control_outbox WHERE idempotency_key = 'same-intent'").get() as { attachments_json: string }).attachments_json))
+      .toEqual(submitted.attachments);
+    expect((await service.submit(submitted)).ok).toBe(true);
+    const changed = await service.submit({ ...submitted, attachments: [] });
+    expect(changed).toMatchObject({ ok: false, error: { field: "idempotency_key" } });
   });
 
   it("keeps first-observed order while rejecting stale and repeated snapshots", () => {

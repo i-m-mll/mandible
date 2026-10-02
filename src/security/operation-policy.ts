@@ -277,6 +277,12 @@ export function operationForRequest(
       && /^\/api\/conversations\/[^/]+\/control\/(submit|stop)$/.test(pathname)) {
     return { id: "provider.send", effects: ["provider:send"] };
   }
+  if (normalizedMethod === "POST" && pathname === "/api/chat-attachments") {
+    return { id: "chat-attachment.store", effects: ["ledger:write"] };
+  }
+  if (normalizedMethod === "GET" && /^\/api\/chat-attachments\/[^/]+\/content$/.test(pathname)) {
+    return READ_OPERATION;
+  }
   if (normalizedMethod === "PUT"
       && /^\/api\/user-settings\/(app_rail_order|ui_font_face|ui_font_size|detail_font_face|detail_font_size)$/.test(pathname)) {
     return { id: "preferences.instance", effects: ["preferences:instance"] };

@@ -71,6 +71,7 @@ const conversationControlSchemaSql = (includeRuntimeOptions: boolean): readonly 
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     ${includeRuntimeOptions ? "runtime_options_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(runtime_options_json) AND json_type(runtime_options_json) = 'object')," : ""}
+    ${includeRuntimeOptions ? "attachments_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(attachments_json) AND json_type(attachments_json) = 'array')," : ""}
     UNIQUE(conversation_id, idempotency_key),
     UNIQUE(conversation_id, turn_id)
   )`,

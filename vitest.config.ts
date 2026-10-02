@@ -43,7 +43,7 @@ export function mandibleVitestConfig(include: string[], options: MandibleSuiteOp
       },
       server: {
         deps: {
-          inline: ['@tanstack/react-virtual'],
+          inline: ['@tanstack/react-virtual', 'agentation'],
         },
       },
     },
