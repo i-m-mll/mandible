@@ -68,6 +68,8 @@ function responseTurn(value: unknown): Record<string, unknown> | null {
   return object(object(value)?.turn);
 }
 
+class UncertainCodexAcquisition extends Error {}
+
 export class CodexAppServerControllerAdapter implements ConversationControllerAdapter {
   readonly id = CODEX_APP_SERVER_PROFILE.adapter_id;
   readonly provider = CODEX_APP_SERVER_PROFILE.provider;
@@ -112,14 +114,14 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       if (aborted) throw new Error("Codex controller acquisition was cancelled");
       const thread = responseThread(result);
       const providerSessionId = stringField(thread, "id");
-      if (!providerSessionId) throw new Error("Codex App Server returned no thread identity");
+      if (!providerSessionId) throw new UncertainCodexAcquisition("Codex App Server returned no thread identity");
       if (input.kind !== "start" && providerSessionId !== input.provider_session_id) {
-        throw new Error("Codex App Server resumed a different thread identity");
+        throw new UncertainCodexAcquisition("Codex App Server resumed a different thread identity");
       }
       const status = threadStatus(thread);
-      if (status === "active") throw new Error("Codex thread already has an active provider controller");
+      if (status === "active") throw new UncertainCodexAcquisition("Codex thread already has an active provider controller");
       if (status !== "idle") {
-        throw new Error(`Codex thread is not controllable from status ${status ?? "unknown"}`);
+        throw new UncertainCodexAcquisition(`Codex thread is not controllable from status ${status ?? "unknown"}`);
       }
       const controller: CodexController = {
         conversationId: input.conversation_id,
@@ -143,7 +145,9 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       return { ok: true, value: { controller_instance_id: input.controller_instance_id, provider_session_id: providerSessionId } };
     } catch (thrown) {
       if (client) await client.close();
-      return { ok: false, error: adapterFailure(this.id, "startup-failed", thrown, { retryable: true }) };
+      return { ok: false, error: adapterFailure(this.id,
+        thrown instanceof UncertainCodexAcquisition ? "acquisition-ambiguous" : "startup-failed",
+        thrown, { retryable: true }) };
     } finally {
       if (input.kind === "start") input.signal?.removeEventListener("abort", abort);
     }

@@ -334,6 +334,80 @@ describe("authoritative conversation control", () => {
     expect(adapter.deliveries).toBe(1);
   });
 
+  it("releases a Codex startup failure before delivery and retries the same submission once", async () => {
+    class FailsOnce extends FakeAdapter {
+      override readonly id = "codex-app-server-v2";
+      override async acquire(input: ControllerAcquisitionRequest) {
+        if (this.acquisitions === 0) {
+          this.acquisitions += 1;
+          return { ok: false as const, error: {
+            kind: "adapter-failure" as const, adapter_id: this.id, code: "startup-failed", message: "paginated_threads is not supported yet", retryable: true,
+          } };
+        }
+        return super.acquire(input);
+      }
+    }
+    const service = new ConversationControlService(db);
+    const adapter = new FailsOnce();
+    service.registerAdapter(adapter);
+    const submission = request(0, "same-draft");
+
+    expect(await service.submit(submission)).toMatchObject({ ok: false, error: { code: "startup-failed" } });
+    const failed = service.getSnapshot("conversation-1");
+    expect(failed.ok && failed.value).toMatchObject({
+      ownership: { kind: "none", generation: 1 }, turn: { kind: "failed" }, capability: { kind: "provider-session-resume" },
+    });
+    expect(adapter.deliveries).toBe(0);
+
+    const retried = await service.submit(submission);
+    expect(retried.ok).toBe(true);
+    expect(adapter.acquisitions).toBe(2);
+    expect(adapter.deliveries).toBe(1);
+    expect(db.prepare("SELECT state, attempts, generation FROM conversation_control_outbox WHERE idempotency_key = 'same-draft'").get())
+      .toEqual({ state: "delivered", attempts: 1, generation: 2 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_control_outbox").get()).toEqual({ count: 1 });
+  });
+
+  it("recovers a previously persisted Codex acquisition failure without probing ambiguous ownership", async () => {
+    class CodexAdapter extends FakeAdapter { override readonly id = "codex-app-server-v2"; }
+    const service = new ConversationControlService(db);
+    const adapter = new CodexAdapter();
+    service.registerAdapter(adapter);
+    const store = new ConversationControlStore(db);
+    const submission = request(0, "persisted-draft");
+    const prepared = store.prepareSubmission(submission, adapter.capabilities, adapter.id);
+    if (!prepared.ok) throw new Error("test claim failed");
+    const generation = prepared.value.snapshot.ownership.generation;
+    const error = { kind: "adapter-failure" as const, adapter_id: adapter.id,
+      code: "startup-failed", message: "paginated_threads is not supported yet", retryable: true };
+    expect(store.publishLifecycle("conversation-1", generation, { kind: "controller-failed", at: Date.now(), error }).ok).toBe(true);
+
+    const reconciled = await service.reconcileAfterRestart();
+    expect(reconciled.errors).toEqual([]);
+    const recovered = service.getSnapshot("conversation-1");
+    expect(recovered.ok && recovered.value).toMatchObject({
+      ownership: { kind: "none", generation: 1 }, capability: { kind: "provider-session-resume" },
+    });
+    expect(adapter.acquisitions).toBe(0);
+    expect(adapter.deliveries).toBe(0);
+    expect((await service.submit(submission)).ok).toBe(true);
+    expect(adapter.acquisitions).toBe(1);
+    expect(adapter.deliveries).toBe(1);
+  });
+
+  it("keeps an uncertain acquisition identity blocked", async () => {
+    const service = new ConversationControlService(db);
+    const adapter = new FakeAdapter();
+    adapter.invalidLeaseOnAcquire = true;
+    service.registerAdapter(adapter);
+    expect(await service.submit(request(0, "ambiguous-start"))).toMatchObject({ ok: false, error: { kind: "adapter-contract-violation" } });
+    const snapshot = service.getSnapshot("conversation-1");
+    expect(snapshot.ok && snapshot.value).toMatchObject({
+      ownership: { kind: "mandible" }, controller: { kind: "failed" }, capability: { kind: "unavailable" },
+    });
+    expect(adapter.deliveries).toBe(0);
+  });
+
   it("persists exact attachment intent and rejects idempotency reuse with changed attachments", async () => {
     const service = new ConversationControlService(db);
     service.registerAdapter(new FakeAdapter());

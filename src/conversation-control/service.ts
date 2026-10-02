@@ -287,6 +287,8 @@ export class ConversationControlService {
         if (!turnFailed.ok) return turnFailed;
         const deliveryFailed = this.store.finishDelivery(prepared.value.delivery_id, acquired);
         if (!deliveryFailed.ok) return deliveryFailed;
+        const released = this.store.recoverFailedAcquisition(request.conversation_id, prepared.value.snapshot.ownership.generation);
+        if (!released.ok) return released;
         this.notify(request.conversation_id);
         return acquired;
       }
@@ -363,7 +365,6 @@ export class ConversationControlService {
 
   async reconcileAfterRestart(): Promise<ConversationControlReconciliationReport> {
     const claims = this.store.activeOwnedRows();
-    const deliveries = this.store.pendingOutbox();
     const errors: ConversationControlError[] = [];
     const record = (result: Result<unknown, ConversationControlError>): void => {
       if (!result.ok) errors.push(result.error);
@@ -373,6 +374,15 @@ export class ConversationControlService {
       if (result.ok) this.notify(conversationId);
     };
     for (const claim of claims) {
+      const recovered = this.store.recoverFailedAcquisition(claim.conversation_id, claim.generation);
+      if (!recovered.ok) {
+        record(recovered);
+        continue;
+      }
+      if (recovered.value) {
+        this.notify(claim.conversation_id);
+        continue;
+      }
       const adapter = this.adapters.byAdapterId(claim.adapter_id);
       if (!adapter) {
         recordControl(claim.conversation_id, this.store.markUnknown(claim.conversation_id, claim.generation, "adapter-unavailable"));
@@ -426,6 +436,7 @@ export class ConversationControlService {
       }));
     }
 
+    const deliveries = this.store.pendingOutbox();
     for (const item of deliveries) {
       if (item.state === "pending") {
         record(await this.dispatch(item.id));

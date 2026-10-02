@@ -387,4 +387,15 @@ describe("structured conversation controller adapters", () => {
     expect(await codex.probe(probe)).toEqual({ ok: true, value: { kind: "released" } });
     expect(await unloadedCodex.probe(probe)).toEqual({ ok: true, value: { kind: "unknown", reason: "probe-ambiguous" } });
   });
+
+  it("classifies an already active Codex thread as ambiguous acquisition", async () => {
+    const codex = new CodexAppServerControllerAdapter({
+      spawnProcess: spawner("codex", [], { FAKE_CODEX_RESUME_STATUS: "active" }),
+      codexExecutable: "codex",
+    });
+    adapters.push(codex);
+    expect(await codex.acquire(acquisition("codex-thread"))).toMatchObject({
+      ok: false, error: { kind: "adapter-failure", code: "acquisition-ambiguous" },
+    });
+  });
 });

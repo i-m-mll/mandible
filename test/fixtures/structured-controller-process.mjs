@@ -57,7 +57,7 @@ lines.on("line", (line) => {
   const respond = (result) => send({ id: request.id, result });
   if (request.method === "initialize") respond({ userAgent: "fake", codexHome: "/tmp", platformFamily: "unix", platformOs: "macos" });
   else if (request.method === "account/read") respond({ account: { type: "chatgpt", email: null, planType: "plus" }, requiresOpenaiAuth: true });
-  else if (request.method === "thread/resume") respond({ thread: { id: request.params.threadId, status: { type: "idle" } } });
+  else if (request.method === "thread/resume") respond({ thread: { id: request.params.threadId, status: { type: process.env.FAKE_CODEX_RESUME_STATUS ?? "idle" } } });
   else if (request.method === "thread/start") respond({ thread: { id: "codex-new-thread", status: { type: "idle" } } });
   else if (request.method === "thread/read") respond({ thread: { id: request.params.threadId, status: { type: process.env.FAKE_CODEX_THREAD_STATUS ?? "idle" } } });
   else if (request.method === "turn/start") {
