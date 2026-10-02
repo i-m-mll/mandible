@@ -60,11 +60,12 @@ type PreparedSubmission = Omit<AcceptedConversationSubmission, "provider_receipt
   controller_instance_id: string;
 };
 
-function recoverableCodexAcquisitionFailure(error: ConversationControlError | null, adapterId: string): boolean {
-  return error?.kind === "adapter-failure" && adapterId === "codex-app-server-v2"
-    && error.adapter_id === adapterId && error.code === "startup-failed"
-    && (error.message === "paginated_threads is not supported yet"
-      || error.message.startsWith("Codex App Server executable is unavailable:"));
+function failedAcquisition(error: ConversationControlError | null, adapterId: string): boolean {
+  return error?.kind === "adapter-failure" && error.adapter_id === adapterId && error.code === "startup-failed";
+}
+
+class RecoveryTransitionError extends Error {
+  constructor(readonly controlError: ConversationControlError) { super(controlError.kind); }
 }
 
 function parseObject<T extends object>(json: string): T {
@@ -210,6 +211,7 @@ export class ConversationControlStore {
       const existing = this.db.prepare(
         "SELECT * FROM conversation_control_outbox WHERE conversation_id = ? AND idempotency_key = ?",
       ).get(request.conversation_id, request.idempotency_key) as Record<string, unknown> | undefined;
+      let retry: Record<string, unknown> | undefined;
       if (existing) {
         if (existing.message !== request.message || existing.operation !== request.operation
             || (existing.message_anchor ?? null) !== (request.message_anchor ?? null)
@@ -220,35 +222,11 @@ export class ConversationControlStore {
         const current = this.row(request.conversation_id)!;
         const priorError = existing.error_json ? parseObject<ConversationControlError>(String(existing.error_json)) : null;
         if (existing.state === "failed" && existing.attempts === 0
-            && recoverableCodexAcquisitionFailure(priorError, adapterId)
+            && failedAcquisition(priorError, adapterId)
             && current.owner_kind === "none" && current.generation === existing.generation
-            && current.turn_state === "failed" && current.turn_id === existing.turn_id
-            && this.operationMatches(request.operation, this.toSnapshot(current, boundary, capabilities, adapterId).capability.kind)) {
-          const generation = current.generation + 1;
-          const controllerInstanceId = randomUUID();
-          const acquiredRevision = current.revision + 1;
-          const queuedRevision = acquiredRevision + 1;
-          const now = this.now();
-          this.db.prepare(`UPDATE conversation_control_state SET revision = ?, generation = ?,
-            owner_kind = 'mandible', controller_state = 'starting', controller_instance_id = ?,
-            adapter_id = ?, turn_state = 'queued', turn_id = ?, delivery_id = ?,
-            owner_detail_json = '{}', state_detail_json = '{}', last_authoritative_signal = ?, updated_at = ?
-            WHERE conversation_id = ? AND revision = ?
-          `).run(queuedRevision, generation, controllerInstanceId, adapterId, existing.turn_id, existing.id,
-            now, now, request.conversation_id, current.revision);
-          this.db.prepare(`UPDATE conversation_control_outbox SET generation = ?, state = 'pending',
-            error_json = NULL, updated_at = ? WHERE id = ? AND state = 'failed' AND attempts = 0
-          `).run(generation, now, existing.id);
-          this.journal(request.conversation_id, acquiredRevision, generation, "controller-acquired", { adapter_id: adapterId, controller_instance_id: controllerInstanceId }, now);
-          this.journal(request.conversation_id, queuedRevision, generation, "turn-queued", { turn_id: existing.turn_id, delivery_id: existing.id, operation: request.operation }, now);
-          return { ok: true, value: {
-            kind: "accepted", delivery_id: String(existing.id), turn_id: String(existing.turn_id),
-            snapshot: this.toSnapshot(this.row(request.conversation_id)!, boundary, capabilities, adapterId),
-            acquisition_required: true, already_delivered: false, adapter_id: adapterId,
-            provider_session_id: boundary.session_id!, controller_instance_id: controllerInstanceId,
-          } };
-        }
-        return {
+            && current.turn_state === "failed" && current.turn_id === existing.turn_id) {
+          retry = existing;
+        } else return {
           ok: true,
           value: {
             kind: "accepted",
@@ -264,10 +242,10 @@ export class ConversationControlStore {
         };
       }
       const row = ensured.value;
-      if (request.expected_revision !== row.revision) {
+      if (!retry && request.expected_revision !== row.revision) {
         return { ok: false, error: { kind: "capability-drift", expected_revision: request.expected_revision, actual_revision: row.revision } };
       }
-      if (request.expected_generation !== row.generation) {
+      if (!retry && request.expected_generation !== row.generation) {
         return { ok: false, error: { kind: "stale-generation", expected_generation: request.expected_generation, actual_generation: row.generation } };
       }
       const snapshot = this.toSnapshot(row, boundary, capabilities, adapterId);
@@ -290,8 +268,8 @@ export class ConversationControlStore {
       const acquisitionRequired = row.owner_kind === "none";
       const generation = acquisitionRequired ? row.generation + 1 : row.generation;
       const controllerInstanceId = acquisitionRequired ? randomUUID() : row.controller_instance_id!;
-      const deliveryId = randomUUID();
-      const turnId = randomUUID();
+      const deliveryId = retry ? String(retry.id) : randomUUID();
+      const turnId = retry ? String(retry.turn_id) : randomUUID();
       let revision = row.revision;
       const now = this.now();
       if (acquisitionRequired) {
@@ -315,12 +293,18 @@ export class ConversationControlStore {
           WHERE conversation_id = ? AND generation = ?
         `).run(revision, turnId, deliveryId, now, request.conversation_id, generation);
       }
-      this.db.prepare(`INSERT INTO conversation_control_outbox (
-        id, conversation_id, generation, turn_id, operation, message, message_anchor, runtime_options_json, attachments_json,
-        idempotency_key, state, attempts, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
-      `).run(deliveryId, request.conversation_id, generation, turnId, request.operation, request.message,
-        request.message_anchor ?? null, runtimeOptionsJson, attachmentsJson, request.idempotency_key, now, now);
+      if (retry) {
+        this.db.prepare(`UPDATE conversation_control_outbox SET generation = ?, state = 'pending',
+          error_json = NULL, updated_at = ? WHERE id = ? AND state = 'failed' AND attempts = 0
+        `).run(generation, now, deliveryId);
+      } else {
+        this.db.prepare(`INSERT INTO conversation_control_outbox (
+          id, conversation_id, generation, turn_id, operation, message, message_anchor, runtime_options_json, attachments_json,
+          idempotency_key, state, attempts, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+        `).run(deliveryId, request.conversation_id, generation, turnId, request.operation, request.message,
+          request.message_anchor ?? null, runtimeOptionsJson, attachmentsJson, request.idempotency_key, now, now);
+      }
       this.journal(request.conversation_id, revision, generation, "turn-queued", { turn_id: turnId, delivery_id: deliveryId, operation: request.operation }, now);
       const current = this.row(request.conversation_id)!;
       return {
@@ -501,17 +485,20 @@ export class ConversationControlStore {
     });
   }
 
-  recoverFailedCodexAcquisition(conversationId: string, generation: number): Result<boolean, ConversationControlError> {
+  recoverFailedAcquisition(conversationId: string, generation: number): Result<boolean, ConversationControlError> {
+    const requireSuccess = (result: Result<void, ConversationControlError>): void => {
+      if (!result.ok) throw new RecoveryTransitionError(result.error);
+    };
     const transaction = this.db.transaction((): Result<boolean, ConversationControlError> => {
       const row = this.row(conversationId);
       if (!row || row.owner_kind !== "mandible" || row.generation !== generation
-          || row.adapter_id !== "codex-app-server-v2" || row.controller_state !== "failed"
+          || !row.adapter_id || row.controller_state !== "failed"
           || !row.delivery_id || !row.turn_id || !["queued", "failed"].includes(row.turn_state)) {
         return { ok: true, value: false };
       }
       const detail = parseObject<StoredDetail>(row.state_detail_json);
       const error = detail.controller_error;
-      if (!recoverableCodexAcquisitionFailure(error ?? null, row.adapter_id)) {
+      if (!error || !failedAcquisition(error, row.adapter_id)) {
         return { ok: true, value: false };
       }
       const item = this.db.prepare("SELECT * FROM conversation_control_outbox WHERE id = ?").get(row.delivery_id) as Record<string, unknown> | undefined;
@@ -520,28 +507,23 @@ export class ConversationControlStore {
           || !["pending", "failed"].includes(String(item.state))) {
         return { ok: true, value: false };
       }
-      const now = this.now();
-      let revision = row.revision;
       if (row.turn_state === "queued") {
-        revision += 1;
-        this.journal(conversationId, revision, generation, "turn-failed", { turn_id: row.turn_id, error }, now);
+        requireSuccess(this.publishLifecycle(conversationId, generation, {
+          kind: "turn-failed", at: this.now(), turn_id: row.turn_id, error,
+        }));
       }
       if (item.state === "pending") {
-        this.db.prepare("UPDATE conversation_control_outbox SET state = 'failed', error_json = ?, updated_at = ? WHERE id = ?")
-          .run(JSON.stringify(error), now, row.delivery_id);
-        this.journal(conversationId, revision, generation, "delivery-failed", { delivery_id: row.delivery_id, error }, now);
+        requireSuccess(this.finishDelivery(row.delivery_id, { ok: false, error }));
       }
-      revision += 1;
-      detail.turn_error = detail.turn_error ?? error;
-      this.db.prepare(`UPDATE conversation_control_state SET revision = ?, owner_kind = 'none',
-        controller_state = 'stopped', controller_instance_id = NULL, adapter_id = NULL,
-        owner_detail_json = '{}', last_authoritative_signal = NULL, turn_state = 'failed',
-        state_detail_json = ?, updated_at = ? WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'
-      `).run(revision, JSON.stringify(detail), now, conversationId, generation);
-      this.journal(conversationId, revision, generation, "controller-released", {}, now);
+      requireSuccess(this.release(conversationId, generation));
       return { ok: true, value: true };
     });
-    return transaction.immediate();
+    try {
+      return transaction.immediate();
+    } catch (error) {
+      if (error instanceof RecoveryTransitionError) return { ok: false, error: error.controlError };
+      throw error;
+    }
   }
 
   markUnknown(conversationId: string, generation: number, reason: ReconciliationUnknownReason): Result<void, ConversationControlError> {

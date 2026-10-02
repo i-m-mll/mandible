@@ -381,8 +381,6 @@ describe("authoritative conversation control", () => {
     const error = { kind: "adapter-failure" as const, adapter_id: adapter.id,
       code: "startup-failed", message: "paginated_threads is not supported yet", retryable: true };
     expect(store.publishLifecycle("conversation-1", generation, { kind: "controller-failed", at: Date.now(), error }).ok).toBe(true);
-    expect(store.publishLifecycle("conversation-1", generation, { kind: "turn-failed", at: Date.now(), turn_id: prepared.value.turn_id, error }).ok).toBe(true);
-    expect(store.finishDelivery(prepared.value.delivery_id, { ok: false, error }).ok).toBe(true);
 
     const reconciled = await service.reconcileAfterRestart();
     expect(reconciled.errors).toEqual([]);
@@ -397,21 +395,12 @@ describe("authoritative conversation control", () => {
     expect(adapter.deliveries).toBe(1);
   });
 
-  it("keeps an ambiguous Codex startup failure blocked", async () => {
-    class AmbiguousAdapter extends FakeAdapter {
-      override readonly id = "codex-app-server-v2";
-      override async acquire() {
-        this.acquisitions += 1;
-        return { ok: false as const, error: {
-          kind: "adapter-failure" as const, adapter_id: this.id, code: "startup-failed",
-          message: "Codex thread already has an active provider controller", retryable: true,
-        } };
-      }
-    }
+  it("keeps an uncertain acquisition identity blocked", async () => {
     const service = new ConversationControlService(db);
-    const adapter = new AmbiguousAdapter();
+    const adapter = new FakeAdapter();
+    adapter.invalidLeaseOnAcquire = true;
     service.registerAdapter(adapter);
-    expect((await service.submit(request(0, "ambiguous-start"))).ok).toBe(false);
+    expect(await service.submit(request(0, "ambiguous-start"))).toMatchObject({ ok: false, error: { kind: "adapter-contract-violation" } });
     const snapshot = service.getSnapshot("conversation-1");
     expect(snapshot.ok && snapshot.value).toMatchObject({
       ownership: { kind: "mandible" }, controller: { kind: "failed" }, capability: { kind: "unavailable" },
