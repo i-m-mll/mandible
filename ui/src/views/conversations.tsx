@@ -2028,6 +2028,12 @@ export function ConversationDetail({
   }, [consoleSessions, conversation?.session_id, creationReceipt]);
 
   const controlPresentation = control ? conversationControlPresentation(control) : null;
+  const providerFailed = creationReceipt?.state === 'failed' || control?.controller.kind === 'failed';
+  useEffect(() => {
+    if (control?.controller.kind === 'failed') {
+      setControlFailure(chatControlFailureNotice(control.controller.error));
+    }
+  }, [control?.controller.kind, control?.controller.kind === 'failed' ? control.controller.at : null]);
 
   const telemetry = useStatuslineTelemetry({
     sessionRef: linkedConsoleSession?.id ?? conversation?.session_id ?? null,
@@ -2113,6 +2119,7 @@ export function ConversationDetail({
   const continueDisabledReason = useMemo(() => {
     if (!conversation) return null;
     if (creationReceipt?.state === 'starting') return null;
+    if (creationReceipt?.state === 'failed') return 'The provider could not start.';
     if (!controlPresentation) return 'Control state unavailable.';
     if (control?.capability.kind === 'message-anchor-resume' && !latestDagUuid) {
       return 'The required message anchor is unavailable.';
@@ -2122,12 +2129,10 @@ export function ConversationDetail({
   }, [control, controlPresentation, conversation, creationReceipt, latestDagUuid]);
 
   const { active: chatViewActive } = useAppShell();
-  const selectedComposerWritable = !isReadOnlyChild && !continueBusy && (!submitIntent || submitIntent.state === 'failed')
-    && !continueDisabledReason && controlPresentation?.composer === 'enabled';
-  const canImportAttachments = chatViewActive && !isReadOnlyChild && !continueBusy
-    && (!submitIntent || submitIntent.state === 'failed')
-    && (!continueDisabledReason || submitIntent?.state === 'failed')
-    && (controlPresentation?.composer === 'enabled' || submitIntent?.state === 'failed');
+  const canEditDraft = !isReadOnlyChild && !continueBusy
+    && (!submitIntent || submitIntent.state === 'failed');
+  const selectedComposerWritable = canEditDraft;
+  const canImportAttachments = chatViewActive && canEditDraft;
   useLayoutEffect(() => {
     if (!selectedComposerWritable) return undefined;
     return registerWritableChatTarget(conversationId, chatViewActive);
@@ -2654,9 +2659,7 @@ export function ConversationDetail({
         <div className="conv-compose conv-compose--readonly" data-detail-pane-overlay-visual>
           <span>Read-only subagent transcript</span>
         </div>
-      ) : ((controlPresentation && controlPresentation.composer !== 'hidden')
-        || creationReceipt?.state === 'starting'
-        || (creationReceipt?.state === 'ready' && !controlPresentation)) ? (
+      ) : (
       <div className="conv-compose" data-detail-pane-overlay-visual>
         {draftAttachments.length > 0 && (
           <OverflowFade direction="horizontal" className="conv-compose__attachment-overflow">
@@ -2682,9 +2685,7 @@ export function ConversationDetail({
             onInput={(event) => { const result = setDraftText(conversationId, event.currentTarget.value); if (!result.ok) setContinueError(result.error); }}
             onKeyDown={handleComposerKeyDown}
             placeholder="Message..."
-            disabled={continueBusy
-              || submitIntent?.state === 'uncertain'
-              || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting')}
+            disabled={!canEditDraft}
             rows={3}
           />
         </form>
@@ -2765,7 +2766,7 @@ export function ConversationDetail({
             {renderRunOptionFields()}
           </div>
         )}
-        {continueDisabledReason && creationReceipt?.state !== 'starting' && (
+        {continueDisabledReason && creationReceipt?.state !== 'starting' && !providerFailed && !controlFailure && (
           <div className="conv-compose__status">
             {continueDisabledReason}
           </div>
@@ -2777,7 +2778,7 @@ export function ConversationDetail({
             : <pre>{attachmentPreviewText ?? 'Loading preview…'}</pre>}
         </DetailPaneModal>
       </div>
-      ) : null;
+      );
 
   const controlFailureNotice = controlFailure ? (
     <ChatFailureNotice
@@ -2787,7 +2788,7 @@ export function ConversationDetail({
     />
   ) : null;
 
-  const creationNotice = creationReceipt?.error ? (
+  const creationNotice = creationReceipt?.error && !controlFailure ? (
     <ChatFailureNotice
       failure={chatSpawnFailureNotice(creationReceipt.error)}
       onRetry={creationReceipt.error.retryable ? onRetryCreation : undefined}

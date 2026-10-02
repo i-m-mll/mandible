@@ -14,6 +14,7 @@ import { AppShellProvider, type AppRightSidebarDescriptor } from '../../ui/src/a
 import { __resetSharedSseForTests } from '../../ui/src/sse-shared.js';
 import type { ConsoleSession } from '../../ui/src/state.js';
 import {
+  ConversationDetail,
   ConversationsView,
   conversationAnchorFromHash,
   conversationAnchorHref,
@@ -26,6 +27,7 @@ import { queryClient } from '../../ui/src/query/client.js';
 import { conversationKeys } from '../../ui/src/query/conversationKeys.js';
 import type { ConversationTranscriptData } from '../../ui/src/query/conversationData.js';
 import { applyConversationSse } from '../../ui/src/query/conversationSse.js';
+import { addDraftAttachments, clearAcceptedDraft } from '../../ui/src/chat/attachmentDrafts.js';
 
 
 vi.mock('@xterm/xterm', () => ({
@@ -1298,6 +1300,73 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
 
+  it('keeps the draft and attachment composer after provider startup fails', async () => {
+    HTMLElement.prototype.scrollTo = vi.fn();
+    const draftStorage = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => draftStorage.get(key) ?? null,
+      setItem: (key: string, value: string) => { draftStorage.set(key, value); },
+    });
+    const ownedControl: ConversationControlSnapshot = {
+      ...defaultControl,
+      ownership: {
+        kind: 'mandible', generation: 1, controller_instance_id: 'controller-1', adapter_id: 'codex',
+        provider_session_id: conversation.session_id, last_authoritative_signal: 2,
+      },
+      controller: { kind: 'ready', since: 2 },
+      capability: { kind: 'live-send', revision: 1, generation: 1 },
+    };
+    const failedControl: ConversationControlSnapshot = {
+      ...ownedControl,
+      revision: 2,
+      controller: { kind: 'failed', at: 3, error: {
+        kind: 'adapter-failure', adapter_id: 'codex', code: 'startup-failed',
+        message: 'The provider process exited before accepting the message.', retryable: true,
+      } },
+      capability: { kind: 'unavailable', revision: 2, reason: 'controller-transition' },
+    };
+    const attachment = { kind: 'file' as const, file: {
+      id: 'startup-failure-file', name: 'context.txt', media_type: 'text/plain', byte_length: 7, sha256: 'sha256-test',
+    } };
+    vi.spyOn(api, 'submitConversationControl').mockRejectedValue(Object.assign(new Error('startup failed'), {
+      controlError: {
+        kind: 'adapter-failure' as const, adapter_id: 'codex', code: 'startup-failed',
+        message: 'The provider process exited before accepting the message.', retryable: true,
+      },
+      snapshot: failedControl,
+    }));
+    const scopedConversation = mockConversationDetail(ownedControl);
+    expect(addDraftAttachments(scopedConversation.id, [attachment]).ok).toBe(true);
+    try {
+      render(<ConversationDetail
+        conversationId={scopedConversation.id}
+        initialConversation={scopedConversation}
+        anchor={null}
+        onNavigate={() => undefined}
+        consoleSessions={[]}
+        sidebarCollapsed={false}
+        chatEntityLinkAction={() => undefined}
+      />);
+      const composer = await screen.findByPlaceholderText('Message...');
+      fireEvent.input(composer, { target: { value: 'Keep this draft.' } });
+      expect(screen.getByText('context.txt')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toContain('The provider could not complete this action.');
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+      expect(document.querySelector('.conv-compose__status')).toBeNull();
+      expect((screen.getByPlaceholderText('Message...') as HTMLTextAreaElement).value).toBe('Keep this draft.');
+      expect((screen.getByPlaceholderText('Message...') as HTMLTextAreaElement).disabled).toBe(false);
+      expect(screen.getByText('context.txt')).toBeTruthy();
+      expect((screen.getByRole('button', { name: 'Add attachments' }) as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true);
+    } finally {
+      clearAcceptedDraft(scopedConversation.id, { text: 'Keep this draft.', attachments: [attachment] });
+      delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTo;
+    }
+  });
+
   it.each([
     {
       label: 'live',
@@ -1336,7 +1405,7 @@ describe('compact detail pane shell', () => {
         ownership: { kind: 'none', generation: 0 },
         capability: { kind: 'unavailable', revision: 0, reason: 'no-provider-session' },
       } satisfies ConversationControlSnapshot,
-      hasComposer: false,
+      hasComposer: true,
     },
   ])('keeps the provider-neutral header and composer contract in $label state', async ({ control, hasComposer }) => {
     const scopedConversation = mockConversationDetail(control);
