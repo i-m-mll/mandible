@@ -14,6 +14,8 @@ import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../src/security/ef
 import { addBinding, createUser, OPERATOR_SETTING_KEY, setupOperator } from '../src/users/store.js';
 import { PRODUCTION_ORIGIN } from '../src/canonical-origin.js';
 import { registerUserRoutes } from '../src/routes/users.js';
+import { registerSessionRoutes } from '../src/routes/sessions.js';
+import { SessionRegistry } from '../src/registry.js';
 import type { InstanceInfo } from '../src/types.js';
 
 let root: string; let db: Db; let auth: ClientAuthenticator; let router: Router;
@@ -43,7 +45,8 @@ beforeEach(async () => {
   auth = new ClientAuthenticator(db, { instance: instance(), secretsDir: path.join(root, 'auth'), sessionAuthorityDir: path.join(root, 'sessions') });
   router = new Router({ clientAuth: auth, instance: instance() });
   registerUserRoutes(router);
-  router.get('/api/read', (req, res) => res.json({ identity: req.client_identity, ambient: req.ambient_identity, managed: req.managed_client }), { fileRpc: 'allow' });
+  router.get('/api/read', (req, res) => res.json({ identity: req.client_identity, ambient: req.ambient_identity,
+    localManaged: req.local_managed_identity, managed: req.managed_client }), { fileRpc: 'allow' });
   router.post('/api/write', (req, res) => res.json({ identity: req.client_identity }), { fileRpc: 'allow' });
   const serverOptions: Parameters<typeof createServer>[0] = { db, sse: new SseManager(), logger: () => undefined, version: 'test', router,
     getStartupInfo: () => null, instance: instance(), clientAuth: auth };
@@ -60,6 +63,37 @@ afterEach(async () => {
 });
 
 describe('owner-only local API socket', () => {
+  it('registers a managed wrapper session before a provider ID exists and retains its agent on later calls', async () => {
+    const agent = createUser(db, { slug: 'wrapper-agent', kind: 'agent', display_name: 'Wrapper Agent' });
+    addBinding(db, agent.id, { binding_type: 'app_name', value: 'codex' });
+    addBinding(db, agent.id, { binding_type: 'app_name', value: 'claude' });
+    registerSessionRoutes(router, new SessionRegistry(db, () => undefined));
+    const headers = { 'X-Mandible-Managed-Client': '1', 'X-Mandible-Managed-App': 'codex', 'X-Mandible-Managed-Session-Id': 'wrapper-session-1' };
+    const registered = await request('POST', '/api/sessions/register', headers, true, { id: 'wrapper-session-1', app: 'codex' });
+    expect(registered).toMatchObject({ status: 200, body: { id: 'wrapper-session-1', app: 'codex' } });
+    const later = await request('GET', '/api/read', headers);
+    expect(later).toMatchObject({ status: 200, body: { identity: { user_id: agent.id, method: 'local_socket' },
+      localManaged: { app_name: 'codex', session_id: 'wrapper-session-1' } } });
+    expect((await request('GET', '/api/read', { ...headers, 'X-Mandible-Managed-App': 'claude' })).status).toBe(401);
+  });
+  it('rejects unknown, malformed, human-bound, and conflicting managed app claims', async () => {
+    const codex = createUser(db, { slug: 'codex-agent', kind: 'agent', display_name: 'Codex Agent' });
+    const claude = createUser(db, { slug: 'claude-agent', kind: 'agent', display_name: 'Claude Agent' });
+    addBinding(db, codex.id, { binding_type: 'provider_session_env', value: 'CODEX_THREAD_ID' });
+    addBinding(db, claude.id, { binding_type: 'app_name', value: 'claude' });
+    const base = { 'X-Mandible-Managed-Client': '1', 'X-Mandible-Managed-App': 'claude', 'X-Mandible-Managed-Session-Id': 'managed-1' };
+    expect((await request('GET', '/api/read', base)).body.identity.user_id).toBe(claude.id);
+    expect((await request('GET', '/api/read', { ...base, 'X-Mandible-Managed-App': 'unknown' })).status).toBe(401);
+    expect((await request('GET', '/api/read', { 'X-Mandible-Managed-App': 'claude' })).status).toBe(401);
+    expect((await request('GET', '/api/read', { ...base, 'X-Mandible-Managed-Session-Id': 'x'.repeat(257) })).status).toBe(401);
+    expect((await request('GET', '/api/read', { ...base, 'X-Mandible-Ambient-Provider': 'codex',
+      'X-Mandible-Ambient-Provider-Session-Id': 'provider-1' })).status).toBe(401);
+    const token = auth.mintApiToken(codex.id);
+    expect((await request('GET', '/api/read', { ...base, Authorization: `Bearer ${token.token}` })).status).toBe(401);
+    const human = setupOperator(db, { display_name: 'Operator', email: 'operator@example.invalid' });
+    addBinding(db, human.id, { binding_type: 'app_name', value: 'human-app' });
+    expect((await request('GET', '/api/read', { ...base, 'X-Mandible-Managed-App': 'human-app' })).status).toBe(401);
+  });
   it('bootstraps the first operator only from an unmanaged bearer-free production socket', async () => {
     db.prepare('DELETE FROM settings WHERE key = ?').run(OPERATOR_SETTING_KEY);
     expect((await request('GET', '/api/read')).status).toBe(401);
@@ -96,6 +130,7 @@ describe('owner-only local API socket', () => {
       status: 200, body: { identity: { user_id: agent.id, method: 'api_token', credential_id: token.credential.id } },
     });
     expect((await request('GET', '/api/read', { Authorization: 'Bearer wrong' })).status).toBe(401);
+    expect((await request('GET', '/api/read', { Authorization: '' })).status).toBe(401);
   });
   it('keeps preview on a separate socket path and the preview effect ceiling', () => {
     const production = localApiSocketPath(instance(), { HOME: root });
@@ -128,6 +163,19 @@ describe('owner-only local API socket', () => {
       const req = http.request({ socketPath, path: '/api/events/subscribe?topic=auth:', method: 'POST' }, res => {
         expect(res.statusCode).toBe(200);
         expect(res.headers['content-type']).toBe('text/event-stream');
+        req.destroy(); resolve();
+      });
+      req.once('error', reject); req.end();
+    });
+  });
+  it('accepts the managed app alias on the event stream', async () => {
+    const agent = createUser(db, { slug: 'stream-agent', kind: 'agent', display_name: 'Stream Agent' });
+    addBinding(db, agent.id, { binding_type: 'app_name', value: 'codex' });
+    const headers = { 'X-Mandible-Managed-Client': '1', 'X-Mandible-Managed-App': 'codex',
+      'X-Mandible-Managed-Session-Id': 'stream-session' };
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({ socketPath, path: '/api/events/subscribe?topic=auth:', method: 'POST', headers }, res => {
+        expect(res.statusCode).toBe(200);
         req.destroy(); resolve();
       });
       req.once('error', reject); req.end();

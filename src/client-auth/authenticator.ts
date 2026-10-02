@@ -7,12 +7,13 @@ import { createHmac } from "node:crypto";
 import type { InstanceInfo } from "../types.js";
 import { PRODUCTION_EFFECTS } from "../security/effect-policy.js";
 import { getOperator, getOperatorId, getUserById } from "../users/store.js";
-import { resolveProviderSessionAttributionResult, resolveSessionIdAttributionResult } from "../identity/resolver.js";
+import { resolveProviderSessionAttributionResult, resolveSessionAttributionResult, resolveSessionIdAttributionResult } from "../identity/resolver.js";
 import type { AmbientProviderIdentity } from "../ambient-provider-identity.js";
 import type {
   ClientAuthRequestContext,
   ClientAuthGate,
   ClientAuthMode,
+  LocalManagedIdentity,
   ResolvedClientIdentity,
 } from "../server.js";
 import { getClientAuthMode } from "./mode.js";
@@ -145,13 +146,34 @@ export class ClientAuthenticator implements ClientAuthGate {
     };
   }
 
-  localSocketIdentity(ambient: AmbientProviderIdentity | null, managed: boolean): ResolvedClientIdentity | null {
+  localSocketIdentity(
+    ambient: AmbientProviderIdentity | null,
+    managed: boolean,
+    localManaged: LocalManagedIdentity | null = null,
+  ): ResolvedClientIdentity | null {
+    let userId: string | null = null;
     if (ambient) {
       const provider = resolveProviderSessionAttributionResult(this.db, ambient.provider);
       const session = resolveSessionIdAttributionResult(this.db, ambient.provider_session_id);
       if (provider.status !== "resolved" || session.status === "conflict"
           || (session.status === "resolved" && session.attribution.user_id !== provider.attribution.user_id)) return null;
-      const user = getUserById(this.db, provider.attribution.user_id);
+      userId = provider.attribution.user_id;
+    }
+    if (localManaged) {
+      const registered = this.db.prepare("SELECT app, owner_user_id FROM sessions WHERE id = ?")
+        .get(localManaged.session_id) as { app: string; owner_user_id: string | null } | undefined;
+      if (registered && registered.app !== localManaged.app_name) return null;
+      const alias = resolveSessionAttributionResult(this.db, {
+        app_name: localManaged.app_name,
+        provider_session_env: localManaged.session_id,
+      });
+      if (alias.status !== "resolved") return null;
+      if (registered?.owner_user_id && registered.owner_user_id !== alias.attribution.user_id) return null;
+      if (userId && userId !== alias.attribution.user_id) return null;
+      userId = alias.attribution.user_id;
+    }
+    if (userId) {
+      const user = getUserById(this.db, userId);
       if (!user || user.status !== "active" || user.kind !== "agent") return null;
       return {
         user_id: user.id,
