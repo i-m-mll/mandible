@@ -868,16 +868,16 @@ describe('ChatSurface stream behavior', () => {
     const loadedRow = Array.from(view.container.querySelectorAll<HTMLElement>('[data-virtual-kind="group"]'))
       .find((row) => row.dataset.virtualKey?.includes(':19:0'))!;
     expect(loadedRow).toBeTruthy();
-    expect(Number.parseFloat(loadedRow.style.transform.replace(/[^\d.-]/g, ''))).toBeLessThan(3300);
+    expect(Number.parseFloat(loadedRow.style.transform.split(',')[1])).toBeLessThan(3300);
     expect(scroll.scrollTop).toBe(3300);
     expect(scrollTo.mock.calls.length).toBe(previousScrollCalls);
 
-    const rowStart = Number.parseFloat(loadedRow.style.transform.replace(/[^\d.-]/g, ''));
+    const rowStart = Number.parseFloat(loadedRow.style.transform.split(',')[1]);
     const readingInset = scroll.scrollTop - rowStart;
     view.rerender(<ChatSurface events={events(18)} streaming={false} transcript={transcript(18)} />);
     const preservedRow = Array.from(view.container.querySelectorAll<HTMLElement>('[data-virtual-kind="group"]'))
       .find((row) => row.dataset.virtualKey?.includes(':19:0'))!;
-    const preservedStart = Number.parseFloat(preservedRow.style.transform.replace(/[^\d.-]/g, ''));
+    const preservedStart = Number.parseFloat(preservedRow.style.transform.split(',')[1]);
     expect(scroll.scrollTop - preservedStart).toBeCloseTo(readingInset);
   });
 
@@ -1067,6 +1067,39 @@ describe('ChatSurface stream behavior', () => {
     );
     expect(scroll.scrollTop).toBeGreaterThan(8400);
     expect(scroll.scrollTop).toBeLessThanOrEqual(8480);
+  });
+
+  it('follows a same-group append only from the true bottom', () => {
+    const initial = Array.from({ length: 24 }, (_, index) => user(`entry ${index}`, `entry-${index}`));
+    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = Number(options.top ?? 0);
+      this.dispatchEvent(new Event('scroll'));
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
+    const view = render(<ChatSurface events={initial} streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
+    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 9000 });
+
+    scroll.scrollTop = 1000;
+    fireEvent.scroll(scroll);
+    const readingTop = scroll.scrollTop;
+    view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24')]}
+      streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
+    expect(scroll.scrollTop).toBe(readingTop);
+
+    scroll.scrollTop = 8450;
+    fireEvent.scroll(scroll);
+    const nearBottomCalls = scrollTo.mock.calls.length;
+    view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24'), user('near latest', 'entry-25')]}
+      streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
+    expect(scrollTo.mock.calls.length).toBe(nearBottomCalls);
+
+    scroll.scrollTop = 8500;
+    fireEvent.scroll(scroll);
+    view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24'), user('near latest', 'entry-25'), user('latest', 'entry-26')]}
+      streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 9000, behavior: 'auto' });
   });
 
   it('does not re-arm tail follow from a correction during an upward wheel gesture', () => {

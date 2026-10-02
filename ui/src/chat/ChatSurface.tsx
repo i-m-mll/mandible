@@ -71,7 +71,7 @@ const SCROLL_TOP_INSET_PX = 32;
 const HISTORY_WINDOW_POSITIONS = 500;
 const HISTORY_WINDOW_BEFORE = Math.floor((HISTORY_WINDOW_POSITIONS - 1) / 2);
 const MIN_CANONICAL_POSITION_HEIGHT = 1;
-const FOLLOW_THRESHOLD_PX = 80;
+const FOLLOW_THRESHOLD_PX = 1;
 const JUMP_RETURN_SECONDS = 2;
 const MANUAL_RETURN_PX_PER_SECOND = 600;
 const INITIAL_VIRTUAL_RECT = { width: 600, height: 720 };
@@ -347,6 +347,8 @@ export function ChatSurface({
   const pendingFocusRef = useRef<{ key: string; blockId: string | null; itemId: string } | null>(null);
   const restoredScrollScopeRef = useRef<string | null>(null);
   const pendingReadingAnchorRef = useRef<ReadingAnchor | null>(null);
+  const streamUpdateAnchorRef = useRef<ReadingAnchor | null>(null);
+  const currentReadingAnchorRef = useRef<ReadingAnchor | null>(null);
   const historyScope = JSON.stringify([
     storageScope,
     transcript?.conversationId ?? null,
@@ -612,6 +614,7 @@ export function ChatSurface({
     if (followingTailOverride === true) {
       const anchor = tailReadingAnchor(items.at(-1)?.id ?? 'tail');
       storageSet(scrollStorageKey, JSON.stringify(anchor));
+      currentReadingAnchorRef.current = anchor;
       return anchor;
     }
     const offset = el.scrollTop;
@@ -660,6 +663,7 @@ export function ChatSurface({
       followingTail: followingTailOverride ?? followingTail,
     };
     storageSet(scrollStorageKey, JSON.stringify(anchor));
+    currentReadingAnchorRef.current = anchor;
     return anchor;
   }, [estimatedRangeHeight, followingTail, items, scrollStorageKey, structureHeights, virtualizer]);
 
@@ -709,6 +713,8 @@ export function ChatSurface({
   useLayoutEffect(() => {
     setExpandedBlocks({});
     pendingReadingAnchorRef.current = null;
+    streamUpdateAnchorRef.current = null;
+    currentReadingAnchorRef.current = null;
     previousScrollTopRef.current = null;
     manualTowardTailRef.current = false;
   }, [storageScope]);
@@ -842,6 +848,32 @@ export function ChatSurface({
     if (!pending || navigationTarget || scrollbarDragRef.current) return;
     restoreReadingAnchor(pending);
   }, [items, navigationTarget, restoreReadingAnchor, virtualItems]);
+
+  useLayoutEffect(() => {
+    const anchor = streamUpdateAnchorRef.current;
+    streamUpdateAnchorRef.current = null;
+    if (!anchor || navigationTarget || scrollbarDragRef.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    if (anchor.followingTail) {
+      if (!transcript?.hasNewer) el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+    } else if (!items.some((item) => item.id === anchor.itemId)) {
+      restoreReadingAnchor(anchor);
+    }
+  }, [items, navigationTarget, restoreReadingAnchor, transcript?.hasNewer]);
+
+  useLayoutEffect(() => () => {
+    const el = scrollRef.current;
+    if (!el || navigationTarget || scrollbarDragRef.current) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 1
+      && !transcript?.hasNewer
+      && (transcript?.unmaterializedAfterCount ?? unmaterializedAfterCount) === 0;
+    streamUpdateAnchorRef.current = atBottom
+      ? tailReadingAnchor(items.at(-1)?.id ?? 'tail')
+      : currentReadingAnchorRef.current?.followingTail === false
+        ? currentReadingAnchorRef.current
+        : captureReadingAnchor(false);
+  }, [captureReadingAnchor, items, navigationTarget, transcript?.hasNewer, transcript?.unmaterializedAfterCount, unmaterializedAfterCount]);
 
   useEffect(() => {
     if (!transcript) return;
