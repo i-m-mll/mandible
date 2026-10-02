@@ -536,20 +536,11 @@ function resolveSessionIdForIssueLink(
   return null;
 }
 
-/**
- * The slice of the client-auth gate the session routes need: ending a session
- * must immediately kill the session-scoped tokens minted for it (issue 0b989d1).
- */
-export interface SessionScopedTokenRevoker {
-  revokeSessionScopedTokens(sessionId: string): number;
-}
-
 export function registerSessionRoutes(
   server: RouteRegistrar,
   registry: SessionRegistry = new SessionRegistry(getDb()),
   discovery?: SessionDiscovery,
   workScanner?: WorkScanner,
-  clientAuth?: SessionScopedTokenRevoker | null,
 ): void {
   server.post("/api/sessions/discover", async (_req, res) => {
     if (!discovery) {
@@ -656,11 +647,6 @@ export function registerSessionRoutes(
       sendJson(res, 404, { error: "Session not found" });
       return;
     }
-    // Issue 0b989d1 — the credential wrap.sh exchanged for this session dies
-    // with it. The authenticator also re-reads session liveness on every
-    // authenticate(), so a session ended by any other path is still refused;
-    // this is the immediate eviction on the path the orphan watcher uses.
-    clientAuth?.revokeSessionScopedTokens(id);
     sendJson(res, 200, ended);
   }, { fileRpc: "allow" });
 

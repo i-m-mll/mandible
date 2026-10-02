@@ -6,7 +6,9 @@ import path from "node:path";
 import { createHmac } from "node:crypto";
 import type { InstanceInfo } from "../types.js";
 import { PRODUCTION_EFFECTS } from "../security/effect-policy.js";
-import { getOperator, getUserById } from "../users/store.js";
+import { getOperator, getOperatorId, getUserById } from "../users/store.js";
+import { resolveProviderSessionAttributionResult, resolveSessionIdAttributionResult } from "../identity/resolver.js";
+import type { AmbientProviderIdentity } from "../ambient-provider-identity.js";
 import type {
   ClientAuthRequestContext,
   ClientAuthGate,
@@ -44,28 +46,9 @@ interface EphemeralEntry {
   expiresAt: number | null;
 }
 
-/**
- * Purpose prefix for a wrap-time exchanged token (issue 0b989d1): a launched
- * agent's long-lived keychain PAT is swapped for a token bound to the
- * `sessions` row it is about to register, so a transcript leak exposes only a
- * credential that dies with that one session instead of a shared PAT whose
- * rotation hits every live agent.
- */
-export const WRAP_SESSION_PURPOSE_PREFIX = "wrap_session:";
-
-export function wrapSessionPurpose(sessionId: string): string {
-  return `${WRAP_SESSION_PURPOSE_PREFIX}${sessionId}`;
-}
-
 export interface ClientAuthenticatorOptions {
   /** Override the filesystem secrets directory (tests). Defaults to config dir. */
   secretsDir?: string;
-  /** TTL backstop for wrap-time session-scoped agent tokens (tests may shorten). */
-  wrapSessionTtlMs?: number;
-  /** Grace before an exchanged token must have a registered session row. */
-  wrapSessionPreRegistrationGraceMs?: number;
-  /** Independent cap for wrap-time session-scoped tokens. */
-  maxWrapSessionTokens?: number;
   /** Hard cap for general daemon-lifetime ephemeral credentials. */
   maxEphemeralTokens?: number;
   /** Injectable clock for expiry tests. */
@@ -79,9 +62,6 @@ export interface ClientAuthenticatorOptions {
   contextVerificationKeyPem?: string;
 }
 
-const DEFAULT_WRAP_SESSION_TTL_MS = 24 * 60 * 60 * 1_000;
-const DEFAULT_WRAP_SESSION_PRE_REGISTRATION_GRACE_MS = 10 * 60 * 1_000;
-const DEFAULT_MAX_WRAP_SESSION_TOKENS = 64;
 const DEFAULT_EPHEMERAL_TTL_MS = 15 * 60 * 1_000;
 const DEFAULT_MAX_EPHEMERAL_TOKENS = 256;
 
@@ -89,9 +69,6 @@ export class ClientAuthenticator implements ClientAuthGate {
   private readonly ephemeral = new Map<string, EphemeralEntry>();
   private readonly telemetry = new ClientAuthTelemetry();
   private readonly secretsDir: string;
-  private readonly wrapSessionTtlMs: number;
-  private readonly wrapSessionPreRegistrationGraceMs: number;
-  private readonly maxWrapSessionTokens: number;
   private readonly maxEphemeralTokens: number;
   private readonly now: () => number;
   /** Pepper is loaded from the filesystem ONCE at construction (startup). */
@@ -107,13 +84,6 @@ export class ClientAuthenticator implements ClientAuthGate {
     options: ClientAuthenticatorOptions = {},
   ) {
     this.secretsDir = options.secretsDir ?? defaultClientAuthDir();
-    this.wrapSessionTtlMs = options.wrapSessionTtlMs ?? DEFAULT_WRAP_SESSION_TTL_MS;
-    this.wrapSessionPreRegistrationGraceMs = options.wrapSessionPreRegistrationGraceMs
-      ?? DEFAULT_WRAP_SESSION_PRE_REGISTRATION_GRACE_MS;
-    this.maxWrapSessionTokens = Math.max(
-      1,
-      options.maxWrapSessionTokens ?? DEFAULT_MAX_WRAP_SESSION_TOKENS,
-    );
     this.maxEphemeralTokens = Math.max(
       2,
       options.maxEphemeralTokens ?? DEFAULT_MAX_EPHEMERAL_TOKENS,
@@ -175,6 +145,40 @@ export class ClientAuthenticator implements ClientAuthGate {
     };
   }
 
+  localSocketIdentity(ambient: AmbientProviderIdentity | null, managed: boolean): ResolvedClientIdentity | null {
+    if (ambient) {
+      const provider = resolveProviderSessionAttributionResult(this.db, ambient.provider);
+      const session = resolveSessionIdAttributionResult(this.db, ambient.provider_session_id);
+      if (provider.status !== "resolved" || session.status === "conflict"
+          || (session.status === "resolved" && session.attribution.user_id !== provider.attribution.user_id)) return null;
+      const user = getUserById(this.db, provider.attribution.user_id);
+      if (!user || user.status !== "active" || user.kind !== "agent") return null;
+      return {
+        user_id: user.id,
+        slug: user.slug,
+        method: "local_socket",
+        credential_id: null,
+        source: "local_socket",
+        effect_ceiling: this.instance?.allowed_effects ?? PRODUCTION_EFFECTS,
+      };
+    }
+    if (managed) return null;
+    const operator = getOperator(this.db);
+    if (!operator || operator.status !== "active" || operator.kind !== "human") return null;
+    return {
+      user_id: operator.id,
+      slug: operator.slug,
+      method: "local_socket",
+      credential_id: null,
+      source: "local_socket",
+      effect_ceiling: this.instance?.allowed_effects ?? PRODUCTION_EFFECTS,
+    };
+  }
+
+  localSocketBootstrapAllowed(): boolean {
+    return this.instance?.role === "main" && getOperatorId(this.db) === null;
+  }
+
   instanceRegistration(instanceId: string): InstanceRegistration | null {
     return this.sessionAuthority.instance(instanceId);
   }
@@ -212,10 +216,6 @@ export class ClientAuthenticator implements ClientAuthGate {
         return null;
       }
       if (!this.agentSessionIdentityStillValid(eph)) {
-        this.ephemeral.delete(key);
-        return null;
-      }
-      if (!this.wrapSessionStillLive(eph)) {
         this.ephemeral.delete(key);
         return null;
       }
@@ -347,11 +347,7 @@ export class ClientAuthenticator implements ClientAuthGate {
       createdAt,
       expiresAt: ttlMs === null ? null : createdAt + ttlMs,
     });
-    if (purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)) {
-      this.enforceWrapSessionLimit();
-    } else {
-      this.enforceEphemeralLimit();
-    }
+    this.enforceEphemeralLimit();
     return raw;
   }
 
@@ -359,52 +355,6 @@ export class ClientAuthenticator implements ClientAuthGate {
   revokeEphemeralToken(raw: string): void {
     const key = fingerprintForToken(this.pepper, raw);
     this.ephemeral.delete(key);
-  }
-
-  /**
-   * Mint a session-scoped ephemeral token for an already-authenticated agent
-   * identity (issue 0b989d1). The caller has proved the identity with a durable
-   * api_token; this narrows that identity to one `sessions` row so a leaked
-   * transcript yields a credential that dies when the session ends. A short
-   * grace covers registration immediately after exchange; the TTL is the
-   * backstop for a registered session that never reports an end.
-   *
-   * The token lives in the in-memory ephemeral map, so a daemon restart also
-   * invalidates it — deliberately tighter than the PAT it replaces, and safe
-   * because wrap.sh falls back to the PAT when the exchange is unavailable.
-   */
-  issueSessionScopedToken(
-    identity: { user_id: string; slug: string },
-    sessionId: string,
-    options: { ttlMs?: number } = {},
-  ): { token: string; expires_at: number; purpose: string } {
-    const purpose = wrapSessionPurpose(sessionId);
-    const ttlMs = options.ttlMs ?? this.wrapSessionTtlMs;
-    for (const [key, entry] of this.ephemeral) {
-      if (entry.purpose === purpose) this.ephemeral.delete(key);
-    }
-    const token = this.issueEphemeralToken(identity, purpose, { ttlMs });
-    const entry = this.ephemeral.get(fingerprintForToken(this.pepper, token));
-    if (!entry || entry.expiresAt === null) {
-      throw new Error("Failed to create an expiring session-scoped token.");
-    }
-    return { token, expires_at: entry.expiresAt, purpose };
-  }
-
-  /**
-   * Drop every session-scoped token bound to one session. Called when the
-   * session is marked ended so the credential stops working immediately rather
-   * than at the next authenticate() liveness read. Returns the count revoked.
-   */
-  revokeSessionScopedTokens(sessionId: string): number {
-    const purpose = wrapSessionPurpose(sessionId);
-    let revoked = 0;
-    for (const [key, entry] of this.ephemeral) {
-      if (entry.purpose !== purpose) continue;
-      this.ephemeral.delete(key);
-      revoked += 1;
-    }
-    return revoked;
   }
 
   private evictExpired(): void {
@@ -444,53 +394,10 @@ export class ClientAuthenticator implements ClientAuthGate {
     return matches.length === 1 && matches[0].id === entry.identity.user_id;
   }
 
-  /**
-   * Liveness gate for a wrap-time session-scoped token (issue 0b989d1). The
-   * explicit revocation on PATCH /api/sessions/:id/end is the fast path; this
-   * read is the one that also catches every other way a session stops being
-   * active (reaper marking it `dead`, dashboard end, direct registry update),
-   * and it survives a route that forgets to revoke.
-   *
-   * wrap.sh exchanges before it registers the session, so a missing row is
-   * allowed only for a short pre-registration grace. A still-missing row after
-   * that deadline is dead; once the row exists, its normal active/ended state
-   * is authoritative.
-   */
-  private wrapSessionStillLive(entry: EphemeralEntry): boolean {
-    if (!entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)) return true;
-    const sessionId = entry.purpose.slice(WRAP_SESSION_PURPOSE_PREFIX.length);
-    const row = this.db
-      .prepare("SELECT status, ended_at FROM sessions WHERE id = ?")
-      .get(sessionId) as { status: string; ended_at: string | null } | undefined;
-    if (!row) {
-      return this.now() < entry.createdAt + this.wrapSessionPreRegistrationGraceMs;
-    }
-    return row.status === "active" && row.ended_at === null;
-  }
-
-  private enforceWrapSessionLimit(): void {
-    // Map iteration is insertion order. Same-session replacement deletes the
-    // previous entry before inserting its successor, so the first wrap entry is
-    // always the oldest even when multiple tokens share the same millisecond.
-    const entries = [...this.ephemeral.entries()]
-      .filter(([, entry]) => entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX));
-    while (entries.length > this.maxWrapSessionTokens) {
-      const [key] = entries.shift()!;
-      this.ephemeral.delete(key);
-    }
-  }
-
   private enforceEphemeralLimit(): void {
-    let retained = [...this.ephemeral.values()]
-      .filter((entry) => (
-        !entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)
-      ))
-      .length;
+    let retained = this.ephemeral.size;
     if (retained <= this.maxEphemeralTokens) return;
     const evictable = [...this.ephemeral.entries()]
-      .filter(([, entry]) => (
-        !entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)
-      ))
       .sort((a, b) => a[1].createdAt - b[1].createdAt);
     while (retained > this.maxEphemeralTokens && evictable.length > 0) {
       const [key] = evictable.shift()!;
