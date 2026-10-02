@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openDb, setDb, type Db } from '../src/db.js';
 import { ClientAuthenticator } from '../src/client-auth/authenticator.js';
 import { createLocalSocketServer, createServer, Router } from '../src/server.js';
@@ -133,6 +133,17 @@ describe('owner-only local API socket', () => {
       });
       req.once('error', reject); req.end();
     });
+  });
+  it('rejects a foreign-owned ancestor even when its mode is read-only', async () => {
+    const original = fs.lstatSync.bind(fs);
+    const inspect = vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike, options?: any) => {
+      const stat = original(target, options);
+      return String(target) === root ? Object.assign(stat, { uid: (process.getuid?.() ?? 0) + 1 }) : stat;
+    }) as typeof fs.lstatSync);
+    try {
+      await expect(startLocalApiSocket(http.createServer(), path.join(root, 'private', 'other.sock')))
+        .rejects.toThrow('Foreign-owned');
+    } finally { inspect.mockRestore(); }
   });
   it('rebinds the same path after clean shutdown', async () => {
     await closeSocket();
