@@ -13,7 +13,7 @@ import {
   resolveProviderSessionAttributionResult,
   type AttributionContext,
 } from "../identity/resolver.js";
-import { getOperatorId } from "../users/store.js";
+import { getOperatorId, getUserById } from "../users/store.js";
 import type { AmbientProviderIdentity } from "../ambient-provider-identity.js";
 import type {
   RequestLike,
@@ -53,6 +53,7 @@ export function isOperator(db: Db, identity: ResolvedClientIdentity): boolean {
 export function isLocalHumanRequest(req: RequestLike): boolean {
   return req.client_identity?.method === "local_socket"
     && (req as RequestLike & { managed_client?: boolean }).managed_client !== true
+    && !(req as RequestLike & { local_managed_identity?: unknown }).local_managed_identity
     && !req.ambient_identity;
 }
 
@@ -66,20 +67,25 @@ export function requireDurableIdentity(req: RequestLike): ResolvedClientIdentity
 }
 
 /**
- * Resolve the durable write principal for a ledger mutation (issue a64d2de).
+ * Resolve the write principal for a ledger mutation (issue a64d2de).
  * The attribution order is deliberate and fail-closed — it never falls back to
  * the local operator:
  *
  *   (a) A verified bearer credential resolved by the client-auth gate is token
  *       evidence (`api_token`), including bounded dashboard and file-RPC
  *       capabilities.
- *   (b) Otherwise, if the request carries an ambient provider signal (the
+ *   (b) A validated managed app/session alias on the local socket identifies
+ *       the resolved agent with `session_claim` evidence. It has no protected
+ *       credential authority.
+ *   (c) Otherwise, if the request carries an ambient provider signal (the
  *       `X-Mandible-Ambient-Provider*` headers the CLI and MCP channel send on
  *       mutating calls), resolve that provider to the agent user that owns its
  *       session env keys via the same fail-closed binding machinery the
  *       auth-request lane uses. A single owning agent yields `session_claim`
  *       evidence; a no-match or conflicting binding yields no attribution.
- *   (c) Otherwise return `null` — an unattributed write. The store records NULL
+ *   (d) An unmanaged socket invocation by the configured operator carries
+ *       `local_default` evidence. Otherwise return `null` — an unattributed
+ *       write. The store records NULL
  *       user-attribution columns, reproducing the pre-identity legacy behavior
  *       (generic 'Mandible' display via the legacy-column read fallback).
  *
@@ -93,11 +99,22 @@ export function attributionForRequest(db: Db, req: unknown): AttributionContext 
   const identity = record?.client_identity ?? null;
   const ambient: AmbientProviderIdentity | null = record?.ambient_identity ?? null;
   const managed = (record as RequestLike & { managed_client?: boolean } | null)?.managed_client === true;
+  const managedIdentity = (record as RequestLike & {
+    local_managed_identity?: { app_name: string; session_id: string } | null;
+  } | null)?.local_managed_identity;
   if (identity && identity.method !== "local_socket") {
     return {
       user_id: identity.user_id,
       evidence_method: identity.source === "local_os_user" ? "local_default" : "api_token",
     };
+  }
+  if (identity?.method === "local_socket" && managedIdentity) {
+    // The socket ingress has already validated this app/session pair and
+    // resolved it to one agent. Keep its attribution tied to that principal.
+    const user = getUserById(db, identity.user_id);
+    return user?.status === "active" && user.kind === "agent"
+      ? { user_id: user.id, evidence_method: "session_claim" }
+      : null;
   }
   if (ambient?.provider && (!identity || identity.method === "local_socket")) {
     // resolveProviderSessionAttributionResult only resolves to an agent-kind
@@ -107,11 +124,13 @@ export function attributionForRequest(db: Db, req: unknown): AttributionContext 
     // and adding one is a schema change out of scope for this fix. Deferred —
     // storing the raw session id for audit value would need a new column.
     const resolution = resolveProviderSessionAttributionResult(db, ambient.provider);
-    if (resolution.status === "resolved") {
+    if (resolution.status === "resolved"
+        && (!identity || resolution.attribution.user_id === identity.user_id)) {
       return resolution.attribution;
     }
   }
-  if (identity?.method === "local_socket" && !managed) {
+  if (identity?.method === "local_socket" && !managed && !ambient
+      && identity.user_id === getOperatorId(db)) {
     return { user_id: identity.user_id, evidence_method: "local_default" };
   }
   return null;
@@ -161,7 +180,9 @@ export function authorizeOperatorSetup(db: Db, req: RequestLike): void {
     requireProtectedOperator(db, req);
     return;
   }
-  if ((req as RequestLike & { managed_client?: boolean }).managed_client === true || req.ambient_identity) {
+  if ((req as RequestLike & { managed_client?: boolean }).managed_client === true
+      || (req as RequestLike & { local_managed_identity?: unknown }).local_managed_identity
+      || req.ambient_identity) {
     throw new ClientAuthzError(403, "operator_setup_human_required",
       "Initial operator setup requires a local human invocation.");
   }

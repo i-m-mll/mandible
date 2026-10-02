@@ -10,7 +10,7 @@ import { addGrant } from "../../src/permissions/store.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
 import { registerBriefingRoutes } from "../../src/routes/briefing.js";
 import type { RequestLike, ResolvedClientIdentity, ResponseLike, RouteHandler, RouteRegistrar } from "../../src/server.js";
-import { addBinding, createUser, setupOperator } from "../../src/users/store.js";
+import { createUser, setupOperator } from "../../src/users/store.js";
 
 let db: Db;
 let root: string;
@@ -35,7 +35,7 @@ async function invoke(method: string, route: string, user: { id: string; slug: s
   const handler = routes.get(`${method} ${route}`)!;
   const req = {
     method, url: route, body, params, query: {}, managed_client: true,
-    ambient_identity: { provider: "codex", provider_session_id: "agent-session" },
+    local_managed_identity: { app_name: "codex", session_id: "managed-session" },
     client_identity: { user_id: user.id, slug: user.slug, method: "local_socket",
       source: "local_socket", credential_id: null, effect_ceiling: [] } as ResolvedClientIdentity,
   } as RequestLike;
@@ -47,10 +47,9 @@ async function invoke(method: string, route: string, user: { id: string; slug: s
   return { status, body: result as Record<string, unknown> };
 }
 
-it("allows claimed local agents to create, rename and read ordinary Briefings while rejecting protected review", async () => {
+it("allows managed app/session agents to create, rename and read ordinary Briefings while rejecting protected review", async () => {
   setupOperator(db, { slug: "operator", display_name: "Operator" });
   const agent = createUser(db, { slug: "codex", kind: "agent", display_name: "Codex" });
-  addBinding(db, agent.id, { binding_type: "provider_session_env", value: "CODEX_THREAD_ID" });
   const project = addProject(db, { project_key: "briefing-test", display_name: "Briefing test" });
   db.prepare("UPDATE ledger_projects SET restricted = 1 WHERE id = ?").run(project.id);
   addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project",
