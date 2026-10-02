@@ -16,6 +16,7 @@
         "height": 900,
         "resizable": true,
         "fullscreen": false,
+        "dragDropEnabled": false,
         "decorations": true,
         "transparent": true,
         "titleBarStyle": "Overlay",
