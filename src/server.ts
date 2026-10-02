@@ -61,6 +61,7 @@ export interface RequestLike {
   query: Record<string, string>;
   body: unknown;
   ambient_identity?: AmbientProviderIdentity | null;
+  local_managed_identity?: LocalManagedIdentity | null;
   managed_client?: boolean;
   // Issue 708dc4c — the authenticated client identity resolved by the
   // client-auth gate (bearer/capability token → user), or null when the request
@@ -71,6 +72,11 @@ export interface RequestLike {
   /** Aborts when the underlying HTTP client disconnects before a response completes. */
   signal?: AbortSignal;
   target_instance_id?: string | null;
+}
+
+export interface LocalManagedIdentity {
+  app_name: string;
+  session_id: string;
 }
 
 // --- Client authentication gate (issue 708dc4c) ---
@@ -114,7 +120,7 @@ export interface UnattributedWriteRecord {
  */
 export interface ClientAuthGate {
   localBrowserIdentity?(): ResolvedClientIdentity | null;
-  localSocketIdentity?(ambient: AmbientProviderIdentity | null, managed: boolean): ResolvedClientIdentity | null;
+  localSocketIdentity?(ambient: AmbientProviderIdentity | null, managed: boolean, localManaged?: LocalManagedIdentity | null): ResolvedClientIdentity | null;
   localSocketBootstrapAllowed?(): boolean;
   authenticate(
     credential: string | null | undefined,
@@ -145,6 +151,25 @@ function clientAuthSourceForTransport(
   if (transport === "http") return "http_bearer";
   if (transport === "file-rpc") return "file_rpc_capability";
   return "in_process";
+}
+
+function resolveLocalSocketIdentity(
+  gate: ClientAuthGate,
+  credential: string | null | undefined,
+  ambient: AmbientProviderIdentity | null,
+  managed: boolean,
+  localManaged: LocalManagedIdentity | null,
+  context: ClientAuthRequestContext,
+): ResolvedClientIdentity | null {
+  const claimed = ambient || localManaged
+    ? gate.localSocketIdentity?.(ambient, true, localManaged) ?? null
+    : null;
+  if ((ambient || localManaged) && !claimed) return null;
+  if (credential !== null && credential !== undefined) {
+    const verified = gate.authenticate(credential, "local_socket", context);
+    return verified && (!claimed || claimed.user_id === verified.user_id) ? verified : null;
+  }
+  return claimed ?? gate.localSocketIdentity?.(null, managed, null) ?? null;
 }
 
 export interface ResponseLike {
@@ -459,6 +484,18 @@ export class Router implements RouteRegistrar {
       }
     }
     try {
+      let localManaged: LocalManagedIdentity | null = null;
+      if (transport === "local-socket") {
+        try {
+          localManaged = localManagedIdentityFromHeaders(req.headers);
+          if (providerHeadersPresent(req.headers) && !ambientIdentityFromHeaders(req.headers)) {
+            throw new Error("Invalid provider claim.");
+          }
+        } catch {
+          new HttpResponse(res).status(401).json({ error: "authentication_required", reason: "invalid_managed_identity" });
+          return true;
+        }
+      }
       const browserRequest = transport === "http" && isBrowserRequest(req.headers);
       if (browserRequest && headerValue(req.headers.authorization)) {
         new HttpResponse(res).status(400).json({
@@ -482,6 +519,7 @@ export class Router implements RouteRegistrar {
           internalContext: headerValue(req.headers["x-mandible-session-context"]),
           targetInstanceId: headerValue(req.headers["x-mandible-target-instance"]),
           managed: managedClientFromHeaders(req.headers),
+          localManaged,
         },
       );
     } finally {
@@ -505,6 +543,7 @@ export class Router implements RouteRegistrar {
       internalContext?: string;
       targetInstanceId?: string;
       managed?: boolean;
+      localManaged?: LocalManagedIdentity | null;
     },
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
@@ -525,9 +564,10 @@ export class Router implements RouteRegistrar {
       const gate = this.options.clientAuth;
       if (gate) {
         clientIdentity = transport === "local-socket"
-          ? credential
-            ? gate.authenticate(credential, "local_socket", { method: normalizedMethod, pathname })
-            : gate.localSocketIdentity?.(requestAmbientIdentity, httpAuth?.managed === true) ?? null
+          ? resolveLocalSocketIdentity(
+              gate, credential, requestAmbientIdentity, httpAuth?.managed === true,
+              httpAuth?.localManaged ?? null, { method: normalizedMethod, pathname },
+            )
           : httpAuth?.internalContext && gate.authenticateInternalContext
           ? await gate.authenticateInternalContext(httpAuth.internalContext)
           : httpAuth?.browserRequest && gate.localBrowserIdentity
@@ -539,7 +579,7 @@ export class Router implements RouteRegistrar {
               ) : null;
         const localBootstrap = transport === "local-socket"
           && normalizedMethod === "POST" && pathname === "/api/users/setup"
-          && !credential && !httpAuth?.managed && !requestAmbientIdentity
+          && credential == null && !httpAuth?.managed && !requestAmbientIdentity && !httpAuth?.localManaged
           && gate.localSocketBootstrapAllowed?.() === true;
         if (transport === "local-socket" && !clientIdentity && pathname !== "/api/health" && !localBootstrap) {
           response.status(401).json({ error: "authentication_required", reason: "local_identity_unknown" });
@@ -617,6 +657,7 @@ export class Router implements RouteRegistrar {
         query,
         body,
         ambient_identity: requestAmbientIdentity,
+        local_managed_identity: transport === "local-socket" ? httpAuth?.localManaged ?? null : null,
         managed_client: transport === "local-socket" && httpAuth?.managed === true,
         client_identity: clientIdentity,
         signal,
@@ -687,10 +728,31 @@ function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientP
   });
 }
 
-function managedClientFromHeaders(headers: http.IncomingHttpHeaders): boolean {
-  return headerValue(headers["x-mandible-managed-client"]) === "1"
-    || headerValue(headers["x-mandible-ambient-provider"]) !== undefined
+function providerHeadersPresent(headers: http.IncomingHttpHeaders): boolean {
+  return headerValue(headers["x-mandible-ambient-provider"]) !== undefined
     || headerValue(headers["x-mandible-ambient-provider-session-id"]) !== undefined;
+}
+
+function localManagedIdentityFromHeaders(headers: http.IncomingHttpHeaders): LocalManagedIdentity | null {
+  const app = headerValue(headers["x-mandible-managed-app"]);
+  const session = headerValue(headers["x-mandible-managed-session-id"]);
+  if (app === undefined && session === undefined) return null;
+  if (app === undefined || session === undefined) throw new Error("Incomplete managed identity.");
+  const appName = app.trim();
+  const sessionId = session.trim();
+  if (!appName || !sessionId || appName.length > 128 || sessionId.length > 256
+      || /[\x00-\x1f\x7f]/.test(appName) || /[\x00-\x1f\x7f]/.test(sessionId)) {
+    throw new Error("Invalid managed identity.");
+  }
+  return { app_name: appName, session_id: sessionId };
+}
+
+function managedClientFromHeaders(headers: http.IncomingHttpHeaders): boolean {
+  return headerValue(headers["x-mandible-managed-client"]) !== undefined
+    || headerValue(headers["x-mandible-ambient-provider"]) !== undefined
+    || headerValue(headers["x-mandible-ambient-provider-session-id"]) !== undefined
+    || headerValue(headers["x-mandible-managed-app"]) !== undefined
+    || headerValue(headers["x-mandible-managed-session-id"]) !== undefined;
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {
@@ -847,13 +909,23 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
         writeJsonResponse(res, 400, { error: "browser_bearer_forbidden" });
         return;
       }
-      const identity = transport === "local-socket"
-        ? bearerFromHeaders(req.headers)
-          ? options.clientAuth?.authenticate(bearerFromHeaders(req.headers), "local_socket", { method, pathname })
-          : options.clientAuth?.localSocketIdentity?.(
-              ambientIdentityFromHeaders(req.headers),
-              managedClientFromHeaders(req.headers),
-            )
+      let localManaged: LocalManagedIdentity | null = null;
+      if (transport === "local-socket") {
+        try {
+          localManaged = localManagedIdentityFromHeaders(req.headers);
+          if (providerHeadersPresent(req.headers) && !ambientIdentityFromHeaders(req.headers)) {
+            throw new Error("Invalid provider claim.");
+          }
+        } catch {
+          writeJsonResponse(res, 401, { error: "authentication_required", reason: "invalid_managed_identity" });
+          return;
+        }
+      }
+      const identity = transport === "local-socket" && options.clientAuth
+        ? resolveLocalSocketIdentity(
+            options.clientAuth, bearerFromHeaders(req.headers), ambientIdentityFromHeaders(req.headers),
+            managedClientFromHeaders(req.headers), localManaged, { method, pathname },
+          )
         : (await options.clientAuth?.authenticateInternalContext?.(
           headerValue(req.headers["x-mandible-session-context"]),
         ))
