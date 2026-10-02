@@ -75,11 +75,12 @@ import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigge
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { OverflowFade } from '../components/shared/OverflowFade';
-import { MAX_MESSAGE_ATTACHMENTS, type ChatAttachment } from '../../../src/conversation-control/attachments';
-import { attachmentContentUrl, importAttachment } from '../chat/attachmentApi';
+import { type ChatAttachment } from '../../../src/conversation-control/attachments';
+import { attachmentContentUrl } from '../chat/attachmentApi';
+import { importAttachmentBatch } from '../chat/attachmentImport';
 import { AnnotationPreviewContent } from '../chat/AnnotationPreviewContent';
 import {
-  activateDraftAttachmentHighlights, addDraftAttachments, clearAcceptedDraft, getAttachmentDraftSnapshot, getConversationDraft,
+  activateDraftAttachmentHighlights, clearAcceptedDraft, getAttachmentDraftSnapshot,
   getDraftAttachmentHighlights,
   getPendingSubmitIntent, registerWritableChatTarget, removeDraftAttachment,
   savePendingSubmitIntent, setDraftText, subscribeAttachmentDrafts,
@@ -286,6 +287,8 @@ type ChatDetailFrameProps = {
   overlayControl?: ComponentChildren;
   overlays?: ComponentChildren;
   ariaBusy?: boolean;
+  onDragOverCapture?: (event: JSX.TargetedDragEvent<HTMLElement>) => void;
+  onDropCapture?: (event: JSX.TargetedDragEvent<HTMLElement>) => void;
   children: ComponentChildren;
 };
 
@@ -300,6 +303,8 @@ export function ChatDetailFrame({
   overlayControl,
   overlays,
   ariaBusy,
+  onDragOverCapture,
+  onDropCapture,
   children,
 }: ChatDetailFrameProps): JSX.Element {
   return (
@@ -317,6 +322,8 @@ export function ChatDetailFrame({
       overlayControl={overlayControl}
       overlays={overlays}
       ariaBusy={ariaBusy}
+      onDragOverCapture={onDragOverCapture}
+      onDropCapture={onDropCapture}
     >
       {children}
     </DetailPaneShell>
@@ -1369,6 +1376,8 @@ export function ConversationDetail({
     return subscribeDraftAttachmentHighlights(refresh);
   }, [conversationId]);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const attachmentImportQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingAttachmentImportsRef = useRef(0);
   const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
   const [attachmentPreviewText, setAttachmentPreviewText] = useState<string | null>(null);
   const attachmentPickerRef = useRef<HTMLInputElement>(null);
@@ -2115,7 +2124,10 @@ export function ConversationDetail({
   const { active: chatViewActive } = useAppShell();
   const selectedComposerWritable = !isReadOnlyChild && !continueBusy && (!submitIntent || submitIntent.state === 'failed')
     && !continueDisabledReason && controlPresentation?.composer === 'enabled';
-  const composerWritable = chatViewActive && selectedComposerWritable;
+  const canImportAttachments = chatViewActive && !isReadOnlyChild && !continueBusy
+    && (!submitIntent || submitIntent.state === 'failed')
+    && (!continueDisabledReason || submitIntent?.state === 'failed')
+    && (controlPresentation?.composer === 'enabled' || submitIntent?.state === 'failed');
   useLayoutEffect(() => {
     if (!selectedComposerWritable) return undefined;
     return registerWritableChatTarget(conversationId, chatViewActive);
@@ -2124,27 +2136,45 @@ export function ConversationDetail({
     if (chatViewActive) activateDraftAttachmentHighlights(conversationId);
   }, [chatViewActive, conversationId]);
 
-  const importFiles = useCallback(async (files: FileList | File[]) => {
-    if (!composerWritable || attachmentBusy) return;
-    if (getConversationDraft(conversationId).attachments.length + files.length > MAX_MESSAGE_ATTACHMENTS) {
-      setContinueError(`A message can have at most ${MAX_MESSAGE_ATTACHMENTS} attachments.`);
+  const importFiles = useCallback((files: FileList | File[]) => {
+    const batch = Array.from(files);
+    if (!batch.length) return;
+    if (!canImportAttachments) {
+      setContinueError(submitIntent?.state === 'uncertain'
+        ? 'Message delivery is uncertain. Resolve it before adding attachments.'
+        : submitIntent?.state === 'submitting' || continueBusy
+          ? 'Wait for the message to finish sending before adding attachments.'
+          : continueDisabledReason ?? 'Attachments are unavailable in this chat.');
       return;
     }
+    const targetConversationId = conversationId;
+    pendingAttachmentImportsRef.current += 1;
     setAttachmentBusy(true);
     setContinueError(null);
-    try {
-      for (const file of Array.from(files)) {
-        const stored = await importAttachment(file);
-        const attachment: ChatAttachment = {
-          kind: stored.media_type.startsWith('image/') ? 'image' : 'file', file: stored,
-        };
-        const result = addDraftAttachments(conversationId, [attachment]);
-        if (!result.ok) throw new Error(result.error);
+    const runBatch = async () => {
+      try {
+        await importAttachmentBatch(targetConversationId, batch);
+      } catch (error) {
+        if (selectionRef.current.conversationId === targetConversationId) {
+          setContinueError(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        pendingAttachmentImportsRef.current -= 1;
+        if (!pendingAttachmentImportsRef.current) setAttachmentBusy(false);
       }
-    } catch (error) {
-      setContinueError(error instanceof Error ? error.message : String(error));
-    } finally { setAttachmentBusy(false); }
-  }, [attachmentBusy, composerWritable, conversationId]);
+    };
+    attachmentImportQueueRef.current = attachmentImportQueueRef.current.then(runBatch, runBatch);
+  }, [canImportAttachments, continueBusy, continueDisabledReason, conversationId, submitIntent?.state]);
+
+  const handleFileDragOver = useCallback((event: JSX.TargetedDragEvent<HTMLElement>) => {
+    if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
+  }, []);
+  const handleFileDrop = useCallback((event: JSX.TargetedDragEvent<HTMLElement>) => {
+    if (!event.dataTransfer?.types.includes('Files')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    importFiles(event.dataTransfer.files);
+  }, [importFiles]);
 
   useEffect(() => {
     if (!attachmentPreview || attachmentPreview.kind === 'annotation' || attachmentPreview.kind === 'image') {
@@ -2302,6 +2332,10 @@ export function ConversationDetail({
 
   const handleContinueSubmit = useCallback((event: JSX.TargetedEvent<HTMLFormElement, Event>) => {
     event.preventDefault();
+    if (pendingAttachmentImportsRef.current) {
+      setContinueError('Wait for attachments to finish importing before sending.');
+      return;
+    }
     const prompt = continueDraft.trim();
     if ((!prompt && !draftAttachments.length)
       || (submitIntent && !['failed', 'uncertain'].includes(submitIntent.state))) return;
@@ -2623,10 +2657,7 @@ export function ConversationDetail({
       ) : ((controlPresentation && controlPresentation.composer !== 'hidden')
         || creationReceipt?.state === 'starting'
         || (creationReceipt?.state === 'ready' && !controlPresentation)) ? (
-      <div className="conv-compose" data-detail-pane-overlay-visual
-        onDragOver={(event) => { if (composerWritable && event.dataTransfer?.types.includes('Files')) event.preventDefault(); }}
-        onDrop={(event) => { if (!composerWritable) return; event.preventDefault(); if (event.dataTransfer?.files) void importFiles(event.dataTransfer.files); }}
-      >
+      <div className="conv-compose" data-detail-pane-overlay-visual>
         {draftAttachments.length > 0 && (
           <OverflowFade direction="horizontal" className="conv-compose__attachment-overflow">
             <div className="conv-compose__attachments" aria-label="Draft attachments">
@@ -2674,9 +2705,9 @@ export function ConversationDetail({
         <div className="conv-compose__controls">
           <input ref={attachmentPickerRef} type="file" multiple hidden
             accept="text/*,image/png,image/jpeg,image/webp,image/gif,.js,.jsx,.ts,.tsx,.json,.yaml,.yml,.toml,.py,.rs,.go,.sh,.sql,.md,.txt"
-            onChange={(event) => { void importFiles(event.currentTarget.files ?? []); event.currentTarget.value = ''; }} />
+            onChange={(event) => { importFiles(event.currentTarget.files ?? []); event.currentTarget.value = ''; }} />
           <button type="button" className="conv-compose__add-attachment" aria-label="Add attachments" title="Add attachments"
-            disabled={!composerWritable || attachmentBusy} onClick={() => attachmentPickerRef.current?.click()}>+</button>
+            disabled={!canImportAttachments || attachmentBusy} onClick={() => attachmentPickerRef.current?.click()}>+</button>
           <div
             ref={runOptionsGeometry.containerRef}
             className={`conv-compose__runtime${runOptionsGeometry.overflowed ? ' conv-compose__runtime--run-options-overflow' : ''}`}
@@ -2713,7 +2744,7 @@ export function ConversationDetail({
                 type="submit"
                 form={`conversation-compose-${conversation.id}`}
                 className="chat-circle-action conv-compose__send"
-                disabled={continueBusy || Boolean(submitIntent && !['failed', 'uncertain'].includes(submitIntent.state)) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || (!continueDraft.trim() && !draftAttachments.length)}
+                disabled={continueBusy || attachmentBusy || Boolean(submitIntent && !['failed', 'uncertain'].includes(submitIntent.state)) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || (!continueDraft.trim() && !draftAttachments.length)}
                 title={controlPresentation?.submitLabel ?? 'Send'}
                 aria-label={controlPresentation?.submitLabel ?? 'Send'}
               >
@@ -2741,7 +2772,7 @@ export function ConversationDetail({
         )}
         <DetailPaneModal open={Boolean(attachmentPreview)} onClose={() => setAttachmentPreview(null)}
           titleId="chat-attachment-preview-title" title={attachmentPreview?.kind === 'annotation' ? `Annotation ${attachmentPreview.ordinal}` : attachmentPreview?.file.name ?? 'Attachment'}
-          closeLabel="Close attachment preview" panelClassName="conv-compose__preview">
+          closeLabel="Close attachment preview" className="conv-compose__preview-modal" panelClassName="conv-compose__preview">
           {attachmentPreview?.kind === 'annotation' ? <AnnotationPreviewContent annotation={attachmentPreview} screenshotUrl={attachmentContentUrl} /> : attachmentPreview?.kind === 'image' ? <img src={attachmentContentUrl(attachmentPreview.file)} alt={attachmentPreview.file.name} />
             : <pre>{attachmentPreviewText ?? 'Loading preview…'}</pre>}
         </DetailPaneModal>
@@ -2819,6 +2850,8 @@ export function ConversationDetail({
       overlayControl={composerOverlay}
       overlays={detailOverlays}
       ariaBusy={loading}
+      onDragOverCapture={handleFileDragOver}
+      onDropCapture={handleFileDrop}
       notice={controlFailureNotice || creationNotice || actionErrorNotice || externalNotice || loadErrorNotice ? <>
         {controlFailureNotice}
         {creationNotice}
