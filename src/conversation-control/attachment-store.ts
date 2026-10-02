@@ -121,7 +121,9 @@ export class ChatAttachmentStore {
           || !target || typeof target.url !== "string" || !target.url || target.url.length > 2_000
           || !rect || ![rect.x, rect.y, rect.width, rect.height].every(finite) || (rect.width as number) < 0 || (rect.height as number) < 0
           || !viewport || ![viewport.width, viewport.height].every(finite) || (viewport.width as number) <= 0 || (viewport.height as number) <= 0
-          || [target.selector, target.element_text, target.revision].some((v) => v !== undefined && (typeof v !== "string" || v.length > 2_000))) {
+          || [target.selector, target.element_text, target.revision, target.element, target.source_file,
+            target.react_components, target.css_classes, target.computed_styles, target.selected_text,
+            target.nearby_text].some((v) => v !== undefined && (typeof v !== "string" || v.length > 2_000))) {
         throw new AttachmentValidationError("Annotation metadata is invalid");
       }
       const screenshot = attachment.screenshot === undefined ? undefined : resolveFile(attachment.screenshot);
@@ -132,6 +134,13 @@ export class ChatAttachmentStore {
         viewport: { width: viewport.width as number, height: viewport.height as number },
         ...(typeof target.selector === "string" ? { selector: target.selector } : {}),
         ...(typeof target.element_text === "string" ? { element_text: target.element_text } : {}),
+        ...(typeof target.element === "string" ? { element: target.element } : {}),
+        ...(typeof target.source_file === "string" ? { source_file: target.source_file } : {}),
+        ...(typeof target.react_components === "string" ? { react_components: target.react_components } : {}),
+        ...(typeof target.css_classes === "string" ? { css_classes: target.css_classes } : {}),
+        ...(typeof target.computed_styles === "string" ? { computed_styles: target.computed_styles } : {}),
+        ...(typeof target.selected_text === "string" ? { selected_text: target.selected_text } : {}),
+        ...(typeof target.nearby_text === "string" ? { nearby_text: target.nearby_text } : {}),
         ...(typeof target.revision === "string" ? { revision: target.revision } : {}),
       };
       return { kind: "annotation", id: attachment.id, ordinal: attachment.ordinal as number, text: attachment.text,

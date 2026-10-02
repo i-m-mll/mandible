@@ -415,6 +415,10 @@
 .conv-compose__preview > * { min-width: 0; }
 .conv-compose__preview img { display: block; max-width: 100%; max-height: 50vh; object-fit: contain; }
 .conv-compose__preview pre { max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.conv-compose__annotation-context { margin: 0; }
+.conv-compose__annotation-context > div { margin-top: .5rem; }
+.conv-compose__annotation-context dt { font-weight: 600; }
+.conv-compose__annotation-context dd { margin: 0; white-space: pre-wrap; }
 
 .conv-compose__input {
   flex: 1;

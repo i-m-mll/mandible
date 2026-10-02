@@ -52,4 +52,25 @@ describe('Agentation to selected Chat draft', () => {
       .toThrow('quota');
     expect(store.getConversationDraft('chat-a').attachments).toHaveLength(0);
   });
+
+  it('keeps Agentation element context on each individual draft attachment', async () => {
+    const store = await import('../ui/src/chat/attachmentDrafts');
+    const { stageAgentationAnnotations } = await import('../ui/src/annotation/agentationAdapter');
+    store.registerWritableChatTarget('chat-a', false);
+    const detailed: Annotation = {
+      ...note('context'), comment: 'Tighten the spacing', element: 'button',
+      elementPath: 'main > button.send', selectedText: 'Send', nearbyText: 'Send message',
+      sourceFile: 'ui/src/views/conversations.tsx', reactComponents: 'ChatComposer',
+      cssClasses: 'send primary', computedStyles: 'padding: 8px; gap: 4px',
+    };
+    stageAgentationAnnotations([detailed], '/chat', { width: 800, height: 600 });
+    expect(store.getConversationDraft('chat-a').attachments[0]).toMatchObject({
+      kind: 'annotation', text: 'Tighten the spacing', target: {
+        url: '/chat', selector: 'main > button.send', element: 'button',
+        selected_text: 'Send', nearby_text: 'Send message',
+        source_file: 'ui/src/views/conversations.tsx', react_components: 'ChatComposer',
+        css_classes: 'send primary', computed_styles: 'padding: 8px; gap: 4px',
+      },
+    });
+  });
 });

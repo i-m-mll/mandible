@@ -1,5 +1,5 @@
 import { retainedAttachmentPath, verifiedAttachmentBytes } from "./attachment-store.js";
-import type { ChatAttachment, StoredAttachmentFile } from "./attachments.js";
+import { annotationContextFields, type ChatAttachment, type StoredAttachmentFile } from "./attachments.js";
 import type { UserInput } from "./generated/codex-app-server/v2/UserInput.js";
 import { getDbPath } from "../db.js";
 
@@ -20,8 +20,8 @@ export function attachmentProviderContext(message: string, attachments: readonly
       images.push({ file: attachment.file, path: retainedAttachmentPath(attachment.file.id, dbPath), bytes: verifiedAttachmentBytes(attachment.file, dbPath) });
       lines.push(`Attached image: ${attachment.file.name}`);
     } else {
-      const target = attachment.target;
-      lines.push(`Annotation ${attachment.ordinal}: ${attachment.text}\nPage: ${target.url}\nElement: ${target.element_text ?? "(no element text)"}\nSelector: ${target.selector ?? "(none)"}\nBounds: ${JSON.stringify(target.rect)}\nViewport: ${JSON.stringify(target.viewport)}${target.revision ? `\nRevision: ${target.revision}` : ""}`);
+      lines.push(`Annotation ${attachment.ordinal}: ${attachment.text}\n${annotationContextFields(attachment.target)
+        .map(({ label, value }) => `${label}: ${value}`).join("\n")}`);
       if (attachment.screenshot) {
         images.push({ file: attachment.screenshot, path: retainedAttachmentPath(attachment.screenshot.id, dbPath), bytes: verifiedAttachmentBytes(attachment.screenshot, dbPath) });
       }
