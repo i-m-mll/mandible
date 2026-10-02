@@ -400,6 +400,11 @@
 .conv-compose__attachment-overflow { --overflow-fade-color: var(--surface-app); }
 .conv-compose__attachments { display: flex; flex-wrap: nowrap; gap: 6px; width: max-content; padding: 2px 0 5px; }
 .conv-compose__attachment { display: inline-flex; align-items: center; flex: 0 0 auto; max-width: 190px; border: 1px solid var(--neutral-alpha-10); border-radius: 7px; background: var(--neutral-alpha-04); }
+.conv-compose__attachment--new { animation: conv-annotation-new 1s ease-out both; }
+@keyframes conv-annotation-new {
+  from { background: rgba(59, 130, 246, 0.3); border-color: #3b82f6; }
+  to { background: var(--neutral-alpha-04); border-color: var(--neutral-alpha-10); }
+}
 .conv-compose__attachment-body, .conv-compose__attachment-remove { border: 0; color: var(--fg-default); background: transparent; cursor: pointer; }
 .conv-compose__attachment-body { display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 4px 3px 4px 7px; }
 .conv-compose__attachment-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15ch; }

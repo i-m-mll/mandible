@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const annotation = (id: string, ordinal: number) => ({
   kind: 'annotation' as const, id, ordinal, text: `Comment ${id}`,
@@ -7,6 +7,7 @@ const annotation = (id: string, ordinal: number) => ({
 
 describe('attachment draft ownership and recovery', () => {
   const entries = new Map<string, string>();
+  afterEach(() => vi.useRealTimers());
   beforeEach(() => {
     entries.clear();
     vi.resetModules();
@@ -81,5 +82,18 @@ describe('attachment draft ownership and recovery', () => {
     expect(store.getPendingSubmitIntent('chat-a')).toMatchObject({ id: 'stable-key', state: 'uncertain' });
     expect(store.clearAcceptedDraft('chat-a', draft).ok).toBe(true);
     expect(store.getPendingSubmitIntent('chat-a')).toBeNull();
+  });
+
+  it('limits highlights to newly staged IDs and clears them after one second', async () => {
+    vi.useFakeTimers();
+    const store = await import('../ui/src/chat/attachmentDrafts');
+    store.registerWritableChatTarget('chat-a', false);
+    store.highlightDraftAttachments('chat-a', ['new']);
+    expect([...store.getDraftAttachmentHighlights('chat-a')]).toEqual([]);
+    store.activateDraftAttachmentHighlights('chat-a');
+    expect([...store.getDraftAttachmentHighlights('chat-a')]).toEqual(['new']);
+    expect([...store.getDraftAttachmentHighlights('chat-b')]).toEqual([]);
+    vi.advanceTimersByTime(1000);
+    expect([...store.getDraftAttachmentHighlights('chat-a')]).toEqual([]);
   });
 });
