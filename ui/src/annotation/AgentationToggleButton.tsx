@@ -9,6 +9,7 @@ export function AgentationToggleButton({ visible, expandedRail, onToggle }: Agen
   return (
     <button
       type="button"
+      data-feedback-toolbar
       className="app-rail__item"
       aria-label={label}
       aria-pressed={visible}
