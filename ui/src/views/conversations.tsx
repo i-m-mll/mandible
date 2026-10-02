@@ -105,6 +105,7 @@ import {
   deriveChatUsageSummary,
   useStatuslineTelemetry,
   chatControlFailureNotice,
+  chatSubmissionFailureNotice,
   chatSpawnFailureNotice,
   reduceNewChatDraft,
   type ChatPreviewTarget,
@@ -2111,7 +2112,7 @@ export function ConversationDetail({
   }, [control, controlPresentation, conversation, creationReceipt, latestDagUuid]);
 
   const { active: chatViewActive } = useAppShell();
-  const selectedComposerWritable = !isReadOnlyChild && !continueBusy && !submitIntent
+  const selectedComposerWritable = !isReadOnlyChild && !continueBusy && (!submitIntent || submitIntent.state === 'failed')
     && !continueDisabledReason && controlPresentation?.composer === 'enabled';
   const composerWritable = chatViewActive && selectedComposerWritable;
   useLayoutEffect(() => {
@@ -2253,7 +2254,8 @@ export function ConversationDetail({
     } catch (err) {
       const apiError = err as Partial<ConversationControlApiError>;
       if (apiError.snapshot && stillSelected()) setControl(apiError.snapshot);
-      const uncertain = apiError.controlError?.kind === 'delivery-uncertain';
+      const uncertain = apiError.controlError?.kind === 'delivery-uncertain'
+        || (!apiError.controlError && !(err instanceof ApiError));
       if (!uncertain) {
         const provider = conversation?.source ?? creationReceipt?.request.provider;
         const providerSessionId = conversation?.session_id
@@ -2282,7 +2284,7 @@ export function ConversationDetail({
       if (stillSelected()) {
         if (!savedFailure.ok) setContinueError(`Could not retain retry state: ${savedFailure.error}`);
         if (apiError.controlError) setControlFailure(chatControlFailureNotice(apiError.controlError));
-        else setContinueError(err instanceof Error ? err.message : String(err));
+        else setControlFailure(chatSubmissionFailureNotice(err));
       }
     } finally {
       if (stillSelected()) {
@@ -2300,22 +2302,36 @@ export function ConversationDetail({
   const handleContinueSubmit = useCallback((event: JSX.TargetedEvent<HTMLFormElement, Event>) => {
     event.preventDefault();
     const prompt = continueDraft.trim();
-    if ((!prompt && !draftAttachments.length) || submitIntent) return;
+    if ((!prompt && !draftAttachments.length)
+      || (submitIntent && !['failed', 'uncertain'].includes(submitIntent.state))) return;
     if (continueDisabledReason && creationReceipt?.state !== 'starting') {
       setContinueError(continueDisabledReason);
       return;
     }
-    const intent = {
-      id: crypto.randomUUID(),
-      message: prompt,
-      draftText: continueDraft,
-      attachments: structuredClone(draftAttachments),
-      ...(control?.capability.kind === 'message-anchor-resume' && latestDagUuid ? { messageAnchor: latestDagUuid } : {}),
-      runtimeOptions: {
+    const runtimeOptions: ConversationRuntimeOptions = submitIntent?.state === 'uncertain'
+      ? submitIntent.runtimeOptions
+      : {
         ...(composerModel ? { model: composerModel } : {}),
         ...(composerEffort ? { effort: composerEffort } : {}),
         ...(composerPermission ? { permission_mode: composerPermission as ConversationRuntimeOptions['permission_mode'] } : {}),
-      },
+      };
+    const messageAnchor = submitIntent?.state === 'uncertain'
+      ? submitIntent.messageAnchor
+      : control?.capability.kind === 'message-anchor-resume' && latestDagUuid
+        ? latestDagUuid : undefined;
+    const unchangedIntent = submitIntent
+      && continueDraft === submitIntent.draftText
+      && JSON.stringify(draftAttachments) === JSON.stringify(submitIntent.attachments)
+      && JSON.stringify(runtimeOptions) === JSON.stringify(submitIntent.runtimeOptions)
+      && messageAnchor === submitIntent.messageAnchor;
+    if (submitIntent?.state === 'uncertain' && !unchangedIntent) return;
+    const intent = {
+      id: unchangedIntent ? submitIntent.id : crypto.randomUUID(),
+      message: prompt,
+      draftText: continueDraft,
+      attachments: structuredClone(draftAttachments),
+      ...(messageAnchor ? { messageAnchor } : {}),
+      runtimeOptions,
       state: 'waiting' as const,
     };
     const savedIntent = savePendingSubmitIntent(conversationId, intent);
@@ -2332,15 +2348,6 @@ export function ConversationDetail({
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
   }, []);
-
-  const retrySubmitIntent = useCallback(() => {
-    if (!submitIntent || !['failed', 'uncertain'].includes(submitIntent.state)) return;
-    const waiting = { ...submitIntent, state: 'waiting' as const };
-    const result = savePendingSubmitIntent(conversationId, waiting);
-    if (!result.ok) { setContinueError(result.error); return; }
-    projectPendingIntent(waiting);
-    setSubmitIntent(waiting);
-  }, [conversationId, projectPendingIntent, submitIntent]);
 
   const handleComposerModelChange = useCallback(async (value: string) => {
     setComposerModel(value);
@@ -2630,7 +2637,7 @@ export function ConversationDetail({
                     <span className="conv-compose__attachment-name">{label}</span>
                   </button>
                   <button type="button" className="conv-compose__attachment-remove" aria-label={`Remove ${label}`} title={`Remove ${label}`}
-                    disabled={Boolean(submitIntent)} onClick={() => { const result = removeDraftAttachment(conversationId, index); if (!result.ok) setContinueError(result.error); }}>×</button>
+                    disabled={Boolean(submitIntent && submitIntent.state !== 'failed')} onClick={() => { const result = removeDraftAttachment(conversationId, index); if (!result.ok) setContinueError(result.error); }}>×</button>
                 </div>;
               })}
             </div>
@@ -2705,7 +2712,7 @@ export function ConversationDetail({
                 type="submit"
                 form={`conversation-compose-${conversation.id}`}
                 className="chat-circle-action conv-compose__send"
-                disabled={continueBusy || Boolean(submitIntent) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || (!continueDraft.trim() && !draftAttachments.length)}
+                disabled={continueBusy || Boolean(submitIntent && !['failed', 'uncertain'].includes(submitIntent.state)) || (Boolean(continueDisabledReason) && creationReceipt?.state !== 'starting') || (!continueDraft.trim() && !draftAttachments.length)}
                 title={controlPresentation?.submitLabel ?? 'Send'}
                 aria-label={controlPresentation?.submitLabel ?? 'Send'}
               >
@@ -2731,12 +2738,6 @@ export function ConversationDetail({
             {continueDisabledReason}
           </div>
         )}
-        {continueError && <div className="conv-compose__status conv-compose__status--error" role="alert">{continueError}</div>}
-        {(submitIntent?.state === 'uncertain' || (submitIntent?.state === 'failed' && !controlFailure?.retryable)) && (
-          <button type="button" className="btn btn--ghost btn--sm" onClick={retrySubmitIntent}>
-            Retry message
-          </button>
-        )}
         <DetailPaneModal open={Boolean(attachmentPreview)} onClose={() => setAttachmentPreview(null)}
           titleId="chat-attachment-preview-title" title={attachmentPreview?.kind === 'annotation' ? `Annotation ${attachmentPreview.ordinal}` : attachmentPreview?.file.name ?? 'Attachment'}
           closeLabel="Close attachment preview" panelClassName="conv-compose__preview">
@@ -2754,7 +2755,7 @@ export function ConversationDetail({
     <ChatFailureNotice
       failure={controlFailure}
       busy={continueBusy}
-      onRetry={controlFailure.retryable && submitIntent?.state === 'failed' ? retrySubmitIntent : undefined}
+      onDismiss={() => setControlFailure(null)}
     />
   ) : null;
 
@@ -2770,7 +2771,7 @@ export function ConversationDetail({
       severity="error"
       density="compact"
       title={runOptionsError && toast?.type !== 'error' && !continueError ? 'Chat run options unavailable' : 'Chat action failed'}
-      actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => { setToast(null); setContinueError(null); setRunOptionsError(null); }}>Dismiss</button>}
+      actions={<button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss error" title="Dismiss error" onClick={() => { setToast(null); setContinueError(null); setRunOptionsError(null); }}>×</button>}
     >
       {toast?.type === 'error' ? toast.message : continueError ?? (runOptionsError ? `Run options could not be loaded: ${runOptionsError}` : null)}
     </DetailPaneNotice>

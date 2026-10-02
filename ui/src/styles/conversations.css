@@ -20,6 +20,26 @@
   font-size: 0.75rem;
 }
 
+.chat-failure-notice__dismiss {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.25rem;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.chat-failure-notice__dismiss:hover,
+.chat-failure-notice__dismiss:focus-visible {
+  background: var(--neutral-alpha-08);
+}
+
 /* Dense conversation lists remain scannable without spending a full control
  * row on each title. This is intentionally scoped to Chat's sidebar. */
 .chat-history-sidebar .sidebar-item-row,
@@ -460,10 +480,6 @@
 .conv-compose__status {
   color: var(--text-muted);
   font-size: 12px;
-}
-
-.conv-compose__status--error {
-  color: var(--accent-red);
 }
 
 .conv-compose__actions {

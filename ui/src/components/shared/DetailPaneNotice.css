@@ -49,7 +49,7 @@
 .detail-pane-notice__content {
   display: flex;
   align-items: baseline;
-  flex: 1 1 24rem;
+  flex: 1 1 0;
   flex-wrap: wrap;
   gap: 0.3rem 0.6rem;
   min-width: 0;
