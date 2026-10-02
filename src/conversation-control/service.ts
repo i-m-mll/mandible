@@ -287,6 +287,8 @@ export class ConversationControlService {
         if (!turnFailed.ok) return turnFailed;
         const deliveryFailed = this.store.finishDelivery(prepared.value.delivery_id, acquired);
         if (!deliveryFailed.ok) return deliveryFailed;
+        const released = this.store.recoverFailedCodexAcquisition(request.conversation_id, prepared.value.snapshot.ownership.generation);
+        if (!released.ok) return released;
         this.notify(request.conversation_id);
         return acquired;
       }
@@ -373,6 +375,15 @@ export class ConversationControlService {
       if (result.ok) this.notify(conversationId);
     };
     for (const claim of claims) {
+      const recovered = this.store.recoverFailedCodexAcquisition(claim.conversation_id, claim.generation);
+      if (!recovered.ok) {
+        record(recovered);
+        continue;
+      }
+      if (recovered.value) {
+        this.notify(claim.conversation_id);
+        continue;
+      }
       const adapter = this.adapters.byAdapterId(claim.adapter_id);
       if (!adapter) {
         recordControl(claim.conversation_id, this.store.markUnknown(claim.conversation_id, claim.generation, "adapter-unavailable"));
