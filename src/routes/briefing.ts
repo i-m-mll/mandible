@@ -1,4 +1,4 @@
-import { ClientAuthzError, isOperator, requireIdentity } from "../client-auth/authz.js";
+import { ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity } from "../client-auth/authz.js";
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson } from "../canonical-json.js";
 import { artifactRequiredProjects, getArtifactCurrentSource } from "../artifact-source.js";
@@ -76,7 +76,8 @@ function handleError(res: ResponseLike, error: unknown): void {
 function activeHuman(db: Db, req: RequestLike) {
   const identity = requireIdentity(req);
   const user = getUserById(db, identity.user_id);
-  if (!user || user.status !== "active" || user.kind !== "human") {
+  if (!user || user.status !== "active" || user.kind !== "human"
+      || (identity.method === "local_socket" && !isLocalHumanRequest(req))) {
     throw new ClientAuthzError(403, "human_responder_required", "Briefing responses require an active human credential.");
   }
   return { identity, user, operator: isOperator(db, identity) };
@@ -100,8 +101,16 @@ function publicationPrincipal(
 ): PublicationPrincipal {
   const identity = requireIdentity(req);
   const caller = getUserById(db, identity.user_id);
-  if (caller?.status === "active" && caller.kind === "human") {
+  if (caller?.status === "active" && caller.kind === "human"
+      && (identity.method === "api_token" || identity.method === "local_os_user"
+        || isLocalHumanRequest(req))) {
     return { publisherUserId: caller.id, kind: "human", operator: isOperator(db, identity) };
+  }
+  if (caller?.status === "active" && caller.kind === "human"
+      && req.body && typeof req.body === "object" && !Array.isArray(req.body)
+      && "sharing_reason" in req.body) {
+    throw new ClientAuthzError(403, "briefing_collection_sharing_credential_required",
+      "Intentional cross-collection sharing requires a durable API token.");
   }
   const publisher = requireDurableAgentPublisher(db, req, messages);
   return { publisherUserId: publisher.userId, kind: "agent", operator: false };
@@ -116,17 +125,17 @@ function configuredHumanOperator(db: Db, code: string, message: string) {
 }
 
 function destinationPrincipal(db: Db, req: RequestLike) {
-  const identity = requireIdentity(req);
-  if (identity.method !== "api_token") {
-    throw new ClientAuthzError(403, "briefing_destination_route_credential_required",
-      "Briefing destination writes require a durable API token.");
-  }
-  const user = getUserById(db, identity.user_id);
-  if (!user || user.status !== "active" || (user.kind !== "agent" && !isOperator(db, identity))) {
+  const principal = publicationPrincipal(db, req, {
+    credentialCode: "briefing_destination_route_credential_required",
+    credentialMessage: "Agent destination writes require a durable API token.",
+    agentCode: "briefing_destination_actor_required",
+    agentMessage: "Destination writes require an active agent or the configured operator.",
+  });
+  if (principal.kind === "human" && !principal.operator) {
     throw new ClientAuthzError(403, "briefing_destination_actor_required",
-      "Briefing destination writes require an active agent or the configured operator.");
+      "Destination writes require an active agent or the configured operator.");
   }
-  return { userId: user.id, credentialId: identity.credential_id };
+  return { userId: principal.publisherUserId, credentialId: req.client_identity?.credential_id ?? null };
 }
 
 function artifactPublisherAccess(db: Db, req: RequestLike, artifactId: string): void {
@@ -189,25 +198,19 @@ function renameViewer(
 }
 
 function groupUpdateViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
-  const identity = requireIdentity(req);
-  if (identity.method !== "api_token") {
-    throw new ClientAuthzError(403, "briefing_group_update_publisher_credential_required",
-      "Briefing group updates require a durable API token, not a session credential.");
-  }
-  const caller = getUserById(db, identity.user_id);
-  if (caller?.status === "active" && caller.kind === "human") {
-    if (!isOperator(db, identity)) {
-      throw new ClientAuthzError(403, "briefing_group_update_operator_required",
-        "Briefing group updates require the configured human operator or a durable agent publisher.");
-    }
-    return { userId: caller.id, operator: true };
-  }
-  requireDurableAgentPublisher(db, req, {
+  const principal = publicationPrincipal(db, req, {
     credentialCode: "briefing_group_update_publisher_credential_required",
-    credentialMessage: "Briefing group updates require a durable API token, not a session credential.",
+    credentialMessage: "Agent Briefing group updates require a durable API token.",
     agentCode: "briefing_group_update_publisher_agent_required",
     agentMessage: "Briefing group updates require an active agent identity.",
   });
+  if (principal.kind === "human") {
+    if (!principal.operator) {
+      throw new ClientAuthzError(403, "briefing_group_update_operator_required",
+        "Briefing group updates require the configured human operator or a durable agent publisher.");
+    }
+    return { userId: principal.publisherUserId, operator: true };
+  }
   return { userId: configuredHumanOperator(db, "briefing_group_update_operator_required",
     "Briefing group updates by an agent require a configured active human operator.").id, operator: true };
 }
@@ -254,55 +257,40 @@ function destinationChanges(value: unknown): BriefingGroupDestinationChangeInput
 }
 
 function briefingOrganizationViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
-  const identity = requireIdentity(req);
-  if (identity.method !== "api_token") {
-    throw new ClientAuthzError(403, "briefing_organization_publisher_credential_required",
-      "Briefing Archive and Restore require a durable API token, not a session credential.");
-  }
-  const caller = getUserById(db, identity.user_id);
-  if (caller?.status === "active" && caller.kind === "human") {
-    if (!isOperator(db, identity)) {
-      throw new ClientAuthzError(403, "briefing_organization_operator_required",
-        "Briefing Archive and Restore require the configured human operator or a durable agent publisher.");
-    }
-    return { userId: caller.id, operator: true };
-  }
-  requireDurableAgentPublisher(db, req, {
+  const principal = publicationPrincipal(db, req, {
     credentialCode: "briefing_organization_publisher_credential_required",
-    credentialMessage: "Briefing Archive and Restore require a durable API token, not a session credential.",
+    credentialMessage: "Agent Briefing Archive and Restore require a durable API token.",
     agentCode: "briefing_organization_publisher_agent_required",
     agentMessage: "Briefing Archive and Restore require an active agent identity.",
   });
+  if (principal.kind === "human") {
+    if (!principal.operator) {
+      throw new ClientAuthzError(403, "briefing_organization_operator_required",
+        "Briefing Archive and Restore require the configured human operator or a durable agent publisher.");
+    }
+    return { userId: principal.publisherUserId, operator: true };
+  }
   return { userId: configuredHumanOperator(db, "briefing_organization_operator_required",
     "Briefing Archive and Restore by an agent require a configured active human operator.").id, operator: true };
 }
 
 function bundleMembershipViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
-  const identity = requireIdentity(req);
-  if (identity.method !== "api_token") {
-    throw new ClientAuthzError(
-      403,
-      "briefing_bundle_membership_publisher_credential_required",
-      "Briefing bundle membership replacement requires a durable API token, not a session credential.",
-    );
-  }
-  const caller = getUserById(db, identity.user_id);
-  if (caller?.status === "active" && caller.kind === "human") {
-    if (!isOperator(db, identity)) {
+  const principal = publicationPrincipal(db, req, {
+    credentialCode: "briefing_bundle_membership_publisher_credential_required",
+    credentialMessage: "Agent Briefing bundle membership replacement requires a durable API token.",
+    agentCode: "briefing_bundle_membership_publisher_agent_required",
+    agentMessage: "Briefing bundle membership replacement requires an active agent identity.",
+  });
+  if (principal.kind === "human") {
+    if (!principal.operator) {
       throw new ClientAuthzError(
         403,
         "briefing_bundle_membership_operator_required",
         "Briefing bundle membership replacement requires the configured human operator or a durable agent publisher.",
       );
     }
-    return { userId: caller.id, operator: true };
+    return { userId: principal.publisherUserId, operator: true };
   }
-  requireDurableAgentPublisher(db, req, {
-    credentialCode: "briefing_bundle_membership_publisher_credential_required",
-    credentialMessage: "Briefing bundle membership replacement requires a durable API token, not a session credential.",
-    agentCode: "briefing_bundle_membership_publisher_agent_required",
-    agentMessage: "Briefing bundle membership replacement requires an active agent identity.",
-  });
   return { userId: configuredHumanOperator(
     db,
     "briefing_bundle_membership_operator_required",
@@ -314,6 +302,10 @@ function briefingLayoutViewer(db: Db, req: RequestLike): {
   userId: string; operator: boolean; humanReviewOperator: boolean;
 } {
   const identity = requireIdentity(req);
+  if (identity.method === "local_socket" && !isLocalHumanRequest(req)) {
+    throw new ClientAuthzError(403, "briefing_layout_operator_required",
+      "Operator-visible Briefing layout reads require an authenticated publisher.");
+  }
   const caller = getUserById(db, identity.user_id);
   if (identity.method === "api_token" && caller?.status === "active" && caller.kind === "agent") {
     requireDurableAgentPublisher(db, req, {
