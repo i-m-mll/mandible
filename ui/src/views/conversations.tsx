@@ -2707,7 +2707,11 @@ export function ConversationDetail({
             accept="text/*,image/png,image/jpeg,image/webp,image/gif,.js,.jsx,.ts,.tsx,.json,.yaml,.yml,.toml,.py,.rs,.go,.sh,.sql,.md,.txt"
             onChange={(event) => { importFiles(event.currentTarget.files ?? []); event.currentTarget.value = ''; }} />
           <button type="button" className="conv-compose__add-attachment" aria-label="Add attachments" title="Add attachments"
-            disabled={!canImportAttachments || attachmentBusy} onClick={() => attachmentPickerRef.current?.click()}>+</button>
+            disabled={!canImportAttachments || attachmentBusy} onClick={() => attachmentPickerRef.current?.click()}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" focusable="false">
+              <path d="M12 4v16M4 12h16" />
+            </svg>
+          </button>
           <div
             ref={runOptionsGeometry.containerRef}
             className={`conv-compose__runtime${runOptionsGeometry.overflowed ? ' conv-compose__runtime--run-options-overflow' : ''}`}
