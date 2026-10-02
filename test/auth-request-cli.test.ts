@@ -20,6 +20,9 @@ function run(
     encoding: "utf8",
     env: {
       ...process.env,
+      CODEX_THREAD_ID: "", CODEX_SESSION_ID: "",
+      CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "",
+      GEMINI_SESSION_ID: "", MANDIBLE_MANAGED_APP: "", MANDIBLE_SESSION_ID: "",
       HOME: homeDir,
       MANDIBLE_PORT: "9",
       // Pin base to the (dead) test port so a leaked dev-shell MANDIBLE_BASE
@@ -45,6 +48,9 @@ function runAsync(
       cwd,
       env: {
         ...process.env,
+      CODEX_THREAD_ID: "", CODEX_SESSION_ID: "",
+      CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "",
+      GEMINI_SESSION_ID: "", MANDIBLE_MANAGED_APP: "", MANDIBLE_SESSION_ID: "",
         HOME: homeDir,
         MANDIBLE_PORT: "9",
         // Pin base to the (dead) test port so a leaked dev-shell MANDIBLE_BASE

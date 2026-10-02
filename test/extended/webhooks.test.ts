@@ -122,9 +122,11 @@ function getJson(
 describe.sequential("webhook ingestion", () => {
   let temp: TempPaths | null = null;
   let daemon: DaemonHandle | null = null;
+  const priorSocket = process.env.MANDIBLE_SOCKET;
 
   beforeEach(async () => {
     temp = createTempPaths();
+    process.env.MANDIBLE_SOCKET = path.join(temp.dir, "api.sock");
     const port = await getAvailablePort();
     if (!port) throw new Error("Could not get available port");
     daemon = await startDaemon({
@@ -140,6 +142,8 @@ describe.sequential("webhook ingestion", () => {
   });
 
   afterEach(async () => {
+    if (priorSocket === undefined) delete process.env.MANDIBLE_SOCKET;
+    else process.env.MANDIBLE_SOCKET = priorSocket;
     if (daemon) {
       await daemon.close();
       daemon = null;
