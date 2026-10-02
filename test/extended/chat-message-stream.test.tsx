@@ -1050,6 +1050,7 @@ describe('ChatSurface stream behavior', () => {
     expect(scroll.scrollTop).toBeGreaterThan(900);
     expect(scroll.scrollTop).toBeLessThanOrEqual(1000);
 
+    fireEvent.wheel(scroll, { deltaY: 500 });
     scroll.scrollTop = 8500;
     fireEvent.scroll(scroll);
     expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
@@ -1080,6 +1081,7 @@ describe('ChatSurface stream behavior', () => {
     Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 500 });
     Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 9000 });
 
+    fireEvent.wheel(scroll, { deltaY: -100 });
     scroll.scrollTop = 1000;
     fireEvent.scroll(scroll);
     const readingTop = scroll.scrollTop;
@@ -1094,11 +1096,42 @@ describe('ChatSurface stream behavior', () => {
       streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
     expect(scrollTo.mock.calls.length).toBe(nearBottomCalls);
 
+    fireEvent.wheel(scroll, { deltaY: 50 });
     scroll.scrollTop = 8500;
     fireEvent.scroll(scroll);
     view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24'), user('near latest', 'entry-25'), user('latest', 'entry-26')]}
       streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
     expect(scrollTo).toHaveBeenCalledWith({ top: 9000, behavior: 'auto' });
+  });
+
+  it('does not re-arm tail follow when a content resize moves an earlier reader to the bottom', () => {
+    const initial = Array.from({ length: 24 }, (_, index) => user(`entry ${index}`, `entry-${index}`));
+    let height = 9000;
+    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = Number(options.top ?? 0);
+      this.dispatchEvent(new Event('scroll'));
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
+    const view = render(<ChatSurface events={initial} streaming={false} sessionInfo={{ sessionId: 'resize-reader' }} />);
+    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => height });
+
+    fireEvent.wheel(scroll, { deltaY: -200 });
+    scroll.scrollTop = 1000;
+    fireEvent.scroll(scroll);
+    height = 1500;
+    fireEvent.scroll(scroll);
+    expect(JSON.parse(localStorage.getItem('mandible:chat-scroll:resize-reader')!).followingTail).toBe(false);
+
+    view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24')]}
+      streaming={false} sessionInfo={{ sessionId: 'resize-reader' }} />);
+    height = 2000;
+    const callsBeforeAppend = scrollTo.mock.calls.length;
+    view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24'), user('later', 'entry-25')]}
+      streaming={false} sessionInfo={{ sessionId: 'resize-reader' }} />);
+    expect(scrollTo.mock.calls.slice(callsBeforeAppend)).not.toContainEqual([{ top: 2000, behavior: 'auto' }]);
+    expect(JSON.parse(localStorage.getItem('mandible:chat-scroll:resize-reader')!).followingTail).toBe(false);
   });
 
   it('keeps an explicit latest jump through a paged source refresh', () => {
