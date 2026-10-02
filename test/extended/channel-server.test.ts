@@ -32,6 +32,12 @@ describe("channel-server base URL", () => {
     })).toBe("http://127.0.0.1:12345");
   });
 
+  it("keeps explicitly selected canonical HTTPS available", async () => {
+    const { resolveTransport } = await import("../../channel-server/base-url.js");
+    expect(resolveTransport({ MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_TRANSPORT: "http" }))
+      .toEqual({ kind: "http", baseUrl: "https://app.mandible.localhost:19420" });
+  });
+
   it("refuses unsupported explicit transports", async () => {
     const { resolveBaseUrl } = await import("../../channel-server/base-url.js");
     expect(() => resolveBaseUrl({ MANDIBLE_BASE: "file:///tmp/spool" })).toThrow();
@@ -41,6 +47,19 @@ describe("channel-server base URL", () => {
 });
 
 describe("channel-server local socket", () => {
+  it("shares bearer selection between REST and notifications", async () => {
+    const { channelTransportHeaders } = await import("../../channel-server/client.js");
+    const original = process.env.MANDIBLE_TOKEN;
+    process.env.MANDIBLE_TOKEN = "explicit-http-token";
+    try {
+      expect(channelTransportHeaders("socket").Authorization).toBeUndefined();
+      expect(channelTransportHeaders("http").Authorization).toBe("Bearer explicit-http-token");
+    } finally {
+      if (original === undefined) delete process.env.MANDIBLE_TOKEN;
+      else process.env.MANDIBLE_TOKEN = original;
+    }
+  });
+
   it("uses the socket and ignores an inherited bearer on ordinary reads", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-socket-"));
     const socket = path.join(root, "daemon.sock");

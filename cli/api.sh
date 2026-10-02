@@ -976,7 +976,7 @@ api_ambient_session_id() {
 }
 
 api_curl_ambient_headers() {
-  local provider session_id
+  local provider session_id managed_app="${MANDIBLE_MANAGED_APP:-}" managed_session="${MANDIBLE_SESSION_ID:-}"
   provider=$(api_ambient_provider)
   session_id=$(api_ambient_session_id)
   if api_managed_client_markers_present || [[ -n "$provider" ]]; then
@@ -984,6 +984,12 @@ api_curl_ambient_headers() {
   fi
   [[ -z "$provider" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Ambient-Provider: ${provider}"
   [[ -z "$session_id" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Ambient-Provider-Session-Id: ${session_id}"
+  if [[ -n "$managed_app" && -n "$managed_session" ]] \
+      && secret_material_valid "$managed_app" && secret_material_valid "$managed_session"; then
+    printf '%s\0%s\0%s\0%s\0' \
+      '-H' "X-Mandible-Managed-App: ${managed_app}" \
+      '-H' "X-Mandible-Managed-Session-Id: ${managed_session}"
+  fi
 }
 
 api_route_mutation_category_file() {

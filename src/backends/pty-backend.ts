@@ -1,4 +1,4 @@
-import { needsManagedHttpCredential } from "./mandible-transport.js";
+import { needsManagedHttpCredential, projectManagedProviderIdentity } from "./mandible-transport.js";
 import { EventEmitter } from "node:events";
 import type { IPty, IDisposable } from "node-pty";
 import pty from "node-pty";
@@ -803,6 +803,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
       cleaned[k] = v;
     }
     Object.assign(cleaned, extraEnv);
+    projectManagedProviderIdentity(cleaned, this.meta.command, this.meta.provider_session_id, this.meta.mandible_session_id ?? this.id);
     // Issue 708dc4c — never inherit or accept a caller-supplied daemon token.
     // SessionManager provisions the token for the resolved agent user and this
     // final assignment prevents either process.env or persisted session env

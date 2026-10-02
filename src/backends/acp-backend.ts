@@ -1,4 +1,4 @@
-import { needsManagedHttpCredential } from "./mandible-transport.js";
+import { needsManagedHttpCredential, projectManagedProviderIdentity } from "./mandible-transport.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { WebSocket } from "ws";
@@ -1133,6 +1133,7 @@ implements
       cleaned[key] = value;
     }
     Object.assign(cleaned, extraEnv);
+    projectManagedProviderIdentity(cleaned, this.meta.command, this.meta.provider_session_id, this.meta.mandible_session_id ?? this.id);
     delete cleaned.MANDIBLE_TOKEN;
     cleaned.MANDIBLE_MANAGED_CLIENT = "1";
     if (needsManagedHttpCredential(cleaned)) {

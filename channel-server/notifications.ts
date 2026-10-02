@@ -18,9 +18,10 @@
 
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import http from "node:http";
+import https from "node:https";
 import type { MandibleSSEEvent } from "./types.js";
 import { resolveBaseUrl, resolveTransport } from "./base-url.js";
-import { ambientHeaders } from "./client.js";
+import { channelTransportHeaders } from "./client.js";
 
 const RECONNECT_DELAY_MS = 5_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
@@ -40,14 +41,20 @@ export function markDelivered(requestId: string): void {
   if (!requestId) return;
   const url = new URL(`/api/inbox/delivered/${encodeURIComponent(requestId)}`, resolveBaseUrl());
   const transport = resolveTransport();
-  const req = http.request(
+  let headers: Record<string, string>;
+  try { headers = channelTransportHeaders(transport.kind); }
+  catch (error) {
+    process.stderr.write(`Mandible channel delivery needs a durable credential: ${String(error)}\n`);
+    return;
+  }
+  const req = (transport.kind === "http" && url.protocol === "https:" ? https : http).request(
     {
       method: "POST",
       hostname: url.hostname,
       port: url.port,
       path: url.pathname,
       ...(transport.kind === "socket" ? { socketPath: transport.socketPath } : {}),
-      headers: { "Content-Length": "0", ...ambientHeaders() },
+      headers: { "Content-Length": "0", ...headers },
     },
     (res) => {
       // Drain to free the socket; status codes are advisory only.
@@ -243,12 +250,19 @@ export function createNotificationBridge(
     const url = new URL("/api/events", resolveBaseUrl());
 
     const transport = resolveTransport();
-    currentReq = http.get({
+    let headers: Record<string, string>;
+    try { headers = channelTransportHeaders(transport.kind); }
+    catch (error) {
+      process.stderr.write(`Mandible channel events need a durable credential: ${String(error)}\n`);
+      scheduleReconnect();
+      return;
+    }
+    currentReq = (transport.kind === "http" && url.protocol === "https:" ? https : http).get({
       hostname: url.hostname,
       port: url.port,
       path: url.pathname,
       ...(transport.kind === "socket" ? { socketPath: transport.socketPath } : {}),
-      headers: ambientHeaders(),
+      headers,
     }, (res) => {
       if (res.statusCode !== 200) {
         res.destroy();
