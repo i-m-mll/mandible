@@ -32,6 +32,11 @@ Clients attach them to requests without asking the model to discover or remember
 them. Claimed provider identity resolves only to an active agent account;
 ambiguous or missing managed-client identity never becomes the human operator.
 The provider task and any Mandible session alias remain distinct identifiers.
+Before a provider assigns its task ID, a managed launcher supplies its explicit
+app name and Mandible session alias. The socket resolves this pair only to an
+active agent binding and refuses conflicting claims. A fresh Claude SDK launch
+reserves the actual provider UUID through the SDK and gives that same UUID to
+its channel; a resumed launch retains its recorded provider UUID.
 
 The server records local socket access separately from verified credential
 evidence. Local access still passes through the existing project permissions,
