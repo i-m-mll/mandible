@@ -838,7 +838,7 @@ api_report_terminal_response() {
 api_http_exchange() {
   local method="$1" request_path="$2" data="$3" output_file="$4"
   local retry_limit="${MANDIBLE_HTTP_RETRIES:-2}" attempt=0 http_status curl_exit
-  local body_tmp="" stderr_tmp retryable empty_response token token_cfg="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service account
+  local body_tmp="" stderr_tmp retryable empty_response token="" token_cfg="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service account
   local ambient_headers=() curl_args=()
 
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
