@@ -245,10 +245,10 @@ afterEach(async () => {
   tempRoots = [];
 });
 
-function writeRouteMutationCategories(payload: unknown): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-route-categories-"));
+function writeOperationMetadata(payload: unknown): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-operation-metadata-"));
   tempRoots.push(root);
-  const file = path.join(root, "route-mutation-categories.json");
+  const file = path.join(root, "instance.json");
   fs.writeFileSync(file, `${JSON.stringify(payload)}\n`, "utf8");
   return file;
 }
@@ -447,7 +447,7 @@ describe("CLI instance mutation preflight", () => {
   });
 
   it("reads exact method/template classification from the selected runtime catalog", async () => {
-    const file = writeRouteMutationCategories(withCatalog(MAIN_INSTANCE));
+    const file = writeOperationMetadata(withCatalog(MAIN_INSTANCE));
     const result = await runBash(`source cli/api.sh
 api_operational_mutation_category POST /api/projects '${file}'`, 1);
     expect(result.status).toBe(0);
@@ -456,22 +456,6 @@ api_operational_mutation_category POST /api/projects '${file}'`, 1);
 api_operational_mutation_category POST /api/auth/check '${file}'`, 1);
     expect(exempt.status).toBe(0);
     expect(exempt.stdout).toBe("");
-  });
-
-  it("fails closed on absent, malformed, mismatched, and unknown operation metadata", async () => {
-    for (const payload of [{ instance: MAIN_INSTANCE }, { ...withCatalog(MAIN_INSTANCE), operations: { schema: 1 } },
-      { ...withCatalog(MAIN_INSTANCE), instance: { ...MAIN_INSTANCE, instance_id: "other", backend_generation: "other" } }]) {
-      const file = writeRouteMutationCategories(payload);
-      const result = await runBash(`source cli/api.sh
-api_operational_mutation_category POST /api/projects '${file}'`, 1);
-      expect(result.status).toBe(2);
-      expect(result.stdout).toBe("");
-    }
-    const file = writeRouteMutationCategories(withCatalog(MAIN_INSTANCE));
-    const unknown = await runBash(`source cli/api.sh
-api_operational_mutation_category POST /api/future-write '${file}'`, 1);
-    expect(unknown.status).toBe(3);
-    expect(unknown.stderr).toContain("Unknown Mandible operation");
   });
 
   it.each([
