@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { Db } from "../../src/db.js";
+import type { Db } from "../src/db.js";
 import {
   buildGitFetchArgs,
   buildGitReadTransportPlan,
@@ -8,7 +8,7 @@ import {
   parseGitReadTransportPolicy,
   readGitReadTransportPolicy,
   toHttpsReadUrl,
-} from "../../src/git-read-transport.js";
+} from "../src/git-read-transport.js";
 
 describe("git read transport", () => {
   it("converts SSH GitHub remotes to HTTPS read URLs", () => {

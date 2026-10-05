@@ -1,3 +1,7 @@
+import { BRIEFING_EVENT_VALUES } from '../../src/contracts';
+import { queryClient } from '../../ui/src/query/client';
+import { browserResourceKeys } from '../../ui/src/query/browserResources';
+import { ensureClientAccess, __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -5,9 +9,6 @@ import {
   dispositionBriefingGroupProposal,
   briefingApiCacheFamiliesForEvent,
   getBriefingSidebarSnapshot,
-  getBriefings,
-  getCachedBriefingSidebarSnapshot,
-  getCachedBriefings,
   getSpace,
   getSpaceFactPacket,
   getSessions,
@@ -15,18 +16,7 @@ import {
 } from '../../ui/src/api';
 
 describe('Briefing SSE cache invalidation matrix', () => {
-  it.each([
-    'briefing:created',
-    'briefing:bundle-created',
-    'briefing:bundle-member-added',
-    'briefing:bundle-members-replaced',
-    'briefing:bundle-name-updated',
-    'briefing:round-published',
-    'briefing:answered',
-    'briefing:annotated',
-    'briefing:submitted',
-    'briefing:title-updated',
-  ])('%s invalidates Briefing, bundle, and badge caches', (topic) => {
+  it.each(BRIEFING_EVENT_VALUES)('%s invalidates Briefing, bundle, and badge caches', (topic) => {
     expect(briefingApiCacheFamiliesForEvent(topic)).toEqual([
       '/api/briefings',
       '/api/briefing-bundles',
@@ -66,7 +56,10 @@ function jsonResponse(body: unknown): Response {
 }
 
 describe('dashboard API GET cache', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    queryClient.clear();
+    __resetBrowserSessionForTests();
+    await ensureClientAccess(async () => jsonResponse({ authenticated: true, session: { csrf_token: 'test' } }));
     invalidateApiGetCache();
   });
 
@@ -131,27 +124,6 @@ describe('dashboard API GET cache', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('exposes a warm logical Briefing list synchronously and clears it through the shared cache', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({
-      briefings: [{ id: 'briefing-1', title: 'Daily briefing', latest_round_id: 'round-1', unanswered_directive_count: 1, created_at: 1, updated_at: 2 }],
-    }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    expect(getCachedBriefings()).toBeNull();
-    await getBriefings();
-    expect(getCachedBriefings()?.[0]).toMatchObject({
-      id: 'briefing:briefing-1',
-      collectionId: 'briefing-1',
-      label: 'Daily briefing',
-      latestRoundId: 'round-1',
-      unansweredDirectiveCount: 1,
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    invalidateApiGetCache('/api/briefings');
-    expect(getCachedBriefings()).toBeNull();
-  });
-
   it('publishes cached Briefing containment only after all three reads succeed', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
@@ -161,9 +133,8 @@ describe('dashboard API GET cache', () => {
       return new Response('unexpected request', { status: 500 });
     }));
 
-    await expect(getBriefingSidebarSnapshot()).rejects.toThrow(/503/);
-    expect(getCachedBriefings()).toEqual([]);
-    expect(getCachedBriefingSidebarSnapshot()).toBeNull();
+    await expect(queryClient.fetchQuery({ queryKey: browserResourceKeys.briefingSidebar, queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal) })).rejects.toThrow(/503/);
+    expect(queryClient.getQueryData(browserResourceKeys.briefingSidebar)).toBeUndefined();
 
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
@@ -172,11 +143,11 @@ describe('dashboard API GET cache', () => {
       if (path === '/api/briefing-groups') return jsonResponse({ groups: [] });
       return new Response('unexpected request', { status: 500 });
     }));
-    await expect(getBriefingSidebarSnapshot()).resolves.toEqual({ briefings: [], bundles: [], groups: [] });
-    expect(getCachedBriefingSidebarSnapshot()).toEqual({ briefings: [], bundles: [], groups: [] });
+    await expect(queryClient.fetchQuery({ queryKey: browserResourceKeys.briefingSidebar, queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal) })).resolves.toEqual({ briefings: [], bundles: [], groups: [] });
+    expect(queryClient.getQueryData(browserResourceKeys.briefingSidebar)).toEqual({ briefings: [], bundles: [], groups: [] });
 
-    invalidateApiGetCache('/api/briefing-groups');
-    expect(getCachedBriefingSidebarSnapshot()).toBeNull();
+    await queryClient.invalidateQueries({ queryKey: browserResourceKeys.briefings });
+    expect(queryClient.getQueryState(browserResourceKeys.briefingSidebar)?.isInvalidated).toBe(true);
   });
 
   it('invalidates a cached Space fact packet after a Space mutation', async () => {

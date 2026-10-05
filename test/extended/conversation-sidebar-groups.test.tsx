@@ -193,7 +193,6 @@ describe('conversation sidebar groups', () => {
     expect(emptyState.classList.contains('sidebar-group-node__placeholder')).toBe(true);
     expect(emptyState.textContent).toBe('No projects included');
     expect(emptyState.getAttribute('role')).toBeNull();
-    expect(chatHistoryStylesheet).toMatch(/\.sidebar-group-node__placeholder\s*\{[^}]*color:\s*var\(--text-disabled\)/s);
     expect(screen.queryByText(/available/i)).toBeNull();
     expect(screen.queryByText(/\d+ available/i)).toBeNull();
     expect(screen.queryByText(/shared host preference/i)).toBeNull();

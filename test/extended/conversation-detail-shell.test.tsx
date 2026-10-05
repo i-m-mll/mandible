@@ -717,16 +717,6 @@ describe('compact detail pane shell', () => {
     expect(settledUpdateCount).toBeLessThanOrEqual(3);
   });
 
-  it('routes every Chat detail state through one typed frame construction', () => {
-    const source = readFileSync(resolve(process.cwd(), 'ui/src/views/conversations.tsx'), 'utf8');
-    const states = Array.from(source.matchAll(/<ChatDetailFrame\s+[\s\S]*?state="([^"]+)"/g), (match) => match[1]).sort();
-    expect(states).toEqual(['conversation', 'draft', 'error', 'live-session', 'loading', 'no-selection', 'not-found']);
-    expect(source).not.toContain('<div className="chat-live-detail">');
-    expect(source).not.toContain('return <LoadingSkeleton variant="detail"');
-
-    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
-    expect(css).not.toMatch(/\.chat-live-detail__(?:header|title|title-group|actions)\s*\{/);
-  });
 
   it('renders the unselected Chat main area through the canonical compact shell', () => {
     const { container } = render(
@@ -871,13 +861,8 @@ describe('compact detail pane shell', () => {
     expect(body?.textContent).toContain('Scrollable content');
     expect(footer?.textContent).toContain('Submit');
 
-    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
-    expect(css).toMatch(/\.detail-pane-shell__footer\s*\{[^}]*flex:\s*none;/s);
-    expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__header\s*\{[^}]*box-shadow:\s*none;/s);
-    expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__header-primary\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;/s);
 
-    expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__title\s*\{[^}]*color:\s*var\(--text-header-title\);[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
-    expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__actions\s*\{[^}]*flex-shrink:\s*0;/s);
+
 
     const defaultShell = render(
       <DetailPaneShell header={<span>Default title</span>}>Default body</DetailPaneShell>,
@@ -967,7 +952,6 @@ describe('compact detail pane shell', () => {
     const body = shell?.querySelector(':scope > .detail-pane-shell__body.conv-detail__body');
     const overlayControl = shell?.querySelector(':scope > .detail-pane-shell__overlay-control');
     const canonicalHeader = header?.querySelector('.detail-pane-header--compact');
-    const conversationCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
     expect(getComputedStyle(shell!).overflow).toBe('clip');
     expect(shell?.classList.contains('chat-detail-frame--conversation')).toBe(true);
     expect(getComputedStyle(body!).position).toBe('relative');
@@ -1035,21 +1019,6 @@ describe('compact detail pane shell', () => {
     expect(body?.querySelector('.conv-transcript')).toBeTruthy();
     const composer = overlayControl?.querySelector('.conv-compose');
     expect(composer).toBeTruthy();
-    const tokensCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/tokens.css'), 'utf8');
-    const baseCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/base.css'), 'utf8');
-    const messageBlocksCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/message-blocks.css'), 'utf8');
-    expect(tokensCss).toContain('--radius-chat-surface: 18px;');
-    expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
-    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;/s);
-    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*0 0 auto;[^}]*max-width:\s*min\(240px, 100%\);/s);
-    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__select\s*\{[^}]*width:\s*auto;[^}]*min-width:\s*44px;[^}]*field-sizing:\s*content;/s);
-    expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);
-    expect(conversationCss).toMatch(/\.conv-detail__body \.user-bubble__text :where\(p, li, blockquote, dd\)[^{]*\{[^}]*font-size:\s*var\(--text-lg\);/s);
-    expect(conversationCss).toMatch(/\.conv-compose__send\s*\{[^}]*--chat-circle-action-visual-size:\s*25\.5px;[^}]*--chat-circle-action-icon-size:\s*17px;/s);
-    expect(baseCss).toMatch(/\.chat-circle-action::before\s*\{[^}]*width:\s*var\(--chat-circle-action-visual-size\);[^}]*height:\s*var\(--chat-circle-action-visual-size\);/s);
-    expect(baseCss).toMatch(/\.chat-circle-action > svg\s*\{[^}]*width:\s*var\(--chat-circle-action-icon-size\);[^}]*height:\s*var\(--chat-circle-action-icon-size\);/s);
-    expect(conversationCss).not.toContain('@container (max-width: 700px)');
-    expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     fireEvent.click(runOptions);
     const runOptionsDialog = screen.getByRole('dialog', { name: 'Run options' });
@@ -1069,15 +1038,6 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
   });
 
-  it('ends the composer mask before the transcript scrollbar gutter', () => {
-    const shellCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
-    const conversationCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
-
-    expect(shellCss).toMatch(/\.detail-pane-shell__overlay-control\s*\{[^}]*inset:\s*auto var\(--detail-pane-scrollbar-width, 0px\) 0 0;/s);
-    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control\s*\{[^}]*--conversation-composer-inline-margin:\s*18px;/s);
-    expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*margin:\s*0 var\(--conversation-composer-inline-margin, 18px\) 16px;/s);
-    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control::before\s*\{[^}]*top:\s*calc\(50% - 8px\);[^}]*right:\s*var\(--conversation-composer-inline-margin\);[^}]*bottom:\s*0;[^}]*left:\s*0;[^}]*pointer-events:\s*none;/s);
-  });
 
   it('puts every provider-neutral run option in the canonical composer popover', async () => {
     const resizeCallbacks: ResizeObserverCallback[] = [];

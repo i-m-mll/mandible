@@ -7,7 +7,7 @@ import {
   renderMandibleInstructionsFragment,
   renderManagedInstructionsBlock,
   withMandibleInstructionsFragment,
-} from "../../src/instructions/fragment.js";
+} from "../src/instructions/fragment.js";
 
 describe("Mandible instructions fragment", () => {
   it("renders the contract-only interface fragment from the authored Markdown", () => {

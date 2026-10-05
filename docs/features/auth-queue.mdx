@@ -137,7 +137,7 @@ The dashboard and `mandible auth list` display the auth queue with all active re
 
 ### Available Actions
 
-**Approve** (`POST /api/auth/request/:id/approve`) — Starts execution. The environment is sanitized so the operation uses your signing key (not the agent's). Output streams in real time via SSE.
+**Approve** (`POST /api/auth/request/:id/approve`) — Verifies a fresh action-bound operator signature before starting execution. The request remains pending on failed, cancelled, expired, or changed proof. **Cancel signing** stops the pending challenge without rejecting the request. Output streams after execution starts.
 
 **Reject** (`POST /api/auth/request/:id/reject`) — Declines the request with an optional reason. The result is delivered to the agent's inbox.
 
@@ -145,7 +145,7 @@ The dashboard and `mandible auth list` display the auth queue with all active re
 
 **Withdraw** (`POST /api/auth/request/:id/withdraw`) — Lets the exact original requester withdraw its own pending request. A reason is required. API-token requests require the same credential; session requests require the same exact session.
 
-**Retry** (`POST /api/auth/request/:id/retry`) — Resets a failed or expired request back to `pending` with a fresh TTL. The user can then approve it again.
+**Retry** (`POST /api/auth/request/:id/retry`) — Resets a failed or expired request to `pending` with a fresh TTL when no prepared publication state exists. Retained publication state requires recovery or operator inspection and cannot be erased for another execution.
 
 Delete and dismiss are retired lifecycle operations. Their old endpoints return `410 Gone`; request rows and lifecycle receipts remain durable.
 
@@ -158,7 +158,7 @@ When a request is approved, Mandible spawns the command in a sanitized environme
 Requests have an `execution_mode` field:
 
 - **`daemon`** (default) — Mandible spawns and manages the command locally. This is the standard flow.
-- **`remote`** — An external process manages execution. Mandible only tracks state transitions (pending, approved, completed). The external process reports output and results via the API. Used for operations that run on a different machine.
+- **`remote`** — An external process manages non-merge execution and reports output/results through the API. Protected merges require local candidate publication.
 
 ### Serialized Execution
 
