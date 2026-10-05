@@ -67,10 +67,20 @@ function canonicalPath(target) {
   }
 }
 
-function canonicalFuturePath(target) {
+function canonicalFuturePath(target, seenLinks = new Set()) {
   let probe = path.resolve(target);
   const suffix = [];
   while (!fs.existsSync(probe)) {
+    let entry;
+    try { entry = fs.lstatSync(probe); } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+    }
+    if (entry?.isSymbolicLink()) {
+      if (seenLinks.has(probe) || seenLinks.size >= 40) throw new Error('Destination symlink cycle');
+      seenLinks.add(probe);
+      const linked = path.resolve(path.dirname(probe), fs.readlinkSync(probe));
+      return path.join(canonicalFuturePath(linked, seenLinks), ...suffix);
+    }
     const parent = path.dirname(probe);
     if (parent === probe) break;
     suffix.unshift(path.basename(probe));
@@ -291,7 +301,7 @@ function assertSafeDestination(sourcePath, destinationPath) {
   }
   const futureDestination = canonicalFuturePath(destinationPath);
   const productionMatch = resolvesToAnyProductionDbPath(destinationPath, PRODUCTION_DB_PATHS)
-    ?? PRODUCTION_DB_PATHS.find((candidate) => canonicalPath(candidate) === futureDestination);
+    ?? PRODUCTION_DB_PATHS.find((candidate) => canonicalFuturePath(candidate) === futureDestination);
   if (productionMatch) {
     throw new Error(`Refusing production database alias as rebuild destination: ${canonicalPath(productionMatch)}`);
   }
