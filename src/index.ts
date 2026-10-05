@@ -748,7 +748,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     stopTrashGcScheduler();
     stopManagedReminderScheduler();
     daemonLogCopyForward.stop();
-    daemonLogRetention.stop();
+    await daemonLogRetention.stop();
     reaperTimer.stop();
     workUnitReconciler.stop();
     navEnricher.stop();

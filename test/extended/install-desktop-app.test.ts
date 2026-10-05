@@ -20,6 +20,10 @@ function makeBundle(appPath: string, marker: string, signed = true): void {
 }
 
 function makeTooling(root: string): { codesign: string; ditto: string; plist: string } {
+  fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+  fs.copyFileSync(path.join(process.cwd(), "scripts/bun-runtime.sh"), path.join(root, "scripts/bun-runtime.sh"));
+  fs.chmodSync(path.join(root, "scripts/bun-runtime.sh"), 0o755);
+  fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(root, ".bun-version"));
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin, { recursive: true });
 
@@ -115,6 +119,7 @@ function runInstaller(
     encoding: "utf8",
     env: {
       ...process.env,
+      MANDIBLE_RUNTIME: process.execPath,
       CI: options.ci ?? process.env.CI,
       MANDIBLE_DESKTOP_PLATFORM: "Darwin",
       MANDIBLE_DESKTOP_DEPENDENCY_COMMAND: ":",
@@ -128,7 +133,7 @@ function runInstaller(
       MANDIBLE_DESKTOP_CODESIGN: tools.codesign,
       MANDIBLE_DESKTOP_DITTO: tools.ditto,
       MANDIBLE_DESKTOP_PLISTBUDDY: tools.plist,
-      MANDIBLE_DESKTOP_NODE: nodeCommand,
+      MANDIBLE_DESKTOP_RUNTIME: nodeCommand,
       MANDIBLE_TEST_RUNTIME_TRACE: runtimeTrace,
       MANDIBLE_DESKTOP_ASSUME_RUNNING: options.running ? "1" : "0",
       MANDIBLE_DESKTOP_RELAUNCH_COMMAND: options.defaultRelaunch
@@ -160,7 +165,11 @@ describe("desktop app installer", () => {
   it("signals only the process owned by the installed bundle during relaunch", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-desktop-relaunch-"));
     tempRoots.push(root);
-    const bin = path.join(root, "bin");
+    fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+  fs.copyFileSync(path.join(process.cwd(), "scripts/bun-runtime.sh"), path.join(root, "scripts/bun-runtime.sh"));
+  fs.chmodSync(path.join(root, "scripts/bun-runtime.sh"), 0o755);
+  fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(root, ".bun-version"));
+  const bin = path.join(root, "bin");
     const installPath = path.join(root, "Applications", "Mandible.app");
     const trace = path.join(root, "trace");
     const terminated = path.join(root, "terminated");
@@ -200,6 +209,7 @@ fi
         encoding: "utf8",
         env: {
           ...process.env,
+      MANDIBLE_RUNTIME: process.execPath,
           MANDIBLE_DESKTOP_PGREP: pgrep,
           MANDIBLE_DESKTOP_PS: ps,
           MANDIBLE_DESKTOP_KILL: kill,

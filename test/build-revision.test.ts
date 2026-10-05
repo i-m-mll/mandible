@@ -45,6 +45,15 @@ describe("daemon build revision", () => {
     expect(writeBuildRevision(root)).toBe(commit);
     expect(readBuildRevision(root)).toBe(commit);
 
+    fs.mkdirSync(path.join(root, "scripts"));
+    fs.writeFileSync(path.join(root, "scripts", "runtime.mjs"), "export {};\n");
+    git(root, "add", "scripts/runtime.mjs");
+    git(root, "commit", "-m", "runtime support");
+    writeBuildRevision(root);
+    fs.appendFileSync(path.join(root, "scripts", "runtime.mjs"), "// drift\n");
+    expect(() => readBuildRevision(root)).toThrow("Daemon sources changed after the production build");
+    fs.writeFileSync(path.join(root, "scripts", "runtime.mjs"), "export {};\n");
+
     fs.appendFileSync(path.join(root, "src", "index.ts"), "// changed after build\n");
     expect(() => readBuildRevision(root)).toThrow("Daemon sources changed after the production build");
   });

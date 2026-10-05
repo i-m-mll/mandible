@@ -45,6 +45,9 @@ function runHookAfterMerge(
   const runtimeTracePath = path.join(tempDir, "runtime-trace");
   fs.mkdirSync(cliDir, { recursive: true });
   fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
+  fs.copyFileSync(path.join(process.cwd(), "scripts/bun-runtime.sh"), path.join(repo, "scripts/bun-runtime.sh"));
+  fs.chmodSync(path.join(repo, "scripts/bun-runtime.sh"), 0o755);
+  fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(repo, ".bun-version"));
   fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
   fs.writeFileSync(path.join(home, ".codex", "AGENTS.md"), "# Codex\n\nLocal policy.\n", "utf8");
 
@@ -137,9 +140,11 @@ exec "$REAL_GIT" "$@"
     env: {
       ...hookEnv,
       HOME: home,
+      MANDIBLE_DB: path.join(tempDir, "fixture.db"),
+      MANDIBLE_RUNTIME: process.execPath,
       MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND: 'printf "dependencies\\n" >> "$MANDIBLE_TEST_TRACE"',
       MANDIBLE_POST_MERGE_BUILD_COMMAND: 'test "$PATH" = "$MANDIBLE_TEST_RUNTIME_PATH" && printf "build\\n" >> "$MANDIBLE_TEST_TRACE"',
-      MANDIBLE_TEST_RUNTIME_PATH: hookEnv.PATH,
+      MANDIBLE_TEST_RUNTIME_PATH: `${path.dirname(process.execPath)}${path.delimiter}${hookEnv.PATH}`,
       MANDIBLE_POST_MERGE_DESKTOP_COMMAND:
         'printf "desktop\\n" >> "$MANDIBLE_TEST_DESKTOP_TRACE"',
       MANDIBLE_TEST_TRACE: tracePath,
