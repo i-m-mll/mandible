@@ -24,7 +24,7 @@ describe("HTTP request cancellation", () => {
           resolve();
         }, { once: true });
       });
-    }, { fileRpc: "deny" });
+    }, { operation: { id: "fixture:post:/wait", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
     server = http.createServer((request, response) => { void router.handle(request, response); });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
     const address = server.address();

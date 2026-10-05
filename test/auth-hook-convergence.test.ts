@@ -1,3 +1,4 @@
+import { approveFixtureRequest, createAuthCheckRepo } from "./helpers/auth-queue-fixtures.js";
 /**
  * Issue 27241e6 — probes for durable, honest, authorized post-merge hooks.
  *
@@ -44,7 +45,7 @@ afterEach(() => {
 });
 
 function tempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = createAuthCheckRepo();
   tempDirs.push(dir);
   return dir;
 }
@@ -173,11 +174,14 @@ describe("auth hook execution environment (issue 27241e6)", () => {
         "MANDIBLE_AUTH_BASE_BRANCH",
         "MANDIBLE_AUTH_MERGE_BASE_SHA",
         "MANDIBLE_AUTH_MERGE_HEAD_SHA",
+        "MANDIBLE_AUTH_MERGE_COMMIT_SHA",
         "MANDIBLE_HOOK_ID",
         "MANDIBLE_HOOK_LABEL",
         "MANDIBLE_HOOK_ATTEMPT",
         "MANDIBLE_HOOK_EXECUTION_ID",
         "MANDIBLE_HOOK_COMMAND_DIGEST",
+        "MANDIBLE_INSTALLATION_ID",
+        "MANDIBLE_RUNTIME",
       ]);
       for (const key of Object.keys(env)) {
         expect(documented.has(key)).toBe(true);
@@ -259,7 +263,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
       const hookManager = new AuthHookManager(db);
       const hook = hookManager.create({
         repo_pattern: "durable-repo",
-        auth_type: "merge",
+        auth_type: "commit",
         command: markerGatedCommand(marker),
         label: "Converge hook",
         position: 0,
@@ -273,13 +277,13 @@ describe("durable hook execution state (issue 27241e6)", () => {
           return { exit_code: 0, output: "merge-ok\n" };
         },
       });
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: 'echo "merge-ok"',
         title: "Durable convergence",
         repo: "durable-repo",
         cwd: dir,
       });
-      queue.approve(request.id);
+      await approveFixtureRequest(queue, request.id);
       await waitFor(() => queue.getRequest(request.id)?.status === "completed");
 
       // The merge succeeded and the queue is unblocked, but the hook did not.
@@ -330,7 +334,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
       const hookManager = new AuthHookManager(db);
       hookManager.create({
         repo_pattern: "bounded-repo",
-        auth_type: "merge",
+        auth_type: "commit",
         command: "echo always-fails >&2; exit 3",
         label: "Broken hook",
         position: 0,
@@ -341,13 +345,13 @@ describe("durable hook execution state (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: 'echo "merge-ok"',
         title: "Bounded retry",
         repo: "bounded-repo",
         cwd: dir,
       });
-      queue.approve(request.id);
+      await approveFixtureRequest(queue, request.id);
       await waitFor(() => queue.getRequest(request.id)?.status === "completed");
 
       // Attempts 2 and 3 come from the resume sweep; the fourth is refused.
@@ -381,7 +385,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
       const hookManager = new AuthHookManager(db);
       const hook = hookManager.create({
         repo_pattern: "alert-repo",
-        auth_type: "merge",
+        auth_type: "commit",
         command: "exit 5",
         label: "Alerting hook",
         position: 0,
@@ -392,13 +396,13 @@ describe("durable hook execution state (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: 'echo "merge-ok"',
         title: "Dedup alert",
         repo: "alert-repo",
         cwd: dir,
       });
-      queue.approve(request.id);
+      await approveFixtureRequest(queue, request.id);
       await waitFor(() => queue.getRequest(request.id)?.status === "completed");
       await queue.resumeHookConvergence();
       await queue.resumeHookConvergence();
@@ -434,7 +438,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
     const dir = tempDir("mandible-hook-withhold-");
     const marker = path.join(dir, "converged");
     try {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-withhold-repo-"));
+      const repoRoot = createAuthCheckRepo();
       tempDirs.push(repoRoot);
       const project = createLedgerProject(db, repoRoot, { defaultBranch: "main", remoteUrl: "" });
       const issue = createLedgerIssue(db, {
@@ -451,7 +455,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
       const hookManager = new AuthHookManager(db);
       hookManager.create({
         repo_pattern: repoName,
-        auth_type: "merge",
+        auth_type: "commit",
         command: markerGatedCommand(marker),
         label: "Withholding hook",
         position: 0,
@@ -463,7 +467,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: 'echo "merge-ok"',
         title: "Withhold closure",
         cwd: repoRoot,
@@ -473,7 +477,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
           { kind: "issue_close", target_issue_ref: issue.short_id, payload: {} },
         ],
       });
-      queue.approve(request.id);
+      await approveFixtureRequest(queue, request.id);
       await waitFor(() => queue.getRequest(request.id)?.status === "completed");
 
       // Merge succeeded; convergence did not. The closure stays staged and the
@@ -517,7 +521,7 @@ describe("hook registration authority (issue 27241e6)", () => {
       const { token } = authenticator.mintApiToken(agent.id);
       const body = {
         repo_pattern: "authority-repo",
-        auth_type: "merge",
+        auth_type: "commit",
         command: "echo take-over-the-machine",
         label: "Unauthorized hook",
       };

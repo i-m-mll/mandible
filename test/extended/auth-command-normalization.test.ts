@@ -1,3 +1,4 @@
+import { approveFixtureRequest, createNoopHookManager } from "../helpers/auth-queue-fixtures.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,7 +11,6 @@ import {
   canonicalAuthMergeCommands,
   normalizeLegacySingleSourceMergeCommand,
 } from "../../src/auth-context.js";
-import type { AuthHookManager } from "../../src/auth-hooks.js";
 import { setDb, type Db } from "../../src/db.js";
 import { registerAuthRoutes } from "../../src/routes/auth.js";
 import { Router } from "../../src/server.js";
@@ -189,7 +189,7 @@ function createHarness(db: Db, repoRoot: string, branch: string): { router: Rout
       started_at: Date.now(),
       finished_at: Date.now(),
     }),
-    hookManager: { executeHooks: async () => [] } as unknown as AuthHookManager,
+    hookManager: createNoopHookManager(),
   });
   registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
   return { router, queue };
@@ -237,7 +237,7 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
       expect(stored?.command).toBe("mandible auth merge feature/channel-legacy --into main");
 
       // Approve-time canonical enforcement accepts the normalized row.
-      const approved = queue.approve(requestId);
+      const approved = await approveFixtureRequest(queue, requestId);
       expect(approved.status).toBe("executing");
       await waitForTerminalStatus(queue, requestId);
     } finally {
@@ -273,7 +273,7 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
       expect(stored?.command).toBe(
         "mandible auth merge feature/channel-canonical --into main",
       );
-      expect(queue.approve(requestId).status).toBe("executing");
+      expect((await approveFixtureRequest(queue, requestId)).status).toBe("executing");
       await waitForTerminalStatus(queue, requestId);
     } finally {
       queue.dispose();
@@ -309,10 +309,10 @@ describe("legacy channel merge submissions (issue 08a5f04)", () => {
       expect(queue.getRequest(requestId)?.command).toBe(mutant);
 
       // ...and refused by approve-time canonical enforcement.
-      expect(() => queue.approve(requestId)).toThrow(/does not match the canonical form/);
+      await expect(approveFixtureRequest(queue, requestId)).rejects.toThrow(/does not match the canonical form/);
       let code: string | null = null;
       try {
-        queue.approve(requestId);
+        await approveFixtureRequest(queue, requestId);
       } catch (error) {
         code = error instanceof AuthQueueError ? error.code : null;
       }

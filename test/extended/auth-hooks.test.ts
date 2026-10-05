@@ -1,3 +1,4 @@
+import { approveFixtureRequest } from "../helpers/auth-queue-fixtures.js";
 import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
@@ -222,7 +223,7 @@ describe("AuthQueue hook integration", () => {
     // Create a simple hook that writes to a predictable output
     hookManager.create({
       repo_pattern: "*",
-      auth_type: "merge",
+      auth_type: "commit",
       command: "echo hook-executed",
       label: "Integration test hook",
       position: 0,
@@ -238,13 +239,13 @@ describe("AuthQueue hook integration", () => {
     // No merge structure: the stub command takes the generic execution path
     // (a merge-structured request would be refused by canonical-command
     // verification, issue 08a5f04 review F2).
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: 'echo "merge-ok"',
       title: "Test merge",
       repo: "test-repo",
     });
 
-    queue.approve(request.id);
+    await approveFixtureRequest(queue, request.id);
 
     // Wait for completion
     const start = Date.now();

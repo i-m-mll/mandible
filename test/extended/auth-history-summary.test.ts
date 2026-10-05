@@ -1,3 +1,4 @@
+import { seedHistoricalAuthCompletion } from "../helpers/auth-queue-fixtures.js";
 import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
@@ -44,8 +45,7 @@ function submitCompleted(queue: AuthQueue): string {
     commit_message: "feat: land it",
     execution_mode: "remote",
   });
-  queue.approve(request.id);
-  queue.setResult(request.id, 0, "console output");
+  seedHistoricalAuthCompletion(queue, request.id, "console output");
   return request.id;
 }
 
@@ -197,10 +197,10 @@ describe("auth history summaries", () => {
 
     // The only fields the list projection deliberately drops: the unbounded
     // body blobs the summary exists to avoid serializing. Everything else in
-    // AuthRequestSummary (= Omit<AuthRequest, those three>) must be projected,
+    // AuthRequestSummary (= Omit<AuthRequest, those four>) must be projected,
     // so a future column added to the row but not to
     // AUTH_HISTORY_SUMMARY_COLUMNS trips this test (issues 98d25f3, 84d940f).
-    const bodyBlobs = new Set(["diff_summary", "spec_content", "output"]);
+    const bodyBlobs = new Set(["diff_summary", "spec_content", "output", "change_report"]);
 
     const [summary] = queue.listHistorySummaries(50);
     const detail = queue.getRequest(id)! as unknown as Record<string, unknown>;

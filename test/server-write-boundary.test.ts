@@ -16,10 +16,10 @@ beforeEach(async () => {
   const router = new Router();
   router.post("/api/issues/test-write", (req, res) => {
     res.json({ ok: true, body: req.body });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "fixture:post:/api/issues/test-write", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
   router.get("/api/read", (_req, res) => {
     res.json({ ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "fixture:get:/api/read", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
 
   const server = createServer({
