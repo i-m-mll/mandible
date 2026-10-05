@@ -39,7 +39,7 @@ it('arms one independent helper under loaded legacy Node arguments and survives 
   const db = createMigratedDb(); let queue: AuthQueue | undefined; let journal: any; let requestRef = ''; let executionRef = ''; let bridgeChild: ReturnType<typeof spawn> | undefined;
   try {
     const sources = ['src/sqlite.ts', 'src/sqlite-runtime.ts', 'src/sqlite-bindings.ts', 'scripts/sqlite-runtime-install.mjs', 'scripts/bun-runtime-lock.tsv', 'cli/production-db-guard.cjs', 'cli/mandible-paths.cjs', 'src/runtime-handoff-proof.ts', 'src/auth-signature-verification.ts', 'src/auth-change-message.ts',
-      'scripts/runtime-handoff.mjs', 'scripts/runtime-log-assessment.mjs', 'scripts/bun-runtime.sh', 'scripts/local-runtime.mjs', 'scripts/canonical-origin.mjs', 'scripts/build-revision.mjs', 'scripts/local-ca-trust.mjs', 'scripts/pinned-caddy.mjs', '.bun-version'];
+      'scripts/runtime-handoff.mjs', 'scripts/process-group-supervisor.mjs', 'scripts/runtime-log-assessment.mjs', 'scripts/bun-runtime.sh', 'scripts/local-runtime.mjs', 'scripts/canonical-origin.mjs', 'scripts/build-revision.mjs', 'scripts/local-ca-trust.mjs', 'scripts/pinned-caddy.mjs', '.bun-version'];
     const files: Record<string, string> = Object.fromEntries(sources.map(name => [name, fs.readFileSync(path.join(process.cwd(), name), 'utf8')]));
     files['package.json'] = '{"type":"module"}\n'; files['dist/index.js'] = '// Owned admission-only fixture.\n';
     commitOnBranch(repo, 'feature/handoff', files);
