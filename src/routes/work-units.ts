@@ -56,14 +56,21 @@ interface ActivateInput {
 }
 
 interface ReleaseInput {
+  id?: string;
+  issue_id?: string;
+  repo_id?: string;
+  branch?: string;
+  expected_generation?: number;
+}
+
+interface ReleaseIssueInput {
   issue_id: string;
   repo_id: string;
-  provider?: string | null;
-  provider_session_id?: string | null;
-  ambient_identity?: unknown;
+  work_units: Array<{ id: string; expected_generation: number }>;
 }
 
 interface PatchInput {
+  expected_generation?: number;
   state?: string;
   assigned_session_id?: string | null;
   continuation?: string | null;
@@ -211,7 +218,12 @@ export function registerWorkUnitRoutes(
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
     const now = Date.now();
-    const existing = findExistingClaimWorkUnit(db, body.issue_id, repoId, body.branch ?? null);
+    const match = findExistingWorkUnit(db, body.issue_id, repoId, body.branch ?? null, false);
+    if (match.status === "ambiguous") {
+      sendJson(res, 409, { error: "Multiple work units match; specify a unique branch or repair duplicate assignments." });
+      return;
+    }
+    const existing = match.work_unit;
 
     if (existing) {
       const updates: string[] = [];
@@ -229,6 +241,11 @@ export function registerWorkUnitRoutes(
         params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
       }
       const credential = durableCredential(req);
+      const owned = db.prepare("SELECT owner_credential_id FROM work_units WHERE id = ?").get(existing.id) as { owner_credential_id: string | null };
+      if (owned.owner_credential_id && !credential) {
+        sendJson(res, 401, { error: "Existing work-unit custody requires a durable credential." });
+        return;
+      }
       if (credential) {
         const custody = assignInitialCustody(db, existing.id, credential.user_id, credential.credential_id, now);
         if (!custody.ok) {
@@ -325,10 +342,20 @@ export function registerWorkUnitRoutes(
       return;
     }
 
-    const existing = findExistingActivateWorkUnit(db, body.issue_id, repoId, body.branch ?? null);
+    const match = findExistingWorkUnit(db, body.issue_id, repoId, body.branch ?? null, true);
+    if (match.status === "ambiguous") {
+      sendJson(res, 409, { error: "Multiple work units match; specify a unique branch or repair duplicate assignments." });
+      return;
+    }
+    const existing = match.work_unit;
 
     if (existing) {
       const credential = durableCredential(req);
+      const owned = db.prepare("SELECT owner_credential_id FROM work_units WHERE id = ?").get(existing.id) as { owner_credential_id: string | null };
+      if (owned.owner_credential_id && !credential) {
+        sendJson(res, 401, { error: "Existing work-unit custody requires a durable credential." });
+        return;
+      }
       if (credential) {
         const custody = assignInitialCustody(db, existing.id, credential.user_id, credential.credential_id, now);
         if (!custody.ok) {
@@ -421,41 +448,77 @@ export function registerWorkUnitRoutes(
     }
   }, { fileRpc: "allow" });
 
-  // POST /api/work-units/release — set state back to open (for abandoned worktrees)
   server.post("/api/work-units/release", (req, res) => {
     const body = readBody<ReleaseInput>(req);
-
-    if (!body.issue_id || typeof body.issue_id !== "string") {
-      sendJson(res, 400, { error: "Missing or invalid issue_id" });
+    if ([body.id, body.issue_id, body.repo_id, body.branch].some(value => value !== undefined && (typeof value !== "string" || !value.trim())) ||
+        (!body.id && (!body.repo_id || !body.branch)) ||
+        (body.id && (body.repo_id || body.branch || body.issue_id))) {
+      sendJson(res, 400, { error: "Select --id or an explicit repository and branch." });
       return;
     }
-    if (!body.repo_id || typeof body.repo_id !== "string") {
-      sendJson(res, 400, { error: "Missing or invalid repo_id" });
+    const rows = body.id
+      ? db.prepare("SELECT * FROM work_units WHERE id = ?").all(body.id)
+      : db.prepare(`SELECT * FROM work_units WHERE repo_id = ? AND branch = ?
+          AND state IN ('open', 'committed', 'abandoned')`)
+        .all(normalizeProjectRepoId(db, body.repo_id!), body.branch);
+    if (rows.length !== 1) {
+      sendJson(res, rows.length ? 409 : 404, { error: rows.length
+        ? "Multiple work units match; select an exact ID." : "Work unit not found." });
       return;
     }
-
-    const repoId = normalizeProjectRepoId(db, body.repo_id);
-    const lookup = buildWorkUnitLookup(db, body.issue_id, repoId);
-    const ambientIdentity = workUnitAmbientIdentity(req, body);
-    const updates = ["state = 'open'", "assigned_session_id = NULL"];
-    const params: unknown[] = [];
-    if (ambientIdentity) {
-      updates.push("provider = ?", "provider_session_id = ?");
-      params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+    const row = rows[0] as CustodyRow;
+    if (body.issue_id) {
+      const lookup = buildWorkUnitLookup(db, body.issue_id, row.repo_id);
+      if (!db.prepare(`SELECT 1 FROM work_units WHERE id = ? AND ${lookup.identity}`).get(row.id, ...lookup.params)) {
+        sendJson(res, 409, { error: "Work unit does not belong to the requested issue." });
+        return;
+      }
     }
-    const result = db
-      .prepare(
-        `UPDATE work_units SET ${updates.join(", ")}
-         WHERE ${lookup.identity} AND state IN ('open', 'committed')`
-      )
-      .run(...params, ...lookup.params);
-
-    if (result.changes === 0) {
-      sendJson(res, 404, { error: "No active work unit found for this issue and repo" });
+    const failure = custodyMutationFailure(db, req, row, body.expected_generation);
+    if (failure) { sendJson(res, failure.status, failure); return; }
+    if (row.auth_request_id) {
+      sendJson(res, 409, { error: "Release cannot change an auth-bound work unit." });
       return;
     }
+    if (row.state === 'resolved') {
+      sendJson(res, 409, { error: "Resolved work cannot be released." });
+      return;
+    }
+    const changed = db.prepare(`UPDATE work_units SET state = 'abandoned', assigned_session_id = NULL
+      WHERE id = ? AND custody_generation = ? AND state != 'abandoned'`)
+      .run(row.id, body.expected_generation);
+    sendJson(res, 200, { ok: true, id: row.id, released: changed.changes, unchanged: changed.changes === 0 });
+  }, { fileRpc: "allow" });
 
-    sendJson(res, 200, { ok: true, released: result.changes });
+  server.post("/api/work-units/release-issue", (req, res) => {
+    const body = readBody<ReleaseIssueInput>(req);
+    if (typeof body.issue_id !== "string" || !body.issue_id || typeof body.repo_id !== "string" || !body.repo_id || !Array.isArray(body.work_units) ||
+        body.work_units.some(unit => !unit || typeof unit.id !== "string" || !unit.id || !Number.isInteger(unit.expected_generation))) {
+      sendJson(res, 400, { error: "Explicit issue, repository and work_units snapshot are required." });
+      return;
+    }
+    const lookup = buildWorkUnitLookup(db, body.issue_id, normalizeProjectRepoId(db, body.repo_id));
+    const rows = db.prepare(`SELECT * FROM work_units WHERE ${lookup.identity}
+      AND state IN ('open', 'committed')`).all(...lookup.params) as CustodyRow[];
+    if (rows.length !== body.work_units.length || new Set(body.work_units.map(x => x.id)).size !== rows.length ||
+        rows.some(row => !body.work_units.some(x => x.id === row.id))) {
+      sendJson(res, 409, { error: "Issue work-unit set changed; refresh the explicit snapshot." });
+      return;
+    }
+    for (const row of rows) {
+      const failure = custodyMutationFailure(db, req, row,
+        body.work_units.find(x => x.id === row.id)!.expected_generation);
+      if (failure) { sendJson(res, failure.status, failure); return; }
+      if (row.auth_request_id) {
+        sendJson(res, 409, { error: "Release cannot change an auth-bound work unit." });
+        return;
+      }
+    }
+    db.transaction(() => {
+      const release = db.prepare("UPDATE work_units SET state = 'abandoned', assigned_session_id = NULL WHERE id = ?");
+      for (const row of rows) release.run(row.id);
+    })();
+    sendJson(res, 200, { ok: true, released: rows.length });
   }, { fileRpc: "allow" });
 
   // GET /api/work-units — list with optional filters, includes liveness overlay
@@ -529,6 +592,10 @@ export function registerWorkUnitRoutes(
       .get(identity.credential_id) as { status: string; user_id: string } | undefined;
     if (!credential || credential.status !== "active" || credential.user_id !== identity.user_id) {
       sendJson(res, 403, { error: "The authenticated credential is not active for this user." });
+      return;
+    }
+    if (row.custody_generation !== body.expected_generation) {
+      sendJson(res, 409, { error: "Work-unit custody changed; refresh and retry.", code: "custody_generation_conflict" });
       return;
     }
     if (row.owner_user_id === identity.user_id && row.owner_credential_id === identity.credential_id) {
@@ -617,8 +684,8 @@ export function registerWorkUnitRoutes(
     }
 
     const existing = db
-      .prepare("SELECT id FROM work_units WHERE id = ?")
-      .get(id) as { id: string } | undefined;
+      .prepare("SELECT * FROM work_units WHERE id = ?")
+      .get(id) as CustodyRow | undefined;
 
     if (!existing) {
       sendJson(res, 404, { error: "Work unit not found" });
@@ -626,6 +693,16 @@ export function registerWorkUnitRoutes(
     }
 
     const body = readBody<PatchInput>(req);
+    if (body.state !== undefined || "auth_request_id" in body || "assigned_session_id" in body) {
+      const failure = custodyMutationFailure(db, req, existing, body.expected_generation);
+      if (failure) { sendJson(res, failure.status, failure); return; }
+      if (existing.auth_request_id && ((body.state !== undefined && body.state !== existing.state) ||
+          ("auth_request_id" in body && body.auth_request_id !== existing.auth_request_id))) {
+        sendJson(res, 409, { error: "Auth-bound delivery state is owned by the auth lifecycle." });
+        return;
+      }
+    }
+
     const ambientIdentity = workUnitAmbientIdentity(req, body);
     const updates: string[] = [];
     const params: unknown[] = [];
@@ -740,72 +817,19 @@ function workUnitAmbientIdentity(
   });
 }
 
-function findExistingClaimWorkUnit(
-  db: ReturnType<typeof getDb>,
-  issueId: string,
-  repoId: string,
-  branch: string | null,
-): ExistingWorkUnit | undefined {
+function findExistingWorkUnit(
+  db: ReturnType<typeof getDb>, issueId: string, repoId: string,
+  branch: string | null, includeAbandoned: boolean,
+): { status: "matched"; work_unit: ExistingWorkUnit | undefined } | { status: "ambiguous" } {
   const lookup = buildWorkUnitLookup(db, issueId, repoId);
-  if (branch) {
-    const byBranch = db
-      .prepare(
-        `SELECT id, state, branch, ledger_issue_id, assigned_session_id
-         FROM work_units
-         WHERE ${lookup.identity}
-           AND (branch = ? OR (branch IS NULL AND auth_request_id IS NULL))
-           AND state IN ('open', 'committed')
-         ORDER BY CASE WHEN branch = ? THEN 0 ELSE 1 END, created_at DESC
-         LIMIT 1`
-      )
-      .get(...lookup.params, branch, branch) as ExistingWorkUnit | undefined;
-    return byBranch;
-  }
-
-  return db
-    .prepare(
-      `SELECT id, state, branch, ledger_issue_id, assigned_session_id
-       FROM work_units
-       WHERE ${lookup.identity}
-         AND state IN ('open', 'committed')
-       ORDER BY created_at DESC
-       LIMIT 1`
-    )
-    .get(...lookup.params) as ExistingWorkUnit | undefined;
-}
-
-function findExistingActivateWorkUnit(
-  db: ReturnType<typeof getDb>,
-  issueId: string,
-  repoId: string,
-  branch: string | null,
-): ExistingWorkUnit | undefined {
-  const lookup = buildWorkUnitLookup(db, issueId, repoId);
-  if (branch) {
-    const byBranch = db
-      .prepare(
-        `SELECT id, state, branch, ledger_issue_id, assigned_session_id
-         FROM work_units
-         WHERE ${lookup.identity}
-           AND (branch = ? OR (branch IS NULL AND auth_request_id IS NULL))
-           AND state IN ('open', 'committed', 'abandoned')
-         ORDER BY CASE WHEN branch = ? THEN 0 ELSE 1 END, created_at DESC
-         LIMIT 1`
-      )
-      .get(...lookup.params, branch, branch) as ExistingWorkUnit | undefined;
-    return byBranch;
-  }
-
-  return db
-    .prepare(
-      `SELECT id, state, branch, ledger_issue_id, assigned_session_id
-       FROM work_units
-       WHERE ${lookup.identity}
-         AND state IN ('open', 'committed')
-       ORDER BY created_at DESC
-       LIMIT 1`
-    )
-    .get(...lookup.params) as ExistingWorkUnit | undefined;
+  const states = branch && includeAbandoned ? "'open', 'committed', 'abandoned'" : "'open', 'committed'";
+  const candidates = db.prepare(`SELECT id, state, branch, ledger_issue_id, assigned_session_id
+    FROM work_units WHERE ${lookup.identity} AND state IN (${states})
+      ${branch ? "AND (branch = ? OR (branch IS NULL AND auth_request_id IS NULL))" : ""}`)
+    .all(...lookup.params, ...(branch ? [branch] : [])) as ExistingWorkUnit[];
+  const exact = branch ? candidates.filter(row => row.branch === branch) : candidates;
+  const matches = exact.length ? exact : candidates;
+  return matches.length > 1 ? { status: "ambiguous" } : { status: "matched", work_unit: matches[0] };
 }
 
 function buildWorkUnitLookup(
@@ -816,11 +840,47 @@ function buildWorkUnitLookup(
   const ledgerIssueId = resolveLedgerIssueId(db, issueId, repoId);
   return ledgerIssueId
     ? {
-        identity: "(ledger_issue_id = ? OR (issue_id = ? AND repo_id = ?))",
+        identity: "(ledger_issue_id = ? OR issue_id = ?) AND repo_id = ?",
         params: [ledgerIssueId, issueId, repoId],
       }
     : {
         identity: "(issue_id = ? AND repo_id = ?)",
         params: [issueId, repoId],
       };
+}
+
+type CustodyRow = {
+  id: string;
+  repo_id: string;
+  state: string;
+  owner_user_id: string | null;
+  owner_credential_id: string | null;
+  custody_generation: number;
+  auth_request_id: string | null;
+};
+
+function custodyMutationFailure(
+  db: ReturnType<typeof getDb>, req: RequestLike, row: CustodyRow, expectedGeneration: unknown,
+): { status: number; error: string; code: string } | null {
+  if (!Number.isInteger(expectedGeneration) || expectedGeneration !== row.custody_generation) {
+    return { status: 409, error: "Work-unit custody changed or expected_generation is missing; refresh and retry.", code: "custody_generation_conflict" };
+  }
+  const identity = durableCredential(req);
+  if (!identity || identity.user_id !== row.owner_user_id || identity.credential_id !== row.owner_credential_id) {
+    return { status: 403, error: "Only the exact durable custodian may change work-unit delivery state.", code: "work_unit_custody_conflict" };
+  }
+  const project = resolveProjectRef(db, row.repo_id);
+  if (project.ok && project.project && !project.ambiguous) {
+    try {
+      requireProjectAccess(db, req, project.project.id, "write");
+    } catch (error) {
+      if (error instanceof PermissionError) return { status: error.status, error: error.message, code: error.code };
+      throw error;
+    }
+  }
+  const credential = db.prepare("SELECT status, user_id FROM user_credentials WHERE id = ?").get(identity.credential_id) as { status: string; user_id: string } | undefined;
+  if (!credential || credential.status !== "active" || credential.user_id !== identity.user_id) {
+    return { status: 403, error: "Custodian credential is inactive.", code: "work_unit_custody_conflict" };
+  }
+  return null;
 }

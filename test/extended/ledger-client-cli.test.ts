@@ -31,6 +31,7 @@ function run(
         MANDIBLE_BASE: `http://127.0.0.1:${port}`,
         ZELLIJ: "",
         TMUX: "",
+        CODEX_THREAD_ID: "", CODEX_SESSION_ID: "", CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "",
         ...extraEnv,
       },
     });
@@ -66,6 +67,7 @@ function runBash(
         MANDIBLE_BASE: `http://127.0.0.1:${extraEnv.MANDIBLE_PORT || "9"}`,
         ZELLIJ: "",
         TMUX: "",
+        CODEX_THREAD_ID: "", CODEX_SESSION_ID: "", CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "",
         ...extraEnv,
       },
     });
@@ -231,8 +233,8 @@ describe("ledger mechanism CLI client", () => {
       "--state",
       "committed",
     ], port)).stdout).toContain("wu-1");
-    expect((await run(["work-unit", "resolve", "--id", "wu-1", "--auth-request-id", "auth-1"], port)).status).toBe(0);
-    expect((await run(["work-unit", "release", "--issue", "abc123", "--repo", "mandible"], port, process.cwd(), {
+    expect((await run(["work-unit", "resolve", "--id", "wu-1", "--expected-generation", "1", "--auth-request-id", "auth-1"], port)).status).toBe(0);
+    expect((await run(["work-unit", "release", "--repo", "mandible", "--branch", "feature/abc123", "--expected-generation", "1"], port, process.cwd(), {
       CODEX_THREAD_ID: "thread-release-cli",
     })).status).toBe(0);
     expect((await run(["issue", "title", "abc123"], port)).stdout).toBe("Ledger client issue\n");
@@ -286,6 +288,7 @@ describe("ledger mechanism CLI client", () => {
     });
     expect(requests.find((request) => request.url === "/api/work-units/wu-1")?.body).toEqual({
       state: "resolved",
+      expected_generation: 1,
       auth_request_id: "auth-1",
     });
     expect(requests.find((request) => request.url === "/api/work-units/activate")).toMatchObject({
@@ -301,7 +304,7 @@ describe("ledger mechanism CLI client", () => {
     expect(requests.find((request) => request.url === "/api/work-units/release")).toMatchObject({
       ambientProvider: "codex",
       ambientSession: "thread-release-cli",
-      body: { issue_id: "abc123", repo_id: "mandible" },
+      body: { branch: "feature/abc123", repo_id: "mandible", expected_generation: 1 },
     });
     expect(requests.find((request) => request.url === "/api/sessions/session-1/issues")?.body).toEqual({
       issue_id: "abc123",
@@ -346,7 +349,7 @@ describe("ledger mechanism CLI client", () => {
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
       });
-      const release = await run(["work-unit", "release", "--issue", "abc123", "--repo", "mandible"], 9, process.cwd(), {
+      const release = await run(["work-unit", "release", "--repo", "mandible", "--branch", "feature/abc123", "--expected-generation", "1"], 9, process.cwd(), {
         CODEX_THREAD_ID: "thread-file-release",
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
@@ -371,7 +374,7 @@ describe("ledger mechanism CLI client", () => {
       expect(seen[2]).toMatchObject({
         method: "POST",
         path: "/api/work-units/release",
-        body: { issue_id: "abc123", repo_id: "mandible" },
+        body: { branch: "feature/abc123", repo_id: "mandible", expected_generation: 1 },
         ambient_identity: { provider: "codex", provider_session_id: "thread-file-release" },
       });
     } finally {
