@@ -1,6 +1,6 @@
 # Architecture
 
-Mandible is three things: a Node.js daemon, a browser-based SPA, and optionally a Tauri native wrapper. They communicate over HTTP, Server-Sent Events, and WebSocket, all on a single port.
+Mandible is three things: a Bun daemon, a browser-based SPA, and optionally a Tauri native wrapper. They communicate over HTTP, Server-Sent Events, and WebSocket, all on a single port.
 
 ## System overview
 
@@ -13,7 +13,7 @@ Mandible is three things: a Node.js daemon, a browser-based SPA, and optionally 
 |  +--------------------+------------------------+  |
 |                       | HTTP / SSE / WebSocket    |
 |  +--------------------+------------------------+  |
-|  |        Node.js Daemon (TypeScript)           |  |
+|  |        Bun Daemon     (TypeScript)           |  |
 |  |                                              |  |
 |  |  Router -> Routes (auth, sessions, work, ...) |
 |  |  SSE Manager -> Real-time event broadcast    |  |
@@ -30,14 +30,14 @@ Mandible is three things: a Node.js daemon, a browser-based SPA, and optionally 
 |  |  Work Unit Reconciler -> state consistency   |  |
 |  |  Channel Registry -> MCP session tracking    |  |
 |  |                                              |  |
-|  |  SQLite (better-sqlite3, WAL mode)           |  |
+|  |  SQLite (node:sqlite, WAL mode)              |  |
 |  +----------------------------------------------+  |
 +-----------------------------------------------------+
 ```
 
 ## The daemon
 
-The daemon is a Node.js process that serves the HTTP API, the SSE event stream, the WebSocket terminal connections, and the static SPA files from one `http.Server`. Its default loopback backend port is 29420 (`MANDIBLE_PORT`); the desktop and browser use the trusted HTTPS gateway at `https://app.mandible.localhost:19420`.
+The daemon is a Bun process that serves the HTTP API, the SSE event stream, the WebSocket terminal connections, and the static SPA files from one `http.Server`. Its default loopback backend port is 29420 (`MANDIBLE_PORT`); the desktop and browser use the trusted HTTPS gateway at `https://app.mandible.localhost:19420`.
 
 ### No framework
 
@@ -51,7 +51,7 @@ The daemon shuts down gracefully on `SIGINT` or `SIGTERM`, closing connections, 
 
 ## SQLite
 
-Mandible uses `better-sqlite3` for synchronous database access. The database runs in WAL (Write-Ahead Logging) mode, which allows concurrent reads from the dashboard while the daemon writes.
+Mandible uses Bun’s built-in `node:sqlite` through the canonical `src/sqlite.ts` boundary for synchronous database access. The database runs in WAL (Write-Ahead Logging) mode, which allows concurrent reads from the dashboard while the daemon writes.
 
 ### Schema migrations
 
@@ -98,6 +98,6 @@ A planned Level 2 integration would bundle the daemon as a Tauri sidecar, starti
 
 ## Process model
 
-Mandible runs as a single Node.js process. Background services (session discovery, issue scanning, conversation ingestion, etc.) run on periodic timers within the same process.
+Mandible runs as a single Bun process. Background services (session discovery, issue scanning, conversation ingestion, etc.) run on periodic timers within the same process.
 
 The exception is the Console: PTY and SDK sessions are child processes managed by the daemon and cleaned up on shutdown.

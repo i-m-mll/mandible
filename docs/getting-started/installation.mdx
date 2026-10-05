@@ -1,13 +1,13 @@
 # Installation
 
-Mandible runs as a Node.js daemon on your workstation. There's no hosted version --- it's designed to be local-first, managing agent sessions and auth requests for repositories on your machine.
+Mandible runs as a Bun daemon on your workstation. There's no hosted version --- it's designed to be local-first, managing agent sessions and auth requests for repositories on your machine.
 
 ## System requirements
 
-- **Node.js** 18 or later (uses ESM, `node:` built-in imports, and `structuredClone`)
+- **Bun** at the exact version in `.bun-version`; `scripts/bun-runtime.sh` selects and verifies it
 - **macOS** (primary target; Linux should work but is untested)
 - **git** (for branch scanning, worktree detection, and auth merges)
-- **A C++ toolchain** for native modules (`node-pty` and `better-sqlite3` compile from source)
+- **A C++ toolchain** if `node-pty` needs to compile on your platform
 
 ### Optional
 
@@ -20,11 +20,13 @@ Mandible runs as a Node.js daemon on your workstation. There's no hosted version
 ```bash
 git clone <repo-url> mandible
 cd mandible
-npm install
-npm run build
+runtime="$(scripts/bun-runtime.sh)"
+export PATH="$(dirname "$runtime"):$PATH"
+"$runtime" install --frozen-lockfile
+"$runtime" run build
 ```
 
-The install step compiles two native modules: `better-sqlite3` (SQLite bindings) and `node-pty` (pseudo-terminal support for the Console). A `postinstall` script runs `scripts/fix-pty-permissions.js` to set correct permissions on the `node-pty` binary.
+SQLite uses Bun’s built-in `node:sqlite` through the shared `src/sqlite.ts` boundary. The install retains `node-pty` for pseudo-terminal support; the postinstall script sets its helper permissions. The frozen install consumes `bun.lock`. See [Bun runtime contract](../bun-foundation.md) for the runtime and storage rules.
 
 The build step does three things:
 
@@ -36,8 +38,8 @@ The build step does three things:
 
 | Variable | Default | Description |
 |---|---|---|
-| `MANDIBLE_PORT` | `19420` | HTTP/SSE/WebSocket port the daemon listens on |
-| `MANDIBLE_DB` | `~/.cache/mandible/mandible.db` | Path to the SQLite database |
+| `MANDIBLE_PORT` | `29420` | Private loopback HTTP/SSE/WebSocket port the daemon listens on |
+| `MANDIBLE_DB` | `~/.mandible/mandible.db` | Path to the SQLite database |
 | `LOG_LEVEL` | `info` | Logging verbosity: `debug`, `info`, `warn`, `error` |
 
 The daemon binds to `127.0.0.1` only --- it is not accessible from other machines on the network.
@@ -46,10 +48,10 @@ The daemon binds to `127.0.0.1` only --- it is not accessible from other machine
 
 ```bash
 # Start the daemon
-npm start
+"$(scripts/bun-runtime.sh)" run start
 
 # In another terminal, check the health endpoint
-curl http://localhost:19420/api/health
+curl http://127.0.0.1:29420/api/health
 ```
 
 You should see a JSON response like:
@@ -71,7 +73,7 @@ The `startup_commit` field shows the Mandible commit that's currently running, u
 
 ## Database location
 
-On first start, the daemon creates a SQLite database at `~/.cache/mandible/mandible.db`. This database stores:
+On first start, the daemon creates a SQLite database at `~/.mandible/mandible.db`. This database stores:
 
 - Session records (active, ended, dead)
 - Auth request queue and history
@@ -89,13 +91,13 @@ For working on Mandible itself:
 
 ```bash
 # Watch both TypeScript and UI for changes
-npm run dev
+bun run dev
 
 # Or watch just the UI (faster iteration on dashboard changes)
-npm run build:watch
+bun run build:watch
 
 # Run tests
-npm test
+bun run test
 ```
 
 The `dev` command runs `tsc --watch` and `esbuild --watch` in parallel. UI changes are rebuilt in milliseconds; TypeScript changes require a daemon restart to take effect.
@@ -105,8 +107,8 @@ The `dev` command runs `tsc --watch` and `esbuild --watch` in parallel. UI chang
 Mandible includes an optional Tauri shell that wraps the dashboard in a native macOS window:
 
 ```bash
-npm run tauri       # Development mode
-npm run tauri:build # Build the .app bundle
+bun run tauri       # Development mode
+bun run tauri:build # Build the .app bundle
 ```
 
-The Tauri wrapper is currently a thin launcher --- it opens a WebView pointed at the daemon URL. The daemon must be running separately. A future version will bundle the daemon as a sidecar process.
+The desktop opens the registered HTTPS front door and controls the persistent local runtime. Install the production bundle and its LaunchAgents with `bash cli/install-desktop-app.sh`; use the supported runtime controller to inspect or restart them.

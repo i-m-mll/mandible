@@ -44,6 +44,9 @@ function runHookAfterMerge(
   const desktopTracePath = path.join(tempDir, "desktop-trace");
   const runtimeTracePath = path.join(tempDir, "runtime-trace");
   fs.mkdirSync(cliDir, { recursive: true });
+  fs.mkdirSync(path.join(repo, "dist"));
+  const sqliteBuild = spawnSync(process.execPath, ["build", path.join(process.cwd(), "src/sqlite.ts"), "--target", "bun", "--outfile", path.join(repo, "dist/sqlite.js")], { encoding: "utf8" });
+  expect(sqliteBuild.status, sqliteBuild.stderr).toBe(0);
   fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
   fs.copyFileSync(path.join(process.cwd(), "scripts/bun-runtime.sh"), path.join(repo, "scripts/bun-runtime.sh"));
   fs.chmodSync(path.join(repo, "scripts/bun-runtime.sh"), 0o755);
@@ -152,7 +155,6 @@ exec "$REAL_GIT" "$@"
       MANDIBLE_TEST_RUNTIME_TRACE: runtimeTracePath,
       MANDIBLE_AUTH_MERGE_BASE_SHA: replayAfterUnrelatedMerge ? mergeBaseSha : "",
       MANDIBLE_AUTH_MERGE_HEAD_SHA: replayAfterUnrelatedMerge ? mergeHeadSha : "",
-      NODE_PATH: path.join(process.cwd(), "node_modules"),
     },
   });
 
@@ -167,16 +169,15 @@ afterEach(() => {
 
 describe("post-merge build hook", () => {
   it.each(["cli/instructions-contract.md", "cli/command-syntax.json", "cli/command-syntax.cjs"])(
-    "skips the build but installs instructions after changing %s",
+    "refreshes build provenance and installs instructions after changing %s",
     (changedPath) => {
       const result = runHookAfterMerge(changedPath);
 
       expect(result.status).toBe(0);
-      expect(result.stderr).toContain("[post-merge-build] no Mandible source changes detected; skipping build");
-      expect(result.stderr).not.toContain("[post-merge-build] generated local build artifacts");
+      expect(result.stderr).toContain("[post-merge-build] generated local build artifacts");
       expect(result.stderr).toContain("no native desktop changes detected");
       expect(result.stderr).toContain("[post-merge-build] installed managed instruction fragments");
-      expect(fs.existsSync(result.tracePath)).toBe(false);
+      expect(fs.readFileSync(result.tracePath, "utf8")).toBe("dependencies\nbuild\n");
       expect(fs.existsSync(result.desktopTracePath)).toBe(false);
 
       const claudeTarget = path.join(result.home, ".claude", "CLAUDE.md");
