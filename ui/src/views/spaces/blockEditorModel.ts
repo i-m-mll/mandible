@@ -20,8 +20,6 @@
 // NO block schema (C11) — it only adapts their frozen surfaces for the editor.
 
 import type { SpaceBlock } from '../../api';
-import type { SpaceExport } from '../../api';
-import type { DocumentCustody } from './custodyEditorUx';
 
 // --- sort-key generation (UI mirror of C11 `generateSortKey`) ----------------
 
@@ -153,25 +151,4 @@ export function siblingIndexOf(blocks: SpaceBlock[], blockId: string): number {
 
 // --- custody projection (C13a exports -> C13d custody) -----------------------
 
-/**
- * Project the C13a export read result onto the C13d `DocumentCustody` shape.
- *
- * Custody for a document is decided by its tracked `space_exports` row:
- *   - No tracked row at all  -> `null` (Mandible custody; freely editable).
- *   - A `repo`-authority row  -> repo-authoritative; its `status` drives gating.
- *   - Only `mandible`-authority rows -> Mandible custody (still freely editable).
- *
- * When several rows exist, a `repo`-authority row is the binding one (it is the
- * repo source of truth the editor must not silently fork from); the most-recently
- * updated such row wins so a re-register/re-export is reflected immediately.
- */
-export function deriveDocumentCustody(exports: SpaceExport[]): DocumentCustody {
-  if (!exports.length) return null;
-  const repoRows = exports.filter((e) => e.authority === 'repo');
-  if (repoRows.length) {
-    const binding = repoRows.reduce((a, b) => (b.updated_at >= a.updated_at ? b : a));
-    return { authority: 'repo', status: binding.status };
-  }
-  const latest = exports.reduce((a, b) => (b.updated_at >= a.updated_at ? b : a));
-  return { authority: latest.authority, status: latest.status };
-}
+

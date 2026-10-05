@@ -1,3 +1,4 @@
+import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
 import { ARTIFACT_CUSTODY_TRIGGERS_SQL } from './artifact-custody-schema.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL } from './artifact-source-schema.js';
 import type { Db } from "./db.js";
@@ -890,7 +891,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
   }
 
   const create = db.transaction(() => {
-    for (const statement of HEAD_SCHEMA_STATEMENTS) {
+    for (const statement of [...HEAD_SCHEMA_STATEMENTS, ...SPACE_PUBLICATION_SCHEMA_SQL]) {
       const executable = statement.startsWith("CREATE TABLE auth_requests")
         ? statement.replace(
             ", supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT, superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT",
