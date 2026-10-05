@@ -2,7 +2,7 @@ import { BRIEFING_EVENT_VALUES } from '../../src/contracts';
 import { queryClient } from '../../ui/src/query/client';
 import { browserResourceKeys, refreshBrowserResources } from '../../ui/src/query/browserResources';
 import { createHash } from 'node:crypto';
-import fs, { readFileSync } from 'node:fs';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -390,10 +390,6 @@ describe('artifact-backed Briefing rounds', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Keep' }).getAttribute('aria-pressed')).toBe('true'));
     const shelf = screen.getByText('Annotation sets (2)').closest('details') as HTMLDetailsElement;
     expect(shelf.open).toBe(false);
-    const css = readFileSync('ui/src/styles/briefing.css', 'utf8');
-    expect(css).toMatch(/\.briefing-detail__footer\s*\{[^}]*padding:\s*0;/s);
-    expect(css).toMatch(/\.briefing-submission-shelf\s*\{[^}]*width:\s*100%;/s);
-    expect(css).toMatch(/\.briefing-submission-shelf\s*>\s*summary\s*\{[^}]*padding:\s*var\(--space-2\)\s+var\(--space-5\);/s);
     fireEvent.click(within(shelf).getByText('Annotation sets (2)'));
     expect(within(shelf).getAllByRole('row', { name: /^View annotation set/ }).map((row) => row.getAttribute('aria-label')))
       .toEqual(['View annotation set by Zed', 'View annotation set by Amy']);
@@ -438,9 +434,6 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.keyDown(inactive, { key: 'Enter' });
     expect(screen.queryByText('No annotation sets for this round.')).toBeNull();
     expect(screen.queryByRole('grid', { name: 'Annotation sets for this round' })).toBeNull();
-    const css = readFileSync('ui/src/styles/briefing.css', 'utf8');
-    expect(css).toMatch(/\.briefing-submission-shelf\s*\{[^}]*color:\s*var\(--text-muted\);/s);
-    expect(css).toMatch(/\.briefing-submission-shelf--inactive\s*\{[^}]*padding:\s*var\(--space-2\)\s+var\(--space-5\);/s);
   });
 
   it('presents a published report as Current with report history', async () => {

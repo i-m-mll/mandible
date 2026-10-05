@@ -1,8 +1,8 @@
+import { setViewportWidth, render } from '../helpers/ui-workspace-fixture';
 import { screen, waitFor } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useSidebarResize } from '../../ui/src/hooks/useSidebarResize';
-import { setViewportWidth, render } from '../helpers/ui-workspace-fixture';
 
 describe('useSidebarResize', () => {
   function stubLocalStorage(initial: Record<string, string> = {}): void {

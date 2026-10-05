@@ -1,10 +1,10 @@
+import { changeSelect, render, mainInstance } from '../helpers/ui-workspace-fixture';
 import { readFileSync } from 'node:fs';
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
-import { App } from '../../ui/src/app';
+
 import { WorkOverviewView } from '../../ui/src/views/work';
-import { changeSelect, render, mainInstance } from '../helpers/ui-workspace-fixture';
 
 describe('WorkOverviewView', () => {
   it('renders repo and branch data', () => {

@@ -1,10 +1,10 @@
-import { readFileSync } from 'node:fs';
+import { installMemoryLocalStorage, stubFetch, render, mainInstance } from '../helpers/ui-workspace-fixture';
+
 import { screen, fireEvent, waitFor, cleanup, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { AuthQueueView } from '../../ui/src/views/auth';
-import { readResolvedStylesheet } from '../helpers/css-manifest';
-import { installMemoryLocalStorage, stubFetch, render, mainInstance } from '../helpers/ui-workspace-fixture';
+
 
 describe('AuthQueueView', () => {
   const changeReport: AuthChangeReport = {

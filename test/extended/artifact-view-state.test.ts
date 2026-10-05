@@ -1,8 +1,8 @@
+import { changeSelect, installMemoryLocalStorage, makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from '../helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { ArtifactsView } from '../../ui/src/views/artifacts';
-import { changeSelect, installMemoryLocalStorage, makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from '../helpers/ui-workspace-fixture';
 
 describe('ArtifactsView', () => {
   it('replaces a removed saved series with the first available artifact', async () => {

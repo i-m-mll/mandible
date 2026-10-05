@@ -1,9 +1,9 @@
+import { changeSelect, render, previewInstance, mainInstance, preferenceWritablePreviewInstance } from '../helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, cleanup, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
-import { App } from '../../ui/src/app';
+
 import { SettingsView } from '../../ui/src/views/settings';
-import { changeSelect, render, previewInstance, mainInstance, preferenceWritablePreviewInstance } from '../helpers/ui-workspace-fixture';
 
 describe('SettingsView', () => {
   it('offers only the native setup handoff from the browser', () => {

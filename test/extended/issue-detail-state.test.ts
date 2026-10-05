@@ -1,8 +1,8 @@
+import { issueDetailProjection, render } from '../helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { LedgerIssueDetail } from '../../ui/src/components/ledger/IssueDetail';
-import { issueDetailProjection, render } from '../helpers/ui-workspace-fixture';
 
 describe('LedgerIssueDetail', () => {
   it('renders issue status in the top metadata row after the copy affordance', () => {

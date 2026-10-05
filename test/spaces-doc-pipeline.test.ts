@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   parseSpacesDoc,
   renderProseToSafeHtml,
-  assertNoExecutableDirectivePath,
   SPACES_DOC_VERSION,
   FORMAT_KEY,
 } from '../ui/src/spaces/doc-pipeline';

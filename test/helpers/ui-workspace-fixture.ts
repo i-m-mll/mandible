@@ -1,78 +1,33 @@
-import { readFileSync } from 'node:fs';
-import { render as testingRender, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/preact';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { h } from 'preact';
-import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 
-import {
-  appReducer,
-  authEventRequiresProjectionRefresh,
-  applySSEEvent,
-  initialState,
-  selectBadgeCounts,
-  parseAuthOutputEvent,
-  parseAuthResolvedId,
-  loadCachedState,
-  saveCachedState,
-  MAX_AUTH_OUTPUT_CHARS,
-} from '../../ui/src/state';
-import { App } from '../../ui/src/app';
+import { render as testingRender, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/preact';
+import { afterEach, beforeEach, expect, vi } from 'vitest';
+import { h } from 'preact';
+
+
+
+
+import { clearPersistedDetailCache } from '../../ui/src/detail-cache';
 import { PRODUCTION_ORIGIN } from '../../src/canonical-origin';
 import { PRODUCTION_EFFECTS } from '../../src/security/effect-policy.js';
-import { APP_RAIL_PREVIEW_ORDER_STORAGE_KEY } from '../../ui/src/app-rail-order';
-import {
-  getWorkCompare,
-  getSettings,
-  invalidateApiGetCache,
-  patchSession,
-  updateConversation,
-  type InstanceInfo,
-} from '../../ui/src/api';
-import {
-  installTauriDeepLinkHandler,
-  navigateToMandibleDeepLink,
-  routeHashFromMandibleDeepLink,
-} from '../../ui/src/deep-links';
-import {
-  __resetAgentPageBindingForTests,
-  adoptAgentSessionBinding,
-  adoptAgentSessionFragment,
-  getAgentPageBinding,
-} from '../../ui/src/agent-page-binding';
-import {
-  briefingGroupRoute,
-  hashWithViewSidebarHidden,
-  hashWithViewSidebarVisible,
-  isViewSidebarHidden,
-  parseRouteFromHash,
-  shortRouteId,
-  spacesRouteFromHash,
-} from '../../ui/src/routing';
+
+import { invalidateApiGetCache, type InstanceInfo } from '../../ui/src/api';
+
+
+
 import { __resetSharedSseForTests } from '../../ui/src/sse-shared';
 import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
-import {
-  AppShellProvider,
-  RightSidebarIcon,
-  useRegisterAppRightSidebar,
-  type AppRightSidebarDescriptor,
-  type AppShellContextValue,
-} from '../../ui/src/app-shell';
-import { AuthQueueView } from '../../ui/src/views/auth';
-import type { AuthChangeReport } from '../../src/contracts';
-import { GraphView } from '../../ui/src/views/graph';
-import { SettingsView } from '../../ui/src/views/settings';
-import { WorkOverviewView } from '../../ui/src/views/work';
-import { ArtifactsView } from '../../ui/src/views/artifacts';
-import { getInstructionMessageMeta } from '../../ui/src/components/message-blocks/UserBubble';
-import { LedgerIssueDetail } from '../../ui/src/components/ledger/IssueDetail';
-import { useSidebarResize } from '../../ui/src/hooks/useSidebarResize';
-import {
-  IssuesView,
-  resolveIssueIdDeepLink,
-  resolveIssueRepoDeepLink,
-  type IssueRepoSummary,
-} from '../../ui/src/views/issues';
-import { readResolvedStylesheet } from './css-manifest';
+import { AppShellProvider } from '../../ui/src/app-shell';
+
+
+
+
+
+
+
+
+
+
+
 
 function ruleBody(css: string, selector: string): string {
   const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -184,6 +139,8 @@ const render: typeof testingRender = (view, options) => {
 };
 
 beforeEach(async () => {
+  installMemoryLocalStorage();
+  clearPersistedDetailCache();
   const noticeHost = document.createElement('div');
   noticeHost.id = 'app-operational-notices';
   document.body.append(noticeHost);
@@ -225,6 +182,7 @@ afterEach(() => {
   restoreTestLocalStorage = null;
   window.history.replaceState(null, '', '/');
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
   delete (window as Window & { __MANDIBLE_BOOTSTRAP__?: unknown }).__MANDIBLE_BOOTSTRAP__;
@@ -805,4 +763,4 @@ function jsonResponse(body: unknown): Promise<Response> {
 }
 
 
-export { ruleBody, changeSelect, setViewportWidth, readSharedSidebarWidth, mockLeftChromeRects, installMemoryLocalStorage, stubFetch, stubEventSource, stubAppShellFetch, stubRailSettingsFetch, railGroupLinks, mockRailRects, fireRailPointer, installPointerEventForTest, issueDetailProjection, makeArtifactVersion, makeArtifactFixture, makeArtifactSeries, jsonResponse, render, reactFlowMockState, previewInstance, mainInstance, writablePreviewInstance, preferenceWritablePreviewInstance };
+export { railReorderReady, ruleBody, changeSelect, setViewportWidth, readSharedSidebarWidth, mockLeftChromeRects, installMemoryLocalStorage, stubFetch, stubEventSource, stubAppShellFetch, stubRailSettingsFetch, railGroupLinks, mockRailRects, fireRailPointer, installPointerEventForTest, issueDetailProjection, makeArtifactVersion, makeArtifactFixture, makeArtifactSeries, jsonResponse, render, reactFlowMockState, previewInstance, mainInstance, writablePreviewInstance, preferenceWritablePreviewInstance };

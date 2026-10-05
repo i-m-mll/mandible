@@ -1,3 +1,4 @@
+import { railReorderReady, changeSelect, installMemoryLocalStorage, stubEventSource, stubAppShellFetch, stubRailSettingsFetch, railGroupLinks, mockRailRects, fireRailPointer, installPointerEventForTest, issueDetailProjection, render, reactFlowMockState, previewInstance, mainInstance, writablePreviewInstance } from '../helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
@@ -11,7 +12,6 @@ import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 import { AppShellProvider, RightSidebarIcon, useRegisterAppRightSidebar, type AppRightSidebarDescriptor, type AppShellContextValue } from '../../ui/src/app-shell';
 import { GraphView } from '../../ui/src/views/graph';
 import { readResolvedStylesheet } from '../helpers/css-manifest';
-import { changeSelect, installMemoryLocalStorage, stubEventSource, stubAppShellFetch, stubRailSettingsFetch, railGroupLinks, mockRailRects, fireRailPointer, installPointerEventForTest, issueDetailProjection, render, reactFlowMockState, previewInstance, mainInstance, writablePreviewInstance } from '../helpers/ui-workspace-fixture';
 
 describe('app shell', () => {
   function RegisteredSidebar(): JSX.Element {
