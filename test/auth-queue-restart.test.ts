@@ -1,3 +1,4 @@
+import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -14,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthHookManager } from "../src/auth-hooks.js";
 import type { SseEvent } from "../src/types.js";
-import { commitOnBranch, createAuthCheckRepo, createMigratedDb, createNoopHookManager, registerWorkRepo, waitForStatus } from "./helpers/auth-queue-fixtures.js";
+import { commitOnBranch, createAuthCheckRepo, createMigratedDb, createNoopHookManager, git, registerWorkRepo, waitForStatus } from "./helpers/auth-queue-fixtures.js";
 
 describe("auth queue", () => {
   describe("self-rebuild event ordering", () => {
@@ -52,15 +53,7 @@ describe("auth queue", () => {
               resolvedBeforeExit = !exitScheduled;
             }
           },
-          executor: async () => ({
-            exit_code: 0,
-            signal: null,
-            stdout: "Merge made by recursive.\n",
-            stderr: "",
-            output: "Merge made by recursive.\n",
-            started_at: Date.now(),
-            finished_at: Date.now()
-          })
+          executor: async (options) => publishFixtureExecution(queue!, options)
         });
 
         const request = queue.submit({
@@ -69,11 +62,12 @@ describe("auth queue", () => {
           repo: "mandible",
           base_branch: "main",
           head_branch: "feature/self-fix",
+          merge_head_sha: git(repo, ["rev-parse", "feature/self-fix"]),
           cwd: repo,
           execution_mode: "daemon"
         });
 
-        queue.approve(request.id);
+        await approveFixtureRequest(queue, request.id);
         await waitForStatus(queue, request.id, "completed");
         // Give the post-execution code time to run (setTimeout scheduling)
         await new Promise((resolve) => originalSetTimeout(resolve, 100));
@@ -115,6 +109,7 @@ describe("auth queue", () => {
       // A hook manager that records, in the same event stream, the moment hooks
       // run — so we can assert mandible:rebuilding fired strictly before it.
       const hookManager = {
+        reclaimAllInterruptedRuns: () => 0,
         executeHooks: async () => {
           events.push({ event: "test:hooks-ran", data: {} });
           return [];
@@ -128,15 +123,7 @@ describe("auth queue", () => {
           db,
           hookManager,
           broadcast: (event) => events.push(event),
-          executor: async () => ({
-            exit_code: 0,
-            signal: null,
-            stdout: "Merge made by recursive.\n",
-            stderr: "",
-            output: "Merge made by recursive.\n",
-            started_at: Date.now(),
-            finished_at: Date.now()
-          })
+          executor: async (options) => publishFixtureExecution(queue!, options)
         });
 
         const request = queue.submit({
@@ -145,11 +132,12 @@ describe("auth queue", () => {
           repo: "mandible",
           base_branch: "main",
           head_branch: "feature/order-fix",
+          merge_head_sha: git(repo, ["rev-parse", "feature/order-fix"]),
           cwd: repo,
           execution_mode: "daemon"
         });
 
-        queue.approve(request.id);
+        await approveFixtureRequest(queue, request.id);
         await waitForStatus(queue, request.id, "completed");
         await new Promise((resolve) => originalSetTimeout(resolve, 50));
 
@@ -182,7 +170,7 @@ describe("auth queue", () => {
       const originalSetTimeout = globalThis.setTimeout;
       const setTimeoutSpy = (fn: (...args: unknown[]) => void, ms?: number) => {
         // Capture the delay used for the self-rebuild exit
-        if (ms !== undefined && ms >= 1000) {
+        if (ms === 2000) {
           exitDelayMs = ms;
           return originalSetTimeout(fn, 0);
         }
@@ -196,6 +184,7 @@ describe("auth queue", () => {
         queue = new AuthQueue({
           db,
           hookManager: {
+            reclaimAllInterruptedRuns: () => 0,
             executeHooks: async () => {
               lifecycleEvents.push("hooks");
               return [];
@@ -212,15 +201,7 @@ describe("auth queue", () => {
             },
           },
           restartFn: () => lifecycleEvents.push("restart"),
-          executor: async () => ({
-            exit_code: 0,
-            signal: null,
-            stdout: "Merge made by recursive.\n",
-            stderr: "",
-            output: "Merge made by recursive.\n",
-            started_at: Date.now(),
-            finished_at: Date.now()
-          })
+          executor: async (options) => publishFixtureExecution(queue!, options)
         });
 
         const request = queue.submit({
@@ -229,11 +210,12 @@ describe("auth queue", () => {
           repo: "mandible",
           base_branch: "main",
           head_branch: "feature/delay-test",
+          merge_head_sha: git(repo, ["rev-parse", "feature/delay-test"]),
           cwd: repo,
           execution_mode: "daemon"
         });
 
-        queue.approve(request.id);
+        await approveFixtureRequest(queue, request.id);
         await waitForStatus(queue, request.id, "completed");
         const restartDeadline = Date.now() + 2_000;
         while (!lifecycleEvents.includes("restart") && Date.now() < restartDeadline) {
@@ -282,6 +264,7 @@ describe("auth queue", () => {
       // Hold the self-merge in its hook phase, keeping admission closed while we
       // approve a second request.
       const hookManager = {
+        reclaimAllInterruptedRuns: () => 0,
         executeHooks: async () => {
           await hookGate;
           return [];
@@ -296,15 +279,7 @@ describe("auth queue", () => {
           hookManager,
           executor: async (options) => {
             executed.push(options.request_id);
-            return {
-              exit_code: 0,
-              signal: null,
-              stdout: "",
-              stderr: "",
-              output: "",
-              started_at: Date.now(),
-              finished_at: Date.now(),
-            };
+            return publishFixtureExecution(queue!, options);
           },
         });
 
@@ -314,10 +289,11 @@ describe("auth queue", () => {
           repo: "mandible",
           base_branch: "main",
           head_branch: "feature/self-park",
+          merge_head_sha: git(repo, ["rev-parse", "feature/self-park"]),
           cwd: repo,
           execution_mode: "daemon",
         });
-        queue.approve(selfMerge.id);
+        await approveFixtureRequest(queue, selfMerge.id);
 
         // Wait for the self-merge to enter its hook phase (admission closed).
         const deadline = Date.now() + 2000;
@@ -327,12 +303,12 @@ describe("auth queue", () => {
         expect(queue.isRebuilding).toBe(true);
 
         // A request approved during the rebuild window must be parked, not run.
-        const other = queue.submit({
+        const other = queue.submit({ type: "commit",
           command: "echo other",
           title: "Other",
           execution_mode: "daemon",
         });
-        queue.approve(other.id);
+        await approveFixtureRequest(queue, other.id);
         expect(queue.getRequest(other.id)?.status).toBe("pending");
 
         releaseHook?.();
@@ -350,11 +326,11 @@ describe("auth queue", () => {
       }
     });
 
-    it("fast-recovers an execution orphaned by a recorded self-merge shutdown", () => {
+    it("fast-recovers an execution orphaned by a recorded self-merge shutdown", async () => {
       const db = createMigratedDb();
       const now = 5_000_000;
       const q1 = new AuthQueue({ db, now: () => now });
-      const req = q1.submit({
+      const req = q1.submit({ type: "commit",
         command: "echo work",
         title: "Interrupted",
         execution_mode: "daemon",
@@ -375,7 +351,7 @@ describe("auth queue", () => {
       const events: SseEvent[] = [];
       const q2 = new AuthQueue({ db, now: () => now, broadcast: (event) => events.push(event) });
 
-      const recovered = q2.getRequest(req.id);
+      const recovered = await waitForStatus(q2, req.id, "completed");
       // A non-merge execution cannot be repository-recovered → completed as failed.
       expect(recovered?.status).toBe("completed");
       expect(recovered?.exit_code).toBe(1);
@@ -394,7 +370,7 @@ describe("auth queue", () => {
       const db = createMigratedDb();
       const now = 5_000_000;
       const q1 = new AuthQueue({ db, now: () => now });
-      const req = q1.submit({
+      const req = q1.submit({ type: "commit",
         command: "echo work",
         title: "Recent",
         execution_mode: "daemon",

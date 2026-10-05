@@ -1,3 +1,4 @@
+import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -31,9 +32,11 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
   function gatedExecutor() {
     const started: string[] = [];
     const releases = new Map<string, () => void>();
-    const executor = async (options: { request_id: string }) => {
+    let queue: AuthQueue;
+    const executor = async (options: Parameters<NonNullable<ConstructorParameters<typeof AuthQueue>[0]["executor"]>>[0]) => {
       started.push(options.request_id);
       await new Promise<void>((resolve) => releases.set(options.request_id, resolve));
+      if (queue.getRequest(options.request_id)?.type === "merge") return publishFixtureExecution(queue, options);
       return {
         exit_code: 0,
         signal: null,
@@ -47,6 +50,7 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
     return {
       executor: executor as unknown as ConstructorParameters<typeof AuthQueue>[0]["executor"],
       started,
+      bindQueue: (value: AuthQueue) => { queue = value; },
       release: (id: string) => releases.get(id)?.(),
     };
   }
@@ -63,17 +67,18 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
       registerWorkRepo(db, repoB);
 
       const queue = new AuthQueue({ db, executor: g.executor, hookManager: createNoopHookManager() });
+      g.bindQueue(queue);
       const reqA = queue.submit({
         type: "merge", command: "mandible auth merge feature/con-a --into main", title: "A",
-        repo: path.basename(repoA), base_branch: "main", head_branch: "feature/con-a", cwd: repoA,
+        repo: path.basename(repoA), base_branch: "main", head_branch: "feature/con-a", cwd: repoA, merge_head_sha: git(repoA, ["rev-parse", "feature/con-a"]),
       });
       const reqB = queue.submit({
         type: "merge", command: "mandible auth merge feature/con-b --into main", title: "B",
-        repo: path.basename(repoB), base_branch: "main", head_branch: "feature/con-b", cwd: repoB,
+        repo: path.basename(repoB), base_branch: "main", head_branch: "feature/con-b", cwd: repoB, merge_head_sha: git(repoB, ["rev-parse", "feature/con-b"]),
       });
 
-      queue.approve(reqA.id);
-      queue.approve(reqB.id);
+      await approveFixtureRequest(queue, reqA.id);
+      await approveFixtureRequest(queue, reqB.id);
       // Distinct canonical repos → both executors enter before either resolves.
       await waitFor(() => g.started.length === 2);
       expect([...g.started].sort()).toEqual([reqA.id, reqB.id].sort());
@@ -105,17 +110,18 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
       registerWorkRepo(db, repo);
 
       const queue = new AuthQueue({ db, executor: g.executor, hookManager: createNoopHookManager() });
+      g.bindQueue(queue);
       const req1 = queue.submit({
         type: "merge", command: "mandible auth merge feature/ser-one --into main", title: "1",
-        repo: path.basename(repo), base_branch: "main", head_branch: "feature/ser-one", cwd: repo,
+        repo: path.basename(repo), base_branch: "main", head_branch: "feature/ser-one", cwd: repo, merge_head_sha: git(repo, ["rev-parse", "feature/ser-one"]),
       });
       const req2 = queue.submit({
         type: "merge", command: "mandible auth merge feature/ser-two --into main", title: "2",
-        repo: path.basename(repo), base_branch: "main", head_branch: "feature/ser-two", cwd: alias,
+        repo: path.basename(repo), base_branch: "main", head_branch: "feature/ser-two", cwd: alias, merge_head_sha: git(alias, ["rev-parse", "feature/ser-two"]),
       });
 
-      queue.approve(req1.id);
-      queue.approve(req2.id);
+      await approveFixtureRequest(queue, req1.id);
+      await approveFixtureRequest(queue, req2.id);
       await waitFor(() => g.started.length === 1);
       await tick();
       // req2 (alias path → same canonical repo) is blocked behind req1.
@@ -136,29 +142,15 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
     }
   });
 
-  it("serializes requests with unresolvable identity on the shared chain", async () => {
+  it("uses one conservative chain key for unresolvable repository identities", () => {
     const db = createMigratedDb();
-    const g = gatedExecutor();
+    const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
-      const queue = new AuthQueue({ db, executor: g.executor, hookManager: createNoopHookManager() });
-      const r1 = queue.submit({ command: "echo one", title: "one", execution_mode: "daemon" });
-      const r2 = queue.submit({ command: "echo two", title: "two", execution_mode: "daemon" });
-
-      queue.approve(r1.id);
-      queue.approve(r2.id);
-      await waitFor(() => g.started.length === 1);
-      await tick();
-      expect(g.started).toEqual([r1.id]);
-
-      g.release(r1.id);
-      await waitForStatus(queue, r1.id, "completed");
-      await waitFor(() => g.started.length === 2);
-      g.release(r2.id);
-      await waitForStatus(queue, r2.id, "completed");
-      queue.dispose();
-    } finally {
-      db.close();
-    }
+      const r1 = queue.submit({ type: "commit", command: "echo one", title: "one" });
+      const r2 = queue.submit({ type: "commit", command: "echo two", title: "two", cwd: uniqueMissingPath("unresolved") });
+      const chainKey = (queue as unknown as { chainKeyForRequest(request: typeof r1): string }).chainKeyForRequest.bind(queue);
+      expect(chainKey(r1)).toBe(chainKey(r2));
+    } finally { queue.dispose(); db.close(); }
   });
 
   it("resolves a 'dotfiles' child work unit against a '.dotfiles' request only with registry backing", async () => {
@@ -177,7 +169,6 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
         git(repo, ["merge", "--no-ff", "feature/dot-child", "-m", "merge child"]);
         const integrationHead = git(repo, ["rev-parse", "integration/dot-batch"]);
         git(repo, ["checkout", "main"]);
-        git(repo, ["merge", "--no-ff", "integration/dot-batch", "-m", "merge integration"]);
         const realRoot = fs.realpathSync(repo);
         if (withRegistry) {
           db.prepare(
@@ -193,15 +184,22 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
            VALUES ('wu-dot', 'dot123', 'dotfiles', 'feature/dot-child', 'partition', 'committed', ?)`
         ).run(now);
 
-        const queue = new AuthQueue({ db, now: () => now });
+        let queue: AuthQueue;
+        queue = new AuthQueue({ db, now: () => now, executor: (options) => publishFixtureExecution(queue, options), hookManager: createNoopHookManager() });
         const request = queue.submit({
           type: "merge", command: "mandible auth merge integration/dot-batch --into main", title: "Merge dotfiles",
           repo: ".dotfiles", cwd: repo, base_branch: "main", head_branch: "integration/dot-batch",
-          merge_head_sha: integrationHead, execution_mode: "remote",
+          merge_head_sha: integrationHead, execution_mode: "daemon",
         });
         now = 1000;
-        queue.approve(request.id);
-        queue.setResult(request.id, 0, "ok");
+        if (!withRegistry) {
+          await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/unregistered/);
+          expect(queue.getRequest(request.id)?.status).toBe("pending");
+          queue.dispose();
+          return "committed";
+        }
+        await approveFixtureRequest(queue, request.id);
+        await waitForStatus(queue, request.id, "completed");
         await queue.drainFinalizers();
         const state = (db.prepare("SELECT state FROM work_units WHERE id = 'wu-dot'").get() as { state: string }).state;
         queue.dispose();
@@ -227,7 +225,6 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
     try {
       commitOnBranch(repo, "feature/dup", { "dup.txt": "d\n" });
       const dupHead = git(repo, ["rev-parse", "feature/dup"]);
-      git(repo, ["merge", "--no-ff", "feature/dup", "-m", "merge dup"]);
       const realRoot = fs.realpathSync(repo);
       // "dotfiles" resolves via work_repos, ".dotfiles" via a ledger project
       // display_name — both rooted at the same physical repo.
@@ -244,20 +241,21 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
          VALUES ('chk-dot', 'prj-dot', NULL, ?, '.dotfiles', 'main', '', ?, ?)`
       ).run(realRoot, now, now);
 
-      const queue = new AuthQueue({ db, now: () => now });
+      let queue: AuthQueue;
+        queue = new AuthQueue({ db, now: () => now, executor: (options) => publishFixtureExecution(queue, options), hookManager: createNoopHookManager() });
       const sibling = queue.submit({
         type: "merge", command: "mandible auth merge feature/dup --into main", title: "dup sibling",
         repo: "dotfiles", cwd: repo, base_branch: "main", head_branch: "feature/dup",
-        merge_head_sha: dupHead, execution_mode: "remote",
+        merge_head_sha: dupHead, execution_mode: "daemon",
       });
       const completed = queue.submit({
         type: "merge", command: "mandible auth merge feature/dup --into main", title: "dup completed",
         repo: ".dotfiles", cwd: repo, base_branch: "main", head_branch: "feature/dup",
-        merge_head_sha: dupHead, execution_mode: "remote",
+        merge_head_sha: dupHead, execution_mode: "daemon",
       });
       now = 1000;
-      queue.approve(completed.id);
-      queue.setResult(completed.id, 0, "ok");
+      await approveFixtureRequest(queue, completed.id);
+      await waitForStatus(queue, completed.id, "completed");
       await queue.drainFinalizers();
       expect(queue.getRequest(sibling.id)).toMatchObject({
         status: "superseded",
