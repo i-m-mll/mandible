@@ -120,7 +120,13 @@ it('hands the actual old daemon over to the candidate through isolated productio
     // This is a signed fixture publication, never a production approval. The
     // actual old daemon discovers it through its deployed finalizer sweep.
     db.prepare("UPDATE auth_requests SET status='completed', exit_code=0, output=?, merge_finalized_at=NULL WHERE id=?").run(`${publication.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT '))}\n`, request.id);
-    await until(() => { journal = readRuntimeHandoff(home, request.id, hook.id); if (journal?.phase === 'failed') throw new Error(journal.error); return journal?.phase === 'complete' || journal?.phase === 'acknowledged'; }, 15 * 60 * 1000, 'Actual old-to-candidate convergence');
+    await until(() => {
+      journal = readRuntimeHandoff(home, request.id, hook.id);
+      if (journal?.phase === 'failed') throw new Error(journal.error);
+      const attempt = db!.prepare('SELECT exit_code, output FROM auth_hook_executions WHERE id=?').get(hook.id) as any;
+      if (!journal && attempt?.exit_code != null && ![0, 75].includes(attempt.exit_code)) throw new Error(`Old daemon hook refused handoff: ${attempt.output}`);
+      return journal?.phase === 'complete' || journal?.phase === 'acknowledged';
+    }, 15 * 60 * 1000, 'Actual old-to-candidate convergence');
     await until(() => readRuntimeHandoff(home, request.id, hook.id)?.phase === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
     const row = db.prepare('SELECT state, exit_code FROM auth_hook_executions WHERE id=?').get(hook.id) as any; expect(row.state).toBe('complete'); expect(row.exit_code).toBe(0);
     const newJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(newJob).toContain(runtime); expect(newJob).not.toContain(legacy);
