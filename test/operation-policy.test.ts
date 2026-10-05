@@ -1,29 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { canPerformOperation, type InstanceInfo } from "../ui/src/api";
+import { bindOperationCatalog, canPerformOperation, type InstanceInfo } from "../ui/src/api";
+import { registeredOperationRouter } from "./helpers/registered-operation-router.js";
+import { resolveInstanceInfo } from "../src/instance-policy.js";
 
-const preview: InstanceInfo = {
-  role: "preview",
-  instance_id: "preview-copy",
-  installation_id: "test-installation",
-  public_origin: "https://preview.mandible.localhost",
-  backend_generation: "test",
-  allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"],
-  writable_roots: [],
-  db_path: null,
-  db_path_source: null,
-};
+const preview: InstanceInfo = { ...resolveInstanceInfo({ env: {} }), role: "preview", instance_id: "preview-copy",
+  allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"] };
 
-describe("shared instance operation policy", () => {
-  it("uses the server route effects and denies unknown instance state", () => {
-    expect(canPerformOperation(undefined, "POST", "/api/issues/one/comments")).toBe(false);
-    expect(canPerformOperation(preview, "POST", "/api/issues/one/comments")).toBe(true);
+describe("daemon-bound operation affordances", () => {
+  it("uses registered static effects while leaving body decisions to the daemon", () => {
+    const catalog = registeredOperationRouter(preview).operationCatalog("test");
+    expect(bindOperationCatalog(preview, catalog)).toBe(true);
+    expect(canPerformOperation(undefined, "POST", "/api/ledger/issues/one/comments")).toBe(false);
+    expect(canPerformOperation(preview, "POST", "/api/ledger/issues/one/comments")).toBe(true);
     expect(canPerformOperation(preview, "POST", "/api/auth/check")).toBe(false);
-    expect(canPerformOperation({ ...preview, role: "main", allowed_effects: [
-      "ledger:read", "ledger:write", "files:preview", "files:production", "auth:protected",
-      "auth:credentials", "process:external", "provider:send", "network:publish",
-      "delivery:background", "maintenance:shared", "preferences:instance",
-    ] }, "POST", "/api/auth/check")).toBe(true);
+    expect(canPerformOperation(preview, "POST", "/api/unknown-operation")).toBe(false);
     expect(canPerformOperation(preview, "POST", "/api/artifacts/ingest", { content: "private bytes" })).toBe(true);
-    expect(canPerformOperation(preview, "POST", "/api/artifacts/ingest", { path: "/host/file" })).toBe(false);
+    // A body's custody is evaluated at daemon ingress, rather than copied into the UI.
+    expect(canPerformOperation(preview, "POST", "/api/artifacts/ingest", { path: "/host/file" })).toBe(true);
+    expect(canPerformOperation(preview, "POST", "/api/spaces/one/document/export")).toBe(false);
+  });
+
+  it("refuses missing, malformed, and stale-generation catalogs", () => {
+    const catalog = registeredOperationRouter(preview).operationCatalog("test");
+    for (const invalid of [null, { ...catalog, schema: "old" }, { ...catalog, runtime: { ...catalog.runtime, backend_generation: "stale" } },
+      { ...catalog, routes: [{ method: "POST", path: "/api/auth/check" }] }]) {
+      expect(bindOperationCatalog(preview, invalid)).toBe(false);
+      expect(canPerformOperation(preview, "POST", "/api/ledger/issues/one/comments")).toBe(false);
+    }
   });
 });

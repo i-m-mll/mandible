@@ -12,7 +12,10 @@ Its runtime version, instance ID, and backend generation bind that catalog to th
 responding daemon. Mutating HTTP CLI calls reject unknown routes, malformed
 catalogs, and identity mismatches before sending the requested mutation. File
 transport uses its independently enforced server policy. Readiness health stays
-compact and does not duplicate the catalog.
+compact and does not duplicate the catalog. The browser loads this catalog once
+per daemon generation for action affordances. It can disable actions with static
+forbidden effects; a null effects hint explicitly leaves body- and custody-dependent
+decisions to daemon ingress. A UI hint never grants credential permission.
 
 `cli/command-syntax.json` is the structural command grammar. Its argument,
 option, choice, optional, and repetition nodes generate parsing, help, and the
