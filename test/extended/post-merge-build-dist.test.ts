@@ -210,9 +210,9 @@ describe("post-merge build hook", () => {
     const result = runHookAfterMerge("src-tauri/src/lib.rs");
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain("no Mandible source changes detected");
+    expect(result.stderr).toContain("generated local build artifacts");
     expect(result.stderr).toContain("installed native desktop bundle");
-    expect(fs.existsSync(result.tracePath)).toBe(false);
+    expect(fs.readFileSync(result.tracePath, "utf8")).toBe("dependencies\nbuild\n");
     expect(fs.readFileSync(result.desktopTracePath, "utf8")).toBe("desktop\n");
   });
 
@@ -250,7 +250,7 @@ describe("post-merge build hook", () => {
     expect(replay.status, replay.stderr).toBe(0);
     expect(replay.stderr).toContain("runtime restart remains with the production LaunchAgent");
     expect(fs.readFileSync(replay.desktopTracePath, "utf8")).toBe("desktop\n");
-    expect(fs.existsSync(replay.tracePath)).toBe(false);
+    expect(fs.readFileSync(replay.tracePath, "utf8")).toBe("dependencies\nbuild\n");
     expect(fs.existsSync(replay.runtimeTracePath)).toBe(false);
     expect(replay.stderr).not.toContain("converged");
   });
