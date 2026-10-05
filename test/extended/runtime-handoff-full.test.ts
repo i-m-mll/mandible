@@ -1,6 +1,6 @@
 // @vitest-environment node
 // Explicit integration gate. It runs the actual archived old daemon, then
-// lets its existing finalizer/drain path hand over to candidate production.
+// lets its finalizer arm a handoff, then exercises its real signal/drain path.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -80,6 +80,16 @@ it('hands the actual old daemon over to the candidate through isolated productio
   const ledger = path.join(home, 'mandible.db'); let db: SqliteDatabase | undefined; let queue: AuthQueue | undefined; let requestId = ''; let executionId = ''; let journal: any;
   const evidence = path.join(os.homedir(), '.cache', 'mandible/acceptance/upgrade-evidence'); fs.mkdirSync(evidence, { recursive: true });
   try {
+    // Reuse the installed build toolchain, while cloning dependency cache bytes
+    // into the disposable home. Neither operation changes user configuration.
+    for (const name of ['.cargo', '.rustup']) {
+      const source = fs.realpathSync(path.join(os.homedir(), name));
+      fs.symlinkSync(source, path.join(userHome, name), 'dir');
+    }
+    const bunCache = path.join(os.homedir(), '.bun/install/cache');
+    if (!fs.existsSync(bunCache)) throw new Error('Full fixture requires the qualified dependency cache from frozen installation.');
+    fs.mkdirSync(path.join(userHome, '.bun/install'), { recursive: true });
+    command('/bin/cp', ['-c', '-R', bunCache, path.join(userHome, '.bun/install/cache')]);
     archive(oldRoot, oldRevision, repo);
     command('/bin/cp', ['-c', '-R', path.join(oldRoot, 'node_modules'), path.join(repo, 'node_modules')]);
     configurePorts(repo, legacy, ports, env);
@@ -104,6 +114,8 @@ it('hands the actual old daemon over to the candidate through isolated productio
     db = new SqliteDatabase(ledger);
     setupOperator(db, { slug: 'isolated-upgrade-operator', display_name: 'Isolated Upgrade Operator' });
     const signing = configureSigningCredential(db, repo, 'ssh_key'); fs.appendFileSync(path.join(repo, '.git/info/exclude'), '\n.mandible-test-signing-key*\n');
+    const fixtureHooks = path.join(repo, '.git/fixture-hooks'); fs.mkdirSync(fixtureHooks);
+    git(repo, ['config', 'core.hooksPath', fixtureHooks]);
     registerWorkRepo(db, repo); createLedgerProject(db, repo);
     const nativeApp = path.join(scratch, 'Mandible.app');
     const hookCommand = `MANDIBLE_HOME=${quote(home)} MANDIBLE_RUNTIME=${quote(runtime)} MANDIBLE_RUNTIME_ARCHIVE=${quote(archivePath)} MANDIBLE_DESKTOP_INSTALL_PATH=${quote(nativeApp)} ${Object.entries(libraryInputs).map(([key, value]) => `${key}=${quote(value)}`).join(' ')} bash cli/post-merge-build-dist.sh`;
@@ -117,12 +129,25 @@ it('hands the actual old daemon over to the candidate through isolated productio
     requestId = request.id; executionId = hook.id;
     // This is a signed fixture publication, never a production approval. The
     // actual old daemon discovers it through its deployed finalizer sweep.
-    db.prepare("UPDATE auth_requests SET status='completed', exit_code=0, output=?, merge_finalized_at=NULL WHERE id=?").run(publication.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT ')), request.id);
-    await until(() => { journal = readRuntimeHandoff(home, request.id, hook.id); if (journal?.phase === 'failed') throw new Error(journal.error); return journal?.phase === 'complete' || journal?.phase === 'acknowledged'; }, 15 * 60 * 1000, 'Actual old-to-candidate convergence');
+    db.prepare("UPDATE auth_requests SET status='completed', exit_code=0, output=?, merge_finalized_at=NULL WHERE id=?").run(`${publication.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT '))}\n`, request.id);
+    await until(() => { journal = readRuntimeHandoff(home, request.id, hook.id); return !!journal?.bridgeInstalled; }, 60000, 'Actual old daemon handoff admission');
+    // A periodic finalizer recovery does not schedule the normal execution's
+    // self-merge exit. Signal this exact private daemon after admission so its
+    // actual shutdown handler drains; the helper still must await its death.
+    const oldProcess = journal.binding.oldProcess;
+    expect(command('/bin/ps', ['-p', String(oldProcess.pid), '-o', 'lstart=']).trim()).toBe(oldProcess.startedAt);
+    process.kill(oldProcess.pid, 'SIGTERM');
+    await until(() => {
+      journal = readRuntimeHandoff(home, request.id, hook.id);
+      if (journal?.phase === 'failed') throw new Error(journal.error);
+      const attempt = db!.prepare('SELECT exit_code, output FROM auth_hook_executions WHERE id=?').get(hook.id) as any;
+      if (!journal && attempt?.exit_code != null && ![0, 75].includes(attempt.exit_code)) throw new Error(`Old daemon hook refused handoff: ${attempt.output}`);
+      return journal?.phase === 'complete' || journal?.phase === 'acknowledged';
+    }, 15 * 60 * 1000, 'Actual old-to-candidate convergence');
     await until(() => readRuntimeHandoff(home, request.id, hook.id)?.phase === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
     const row = db.prepare('SELECT state, exit_code FROM auth_hook_executions WHERE id=?').get(hook.id) as any; expect(row.state).toBe('complete'); expect(row.exit_code).toBe(0);
     const newJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(newJob).toContain(runtime); expect(newJob).not.toContain(legacy);
-    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, hook.id), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
+    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, hook.id), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'SIGTERM to exact bound private old daemon after handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
   } catch (error) {
     const logs = [path.join(scratch, '.cache/mandible/production-stderr.log'), ...(requestId ? [path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'convergence.log')] : [])].filter(file => fs.existsSync(file)).map(file => ({ name: path.basename(file), sha256: digest(fs.readFileSync(file)), excerpt: fs.readFileSync(file, 'utf8').slice(-16000) }));
     fs.writeFileSync(path.join(evidence, `${Date.now()}-failed.json`), JSON.stringify({ status: 'failed', oldRevision, candidateRevision: candidate, error: String(error), logs, journal: requestId ? readRuntimeHandoff(home, requestId, executionId) : null }, null, 2)); throw error;

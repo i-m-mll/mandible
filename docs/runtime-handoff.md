@@ -61,8 +61,11 @@ The full fixture archives the deployed old source revision from its build
 marker, clones its installed dependencies, and starts that actual daemon in a
 private installation. It imports the selected candidate source into a signed
 temporary test repository. The old daemon's existing finalizer sweep consumes
-one fixture publication, runs the real hook, and follows its existing drain
-and exit path. The candidate worker builds and installs a private desktop
+one fixture publication and runs the real hook. After admission, the fixture
+sends SIGTERM to the exact bound private old daemon and exercises its existing
+drain and exit path. Periodic finalizer recovery does not schedule the normal
+execution path's self-merge exit; the receipt records this explicit trigger.
+The candidate worker builds and installs a private desktop
 bundle, starts candidate production, and waits for receipt reconciliation.
 No request is submitted to the production ledger.
 

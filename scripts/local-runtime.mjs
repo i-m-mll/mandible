@@ -249,7 +249,7 @@ function assertHandoffInstallation(binding) {
   if (processStart(binding.oldProcess.pid) === binding.oldProcess.startedAt) throw new Error('The old production process has not finished draining.');
 }
 
-export function removeHandoffDefinitions(binding) {
+export async function removeHandoffDefinitions(binding) {
   assertHandoffInstallation(binding);
   for (const [label, prior] of [[BACKEND_LABEL, binding.priorBackend], [GATEWAY_LABEL, binding.priorGateway]]) {
     // A stable Caddy gateway can remain live. A legacy JS gateway must be
@@ -264,7 +264,15 @@ export function removeHandoffDefinitions(binding) {
       if (bridge?.pid !== current.pid || bridge.startedAt !== processStart(current.pid)) throw new Error('An old application process respawned before the bridge; preserve its work and drain it before continuing.');
     }
     const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`]);
-    if (result.status !== 0 || inspectJob(label).loaded) throw new Error(`Could not unload exact service ${label}: ${result.stderr.trim()}`);
+    if (result.status !== 0) throw new Error(`Could not unload exact service ${label}: ${result.stderr.trim()}`);
+    const deadline = Date.now() + 5000;
+    while (true) {
+      const remaining = inspectJob(label);
+      if (!remaining.loaded) break;
+      if (JSON.stringify(remaining.argv) !== JSON.stringify(prior.argv)) throw new Error(`Service ${label} changed while unloading; preserving it.`);
+      if (Date.now() >= deadline) throw new Error(`Exact service ${label} is still loaded after bootout.`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
   }
 }
 
@@ -880,7 +888,7 @@ async function main() {
   if (command === 'handoff-remove' || command === 'handoff-start' || command === 'handoff-verify') {
     const acceptedProbe = command === 'handoff-verify' && (journal?.phase === 'acknowledged' || journal?.phase === 'complete' && journal.cleanupStartedAt) && journal.binding.home === HOME;
     if (!directHandoff && !acceptedProbe) throw new Error('Runtime handoff command requires its exact active journal.');
-    const result = command === 'handoff-remove' ? removeHandoffDefinitions(journal.binding)
+    const result = command === 'handoff-remove' ? await removeHandoffDefinitions(journal.binding)
       : command === 'handoff-start' ? await startHandoffDefinitions(journal.binding) : await verifyHandoffDefinitions(journal.binding);
     process.stdout.write(`${JSON.stringify(result ?? { removed: true })}\n`);
     return;
