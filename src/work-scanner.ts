@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 import { execFile, spawnSync } from "child_process";
 import { randomUUID } from "node:crypto";
 import fs from "fs";
@@ -1042,8 +1043,8 @@ export class WorkScanner {
     this.refreshRepoInfos();
 
     this.emit({
-      event: "work:scan:started",
-      type: "work:scan:started",
+      event: DOMAIN_EVENTS.WORK_SCAN_STARTED,
+      type: DOMAIN_EVENTS.WORK_SCAN_STARTED,
       data: { started_at: new Date(start).toISOString() },
     });
 
@@ -1097,8 +1098,8 @@ export class WorkScanner {
     };
 
     this.emit({
-      event: "work:scan:completed",
-      type: "work:scan:completed",
+      event: DOMAIN_EVENTS.WORK_SCAN_COMPLETED,
+      type: DOMAIN_EVENTS.WORK_SCAN_COMPLETED,
       data: summary,
     });
 
@@ -1146,14 +1147,14 @@ export class WorkScanner {
         missing_repos: [],
         duration_ms: Date.now() - start,
       };
-      this.emit({ event: "work:scan:completed", type: "work:scan:completed", data: summary });
+      this.emit({ event: DOMAIN_EVENTS.WORK_SCAN_COMPLETED, type: DOMAIN_EVENTS.WORK_SCAN_COMPLETED, data: summary });
       return summary;
     }
 
     await this.refreshRepoInfosAsync();
     this.emit({
-      event: "work:scan:started",
-      type: "work:scan:started",
+      event: DOMAIN_EVENTS.WORK_SCAN_STARTED,
+      type: DOMAIN_EVENTS.WORK_SCAN_STARTED,
       data: { started_at: new Date(start).toISOString() },
     });
 
@@ -1199,7 +1200,7 @@ export class WorkScanner {
       missing_repos: missingRepos,
       duration_ms: Date.now() - start,
     };
-    this.emit({ event: "work:scan:completed", type: "work:scan:completed", data: summary });
+    this.emit({ event: DOMAIN_EVENTS.WORK_SCAN_COMPLETED, type: DOMAIN_EVENTS.WORK_SCAN_COMPLETED, data: summary });
     return summary;
   }
 
@@ -1974,8 +1975,8 @@ export class WorkScanner {
           diff_stat: status.diff_stat,
         };
         this.emit({
-          event: "work:branch:updated",
-          type: "work:branch:updated",
+          event: DOMAIN_EVENTS.WORK_BRANCH_UPDATED,
+          type: DOMAIN_EVENTS.WORK_BRANCH_UPDATED,
           data: { ...branchData, repo_id: repoId },
         });
       }

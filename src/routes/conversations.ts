@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "../contracts.js";
 // API routes for the chat log / conversation system.
 
 import { createHash } from "node:crypto";
@@ -2111,7 +2112,7 @@ export function registerConversationRoutes(
         sendJson(res, 404, { error: "Conversation not found" });
         return;
       }
-      broadcast("conversation:updated", { id, updates: result.changedFields });
+      broadcast(DOMAIN_EVENTS.CONVERSATION_UPDATED, { id, updates: result.changedFields });
       sendJson(res, 200, result.updated ? mapConversation(result.updated) : { id, archived_at: result.archivedAt });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid metadata update" });

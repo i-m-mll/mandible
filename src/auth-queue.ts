@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 import { AUTH_REQUEST_TYPES } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
@@ -771,7 +772,7 @@ export class AuthQueue {
       const recovered = this.getRequest(id);
       if (recovered) {
         this.broadcast({
-          event: "auth:resolved",
+          event: DOMAIN_EVENTS.AUTH_RESOLVED,
           data: this.buildResolvedPayload(recovered)
         });
       }
@@ -785,7 +786,7 @@ export class AuthQueue {
     for (const id of requeuedIds) {
       const requeued = this.getRequest(id);
       if (requeued) {
-        this.broadcast({ event: "auth:updated", data: { request: requeued } });
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: requeued } });
       }
       authLog("warn", "auth_request_recovered_requeued", {
         subsystem: "auth",
@@ -936,8 +937,8 @@ export class AuthQueue {
     this.markEvidenceOnlyPartialFinalization(request, now);
     const finalized = this.getRequest(request.id);
     if (finalized) {
-      this.broadcast({ event: "auth:merged", data: this.buildMergedPayload(finalized) });
-      this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(finalized) });
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_MERGED, data: this.buildMergedPayload(finalized) });
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(finalized) });
     }
     authLog("warn", "auth_request_reconciled_without_approval_attribution", {
       subsystem: "auth",
@@ -1138,13 +1139,13 @@ export class AuthQueue {
     for (const id of result.recoveredFailureIds) {
       const recovered = this.getRequest(id);
       if (recovered) {
-        this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(recovered) });
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(recovered) });
       }
     }
     for (const id of result.requeuedIds) {
       const requeued = this.getRequest(id);
       if (requeued) {
-        this.broadcast({ event: "auth:updated", data: { request: requeued } });
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: requeued } });
       }
     }
   }
@@ -1230,7 +1231,7 @@ export class AuthQueue {
     }
     const parked = this.getRequest(request.id);
     if (parked) {
-      this.broadcast({ event: "auth:updated", data: { request: parked } });
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: parked } });
     }
     authLog("info", "auth_execution_parked_for_restart", {
       subsystem: "auth",
@@ -2048,16 +2049,16 @@ export class AuthQueue {
     this.syncLedgerLinksForRequest(request, false);
 
     this.broadcast({
-      event: "auth:new",
+      event: DOMAIN_EVENTS.AUTH_NEW,
       data: { request }
     });
-    this.broadcast({ event: "auth:lifecycle", data: {
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
       request_id: request.id, lifecycle: "submitted", related_request_id: predecessor?.id ?? null,
     } });
     if (predecessor) {
       const superseded = this.requireRequest(predecessor.id);
-      this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(superseded) });
-      this.broadcast({ event: "auth:lifecycle", data: {
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(superseded) });
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
         request_id: predecessor.id, lifecycle: "superseded", related_request_id: request.id,
       } });
     }
@@ -2292,8 +2293,8 @@ export class AuthQueue {
       });
       return this.requireRequest(requestId);
     })();
-    this.broadcast({ event: "auth:lifecycle", data: { request_id: repaired.id, lifecycle: "revised" } });
-    this.broadcast({ event: "auth:updated", data: { request: repaired } });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: repaired.id, lifecycle: "revised" } });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: repaired } });
     return repaired;
   }
 
@@ -2405,7 +2406,7 @@ export class AuthQueue {
     const request = this.requireActionEditableRequest(requestId);
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => addAuthRequestAction(this.db, request, input, this.now()));
-    this.broadcast({ event: "auth:updated", data: { request, action } });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request, action } });
     return action;
   }
 
@@ -2413,7 +2414,7 @@ export class AuthQueue {
     const request = this.requireActionEditableRequest(requestId);
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => updateAuthRequestAction(this.db, request, actionId, input, this.now()));
-    this.broadcast({ event: "auth:updated", data: { request, action } });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request, action } });
     return action;
   }
 
@@ -2421,7 +2422,7 @@ export class AuthQueue {
     const request = this.requireActionEditableRequest(requestId);
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => deleteAuthRequestAction(this.db, request.id, actionId));
-    this.broadcast({ event: "auth:updated", data: { request, deleted_action_id: action.id } });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request, deleted_action_id: action.id } });
     return action;
   }
 
@@ -2429,7 +2430,7 @@ export class AuthQueue {
     const request = this.requireActionVetoableRequest(requestId);
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => setAuthRequestActionVeto(this.db, request.id, actionId, vetoed, this.now()));
-    this.broadcast({ event: "auth:updated", data: { request: this.requireRequest(request.id), action } });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id), action } });
     return action;
   }
 
@@ -3027,10 +3028,10 @@ export class AuthQueue {
     }
     this.syncLedgerLinksForRequest(updated, false);
     this.broadcast({
-      event: "auth:updated",
+      event: DOMAIN_EVENTS.AUTH_UPDATED,
       data: { request: updated }
     });
-    this.broadcast({ event: "auth:lifecycle", data: { request_id: requestId, lifecycle: "revised" } });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: requestId, lifecycle: "revised" } });
     return updated;
   }
 
@@ -3152,10 +3153,10 @@ export class AuthQueue {
 
     const retried = this.requireRequest(request.id);
     this.broadcast({
-      event: "auth:new",
+      event: DOMAIN_EVENTS.AUTH_NEW,
       data: { request: retried }
     });
-    this.broadcast({ event: "auth:lifecycle", data: {
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
       request_id: retried.id, lifecycle: "revised", reason: "Explicit retry.",
     } });
 
@@ -3193,10 +3194,10 @@ export class AuthQueue {
 
     const requeued = this.requireRequest(request.id);
     this.broadcast({
-      event: "auth:new",
+      event: DOMAIN_EVENTS.AUTH_NEW,
       data: { request: requeued }
     });
-    this.broadcast({ event: "auth:lifecycle", data: {
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
       request_id: requeued.id, lifecycle: "revised", reason: "Explicit requeue.",
     } });
 
@@ -3246,10 +3247,10 @@ export class AuthQueue {
 
     const withdrawn = this.requireRequest(request.id);
     this.broadcast({
-      event: "auth:resolved",
+      event: DOMAIN_EVENTS.AUTH_RESOLVED,
       data: this.buildResolvedPayload(withdrawn)
     });
-    this.broadcast({ event: "auth:lifecycle", data: {
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
       request_id: withdrawn.id, lifecycle: "withdrawn", reason: reason.trim(),
     } });
 
@@ -3419,7 +3420,7 @@ export class AuthQueue {
     })();
 
     const executing = this.requireRequest(request.id);
-    this.broadcast({ event: "auth:lifecycle", data: {
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
       request_id: executing.id, lifecycle: "executing", approved_by_user_id: approverUserId,
     } });
     const executionEnv = {
@@ -3438,7 +3439,7 @@ export class AuthQueue {
     if (Object.keys(executionEnv).length > 0) {
       this.executionEnvs.set(executing.id, executionEnv);
     }
-    this.broadcast({ event: "auth:updated", data: { request: executing } });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: executing } });
     this.executeInBackground(executing);
     return executing;
   }
@@ -3549,8 +3550,8 @@ export class AuthQueue {
       );
     }
     const executing = this.requireRequest(requestId);
-    this.broadcast({ event: "auth:updated", data: { request: executing, clearance_use_id: consumed.use.id } });
-    this.broadcast({ event: "auth:lifecycle", data: {
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: executing, clearance_use_id: consumed.use.id } });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
       request_id: executing.id, lifecycle: "executing", clearance_use_id: consumed.use.id,
     } });
     this.executeInBackground(executing, consumed.settle);
@@ -4456,7 +4457,7 @@ export class AuthQueue {
       }
       return fail(errorMessage(error) ?? "candidate_snapshot_write_failed");
     }
-    this.broadcast({ event: "auth:lifecycle", data: { request_id: request.id, lifecycle: "revised" } });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: request.id, lifecycle: "revised" } });
     return this.readRequestByExactId(request.id);
   }
 
@@ -4685,10 +4686,10 @@ export class AuthQueue {
 
     const rejected = this.requireRequest(request.id);
     this.broadcast({
-      event: "auth:resolved",
+      event: DOMAIN_EVENTS.AUTH_RESOLVED,
       data: this.buildResolvedPayload(rejected)
     });
-    this.broadcast({ event: "auth:lifecycle", data: {
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
       request_id: rejected.id, lifecycle: "rejected", reason,
     } });
 
@@ -4801,7 +4802,7 @@ export class AuthQueue {
       this.finalizeSuccessfulMerge(completed);
     } else {
       this.broadcast({
-        event: "auth:resolved",
+        event: DOMAIN_EVENTS.AUTH_RESOLVED,
         data: this.buildResolvedPayload(completed)
       });
     }
@@ -4851,10 +4852,10 @@ export class AuthQueue {
     for (const expired of expiredRequests) {
       this.dropMergeCandidate(expired);
       this.broadcast({
-        event: "auth:resolved",
+        event: DOMAIN_EVENTS.AUTH_RESOLVED,
         data: this.buildResolvedPayload(expired)
       });
-      this.broadcast({ event: "auth:lifecycle", data: {
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
         request_id: expired.id, lifecycle: "expired",
       } });
     }
@@ -4900,13 +4901,13 @@ export class AuthQueue {
     for (const id of recoveredFailureIds) {
       const recovered = this.getRequest(id);
       if (recovered) {
-        this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(recovered) });
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(recovered) });
       }
     }
     for (const id of requeuedIds) {
       const requeued = this.getRequest(id);
       if (requeued) {
-        this.broadcast({ event: "auth:updated", data: { request: requeued } });
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: requeued } });
       }
     }
   }
@@ -5074,7 +5075,7 @@ export class AuthQueue {
           });
         })();
         const requeued = this.requireRequest(request.id);
-        this.broadcast({ event: "auth:updated", data: { request: requeued } });
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: requeued } });
         return;
       }
       // The three remaining outcomes used to share one message, "Atomic merge
@@ -5194,7 +5195,7 @@ export class AuthQueue {
       // post-merge hooks, at the same boundary that closes admission.
       this.restartAvailability?.markRebuildStarted(request.id);
       this._rebuilding = true;
-      this.broadcast({ event: "mandible:rebuilding", data: {} });
+      this.broadcast({ event: DOMAIN_EVENTS.MANDIBLE_REBUILDING, data: {} });
     }
     try {
       const hookResults = await this.hookManager.executeHooks(mergedRequest, (hookLabel, text) => {
@@ -5298,7 +5299,7 @@ export class AuthQueue {
     // merged/live distinction moved. The channel server filters this by
     // target_session_id exactly as it filters auth:resolved.
     this.broadcast({
-      event: "auth:convergence",
+      event: DOMAIN_EVENTS.AUTH_CONVERGENCE,
       data: {
         request_id: request.id,
         convergence: convergence.state,
@@ -5492,7 +5493,7 @@ export class AuthQueue {
       .run(chunk.text, chunk.timestamp, chunk.request_id);
 
     this.broadcast({
-      event: "auth:output",
+      event: DOMAIN_EVENTS.AUTH_OUTPUT,
       data: chunk
     });
   }
@@ -5548,7 +5549,7 @@ export class AuthQueue {
       this.finalizeSuccessfulMerge(completed);
     } else {
       this.broadcast({
-        event: "auth:resolved",
+        event: DOMAIN_EVENTS.AUTH_RESOLVED,
         data: this.buildResolvedPayload(completed)
       });
     }
@@ -5580,7 +5581,7 @@ export class AuthQueue {
 
     // Stage 1 — broadcast auth:merged immediately (merge type only).
     if (completed.type === "merge") {
-      this.broadcast({ event: "auth:merged", data: this.buildMergedPayload(completed) });
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_MERGED, data: this.buildMergedPayload(completed) });
     }
 
     // Signature and execution evidence stay on the critical path, before
@@ -5623,7 +5624,7 @@ export class AuthQueue {
 
     // Stage 2 complete — consumers (channel server, UI) observe resolved
     // ledger/work-unit state here. Shape/semantics unchanged from before.
-    this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(finalized) });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(finalized) });
 
     // Stage 3 — enqueue the heavy finalizers. Overflow is a backstop, not an
     // error: the row stays merge_finalized_at IS NULL and the periodic sweep
@@ -5792,7 +5793,7 @@ export class AuthQueue {
       });
     }
     this.broadcast({
-      event: "auth:finalized",
+      event: DOMAIN_EVENTS.AUTH_FINALIZED,
       data: this.buildFinalizedPayload(finalizedRow, state),
     });
     this.markSuccessfulMergeFinalized(finalized, mergeHeadSha, finalizedAt);
@@ -6184,11 +6185,11 @@ export class AuthQueue {
         const invalidated = this.getRequest(current.id);
         if (invalidated) {
           this.broadcast({
-            event: "auth:resolved",
+            event: DOMAIN_EVENTS.AUTH_RESOLVED,
             data: this.buildResolvedPayload(invalidated)
           });
           this.broadcast({
-            event: "auth:needs_rebase",
+            event: DOMAIN_EVENTS.AUTH_NEEDS_REBASE,
             data: { request: invalidated, check: report }
           });
         }
@@ -6202,7 +6203,7 @@ export class AuthQueue {
       // next approval takes the exact-candidate fast path.
       const refreshed = this.refreshCleanCandidateAfterSibling(current, report);
       if (refreshed) {
-        this.broadcast({ event: "auth:updated", data: { request: refreshed } });
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: refreshed } });
       }
     }
   }
@@ -6692,10 +6693,10 @@ export class AuthQueue {
       const superseded = this.getRequest(sibling.id);
       if (superseded) {
         this.broadcast({
-          event: "auth:resolved",
+          event: DOMAIN_EVENTS.AUTH_RESOLVED,
           data: this.buildResolvedPayload(superseded)
         });
-        this.broadcast({ event: "auth:lifecycle", data: {
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
           request_id: sibling.id, lifecycle: "superseded", related_request_id: completed.id,
         } });
         authLog("info", "auth_duplicate_superseded", {

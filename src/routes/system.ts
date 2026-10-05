@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "../contracts.js";
 import { exec } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -225,7 +226,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
   // before initiating a daemon restart so the UI can show a full-page splash.
   // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
   server.post("/api/admin/rebuilding", (_req, res) => {
-    broadcast("mandible:rebuilding", {});
+    broadcast(DOMAIN_EVENTS.MANDIBLE_REBUILDING, {});
     sendJson(res, 200, { ok: true });
   }, { fileRpc: "deny" });
 

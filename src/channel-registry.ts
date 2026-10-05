@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 // Bug: 0b454df — Channel session registry: tracks which sessions are
 // connected via the MCP channel server. Channel sessions are "1.5-class"
 // citizens — richer than third-class (external/discovered) but without the
@@ -92,7 +93,7 @@ class ChannelRegistry extends EventEmitter {
       // Best effort — the sessions row may not exist yet
     }
 
-    broadcast("channel:session:connected", {
+    broadcast(DOMAIN_EVENTS.CHANNEL_SESSION_CONNECTED, {
       session_id: sessionId,
       connected_at: now,
       cwd,
@@ -189,7 +190,7 @@ class ChannelRegistry extends EventEmitter {
     this.emit("channel_event", disconnectEvent);
 
     this.sessions.delete(sessionId);
-    broadcast("channel:session:disconnected", { session_id: sessionId });
+    broadcast(DOMAIN_EVENTS.CHANNEL_SESSION_DISCONNECTED, { session_id: sessionId });
   }
 
   /** Get a specific channel session, or null if not connected. */
