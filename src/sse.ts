@@ -211,7 +211,7 @@ function matchesTopic(type: string, topics: string[]): boolean {
 
 let _instance: SseManager | null = null;
 
-export function setSseManager(manager: SseManager): void {
+export function setSseManager(manager: SseManager | null): void {
   _instance = manager;
 }
 

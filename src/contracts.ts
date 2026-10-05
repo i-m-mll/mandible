@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { LEDGER_EVENT_VALUES, type LedgerDomainEvent } from "./ledger/event-contract.js";
 import { SPACE_EVENTS, SPACE_EVENT_VALUES } from "./spaces/events.js";
 // Shared API/UI contracts. Keep this module dependency-light so daemon and
 // browser UI code can import its types without dragging in runtime services.
@@ -103,7 +104,7 @@ export const DOMAIN_EVENTS = Object.freeze({
 } as const);
 
 export type MandibleEventType = (typeof DOMAIN_EVENTS)[keyof typeof DOMAIN_EVENTS]
-  | BriefingEvent | import("./spaces/events.js").SpaceEvent
+  | BriefingEvent | LedgerDomainEvent | import("./spaces/events.js").SpaceEvent
   | (typeof USER_SETTING_EVENTS)[keyof typeof USER_SETTING_EVENTS]
   | (typeof OPERATIONAL_INCIDENT_EVENTS)[keyof typeof OPERATIONAL_INCIDENT_EVENTS]
   | (typeof TASK_INVENTORY_EVENTS)[keyof typeof TASK_INVENTORY_EVENTS]
@@ -2254,7 +2255,7 @@ const eventNameValues = Object.freeze([
   ...Object.values(DOMAIN_EVENTS), ...BRIEFING_EVENT_VALUES, ...SPACE_EVENT_VALUES,
   ...Object.values(USER_SETTING_EVENTS), ...Object.values(OPERATIONAL_INCIDENT_EVENTS),
   ...Object.values(TASK_INVENTORY_EVENTS), ...Object.values(TASK_COMMAND_EVENTS),
-  ...Object.values(MANAGED_REMINDER_EVENTS),
+  ...Object.values(MANAGED_REMINDER_EVENTS), ...LEDGER_EVENT_VALUES,
 ]);
 const eventNames = new Set<string>(eventNameValues);
 export function isDomainEventType(value: unknown): value is MandibleEventType {

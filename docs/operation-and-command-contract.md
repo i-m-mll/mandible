@@ -30,7 +30,10 @@ the destination host using the same repository mechanism. Cache manifests record
 that complete dependency set and a stable digest of its source paths and bytes;
 CLI mutation policy always comes from the responding daemon's live catalog.
 
-Domain event names and payload contracts live in `src/contracts.ts`. Emitters,
+Domain event names and payload contracts live in `src/contracts.ts`. The ledger's
+canonical producer-to-wire mapping lives in the dependency-free
+`src/ledger/event-contract.ts`; both the producer and domain validator consume
+that mapping, including the generic ledger event notification. Emitters,
 worker messages, SSE envelopes, and browser consumers share this vocabulary.
 Transport boundaries reject unknown event names and malformed payloads. Provider
 console telemetry is the explicit opaque-payload exception.
