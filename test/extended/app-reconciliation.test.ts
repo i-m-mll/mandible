@@ -12,7 +12,7 @@ import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 import { AppShellProvider, RightSidebarIcon, useRegisterAppRightSidebar, type AppRightSidebarDescriptor, type AppShellContextValue } from '../../ui/src/app-shell';
 import { GraphView } from '../../ui/src/views/graph';
 import { readResolvedStylesheet } from '../helpers/css-manifest';
-import { registeredOperationRouter } from '../helpers/registered-operation-router';
+import { operationCatalogFixture } from '../helpers/operation-catalog-fixture';
 
 describe('app shell', () => {
   function RegisteredSidebar(): JSX.Element {
@@ -865,7 +865,7 @@ describe('app shell', () => {
 
   it('persists Settings theme choices, applies root attributes, and follows system changes', async () => {
     stubEventSource();
-    const operations = registeredOperationRouter(mainInstance).operationCatalog('theme-test');
+    const operations = operationCatalogFixture(mainInstance, ['src/routes/host-user-preferences.ts']);
     window.__MANDIBLE_BOOTSTRAP__ = { instance: mainInstance };
     window.history.replaceState(null, '', '#/settings');
     let storedTheme = 'system';
