@@ -152,3 +152,9 @@ not come back.
 
 Readmission timing is checked on the coordinated candidate run; syntax parsing
 alone does not establish the under-one-second budget.
+
+The test launchers pass Bun's public `--smol` flag to the runner and actual test
+forks. The process-tree RSS watchdog remains authoritative; this flag encourages
+collection and does not raise or replace the memory limit. On macOS, the launcher
+resolves the hash-verified stock SQLite archive before isolating HOME, then passes
+that exact archive to private child runtimes. No ambient library fallback is used.

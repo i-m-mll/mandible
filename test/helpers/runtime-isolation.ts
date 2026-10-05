@@ -14,6 +14,7 @@ const isolatedValues: Record<string, string | undefined> = {
   APPDATA: path.join(home, 'AppData', 'Roaming'),
   XDG_CONFIG_HOME: path.join(home, '.config'),
   XDG_CACHE_HOME: path.join(home, '.cache'),
+  XDG_DATA_HOME: path.join(home, '.local', 'share'),
   CODEX_HOME: path.join(home, '.codex'),
   // Let normal defaults derive from the private home. Tests of explicit
   // overrides can still set these themselves and restore them afterward.

@@ -29,6 +29,8 @@ export function mandibleVitestConfig(include: string[], options: MandibleSuiteOp
       // whole shape depends on files running in parallel isolated forks, and a
       // silent upstream default change would be a silent regression.
       pool: 'forks',
+      // Constrain the actual Bun forks, not only the Vitest parent process.
+      execArgv: ['--smol'],
       fileParallelism: true,
       // Issue c4f456c: unconditional per-test reset of the src/db.ts singleton.
       setupFiles: ['./test/helpers/runtime-isolation.ts', './test/helpers/db-reset-backstop.ts'],

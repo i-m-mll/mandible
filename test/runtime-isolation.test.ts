@@ -11,6 +11,9 @@ describe('test runtime custody', () => {
   it('contains default durable state, CLI cache, RPC spool and inherited subprocess home', () => {
     const home = process.env.HOME!;
     expect(path.relative(testRuntimeRoot, home)).toBe('home');
+    expect(process.env.XDG_DATA_HOME).toBe(path.join(home, '.local', 'share'));
+    const childDataRoot = execFileSync(process.execPath, ['-e', 'process.stdout.write(process.env.XDG_DATA_HOME)'], { encoding: 'utf8' });
+    expect(childDataRoot).toBe(process.env.XDG_DATA_HOME);
     expect(getMandibleHome()).toBe(path.join(home, '.mandible'));
     expect(defaultCoworkCliCacheDir()).toBe(path.join(home, '.cache', 'mandible', 'cli'));
     expect(defaultFileRpcDirForInstance()).toBe(path.join(home, '.cache', 'mandible', 'agent-rpc'));
