@@ -1,128 +1,40 @@
-import SqliteDatabase from "../../src/sqlite.ts";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
+import SqliteDatabase from "../src/sqlite.ts";
+import { describe, expect, it } from "vitest";
 import { migrate, setDb } from "../src/db.js";
-import { CLAUDE_PTY_LANE_ENV_KEY } from "../src/claude-lane-policy.js";
 import { SessionManager } from "../src/session-manager.js";
+import type { ConsoleSessionInput } from "../src/types.js";
 
-function createManager(): { db: InstanceType<typeof SqliteDatabase>; manager: SessionManager } {
-  const db = new SqliteDatabase(":memory:");
-  migrate(db);
-  setDb(db);
-  return {
-    db,
-    manager: new SessionManager(db, () => undefined),
-  };
-}
-
-describe("console transport lanes", () => {
-  // Issue 8aadf70 — the Claude PTY/Channel lanes are local-only and off by
-  // default. The lane-selection behaviour under test here is unchanged; the
-  // tests that exercise those lanes opt into them explicitly.
-  beforeEach(() => {
-    delete process.env[CLAUDE_PTY_LANE_ENV_KEY];
-  });
-
-  afterEach(() => {
-    delete process.env[CLAUDE_PTY_LANE_ENV_KEY];
-  });
-
-  it("adds the persisted transport lane column through migrations", () => {
-    const { db } = createManager();
+// Managed provider control belongs to ConversationControlService. Console owns
+// plain terminals; retired SDK/ACP/Channel creation is deliberately rejected.
+describe("Console transport boundary", () => {
+  it("persists a plain terminal as PTY even when its command names a provider", () => {
+    const db = new SqliteDatabase(":memory:");
+    migrate(db); setDb(db);
+    const manager = new SessionManager(db, () => undefined);
     try {
-      const columns = db.prepare("PRAGMA table_info(console_sessions)").all() as Array<{ name: string }>;
-      expect(columns.map((column) => column.name)).toContain("transport_lane");
-    } finally {
-      db.close();
-    }
+      const session = manager.create({ label: "Terminal", command: "codex" });
+      expect(session).toMatchObject({ backend_type: "pty", transport_lane: "pty", channel_enabled: false });
+      expect(db.prepare("SELECT backend_type, transport_lane, channel_enabled FROM console_sessions WHERE id = ?")
+        .get(session.id)).toEqual({ backend_type: "pty", transport_lane: "pty", channel_enabled: 0 });
+    } finally { manager.close(); db.close(); }
   });
 
-  it("defaults Claude to the SDK lane and Codex/Gemini to ACP", () => {
-    const { db, manager } = createManager();
+  it("rejects managed lifecycle inputs before creating a Console record", () => {
+    const db = new SqliteDatabase(":memory:");
+    migrate(db); setDb(db);
+    const manager = new SessionManager(db, () => undefined);
+    const inputs: Partial<ConsoleSessionInput>[] = [
+      { backend_type: "sdk" }, { backend_type: "acp" }, { backend_type: "spawn" },
+      { transport_lane: "channel" }, { channel_enabled: true },
+      { provider_session_id: "provider-exact" }, { resume_at_message: "message-exact" },
+      { runOptions: { model: "managed-model" } },
+    ];
     try {
-      const claude = manager.create({ label: "Claude", command: "claude" });
-      const codex = manager.create({ label: "Codex", command: "codex" });
-      const gemini = manager.create({ label: "Gemini", command: "gemini" });
-
-      expect(claude).toMatchObject({
-        backend_type: "sdk",
-        transport_lane: "sdk",
-        channel_enabled: false,
-        transport_badge: { label: "SDK" },
-      });
-      expect(codex).toMatchObject({
-        backend_type: "acp",
-        transport_lane: "acp",
-        transport_badge: { label: "ACP" },
-      });
-      expect(gemini).toMatchObject({
-        backend_type: "acp",
-        transport_lane: "acp",
-        transport_badge: { label: "ACP" },
-      });
-    } finally {
-      db.close();
-    }
-  });
-
-  it("preserves the legacy channel-enabled PTY path as the Channel lane", () => {
-    process.env[CLAUDE_PTY_LANE_ENV_KEY] = "1";
-    const { db, manager } = createManager();
-    try {
-      const session = manager.create({
-        label: "Claude Channel",
-        command: "claude",
-        backend_type: "pty",
-        channel_enabled: true,
-      });
-      const row = db
-        .prepare("SELECT backend_type, channel_enabled, transport_lane FROM console_sessions WHERE id = ?")
-        .get(session.id) as { backend_type: string; channel_enabled: number; transport_lane: string };
-
-      expect(session).toMatchObject({
-        backend_type: "pty",
-        transport_lane: "channel",
-        channel_enabled: true,
-        transport_badge: { label: "Channel" },
-      });
-      expect(row).toEqual({
-        backend_type: "pty",
-        channel_enabled: 1,
-        transport_lane: "channel",
-      });
-    } finally {
-      db.close();
-    }
-  });
-
-  it("normalizes explicit provider lane selections", () => {
-    const { db, manager } = createManager();
-    try {
-      expect(manager.create({
-        label: "Claude SDK",
-        command: "claude",
-        transport_lane: "sdk",
-      })).toMatchObject({ backend_type: "sdk", transport_lane: "sdk", channel_enabled: false });
-
-      expect(manager.create({
-        label: "Gemini PTY",
-        command: "gemini",
-        transport_lane: "pty",
-      })).toMatchObject({ backend_type: "pty", transport_lane: "pty", channel_enabled: false });
-
-      expect(manager.create({
-        label: "Codex ACP",
-        command: "codex",
-        transport_lane: "acp",
-      })).toMatchObject({ backend_type: "acp", transport_lane: "acp", channel_enabled: false });
-
-      expect(manager.create({
-        label: "Legacy Codex Spawn",
-        command: "codex",
-        backend_type: "spawn",
-      })).toMatchObject({ backend_type: "spawn", transport_lane: "spawn", channel_enabled: false });
-    } finally {
-      db.close();
-    }
+      for (const input of inputs) {
+        expect(() => manager.create({ label: "Managed", command: "claude", ...input }))
+          .toThrow("Managed conversations use ConversationControlService");
+      }
+      expect(db.prepare("SELECT count(*) AS count FROM console_sessions").get()).toEqual({ count: 0 });
+    } finally { manager.close(); db.close(); }
   });
 });

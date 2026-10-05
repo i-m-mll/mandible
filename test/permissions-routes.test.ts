@@ -174,7 +174,7 @@ describe("restricted project route enforcement", () => {
     expect(allowed.status).toBe(202);
     expect(allowed.body).toMatchObject({
       conversation_id: "10000000-0000-4000-8000-000000000001",
-      spawn: { state: "ready", native_session_id: expect.stringMatching(/^controller-/) },
+      spawn: { state: "ready", native_session_id: "provider-10000000-0000-4000-8000-000000000001" },
     });
     expect(control.acquireNew).toHaveBeenCalledWith(expect.objectContaining({
       conversation_id: "10000000-0000-4000-8000-000000000001",

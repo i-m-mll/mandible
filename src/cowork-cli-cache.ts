@@ -144,7 +144,7 @@ function collectCacheFiles(sourceRoot: string): Array<{ source: string; path: st
   // identity contract. Reuse its verification/install path rather than inventing
   // a cache-specific runtime or trusting the destination's ambient executable.
   if (files.some((file) => file.path === "command-syntax.sh")) {
-    for (const source of [".bun-version", "scripts/bun-runtime.sh", "scripts/bun-runtime-lock.tsv"]) {
+    for (const source of [".bun-version", "scripts/bun-runtime.sh", "scripts/bun-runtime-lock.tsv", "scripts/sqlite-runtime-install.mjs", "src/sqlite-runtime.ts"]) {
       if (!fs.statSync(path.join(sourceRoot, source)).isFile()) {
         throw new Error(`missing CLI runtime dependency: ${source}`);
       }

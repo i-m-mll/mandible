@@ -50,6 +50,8 @@ describe("Cowork CLI cache materializer", () => {
       [".bun-version", "runtime/.bun-version"],
       ["scripts/bun-runtime.sh", "runtime/scripts/bun-runtime.sh"],
       ["scripts/bun-runtime-lock.tsv", "runtime/scripts/bun-runtime-lock.tsv"],
+      ["scripts/sqlite-runtime-install.mjs", "runtime/scripts/sqlite-runtime-install.mjs"],
+      ["src/sqlite-runtime.ts", "runtime/src/sqlite-runtime.ts"],
     ];
     for (const [source, cached] of runtimeFiles) {
       expect(manifest.files).toContainEqual(expect.objectContaining({ source, path: cached }));
