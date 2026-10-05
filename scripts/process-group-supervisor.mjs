@@ -1,5 +1,5 @@
 import process from "node:process";
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 export async function runSupervisedCommand(binary, args, { cwd, env, stdio, timeout, graceMs } = {}) {
   const supervisor = new ProcessGroupSupervisor({ graceMs });
@@ -31,12 +31,32 @@ function waitForExit(child) {
   });
 }
 
-function signalGroup(groupId, signal) {
+function groupMembers(groupId) {
+  const result = spawnSync("/bin/ps", ["-axo", "pid=,pgid=,uid=,stat="], { encoding: "utf8", timeout: 1_000 });
+  if (result.error || result.status !== 0) throw new Error(`Cannot inspect process group ${groupId}.`, { cause: result.error || new Error(result.stderr) });
+  return result.stdout.trim().split("\n").filter(Boolean).map((line) => {
+    const [pid, pgid, uid, state] = line.trim().split(/\s+/);
+    if (![pid, pgid, uid].every((value) => /^\d+$/.test(value)) || !state) throw new Error("Invalid process-group inspection output.");
+    return { pid: Number(pid), pgid: Number(pgid), uid: Number(uid), zombie: state.startsWith("Z") };
+  }).filter((member) => member.pgid === groupId);
+}
+
+function signalGroup({ child, groupId }, signal) {
   if (!groupId) return;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    const members = groupMembers(groupId);
+    // An exited leader cannot become live again. Such a PID now names a reused
+    // group, and a credential change also invalidates our signal authority.
+    if (members.some((member) => member.uid !== process.getuid() || (member.pid === groupId && !member.zombie))) {
+      throw new Error(`Refusing to signal process group ${groupId}: owned leader exited and group custody changed.`);
+    }
+  }
   try {
     process.kill(-groupId, signal);
   } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
+    if (error?.code === "ESRCH") return;
+    if (error?.code === "EPERM" && process.platform === "darwin" && !groupExists(groupId)) return;
+    throw error;
   }
 }
 
@@ -47,6 +67,17 @@ function groupExists(groupId) {
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM" && process.platform === "darwin") {
+      const members = groupMembers(groupId);
+      // XNU excludes zombies from its group signal check and returns EPERM
+      // when none remain signalable. Prove this exact state; live or foreign
+      // members still constitute a permission/custody failure.
+      if (members.length > 0 && members.every((member) => member.zombie && member.uid === process.getuid())) return false;
+      try { process.kill(-groupId, 0); } catch (retryError) {
+        if (retryError?.code === "ESRCH") return false;
+        throw retryError;
+      }
+    }
     throw error;
   }
 }
@@ -133,11 +164,12 @@ export class ProcessGroupSupervisor {
     });
   }
 
-  async #terminate({ child, groupId }, signal) {
-    signalGroup(groupId, signal);
+  async #terminate(active, signal) {
+    const { child, groupId } = active;
+    signalGroup(active, signal);
     const leaderExit = waitForExit(child);
     if (!await waitForGroupExit(groupId, this.#graceMs)) {
-      signalGroup(groupId, "SIGKILL");
+      signalGroup(active, "SIGKILL");
       if (!await waitForGroupExit(groupId, this.#graceMs)) {
         throw new Error(`Process group ${groupId} survived SIGKILL.`);
       }
