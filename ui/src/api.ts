@@ -1,4 +1,4 @@
-import { isBriefingEvent } from '../../src/contracts';
+import { DOMAIN_EVENTS, isBriefingEvent } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
@@ -693,6 +693,7 @@ export function invalidateBriefingApiCacheForEvent(type: string): boolean {
 }
 
 export function invalidateDashboardApiCacheForEvent(type: string): void {
+  if (type === DOMAIN_EVENTS.HEARTBEAT) return;
   // Logs are an all-event projection. Its view refetches on each event, so
   // discard a warmed snapshot before the visible consumer asks again.
   invalidateApiGetCache('/api/system/logs');

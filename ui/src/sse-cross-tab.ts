@@ -1,3 +1,4 @@
+import { invalidateDashboardApiCacheForEvent } from './api';
 import type {
   SSEHandler,
   SSEPayload,
@@ -496,6 +497,8 @@ export class CrossTabSseCoordinator {
   }
 
   private dispatch(payload: SSEPayload): void {
+    // Reconcile cache freshness before any view can synchronously start a read.
+    invalidateDashboardApiCacheForEvent(payload.type);
     let handled = false;
     const exact = this.listeners.get(payload.type);
     if (exact?.size) {

@@ -25,7 +25,6 @@ import {
   getUserTypographySetting,
   getWorkRepos,
   invalidateApiGetCache,
-  invalidateDashboardApiCacheForEvent,
   normalizeInstanceInfo,
   loadOperationCatalog,
   triggerWorkScan,
@@ -1476,16 +1475,14 @@ function App(): JSX.Element {
     };
     const handler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
-      invalidateDashboardApiCacheForEvent(payload.type);
       dispatch({ type: 'sse', payload });
       if (authEventRequiresProjectionRefresh(payload.type)) {
         scheduleAuthProjectionRefresh();
       }
       scheduleBadgeRefresh();
     };
-    const briefingHandler = (payload: SSEPayload) => {
+    const briefingHandler = () => {
       lastDashboardSseAtRef.current = Date.now();
-      invalidateDashboardApiCacheForEvent(payload.type);
       scheduleBadgeRefresh();
     };
     const managedReminderHandler = (payload: SSEPayload) => {
@@ -1518,7 +1515,6 @@ function App(): JSX.Element {
     // suffices — the route.tab activation effect refetches on activation.
     const ledgerHandler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
-      invalidateDashboardApiCacheForEvent(payload.type);
       const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
       window.dispatchEvent(
         new CustomEvent('ledger:sse', { detail: { type: payload.type, data } }),
@@ -1645,7 +1641,6 @@ function App(): JSX.Element {
 
     // Bug: b5abaea — forward push SSE events to window so WorkOverviewView can subscribe
     const pushEventHandler = (payload: SSEPayload) => {
-      invalidateDashboardApiCacheForEvent(payload.type);
       const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
       window.dispatchEvent(
         new CustomEvent('work:push', { detail: { type: payload.type, data } }),
@@ -1666,8 +1661,7 @@ function App(): JSX.Element {
       setRebuilding(true);
     };
 
-    const graphRefreshHandler = (payload: SSEPayload) => {
-      invalidateDashboardApiCacheForEvent(payload.type);
+    const graphRefreshHandler = () => {
       // Only repaint the graph when it is the active, visible tab. Otherwise
       // mark it dirty; the graph-activation effect flushes one bump on
       // activation or when the tab becomes visible again.
