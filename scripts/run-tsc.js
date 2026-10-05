@@ -17,7 +17,7 @@ if (!tscPath) {
   process.exit(1);
 }
 
-const child = spawn(process.execPath, [tscPath, ...process.argv.slice(2)], {
+const child = spawn(process.execPath, ['--smol', '--no-install', tscPath, ...process.argv.slice(2)], {
   cwd: repoRoot,
   stdio: "inherit",
 });

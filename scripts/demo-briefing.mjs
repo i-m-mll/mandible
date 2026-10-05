@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { spawnSync } from "node:child_process";
+import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -78,12 +78,10 @@ function usage() {
   return "Usage: bun run demo:briefing -- --db <absolute-fresh-path> [--json]";
 }
 
-function buildServer() {
-  const typescriptEntry = require.resolve("typescript");
-  const tsc = path.join(path.dirname(typescriptEntry), "tsc.js");
-  const result = spawnSync(process.execPath, [tsc], { cwd: repoRoot, stdio: "inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`TypeScript build failed with status ${result.status ?? "unknown"}.`);
+async function buildServer() {
+  await runSupervisedCommand(process.execPath, ['--smol', '--no-install', path.join(repoRoot, 'scripts/run-tsc.js')], {
+    cwd: repoRoot, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, stdio: 'inherit', timeout: 180000,
+  });
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -93,7 +91,7 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   const paths = resolveFreshDemoPaths(args.db);
-  buildServer();
+  await buildServer();
   const [{ openDb }, { seedRichBriefingDemo }] = await Promise.all([
     import("../dist/db.js"),
     import("../dist/feedback/rich-briefing-demo.js"),
