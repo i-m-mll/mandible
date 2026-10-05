@@ -277,3 +277,17 @@ it('refuses an unexpected existing Git retention target without overwriting it',
   expect(()=>retainArtifactCommit(db,{project:'guarded',commit:saved.version.commit_sha!,path:'report.md',sha256:saved.version.content_hash})).toThrow('unexpected commit');
   expect(git(a.root,'rev-parse',ref)).toBe(other);
 });
+
+it('preserves original input alias evidence and rejects conflicting project attribution', () => {
+  const target = path.join(dir, 'target'); fs.mkdirSync(target);
+  const file = path.join(target, 'report.md'); fs.writeFileSync(file, 'report');
+  const alias = path.join(dir, 'alias'); fs.symlinkSync(target, alias);
+  const project = insertRawLedgerProject(db, { name: 'alias-project' });
+  insertRawLedgerCheckout(db, { projectId: project, name: 'alias-project', root: alias, conflict: 'replace' });
+  const input = { source_kind: 'local_only' as const, path: path.join(alias, 'report.md'), custody_mode: 'managed' as const };
+  const plan = ok(planArtifactVersion(db, input));
+  expect(plan.required_project_ids).toContain(project);
+  const other = insertRawLedgerProject(db, { name: 'target-project' });
+  insertRawLedgerCheckout(db, { projectId: other, name: 'target-project', root: target, conflict: 'replace' });
+  expect(planArtifactVersion(db, input)).toMatchObject({ ok: false, error: { code: 'invalid_source' } });
+});

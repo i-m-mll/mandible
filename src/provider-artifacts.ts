@@ -1678,9 +1678,9 @@ function runGit(cwd: string, args: string[]): string | null {
   }
 }
 
-function repoInfoForRoot(db: Db, root: string): { repo_id: string | null; name: string | null } {
+function repoInfoForRoot(db: Db, root: string, observedRoot?: string): { repo_id: string | null; name: string | null } {
   const realRoot = path.resolve(root);
-  const canonical = resolveCanonicalArtifactRepoForRoot(db, realRoot);
+  const canonical = resolveCanonicalArtifactRepoForRoot(db, realRoot, observedRoot);
   if (canonical.ok) return { repo_id: canonical.project_key, name: canonical.checkout_name };
   return { repo_id: null, name: null };
 }
@@ -1717,7 +1717,7 @@ function classifyLocalArtifactPath(db: Db, filePath: string): ArtifactGitState {
   const status = runGit(repoRoot, ["status", "--porcelain=v1", "--", relativePath]);
   const staged = Boolean(status && status.length >= 2 && status[0] !== " " && status[0] !== "?");
   const dirty = Boolean(status && status.length >= 2 && (status[1] !== " " || status.startsWith("??")));
-  const repoInfo = repoInfoForRoot(db, repoRoot);
+  const repoInfo = repoInfoForRoot(db, repoRoot, path.dirname(expanded));
 
   return {
     inside_worktree: true,
@@ -5095,7 +5095,7 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
       if (input.source && sourceKey(input.source) !== sourceKey(source)) return artifactFailure('source_mismatch', 'Declared source differs from committed source');
     } else if (local) {
       const git = local.git_state;
-      const repo = resolveCanonicalArtifactRepoForRoot(db, git.repo_root ?? path.dirname(local.resolved_path));
+      const repo = resolveCanonicalArtifactRepoForRoot(db, git.repo_root ?? path.dirname(local.resolved_path), path.dirname(local.input_path));
       if (repo && !repo.ok && repo.reason === 'ambiguous_repo') return artifactFailure('invalid_source', 'Repository is ambiguous');
       if (repo.ok && (git.relative_path || repo.checkout_root)) {
         projectId = repo.project_id;

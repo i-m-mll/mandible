@@ -112,9 +112,25 @@ function runGit(cwd: string, args: string[]): string | null {
   }
 }
 
-function gitCommonDir(root: string): string | null {
-  const common = runGit(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  return common ? safeRealpath(common) : null;
+function gitWorktreeRoots(root: string): Set<string> {
+  // Git owns the shared repository identity. Ask only the requested repository;
+  // probing registered checkouts would let an unrelated mount or OS access gate
+  // block artifact saving on the daemon's main thread.
+  const listing = runGit(root, ["worktree", "list", "--porcelain", "-z"]);
+  const roots = new Set((listing ?? "").split("\0")
+    .filter((field) => field.startsWith("worktree "))
+    .map((field) => path.resolve(field.slice("worktree ".length))));
+  // A separate Git directory can explicitly record its main working tree.
+  // Without that metadata, its unlisted main path cannot be inferred safely.
+  if (listing) {
+    const common = runGit(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    // Git can list the object directory as its main path for bare or separate
+    // Git directories. That is not evidence of a checkout at that path.
+    if (common) roots.delete(path.resolve(common));
+    const main = runGit(root, ["config", "--path", "--get", "core.worktree"]);
+    if (main && common) roots.add(path.resolve(common, main));
+  }
+  return roots;
 }
 
 function gitRemoteIdentity(root: string): string {
@@ -126,47 +142,65 @@ function isPathInside(candidate: string, root: string): boolean {
   return relative === "" || Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-export function resolveCanonicalArtifactRepoForRoot(db: Db, root: string): CanonicalArtifactRepoResolution {
+/** The primary root identifies the checkout; additional paths only supply prefix aliases. */
+function requestedPathEvidence(roots: string[]): { roots: Set<string>; canonicalize: (root: string) => string } {
+  const requested = new Set<string>();
+  const aliases = new Map<string, string>();
+  const realPaths = new Map<string, string>();
+  for (const [index, root] of roots.entries()) {
+    const resolved = path.resolve(root);
+    if (index === 0) requested.add(resolved);
+    // Preserve prefix aliases such as /tmp -> /private/tmp and aliases supplied
+    // by the caller. Ancestors belong to this request's filesystem traversal.
+    for (let ancestor = resolved; !realPaths.has(ancestor); ancestor = path.dirname(ancestor)) {
+      const real = safeRealpath(ancestor);
+      realPaths.set(ancestor, real);
+      if (real !== ancestor) aliases.set(ancestor, real);
+      if (ancestor === path.dirname(ancestor)) break;
+    }
+    if (index === 0) requested.add(realPaths.get(resolved)!);
+  }
+  const prefixes = [...aliases].sort(([a], [b]) => b.length - a.length);
+  return {
+    roots: requested,
+    canonicalize(root) {
+      const resolved = path.resolve(root);
+      const alias = prefixes.find(([prefix]) => isPathInside(resolved, prefix));
+      return alias ? path.resolve(alias[1], path.relative(alias[0], resolved)) : resolved;
+    },
+  };
+}
+
+export function resolveCanonicalArtifactRepoForRoot(db: Db, root: string, observedRoot?: string): CanonicalArtifactRepoResolution {
   const resolvedRoot = path.resolve(root);
-  const realRoot = safeRealpath(resolvedRoot);
   const rows = allProjectCheckoutRows(db);
   if (rows.length === 0) return { ok: false, reason: "unknown_repo" };
 
-  const exact = rows.filter((row) => {
-    if (!row.checkout_root) return false;
-    const checkoutRoot = path.resolve(row.checkout_root);
-    const checkoutReal = safeRealpath(checkoutRoot);
-    return checkoutRoot === resolvedRoot || checkoutRoot === realRoot || checkoutReal === realRoot;
-  });
+  // Registry paths are explicit identity evidence, not filesystem discovery
+  // seeds. Only requested paths and their ancestors supply filesystem aliases.
+  const evidence = requestedPathEvidence(observedRoot ? [resolvedRoot, observedRoot] : [resolvedRoot]);
+  const exact = rows.filter((row) => row.checkout_root && evidence.roots.has(evidence.canonicalize(row.checkout_root)));
   const exactResolution = uniqueResolution(exact, "checkout_root");
   if (exactResolution.ok || exactResolution.reason === "ambiguous_repo") return exactResolution;
 
-  const common = gitCommonDir(resolvedRoot);
-  if (common) {
-    const commonRows = rows.filter((row) => row.checkout_root && gitCommonDir(row.checkout_root) === common);
-    const commonResolution = uniqueResolution(commonRows, "git_common_dir");
-    if (commonResolution.ok || commonResolution.reason === "ambiguous_repo") return commonResolution;
-  }
+  const worktreeRoots = gitWorktreeRoots(resolvedRoot);
+  const commonRows = rows.filter((row) => row.checkout_root && worktreeRoots.has(evidence.canonicalize(row.checkout_root)));
+  const commonResolution = uniqueResolution(commonRows, "git_common_dir");
+  if (commonResolution.ok || commonResolution.reason === "ambiguous_repo") return commonResolution;
 
   const remoteIdentity = gitRemoteIdentity(resolvedRoot);
   if (remoteIdentity) {
     const remoteRows = rows.filter((row) => {
-      const identities = [
-        row.remote_identity,
-        row.upstream_identity,
-        row.remote_url,
-      ].map((value) => normalizeRemoteIdentity(value));
+      const identities = [row.remote_identity, row.upstream_identity, row.remote_url]
+        .map((value) => normalizeRemoteIdentity(value));
       return identities.includes(remoteIdentity);
     });
     const remoteResolution = uniqueResolution(remoteRows, "remote_identity");
     if (remoteResolution.ok || remoteResolution.reason === "ambiguous_repo") return remoteResolution;
   }
 
-  const ancestryRows = rows.filter((row) => {
-    if (!row.checkout_root) return false;
-    const checkoutReal = safeRealpath(path.resolve(row.checkout_root));
-    return isPathInside(realRoot, checkoutReal);
-  });
+  const ancestryRows = rows.filter((row) => row.checkout_root &&
+    [...evidence.roots].some((requested) => isPathInside(requested, evidence.canonicalize(row.checkout_root!))));
   return uniqueResolution(ancestryRows, "checkout_ancestry");
 }
 
