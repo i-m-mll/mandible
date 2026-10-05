@@ -31,58 +31,7 @@ err() { printf "%b\n" "$*" >&2; }
 die() { err "$1"; exit "${2:-1}"; }
 
 usage() {
-  cat <<'EOF' | mandible_render_commands
-Usage:
-  {{command user.setup}}
-  mandible user pair <reference> [--json]
-  {{command user.whoami}}
-  {{command user.list}}
-  {{command user.show}}
-  {{command user.update}}
-  {{command user.credential.add}}
-  {{command user.credential.revoke}}
-  {{command user.credential.list}}
-  {{command user.token.mint}}
-  mandible user token list <ref> [--all] [--json]
-  mandible user token revoke <credential-id> [--json]
-  {{command user.binding.add}}
-  {{command user.binding.rm}}
-  {{command user.binding.list}}
-  mandible user group add <slug> [--name <n>] [--json]
-  mandible user group rm <ref> [--json]
-  mandible user group members <ref> [--add <user>|--rm <user>] [--json]
-  mandible user grant add --subject-type user|group --subject <ref> (--project <ref> --role read|write|admin | --global <capability>) [--json]
-  mandible user grant rm <id> [--json]
-  mandible user grant list [--resource-type project|global] [--resource-id <id>] [--json]
-  {{command user.access}}
-
-Setup is idempotent and is the only way the local human operator is created.
---agents deliberately provisions the claude-code, codex, and gemini users,
-their app and provider-session-environment bindings.
-Defaults for --name/--email come from git config user.name / user.email.
-Setup also registers git user.signingkey as the operator's ssh_key credential
-when one is configured in GLOBAL git config (idempotent; skipped silently when
-unset). Operator credentials are global, so a key configured only in the
-current repository is reported with the command that registers it, never
-auto-registered. Protected merges are only attested when their signature
-verifies against an active registered credential, so this is not an optional
-step. `credential add --from-git-signingkey` registers the effective key of the
-current repository and prints which config scope it came from.
-Credentials are immutable: revoke then add, never mutate a fingerprint. No
-private key material is ever accepted.
-
-Tokens are per-user bearer secrets stored hashed (never in the clear). The raw
-token is printed once at mint time and cannot be retrieved again; export it as
-MANDIBLE_TOKEN for the CLI to authenticate. Revoke a token via its credential id.
-token mint --store writes the new token straight into the OS secret store
-instead of printing it: `mandible-operator` for the human operator, or
-`mandible-agent-<app>` for an agent user (<app> is its shortest active app_name
-binding), with the user slug as the account. --service overrides that name.
-Storing again rotates the item in place.
-Open the registered local address in a browser for OS-owned access.
-Use whoami to check which user the daemon actually resolves for this shell's
-credential before a session starts writing to the ledger.
-EOF
+  mandible_command_help user
 }
 
 require_tools() {
@@ -306,17 +255,9 @@ setup_signing_credential() {
 
 cmd_setup() {
   local slug="" name="" email="" json=0 email_set=0 agents=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --slug)  slug="$2"; shift 2 ;;
-      --name)  name="$2"; shift 2 ;;
-      --email) email="$2"; email_set=1; shift 2 ;;
-      --agents) agents=1; shift ;;
-      --json)  json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.setup" '{"slug":{"option":"slug"},"name":{"option":"name"},"email":{"option":"email"},"email_set":{"option":"email","constant":"1"},"agents":{"option":"agents","constant":"1"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$name" ]] || name="$(git_config_value user.name)"
   if (( ! email_set )); then
     email="$(git_config_value user.email)"
@@ -348,13 +289,9 @@ cmd_setup() {
 # the auth-request gate refuses the submission hours later.
 cmd_whoami() {
   local json=0 response
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.whoami" '{"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   require_tools
   response="$(api_read "/api/client-auth/whoami" "client identity")" || exit 1
   emit "$response" "$json" '"user: \(.user.slug // "-") (\(.user.kind // "unauthenticated"))\nevidence: \(.evidence_method // "none")\nsource: \(.source // "-")\(if .ephemeral_purpose then " (\(.ephemeral_purpose))" else "" end)\ncredential: \(.credential.label // (.credential.id | mandible_short_id) // "-")\nmode: \(.mode)"'
@@ -362,15 +299,9 @@ cmd_whoami() {
 
 cmd_list() {
   local kind="" status_filter="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --kind)   kind="$2"; shift 2 ;;
-      --status) status_filter="$2"; shift 2 ;;
-      --json)   json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.list" '{"kind":{"option":"kind"},"status_filter":{"option":"status"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   require_tools
   local query="" response
   [[ -n "$kind" ]] && query="?kind=$(urlencode "$kind")"
@@ -383,13 +314,9 @@ cmd_list() {
 
 cmd_show() {
   local ref="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.show" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.show)" 2
   require_tools
   local response
@@ -402,16 +329,9 @@ cmd_show() {
 
 cmd_update() {
   local ref="" name="" email="" status_value="" json=0 name_set=0 email_set=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --name)   name="$2"; name_set=1; shift 2 ;;
-      --email)  email="$2"; email_set=1; shift 2 ;;
-      --status) status_value="$2"; shift 2 ;;
-      --json)   json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.update" '{"name":{"option":"name"},"name_set":{"option":"name","constant":"1"},"email":{"option":"email"},"email_set":{"option":"email","constant":"1"},"status_value":{"option":"status"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.update)" 2
   require_tools
   local payload response
@@ -439,18 +359,9 @@ cmd_credential() {
 
 credential_add() {
   local ref="" ctype="" fingerprint="" material="" label="" json=0 material_set=0 from_git=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --type)            ctype="$2"; shift 2 ;;
-      --fingerprint)     fingerprint="$2"; shift 2 ;;
-      --public-material) material="$2"; material_set=1; shift 2 ;;
-      --from-git-signingkey) from_git=1; shift ;;
-      --label)           label="$2"; shift 2 ;;
-      --json)            json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.credential.add" '{"ctype":{"option":"type"},"fingerprint":{"option":"fingerprint"},"material":{"option":"public-material"},"material_set":{"option":"public-material","constant":"1"},"from_git":{"option":"from-git-signingkey","constant":"1"},"label":{"option":"label"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.credential.add)" 2
   if (( from_git )); then
     [[ -z "$ctype" && -z "$fingerprint" && $material_set -eq 0 ]] \
@@ -489,13 +400,9 @@ credential_add() {
 
 credential_revoke() {
   local id="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.credential.revoke" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" ]] || die "Usage: $(mandible_command_syntax user.credential.revoke)" 2
   require_tools
   local response
@@ -506,14 +413,9 @@ credential_revoke() {
 
 credential_list() {
   local ref="" all=0 json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --all)  all=1; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.credential.list" '{"all":{"option":"all","constant":"1"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.credential.list)" 2
   require_tools
   local query="" response
@@ -561,16 +463,9 @@ default_secret_service_for_user() {
 
 token_mint() {
   local ref="" label="" json=0 store=0 service="" service_set=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --label)   label="$2"; shift 2 ;;
-      --store)   store=1; shift ;;
-      --service) service="$2"; service_set=1; shift 2 ;;
-      --json)    json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.token.mint" '{"label":{"option":"label"},"store":{"option":"store","constant":"1"},"service":{"option":"service"},"service_set":{"option":"service","constant":"1"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" ]] \
     || die "Usage: $(mandible_command_syntax user.token.mint)" 2
   (( service_set == 0 || store == 1 )) || die "--service requires --store." 2
@@ -702,14 +597,9 @@ token_mint() {
 
 token_list() {
   local ref="" all=0 json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --all)  all=1; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.token.list" '{"all":{"option":"all","constant":"1"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" ]] || die "Usage: mandible user token list <ref> [--all] [--json]" 2
   require_tools
   local query="" response
@@ -730,16 +620,9 @@ cmd_binding() {
 
 binding_add() {
   local ref="" btype="" value="" scope="" json=0 scope_set=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --type)  btype="$2"; shift 2 ;;
-      --value) value="$2"; shift 2 ;;
-      --scope) scope="$2"; scope_set=1; shift 2 ;;
-      --json)  json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.binding.add" '{"btype":{"option":"type"},"value":{"option":"value"},"scope":{"option":"scope"},"scope_set":{"option":"scope","constant":"1"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" && -n "$btype" && -n "$value" ]] \
     || die "Usage: $(mandible_command_syntax user.binding.add)" 2
   require_tools
@@ -756,13 +639,9 @@ binding_add() {
 
 binding_rm() {
   local id="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.binding.rm" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" ]] || die "Usage: $(mandible_command_syntax user.binding.rm)" 2
   require_tools
   local response
@@ -773,13 +652,9 @@ binding_rm() {
 
 binding_list() {
   local ref="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.binding.list" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.binding.list)" 2
   require_tools
   local response
@@ -801,14 +676,9 @@ EOF
       return 0
       ;;
     add)
-      while (( $# > 0 )); do
-        case "$1" in
-          --name) name="$2"; shift 2 ;;
-          --json) json=1; shift ;;
-          -*) die "Unknown option: $1" 2 ;;
-          *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-        esac
-      done
+      local binding
+      binding=$(mandible_bind_arguments "user.group.add" '{"name":{"option":"name"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+      eval "$binding"
       [[ -n "$ref" ]] || die "Usage: mandible user group add <slug> [--name <n>]" 2
       require_tools
       payload="$(jq -n --arg slug "$ref" --arg name "$name" \
@@ -817,28 +687,18 @@ EOF
       emit "$response" "$json" '.group | "\(.slug)\t\(.kind)\t\(.display_name)"'
       ;;
     rm)
-      while (( $# > 0 )); do
-        case "$1" in
-          --json) json=1; shift ;;
-          -*) die "Unknown option: $1" 2 ;;
-          *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-        esac
-      done
+      local binding
+      binding=$(mandible_bind_arguments "user.group.rm" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+      eval "$binding"
       [[ -n "$ref" ]] || die "Usage: mandible user group rm <ref>" 2
       require_tools
       response="$(api_send DELETE "/api/users/groups/$(urlencode "$ref")" "")" || die "Failed to remove group." 1
       emit "$response" "$json" '"removed group"'
       ;;
     members)
-      while (( $# > 0 )); do
-        case "$1" in
-          --add) operation="add"; user="$2"; shift 2 ;;
-          --rm) operation="rm"; user="$2"; shift 2 ;;
-          --json) json=1; shift ;;
-          -*) die "Unknown option: $1" 2 ;;
-          *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-        esac
-      done
+      local binding
+      binding=$(mandible_bind_arguments "user.group.members" '{"operation":[{"option":"add","constant":"add"},{"option":"rm","constant":"rm"}],"user":[{"option":"add"},{"option":"rm"}],"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+      eval "$binding"
       [[ -n "$ref" ]] || die "Usage: mandible user group members <ref> [--add <user>|--rm <user>]" 2
       require_tools
       if [[ "$operation" == "add" ]]; then
@@ -869,18 +729,9 @@ EOF
       return 0
       ;;
     add)
-      while (( $# > 0 )); do
-        case "$1" in
-          --subject-type) subject_type="$2"; shift 2 ;;
-          --subject) subject="$2"; shift 2 ;;
-          --project) project="$2"; shift 2 ;;
-          --role) role="$2"; shift 2 ;;
-          --global) capability="$2"; shift 2 ;;
-          --json) json=1; shift ;;
-          -*) die "Unknown option: $1" 2 ;;
-          *) die "Unexpected argument: $1" 2 ;;
-        esac
-      done
+      local binding
+      binding=$(mandible_bind_arguments "user.grant.add" '{"subject_type":{"option":"subject-type"},"subject":{"option":"subject"},"project":{"option":"project"},"role":{"option":"role"},"capability":{"option":"global"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+      eval "$binding"
       [[ "$subject_type" == "user" || "$subject_type" == "group" ]] || die "--subject-type must be user or group" 2
       [[ -n "$subject" ]] || die "--subject is required" 2
       if [[ -n "$project" && -n "$role" && -z "$capability" ]]; then
@@ -899,24 +750,18 @@ EOF
       emit "$response" "$json" '.grant | "\(mandible_display_id)\t\(.subject_type):\(.subject_id | mandible_short_id)\t\(.resource_type):\((.resource_id // "-") | mandible_short_id)\t\(.permission)"'
       ;;
     rm)
-      while (( $# > 0 )); do
-        case "$1" in --json) json=1; shift ;; -*) die "Unknown option: $1" 2 ;; *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;; esac
-      done
+      local binding
+      binding=$(mandible_bind_arguments "user.grant.rm" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+      eval "$binding"
       [[ -n "$id" ]] || die "Usage: mandible user grant rm <id>" 2
       require_tools
       response="$(api_send DELETE "/api/users/grants/$(urlencode "$id")" "")" || die "Failed to remove grant." 1
       emit "$response" "$json" '"removed grant"'
       ;;
     list)
-      while (( $# > 0 )); do
-        case "$1" in
-          --resource-type) resource_type="$2"; shift 2 ;;
-          --resource-id) resource_id="$2"; shift 2 ;;
-          --json) json=1; shift ;;
-          -*) die "Unknown option: $1" 2 ;;
-          *) die "Unexpected argument: $1" 2 ;;
-        esac
-      done
+      local binding
+      binding=$(mandible_bind_arguments "user.grant.list" '{"resource_type":{"option":"resource-type"},"resource_id":{"option":"resource-id"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+      eval "$binding"
       [[ -z "$resource_type" ]] || query="?resource_type=$(urlencode "$resource_type")"
       if [[ -n "$resource_id" ]]; then
         [[ -n "$query" ]] && query="${query}&resource_id=$(urlencode "$resource_id")" || query="?resource_id=$(urlencode "$resource_id")"
@@ -931,13 +776,9 @@ EOF
 
 cmd_access() {
   local user="" project="" json=0 response
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) if [[ -z "$user" ]]; then user="$1"; elif [[ -z "$project" ]]; then project="$1"; else die "Unexpected argument: $1" 2; fi; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "user.access" '{"json":{"option":"json","constant":"1"},"user":{"position":0},"project":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$user" && -n "$project" ]] || die "Usage: $(mandible_command_syntax user.access)" 2
   require_tools
   response="$(api_read "/api/users/$(urlencode "$user")/access?project=$(urlencode "$project")" "access")" || exit 1

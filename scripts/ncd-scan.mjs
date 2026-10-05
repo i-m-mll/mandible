@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Alpha-normalized NCD duplication scanner.
 //
 // Finds declarations that carry substantially the same structural information

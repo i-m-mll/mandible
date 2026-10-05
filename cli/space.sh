@@ -38,38 +38,7 @@ die() {
 }
 
 usage() {
-  cat <<'EOF'
-Usage:
-  mandible space create --project <id> --title <text> [--renderer <r>] [--description <text>] [--json]
-  mandible space list --project <id> [--json]
-  mandible space show <space-id> [--json]
-  mandible space add-item <space-id> <ref> [--title <text>] [--json]
-  mandible space rm-item <space-id> <item-id> [--json]
-  mandible space place <space-id> [--item <item-id>] [--renderer <r>] [--x N] [--y N] [--width N] [--height N] [--parent <occ-id>] [--section <id>] [--note <text>] [--json]
-  mandible space link <space-id> --source <occ-id> --target <occ-id> [--label <text>] [--style <text>] [--json]
-  mandible space unlink <space-id> <edge-id> [--json]
-  mandible space promote-edge --source <ref> --target <ref> [--link-type <type>] [--space <id>] [--edge <id>] [--note <text>] [--json]
-  mandible space promote-docs --issue <id> [--branch <docs-branch>] [--title <text>] [--json]
-  mandible space seed-from-filter <space-id> --predicate <json> [--with-shelf] [--no-artifacts] [--json]
-  mandible space block add <space-id> --type <block-type> [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]
-  mandible space block edit <space-id> <block-id> [--type <block-type>] [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]
-  mandible space block rm <space-id> <block-id> [--json]
-
-Block types (block add|edit --type):
-  heading paragraph reference artifact_embed issue_embed comment_embed todo
-  (embed types reference|artifact_embed|issue_embed|comment_embed require --item with --snapshot)
-
-Refs (add-item, promote-edge):
-  issue:<id>                  ref_type=issue
-  comment:<id>                ref_type=comment
-  artifact:<id>               ref_type=artifact   (not ledger-promotable)
-  artifact-version:<id>       ref_type=artifact   (not ledger-promotable)
-  artifact-blob:<hash>        ref_type=artifact   (not ledger-promotable)
-  uri:<...>                   ref_type=external_ref (not ledger-promotable)
-
-Link types (promote-edge --link-type, default references):
-  parent_child blocks duplicate_of related references fixed_by caused_by implements tests
-EOF
+  mandible_command_help space
 }
 
 require_tools() {
@@ -142,17 +111,9 @@ ref_kind() {
 
 cmd_create() {
   local project="" title="" renderer="" description="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --project) project="$2"; shift 2 ;;
-      --title) title="$2"; shift 2 ;;
-      --renderer) renderer="$2"; shift 2 ;;
-      --description) description="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.create" '{"project":{"option":"project"},"title":{"option":"title"},"renderer":{"option":"renderer"},"description":{"option":"description"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$project" && -n "$title" ]] || die "Usage: mandible space create --project <id> --title <text> [--renderer <r>] [--description <text>] [--json]" 2
   require_tools
   local payload response
@@ -166,14 +127,9 @@ cmd_create() {
 
 cmd_list() {
   local project="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --project) project="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.list" '{"project":{"option":"project"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$project" ]] || die "Usage: mandible space list --project <id> [--json]" 2
   require_tools
   local response
@@ -183,13 +139,9 @@ cmd_list() {
 
 cmd_show() {
   local id="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.show" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" ]] || die "Usage: mandible space show <space-id> [--json]" 2
   require_tools
   local response
@@ -199,18 +151,9 @@ cmd_show() {
 
 cmd_add_item() {
   local id="" ref="" title="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --title) title="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$id" ]]; then id="$1";
-        elif [[ -z "$ref" ]]; then ref="$1";
-        else die "Unexpected argument: $1" 2; fi
-        shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.add-item" '{"title":{"option":"title"},"json":{"option":"json","constant":"1"},"id":{"position":0},"ref":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" && -n "$ref" ]] || die "Usage: mandible space add-item <space-id> <ref> [--title <text>] [--json]" 2
   require_tools
   local parsed payload response
@@ -225,17 +168,9 @@ cmd_add_item() {
 
 cmd_rm_item() {
   local id="" item_id="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$id" ]]; then id="$1";
-        elif [[ -z "$item_id" ]]; then item_id="$1";
-        else die "Unexpected argument: $1" 2; fi
-        shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.rm-item" '{"json":{"option":"json","constant":"1"},"id":{"position":0},"item_id":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" && -n "$item_id" ]] || die "Usage: mandible space rm-item <space-id> <item-id> [--json]" 2
   require_tools
   local response
@@ -247,22 +182,9 @@ cmd_rm_item() {
 cmd_place() {
   local id="" item="" renderer="" parent="" section="" note="" json=0
   local x="" y="" width="" height=""
-  while (( $# > 0 )); do
-    case "$1" in
-      --item) item="$2"; shift 2 ;;
-      --renderer) renderer="$2"; shift 2 ;;
-      --x) x="$2"; shift 2 ;;
-      --y) y="$2"; shift 2 ;;
-      --width) width="$2"; shift 2 ;;
-      --height) height="$2"; shift 2 ;;
-      --parent) parent="$2"; shift 2 ;;
-      --section) section="$2"; shift 2 ;;
-      --note) note="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.place" '{"item":{"option":"item"},"renderer":{"option":"renderer"},"x":{"option":"x"},"y":{"option":"y"},"width":{"option":"width"},"height":{"option":"height"},"parent":{"option":"parent"},"section":{"option":"section"},"note":{"option":"note"},"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" ]] || die "Usage: mandible space place <space-id> [--item <item-id>] [--renderer <r>] [--x N] [--y N] ... [--json]" 2
   require_tools
   local payload response
@@ -286,17 +208,9 @@ cmd_place() {
 
 cmd_link() {
   local id="" source="" target="" label="" style="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --source) source="$2"; shift 2 ;;
-      --target) target="$2"; shift 2 ;;
-      --label) label="$2"; shift 2 ;;
-      --style) style="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.link" '{"source":{"option":"source"},"target":{"option":"target"},"label":{"option":"label"},"style":{"option":"style"},"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" && -n "$source" && -n "$target" ]] || die "Usage: mandible space link <space-id> --source <occ-id> --target <occ-id> [--label <text>] [--style <text>] [--json]" 2
   require_tools
   local payload response
@@ -310,17 +224,9 @@ cmd_link() {
 
 cmd_unlink() {
   local id="" edge_id="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$id" ]]; then id="$1";
-        elif [[ -z "$edge_id" ]]; then edge_id="$1";
-        else die "Unexpected argument: $1" 2; fi
-        shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.unlink" '{"json":{"option":"json","constant":"1"},"id":{"position":0},"edge_id":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" && -n "$edge_id" ]] || die "Usage: mandible space unlink <space-id> <edge-id> [--json]" 2
   require_tools
   local response
@@ -336,19 +242,9 @@ cmd_unlink() {
 # ledger route is never called.
 cmd_promote_edge() {
   local source="" target="" link_type="references" space="" edge="" note="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --source) source="$2"; shift 2 ;;
-      --target) target="$2"; shift 2 ;;
-      --link-type) link_type="$2"; shift 2 ;;
-      --space) space="$2"; shift 2 ;;
-      --edge) edge="$2"; shift 2 ;;
-      --note) note="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.promote-edge" '{"source":{"option":"source"},"target":{"option":"target"},"link_type":{"option":"link-type"},"space":{"option":"space"},"edge":{"option":"edge"},"note":{"option":"note"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$source" && -n "$target" ]] || die "Usage: mandible space promote-edge --source <ref> --target <ref> [--link-type <type>] [--space <id>] [--edge <id>] [--note <text>] [--json]" 2
   require_tools
 
@@ -403,96 +299,11 @@ cmd_promote_edge() {
   emit "$result" "$json" '"promoted \(.source_ref) -[\(.link_type)]-> \(.target_ref)"'
 }
 
-# promote-docs: promote the long-lived Spaces docs branch into the protected
-# branch WITHOUT destroying the managed docs worktree. The docs worktree
-# (provisioned under <repoRoot>/.git/mandible-docs-worktrees/<branch> by the
-# export backend) must survive promotion, but the post-merge cleanup in
-# cli/auth-merge.sh tears down the merged source branch's worktree. So instead
-# of submitting the docs branch itself, we cut a throwaway
-# `promote/docs/<ts>` branch from the docs-branch head and submit THAT to the
-# auth queue. After the merge, cleanup only tears down the disposable proxy.
-# See child issue 8921e84.
-DEFAULT_DOCS_BRANCH="docs/spaces"
-
-cmd_promote_docs() {
-  local docs_branch="$DEFAULT_DOCS_BRANCH" issue="" title="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --branch) docs_branch="$2"; shift 2 ;;
-      --issue|--ref-issue) issue="$2"; shift 2 ;;
-      --title) title="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
-  [[ -n "$issue" ]] || die "Usage: mandible space promote-docs --issue <id> [--branch <docs-branch>] [--title <text>] [--json]" 2
-  command -v git >/dev/null 2>&1 || die "git not found." 1
-  command -v jq >/dev/null 2>&1 || die "jq not found." 1
-
-  git rev-parse --git-dir >/dev/null 2>&1 || die "Not a git repository." 1
-
-  # The docs branch must exist (the export backend provisions it on first
-  # export). Without it there is nothing to promote.
-  git show-ref --verify --quiet "refs/heads/${docs_branch}" \
-    || die "Docs branch '${docs_branch}' does not exist. Export a document first." 1
-
-  local head_sha
-  head_sha="$(git rev-parse "refs/heads/${docs_branch}")" \
-    || die "Failed to resolve head of '${docs_branch}'." 1
-
-  # Disposable proxy branch cut from the docs-branch head. The timestamp keeps
-  # successive promotions from colliding.
-  local ts proxy
-  ts="$(date +%Y%m%d%H%M%S)"
-  proxy="promote/docs/${ts}"
-  if git show-ref --verify --quiet "refs/heads/${proxy}"; then
-    die "Proxy branch '${proxy}' already exists; retry." 1
-  fi
-  git branch "$proxy" "$head_sha" \
-    || die "Failed to create proxy branch '${proxy}'." 1
-
-  [[ -n "$title" ]] || title="Promote ${docs_branch} (${ts})"
-
-  # Submit the PROXY branch — never the long-lived docs branch — to the auth
-  # queue. The auth merge tears down only the proxy worktree on success; the
-  # docs branch and its managed worktree survive.
-  local cli_dir auth_request
-  cli_dir="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}"
-  auth_request="${cli_dir}/auth-request.sh"
-
-  if (( json )); then
-    jq -n \
-      --arg docs_branch "$docs_branch" \
-      --arg proxy "$proxy" \
-      --arg head_sha "$head_sha" \
-      --arg issue "$issue" \
-      --arg title "$title" \
-      '{status:"proxy_submitted", docs_branch:$docs_branch, proxy_branch:$proxy,
-        head_sha:$head_sha, issue:$issue, title:$title}'
-  else
-    err "Cut proxy branch ${proxy} from ${docs_branch}@${head_sha:0:12}"
-    err "Submitting auth request for ${proxy} (docs branch + worktree preserved)…"
-  fi
-
-  # Delegate submission to the standard auth-request CLI. The proxy carries the
-  # docs-branch commits, each of which is an agent-key linked commit with a
-  # structured ledger association.
-  "$auth_request" "$proxy" --title "$title" --issue "$issue" --no-watch
-}
-
 cmd_seed_from_filter() {
   local id="" predicate="" with_shelf=0 no_artifacts=0 json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --predicate) predicate="$2"; shift 2 ;;
-      --with-shelf) with_shelf=1; shift ;;
-      --no-artifacts) no_artifacts=1; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.seed-from-filter" '{"predicate":{"option":"predicate"},"with_shelf":{"option":"with-shelf","constant":"1"},"no_artifacts":{"option":"no-artifacts","constant":"1"},"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" && -n "$predicate" ]] || die "Usage: mandible space seed-from-filter <space-id> --predicate <json> [--with-shelf] [--no-artifacts] [--json]" 2
   require_tools
   printf '%s' "$predicate" | jq empty 2>/dev/null || die "--predicate must be valid JSON." 2
@@ -562,20 +373,9 @@ block_build_payload() {
 cmd_block_add() {
   local id="" block_type="" parent="" item="" snapshot="" sort_key="" markdown="" metadata="" json=0
   local have_parent=0 have_item=0 have_snapshot=0 have_sort=0 have_markdown=0 have_metadata=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --type) block_type="$2"; shift 2 ;;
-      --parent) parent="$2"; have_parent=1; shift 2 ;;
-      --item) item="$2"; have_item=1; shift 2 ;;
-      --snapshot) snapshot="$2"; have_snapshot=1; shift 2 ;;
-      --sort-key) sort_key="$2"; have_sort=1; shift 2 ;;
-      --markdown) markdown="$2"; have_markdown=1; shift 2 ;;
-      --metadata) metadata="$2"; have_metadata=1; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.block.add" '{"block_type":{"option":"type"},"parent":{"option":"parent"},"have_parent":{"option":"parent","constant":"1"},"item":{"option":"item"},"have_item":{"option":"item","constant":"1"},"snapshot":{"option":"snapshot"},"have_snapshot":{"option":"snapshot","constant":"1"},"sort_key":{"option":"sort-key"},"have_sort":{"option":"sort-key","constant":"1"},"markdown":{"option":"markdown"},"have_markdown":{"option":"markdown","constant":"1"},"metadata":{"option":"metadata"},"have_metadata":{"option":"metadata","constant":"1"},"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" && -n "$block_type" ]] || die "Usage: mandible space block add <space-id> --type <block-type> [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]" 2
   require_tools
   block_validate_type "$block_type"
@@ -590,24 +390,9 @@ cmd_block_add() {
 cmd_block_edit() {
   local id="" block_id="" block_type="" parent="" item="" snapshot="" sort_key="" markdown="" metadata="" json=0
   local have_type=0 have_parent=0 have_item=0 have_snapshot=0 have_sort=0 have_markdown=0 have_metadata=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --type) block_type="$2"; have_type=1; shift 2 ;;
-      --parent) parent="$2"; have_parent=1; shift 2 ;;
-      --item) item="$2"; have_item=1; shift 2 ;;
-      --snapshot) snapshot="$2"; have_snapshot=1; shift 2 ;;
-      --sort-key) sort_key="$2"; have_sort=1; shift 2 ;;
-      --markdown) markdown="$2"; have_markdown=1; shift 2 ;;
-      --metadata) metadata="$2"; have_metadata=1; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$id" ]]; then id="$1";
-        elif [[ -z "$block_id" ]]; then block_id="$1";
-        else die "Unexpected argument: $1" 2; fi
-        shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.block.edit" '{"block_type":{"option":"type"},"have_type":{"option":"type","constant":"1"},"parent":{"option":"parent"},"have_parent":{"option":"parent","constant":"1"},"item":{"option":"item"},"have_item":{"option":"item","constant":"1"},"snapshot":{"option":"snapshot"},"have_snapshot":{"option":"snapshot","constant":"1"},"sort_key":{"option":"sort-key"},"have_sort":{"option":"sort-key","constant":"1"},"markdown":{"option":"markdown"},"have_markdown":{"option":"markdown","constant":"1"},"metadata":{"option":"metadata"},"have_metadata":{"option":"metadata","constant":"1"},"json":{"option":"json","constant":"1"},"id":{"position":0},"block_id":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" && -n "$block_id" ]] || die "Usage: mandible space block edit <space-id> <block-id> [--type <block-type>] [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]" 2
   require_tools
   (( have_type )) && block_validate_type "$block_type"
@@ -622,17 +407,9 @@ cmd_block_edit() {
 
 cmd_block_rm() {
   local id="" block_id="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$id" ]]; then id="$1";
-        elif [[ -z "$block_id" ]]; then block_id="$1";
-        else die "Unexpected argument: $1" 2; fi
-        shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "space.block.rm" '{"json":{"option":"json","constant":"1"},"id":{"position":0},"block_id":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" && -n "$block_id" ]] || die "Usage: mandible space block rm <space-id> <block-id> [--json]" 2
   require_tools
   local response
@@ -670,7 +447,6 @@ case "$cmd" in
   link) cmd_link "$@" ;;
   unlink) cmd_unlink "$@" ;;
   promote-edge) cmd_promote_edge "$@" ;;
-  promote-docs) cmd_promote_docs "$@" ;;
   seed-from-filter) cmd_seed_from_filter "$@" ;;
   block) cmd_block "$@" ;;
   *) die "Unknown space subcommand: $cmd" 2 ;;

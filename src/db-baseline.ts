@@ -1,3 +1,4 @@
+import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
 import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
 import { CONVERSATION_RUNTIME_SCHEMA_SQL } from "./conversation-control/runtime-schema.js";
 import { ARTIFACT_CUSTODY_TRIGGERS_SQL } from './artifact-custody-schema.js';
@@ -19,7 +20,7 @@ import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 190;
+export const BASELINE_SCHEMA_VERSION = 191;
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -893,7 +894,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
   }
 
   const create = db.transaction(() => {
-    for (const statement of [...HEAD_SCHEMA_STATEMENTS, ...SPACE_PUBLICATION_SCHEMA_SQL]) {
+    for (const statement of [...HEAD_SCHEMA_STATEMENTS, ...SPACE_PUBLICATION_SCHEMA_SQL, ...SPACE_PUBLICATION_AUTH_SCHEMA_SQL]) {
       const executable = statement.startsWith("CREATE TABLE auth_requests")
         ? statement.replace(
             ", supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT, superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT",

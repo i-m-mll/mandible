@@ -50,5 +50,5 @@ export function registerLedgerChangeRoutes(server: RouteRegistrar, db: Db = getD
       }
       throw error;
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/changes", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 }

@@ -8,18 +8,18 @@ import {
   type AmbientProviderIdentity,
 } from "./ambient-provider-identity.js";
 import {
-  operationalMutationCategoryForPath,
   resolveInstanceInfo,
-  UNSAFE_MUTATION_METHODS as UNSAFE_METHODS,
 } from "./instance-policy.js";
 import { authorizeEffects } from "./security/effect-policy.js";
-import { operationForRequest } from "./security/operation-policy.js";
+import { resolveOperation, type OperationDescriptor } from "./security/operation-policy.js";
 import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
 import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";
 import type { DaemonMemorySnapshot } from "./daemon-memory.js";
 import type { EventLoopLagSnapshot } from "./daemon-event-loop.js";
 import { OperatorNotConfiguredError } from "./identity/resolver.js";
+
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const ROOT_DIR = resolveRootDir();
@@ -195,6 +195,7 @@ export type FileRpcPolicy = "allow" | "deny" | {
 };
 
 export interface RouteOptions {
+  operation: OperationDescriptor;
   fileRpc: FileRpcPolicy;
   // Infrastructure mutations may opt out of historical unattributed-write
   // telemetry. Authorization never depends on this counter.
@@ -205,7 +206,9 @@ export interface RoutePolicyEntry {
   method: string;
   path: string;
   fileRpc: "allow" | "deny" | "conditional";
-  operationalMutationCategory?: string;
+  operationId: string;
+  operationalMutationCategory: string | null;
+  requestSchema: "handler" | "zod";
 }
 
 export interface RouterOptions {
@@ -409,6 +412,12 @@ export class Router implements RouteRegistrar {
   }
 
   private addRoute(method: string, path: string, handler: RouteHandler, options: RouteOptions): void {
+    const operation = options?.operation;
+    if (!operation || !operation.id || !Object.hasOwn(operation, "reportingCategory")
+        || !Object.hasOwn(operation, "requestSchema") || !operation.effects
+        || !options.fileRpc) {
+      throw new Error(`Incomplete operation descriptor: ${method} ${path}`);
+    }
     const { regex, paramNames } = compileRoute(path);
     this.routes.push({ method, path, regex, paramNames, handler, options });
   }
@@ -436,14 +445,33 @@ export class Router implements RouteRegistrar {
 
   listRoutePolicies(): RoutePolicyEntry[] {
     return this.routes.map((route) => {
-      const operationalMutationCategory = operationalMutationCategoryForRoute(route.method, route.path);
       return {
         method: route.method,
         path: route.path,
         fileRpc: serializeFileRpcPolicy(route.options.fileRpc),
-        ...(operationalMutationCategory ? { operationalMutationCategory } : {}),
+        operationId: route.options.operation.id,
+        operationalMutationCategory: route.options.operation.reportingCategory,
+        requestSchema: route.options.operation.requestSchema === null ? "handler" : "zod",
       };
     });
+  }
+
+  resolveRequestOperation(method: string, requestUrl: string, body?: unknown) {
+    const match = this.matchRoute(method.toUpperCase(), new URL(requestUrl, "http://localhost").pathname);
+    return match ? resolveOperation(match.route.options.operation, { instanceRole: this.instance.role, body, params: match.params }) : null;
+  }
+
+  operationCatalog(version: string) {
+    return {
+      schema: "mandible-operation-catalog@2" as const,
+      source: "Router.listRoutePolicies" as const,
+      runtime: {
+        version,
+        instance_id: this.instance.instance_id,
+        backend_generation: this.instance.backend_generation,
+      },
+      routes: this.listRoutePolicies(),
+    };
   }
 
   async invoke(input: RouterInvokeRequest): Promise<RouterInvokeResponse> {
@@ -621,10 +649,20 @@ export class Router implements RouteRegistrar {
               method: normalizedMethod,
               pathname,
               transport: telemetryTransport,
-              category: operationalMutationCategoryForRoute(normalizedMethod, route.path),
+              category: route.options.operation.reportingCategory,
             });
           }
         }
+      }
+
+      const schema = route.options.operation.requestSchema;
+      if (schema !== null) {
+        const parsed = schema.safeParse(body);
+        if (!parsed.success) {
+          response.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+          return true;
+        }
+        body = parsed.data;
       }
 
       // Direct invocation is a trusted process-local composition boundary.
@@ -632,7 +670,7 @@ export class Router implements RouteRegistrar {
       // credential effect ceilings; treating an omitted test/internal
       // transport as file-RPC would invent a remote caller that does not exist.
       if (gate && transport !== "in-process") {
-        const operation = operationForRequest(normalizedMethod, pathname, this.instance.role, body);
+        const operation = resolveOperation(route.options.operation, { instanceRole: this.instance.role, body, params });
         const effectDecision = authorizeEffects(this.instance, clientIdentity, operation);
         if (!effectDecision.allowed) {
           response.status(effectDecision.code === "authentication_required" ? 401 : 403).json({
@@ -715,9 +753,7 @@ function serializeFileRpcPolicy(policy: FileRpcPolicy): "allow" | "deny" | "cond
 // Issue 97cf613 — the route→category table and the exemption set live in
 // instance-policy.ts. This wrapper only names the route-pattern call site; do
 // not reintroduce a local copy of either table here.
-function operationalMutationCategoryForRoute(method: string, pathPattern: string): string | null {
-  return operationalMutationCategoryForPath(method, pathPattern);
-}
+
 
 function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientProviderIdentity | null {
   const provider = headerValue(headers["x-mandible-ambient-provider"]);
@@ -856,11 +892,15 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
         : {}),
     };
     res.json(payload);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/health", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  router.post("/api/events/subscribe", (_req, res) => {
+    res.status(400).json({ error: "stream_transport_required" });
+  }, { operation: { id: "events.subscribe", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   router.get("/api/instance", (_req, res) => {
-    res.json({ instance });
-  }, { fileRpc: "deny" });
+    res.json({ instance, operations: router.operationCatalog(version) });
+  }, { operation: { id: "get:/api/instance", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
   }
 
   return http.createServer(async (req, res) => {
@@ -948,7 +988,7 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
       const eventDecision = authorizeEffects(
         instance,
         identity,
-        operationForRequest(method, pathname, instance.role),
+        router.resolveRequestOperation(method, pathname),
       );
       if (!eventDecision.allowed) {
         writeJsonResponse(res, 403, { error: eventDecision.code, missing_effects: eventDecision.missing });

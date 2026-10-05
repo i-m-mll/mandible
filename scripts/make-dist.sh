@@ -1,9 +1,9 @@
 #!/bin/sh
 # Bug: 88a4472 — create desktop bootstrap assets for Tauri builds.
 # Keep the Tauri bootstrap separate from the daemon's generated dist/ tree.
-# A native build must not overwrite dist/index.js after `npm run build`.
+# A native build must not overwrite dist/index.js after `bun run build`.
 set -e
-node scripts/generate-canonical-origin.mjs --check
+bun scripts/generate-canonical-origin.mjs --check
 mkdir -p src-tauri/dist
 scripts/build-local-ca-trust-helper.sh
 cp src-tauri/bootstrap/index.html src-tauri/dist/index.html

@@ -11,13 +11,7 @@ import type { Logger } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
-export interface DiscoveryResult {
-  discovered: number;
-  dead_reaped: number;
-  already_tracked: number;
-  processes_found: number;
-  duration_ms: number;
-}
+export type DiscoveryResult = import("./contracts.js").SessionDiscoveryResult;
 
 interface WorktreeInfo {
   path: string;

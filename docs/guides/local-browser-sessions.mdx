@@ -4,11 +4,11 @@ Mandible belongs to the logged-in OS account. A browser at the registered local 
 
 ## Secure local origin
 
-1. Run `npm run local-front-door -- initialize` to establish the installation identity.
+1. Run `"$(scripts/bun-runtime.sh)" run local-front-door -- initialize` to establish the installation identity.
 2. Start the production daemon on its private loopback backend.
-3. Run `npm run local-front-door -- install` to install the pinned Caddy binary.
-4. Set up secure local connections from the desktop **Connections** action or `node scripts/local-ca-trust.mjs setup`. This establishes a per-user trusted certificate root with an explicit macOS trust decision. It is a connection setup action, not a browser login.
-5. Start the ordinary front door with `npm run local-front-door -- run` and open `https://app.mandible.localhost:19420`.
+3. Run `"$(scripts/bun-runtime.sh)" run local-front-door -- install` to install the pinned Caddy binary.
+4. Set up secure local connections from the desktop **Connections** action or `"$(scripts/bun-runtime.sh)" scripts/local-ca-trust.mjs setup`. This establishes a per-user trusted certificate root with an explicit macOS trust decision. It is a connection setup action, not a browser login.
+5. Start the ordinary front door with `"$(scripts/bun-runtime.sh)" run local-front-door -- run` and open `https://app.mandible.localhost:19420`.
 
 The gateway and daemon require the exact registered host and origin for browser writes. Cross-site requests fail. Browsers cannot send bearer credentials through this route. Protected branch approval, agent attribution, host and origin checks, and preview effects remain separate controls.
 

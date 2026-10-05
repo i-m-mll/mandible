@@ -51,35 +51,19 @@ ISSUE_CLOSE_RESOLUTIONS=(delivered duplicate wontfix)
 ACCEPTED_ISSUE_CLOSE_RESOLUTIONS="delivered, duplicate, wontfix"
 
 usage_link() {
-  cat <<'LINK_USAGE' | mandible_render_commands
-Usage:
-  {{command issue.link}}
-
-Accepted relationship types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests
-LINK_USAGE
+  mandible_command_help issue link
 }
 
 usage_unlink() {
-  cat <<'UNLINK_USAGE' | mandible_render_commands
-Usage:
-  {{command issue.unlink}}
-
-Accepted relationship types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests
-UNLINK_USAGE
+  mandible_command_help issue unlink
 }
 
 usage_checkpoint_add() {
-  cat <<'CHECKPOINT_ADD_USAGE' | mandible_render_commands
-Usage:
-  {{command issue.checkpoint.add}}
-CHECKPOINT_ADD_USAGE
+  mandible_command_help issue checkpoint add
 }
 
 usage_checkpoint_show() {
-  cat <<'CHECKPOINT_SHOW_USAGE' | mandible_render_commands
-Usage:
-  {{command issue.checkpoint.show}}
-CHECKPOINT_SHOW_USAGE
+  mandible_command_help issue checkpoint show
 }
 
 valid_relationship_type() {
@@ -179,59 +163,7 @@ die_api_status() {
 }
 
 usage() {
-  cat <<'USAGE' | mandible_render_commands
-Usage:
-  {{command issue.new}}  Create a new issue
-  mandible issue list [--status open|closed|all] [--repo <repo>]   List issues (default: open)
-  mandible issue show <id>                                        Show issue details
-  {{command issue.title}}  Print issue title
-  {{command issue.report}}  Print deterministic issue context
-  mandible issue triage [--status open|closed|all] [--resolution <resolution>] [--kind <kind>] [--priority <priority>] [--label <label>] [opts] [--json]
-                                                                  Filter issues for review
-  {{command issue.heads}}  Print issue state digests
-  {{command issue.changed.since-manifest}}  Compare issue digests to a manifest
-  {{command issue.changed.since-issue}}
-                                                                  Compare issue digests to a checkpoint payload and the issue's own head
-  {{command issue.checkpoint.add}}
-                                                                  Add an issue-scoped structured checkpoint
-  {{command issue.checkpoint.show}}
-                                                                  Show issue-scoped structured checkpoints
-  {{command issue.status}}  Set worker status
-  {{command issue.branch.add}}
-                                                                  Link a branch to an issue
-  {{command issue.link}}  Add structured issue/comment links
-  {{command issue.unlink}}  Remove structured issue/comment links
-  {{command issue.close}}
-                                                                  Close issue with an explicit resolution; --commit is only for delivered
-  mandible issue open <id>                                        Reopen a closed issue
-  mandible issue description show <issue-ref> [--json]            Show only the issue description
-  {{command issue.description.edit}}
-                                                                  Edit the issue description
-  mandible issue description history <issue-ref> [--json] [--with-body]
-                                                                  Show issue description revision history
-  mandible issue work-notes show <issue-ref> [--json]              Show current working notes
-  mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]
-                                                                  Edit current working notes
-  mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
-                                                                  Clear current working notes
-  mandible issue work-notes history <issue-ref> [--json] [--with-body]
-                                                                  Show working-notes revision history
-  {{command issue.kind.set}}  Set the canonical issue kind
-  {{command issue.comment.add}}  Add a comment
-  {{command issue.comment.edit}}
-                                                                  Edit a comment
-  mandible issue parent-role <status|assume> <umbrella> [opts]     Inspect or record parent-role holder state
-  mandible issue comment show <comment-ref> [--json]               Show one comment
-  mandible issue comment history <comment-ref> [--json] [--with-body]
-                                                                  Show one comment revision history
-  mandible issue revision show <revision-id> [--json]             Show one text revision
-  mandible issue revision diff <old-revision-id> <new-revision-id> [--force]
-                                                                  Diff two text revisions
-  mandible issue label add <id> <label>                           Add a label
-  mandible issue label rm <id> <label>                            Remove a label
-  mandible issue markdown <audit|normalize|export> [opts]          Audit, normalize, or export ledger Markdown
-  mandible issue refs backfill [opts]                              Reanalyze issue/comment cross-references
-USAGE
+  mandible_command_help issue
 }
 
 require_tools() {
@@ -313,36 +245,9 @@ cmd_close() {
   local resolution=""
   local commit_provided=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --commit)
-        if (( $# < 2 )); then
-          die "Missing value for --commit." 2
-        fi
-        sha="$2"
-        commit_provided=1
-        shift 2
-        ;;
-      --resolution)
-        if (( $# < 2 )); then
-          die "Missing value for --resolution." 2
-        fi
-        resolution="$2"
-        shift 2
-        ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$id" ]]; then
-          id="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.close" '{"sha":{"option":"commit"},"commit_provided":{"option":"commit","constant":"1"},"resolution":{"option":"resolution"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$id" ]]; then
     die "Usage: $(mandible_command_syntax issue.close)" 2
@@ -387,32 +292,9 @@ cmd_comment_add() {
   local message=""
   local reopen=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --reopen)
-        reopen=1
-        shift
-        ;;
-      -m)
-        if (( $# < 2 )); then
-          die "Missing value for -m." 2
-        fi
-        message="$2"
-        shift 2
-        ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$id" ]]; then
-          id="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.comment.add" '{"reopen":{"option":"reopen","constant":"1"},"message":{"option":["m","message"]},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$id" || -z "$message" ]]; then
     die "Usage: $(mandible_command_syntax issue.comment.add)" 2
@@ -435,42 +317,9 @@ cmd_comment_edit() {
   local base_revision_id=""
   local base_body_hash=""
 
-  while (( $# > 0 )); do
-    case "$1" in
-      -m)
-        if (( $# < 2 )); then
-          die "Missing value for -m." 2
-        fi
-        message="$2"
-        shift 2
-        ;;
-      --base-revision|--base-body-revision)
-        if (( $# < 2 )); then
-          die "Missing value for $1." 2
-        fi
-        base_revision_id="$2"
-        shift 2
-        ;;
-      --base-body-hash)
-        if (( $# < 2 )); then
-          die "Missing value for --base-body-hash." 2
-        fi
-        base_body_hash="$2"
-        shift 2
-        ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$comment_ref" ]]; then
-          comment_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.comment.edit" '{"message":{"option":["m","message"]},"base_revision_id":{"option":"base-revision"},"base_body_hash":{"option":"base-body-hash"},"comment_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$comment_ref" || -z "$message" ]]; then
     die "Usage: $(mandible_command_syntax issue.comment.edit)" 2
@@ -505,7 +354,9 @@ cmd_comment_edit() {
 }
 
 cmd_show() {
-  local id="$1"
+  local binding
+  binding=$(mandible_bind_arguments "issue.show" '{"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$id" ]]; then
     die "Usage: mandible issue show <id>" 2
@@ -519,22 +370,9 @@ cmd_report() {
   local id=""
   local json=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$id" ]]; then
-          id="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.report" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$id" ]]; then
     die "Usage: $(mandible_command_syntax issue.report)" 2
@@ -611,39 +449,9 @@ cmd_triage() {
   local json=0
   local repo=""
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --status)
-        if (( $# < 2 )); then die "Missing value for --status." 2; fi
-        status="$2"; shift 2 ;;
-      --resolution)
-        if (( $# < 2 )); then die "Missing value for --resolution." 2; fi
-        resolution="$2"; shift 2 ;;
-      --label)
-        if (( $# < 2 )); then die "Missing value for --label." 2; fi
-        label="$2"; shift 2 ;;
-      --kind)
-        if (( $# < 2 )); then die "Missing value for --kind." 2; fi
-        kind="$2"; shift 2 ;;
-      --priority)
-        if (( $# < 2 )); then die "Missing value for --priority." 2; fi
-        priority="$2"; shift 2 ;;
-      --repo)
-        if (( $# < 2 )); then die "Missing value for --repo." 2; fi
-        repo="$2"; shift 2 ;;
-      --stale-days)
-        if (( $# < 2 )); then die "Missing value for --stale-days." 2; fi
-        stale_days="$2"; shift 2 ;;
-      --limit)
-        if (( $# < 2 )); then die "Missing value for --limit." 2; fi
-        limit="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2 ;;
-      *)
-        die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.triage" '{"status":{"option":"status"},"resolution":{"option":"resolution"},"label":{"option":"label"},"kind":{"option":"kind"},"priority":{"option":"priority"},"repo":{"option":"repo"},"stale_days":{"option":"stale-days"},"limit":{"option":"limit"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
 
   case "$status" in
     open|closed|all) ;;
@@ -702,17 +510,13 @@ cmd_triage() {
 }
 
 cmd_status() {
-  local id="${1:-}"
-  local worker_status="${2:-}"
+  local binding
+  binding=$(mandible_bind_arguments "issue.status" '{"id":{"position":0},"worker_status":{"position":1}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$id" || -z "$worker_status" ]]; then
     die "Usage: $(mandible_command_syntax issue.status)" 2
   fi
-
-  case "$worker_status" in
-    none|in_progress|done|blocked|pivot-needed) ;;
-    *) die "Unknown worker status: $worker_status" 2 ;;
-  esac
 
   require_tools
   local payload
@@ -745,28 +549,9 @@ cmd_branch_add() {
   local branch=""
   local role="primary"
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --role)
-        if (( $# < 2 )); then die "Missing value for --role." 2; fi
-        role="$2"
-        shift 2
-        ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$id" ]]; then
-          id="$1"
-        elif [[ -z "$branch" ]]; then
-          branch="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.branch.add" '{"role":{"option":"role"},"id":{"position":0},"branch":{"position":1}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$id" || -z "$branch" ]]; then
     die "Usage: $(mandible_command_syntax issue.branch.add)" 2
@@ -790,35 +575,9 @@ cmd_link() {
   local note=""
   local -a targets=()
 
-  while (( $# > 0 )); do
-    case "$1" in
-      -h|--help)
-        usage_link
-        return 0
-        ;;
-      --type)
-        if (( $# < 2 )); then die "Missing value for --type." 2; fi
-        link_type="$2"
-        shift 2
-        ;;
-      --note)
-        if (( $# < 2 )); then die "Missing value for --note." 2; fi
-        note="$2"
-        shift 2
-        ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$source_ref" ]]; then
-          source_ref="$1"
-        else
-          targets+=("$1")
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.link" '{"link_type":{"option":"type"},"note":{"option":"note"},"source_ref":{"position":0},"targets":{"rest":1}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$source_ref" || ${#targets[@]} -eq 0 ]]; then
     usage_link >&2
@@ -851,30 +610,9 @@ cmd_unlink() {
   local link_type="references"
   local -a targets=()
 
-  while (( $# > 0 )); do
-    case "$1" in
-      -h|--help)
-        usage_unlink
-        return 0
-        ;;
-      --type)
-        if (( $# < 2 )); then die "Missing value for --type." 2; fi
-        link_type="$2"
-        shift 2
-        ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$source_ref" ]]; then
-          source_ref="$1"
-        else
-          targets+=("$1")
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.unlink" '{"link_type":{"option":"type"},"source_ref":{"position":0},"targets":{"rest":1}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$source_ref" || ${#targets[@]} -eq 0 ]]; then
     usage_unlink >&2
@@ -918,18 +656,9 @@ cmd_heads() {
   local json=0
   local -a ids=()
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        ids+=("$1")
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.heads" '{"json":{"option":"json","constant":"1"},"ids":{"rest":0}}' "$@") || return $?
+  eval "$binding"
 
   if (( ${#ids[@]} == 0 )); then
     die "Usage: $(mandible_command_syntax issue.heads)" 2
@@ -997,45 +726,9 @@ cmd_changed() {
   local checkpoint_ref=""
   local json=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --since-manifest)
-        if (( $# < 2 )); then
-          die "Missing value for --since-manifest." 2
-        fi
-        manifest="$2"
-        shift 2
-        ;;
-      --since-issue)
-        if (( $# < 2 )); then
-          die "Missing value for --since-issue." 2
-        fi
-        since_issue="$2"
-        shift 2
-        ;;
-      --kind)
-        if (( $# < 2 )); then
-          die "Missing value for --kind." 2
-        fi
-        kind="$2"
-        shift 2
-        ;;
-      --checkpoint)
-        if (( $# < 2 )); then
-          die "Missing value for --checkpoint." 2
-        fi
-        checkpoint_ref="$2"
-        shift 2
-        ;;
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        die "Unexpected argument: $1" 2
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.changed" '{"manifest":{"option":"since-manifest"},"since_issue":{"option":"since-issue"},"kind":{"option":"kind"},"checkpoint_ref":{"option":"checkpoint"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -n "$manifest" && -n "$since_issue" ]]; then
     die "Use only one of --since-manifest or --since-issue." 2
@@ -1236,46 +929,9 @@ cmd_checkpoint() {
       local payload_inline=""
       local payload_file=""
 
-      while (( $# > 0 )); do
-        case "$1" in
-          -h|--help)
-            usage_checkpoint_add
-            return 0
-            ;;
-          --kind)
-            if (( $# < 2 )); then
-              die "Missing value for --kind." 2
-            fi
-            kind="$2"
-            shift 2
-            ;;
-          --payload)
-            if (( $# < 2 )); then
-              die "Missing value for --payload." 2
-            fi
-            payload_inline="$2"
-            shift 2
-            ;;
-          --payload-file)
-            if (( $# < 2 )); then
-              die "Missing value for --payload-file." 2
-            fi
-            payload_file="$2"
-            shift 2
-            ;;
-          -*)
-            die "Unknown option: $1" 2
-            ;;
-          *)
-            if [[ -z "$id" ]]; then
-              id="$1"
-            else
-              die "Unexpected argument: $1" 2
-            fi
-            shift
-            ;;
-        esac
-      done
+      local binding
+      binding=$(mandible_bind_arguments "issue.checkpoint.add" '{"kind":{"option":"kind"},"payload_inline":{"option":"payload"},"payload_file":{"option":"payload-file"},"id":{"position":0}}' "$@") || return $?
+      eval "$binding"
 
       if [[ -z "$id" || -z "$kind" ]]; then
         usage_checkpoint_add >&2
@@ -1314,35 +970,9 @@ cmd_checkpoint() {
       local latest=1
       local json=0
 
-      while (( $# > 0 )); do
-        case "$1" in
-          -h|--help)
-            usage_checkpoint_show
-            return 0
-            ;;
-          --kind)
-            if (( $# < 2 )); then
-              die "Missing value for --kind." 2
-            fi
-            kind="$2"
-            shift 2
-            ;;
-          --latest) latest=1; shift ;;
-          --all) latest=0; shift ;;
-          --json) json=1; shift ;;
-          -*)
-            die "Unknown option: $1" 2
-            ;;
-          *)
-            if [[ -z "$id" ]]; then
-              id="$1"
-            else
-              die "Unexpected argument: $1" 2
-            fi
-            shift
-            ;;
-        esac
-      done
+      local binding
+      binding=$(mandible_bind_arguments "issue.checkpoint.show" '{"kind":{"option":"kind"},"latest":[{"option":"latest","constant":"1"},{"option":"all","constant":"0"}],"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+      eval "$binding"
 
       if [[ -z "$id" || -z "$kind" ]]; then
         usage_checkpoint_show >&2
@@ -1393,51 +1023,9 @@ cmd_new() {
   local -a labels=()
   local project_ref=""
 
-  while (( $# > 0 )); do
-    case "$1" in
-      -t)
-        if (( $# < 2 )); then
-          die "Missing value for -t." 2
-        fi
-        title="$2"
-        shift 2
-        ;;
-      -m)
-        if (( $# < 2 )); then
-          die "Missing value for -m." 2
-        fi
-        body="$2"
-        shift 2
-        ;;
-      --kind)
-        if (( $# < 2 )); then
-          die "Missing value for --kind." 2
-        fi
-        kind="$2"
-        shift 2
-        ;;
-      --label)
-        if (( $# < 2 )); then
-          die "Missing value for --label." 2
-        fi
-        labels+=("$2")
-        shift 2
-        ;;
-      --project|--repo)
-        if (( $# < 2 )); then
-          die "Missing value for $1." 2
-        fi
-        project_ref="$2"
-        shift 2
-        ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        die "Unexpected argument: $1" 2
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.new" '{"title":{"option":["t","title"]},"body":{"option":["m","message"]},"kind":{"option":"kind"},"labels":{"option":"label","array":true},"project_ref":{"option":"project"}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$title" || -z "$body" || -z "$kind" ]]; then
     die "Usage: $(mandible_command_syntax issue.new)" 2
@@ -1473,30 +1061,9 @@ cmd_list() {
   local status="open"
   local repo=""
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --status)
-        if (( $# < 2 )); then
-          die "Missing value for --status." 2
-        fi
-        status="$2"
-        shift 2
-        ;;
-      --repo)
-        if (( $# < 2 )); then
-          die "Missing value for --repo." 2
-        fi
-        repo="$2"
-        shift 2
-        ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        die "Unexpected argument: $1" 2
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.list" '{"status":{"option":"status"},"repo":{"option":"repo"}}' "$@") || return $?
+  eval "$binding"
 
   case "$status" in
     open|closed|all) ;;
@@ -1538,22 +1105,9 @@ PARENT_ROLE_USAGE
 cmd_parent_role_status() {
   local issue_ref=""
   local json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then
-          issue_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.parent-role.status" '{"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   if [[ -z "$issue_ref" ]]; then
     die "Usage: mandible issue parent-role status <umbrella> [--json]" 2
   fi
@@ -1582,36 +1136,9 @@ cmd_parent_role_assume() {
   local mechanism="codex"
   local override=0
   local json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      -h|--help)
-        cat <<'PARENT_ROLE_ASSUME_USAGE'
-Usage:
-  mandible issue parent-role assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]
-
-If --session is omitted, Mandible tries MANDIBLE_SESSION_ID and CODEX_SESSION_ID.
-PARENT_ROLE_ASSUME_USAGE
-        return 0
-        ;;
-      --session)
-        if (( $# < 2 )); then die "Missing value for --session." 2; fi
-        session_id="$2"; shift 2 ;;
-      --mechanism)
-        if (( $# < 2 )); then die "Missing value for --mechanism." 2; fi
-        mechanism="$2"; shift 2 ;;
-      --override) override=1; shift ;;
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then
-          issue_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.parent-role.assume" '{"session_id":{"option":"session"},"mechanism":{"option":"mechanism"},"override":{"option":"override","constant":"1"},"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   if [[ -z "$issue_ref" ]]; then
     die "Usage: mandible issue parent-role assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]" 2
   fi
@@ -1655,11 +1182,7 @@ PARENT_ROLE_ASSUME_USAGE
 
 cmd_label() {
   if (( $# < 1 )); then
-    cat <<'LABEL_USAGE' >&2
-Usage:
-  mandible issue label add <id> <label>   Add a label to an issue
-  mandible issue label rm <id> <label>    Remove a label from an issue
-LABEL_USAGE
+    mandible_command_help issue label
     exit 2
   fi
 
@@ -1676,12 +1199,10 @@ LABEL_USAGE
 cmd_label_set() {
   local present="$1"
   shift
-  if (( $# < 2 )); then
-    die "Usage: $(mandible_command_syntax issue.label.add-or-rm)" 2
-  fi
-
-  local id="$1"
-  local label="$2"
+  local action=rm binding id="" label=""
+  [[ "$present" != true ]] || action=add
+  binding=$(mandible_bind_arguments "issue.label.$action" '{"id":{"position":0},"label":{"position":1}}' "$@") || return $?
+  eval "$binding"
   local payload
   require_tools
   payload=$(jq -n --arg label "$label" --argjson present "$present" '{"label":$label, present:$present}')
@@ -1695,7 +1216,9 @@ cmd_label_set() {
 }
 
 cmd_open() {
-  local id="${1:-}"
+  local binding
+  binding=$(mandible_bind_arguments "issue.open" '{"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$id" ]]; then
     die "Usage: mandible issue open <id>" 2
@@ -1735,22 +1258,9 @@ cmd_description_show() {
   local issue_ref=""
   local json=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then
-          issue_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.description.show" '{"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$issue_ref" ]]; then
     die "Usage: mandible issue description show <issue-ref> [--json]" 2
@@ -1772,23 +1282,9 @@ cmd_description_history() {
   local json=0
   local with_body=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      --with-body) with_body=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then
-          issue_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.description.history" '{"json":{"option":"json","constant":"1"},"with_body":{"option":"with-body","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$issue_ref" ]]; then
     die "Usage: mandible issue description history <issue-ref> [--json] [--with-body]" 2
@@ -1811,42 +1307,9 @@ cmd_description_edit() {
   local base_revision_id=""
   local base_body_hash=""
 
-  while (( $# > 0 )); do
-    case "$1" in
-      -m)
-        if (( $# < 2 )); then
-          die "Missing value for -m." 2
-        fi
-        message="$2"
-        shift 2
-        ;;
-      --base-revision|--base-body-revision)
-        if (( $# < 2 )); then
-          die "Missing value for $1." 2
-        fi
-        base_revision_id="$2"
-        shift 2
-        ;;
-      --base-body-hash)
-        if (( $# < 2 )); then
-          die "Missing value for --base-body-hash." 2
-        fi
-        base_body_hash="$2"
-        shift 2
-        ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then
-          issue_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.description.edit" '{"message":{"option":["m","message"]},"base_revision_id":{"option":"base-revision"},"base_body_hash":{"option":"base-body-hash"},"issue_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$issue_ref" || -z "$message" ]]; then
     die "Usage: $(mandible_command_syntax issue.description.edit)" 2
@@ -1896,16 +1359,9 @@ cmd_work_notes_show() {
   local issue_ref=""
   local json=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then issue_ref="$1"; else die "Unexpected argument: $1" 2; fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.work-notes.show" '{"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$issue_ref" ]]; then
     die "Usage: mandible issue work-notes show <issue-ref> [--json]" 2
@@ -1929,21 +1385,9 @@ cmd_work_notes_patch() {
   local message=""
   local base_revision_id=""
 
-  while (( $# > 0 )); do
-    case "$1" in
-      -m)
-        if (( $# < 2 )); then die "Missing value for -m." 2; fi
-        message="$2"; shift 2 ;;
-      --base-revision|--expected-revision)
-        if (( $# < 2 )); then die "Missing value for $1." 2; fi
-        base_revision_id="$2"; shift 2 ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then issue_ref="$1"; else die "Unexpected argument: $1" 2; fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.work-notes.${action}" '{"message":{"option":"m"},"base_revision_id":{"option":"base-revision"},"issue_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$issue_ref" ]]; then
     die "Usage: mandible issue work-notes ${action} <issue-ref> $([[ "$action" == edit ]] && printf '%s' '-m <text> ') [--base-revision <rev>]" 2
@@ -1975,17 +1419,9 @@ cmd_work_notes_history() {
   local json=0
   local with_body=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      --with-body) with_body=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then issue_ref="$1"; else die "Unexpected argument: $1" 2; fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.work-notes.history" '{"json":{"option":"json","constant":"1"},"with_body":{"option":"with-body","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$issue_ref" ]]; then
     die "Usage: mandible issue work-notes history <issue-ref> [--json] [--with-body]" 2
@@ -2011,13 +1447,7 @@ cmd_work_notes() {
     clear) cmd_work_notes_patch clear "$@" ;;
     history) cmd_work_notes_history "$@" ;;
     ""|-h|--help)
-      cat <<'WORK_NOTES_USAGE'
-Usage:
-  mandible issue work-notes show <issue-ref> [--json]
-  mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]
-  mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
-  mandible issue work-notes history <issue-ref> [--json] [--with-body]
-WORK_NOTES_USAGE
+      mandible_command_help issue work-notes
       ;;
     *) die "Unknown work-notes action: $action (expected show, edit, clear, or history)" 2 ;;
   esac
@@ -2037,12 +1467,9 @@ KIND_USAGE
     die "Unknown kind action: $action (expected set)" 2
   fi
 
-  local issue_ref="${1:-}"
-  local kind="${2:-}"
-  if [[ -z "$issue_ref" || -z "$kind" || $# -gt 2 ]]; then
-    die "Usage: $(mandible_command_syntax issue.kind.set)" 2
-  fi
-  require_issue_kind "$kind"
+  local issue_ref="" kind="" binding
+  binding=$(mandible_bind_arguments "issue.kind.set" '{"issue_ref":{"position":0},"kind":{"position":1}}' "$@") || return $?
+  eval "$binding"
   require_tools
   local payload
   payload=$(jq -n --arg kind "$kind" '{kind:$kind}')
@@ -2094,22 +1521,9 @@ cmd_comment_show() {
   local comment_ref=""
   local json=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$comment_ref" ]]; then
-          comment_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.comment.show" '{"json":{"option":"json","constant":"1"},"comment_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$comment_ref" ]]; then
     die "Usage: mandible issue comment show <comment-ref> [--json]" 2
@@ -2136,23 +1550,9 @@ cmd_comment_history() {
   local json=0
   local with_body=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      --with-body) with_body=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$comment_ref" ]]; then
-          comment_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.comment.history" '{"json":{"option":"json","constant":"1"},"with_body":{"option":"with-body","constant":"1"},"comment_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$comment_ref" ]]; then
     die "Usage: mandible issue comment history <comment-ref> [--json] [--with-body]" 2
@@ -2237,22 +1637,9 @@ cmd_revision_show() {
   local revision_id=""
   local json=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$revision_id" ]]; then
-          revision_id="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.revision.show" '{"json":{"option":"json","constant":"1"},"revision_id":{"position":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$revision_id" ]]; then
     die "Usage: mandible issue revision show <revision-id> [--json]" 2
@@ -2274,24 +1661,9 @@ cmd_revision_diff() {
   local new_revision_id=""
   local force=0
 
-  while (( $# > 0 )); do
-    case "$1" in
-      --force) force=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$old_revision_id" ]]; then
-          old_revision_id="$1"
-        elif [[ -z "$new_revision_id" ]]; then
-          new_revision_id="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "issue.revision.diff" '{"force":{"option":"force","constant":"1"},"old_revision_id":{"position":0},"new_revision_id":{"position":1}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$old_revision_id" || -z "$new_revision_id" ]]; then
     die "Usage: mandible issue revision diff <old-revision-id> <new-revision-id> [--force]" 2
@@ -2360,11 +1732,7 @@ cmd_revision() {
     show) cmd_revision_show "$@" ;;
     diff) cmd_revision_diff "$@" ;;
     ""|-h|--help)
-      cat <<'REVISION_USAGE'
-Usage:
-  mandible issue revision show <revision-id> [--json]
-  mandible issue revision diff <old-revision-id> <new-revision-id> [--force]
-REVISION_USAGE
+      mandible_command_help issue revision
       ;;
     *)
       die "Unknown revision action: $action (expected show or diff)" 2
@@ -2380,7 +1748,7 @@ cmd_refs() {
     backfill)
       local root
       root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-      exec node "$root/dist/cli/issue-refs-backfill.js" "$@"
+      exec "$("$root/scripts/bun-runtime.sh")" "$root/dist/cli/issue-refs-backfill.js" "$@"
       ;;
     ""|-h|--help)
       cat <<'REFS_USAGE'
@@ -2397,7 +1765,7 @@ REFS_USAGE
 cmd_markdown() {
   local root
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-  exec node "$root/dist/cli/issue-markdown-tools.js" "$@"
+  exec "$("$root/scripts/bun-runtime.sh")" "$root/dist/cli/issue-markdown-tools.js" "$@"
 }
 
 # --- Main ---
@@ -2413,7 +1781,7 @@ shift
 case "$subcmd" in
   new)     cmd_new "$@" ;;
   list)    cmd_list "$@" ;;
-  show)    cmd_show "${1:-}" ;;
+  show)    cmd_show "$@" ;;
   title)   mandible_issue_title "$@" ;;
   report)  cmd_report "$@" ;;
   triage)  cmd_triage "$@" ;;
@@ -2426,7 +1794,7 @@ case "$subcmd" in
   link)    cmd_link "$@" ;;
   unlink)  cmd_unlink "$@" ;;
   close)   cmd_close "$@" ;;
-  open)    cmd_open "${1:-}" ;;
+  open)    cmd_open "$@" ;;
   description) cmd_description "$@" ;;
   work-notes) cmd_work_notes "$@" ;;
   kind)    cmd_kind "$@" ;;

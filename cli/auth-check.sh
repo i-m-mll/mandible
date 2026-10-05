@@ -20,29 +20,11 @@ cwd_override=""
 json=0
 
 usage() {
-  sed -n '2,/^$/{ s/^# //; s/^#$//; p; }' "$0" | mandible_render_commands
+  mandible_command_help auth check
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --branch) branch="${2:?--branch requires a value}"; shift 2 ;;
-    --repo) repo="${2:?--repo requires a value}"; shift 2 ;;
-    --target|--base) target_override="${2:?--target requires a value}"; shift 2 ;;
-    --cwd) cwd_override="${2:?--cwd requires a value}"; shift 2 ;;
-    --json) json=1; shift ;;
-    -h|--help) usage; exit 0 ;;
-    -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
-    *)
-      if [[ -z "$branch" ]]; then
-        branch="$1"
-      else
-        echo "Unexpected argument: $1" >&2
-        exit 2
-      fi
-      shift
-      ;;
-  esac
-done
+binding=$(mandible_bind_main_arguments "auth.check" '{"branch":[{"option":"branch"},{"position":0}],"repo":{"option":"repo"},"target_override":{"option":["target","base"]},"cwd_override":{"option":"cwd"},"json":{"option":"json","constant":"1"}}' "$@") || exit $?
+eval "$binding"
 
 detect_protected_branch() {
   if git show-ref --verify --quiet refs/heads/develop 2>/dev/null; then

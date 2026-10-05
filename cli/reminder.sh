@@ -7,19 +7,7 @@ API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
 
 usage() {
-  cat <<'EOF'
-Usage:
-  mandible reminder create --project <ref> --message <text> --idempotency-key <key> --at <RFC3339> [--json]
-  mandible reminder create --project <ref> --message <text> --idempotency-key <key> --issue-closed <issue-ref> [--json]
-  mandible reminder create --project <ref> --message <text> --idempotency-key <key> --auth-merge-count-gte <positive-int> [--base-branch <exact>] [--canonical-message <true|false>] [--json]
-  mandible reminder show <id> [--json]
-  mandible reminder list [--project <ref>] [--lifecycle <armed|completed|cancelled>] [--json]
-  mandible reminder cancel <id> [--json]
-
-Creation requires an explicit idempotency key. Reuse the same key and exact
-arguments after an uncertain outcome; reusing it with different arguments is a conflict.
-Exactly one trigger (--at, --issue-closed, or --auth-merge-count-gte) is required.
-EOF
+  mandible_command_help reminder
 }
 
 fail() {
@@ -82,22 +70,9 @@ print_reminder() {
 cmd_create() {
   local project="" message="" idempotency_key="" at="" issue_closed=""
   local auth_merge_count="" base_branch="" canonical_message="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --project) require_value "$1" "$#"; project="$2"; shift 2 ;;
-      --message) require_value "$1" "$#"; message="$2"; shift 2 ;;
-      --idempotency-key) require_value "$1" "$#"; idempotency_key="$2"; shift 2 ;;
-      --at) require_value "$1" "$#"; at="$2"; shift 2 ;;
-      --issue-closed) require_value "$1" "$#"; issue_closed="$2"; shift 2 ;;
-      --auth-merge-count-gte) require_value "$1" "$#"; auth_merge_count="$2"; shift 2 ;;
-      --base-branch) require_value "$1" "$#"; base_branch="$2"; shift 2 ;;
-      --canonical-message) require_value "$1" "$#"; canonical_message="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -h|--help) usage; return 0 ;;
-      -*) fail "unknown create option '$1'" ;;
-      *) fail "unexpected create argument '$1'" ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "reminder.create" '{"project":{"option":"project"},"message":{"option":"message"},"idempotency_key":{"option":"idempotency-key"},"at":{"option":"at"},"issue_closed":{"option":"issue-closed"},"auth_merge_count":{"option":"auth-merge-count-gte"},"base_branch":{"option":"base-branch"},"canonical_message":{"option":"canonical-message"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
 
   [[ -n "$project" ]] || fail "create requires --project"
   [[ -n "$message" ]] || fail "create requires --message"
@@ -144,14 +119,9 @@ cmd_create() {
 
 cmd_show() {
   local id="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -h|--help) usage; return 0 ;;
-      -*) fail "unknown show option '$1'" ;;
-      *) [[ -z "$id" ]] || fail "unexpected show argument '$1'"; id="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "reminder.show" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" ]] || fail "Usage: mandible reminder show <id> [--json]"
   require_tools
   local response_file status response
@@ -163,16 +133,9 @@ cmd_show() {
 
 cmd_list() {
   local project="" lifecycle="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --project) require_value "$1" "$#"; project="$2"; shift 2 ;;
-      --lifecycle) require_value "$1" "$#"; lifecycle="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -h|--help) usage; return 0 ;;
-      -*) fail "unknown list option '$1'" ;;
-      *) fail "unexpected list argument '$1'" ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "reminder.list" '{"project":{"option":"project"},"lifecycle":{"option":"lifecycle"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   if [[ -n "$lifecycle" && "$lifecycle" != "armed" && "$lifecycle" != "completed" && "$lifecycle" != "cancelled" ]]; then
     fail "--lifecycle must be armed, completed, or cancelled"
   fi
@@ -203,14 +166,9 @@ cmd_list() {
 
 cmd_cancel() {
   local id="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -h|--help) usage; return 0 ;;
-      -*) fail "unknown cancel option '$1'" ;;
-      *) [[ -z "$id" ]] || fail "unexpected cancel argument '$1'"; id="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "reminder.cancel" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$id" ]] || fail "Usage: mandible reminder cancel <id> [--json]"
   require_tools
   local response_file status response

@@ -132,7 +132,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const visible = repos.filter((repo) => canRepoAccess(req, repo, "read"));
     const filtered = includeExcluded ? visible : visible.filter((r) => !r.excluded);
     sendJson(res, 200, filtered);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/work/repos", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.put("/api/work/repos/:id", (req, res) => {
     const id = req.params.id;
@@ -144,7 +144,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const updated = workScanner.updateRepo(id, body ?? {});
     if (!updated) { sendJson(res, 404, { error: "repo not found" }); return; }
     sendJson(res, 200, updated);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "put:/api/work/repos/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work" }, fileRpc: "deny" });
 
   server.post("/api/work/repos/add", async (req, res) => {
     const body = req.body as { root?: string; name?: string } | undefined;
@@ -156,7 +156,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     } catch (e) {
       sendJson(res, 400, { error: (e as Error).message });
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/work/repos/add", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write","files:preview","process:external"] : ["ledger:write","files:production","process:external"], requestSchema: null, reportingCategory: "work" }, fileRpc: "deny" });
 
   server.delete("/api/work/repos/:id", (req, res) => {
     const id = req.params.id;
@@ -166,7 +166,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const ok = workScanner.removeRepo(id ?? "");
     if (!ok) { sendJson(res, 404, { error: "repo not found" }); return; }
     sendJson(res, 200, { ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "delete:/api/work/repos/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write","files:preview"] : ["ledger:write","files:production"], requestSchema: null, reportingCategory: "work" }, fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/branches", (req, res) => {
     const repoId = req.params.id;
@@ -184,7 +184,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const filter = queryString(req, "filter");
     const branches = workScanner.getBranches(repo.root);
     sendJson(res, 200, filterAndSortBranches(branches, { sort, filter }));
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/work/repos/:id/branches", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/audit", async (req, res) => {
     const repoId = req.params.id;
@@ -212,7 +212,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const branches = workScanner.getBranches(refreshedRepo.root);
     const inventory = workScanner.getWorktreeInventory(refreshedRepo.root);
     sendJson(res, 200, buildWorkAudit(refreshedRepo, branches, inventory));
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/work/repos/:id/audit", effects: ["ledger:write","process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/branches/:branch/commits", (req, res) => {
     const repoId = req.params.id;
@@ -235,7 +235,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const limit = parsePositiveInteger(queryString(req, "limit"), 50);
     const offset = parsePositiveInteger(queryString(req, "offset"), 0);
     sendJson(res, 200, workScanner.getCommits(repo.root, branch, { limit, offset }));
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/work/repos/:id/branches/:branch/commits", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/compare", (req, res) => {
     const repoId = req.params.id;
@@ -257,7 +257,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     }
     const mode = parseCompareMode(queryString(req, "mode"));
     sendJson(res, 200, workScanner.compareRefs(repo.root, from, to, mode));
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/work/repos/:id/compare", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/worktrees", (req, res) => {
     const repoId = req.params.id;
@@ -272,7 +272,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     }
     if (!enforceRepoAccess(req, res, repo, "read")) return;
     sendJson(res, 200, workScanner.getWorktrees(repo.root));
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/work/repos/:id/worktrees", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/branch/:name", (req, res) => {
     const repoId = req.params.id;
@@ -293,12 +293,12 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       return;
     }
     sendJson(res, 200, branch);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/work/repos/:id/branch/:name", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.post("/api/work/scan", async (_req, res) => {
     const summary = await workScanner.scanAllAsync();
     sendJson(res, 200, summary);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/work/scan", effects: ["ledger:write","process:external"], requestSchema: null, reportingCategory: "work" }, fileRpc: "deny" });
 
   // --- Push routes (Bug: ea3102a) ---
 
@@ -324,7 +324,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     } catch (err) {
       sendJson(res, 409, { error: (err as Error).message });
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/work/push", effects: ["ledger:write","files:production","network:publish","process:external"], requestSchema: null, reportingCategory: "work" }, fileRpc: "deny" });
 
   server.post("/api/work/repos/:id/push", async (req, res) => {
     const repoId = req.params.id;
@@ -347,11 +347,11 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     } catch (err) {
       sendJson(res, 500, { error: (err as Error).message });
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/work/repos/:id/push", effects: ["ledger:write","files:production","network:publish","process:external"], requestSchema: null, reportingCategory: "work" }, fileRpc: "deny" });
 
   server.get("/api/work/push/status", (_req, res) => {
     sendJson(res, 200, getPushStatus());
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/work/push/status", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   return workScanner;
 }

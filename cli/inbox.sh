@@ -106,7 +106,9 @@ cmd_check() {
 }
 
 cmd_add() {
-  local text="$1"
+  local text="" binding
+  binding=$(mandible_bind_arguments "inbox.add" '{"text":{"position":0}}' "$@") || return $?
+  eval "$binding"
   if [[ -z "$text" ]]; then
     print -u2 "usage: mandible inbox add \"reminder text\""
     exit 1
@@ -140,8 +142,9 @@ cmd_add() {
 }
 
 cmd_ack() {
-  local type="$1"
-  local id="$2"
+  local type="" id="" binding
+  binding=$(mandible_bind_arguments "inbox.ack" '{"type":{"position":0},"id":{"position":1}}' "$@") || return $?
+  eval "$binding"
   if [[ -z "$type" || -z "$id" ]]; then
     print -u2 "usage: mandible inbox ack <continuation|auth_result> <id>"
     exit 1
@@ -171,7 +174,9 @@ cmd_ack() {
 }
 
 cmd_watch() {
-  local request_id="$1"
+  local request_id="" binding
+  binding=$(mandible_bind_arguments "inbox.watch" '{"request_id":{"position":0}}' "$@") || return $?
+  eval "$binding"
   if [[ -z "$request_id" ]]; then
     print -u2 "usage: mandible inbox watch <request-id>"
     exit 1
@@ -226,29 +231,24 @@ cmd_watch() {
 
 case "${1:-}" in
   check)
+    shift
+    mandible_bind_arguments "inbox.check" '{}' "$@" >/dev/null || exit $?
     cmd_check
     ;;
   add)
     shift
-    cmd_add "$1"
+    cmd_add "$@"
     ;;
   ack)
     shift
-    cmd_ack "$1" "$2"
+    cmd_ack "$@"
     ;;
   watch)
     shift
-    cmd_watch "$1"
+    cmd_watch "$@"
     ;;
   --help|-h)
-    print "Usage: mandible inbox [check|add|ack|watch]"
-    print ""
-    print "Commands:"
-    print "  (none)              Pretty-print pending items for current branch"
-    print "  check               Machine-friendly one-liner (for hooks)"
-    print "  add \"text\"          Create Mandible reminder issue with 'reminder' label"
-    print "  ack <type> <id>     Acknowledge an item"
-    print "  watch <id>          Poll until auth request resolves"
+    mandible_command_help inbox
     exit 0
     ;;
   "")

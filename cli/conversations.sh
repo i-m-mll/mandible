@@ -10,64 +10,15 @@ source "$SCRIPT_DIR/api.sh"
 MANDIBLE_DB="$(api_live_db_path)"
 
 usage() {
-  cat <<'EOF' | mandible_render_commands
-Usage:
-  mandible conversations list [--provider claude|codex|gemini|all] [--tag TAG] [--since Nd] [--limit N] [--json]
-  mandible conversations show <id|session-id> [--json] [--blocks]
-  mandible conversations blocks <id|session-id> [filters] [--json]
-  mandible conversations export <id|session-id> [--format json|markdown]
-  mandible conversations search "<query>" [search options...]
-  {{command conversations.star}}
-  {{command conversations.unstar}}
-  {{command conversations.tag.add}}
-  {{command conversations.tag.rm}}
-  {{command conversations.comment}}
-  mandible conversations spawn --provider <claude|codex|gemini> --message <text> [--label <name>] [--project-id <id> --checkout-id <id>] [--topology <top-level|autonomous|child|sibling|successor> --target <conversation-id>] [--idempotency-key <key>] [--json]
-  mandible conversations storage prepare [--apply] [--limit N] [--json]
-  mandible conversations custody status <id|session-id> [--json]
-  mandible conversations custody capture <id|session-id> [--rewind] [--mirroring] [--json]
-  mandible conversations custody verify <id|session-id> [--version VERSION] [--json]
-  mandible conversations custody archive <id|session-id> --destination PATH [--json]
-  mandible conversations custody stage-restore <id|session-id> --staging-root PATH --provider-root PATH [--json]
-  mandible conversations custody import <archive-root> [--json]
-  mandible conversations scan-credentials [--conversation <id>] [--limit N] [--dry-run] [--json]
-
-These commands read Mandible's normalized SQLite conversation index. Use
-`mandible logs ...` for provider-native source files.
-
-Block filters: --role ROLE --type TYPE[,TYPE...] --tool NAME --tool-kind KIND --since TIME --until TIME --content TEXT --limit N --offset N
-
-scan-credentials sweeps the existing index for leaked Mandible tokens
-(`mandible_pat_...`), verifying each candidate against the live credential
-hashes. Confirmed leaks are recorded as high-priority inbox alerts. Session-
-scoped credentials persisted in user_credentials are auto-revoked; long-lived
-PATs are alerted only and must be rotated with `mandible user token mint <ref>
---store` plus a revoke. In-memory wrap-session tokens are invisible to this
-scanner by design and instead expire on session end, daemon restart, or TTL.
-The session-scoped predicate is reserved for a future persisted shape. Use
---dry-run to report without recording or revoking. No token material is ever
-printed or stored.
-EOF
+  mandible_command_help conversations
 }
 
 conversation_spawn_command() {
   local provider="" message="" label="New chat" project_id="" checkout_id="" topology="top-level" target="" idempotency_key="" json=0
   local command backend lane payload response topology_json placement_json
-  while (( $# > 0 )); do
-    case "$1" in
-      --provider) provider="${2:?--provider requires a value}"; shift 2 ;;
-      --message|-m) message="${2:?--message requires a value}"; shift 2 ;;
-      --label) label="${2:?--label requires a value}"; shift 2 ;;
-      --project-id) project_id="${2:?--project-id requires a value}"; shift 2 ;;
-      --checkout-id) checkout_id="${2:?--checkout-id requires a value}"; shift 2 ;;
-      --topology) topology="${2:?--topology requires a value}"; shift 2 ;;
-      --target) target="${2:?--target requires a value}"; shift 2 ;;
-      --idempotency-key) idempotency_key="${2:?--idempotency-key requires a value}"; shift 2 ;;
-      --json) json=1; shift ;;
-      -h|--help) usage; return 0 ;;
-      *) echo "Unknown option: $1" >&2; return 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "conversations.spawn" '{"provider":{"option":"provider"},"message":{"option":"message"},"label":{"option":"label"},"project_id":{"option":"project-id"},"checkout_id":{"option":"checkout-id"},"topology":{"option":"topology"},"target":{"option":"target"},"idempotency_key":{"option":"idempotency-key"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$message" ]] || { echo "Error: --message is required." >&2; return 2; }
   [[ "$provider" == "claude" || "$provider" == "codex" || "$provider" == "gemini" ]] || {
     echo "Error: --provider must be claude, codex, or gemini." >&2; return 2;
@@ -111,19 +62,9 @@ conversation_custody_command() {
   [[ -n "$operation" ]] || { usage >&2; return 2; }
   shift || true
   shift || true
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      --rewind) rewind=1; shift ;;
-      --mirroring) mirroring=1; shift ;;
-      --version) version="${2:?--version requires a value}"; shift 2 ;;
-      --destination) destination="${2:?--destination requires a value}"; shift 2 ;;
-      --staging-root) staging_root="${2:?--staging-root requires a value}"; shift 2 ;;
-      --provider-root) provider_root="${2:?--provider-root requires a value}"; shift 2 ;;
-      -h|--help) usage; return 0 ;;
-      *) echo "Unknown option: $1" >&2; return 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "conversations.custody.${operation}" '{"json":{"option":"json","constant":"1"},"rewind":{"option":"rewind","constant":"1"},"mirroring":{"option":"mirroring","constant":"1"},"version":{"option":"version"},"destination":{"option":"destination"},"staging_root":{"option":"staging-root"},"provider_root":{"option":"provider-root"}}' "$target" "$@") || return $?
+  eval "$binding"
   [[ -n "$target" ]] || { echo "Error: custody $operation requires a target." >&2; return 2; }
 
   if [[ "$operation" == "import" ]]; then
@@ -189,17 +130,9 @@ conversation_resolve_id() {
 
 file_rpc_list() {
   local provider="all" tag="" since="" limit=20 json=0 source request response
-  while (( $# > 0 )); do
-    case "$1" in
-      --provider) provider="${2:?--provider requires a value}"; shift 2 ;;
-      --tag) tag="${2:?--tag requires a value}"; shift 2 ;;
-      --since) since="${2:?--since requires a value}"; shift 2 ;;
-      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
-      --json) json=1; shift ;;
-      -h|--help) usage; exit 0 ;;
-      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "conversations.list" '{"provider":{"option":"provider"},"tag":{"option":"tag"},"since":{"option":"since"},"limit":{"option":"limit"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   source=$(conversation_source "$provider")
   request="/api/conversations?limit=$(urlencode "$limit")"
   if [[ -n "$source" ]]; then request="${request}&source=$(urlencode "$source")"; fi
@@ -278,19 +211,11 @@ conversation_metadata_command() {
   else
     operation="$command"
   fi
-  while (( $# > 0 )); do
-    case "$1" in
-      --current) current=1; shift ;;
-      --json) json=1; shift ;;
-      -m)
-        [[ "$operation" == "comment" ]] || { echo "Error: -m is only valid for comment." >&2; return 2; }
-        message="${2:?comment -m requires markdown}"; shift 2 ;;
-      --*) echo "Unknown option: $1" >&2; return 2 ;;
-      *)
-        if [[ -z "$target" && "$current" -eq 0 ]]; then target="$1"; else tags+=("$1"); fi
-        shift ;;
-    esac
-  done
+  local grammar_key="conversations.$command"
+  [[ "$command" != "tag" ]] || grammar_key="conversations.tag.$operation"
+  local binding
+  binding=$(mandible_bind_arguments "$grammar_key" '{"current":{"option":"current","constant":"1"},"json":{"option":"json","constant":"1"},"message":{"option":["m","message"]},"target":{"position":0,"unlessOption":"current"},"tags":[{"rest":0,"whenOption":"current"},{"rest":1}]}' "$@") || return $?
+  eval "$binding"
   if (( current )); then
     [[ -z "$target" ]] || { echo "Error: use a conversation ref or --current, not both." >&2; return 2; }
   else
@@ -318,14 +243,9 @@ file_rpc_show() {
   local ident="${1:-}" json=0 blocks=0 response
   if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; exit 2; fi
   shift
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      --blocks) blocks=1; shift ;;
-      -h|--help) usage; exit 0 ;;
-      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "conversations.show" '{"json":{"option":"json","constant":"1"},"blocks":{"option":"blocks","constant":"1"}}' "$target" "$@") || return $?
+  eval "$binding"
   response=$(api_get "/api/conversations/$(urlencode "$ident")?target=latest")
   if (( json )); then
     if (( blocks )); then
@@ -352,21 +272,9 @@ file_rpc_blocks() {
   local ident="${1:-}" type_filter="" role_filter="" content_filter="" limit=100 offset=0 json=0 request response
   if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; exit 2; fi
   shift
-  while (( $# > 0 )); do
-    case "$1" in
-      --type) type_filter="${2:?--type requires a value}"; shift 2 ;;
-      --role) role_filter="${2:?--role requires a value}"; shift 2 ;;
-      --content|--contains) content_filter="${2:?--content requires a value}"; shift 2 ;;
-      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
-      --offset) offset="${2:?--offset requires a value}"; shift 2 ;;
-      --json) json=1; shift ;;
-      --tool|--tool-kind|--since|--until)
-        echo "Error: $1 is not supported through file-RPC conversation blocks yet." >&2
-        exit 2 ;;
-      -h|--help) usage; exit 0 ;;
-      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "conversations.blocks" '{"type_filter":{"option":"type"},"role_filter":{"option":"role"},"content_filter":{"option":["content","contains"]},"limit":{"option":"limit"},"offset":{"option":"offset"},"json":{"option":"json","constant":"1"}}' "$target" "$@") || return $?
+  eval "$binding"
   request="/api/conversations/$(urlencode "$ident")/blocks?limit=$(urlencode "$limit")&offset=$(urlencode "$offset")"
   if [[ -n "$type_filter" ]]; then request="${request}&type=$(urlencode "$type_filter")"; fi
   response=$(api_get "$request")
@@ -388,13 +296,9 @@ conversation_export_api() {
   local ident="${1:-}" format="markdown" payload response
   if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; return 2; fi
   shift
-  while (( $# > 0 )); do
-    case "$1" in
-      --format) format="${2:?--format requires a value}"; shift 2 ;;
-      -h|--help) usage; return 0 ;;
-      *) echo "Unknown option: $1" >&2; usage >&2; return 1 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "conversations.export" '{"format":{"option":"format"}}' "$target" "$@") || return $?
+  eval "$binding"
   [[ "$format" == "json" || "$format" == "markdown" ]] || {
     echo "Error: format must be json or markdown." >&2
     return 2
@@ -422,18 +326,9 @@ file_rpc_search() {
   local query="${1:-}" provider="all" role="" since="" limit=20 title=0 json=0 source request response
   if [[ -z "$query" ]]; then echo "Error: search query is required." >&2; exit 1; fi
   shift
-  while (( $# > 0 )); do
-    case "$1" in
-      --provider) provider="${2:?--provider requires a value}"; shift 2 ;;
-      --role) role="${2:?--role requires a value}"; shift 2 ;;
-      --since) since="${2:?--since requires a value}"; shift 2 ;;
-      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
-      --title) title=1; shift ;;
-      --json) json=1; shift ;;
-      -h|--help) usage; exit 0 ;;
-      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "conversations.search" '{"provider":{"option":"provider"},"role":{"option":"role"},"since":{"option":"since"},"limit":{"option":"limit"},"title":{"option":"title","constant":"1"},"json":{"option":"json","constant":"1"}}' "$query" "$@") || return $?
+  eval "$binding"
   source=$(conversation_source "$provider")
   request="/api/conversations/search?q=$(urlencode "$query")&limit=$(urlencode "$limit")"
   if [[ -n "$source" ]]; then request="${request}&source=$(urlencode "$source")"; fi
@@ -463,16 +358,9 @@ file_rpc_search() {
 # request and renders the structured result. No token material is ever printed.
 scan_credentials() {
   local conversation="" limit="" dry_run=0 json=0 payload response
-  while (( $# > 0 )); do
-    case "$1" in
-      --conversation) conversation="${2:?--conversation requires a value}"; shift 2 ;;
-      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
-      --dry-run) dry_run=1; shift ;;
-      --json) json=1; shift ;;
-      -h|--help) usage; exit 0 ;;
-      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "conversations.scan-credentials" '{"conversation":{"option":"conversation"},"limit":{"option":"limit"},"dry_run":{"option":"dry-run","constant":"1"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
 
   payload=$(jq -nc \
     --arg conversation "$conversation" \
@@ -534,7 +422,7 @@ fi
 case "${1:-}" in
   storage)
     shift
-    exec node "$(cd "$SCRIPT_DIR/.." && pwd -P)/dist/cli/conversation-storage.js" "$@" --db "$MANDIBLE_DB"
+    exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$(cd "$SCRIPT_DIR/.." && pwd -P)/dist/cli/conversation-storage.js" "$@" --db "$MANDIBLE_DB"
     ;;
   star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
   spawn) shift; conversation_spawn_command "$@"; exit $? ;;
@@ -570,14 +458,16 @@ case "${1:-}" in
     ;;
   blocks)
     shift
-    exec node "$(cd "$SCRIPT_DIR/.." && pwd -P)/dist/cli/conversation-blocks.js" conversations "$MANDIBLE_DB" "$@"
+    exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$(cd "$SCRIPT_DIR/.." && pwd -P)/dist/cli/conversation-blocks.js" conversations "$MANDIBLE_DB" "$@"
     ;;
 esac
 
+export MANDIBLE_PARSED_COMMAND
+MANDIBLE_PARSED_COMMAND=$(mandible_parse_command conversations "$@") || exit $?
 exec python3 - "$MANDIBLE_DB" "$@" <<'PY'
 from __future__ import annotations
 
-import argparse
+from types import SimpleNamespace
 import datetime as dt
 import gzip
 import json
@@ -585,17 +475,6 @@ import sqlite3
 import sys
 import zlib
 from typing import Any
-
-
-def usage() -> None:
-    print("""Usage:
-  mandible conversations list [--provider claude|codex|gemini|all] [--tag TAG] [--since Nd] [--limit N] [--json]
-  mandible conversations show <id|session-id> [--json] [--blocks]
-  mandible conversations blocks <id|session-id> [filters] [--json]
-  mandible conversations export <id|session-id> [--format json|markdown]
-  mandible conversations search "<query>" [search options...]
-  mandible conversations scan-credentials [--conversation <id>] [--limit N] [--dry-run] [--json]
-""")
 
 
 def map_provider(value: str) -> str | None:
@@ -653,7 +532,7 @@ def resolve_conversation(conn: sqlite3.Connection, ident: str) -> sqlite3.Row:
     return row
 
 
-def list_cmd(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+def list_cmd(conn: sqlite3.Connection, args: SimpleNamespace) -> int:
     params: list[Any] = []
     where = ["1=1"]
     source = map_provider(args.provider)
@@ -706,7 +585,7 @@ def blocks_for(conn: sqlite3.Connection, conversation_id: str) -> list[dict[str,
     return out
 
 
-def show_cmd(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+def show_cmd(conn: sqlite3.Connection, args: SimpleNamespace) -> int:
     conv = row_to_dict(resolve_conversation(conn, args.ident))
     payload: dict[str, Any] = {"conversation": conv}
     if args.blocks:
@@ -729,7 +608,7 @@ def show_cmd(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     return 0
 
 
-def blocks_cmd(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+def blocks_cmd(conn: sqlite3.Connection, args: SimpleNamespace) -> int:
     conv = row_to_dict(resolve_conversation(conn, args.ident))
     blocks = blocks_for(conn, conv["id"])
     if args.type:
@@ -746,7 +625,7 @@ def blocks_cmd(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     return 0
 
 
-def export_cmd(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+def export_cmd(conn: sqlite3.Connection, args: SimpleNamespace) -> int:
     conv = row_to_dict(resolve_conversation(conn, args.ident))
     blocks = blocks_for(conn, conv["id"])
     if args.format == "json":
@@ -766,26 +645,16 @@ def export_cmd(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
 
 def main() -> int:
     db_path = sys.argv[1]
-    argv = sys.argv[2:]
-    if not argv or argv[0] in {"-h", "--help", "help"}:
-        usage()
-        return 0 if argv else 2
-    parser = argparse.ArgumentParser(prog="mandible conversations", add_help=False)
-    sub = parser.add_subparsers(dest="command")
-    list_parser = sub.add_parser("list")
-    list_parser.add_argument("--provider", default="all", choices=["claude", "codex", "gemini", "all"])
-    list_parser.add_argument("--since")
-    list_parser.add_argument("--tag")
-    list_parser.add_argument("--limit", type=int, default=20)
-    list_parser.add_argument("--json", action="store_true")
-    show_parser = sub.add_parser("show")
-    show_parser.add_argument("ident")
-    show_parser.add_argument("--json", action="store_true")
-    show_parser.add_argument("--blocks", action="store_true")
-    export_parser = sub.add_parser("export")
-    export_parser.add_argument("ident")
-    export_parser.add_argument("--format", default="markdown", choices=["json", "markdown"])
-    args = parser.parse_args(argv)
+    parsed = json.loads(os.environ["MANDIBLE_PARSED_COMMAND"])
+    values = {'provider': 'all', 'since': None, 'tag': None, 'limit': 20, 'json': False, 'blocks': False, 'format': 'markdown', 'head': 20, 'parse': False, 'role': None, 'type': None, 'tool': None, 'tool_kind': None, 'until': None, 'content': None, 'offset': 0}
+    values.update({key.replace("-", "_"): value for key, value in parsed["options"].items()})
+    for key in ("limit", "head", "offset"):
+        values[key] = int(values[key])
+    values["command"] = parsed["command"].split(".")[-1]
+    positions = parsed["positionals"]
+    values["ident"] = positions[0] if positions else None
+    values["target"] = positions[0] if positions else None
+    args = SimpleNamespace(**values)
     conn = connect(db_path)
     try:
         if args.command == "list":
@@ -794,8 +663,7 @@ def main() -> int:
             return show_cmd(conn, args)
         if args.command == "export":
             return export_cmd(conn, args)
-        usage()
-        return 2
+        raise ValueError(f"Unsupported parsed command: {args.command}")
     finally:
         conn.close()
 

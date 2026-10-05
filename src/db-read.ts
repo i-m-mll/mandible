@@ -97,11 +97,7 @@ export function openReadOnlyLedger(dbPath: string = resolveLedgerDbPath()): Read
     db = new SqliteDatabase(resolved, { readonly: true, fileMustExist: true, timeout: 2000 });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Could not open ${resolved} read-only: ${detail}\n` +
-        "A read-only connection to a WAL database needs to create or attach its -shm " +
-        "sidecar, which requires write permission on the containing directory.",
-    );
+    throw new Error(`Could not open ${resolved} read-only: ${detail}`);
   }
   db.pragma("query_only = 1");
   return { db, path: resolved, close: () => db.close() };

@@ -1,3 +1,4 @@
+import { parseCommand, stringOption, flagOption } from "./grammar.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -75,42 +76,13 @@ function parseArgs(argv: string[]): CliOptions {
     dbPath: getDbPath(),
   };
 
-  for (let index = 0; index < argv.length; index++) {
-    const arg = argv[index];
-    switch (arg) {
-      case "--apply":
-        options.apply = true;
-        break;
-      case "--dry-run":
-        options.apply = false;
-        break;
-      case "--json":
-        options.json = true;
-        break;
-      case "--repo":
-      case "--project":
-        options.project = readValue(argv, ++index, arg);
-        break;
-      case "--issue":
-        options.issue = readValue(argv, ++index, arg);
-        break;
-      case "--since":
-        options.since = parseTime(readValue(argv, ++index, arg), arg);
-        break;
-      case "--until":
-        options.until = parseTime(readValue(argv, ++index, arg), arg);
-        break;
-      case "--db":
-        options.dbPath = readValue(argv, ++index, arg);
-        break;
-      case "-h":
-      case "--help":
-        usage(0);
-        break;
-      default:
-        throw new Error(`Unknown option: ${arg}`);
-    }
-  }
+  const parsed = parseCommand(["issue", "refs", "backfill"], argv);
+  options.apply = flagOption(parsed, "apply"); options.json = flagOption(parsed, "json");
+  options.dbPath = stringOption(parsed, "db") ?? getDbPath();
+  options.project = stringOption(parsed, "repo", "project"); options.issue = stringOption(parsed, "issue");
+  const since = stringOption(parsed, "since"), until = stringOption(parsed, "until");
+  options.since = since === undefined ? undefined : parseTime(since, "--since");
+  options.until = until === undefined ? undefined : parseTime(until, "--until");
 
   if (options.since !== undefined && options.until !== undefined && options.since > options.until) {
     throw new Error("--since must be earlier than or equal to --until.");
@@ -119,13 +91,7 @@ function parseArgs(argv: string[]): CliOptions {
   return options;
 }
 
-function readValue(argv: string[], index: number, flag: string): string {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) {
-    throw new Error(`Missing value for ${flag}.`);
-  }
-  return value;
-}
+
 
 function parseTime(value: string, flag: string): number {
   if (/^\d+$/.test(value)) return Number(value);
@@ -159,21 +125,6 @@ function formatDelta(value: number): string {
   return value >= 0 ? `+${value}` : String(value);
 }
 
-function usage(exitCode: number): never {
-  process.stdout.write(`Usage:
-  mandible issue refs backfill [--dry-run] [--apply] [--repo <repo>] [--issue <ref>] [--since <date>] [--until <date>] [--json]
-
-Options:
-  --dry-run          Run against a temporary SQLite backup (default)
-  --apply            Write the backfill to the configured Mandible DB
-  --repo <repo>      Scope to a project id, project display name, checkout name, or checkout root
-  --issue <ref>      Scope to one issue, resolved with optional --repo context
-  --since <date>     Only reanalyze issue/comment text updated at or after this ISO date or epoch ms
-  --until <date>     Only reanalyze issue/comment text updated at or before this ISO date or epoch ms
-  --json             Print machine-readable JSON
-`);
-  process.exit(exitCode);
-}
 
 main(process.argv.slice(2)).catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

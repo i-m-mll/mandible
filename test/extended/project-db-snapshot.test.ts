@@ -291,6 +291,19 @@ function runSnapshotWithAutomaticCutoff(source: string, output: string) {
 }
 
 describe("project-db-snapshot", () => {
+  it("refuses an over-budget snapshot before publication and removes owned partial staging", () => {
+    const { root, source } = createFixture();
+    const output = path.join(root, "preview.db");
+    const staging = path.join(root, "staging");
+    const before = crypto.createHash("sha256").update(fs.readFileSync(source)).digest("hex");
+    const result = runSnapshot(source, output, ["--max-output-bytes", "1", "--reserve-bytes", "536870912", "--staging-dir", staging]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("output_budget=1");
+    expect(fs.existsSync(output)).toBe(false);
+    expect(fs.readdirSync(staging)).toEqual([]);
+    expect(crypto.createHash("sha256").update(fs.readFileSync(source)).digest("hex")).toBe(before);
+  });
+
   it("projects a canonical source after daemon_log moved to the operational-log database", () => {
     const { root, source } = createFixture({ includeLegacyDaemonLog: false });
     const output = path.join(root, "preview.db");
@@ -311,9 +324,9 @@ describe("project-db-snapshot", () => {
     expect(projected.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_log'",
     ).get()).toBeUndefined();
-    expect(projected.prepare("SELECT id FROM conversations ORDER BY id").pluck().all())
+    expect(projected.prepare("SELECT id FROM conversations ORDER BY id").all().map((row: { id: string }) => row.id))
       .toEqual(["newest-b", "old-parent", "recent-child", "session-old", "starred-old", "workflow-old"]);
-    expect(projected.prepare("PRAGMA quick_check").pluck().get()).toBe("ok");
+    expect(projected.prepare("PRAGMA quick_check").get()?.quick_check).toBe("ok");
     expect(projected.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     projected.close();
   });
@@ -338,13 +351,13 @@ describe("project-db-snapshot", () => {
     expect(fs.statSync(source).size).toBe(sourceSizeBefore);
 
     const projected = new SqliteDatabase(output, { readonly: true });
-    expect(projected.prepare("SELECT id FROM canonical_records ORDER BY id").pluck().all())
+    expect(projected.prepare("SELECT id FROM canonical_records ORDER BY id").all().map((row: { id: string }) => row.id))
       .toEqual(["canonical-1", "canonical-2"]);
-    expect(projected.prepare("SELECT id FROM daemon_log ORDER BY id").pluck().all())
+    expect(projected.prepare("SELECT id FROM daemon_log ORDER BY id").all().map((row: { id: string }) => row.id))
       .toEqual(["old-warn", "recent-info"]);
-    expect(projected.prepare("SELECT id FROM conversations ORDER BY id").pluck().all())
+    expect(projected.prepare("SELECT id FROM conversations ORDER BY id").all().map((row: { id: string }) => row.id))
       .toEqual(["newest-b", "old-parent", "recent-child", "session-old", "starred-old", "workflow-old"]);
-    expect(projected.prepare("PRAGMA quick_check").pluck().get()).toBe("ok");
+    expect(projected.prepare("PRAGMA quick_check").get()?.quick_check).toBe("ok");
     expect(projected.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     projected.close();
   });
@@ -380,7 +393,7 @@ describe("project-db-snapshot", () => {
     expect(replacement.status, replacement.stderr).toBe(0);
 
     const projected = new SqliteDatabase(output, { readonly: true });
-    expect(projected.prepare("SELECT id FROM canonical_records ORDER BY id").pluck().all())
+    expect(projected.prepare("SELECT id FROM canonical_records ORDER BY id").all().map((row: { id: string }) => row.id))
       .toEqual(["canonical-1", "canonical-2", "canonical-3"]);
     projected.close();
     expect(fs.readdirSync(root).some((name) => name.includes(".partial-"))).toBe(false);

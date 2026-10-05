@@ -12,17 +12,8 @@ request_id="${1:-}"
 [[ -n "$request_id" && "$request_id" != -* ]] || { printf '%s\n' "$usage" >&2; exit 2; }
 shift
 revision="" generation="" digest="" recovery=false json=0
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --expected-revision) revision="${2:-}"; shift 2 ;;
-    --expected-custody-generation) generation="${2:-}"; shift 2 ;;
-    --expected-current-snapshot-sha256) digest="${2:-}"; shift 2 ;;
-    --operator-recovery) recovery=true; shift ;;
-    --json) json=1; shift ;;
-    -h|--help) printf '%s\n' "$usage"; exit 0 ;;
-    *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
-  esac
-done
+binding=$(mandible_bind_main_arguments "auth.candidate-repair.${action}" '{"revision":{"option":"expected-revision"},"generation":{"option":"expected-custody-generation"},"digest":{"option":"expected-current-snapshot-sha256"},"recovery":{"option":"operator-recovery","constant":"true"},"json":{"option":"json","constant":"1"}}' "$request_id" "$@") || exit $?
+eval "$binding"
 if [[ "$action" == apply ]] && { [[ ! "$revision" =~ ^[0-9]+$ ]] || [[ ! "$generation" =~ ^[0-9]+$ ]] || [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; }; then
   printf '%s\n' "$usage" >&2
   exit 2

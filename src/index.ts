@@ -383,7 +383,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       generatedFiles: [
         {
           path: "route-mutation-categories.json",
-          contents: routeMutationCategoriesJson(router),
+          contents: routeMutationCategoriesJson(router, version),
         },
       ],
     });
@@ -749,7 +749,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     stopTrashGcScheduler();
     stopManagedReminderScheduler();
     daemonLogCopyForward.stop();
-    daemonLogRetention.stop();
+    await daemonLogRetention.stop();
     reaperTimer.stop();
     workUnitReconciler.stop();
     navEnricher.stop();
@@ -825,20 +825,8 @@ function resolveMandibleRoot(): string {
 
 const MANDIBLE_ROOT = resolveMandibleRoot();
 
-function routeMutationCategoriesJson(router: Router): string {
-  const routes = router.listRoutePolicies()
-    .filter((route) => route.operationalMutationCategory)
-    .map((route) => ({
-      method: route.method,
-      path: route.path,
-      category: route.operationalMutationCategory,
-    }));
-  return `${JSON.stringify({
-    schema: 1,
-    source: "Router.listRoutePolicies",
-    routes,
-    fallbackCategory: "api",
-  }, null, 2)}\n`;
+function routeMutationCategoriesJson(router: Router, version: string): string {
+  return `${JSON.stringify(router.operationCatalog(version), null, 2)}\n`;
 }
 
 function readStartupCommit(logger: Logger): Promise<StartupCommitInfo> {

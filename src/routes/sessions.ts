@@ -549,7 +549,7 @@ export function registerSessionRoutes(
     }
     const result = await discovery.discoverSessions();
     sendJson(res, 200, result);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/sessions/discover", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   server.post("/api/sessions/register", (req, res) => {
     const payload = readBody<SessionInput>(req);
@@ -564,7 +564,7 @@ export function registerSessionRoutes(
     // instead of at end-of-day auth submission.
     const identityWarning = checkSessionIdentity(getDb(), session.id, req.client_identity);
     sendJson(res, 200, { ...session, identity_warning: identityWarning });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/sessions/register", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
 
   // Issue f59b5bd (review S1) — deliberate, user-initiated registration of a
   // provider-known session as a Mandible session row. The client supplies ONLY
@@ -609,7 +609,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, { ...result.session, provider: result.provider });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/sessions/register-provider", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   server.patch("/api/sessions/:id", (req, res) => {
     const rawId = req.params.id;
@@ -630,7 +630,7 @@ export function registerSessionRoutes(
       syncPinnedPanesTsv(updated.nav_pane_id, Boolean(payload.pinned));
     }
     sendJson(res, 200, updated);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/sessions/:id", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
 
   server.patch("/api/sessions/:id/end", (req, res) => {
     const rawId = req.params.id;
@@ -648,7 +648,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, ended);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/sessions/:id/end", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
 
   server.post("/api/sessions/:id/children", (req, res) => {
     const parentId = req.params.id;
@@ -663,7 +663,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, child);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/sessions/:id/children", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   server.patch("/api/sessions/:id/children/:childId", (req, res) => {
     const parentId = req.params.id;
@@ -680,7 +680,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, updated);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "patch:/api/sessions/:id/children/:childId", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   server.get("/api/sessions", (req, res) => {
     const query = req.query ?? {};
@@ -766,13 +766,13 @@ export function registerSessionRoutes(
     }
 
     sendJson(res, 200, { sessions, ...meta });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/sessions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Bug: 568eca7 — lightweight endpoint returning just pinned session IDs
   server.get("/api/sessions/pinned", (_req, res) => {
     const ids = registry.getPinnedSessionIds();
     sendJson(res, 200, { ids });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/sessions/pinned", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Bug: 0b454df — list channel-connected sessions
   server.get("/api/sessions/channel-connected", (_req, res) => {
@@ -812,7 +812,7 @@ export function registerSessionRoutes(
     }
 
     sendJson(res, 200, { sessions: combined });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/sessions/channel-connected", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Bug: 0b454df — record a channel tool call for liveness tracking
   server.post("/api/sessions/:id/channel-tool-call", (req, res) => {
@@ -839,7 +839,7 @@ export function registerSessionRoutes(
     // so a token swapped mid-session is caught without waiting for a re-register.
     const identityWarning = checkSessionIdentity(getDb(), id, req.client_identity);
     sendJson(res, 200, { ok: true, identity_warning: identityWarning });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/sessions/:id/channel-tool-call", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   // Issue 037fa85 / f59b5bd — provider-neutral session alias resolution with
   // explicit zero/one/many semantics. Registered before /api/sessions/:id so
@@ -869,7 +869,7 @@ export function registerSessionRoutes(
       truncated,
       matches,
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/sessions/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Issue 037fa85 (follow-up) — provider-scoped overview for a Codex session
   // Mandible knows only through ingestion (a conversations row keyed on the
@@ -1004,7 +1004,7 @@ export function registerSessionRoutes(
         items: conversations,
       },
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/sessions/overview/by-provider", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/sessions/by-pid/:pid", (req, res) => {
     const pidStr = req.params.pid;
@@ -1019,7 +1019,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, session);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/sessions/by-pid/:pid", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/sessions/:id", (req, res) => {
     const rawId = req.params.id;
@@ -1035,7 +1035,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, session);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/sessions/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/sessions/:id/tree", (req, res) => {
     const rawId = req.params.id;
@@ -1051,7 +1051,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, tree);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/sessions/:id/tree", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Issue 037fa85 — aggregate Session Overview payload: session row, bounded
   // descendant list, ledger-linked issues, work units, recent conversations.
@@ -1179,7 +1179,7 @@ export function registerSessionRoutes(
         items: conversations,
       },
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/sessions/:id/overview", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.post("/api/sessions/:id/navigate", (req, res) => {
     const rawId = req.params.id;
@@ -1196,7 +1196,7 @@ export function registerSessionRoutes(
     }
     const result = navigateToSession(session);
     sendJson(res, result.ok ? 200 : 500, result);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/sessions/:id/navigate", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   // Bug: 14e1e63 — write Reaper Notice before killing so it appears before pane-loop restarts
   server.post("/api/sessions/:id/kill", (req, res) => {
@@ -1243,7 +1243,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, { ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/sessions/:id/kill", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   // POST /api/sessions/:id/issues — link a session to an issue
   server.post("/api/sessions/:id/issues", (req, res) => {
@@ -1297,7 +1297,7 @@ export function registerSessionRoutes(
       ledger_issue_id: ledgerIssueId,
       identity_warning: identityWarning,
     });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/sessions/:id/issues", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
 
   // GET /api/sessions/:id/issues — get linked issues for a session
   server.get("/api/sessions/:id/issues", (req, res) => {
@@ -1316,6 +1316,6 @@ export function registerSessionRoutes(
        ORDER BY created_at ASC`
     ).all(sessionId);
     sendJson(res, 200, links);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/sessions/:id/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
 }

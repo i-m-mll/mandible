@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseCommand, stringOption, numberOption, flagOption } from "./grammar.js";
 
 import fs from "node:fs";
 import os from "node:os";
@@ -383,29 +384,15 @@ export async function prepareSourceBackedConversationStorage(options: {
   }
 }
 
-function valueAfter(argv: string[], flag: string): string | undefined {
-  const index = argv.indexOf(flag);
-  if (index < 0) return undefined;
-  const value = argv[index + 1];
-  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
-}
+
 
 async function main(argv = process.argv.slice(2)): Promise<void> {
-  if (argv[0] !== "prepare") {
-    throw new Error("Usage: conversation-storage prepare --db PATH [--apply] [--limit N] [--json]");
-  }
-  const dbPath = valueAfter(argv, "--db");
-  if (!dbPath) throw new Error("--db is required");
-  const rawLimit = valueAfter(argv, "--limit");
-  const limit = rawLimit === undefined ? undefined : Number(rawLimit);
-  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
-    throw new Error("--limit must be a positive integer");
-  }
-  const json = argv.includes("--json");
+  const parsed = parseCommand(["conversation-storage"], argv);
+  const dbPath = stringOption(parsed, "db")!;
+  const limit = numberOption(parsed, "limit"), json = flagOption(parsed, "json");
   const result = await prepareSourceBackedConversationStorage({
     dbPath,
-    apply: argv.includes("--apply"),
+    apply: flagOption(parsed, "apply"),
     limit,
     onProgress: json ? undefined : (message) => process.stderr.write(`${message}\n`),
   });

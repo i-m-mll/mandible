@@ -78,5 +78,5 @@ export function registerGraphRoutes(app: RouteRegistrar): void {
     };
 
     res.json(projectArtifactPublicValue(getDb(), payload));
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/graph", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 }
