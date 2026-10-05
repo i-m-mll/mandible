@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,16 @@ export function operatorGitEnv(): NodeJS.ProcessEnv {
     if (name.startsWith("GIT_CONFIG_") || ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG"].includes(name)) delete env[name];
   }
   return env;
+}
+
+function isExecutable(program: string): boolean {
+  try { accessSync(program, constants.X_OK); return true; } catch { return false; }
+}
+
+export function operatorSigningProgram(configured: string | null, executable = isExecutable): string | null {
+  if (configured) return configured.startsWith("~/") ? join(homedir(), configured.slice(2)) : configured;
+  return ["/opt/homebrew/opt/openssh/bin/ssh-keygen", "/usr/local/opt/openssh/bin/ssh-keygen", "/usr/bin/ssh-keygen", "/bin/ssh-keygen"]
+    .find(executable) ?? null;
 }
 
 export async function signOperatorChallenge(
@@ -31,9 +41,29 @@ export async function signOperatorChallenge(
   if (!key || allowedSigners.length === 0) {
     return { ok: false, reason: "missing_key", detail: "Configure and register the operator signing key before approving." };
   }
+  const signerConfig = spawnSync("git", ["config", "--includes", "--null", "--show-scope", "--get-all", "gpg.ssh.program"], {
+    cwd: cwd ?? undefined, encoding: "utf8", timeout: 5_000, env: gitEnv,
+  });
+  if (signerConfig.status !== 0 && signerConfig.status !== 1) {
+    return { ok: false, reason: "signing_failed", detail: "Could not read the operator's Git signing program configuration." };
+  }
+  const output = signerConfig.stdout ?? "";
+  const entries = output ? output.slice(0, -1).split("\0") : [];
+  if ((output && !output.endsWith("\0")) || entries.length % 2 !== 0
+    || entries.some((value, index) => index % 2 === 0 && !["system", "global", "local", "worktree", "command"].includes(value))) {
+    return { ok: false, reason: "signing_failed", detail: "Git returned malformed signing program scope metadata." };
+  }
+  let configuredSigner: string | null = null;
+  for (let index = 0; index + 1 < entries.length; index += 2) {
+    if (entries[index] === "global" || entries[index] === "system") configuredSigner = entries[index + 1]!.trim() || null;
+  }
+  const signer = operatorSigningProgram(configuredSigner);
+  if (!signer) {
+    return { ok: false, reason: "signing_failed", detail: "No executable OpenSSH signer is available; configure the operator's global gpg.ssh.program with a FIDO-capable signer for security keys." };
+  }
   const signed = await new Promise<{ code: number | null; timedOut: boolean; signature: string; error: string }>((resolve) => {
-    const child = spawn("/usr/bin/ssh-keygen", ["-Y", "sign", "-n", "mandible-auth", "-f", key], {
-      cwd: cwd ?? undefined, stdio: ["pipe", "pipe", "pipe"],
+    const child = spawn(signer, ["-Y", "sign", "-n", "mandible-auth", "-f", key], {
+      cwd: cwd ?? undefined, stdio: ["pipe", "pipe", "pipe"], env: gitEnv,
     });
     let signature = "";
     let error = "";
@@ -50,7 +80,7 @@ export async function signOperatorChallenge(
     child.stdin.end(challenge);
   });
   if (signed.code !== 0 || signal?.aborted) {
-    return { ok: false, reason: signal?.aborted ? "cancelled" : signed.timedOut ? "timeout" : "signing_failed", detail: signed.error.trim() || "Operator signing was cancelled or failed." };
+    return { ok: false, reason: signal?.aborted ? "cancelled" : signed.timedOut ? "timeout" : "signing_failed", detail: `${signer}: ${signed.error.trim() || "Operator signing was cancelled or failed."}` };
   }
   const dir = mkdtempSync(join(tmpdir(), "mandible-operator-proof-"));
   try {
