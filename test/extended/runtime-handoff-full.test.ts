@@ -131,7 +131,8 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
       if (!fs.lstatSync(candidateDependencies).isSymbolicLink()) throw new Error('Unexpected real candidate dependency entry; preserve it.');
       fs.unlinkSync(candidateDependencies); // only the link created by this fixture's wt
     }
-    command('/bin/cp', ['-c', '-R', path.join(repo, 'node_modules'), candidateDependencies]);
+    // A fresh frozen install must create candidate CLI links; copying the old
+    // tree can retain an obsolete native Tauri launcher despite package metadata.
     const nativeApp = path.join(scratch, 'Mandible.app');
     const poisonedShim = path.join(userHome, '.dotfiles/bin/mandible'); fs.mkdirSync(path.dirname(poisonedShim), { recursive: true });
     const poisonMarker = path.join(scratch, 'old-cli-used');
