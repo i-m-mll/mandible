@@ -216,10 +216,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const version = resolveVersion();
   const startupEpoch = randomUUID();
   let readyRestartGeneration: string | null = null;
+  let closing = false;
   let startupWorkScanComplete = false;
   let startupSessionDiscoveryComplete = false;
   const updateWarmReadiness = () => {
-    if (!startupWorkScanComplete || !startupSessionDiscoveryComplete) return;
+    if (closing || !startupWorkScanComplete || !startupSessionDiscoveryComplete) return;
     setDaemonWarm(true);
     if (readyRestartGeneration) {
       restartAvailability?.markWarm(readyRestartGeneration);
@@ -705,7 +706,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     ? startDaemonLogRetention(operationalLogStore.db, logger, { settingsDb: db })
     : { stop: () => undefined };
 
-  let closing = false;
   const close = async () => {
     if (closing) {
       // Second signal while already shutting down — force exit immediately.
@@ -714,7 +714,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
     closing = true;
     cancelStartupIngestion();
+    if (startupDiscoveryTimer) clearTimeout(startupDiscoveryTimer);
     const scannerDrain = workScanner.stop();
+    const discoveryDrain = reaperTimer.stop();
     // Bug: 645f8a8 — a draining daemon is no longer ready for mutations.
     setDaemonReady(false);
     setDaemonWarm(false);
@@ -745,13 +747,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     stopManagedReminderScheduler();
     daemonLogCopyForward.stop();
     await daemonLogRetention.stop();
-    reaperTimer.stop();
     workUnitReconciler.stop();
     navEnricher.stop();
     fileRpcTransport.stop();
     await closeLocalSocket();
     authQueue.dispose();
-    if (startupDiscoveryTimer) clearTimeout(startupDiscoveryTimer);
     clearInterval(channelPruneTimer);
     // Bug: 737df04 — destroy all open connections (including SSE streams) before
     // calling server.close(). Without this, server.close() waits indefinitely for
@@ -761,7 +761,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       (server as { closeAllConnections: () => void }).closeAllConnections();
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    await scannerDrain;
+    await Promise.all([scannerDrain, discoveryDrain]);
     clearInterval(healthCheckTimer);
     eventLoopDiagnostics.close();
     clearTimeout(shutdownTimeout);

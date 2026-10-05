@@ -133,8 +133,8 @@ describe.sequential("WorkScanner", () => {
     registerWorkRoutes(router, scanner);
 
     const empty = await router.invoke({ method: "GET", url: "/api/work/repos" });
-    expect(empty.status).toBe(200);
-    expect(empty.body).toEqual([]);
+    expect(empty.status).toBe(503);
+    expect(empty.body).toMatchObject({ code: "repo_discovery_pending" });
     expect(scan).not.toHaveBeenCalled();
 
     db.prepare(
@@ -151,6 +151,53 @@ describe.sequential("WorkScanner", () => {
       name: "Cached repo",
     })]);
     expect(scan).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes pending and failed cold discovery from a successfully empty inventory", async () => {
+    const db = createMigratedDb();
+    const scanner = new WorkScanner({ db, repo_roots: [] });
+    const router = new Router();
+    registerWorkRoutes(router, scanner);
+    expect((await router.invoke({ method: "GET", url: "/api/work/repos" })).status).toBe(503);
+    await scanner.scanAllAsync();
+    expect(await router.invoke({ method: "GET", url: "/api/work/repos" })).toMatchObject({ status: 200, body: [] });
+    const failing = new WorkScanner({ db, repo_roots: [repoRoot] });
+    vi.spyOn(failing as unknown as { runRepoInfoRefresh(): Promise<void> }, "runRepoInfoRefresh").mockRejectedValue(new Error("Git unavailable"));
+    const failedRouter = new Router();
+    registerWorkRoutes(failedRouter, failing);
+    await expect(failing.scanAllAsync()).rejects.toThrow("Git unavailable");
+    expect(await failedRouter.invoke({ method: "GET", url: "/api/work/repos" })).toMatchObject({ status: 503, body: { code: "repo_discovery_failed" } });
+  });
+
+  it("preserves the previous repository projection when directory enumeration fails", async () => {
+    const db = createMigratedDb();
+    const initial = new WorkScanner({ db, repo_roots: [repoRoot] });
+    await initial.scanAllAsync();
+    const before = db.prepare("SELECT * FROM work_repos ORDER BY root").all();
+    const home = fs.mkdtempSync(path.join(tempRoot, "discovery-failure-"));
+    const originalRead = fs.readdirSync;
+    const previousRoots = process.env.MANDIBLE_WORK_SCANNER_ROOTS;
+    const homeSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    try {
+      for (const configured of [false, true]) {
+        if (configured) process.env.MANDIBLE_WORK_SCANNER_ROOTS = JSON.stringify([{ path: home, depth: 1 }]);
+        else delete process.env.MANDIBLE_WORK_SCANNER_ROOTS;
+        const readSpy = vi.spyOn(fs, "readdirSync").mockImplementation(((target: fs.PathLike, options: unknown) => {
+          if (String(target) === home) throw Object.assign(new Error("enumeration unavailable"), { code: configured ? "EIO" : "EACCES" });
+          return originalRead(target, options as never);
+        }) as typeof fs.readdirSync);
+        const scanner = new WorkScanner({ db, default_repo_root: repoRoot, config_path: path.join(home, "missing.json") });
+        await expect(scanner.scanAllAsync()).rejects.toThrow("enumeration unavailable");
+        expect(scanner.getRepoDiscoveryStatus()).toBe("failed");
+        expect(db.prepare("SELECT * FROM work_repos ORDER BY root").all()).toEqual(before);
+        expect(scanner.getCachedRepos()).toContainEqual(expect.objectContaining({ root: repoRoot }));
+        readSpy.mockRestore();
+      }
+    } finally {
+      homeSpy.mockRestore();
+      if (previousRoots === undefined) delete process.env.MANDIBLE_WORK_SCANNER_ROOTS;
+      else process.env.MANDIBLE_WORK_SCANNER_ROOTS = previousRoots;
+    }
   });
 
   it("removes repos through a preview-owned roots file and rejects symlink escapes", () => {
@@ -187,10 +234,10 @@ describe.sequential("WorkScanner", () => {
     expect(fs.existsSync(path.join(outside, "repos.json"))).toBe(false);
   });
 
-  it("scans a repo with known branch state", () => {
+  it("scans a repo with known branch state", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
 
     const branches = scanner.getBranches(repoRoot).map((branch) => branch.branch);
     expect(branches).toContain("main");
@@ -198,7 +245,7 @@ describe.sequential("WorkScanner", () => {
     expect(branches).toContain("no-upstream");
   });
 
-  it("preserves the persisted repo id when refresh derives a different path id", () => {
+  it("preserves the persisted repo id when refresh derives a different path id", async () => {
     const db = createMigratedDb();
     db.prepare(
       `INSERT INTO work_repos (
@@ -208,7 +255,7 @@ describe.sequential("WorkScanner", () => {
     ).run("canonical-widget", repoRoot, "repo", "main");
 
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
 
     expect(scanner.getRepos()).toContainEqual(expect.objectContaining({
       id: "canonical-widget",
@@ -216,7 +263,7 @@ describe.sequential("WorkScanner", () => {
     }));
   });
 
-  it("recreates canonical and deliberately disambiguated scanner rows without collapsing them", () => {
+  it("recreates canonical and deliberately disambiguated scanner rows without collapsing them", async () => {
     const db = createMigratedDb();
     resolveProjectForCheckout(db, {
       root: repoRoot,
@@ -231,10 +278,10 @@ describe.sequential("WorkScanner", () => {
     });
 
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot, duplicateRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
     db.prepare("DELETE FROM work_repos WHERE root = ?").run(duplicateRoot);
     const recreated = new WorkScanner({ db, repo_roots: [repoRoot, duplicateRoot] });
-    recreated.scanAll();
+    await recreated.scanAllAsync();
 
     expect(recreated.getRepos()).toContainEqual(expect.objectContaining({
       id: "repo",
@@ -252,10 +299,10 @@ describe.sequential("WorkScanner", () => {
     ).toEqual({ id: "dev-repo" });
   });
 
-  it("detects dirty worktrees", () => {
+  it("detects dirty worktrees", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
 
     const feature = scanner.getBranch(repoRoot, "feature");
     expect(feature).not.toBeNull();
@@ -264,12 +311,12 @@ describe.sequential("WorkScanner", () => {
     expect(feature?.diff_stat).toMatch(/feature\.txt/);
   });
 
-  it("preserves detached worktrees in the explicit inventory adapter", () => {
+  it("preserves detached worktrees in the explicit inventory adapter", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
 
-    const inventory = scanner.getWorktreeInventory(repoRoot);
+    const inventory = await scanner.getWorktreeInventory(repoRoot);
     expect(inventory.known).toBe(true);
     expect(inventory.worktrees).toContainEqual({
       path: fs.realpathSync(repoRoot),
@@ -283,10 +330,10 @@ describe.sequential("WorkScanner", () => {
     });
   });
 
-  it("computes ahead/behind counts", () => {
+  it("computes ahead/behind counts", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
 
     const feature = scanner.getBranch(repoRoot, "feature");
     expect(feature).not.toBeNull();
@@ -294,10 +341,10 @@ describe.sequential("WorkScanner", () => {
     expect(feature?.behind).toBe(0);
   });
 
-  it("handles repos with no upstream", () => {
+  it("handles repos with no upstream", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
 
     const branch = scanner.getBranch(repoRoot, "no-upstream");
     expect(branch).not.toBeNull();
@@ -306,10 +353,10 @@ describe.sequential("WorkScanner", () => {
     expect(branch?.has_upstream).toBe(false);
   });
 
-  it("persists upstream tracking info during scans and serves it from the DB", () => {
+  it("persists upstream tracking info during scans and serves it from the DB", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
 
     // Persisted onto the branches row by the scan, not recomputed per GET.
     const row = db
@@ -330,10 +377,10 @@ describe.sequential("WorkScanner", () => {
     expect(feature?.upstream).toBe("origin/feature");
   });
 
-  it("serves upstream info from the DB even when the repo is gone", () => {
+  it("serves upstream info from the DB even when the repo is gone", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
 
     // Read via a scanner that never probes the on-disk repo (empty roots): the
     // upstream fields must come purely from the persisted branch rows.
@@ -347,7 +394,7 @@ describe.sequential("WorkScanner", () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
     // Prime repoInfos so refreshRepoAsync can resolve the repo id.
-    scanner.getRepos();
+    await scanner.scanAllAsync();
 
     const refreshed = await scanner.refreshRepoAsync(repoRoot);
     expect(refreshed.exists).toBe(true);
@@ -358,10 +405,10 @@ describe.sequential("WorkScanner", () => {
     expect(branches).toContain("feature");
   });
 
-  it("handles missing repos gracefully", () => {
+  it("handles missing repos gracefully", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot, missingRepo] });
-    const summary = scanner.scanAll();
+    const summary = await scanner.scanAllAsync();
 
     expect(summary.missing_repos).toContain(path.resolve(missingRepo));
   });
@@ -399,7 +446,7 @@ describe.sequential("WorkScanner", () => {
   it("queues an explicit full scan behind an active freshness-skipping scan", async () => {
     const db = createMigratedDb();
     const initialScanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    initialScanner.scanAll();
+    await initialScanner.scanAllAsync();
     const scanner = new WorkScanner({
       db,
       repo_roots: [repoRoot],
@@ -436,7 +483,7 @@ describe.sequential("WorkScanner", () => {
     expect(restartedScanner.getBranches(repoRoot).length).toBeGreaterThan(0);
   });
 
-  it("auto-discovers repos when config is missing", () => {
+  it("auto-discovers repos when config is missing", async () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "cp-home-"));
     const dotfilesRoot = path.join(tempHome, ".dotfiles");
     const devRoot = path.join(tempHome, "dev", "alpha");
@@ -454,6 +501,7 @@ describe.sequential("WorkScanner", () => {
       const db = createMigratedDb();
       const configPath = path.join(tempHome, ".config", "mandible", "repos.json");
       const scanner = new WorkScanner({ db, config_path: configPath, default_repo_root: dotfilesRoot });
+      await scanner.scanAllAsync();
       const roots = scanner.getRepos().map((repo) => repo.root);
       expect(new Set(roots)).toEqual(new Set([dotfilesRoot, devRoot, projectsRoot]));
     } finally {
@@ -527,17 +575,17 @@ describe.sequential("WorkScanner", () => {
     ]);
   });
 
-  it("targeted repo refresh updates cached data", () => {
+  it("targeted repo refresh updates cached data", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
 
     let feature = scanner.getBranch(repoRoot, "feature");
     expect(feature?.is_dirty).toBe(true);
 
     run("git reset --hard", worktreePath);
 
-    scanner.refreshRepo(repoRoot);
+    await scanner.refreshRepoAsync(repoRoot);
     feature = scanner.getBranch(repoRoot, "feature");
     expect(feature?.is_dirty).toBe(false);
   });
@@ -545,7 +593,7 @@ describe.sequential("WorkScanner", () => {
   it("serves encoded branch commit pages with classification metadata", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
     const repoId = scanner.getRepos()[0].id;
     const router = new Router();
     registerWorkRoutes(router, scanner);
@@ -570,7 +618,7 @@ describe.sequential("WorkScanner", () => {
   it("serves Projects compare results as raw unified diff plus stat", async () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
     const repoId = scanner.getRepos()[0].id;
     const router = new Router();
     registerWorkRoutes(router, scanner);

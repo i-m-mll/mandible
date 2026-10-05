@@ -453,12 +453,12 @@ describe.sequential("trash custody", () => {
     );
   });
 
-  it("uses the canonical checkout default for scanner reaping facts", () => {
+  it("uses the canonical checkout default for scanner reaping facts", async () => {
     git(repoRoot, ["branch", "-m", "main", "trunk"]);
     db.prepare("UPDATE ledger_project_checkouts SET default_branch = 'trunk' WHERE id = ?")
       .run(checkoutId);
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
-    scanner.scanAll();
+    await scanner.scanAllAsync();
 
     expect(scanner.getBranch(repoRoot, "feature/trash")).toMatchObject({
       default_branch: "trunk",

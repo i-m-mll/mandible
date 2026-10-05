@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { promisify } from "node:util";
-import { SessionRegistry, readPidStartTime } from "./registry.js";
+import { SessionRegistry, normalizePidStart, cachePidStartTimes } from "./registry.js";
 import { broadcast } from "./sse.js";
 import { WorkScanner } from "./work-scanner.js";
 import type { Db } from "./db.js";
@@ -22,6 +22,7 @@ interface AgentProcess {
   pid: number;
   app: string;
   cwd: string;
+  pid_start: string;
 }
 
 /** Known agent process patterns to scan for. */
@@ -41,6 +42,9 @@ export class SessionDiscovery {
   private readonly registry: SessionRegistry;
   private readonly workScanner: WorkScanner;
   private readonly log: Logger;
+  private stopped = false;
+  private readonly abort = new AbortController();
+  private activeDiscovery: Promise<DiscoveryResult> | null = null;
 
   constructor(
     db: Db,
@@ -54,8 +58,24 @@ export class SessionDiscovery {
     this.log = logger;
   }
 
-  /** Run a full discovery pass: find new sessions and reap dead ones. */
-  async discoverSessions(): Promise<DiscoveryResult> {
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.abort.abort();
+    await Promise.allSettled([this.activeDiscovery]);
+  }
+
+  /** Run one shared, cancellable discovery pass. */
+  discoverSessions(): Promise<DiscoveryResult> {
+    if (this.stopped) return Promise.reject(new Error("Session discovery is stopped"));
+    if (this.activeDiscovery) return this.activeDiscovery;
+    const discovery = this.runDiscovery();
+    this.activeDiscovery = discovery;
+    const clear = () => { if (this.activeDiscovery === discovery) this.activeDiscovery = null; };
+    void discovery.then(clear, clear);
+    return discovery;
+  }
+
+  private async runDiscovery(): Promise<DiscoveryResult> {
     const start = Date.now();
     let discovered = 0;
     let alreadyTracked = 0;
@@ -65,6 +85,11 @@ export class SessionDiscovery {
 
     // 2. Find running agent processes
     const processes = await this.findAgentProcesses();
+
+    if (this.stopped) throw new Error("Session discovery is stopped");
+    // Preserve the canonical parser/cache used by registry liveness checks.
+    // Only successful process evidence is cached; failure never becomes death.
+    cachePidStartTimes(new Map(processes.map(proc => [proc.pid, proc.pid_start])));
 
     // 3. Match processes to worktrees and register unknown sessions
     for (const proc of processes) {
@@ -77,14 +102,14 @@ export class SessionDiscovery {
 
       // Check if already tracked by PID
       const existing = this.registry.getSessionByPid(proc.pid);
-      if (existing) {
+      if (existing?.status === "active") {
         alreadyTracked++;
         continue;
       }
 
       // Create new session record for this discovered process
       const sessionId = `discovered-${crypto.randomUUID()}`;
-      const pidStart = readPidStartTime(proc.pid);
+      const pidStart = proc.pid_start;
 
       this.registry.registerSession({
         id: sessionId,
@@ -126,6 +151,7 @@ export class SessionDiscovery {
 
   /** Mark active sessions whose PIDs are no longer alive as dead. */
   reapDeadSessions(): number {
+    if (this.stopped) return 0;
     const activeSessions = this.db
       .prepare(
         "SELECT id, pid FROM sessions WHERE status = 'active' AND pid IS NOT NULL",
@@ -155,40 +181,17 @@ export class SessionDiscovery {
     return count;
   }
 
-  /**
-   * Collect all worktree paths from every repo the work scanner knows about.
-   * Uses `git worktree list --porcelain` the same way WorkScanner does.
-   */
+  /** Reuse the scanner's bounded inventory path and exact branch parser. */
   private async getWorktreePaths(): Promise<WorktreeInfo[]> {
-    const repos = this.workScanner.getRepos();
+    const repos = await this.workScanner.getReposAsync();
     const result: WorktreeInfo[] = [];
-
     for (const repo of repos) {
-      if (!repo.exists) {
-        continue;
-      }
-
-      let stdout: string;
-      try {
-        const output = await execFileAsync("git", ["worktree", "list", "--porcelain"], {
-          cwd: repo.root,
-          encoding: "utf8",
-          env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-          maxBuffer: 16 * 1024 * 1024,
-        });
-        stdout = output.stdout;
-      } catch {
-        continue;
-      }
-
-      if (!stdout) {
-        continue;
-      }
-
-      const worktrees = parseWorktreeList(stdout);
-      result.push(...worktrees);
+      if (this.stopped) throw new Error("Session discovery is stopped");
+      if (!repo.exists) continue;
+      const inventory = await this.workScanner.getWorktreeInventory(repo.root, { signal: this.abort.signal });
+      if (!inventory.known) throw new Error(`Worktree inventory is unavailable for ${repo.id}`);
+      result.push(...inventory.worktrees.map(worktree => ({ path: worktree.path, branch: worktree.branch })));
     }
-
     return result;
   }
 
@@ -199,21 +202,22 @@ export class SessionDiscovery {
   private async findAgentProcesses(): Promise<AgentProcess[]> {
     const results: AgentProcess[] = [];
 
-    // Get process list — use `ps axo pid,comm` for concise output
+    // Read command identity and start time in one process snapshot.
     let psOutput: string;
     try {
-      const output = await execFileAsync("ps", ["axo", "pid,comm"], {
+      const output = await execFileAsync("ps", ["axo", "pid=,lstart=,comm="], {
         encoding: "utf8",
+        timeout: 5000, killSignal: "SIGKILL", signal: this.abort.signal,
         maxBuffer: 16 * 1024 * 1024,
       });
       psOutput = output.stdout;
-    } catch {
-      this.log("warn", "session_discovery_ps_failed");
-      return results;
+    } catch (error) {
+      if (!this.stopped) this.log("warn", "session_discovery_ps_failed", { error: String(error) });
+      throw error;
     }
 
     const lines = psOutput.split("\n");
-    const candidates: Array<{ pid: number; app: string }> = [];
+    const candidates: Array<{ pid: number; app: string; pid_start: string }> = [];
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -221,18 +225,12 @@ export class SessionDiscovery {
         continue;
       }
 
-      const spaceIdx = trimmed.indexOf(" ");
-      if (spaceIdx === -1) {
-        continue;
-      }
-
-      const pidStr = trimmed.slice(0, spaceIdx).trim();
-      const comm = trimmed.slice(spaceIdx + 1).trim().toLowerCase();
-      const pid = Number.parseInt(pidStr, 10);
-
-      if (!Number.isInteger(pid) || pid <= 0) {
-        continue;
-      }
+      const match = trimmed.match(/^(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/);
+      if (!match) throw new Error("Unrecognized ps process identity record");
+      const pid = Number.parseInt(match[1], 10);
+      const pidStart = normalizePidStart(match[2]);
+      const comm = match[3].toLowerCase();
+      if (!Number.isInteger(pid) || pid <= 0 || !pidStart) throw new Error("Invalid ps process identity record");
 
       // Skip our own process
       if (pid === process.pid) {
@@ -241,7 +239,7 @@ export class SessionDiscovery {
 
       for (const pattern of AGENT_PATTERNS) {
         if (pattern.pattern.test(comm)) {
-          candidates.push({ pid, app: pattern.app });
+          candidates.push({ pid, app: pattern.app, pid_start: pidStart });
           break;
         }
       }
@@ -252,7 +250,7 @@ export class SessionDiscovery {
     for (const candidate of candidates) {
       const cwd = cwdByPid.get(candidate.pid);
       if (cwd) {
-        results.push({ pid: candidate.pid, app: candidate.app, cwd });
+        results.push({ ...candidate, cwd });
       }
     }
 
@@ -277,20 +275,18 @@ export class SessionDiscovery {
       const result = await execFileAsync(
         "/usr/sbin/lsof",
         ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"],
-        { encoding: "utf8", timeout: 10000, maxBuffer: 16 * 1024 * 1024 },
+        { encoding: "utf8", timeout: 10000, killSignal: "SIGKILL", signal: this.abort.signal, maxBuffer: 16 * 1024 * 1024 },
       );
       output = result.stdout;
     } catch (error) {
-      const partial = (error as { stdout?: string }).stdout;
-      if (typeof partial === "string" && partial.length > 0) {
-        output = partial;
+      const failure = error as { stdout?: string; code?: string | number; killed?: boolean; signal?: string };
+      // lsof status1 means some requested processes may have exited. A timeout,
+      // abort or other tool failure is not a successful partial discovery pass.
+      if (failure.code === 1 && !failure.killed && !failure.signal) {
+        output = failure.stdout ?? "";
       } else {
-        // lsof may fail for permission reasons or if every process exited.
-        this.log("debug", "session_discovery_lsof_failed", {
-          pid_count: pids.length,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return cwdByPid;
+        if (!this.stopped) this.log("warn", "session_discovery_lsof_failed", { pid_count: pids.length, error: String(error) });
+        throw error;
       }
     }
 
@@ -384,7 +380,7 @@ export class ReaperTimer {
   }
 
   /** Stop the periodic reaper and discovery. */
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -395,6 +391,7 @@ export class ReaperTimer {
       this.discoveryTimer = null;
       this.log("info", "discovery_timer_stopped");
     }
+    await this.discovery.stop();
   }
 
   private tick(): void {
@@ -443,43 +440,4 @@ export class ReaperTimer {
         this.discovering = false;
       });
   }
-}
-
-/**
- * Parse `git worktree list --porcelain` output into path+branch pairs.
- * Mirrors the parsing logic in work-scanner.ts.
- */
-function parseWorktreeList(output: string): WorktreeInfo[] {
-  const worktrees: WorktreeInfo[] = [];
-  const lines = output.split("\n");
-  let current: Partial<WorktreeInfo> = {};
-
-  const flush = () => {
-    if (current.path) {
-      worktrees.push({
-        path: current.path,
-        branch: current.branch ?? null,
-      });
-    }
-    current = {};
-  };
-
-  for (const line of lines) {
-    if (!line.trim()) {
-      flush();
-      continue;
-    }
-    const [key, ...rest] = line.split(" ");
-    const value = rest.join(" ");
-    if (key === "worktree") {
-      current.path = value;
-    } else if (key === "branch") {
-      const normalized = value.startsWith("refs/heads/")
-        ? value.slice("refs/heads/".length)
-        : value;
-      current.branch = normalized;
-    }
-  }
-  flush();
-  return worktrees;
 }

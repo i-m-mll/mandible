@@ -129,6 +129,14 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
   server.get("/api/work/repos", (req, res) => {
     const includeExcluded = queryString(req, "include_excluded") === "true";
     const repos = workScanner.getCachedRepos();
+    if (repos.length === 0 && workScanner.getRepoDiscoveryStatus() !== "ready") {
+      const failed = workScanner.getRepoDiscoveryStatus() === "failed";
+      sendJson(res, 503, {
+        code: failed ? "repo_discovery_failed" : "repo_discovery_pending",
+        error: failed ? "Project discovery failed; previous results are retained." : "Project discovery is still pending.",
+      });
+      return;
+    }
     const visible = repos.filter((repo) => canRepoAccess(req, repo, "read"));
     const filtered = includeExcluded ? visible : visible.filter((r) => !r.excluded);
     sendJson(res, 200, filtered);
@@ -210,11 +218,11 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       return;
     }
     const branches = workScanner.getBranches(refreshedRepo.root);
-    const inventory = workScanner.getWorktreeInventory(refreshedRepo.root);
+    const inventory = await workScanner.getWorktreeInventory(refreshedRepo.root);
     sendJson(res, 200, buildWorkAudit(refreshedRepo, branches, inventory));
   }, { operation: { id: "get:/api/work/repos/:id/audit", effects: ["ledger:write","process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
-  server.get("/api/work/repos/:id/branches/:branch/commits", (req, res) => {
+  server.get("/api/work/repos/:id/branches/:branch/commits", async (req, res) => {
     const repoId = req.params.id;
     const branchName = req.params.branch;
     if (!repoId || !branchName) {
@@ -234,10 +242,10 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     }
     const limit = parsePositiveInteger(queryString(req, "limit"), 50);
     const offset = parsePositiveInteger(queryString(req, "offset"), 0);
-    sendJson(res, 200, workScanner.getCommits(repo.root, branch, { limit, offset }));
+    sendJson(res, 200, await workScanner.getCommits(repo.root, branch, { limit, offset }));
   }, { operation: { id: "get:/api/work/repos/:id/branches/:branch/commits", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
-  server.get("/api/work/repos/:id/compare", (req, res) => {
+  server.get("/api/work/repos/:id/compare", async (req, res) => {
     const repoId = req.params.id;
     if (!repoId) {
       sendJson(res, 400, { error: "missing repo id" });
@@ -256,7 +264,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       return;
     }
     const mode = parseCompareMode(queryString(req, "mode"));
-    sendJson(res, 200, workScanner.compareRefs(repo.root, from, to, mode));
+    sendJson(res, 200, await workScanner.compareRefs(repo.root, from, to, mode));
   }, { operation: { id: "get:/api/work/repos/:id/compare", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/worktrees", (req, res) => {

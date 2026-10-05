@@ -1686,6 +1686,10 @@ function App(): JSX.Element {
       client.on('auth:finalized', handler),
       client.on('auth:lifecycle', handler),
       client.on('work:branch:updated', handler),
+      client.on('work:scan:completed', (payload) => {
+        handler(payload);
+        window.dispatchEvent(new CustomEvent('work:scan:completed'));
+      }),
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
       client.on('user-setting:updated', userSettingHandler),

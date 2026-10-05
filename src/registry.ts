@@ -49,6 +49,13 @@ function setCachedPidStart(pid: number, value: string | null): void {
   pidStartCache.set(pid, { value, at: Date.now() });
 }
 
+/** Reuse observed process evidence without issuing per-PID subprocesses. */
+export function cachePidStartTimes(evidence: ReadonlyMap<number, string>): void {
+  for (const [pid, start] of evidence) {
+    if (Number.isInteger(pid) && pid > 0) setCachedPidStart(pid, normalizePidStart(start));
+  }
+}
+
 /**
  * Warm the pid-start cache for many pids using a single `ps` invocation.
  * Pids not reported by `ps` are treated as gone and cached as null. Best-effort:

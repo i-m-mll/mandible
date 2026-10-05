@@ -117,10 +117,9 @@ describe('WorkOverviewView', () => {
   });
 
   it('uses project language for empty and add-error guidance', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(
-      JSON.stringify({ error: 'Path is not a Git project.' }),
-      { status: 400, headers: { 'content-type': 'application/json' } },
-    )));
+    vi.stubGlobal('fetch', vi.fn(async (input) => String(input).endsWith('/api/work/repos')
+      ? new Response('[]', { headers: { 'content-type': 'application/json' } })
+      : new Response(JSON.stringify({ error: 'Path is not a Git project.' }), { status: 400, headers: { 'content-type': 'application/json' } })));
     render(h(WorkOverviewView, {
       instance: mainInstance,
       repos: [],
@@ -128,7 +127,7 @@ describe('WorkOverviewView', () => {
       onRescan: () => undefined,
     }));
 
-    expect(screen.getByText('No projects found. Register a session or add a project.')).toBeTruthy();
+    await screen.findByText('No projects found. Register a session or add a project.');
     fireEvent.click(screen.getByRole('button', { name: '+ Add project' }));
     fireEvent.input(screen.getByRole('textbox', { name: 'Project path' }), {
       target: { value: '/missing/project' },
@@ -430,3 +429,31 @@ describe('WorkOverviewView', () => {
   });
 });
 
+
+it('keeps cold and failed project discovery distinct from successful empty results', async () => {
+  let phase: 'pending' | 'ready' | 'failed' | 'empty' = 'pending';
+  const projects = [{ id: 'r1', name: 'One', path: '/repo/one' }, { id: 'r2', name: 'Two', path: '/repo/two' }];
+  vi.stubGlobal('fetch', vi.fn(async (input) => {
+    if (!String(input).includes('/api/work/repos')) return new Response('{}');
+    if (phase === 'pending' || phase === 'failed') return new Response(JSON.stringify({ code: `repo_discovery_${phase}` }), { status: 503, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify(phase === 'ready' ? projects : []), { headers: { 'content-type': 'application/json' } });
+  }));
+  render(h(WorkOverviewView, { instance: mainInstance, repos: [], branchesByRepo: {}, onRescan: () => undefined }));
+  await screen.findByText('Projects are still loading.');
+  expect(screen.queryByText('No projects found. Register a session or add a project.')).toBeNull();
+  phase = 'ready';
+  await act(() => window.dispatchEvent(new CustomEvent('work:scan:completed')));
+  await screen.findByRole('button', { name: 'Select project Two' });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Select project One' }).getAttribute('aria-current')).toBe('true'));
+  await act(() => fireEvent.click(screen.getByRole('button', { name: 'Select project Two' })));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Select project Two' }).getAttribute('aria-current')).toBe('true'));
+  phase = 'failed';
+  await act(() => window.dispatchEvent(new CustomEvent('work:scan:completed')));
+  await screen.findByText('Could not refresh projects. Showing previous results.');
+  expect(screen.getByRole('button', { name: 'Select project Two' }).getAttribute('aria-current')).toBe('true');
+  expect(screen.getByRole('button', { name: 'Select project One' })).toBeTruthy();
+  phase = 'empty';
+  await act(() => window.dispatchEvent(new CustomEvent('work:scan:completed')));
+  await screen.findByText('No projects found. Register a session or add a project.');
+  expect(screen.queryByRole('button', { name: 'Select project Two' })).toBeNull();
+});
