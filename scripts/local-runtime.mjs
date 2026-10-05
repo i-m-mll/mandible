@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { DEFAULT_BACKEND_PORT, PRODUCTION_ORIGIN } from "./canonical-origin.mjs";
 import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
 import { installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
-import { readBuildRevision } from "./build-revision.mjs";
+import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "./build-revision.mjs";
 
 const DEFAULT_HOME = path.join(os.homedir(), ".mandible");
 const configuredHome = process.env.MANDIBLE_HOME?.trim() || DEFAULT_HOME;
@@ -244,8 +244,8 @@ export function captureRuntimeHandoff(root) {
     if (commonGitDir !== fs.realpathSync(git(destination, ['rev-parse', '--path-format=absolute', '--git-common-dir']))) throw new Error('Installed source and handoff destination belong to different Git repositories.');
     const buildRevision = readBuildRevision(sourceRoot);
     if (main.backend_generation !== buildRevision) throw new Error('Installed source build differs from the registered running generation.');
-    source = { root: sourceRoot, commonGitDir, head: git(sourceRoot, ['rev-parse', 'HEAD']), buildRevision,
-      files: Object.fromEntries(['dist/build-revision.json', 'dist/index.js', 'bin/mandible'].map(name => [name, createHash('sha256').update(fs.readFileSync(path.join(sourceRoot, name))).digest('hex')])) };
+    source = { root: sourceRoot, commonGitDir, head: git(sourceRoot, ['rev-parse', 'HEAD']), buildRevision, compiledDigest: compiledBuildDigest(sourceRoot), dependencies: { root: fs.realpathSync(path.join(sourceRoot, 'node_modules')), digest: runtimeDependenciesDigest(sourceRoot) },
+      files: Object.fromEntries(['bin/mandible'].map(name => [name, createHash('sha256').update(fs.readFileSync(path.join(sourceRoot, name))).digest('hex')])) };
   }
   const backend = handoffService(BACKEND_LABEL);
   const gateway = handoffService(GATEWAY_LABEL);

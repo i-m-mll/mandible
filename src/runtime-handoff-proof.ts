@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { realpathSync, readFileSync } from "node:fs";
 import { resolveCheckoutPath } from "./ledger/project-registry.js";
+import { compiledBuildDigest, readBuildRevision, runtimeDependenciesDigest } from "../scripts/build-revision.mjs";
 import type { Db } from "./db.js";
 import { canonicalizeChangeMessage } from "./auth-change-message.js";
 import { extractAtomicMergeState, extractSuccessfulMergeCommitSha, verifyAuthorizedMergeCommitSignature } from "./auth-signature-verification.js";
@@ -12,7 +13,7 @@ export interface RuntimePublicationBinding {
   hookId: string;
   commandDigest: string;
   root: string;
-  source?: { root: string; commonGitDir: string; head: string; buildRevision: string; runtime: { path: string; sha256: string }; files: Record<string, string> };
+  source?: { root: string; commonGitDir: string; head: string; buildRevision: string; compiledDigest: string; dependencies: { root: string; digest: string }; runtime: { path: string; sha256: string }; files: Record<string, string> };
   sourceProjectId?: string;
   mergeCommit?: string;
   mergeBase?: string;
@@ -69,12 +70,12 @@ export function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePublicat
         realpathSync(git(["rev-parse", "--path-format=absolute", "--git-common-dir"])) !== source.commonGitDir ||
         source.head !== head || gitAt(sourceRoot, ["rev-parse", "HEAD"]) !== source.head ||
         gitAt(sourceRoot, ["status", "--porcelain", "--untracked-files=normal"])) fail("retained installed source checkout changed");
-    for (const name of ["dist/build-revision.json", "dist/index.js", "bin/mandible"]) {
+    for (const name of ["bin/mandible"]) {
       if (createHash("sha256").update(readFileSync(`${sourceRoot}/${name}`)).digest("hex") !== source.files[name]) fail("retained installed source bytes changed");
     }
     if (createHash("sha256").update(readFileSync(source.runtime.path)).digest("hex") !== source.runtime.sha256) fail("retained installed runtime bytes changed");
-    const marker = JSON.parse(readFileSync(`${sourceRoot}/dist/build-revision.json`, "utf8"));
-    if (marker.commit !== source.buildRevision) fail("retained installed source build changed");
+    if (realpathSync(`${sourceRoot}/node_modules`) !== source.dependencies.root || runtimeDependenciesDigest(sourceRoot) !== source.dependencies.digest) fail("retained installed dependencies changed");
+    if (readBuildRevision(sourceRoot) !== source.buildRevision || compiledBuildDigest(sourceRoot) !== source.compiledDigest) fail("retained installed source build changed");
   }
   if (git(["show", "-s", "--format=%P", commit!]) !== `${base} ${head}` || git(["rev-parse", `${commit}^{tree}`]) !== tree ||
       git(["rev-parse", "HEAD"]) !== commit || git(["rev-parse", `refs/heads/${row.base_branch}`]) !== commit ||

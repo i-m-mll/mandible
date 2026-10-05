@@ -58,16 +58,29 @@ stabilize. The isolated candidate command is documented in
 ## Full daemon transition gate
 
 The full fixture archives the deployed old source revision from its build
-marker, clones its installed dependencies, and starts that actual daemon in a
-private installation. It imports the selected candidate source into a signed
-temporary test repository. The old daemon's existing finalizer sweep consumes
-one fixture publication and runs the real hook. After admission, the fixture
-sends SIGTERM to the exact bound private old daemon and exercises its existing
-drain and exit path. Periodic finalizer recovery does not schedule the normal
-execution path's self-merge exit; the receipt records this explicit trigger.
-The candidate worker builds and installs a private desktop
-bundle, starts candidate production, and waits for receipt reconciliation.
-No request is submitted to the production ledger.
+marker, clones its installed dependencies, and starts the actual old daemon in
+a private installation. It creates a candidate checkout through `wt`, builds
+its complete daemon and desktop package, drains the exact old backend, and
+installs the candidate using the existing local installer. This bootstrap
+includes the candidate's ordinary database migrations.
+
+The candidate service has an explicit reviewed PATH starting at its retained
+CLI. A poisoned old shim proves that this selection overrides an older CLI.
+A durable private agent then submits one issue-linked request through the
+normal HTTP API, and the private configured operator approves it through the
+ordinary action-bound signing challenge. The exact configured native Git hook
+bytes are copied into the private repository and must finish before the build
+hook. The executor must produce the atomic preparation, application and result
+receipts; no auth row or receipt is manually published.
+
+The build hook independently supervises the retained candidate source to
+canonical destination transition. Admission binds one installation, canonical
+project and Git common directory, the reviewed source head, verified build
+marker, every generated daemon module and installed dependency, and exact
+runtime and CLI bytes. The source checkout and its independent dependencies
+remain intact until the request and convergence receipt are terminal. Final
+readiness proves the canonical root, actual merge generation and canonical
+CLI PATH. No request is submitted to the production ledger.
 
 ```bash
 runtime="$(scripts/bun-runtime.sh)"

@@ -120,9 +120,9 @@ export async function armRuntimeHandoff(root) {
   }
   const storage = path.join(dir, 'sqlite.mjs');
   run(runtime, ['build', path.join(root, 'src/sqlite.ts'), '--target', 'bun', '--outfile', storage], { cwd: root });
-  const environment = { ...process.env, MANDIBLE_RUNTIME: runtime, MANDIBLE_RUNTIME_HANDOFF_STORAGE: storage, PATH: `${path.dirname(runtime)}:${process.env.PATH}`, GIT_OPTIONAL_LOCKS: '0' };
+  const environment = { ...process.env, MANDIBLE_RUNTIME: runtime, MANDIBLE_RUNTIME_HANDOFF_STORAGE: storage, PATH: `${root}/bin:${path.dirname(runtime)}:${process.env.PATH}`, GIT_OPTIONAL_LOCKS: '0' };
   for (const key of Object.keys(environment)) if (/TOKEN|SECRET|KEYCHAIN|API_KEY/.test(key)) delete environment[key];
-  const binding = { ...JSON.parse(run(runtime, [path.join(root, 'scripts/local-runtime.mjs'), 'handoff-snapshot', '--root', root], { env: environment })),
+  const binding = { ...JSON.parse(run(runtime, [path.join(root, 'scripts/local-runtime.mjs'), 'handoff-snapshot', '--root', root], { env: environment, timeout: 30000 })),
     requestId, executionId, hookId: process.env.MANDIBLE_HOOK_ID, commandDigest: process.env.MANDIBLE_HOOK_COMMAND_DIGEST,
     mergeBase: process.env.MANDIBLE_AUTH_MERGE_BASE_SHA || undefined, mergeHead: process.env.MANDIBLE_AUTH_MERGE_HEAD_SHA || undefined,
     mergeCommit: process.env.MANDIBLE_AUTH_MERGE_COMMIT_SHA || undefined,
