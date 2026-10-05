@@ -376,7 +376,8 @@ export class ConversationControlService {
     this.notify(request.conversation_id);
     if (prepared.value.acquisition_required) {
       const location = this.db.prepare("SELECT cwd FROM conversations WHERE id = ?").get(request.conversation_id) as { cwd: string | null };
-      const settings = { ...this.retainedRuntimeOptions(request.conversation_id), ...request.runtime_options };
+      const frozen = this.db.prepare("SELECT options_json FROM conversation_delivery_settings WHERE delivery_id = ?").get(prepared.value.delivery_id) as { options_json: string };
+      const settings = JSON.parse(frozen.options_json) as import("./types.js").ConversationRuntimeOptions;
       const acquisition: ControllerAcquisitionRequest = !prepared.value.provider_session_id
         ? { kind: "start", conversation_id: request.conversation_id, controller_instance_id: prepared.value.controller_instance_id, generation: prepared.value.snapshot.ownership.generation, cwd: location.cwd!, runtime_options: settings }
         : request.operation === "resume-message-anchor"

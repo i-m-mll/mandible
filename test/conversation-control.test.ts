@@ -359,8 +359,10 @@ describe("authoritative conversation control", () => {
     });
     expect(adapter.deliveries).toBe(0);
 
+    expect(service.saveRuntimeSettings("conversation-1", 0, { model: "future-turn" }).ok).toBe(true);
     const retried = await service.submit(submission);
     expect(retried.ok).toBe(true);
+    expect(adapter.lastAcquisition?.runtime_options).toEqual({});
     expect(adapter.acquisitions).toBe(2);
     expect(adapter.deliveries).toBe(1);
     expect(db.prepare("SELECT state, attempts, generation FROM conversation_control_outbox WHERE idempotency_key = 'same-draft'").get())
