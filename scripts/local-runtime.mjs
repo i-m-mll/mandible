@@ -305,7 +305,9 @@ export async function removeHandoffDefinitions(binding) {
     if (label === GATEWAY_LABEL && !prior.argv.some(arg => /\.m?js$/.test(arg))) continue;
     const current = inspectJob(label);
     if (!current.loaded) continue;
-    if (JSON.stringify(current.argv) !== JSON.stringify(prior.argv)) throw new Error(`Service ${label} changed during handoff; preserving it.`);
+    // Retained journals predating definition capture retain their argv guard.
+    // New journals must still own the complete loaded definition after drain.
+    if (JSON.stringify(current.argv) !== JSON.stringify(prior.argv) || prior.definition && !loadedServiceMatches(prior.definition, current)) throw new Error(`Service ${label} changed during handoff; preserving it.`);
     if (label === BACKEND_LABEL && current.pid) {
       const file = path.join(RUNTIME_DIR, 'handoff', `${binding.requestId}-${binding.executionId}`, 'bridge-process.json');
       const bridge = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
