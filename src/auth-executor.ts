@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import type { AuthOutputChunk } from "./types.js";
 
@@ -25,6 +26,7 @@ export interface ExecuteAuthCommandOptions {
   now?: () => number;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  mandibleArgs?: readonly string[];
 }
 
 /**
@@ -70,7 +72,10 @@ export async function executeAuthCommand(
     const childEnv = { ...cleanEnvForAuth(process.env), ...(options.env ?? {}) };
     childEnv.MANDIBLE_AUTH_REQUEST_ID = options.request_id;
 
-    const child = spawn("bash", ["-c", options.command], {
+    const executable = options.mandibleArgs
+      ? fileURLToPath(new URL("../bin/mandible", import.meta.url)) : "bash";
+    const args = options.mandibleArgs ? [...options.mandibleArgs] : ["-c", options.command];
+    const child = spawn(executable, args, {
       cwd: options.cwd ?? undefined,
       stdio: ["ignore", "pipe", "pipe"],
       env: childEnv

@@ -61,6 +61,7 @@ describe("auth queue", () => {
         db,
         executor: async (options) => {
           calls.push(options.cwd);
+          expect(options.mandibleArgs).toEqual(["auth", "merge", "feature/approval-cwd", "--into", "main"]);
           return publishFixtureExecution(queue, options);
         },
         hookManager: createNoopHookManager(),

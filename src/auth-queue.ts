@@ -3526,6 +3526,14 @@ export class AuthQueue {
     return env;
   }
 
+  private localMergeArguments(request: AuthRequest): string[] | undefined {
+    if (request.execution_mode === "remote" || !isAuthMergeCommand(request)) return undefined;
+    this.enforceCanonicalMergeCommand(request);
+    const args = ["auth", "merge", request.head_branch!, "--into", request.base_branch!];
+    if (request.command.endsWith(" --preserve-head-branch")) args.push("--preserve-head-branch");
+    return args;
+  }
+
   /**
    * Issue 6947631 — an update to reviewed merge identity deliberately clears
    * every retained candidate field. Native-hook/non-atomic requests may have
@@ -4817,6 +4825,7 @@ export class AuthQueue {
             cwd: request.cwd,
             onOutput: (chunk) => this.handleOutput(chunk),
             env: this.executionEnvs.get(request.id),
+            mandibleArgs: this.localMergeArguments(request),
           });
           executionResult = result;
 
