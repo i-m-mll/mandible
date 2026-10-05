@@ -156,7 +156,7 @@ describe("managed reminder route admission", () => {
       ) as { status: number; body: Record<string, unknown> };
       expect(response("anonymous")).toMatchObject({
         status: 401,
-        body: { error: "authentication_required", operation: "delivery.background" },
+        body: { error: "authentication_required", operation: "post:/api/reminders" },
       });
       expect(response("authorized")).toMatchObject({ status: 201, body: { stored: true } });
     } finally {

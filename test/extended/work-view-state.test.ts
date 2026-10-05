@@ -1,10 +1,13 @@
+import { bindTestInstanceCatalog } from '../helpers/instance-operation-fixtures';
 import { changeSelect, render, mainInstance } from '../helpers/ui-workspace-fixture';
 import { readFileSync } from 'node:fs';
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/preact';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 import { WorkOverviewView } from '../../ui/src/views/work';
+
+beforeEach(() => bindTestInstanceCatalog(mainInstance));
 
 describe('WorkOverviewView', () => {
   it('renders repo and branch data', () => {

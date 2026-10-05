@@ -45,7 +45,7 @@ describe('message action cards', () => {
   });
 
   it('left-truncates long targets while preserving the filename', () => {
-    const target = '/Users/fixture/Projects/sample repo';
+    const target = `/project/${'a'.repeat(64)}/ToolUseBlock.tsx`;
     const truncated = leftTruncateTarget(target, 48);
     expect(truncated.startsWith('...')).toBe(true);
     expect(truncated.endsWith('/ToolUseBlock.tsx')).toBe(true);
