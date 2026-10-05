@@ -138,6 +138,8 @@ describe("protected delivery evidence", () => {
     const proof = verifyRuntimeHandoffPublication(db, binding);
     expect(proof).toMatchObject({ mergeCommit: publication.mergeSha, mergeBase: request.merge_preflight_base_sha, mergeHead: request.merge_head_sha, frozenCandidate: { tree: request.merge_candidate_tree_sha } });
     expect(() => verifyRuntimeHandoffPublication(db, { ...binding, commandDigest: "f".repeat(64) })).toThrow("binding differs");
+    // An executor checkout never gains destination authority from matching runtime bytes.
+    expect(() => verifyRuntimeHandoffPublication(db, { ...binding, source: { root: repo, commonGitDir: git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), head: request.merge_head_sha!, buildRevision: request.merge_head_sha!, files: {}, runtime: { path: process.execPath, sha256: "f".repeat(64) } } })).toThrow("retained installed source checkout changed");
     git(repo, ["update-ref", "refs/heads/main", request.merge_preflight_base_sha!, publication.mergeSha]);
     expect(() => verifyRuntimeHandoffPublication(db, { ...binding, ...proof })).toThrow("checkout differs");
   });

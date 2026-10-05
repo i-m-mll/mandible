@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { realpathSync, readFileSync } from "node:fs";
+import { resolveCheckoutPath } from "./ledger/project-registry.js";
 import type { Db } from "./db.js";
 import { canonicalizeChangeMessage } from "./auth-change-message.js";
 import { extractAtomicMergeState, extractSuccessfulMergeCommitSha, verifyAuthorizedMergeCommitSignature } from "./auth-signature-verification.js";
@@ -11,6 +12,8 @@ export interface RuntimePublicationBinding {
   hookId: string;
   commandDigest: string;
   root: string;
+  source?: { root: string; commonGitDir: string; head: string; buildRevision: string; runtime: { path: string; sha256: string }; files: Record<string, string> };
+  sourceProjectId?: string;
   mergeCommit?: string;
   mergeBase?: string;
   mergeHead?: string;
@@ -51,12 +54,33 @@ export function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePublicat
   if (!signature.verified || !signature.credential_id) fail("published signature is not authorized");
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
   for (const key of Object.keys(env)) if (/^GIT_(CONFIG_(COUNT|KEY_|VALUE_|PARAMETERS)|DIR$|WORK_TREE$|INDEX_FILE$)/.test(key)) delete env[key as keyof typeof env];
-  const git = (args: string[]) => execFileSync("git", args, { cwd: root, env, encoding: "utf8", timeout: 5000 }).trim();
+  const gitAt = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, env, encoding: "utf8", timeout: 5000 }).trim();
+  const git = (args: string[]) => gitAt(root, args);
+  let sourceProjectId: string | undefined;
+  if (binding.source) {
+    const source = binding.source;
+    const sourceRoot = realpathSync(source.root);
+    const destinationProject = resolveCheckoutPath(db, root);
+    const sourceProject = resolveCheckoutPath(db, sourceRoot);
+    if (!destinationProject || !sourceProject || sourceProject.id !== destinationProject.id) fail("source and destination canonical projects differ");
+    sourceProjectId = destinationProject!.id;
+    if (binding.sourceProjectId && binding.sourceProjectId !== sourceProjectId) fail("source canonical project changed");
+    if (sourceRoot === root || realpathSync(gitAt(sourceRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"])) !== source.commonGitDir ||
+        realpathSync(git(["rev-parse", "--path-format=absolute", "--git-common-dir"])) !== source.commonGitDir ||
+        source.head !== head || gitAt(sourceRoot, ["rev-parse", "HEAD"]) !== source.head ||
+        gitAt(sourceRoot, ["status", "--porcelain", "--untracked-files=normal"])) fail("retained installed source checkout changed");
+    for (const name of ["dist/build-revision.json", "dist/index.js", "bin/mandible"]) {
+      if (createHash("sha256").update(readFileSync(`${sourceRoot}/${name}`)).digest("hex") !== source.files[name]) fail("retained installed source bytes changed");
+    }
+    if (createHash("sha256").update(readFileSync(source.runtime.path)).digest("hex") !== source.runtime.sha256) fail("retained installed runtime bytes changed");
+    const marker = JSON.parse(readFileSync(`${sourceRoot}/dist/build-revision.json`, "utf8"));
+    if (marker.commit !== source.buildRevision) fail("retained installed source build changed");
+  }
   if (git(["show", "-s", "--format=%P", commit!]) !== `${base} ${head}` || git(["rev-parse", `${commit}^{tree}`]) !== tree ||
       git(["rev-parse", "HEAD"]) !== commit || git(["rev-parse", `refs/heads/${row.base_branch}`]) !== commit ||
       git(["write-tree"]) !== tree || git(["status", "--porcelain", "--untracked-files=no"])) fail("exact applied checkout differs");
   if (frozen.commit_message_digest && canonicalizeChangeMessage(git(["show", "-s", "--format=%B", commit!])) !== frozen.commit_message) fail("canonical merge message differs");
   const frozenCandidate = { tree, snapshotRevision: event!.revision, snapshotDigest: event!.snapshot_sha256, signerCredentialId: signature.credential_id! };
   if (binding.frozenCandidate && (Object.keys(frozenCandidate) as Array<keyof typeof frozenCandidate>).some(key => binding.frozenCandidate![key] !== frozenCandidate[key])) fail("frozen proof binding differs");
-  return { mergeCommit: commit!, mergeBase: base, mergeHead: head, frozenCandidate };
+  return { mergeCommit: commit!, mergeBase: base, mergeHead: head, frozenCandidate, ...(sourceProjectId ? { sourceProjectId } : {}) };
 }

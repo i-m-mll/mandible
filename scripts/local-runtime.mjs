@@ -230,14 +230,30 @@ function handoffService(label) {
 
 export function captureRuntimeHandoff(root) {
   const production = readProductionRecord();
-  if (production.root !== path.resolve(root)) throw new Error('Handoff checkout differs from the installed production checkout.');
+  const destination = fs.realpathSync(root);
+  const sourceRoot = fs.realpathSync(production.root);
   const main = readMainInstance(root);
+  let source;
+  if (sourceRoot !== destination) {
+    const git = (checkout, args) => {
+      const result = spawnSync('git', args, { cwd: checkout, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, encoding: 'utf8', timeout: 5000 });
+      if (result.error || result.status !== 0) throw new Error(`Cannot bind the installed source checkout: ${result.stderr || result.error?.message}`);
+      return result.stdout.trim();
+    };
+    const commonGitDir = fs.realpathSync(git(sourceRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+    if (commonGitDir !== fs.realpathSync(git(destination, ['rev-parse', '--path-format=absolute', '--git-common-dir']))) throw new Error('Installed source and handoff destination belong to different Git repositories.');
+    const buildRevision = readBuildRevision(sourceRoot);
+    if (main.backend_generation !== buildRevision) throw new Error('Installed source build differs from the registered running generation.');
+    source = { root: sourceRoot, commonGitDir, head: git(sourceRoot, ['rev-parse', 'HEAD']), buildRevision,
+      files: Object.fromEntries(['dist/build-revision.json', 'dist/index.js', 'bin/mandible'].map(name => [name, createHash('sha256').update(fs.readFileSync(path.join(sourceRoot, name))).digest('hex')])) };
+  }
   const backend = handoffService(BACKEND_LABEL);
   const gateway = handoffService(GATEWAY_LABEL);
+  if (source) source.runtime = { path: backend.argv[0], sha256: createHash('sha256').update(fs.readFileSync(backend.argv[0])).digest('hex') };
   const job = inspectJob(BACKEND_LABEL);
   const startedAt = processStart(job.pid);
   if (!job.loaded || !job.pid || !startedAt) throw new Error('Handoff requires the exact running production LaunchAgent.');
-  return { installationId: main.installation_id, home: HOME, root: production.root, domain: DOMAIN,
+  return { installationId: main.installation_id, home: HOME, root: destination, ...(source ? { source } : {}), domain: DOMAIN,
     backendLabel: BACKEND_LABEL, gatewayLabel: GATEWAY_LABEL, publicOrigin: main.public_origin,
     daemonLog: readRunnerMetadata(production).logFile,
     oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, runnerSha256: createHash('sha256').update(fs.readFileSync(backend.argv[1])).digest('hex'), launchMode: installedLaunchMode() }, priorGateway: gateway };
