@@ -7,10 +7,10 @@ import path from 'node:path';
 import net from 'node:net';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { expect, it } from 'vitest';
 import SqliteDatabase from '../../src/sqlite.js';
-import { AuthQueue } from '../../src/auth-queue.js';
-import { AuthHookManager } from '../../src/auth-hooks.js';
+import type { AuthQueue } from '../../src/auth-queue.js';
 import { setupOperator } from '../../src/users/store.js';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from '../../scripts/local-ca-trust.mjs';
 import { readRuntimeHandoff } from '../../scripts/runtime-handoff.mjs';
@@ -96,6 +96,11 @@ it('hands the actual old daemon over to the candidate through isolated productio
     git(repo, ['add', '.']); git(repo, ['commit', '-m', 'Actual old daemon with isolated connection ports']);
     command(legacy, ['node_modules/typescript/bin/tsc'], { cwd: repo, env });
     command(legacy, ['scripts/build-revision.mjs', 'write'], { cwd: repo, env });
+    // Author the fixture request with the deployed old contracts. Using the
+    // candidate queue against the old schema would require premature migration
+    // and skip the real upgrade's migration boundary.
+    const { AuthQueue: LegacyAuthQueue } = await import(pathToFileURL(path.join(repo, 'dist/auth-queue.js')).href);
+    const { AuthHookManager: LegacyAuthHookManager } = await import(pathToFileURL(path.join(repo, 'dist/auth-hooks.js')).href);
     const ca = localCaPaths(home);
     fs.mkdirSync(path.dirname(ca.installationAuthority), { recursive: true }); fs.copyFileSync(sourceCa.installationAuthority, ca.installationAuthority);
     fs.cpSync(sourceCa.storageRoot, ca.storageRoot, { recursive: true });
@@ -120,8 +125,8 @@ it('hands the actual old daemon over to the candidate through isolated productio
     const nativeApp = path.join(scratch, 'Mandible.app');
     const hookCommand = `MANDIBLE_HOME=${quote(home)} MANDIBLE_RUNTIME=${quote(runtime)} MANDIBLE_RUNTIME_ARCHIVE=${quote(archivePath)} MANDIBLE_DESKTOP_INSTALL_PATH=${quote(nativeApp)} ${Object.entries(libraryInputs).map(([key, value]) => `${key}=${quote(value)}`).join(' ')} bash cli/post-merge-build-dist.sh`;
     db.prepare('UPDATE auth_hooks SET command = ?, repo_pattern = ? WHERE id = ?').run(hookCommand, '*', 'builtin-mandible-rebuild');
-    const hooks = new AuthHookManager(db);
-    queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
+    const hooks = new LegacyAuthHookManager(db);
+    queue = new LegacyAuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     const request = queue.submit({ type: 'merge', title: 'Actual isolated upgrade', command: 'mandible auth merge feature/actual-upgrade --into main', cwd: repo, repo: 'mandible', base_branch: 'main', head_branch: 'feature/actual-upgrade', merge_head_sha: git(repo, ['rev-parse', 'feature/actual-upgrade']), execution_mode: 'local' });
     expect(request.repo).toBe('mandible');
     await queue.approveWithOperatorProof(request.id, signing.operatorId);
