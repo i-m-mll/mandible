@@ -270,6 +270,39 @@ describe.sequential("WorkScanner", () => {
     expect(branches).toContain("no-upstream");
   });
 
+  it("preserves exact local branch names despite tag and remote ref collisions", async () => {
+    const isolatedRepo = path.join(tempRoot, "ref-collisions");
+    fs.mkdirSync(isolatedRepo);
+    run("git init -b main", isolatedRepo);
+    run('git -c commit.gpgsign=false commit --allow-empty -m "init"', isolatedRepo);
+    run("git branch collision", isolatedRepo);
+    run("git tag collision", isolatedRepo);
+    run("git checkout collision", isolatedRepo);
+    run('git -c commit.gpgsign=false commit --allow-empty -m "local branch commit"', isolatedRepo);
+    const branchCommit = run("git rev-parse refs/heads/collision", isolatedRepo).trim();
+    run("git checkout main", isolatedRepo);
+    run("git branch origin/topic", isolatedRepo);
+    run("git branch heads/legitimate", isolatedRepo);
+    run("git update-ref refs/remotes/origin/topic HEAD", isolatedRepo);
+    run("git update-ref refs/remotes/origin/remote-only HEAD", isolatedRepo);
+
+    const db = createMigratedDb();
+    const scanner = new WorkScanner({ db, repo_roots: [isolatedRepo] });
+    try {
+      await scanner.scanAllAsync();
+      expect(scanner.getBranches(isolatedRepo).map(branch => branch.branch).sort()).toEqual([
+        "collision", "heads/legitimate", "main", "origin/topic",
+      ]);
+      expect(scanner.getBranch(isolatedRepo, "collision")?.last_commit?.hash).toBe(branchCommit);
+      const commits = await scanner.getCommits(isolatedRepo, "collision");
+      expect(commits.commits[0]?.hash).toBe(branchCommit);
+      expect(commits.total).toBe(2);
+    } finally {
+      await scanner.stop();
+      fs.rmSync(isolatedRepo, { recursive: true, force: true });
+    }
+  });
+
   it("preserves the persisted repo id when refresh derives a different path id", async () => {
     const db = createMigratedDb();
     db.prepare(

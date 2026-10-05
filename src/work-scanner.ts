@@ -13,6 +13,10 @@ import { broadcast, type SseEvent } from "./sse.js";
 import { canonicalizeCheckoutWorkRepoId } from "./ledger/projects.js";
 import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
 
+function localBranchRef(branch: string): string {
+  return `refs/heads/${branch}`;
+}
+
 export interface LastCommit {
   hash: string;
   message: string;
@@ -950,7 +954,7 @@ export class WorkScanner {
     const offset = Math.max(Math.trunc(options.offset ?? 0), 0);
     const defaultBranch = await this.detectDefaultBranch(repoRoot);
     const mergeBase = defaultBranch && defaultBranch !== branch
-      ? await runGit(["merge-base", defaultBranch, branch], { cwd: repoRoot, absent_exit_codes: [1], signal: this.scanAbort.signal })
+      ? await runGit(["merge-base", localBranchRef(defaultBranch), localBranchRef(branch)], { cwd: repoRoot, absent_exit_codes: [1], signal: this.scanAbort.signal })
       : null;
     const cherryStatus = await this.getCherryStatus(repoRoot, defaultBranch, branch);
     const format = [
@@ -966,13 +970,13 @@ export class WorkScanner {
       `--max-count=${limit}`,
       `--skip=${offset}`,
       `--pretty=format:${format}%x1e`,
-      branch,
+      localBranchRef(branch),
     ], {
       cwd: repoRoot,
       signal: this.scanAbort.signal,
 
     }) ?? "";
-    const totalRaw = await runGit(["rev-list", "--count", branch], {
+    const totalRaw = await runGit(["rev-list", "--count", localBranchRef(branch)], {
       cwd: repoRoot,
       signal: this.scanAbort.signal,
 
@@ -1906,7 +1910,7 @@ export class WorkScanner {
   }
 
   private async listBranches(repoRoot: string): Promise<string[]> {
-    const output = await runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"], {
+    const output = await runGit(["for-each-ref", "--format=%(refname)", "refs/heads"], {
       cwd: repoRoot,
       signal: this.scanAbort.signal,
 
@@ -1916,9 +1920,8 @@ export class WorkScanner {
     }
     return output
       .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .filter((line) => !line.startsWith("remotes/"));
+      .filter((line) => line.startsWith("refs/heads/"))
+      .map((line) => line.slice("refs/heads/".length));
   }
 
   private async listWorktrees(repoRoot: string, signal?: AbortSignal): Promise<{ worktrees: WorktreeInfo[]; known: boolean }> {
@@ -1983,7 +1986,7 @@ export class WorkScanner {
 
   private async getLastCommit(repoRoot: string, branch: string): Promise<LastCommit | null> {
     const output = await runGit(
-      ["log", "-1", "--format=%H%x1f%s%x1f%an%x1f%aI", branch],
+      ["log", "-1", "--format=%H%x1f%s%x1f%an%x1f%aI", localBranchRef(branch)],
       { cwd: repoRoot,  signal: this.scanAbort.signal },
     );
     return parseLastCommit(output);
@@ -1998,7 +2001,7 @@ export class WorkScanner {
     if (!defaultBranch || defaultBranch === branch) {
       return statusByHash;
     }
-    const output = await runGit(["cherry", defaultBranch, branch], {
+    const output = await runGit(["cherry", localBranchRef(defaultBranch), localBranchRef(branch)], {
       cwd: repoRoot,
       signal: this.scanAbort.signal,
 
@@ -2084,7 +2087,7 @@ export class WorkScanner {
       return { ahead_default: 0, behind_default: 0, default_branch: defaultBranch, known: true };
     }
     const output = await runGit(
-      ["rev-list", "--left-right", "--count", `${defaultBranch}...${branch}`],
+      ["rev-list", "--left-right", "--count", `${localBranchRef(defaultBranch)}...${localBranchRef(branch)}`],
       { cwd: repoRoot,  signal: this.scanAbort.signal },
     );
     if (!output) {
@@ -2110,7 +2113,7 @@ export class WorkScanner {
       return { ahead: 0, behind: 0, has_upstream: false, upstream: null };
     }
     const output = await runGit(
-      ["rev-list", "--left-right", "--count", `${upstreamInfo.upstream}...${branch}`],
+      ["rev-list", "--left-right", "--count", `${upstreamInfo.upstream}...${localBranchRef(branch)}`],
       {
       cwd: repoRoot,
       signal: this.scanAbort.signal,
