@@ -11,7 +11,7 @@ export function assessLogs(text) {
     const event = row.message || row.event || '';
     if (event === 'server_started') started++;
     counts.set(event, (counts.get(event) || 0) + 1);
-    if (row.level === 'error' || event === 'daemon_event_loop_lag' || /foreign.key|database.*(?:closed|not open)|panic|crash/i.test(line)) { if (failures.length < 20) failures.push(line); }
+    if (row.level === 'error' || ['ingestion_worker_error', 'ingestion_worker_exit', 'ingestion_reconcile_error'].includes(event) || event === 'daemon_event_loop_lag' || /foreign.key|database.*(?:closed|not open)|panic|crash/i.test(line)) { if (failures.length < 20) failures.push(line); }
   }
   if (started > 1) failures.push('Daemon restarted during acceptance');
   for (const [event, count] of counts) if (event && count > 100) failures.push(`Repeated event storm: ${event} (${count})`);

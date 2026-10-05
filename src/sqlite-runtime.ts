@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
+import { getEnvironmentData, setEnvironmentData } from "node:worker_threads";
 
 // One stock library per process: Bun's public configuration also selects
 // node:sqlite's library. No bun:sqlite connection is constructed.
@@ -61,9 +62,31 @@ export function provisionSqliteLibrary(archive: string) {
 }
 
 const ownershipKey = Symbol.for("mandible.sqlite.library-owner");
-type LibraryOwner = { sha256: string; sourceId: string; filename: string };
+const workerOwnershipKey = "mandible.sqlite.library-owner@1";
+type LibraryOwner = { pid: number; sha256: string; sourceId: string; filename: string };
+type NativeDriver = new (filename: string) => {
+  prepare(sql: string): { get(): Record<string, unknown> | undefined };
+  close(): void;
+};
+
+function verifyOwner(owner: LibraryOwner) {
+  if (owner.pid !== process.pid || owner.sha256 !== SQLITE_RUNTIME_LOCK.librarySha256 || owner.sourceId !== SQLITE_RUNTIME_LOCK.sourceId) {
+    throw new Error("Conflicting SQLite library identity in this process");
+  }
+  verifySqliteLibrary(owner.filename);
+}
+
+function verifyLoadedIdentity(Driver: NativeDriver) {
+  const probe = new Driver(":memory:");
+  try {
+    const row = probe.prepare("SELECT sqlite_version() AS version, sqlite_source_id() AS source_id").get();
+    if (row?.version !== SQLITE_RUNTIME_LOCK.version || typeof row.source_id !== "string" || row.source_id.split(" ").at(-1) !== SQLITE_RUNTIME_LOCK.sourceId) {
+      throw new Error("Loaded SQLite library does not match the pinned native identity");
+    }
+  } finally { probe.close(); }
+}
 const processOwnership = globalThis as typeof globalThis & { [ownershipKey]?: LibraryOwner };
-export function configureSqliteRuntime() {
+export function configureSqliteRuntime(Driver?: NativeDriver) {
   if (process.platform !== "darwin") return;
   if (`${process.platform}-${process.arch}` !== SQLITE_RUNTIME_LOCK.platform) throw new Error("No qualified stock SQLite library for this macOS architecture");
   const files = sqliteRuntimePaths();
@@ -75,13 +98,24 @@ export function configureSqliteRuntime() {
   const library = verifySqliteLibrary(override || files.library);
   const owner = processOwnership[ownershipKey];
   if (owner) {
-    if (owner.sha256 !== SQLITE_RUNTIME_LOCK.librarySha256 || owner.sourceId !== SQLITE_RUNTIME_LOCK.sourceId) {
-      throw new Error("Conflicting SQLite library identity in this process");
-    }
-    verifySqliteLibrary(owner.filename);
+    verifyOwner(owner);
+    return;
+  }
+  // Environment data is inherited by Worker realms, not by child processes.
+  // Its receipt alone is insufficient: verify the actual already selected
+  // node:sqlite driver identity before sharing the process-wide selection.
+  const inheritedOwner = getEnvironmentData(workerOwnershipKey) as LibraryOwner | undefined;
+  if (inheritedOwner) {
+    verifyOwner(inheritedOwner);
+    if (!Driver) throw new Error("Worker SQLite initialization requires native identity verification");
+    verifyLoadedIdentity(Driver);
+    processOwnership[ownershipKey] = Object.freeze({ ...inheritedOwner });
     return;
   }
   const { Database } = createRequire(import.meta.url)("bun:sqlite") as { Database: { setCustomSQLite(filename: string): boolean } };
   if (!Database.setCustomSQLite(library)) throw new Error("Pinned SQLite must be configured before the first database opens");
-  processOwnership[ownershipKey] = Object.freeze({ sha256: SQLITE_RUNTIME_LOCK.librarySha256, sourceId: SQLITE_RUNTIME_LOCK.sourceId, filename: library });
+  if (Driver) verifyLoadedIdentity(Driver);
+  const selectedOwner = Object.freeze({ pid: process.pid, sha256: SQLITE_RUNTIME_LOCK.librarySha256, sourceId: SQLITE_RUNTIME_LOCK.sourceId, filename: library });
+  processOwnership[ownershipKey] = selectedOwner;
+  setEnvironmentData(workerOwnershipKey, selectedOwner);
 }

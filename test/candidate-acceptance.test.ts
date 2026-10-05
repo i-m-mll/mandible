@@ -14,6 +14,11 @@ describe('production acceptance evidence', () => {
     expect(assessLogs(`${stopped}\n${closedDb}`)).toEqual([closedDb]);
     expect(assessLogs(Array(101).fill(JSON.stringify({ level: 'info', message: 'work:scan:completed' })).join('\n'))).toContain('Repeated event storm: work:scan:completed (101)');
     expect(assessLogs(`${stopped}\n${JSON.stringify({ level: 'info', message: 'daemon_ready' })}`)).toEqual([]);
+    for (const event of ['ingestion_worker_error', 'ingestion_worker_exit', 'ingestion_reconcile_error']) {
+      const warning = JSON.stringify({ level: 'warn', message: event, error: 'SQLite already loaded' });
+      expect(assessLogs(warning)).toEqual([warning]);
+    }
+    expect(assessLogs(JSON.stringify({ level: 'warn', message: 'optional_provider_unavailable' }))).toEqual([]);
   });
 });
 

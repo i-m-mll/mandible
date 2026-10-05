@@ -105,7 +105,7 @@ type Transaction<Args extends any[], Value> = ((...args: Args) => Value) & {
   exclusive(...args: Args): Value;
 };
 export interface SqliteOpenOptions { readonly?: boolean; fileMustExist?: boolean; timeout?: number }
-configureSqliteRuntime();
+configureSqliteRuntime(DatabaseSync);
 
 export default class SqliteDatabase {
   private readonly native: NativeDatabase;
