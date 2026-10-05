@@ -36,6 +36,11 @@ describe("one CLI grammar", () => {
     expect(syntax.bindEntry("@auth request", { refs: options.refs, group: options.group },
       ["feature/x", "--title", "t", "--issue", "one", "--issue", "two", "--promote-briefing", "g", "b", "p"]))
       .toBe("refs=('one' 'two')\ngroup='g'");
+    expect(syntax.bindEntry("@auth request", { publication: { option: "space-publication" } },
+      ["feature/x", "--title", "t", "--issue", "one", "--space-publication", "frozen-row"]))
+      .toBe("publication='frozen-row'");
+    expect(() => syntax.parse(["auth", "request", "feature/x", "--title", "t", "--issue", "one", "--space-publication"]))
+      .toThrow();
     expect(syntax.bindEntry("conversations.comment", { message: { option: "m" } }, ["id", "-m", "$(touch bad)'literal"]))
       .toContain("'$(touch bad)'\\''literal'");
   });

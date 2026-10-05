@@ -2,7 +2,6 @@ import { isBriefingEvent } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
-import { operationForRequest } from '../../src/security/operation-policy';
 import { browserSessionFetch } from './client-auth-token';
 import type { ChatAttachment } from '../../src/conversation-control/attachments';
 import type { InboxData } from './views/inbox';
@@ -123,15 +122,53 @@ export type InstanceInfo = {
   source_db_path_source?: string | null;
 };
 
+type OperationHint = { method: string; path: string; effects: string[] | null };
+const operationHints = new Map<string, OperationHint[]>();
+const hintKey = (instance: InstanceInfo) => `${instance.instance_id}/${instance.backend_generation}`;
+
+/** Bind affordance hints to the daemon generation that authored them. */
+export function bindOperationCatalog(instance: InstanceInfo, value: unknown): boolean {
+  const key = hintKey(instance);
+  operationHints.delete(key);
+  if (!value || typeof value !== 'object') return false;
+  const catalog = value as { schema?: unknown; source?: unknown; runtime?: { instance_id?: unknown; backend_generation?: unknown; version?: unknown }; routes?: unknown };
+  if (catalog.schema !== 'mandible-operation-catalog@2' || catalog.source !== 'Router.listRoutePolicies'
+      || catalog.runtime?.instance_id !== instance.instance_id || catalog.runtime.backend_generation !== instance.backend_generation
+      || typeof catalog.runtime.version !== 'string' || !catalog.runtime.version || !Array.isArray(catalog.routes)) return false;
+  const hints: OperationHint[] = [];
+  for (const value of catalog.routes) {
+    if (!value || typeof value !== 'object') return false;
+    const route = value as OperationHint;
+    if (typeof route.method !== 'string' || typeof route.path !== 'string'
+        || (route.effects !== null && (!Array.isArray(route.effects) || route.effects.some(effect => typeof effect !== 'string')))) return false;
+    hints.push(route);
+  }
+  operationHints.set(key, hints);
+  return true;
+}
+
+export async function loadOperationCatalog(instance: InstanceInfo): Promise<void> {
+  if (operationHints.has(hintKey(instance))) return;
+  const response = await apiGet('/api/instance');
+  const payload = await response.json() as { operations?: unknown };
+  if (!bindOperationCatalog(instance, payload.operations)) throw new Error('Daemon operation catalog is incompatible with this instance');
+}
+
+/** An affordance hint only; the daemon decides body, custody, and credential permissions. */
 export function canPerformOperation(
   instance: InstanceInfo | null | undefined,
   method: string,
   pathname: string,
-  body?: unknown,
+  _body?: unknown,
 ): boolean {
   if (!instance) return false;
-  const operation = operationForRequest(method, pathname, instance.role, body);
-  return operation !== null && operation.effects.every((effect) => instance.allowed_effects.includes(effect));
+  const path = pathname.split('?')[0].split('/');
+  const route = operationHints.get(hintKey(instance))?.find(route => {
+    const pattern = route.path.split('/');
+    return route.method === method.toUpperCase() && pattern.length === path.length
+      && pattern.every((part, index) => part.startsWith(':') ? path[index].length > 0 : part === path[index]);
+  });
+  return Boolean(route && (route.effects === null || route.effects.every(effect => instance.allowed_effects.includes(effect))));
 }
 
 export function allowsInstanceEffect(
@@ -385,9 +422,10 @@ async function throwOnError(response: Response, method: string, path: string): P
   let message = `${method} ${path} failed: ${response.status}`;
   let code: string | null = null;
   try {
-    const body = await response.json() as { code?: string; error?: string; message?: string };
+    const body = await response.json() as { code?: string; error?: string; message?: string; missing_effects?: string[] };
     code = body.code ?? body.error ?? null;
     if (body.message) message = body.message;
+    else if (body.error === 'effect_forbidden' && Array.isArray(body.missing_effects)) message = `This instance cannot perform the requested action. Required effects: ${body.missing_effects.join(', ')}.`;
     else if (body.error) message = body.error;
   } catch {
     // keep the generic message when the server did not return JSON

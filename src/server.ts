@@ -209,6 +209,7 @@ export interface RoutePolicyEntry {
   operationId: string;
   operationalMutationCategory: string | null;
   requestSchema: "handler" | "zod";
+  effects: readonly import("./security/operation-policy.js").Effect[] | null;
 }
 
 export interface RouterOptions {
@@ -452,6 +453,7 @@ export class Router implements RouteRegistrar {
         operationId: route.options.operation.id,
         operationalMutationCategory: route.options.operation.reportingCategory,
         requestSchema: route.options.operation.requestSchema === null ? "handler" : "zod",
+        effects: typeof route.options.operation.effects === "function" ? null : route.options.operation.effects,
       };
     });
   }
