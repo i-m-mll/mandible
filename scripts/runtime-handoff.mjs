@@ -77,7 +77,7 @@ async function publication(journal) {
   try { return module.verifyRuntimeHandoffPublication(db, journal.binding); } finally { db.close(); }
 }
 export function legacyHandoffBridge(file, target, deadline) {
-  return `// Temporary dependency-free runtime handoff bridge.\nimport fs from 'node:fs';\nimport {spawnSync} from 'node:child_process';\nconst file=${JSON.stringify(file)};\nconst target=${JSON.stringify(target)};\nfunction wake(){spawnSync('/bin/launchctl',['kickstart',target],{timeout:1500,stdio:'ignore'});}\nwake();\nconst timer=setInterval(()=>{try{const j=JSON.parse(fs.readFileSync(file,'utf8'));if(j.phase==='acknowledged'){clearInterval(timer);process.exit(0);}if(Date.now()>${deadline}){clearInterval(timer);console.error('Runtime handoff deadline exceeded; preserve convergence evidence.');process.exit(1);}}catch(e){console.error(e.message);}},2000);\n`;
+  return `// Temporary dependency-free runtime handoff bridge.\nimport fs from 'node:fs';\nimport {spawnSync} from 'node:child_process';\nimport path from 'node:path';\nconst file=${JSON.stringify(file)};\nconst target=${JSON.stringify(target)};\nconst marker=path.join(path.dirname(file),'bridge-process.json');\nconst startedAt=spawnSync('/bin/ps',['-p',String(process.pid),'-o','lstart='],{encoding:'utf8',timeout:1500}).stdout.trim();\nconst temporary=marker+'.'+process.pid+'.tmp';\nfs.writeFileSync(temporary,JSON.stringify({pid:process.pid,startedAt}),{mode:0o600});fs.renameSync(temporary,marker);\nfunction wake(){spawnSync('/bin/launchctl',['kickstart',target],{timeout:1500,stdio:'ignore'});}\nwake();\nconst timer=setInterval(()=>{try{const j=JSON.parse(fs.readFileSync(file,'utf8'));if(j.phase==='acknowledged'){clearInterval(timer);process.exit(0);}if(Date.now()>${deadline}){clearInterval(timer);console.error('Runtime handoff deadline exceeded; preserve convergence evidence.');process.exit(1);}}catch(e){console.error(e.message);}},2000);\n`;
 }
 function plist(journal, helper) {
   const esc = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -168,13 +168,18 @@ async function finishAdmission(journal) {
   if (!readRuntimeHandoff(home, requestId, executionId)?.acknowledgedAt) throw new Error('Independent handoff helper did not acknowledge its journal.');
   const runner = binding.priorBackend.argv[1];
   if (path.resolve(runner) !== path.join(homeDirectory(home), 'production-runner.mjs')) throw new Error('Legacy runner does not belong to this installation.');
+  const bridgeBytes = legacyHandoffBridge(journalFile(binding), `${binding.domain}/${journal.helperLabel}`, journal.deadline);
+  const runnerHash = fileHash(runner);
+  if (runnerHash !== binding.priorBackend.runnerSha256 && runnerHash !== hash(bridgeBytes)) throw new Error('Legacy runner changed after admission; preserving it.');
   if (!fs.existsSync(path.join(dir, 'original-runner.mjs'))) {
+    if (runnerHash !== binding.priorBackend.runnerSha256) throw new Error('Original runner custody is missing; preserving the bridge.');
     fs.copyFileSync(runner, path.join(dir, 'original-runner.mjs'));
-    const current = readRuntimeHandoff(home, requestId, executionId);
-    save(current, { originalRunnerHash: fileHash(runner) });
   }
+  if (fileHash(path.join(dir, 'original-runner.mjs')) !== binding.priorBackend.runnerSha256) throw new Error('Preserved original runner changed; refusing replacement.');
+  const originalJournal = readRuntimeHandoff(home, requestId, executionId);
+  save(originalJournal, { originalRunnerHash: binding.priorBackend.runnerSha256 });
   const bridge = `${runner}.${process.pid}.tmp`;
-  fs.writeFileSync(bridge, legacyHandoffBridge(journalFile(binding), `${binding.domain}/${journal.helperLabel}`, journal.deadline), { mode: 0o700 });
+  fs.writeFileSync(bridge, bridgeBytes, { mode: 0o700 });
   fs.renameSync(bridge, runner);
   const current = readRuntimeHandoff(home, requestId, executionId);
   save(current, { bridgeInstalled: true });
@@ -206,7 +211,7 @@ export async function acknowledgeRuntimeHandoff(binding) {
   }
   if (fs.existsSync(journal.helperPlist)) fs.unlinkSync(journal.helperPlist);
   // Compact accepted evidence remains; regenerated scripts and logs expire now.
-  for (const name of [...Object.keys(binding.stagedFiles), 'helper.log', 'convergence.log', 'original-runner.mjs', 'preparation.json']) {
+  for (const name of [...Object.keys(binding.stagedFiles), 'helper.log', 'convergence.log', 'original-runner.mjs', 'preparation.json', 'bridge-process.json']) {
     const file = path.join(path.dirname(journalFile(binding)), name);
     if (fs.existsSync(file)) {
       if (!fs.lstatSync(file).isFile()) throw new Error(`Handoff generated material changed type; preserving ${name}.`);

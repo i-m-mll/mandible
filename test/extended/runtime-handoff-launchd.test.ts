@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { expect, it } from 'vitest';
 import SqliteDatabase from '../../src/sqlite.js';
 import { AuthQueue } from '../../src/auth-queue.js';
@@ -35,7 +35,7 @@ it('arms one independent helper under loaded legacy Node arguments and survives 
   const gateway = `bio.mll.mandible.local-front-door.${suffix}`;
   const domain = `gui/${process.getuid!()}`;
   const control = (args: string[]) => spawnSync('/bin/launchctl', args, { encoding: 'utf8', timeout: 5000 });
-  const db = createMigratedDb(); let queue: AuthQueue | undefined; let journal: any; let requestRef = ''; let executionRef = '';
+  const db = createMigratedDb(); let queue: AuthQueue | undefined; let journal: any; let requestRef = ''; let executionRef = ''; let bridgeChild: ReturnType<typeof spawn> | undefined;
   try {
     const sources = ['src/sqlite.ts', 'src/sqlite-bindings.ts', 'cli/production-db-guard.cjs', 'cli/mandible-paths.cjs', 'src/runtime-handoff-proof.ts', 'src/auth-signature-verification.ts', 'src/auth-change-message.ts',
       'scripts/runtime-handoff.mjs', 'scripts/runtime-log-assessment.mjs', 'scripts/bun-runtime.sh', 'scripts/local-runtime.mjs', 'scripts/canonical-origin.mjs', 'scripts/build-revision.mjs', 'scripts/local-ca-trust.mjs', 'scripts/pinned-caddy.mjs', '.bun-version'];
@@ -74,6 +74,11 @@ it('arms one independent helper under loaded legacy Node arguments and survives 
     expect(journal.bridgeInstalled).toBe(true); expect(journal.binding.oldProcess.pid).toBe(Number(fs.readFileSync(marker, 'utf8')));
     expect(journal.binding.priorBackend.argv[0]).toBe(legacy); expect(journal.binding.mergeCommit).toBe(published.mergeSha);
     expect(journal.stages).toEqual({}); expect(fs.readFileSync(runner, 'utf8')).toContain('dependency-free');
+    bridgeChild = spawn(legacy, [runner, 'run'], { env, stdio: 'ignore' });
+    const bridgeMarker = path.join(path.dirname(path.join(runtimeDir, 'handoff', `${request.id}-${hook.id}`, 'journal.json')), 'bridge-process.json');
+    await wait(() => fs.existsSync(bridgeMarker) && JSON.parse(fs.readFileSync(bridgeMarker, 'utf8')).pid === bridgeChild?.pid);
+    expect(bridgeChild.exitCode).toBeNull();
+    bridgeChild.kill('SIGTERM'); await wait(() => bridgeChild?.signalCode === 'SIGTERM');
     const target = `${domain}/${journal.helperLabel}`;
     const before = journal.acknowledgedAt;
     expect(control(['kill', 'SIGKILL', target]).status).toBe(0);
@@ -82,6 +87,7 @@ it('arms one independent helper under loaded legacy Node arguments and survives 
     expect(readRuntimeHandoff(home, request.id, hook.id)?.bindingDigest).toBe(journal.bindingDigest);
     expect(readRuntimeHandoff(home, request.id, hook.id)?.stages).toEqual({});
   } finally {
+    if (bridgeChild && bridgeChild.exitCode === null && bridgeChild.signalCode === null) bridgeChild.kill('SIGTERM');
     if (requestRef && executionRef) {
       const helperLabel = `bio.mll.mandible.runtime-handoff.${createHash('sha256').update(`${home}:${requestRef}:${executionRef}`).digest('hex').slice(0, 16)}`;
       control(['bootout', `${domain}/${helperLabel}`]);

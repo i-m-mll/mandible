@@ -240,7 +240,7 @@ export function captureRuntimeHandoff(root) {
   return { installationId: main.installation_id, home: HOME, root: production.root, domain: DOMAIN,
     backendLabel: BACKEND_LABEL, gatewayLabel: GATEWAY_LABEL, publicOrigin: main.public_origin,
     daemonLog: readRunnerMetadata(production).logFile,
-    oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, launchMode: installedLaunchMode() }, priorGateway: gateway };
+    oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, runnerSha256: createHash('sha256').update(fs.readFileSync(backend.argv[1])).digest('hex'), launchMode: installedLaunchMode() }, priorGateway: gateway };
 }
 
 function assertHandoffInstallation(binding) {
@@ -258,6 +258,11 @@ export function removeHandoffDefinitions(binding) {
     const current = inspectJob(label);
     if (!current.loaded) continue;
     if (JSON.stringify(current.argv) !== JSON.stringify(prior.argv)) throw new Error(`Service ${label} changed during handoff; preserving it.`);
+    if (label === BACKEND_LABEL && current.pid) {
+      const file = path.join(RUNTIME_DIR, 'handoff', `${binding.requestId}-${binding.executionId}`, 'bridge-process.json');
+      const bridge = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+      if (bridge?.pid !== current.pid || bridge.startedAt !== processStart(current.pid)) throw new Error('An old application process respawned before the bridge; preserve its work and drain it before continuing.');
+    }
     const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`]);
     if (result.status !== 0 || inspectJob(label).loaded) throw new Error(`Could not unload exact service ${label}: ${result.stderr.trim()}`);
   }
