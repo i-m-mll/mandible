@@ -12,9 +12,9 @@ import {
   authorizedMergeSignerLines,
   authorizedOperatorSignerLines,
   extractSuccessfulMergeCommitSha,
+  extractAtomicMergeState,
   isValidCommitSha,
   verifyAuthorizedMergeCommitSignature,
-  verifySuccessfulMergeCommitSignature,
   type MergeSignatureVerification,
 } from "./auth-signature-verification.js";
 import {
@@ -52,6 +52,8 @@ import {
 } from "./auth-change-message.js";
 import type { AuthHook } from "./types.js";
 import { AuthHookManager } from "./auth-hooks.js";
+import type { RuntimePublicationBinding } from "./runtime-handoff-proof.js";
+import { verifyRuntimeHandoffPublication } from "./runtime-handoff-proof.js";
 import {
   describeRecomputeRefusal,
   type RecomputeRefusal,
@@ -636,8 +638,6 @@ export class AuthQueue {
     // Bug: 681739e — fast-recover executions orphaned by a self-merge restart
     // before the generic (threshold-based) stuck-request recovery runs.
     if (this.backgroundMaintenance) {
-      this.recoverSelfMergeShutdown();
-      this.recoverStuckRequests();
       // Issue fbf2a58 — reconcile merge requests whose merge already landed but
       // whose finalization write was lost (e.g. a terminal-executed auth-merge
       // whose post-merge dist rebuild restarted the daemon before the finalize
@@ -647,14 +647,48 @@ export class AuthQueue {
       // the merge and hook completion left unfinished. Every `running` row
       // belongs to the dead process, so reclaim them first; then sweep.
       // Fire-and-forget: a hook that cannot run must never block startup.
-      try {
-        this.hookManager.reclaimAllInterruptedRuns();
-      } catch {
-        /* hook tables are optional in partial/legacy databases */
-      }
-      void this.resumeHookConvergence().catch(() => undefined);
-      this.startExpiryTimer();
+      void this.startRecovery().catch(error => authLog("warn", "auth_startup_recovery_failed", { subsystem: "auth", error: errorMessage(error) }));
     }
+  }
+
+  private async startRecovery(): Promise<void> {
+    await this.reconcileRuntimeHandoffs();
+    if (this.disposed || !this.isDbOpen()) return;
+    this.recoverSelfMergeShutdown();
+    this.recoverStuckRequests();
+    this.hookManager.reclaimAllInterruptedRuns();
+    await this.resumeHookConvergence();
+    this.startExpiryTimer();
+  }
+
+  private async reconcileRuntimeHandoffs(): Promise<void> {
+    if (typeof this.hookManager.reconcileRuntimeHandoffs !== "function") return;
+    const ids = await this.hookManager.reconcileRuntimeHandoffs((binding, proof) => this.adoptRuntimePublication(binding, proof));
+    for (const id of ids) {
+      const request = this.getRequestById(id);
+      if (request && !this.successfulMergeEvidenceFailure(request)) {
+        this.finalizeSuccessfulMerge(request);
+        this.settleConvergence(request);
+      }
+    }
+  }
+
+  /** Only an exact verified first-upgrade receipt may restore legacy cleared candidate fields. */
+  private adoptRuntimePublication(binding: RuntimePublicationBinding, proof: ReturnType<typeof verifyRuntimeHandoffPublication>): void {
+    const request = this.requireRequest(binding.requestId);
+    verifyRuntimeHandoffPublication(this.db, binding);
+    const priorSnapshot = authRequestSnapshot(this.db, request.id);
+    const prepared = extractAtomicMergeState(request.output).prepared;
+    const output = prepared ? request.output : `${request.output}\nMANDIBLE_MERGE_PREPARED ${JSON.stringify({ merge_sha: proof.mergeCommit, base_sha: proof.mergeBase, head_sha: proof.mergeHead, tree_sha: proof.frozenCandidate.tree })}\nMANDIBLE_MERGE_APPLIED ${JSON.stringify({ merge_sha: proof.mergeCommit, base_sha: proof.mergeBase })}`;
+    this.db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = 0, merge_preflight_base_sha = ?, merge_head_sha = ?, merge_candidate_tree_sha = ?, merge_atomic_enabled = 1, output = ?, resolved_at = COALESCE(resolved_at, ?), updated_at = ? WHERE id = ?").run(
+      proof.mergeBase, proof.mergeHead, proof.frozenCandidate.tree, output, this.now(), this.now(), request.id,
+    );
+    const evidenced = this.attachSuccessfulSignatureEvidence(this.requireRequest(request.id));
+    appendAuthLifecycleEvent(this.db, {
+      requestId: request.id, eventType: request.status === "completed" ? "revised" : "completed", priorStatus: request.status, nextStatus: "completed", priorSnapshot,
+      actor: { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: evidenced.execution_evidence_id, authority_path: "system" },
+      reason: "Adopted exact signed publication and externally verified first-upgrade runtime receipt; no merge replay.", occurredAt: this.now(),
+    });
   }
 
   /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
@@ -5152,6 +5186,7 @@ export class AuthQueue {
     if (this.convergenceSweepInFlight) return;
     this.convergenceSweepInFlight = true;
     try {
+      await this.reconcileRuntimeHandoffs();
       await this.runConvergenceSweep(limit);
     } finally {
       this.convergenceSweepInFlight = false;
@@ -5674,12 +5709,10 @@ export class AuthQueue {
     }
     let verification: MergeSignatureVerification;
     try {
-      verification = verifySuccessfulMergeCommitSignature(
-        this.db,
-        cwd,
-        commitSha,
-        targetHeadSha,
-      );
+      const lease = request.approval_lease_id ? getDelegatedSigningLease(this.db, request.approval_lease_id) : null;
+      verification = cwd && commitSha && request.approved_by_user_id
+        ? verifyAuthorizedMergeCommitSignature(this.db, cwd, commitSha, request.approved_by_user_id, lease?.credential_id)
+        : { verified: false, commit_sha: commitSha, fingerprint: null, credential_id: null, user_id: null, reason: "missing_publication_identity" };
     } catch {
       verification = {
         verified: false,
@@ -7398,45 +7431,6 @@ function errorMessage(error: unknown): string | null {
   return error instanceof Error ? error.message : null;
 }
 
-type AtomicMarker = {
-  merge_sha: string;
-  base_sha?: string;
-  head_sha?: string;
-  tree_sha?: string;
-};
-
-function extractAtomicMergeState(output: string): {
-  prepared: Required<AtomicMarker> | null;
-  applied: AtomicMarker | null;
-  invalid: boolean;
-} {
-  let prepared: Required<AtomicMarker> | null = null;
-  let applied: AtomicMarker | null = null;
-  let invalid = false;
-  for (const line of output.split(/\r?\n/)) {
-    for (const [prefix, kind] of [
-      ["MANDIBLE_MERGE_PREPARED ", "prepared"],
-      ["MANDIBLE_MERGE_APPLIED ", "applied"],
-    ] as const) {
-      const index = line.indexOf(prefix);
-      if (index < 0) continue;
-      try {
-        const value = JSON.parse(line.slice(index + prefix.length)) as AtomicMarker;
-        if (!GIT_OID_RE.test(value.merge_sha ?? "") || !GIT_OID_RE.test(value.base_sha ?? "")) { invalid = true; continue; }
-        if (kind === "prepared") {
-          if (!GIT_OID_RE.test(value.head_sha ?? "") || !GIT_OID_RE.test(value.tree_sha ?? "")) { invalid = true; continue; }
-          if (prepared && (prepared.merge_sha !== value.merge_sha || prepared.base_sha !== value.base_sha || prepared.head_sha !== value.head_sha || prepared.tree_sha !== value.tree_sha)) invalid = true;
-          prepared = value as Required<AtomicMarker>;
-        } else {
-          if (applied && (applied.merge_sha !== value.merge_sha || applied.base_sha !== value.base_sha)) invalid = true;
-          applied = value;
-        }
-      } catch { invalid = true; }
-    }
-  }
-  if (applied && prepared && (applied.merge_sha !== prepared.merge_sha || applied.base_sha !== prepared.base_sha)) invalid = true;
-  return { prepared, applied, invalid };
-}
 
 
 function conflictFilesFromMergeTreeOutput(
