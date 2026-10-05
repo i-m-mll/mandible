@@ -1,3 +1,5 @@
+import { mockConversationStructureFromWindow, mockManagedSettings } from '../helpers/conversation-ui-transport';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { QueryClientProvider } from '@tanstack/preact-query';
@@ -45,7 +47,12 @@ class FakeEventSource {
 vi.mock('@xterm/xterm', () => ({ Terminal: class { options = {}; loadAddon(): void {} open(): void {} write(): void {} writeln(): void {} clear(): void {} focus(): void {} dispose(): void {} } }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await establishTestClientAccess();
+  mockConversationStructureFromWindow();
+  mockManagedSettings();
+  Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
+  vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});
   queryClient.clear();
   vi.stubGlobal('ResizeObserver', class {
     observe(): void {}
@@ -562,6 +569,7 @@ describe('conversation sidebar groups', () => {
       undefined,
       expect.any(Object),
       expect.any(String),
+      [],
     );
     expect(composer.value).toBe('');
   });

@@ -85,7 +85,7 @@ import {
 import { browserSessionFetch } from '../client-auth-token';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
-import { ManagedConversationControls } from '../chat/ManagedConversationControls';
+import { ManagedConversationControlActions, ManagedConversationControlFields, useManagedConversationControlState } from '../chat/ManagedConversationControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
   ChatOverlay,
@@ -420,11 +420,14 @@ function buildConversationSidebarFilters(state: ConversationSidebarRequestState)
     project_ids: state.projectIds,
     lifecycle: state.lifecycle,
   };
-  if (state.pinnedConversationIds !== null) {
+  if (state.previewMutationsRejected) {
+    const pinnedIds = new Set(state.pinnedConversationIds ?? []);
+    for (const [id, pinned] of Object.entries(state.previewPinOverrides)) {
+      if (pinned) pinnedIds.add(id); else pinnedIds.delete(id);
+    }
+    params.pinned_ids = [...pinnedIds];
+  } else if (state.pinnedConversationIds !== null) {
     params.pinned_ids = state.pinnedConversationIds;
-  } else if (state.previewMutationsRejected) {
-    params.pinned_ids = Object.entries(state.previewPinOverrides)
-      .flatMap(([id, pinned]) => pinned ? [id] : []);
   }
   if (state.sourceFilter !== 'all') params.source = state.sourceFilter;
   if (state.starredOnly) params.starred = true;
@@ -2166,8 +2169,9 @@ export function ConversationDetail({
     return () => { active = false; };
   }, [attachmentPreview]);
 
+  const managedControlState = useManagedConversationControlState(control);
   const hasRunOptions = Boolean(control && ['claude_code', 'codex'].includes(control.provider));
-  const runOptionsGeometry = useIntrinsicOverflowGroup(hasRunOptions, `${control?.revision ?? ''}`);
+  const runOptionsGeometry = useIntrinsicOverflowGroup(hasRunOptions && Boolean(conversation) && !notFound, `${control?.revision ?? ''}`);
 
   const projectPendingIntent = useCallback((intent: { id: string; message: string }) => {
     const provider = conversation?.source ?? creationReceipt?.request.provider;
@@ -2282,7 +2286,7 @@ export function ConversationDetail({
     }
     const runtimeOptions: ConversationRuntimeOptions = submitIntent?.state === 'uncertain'
       ? submitIntent.runtimeOptions
-      : {};
+      : managedControlState.draft;
     const messageAnchor = submitIntent?.state === 'uncertain'
       ? submitIntent.messageAnchor
       : control?.capability.kind === 'message-anchor-resume' && latestDagUuid
@@ -2308,7 +2312,7 @@ export function ConversationDetail({
     setControlFailure(null);
     projectPendingIntent(intent);
     setSubmitIntent(intent);
-  }, [continueDisabledReason, continueDraft, draftAttachments, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent, conversationId]);
+  }, [continueDisabledReason, continueDraft, draftAttachments, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent, conversationId, managedControlState.draft]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter') return;
@@ -2513,7 +2517,7 @@ export function ConversationDetail({
     />
   );
 
-  const renderRunOptionFields = () => <ManagedConversationControls key={conversationId} control={control} />;
+  const renderRunOptionFields = (compact = false) => <ManagedConversationControlFields state={managedControlState} compact={compact} includeActions={false} />;
 
   const composerOverlay = isReadOnlyChild ? (
         <div className="conv-compose conv-compose--readonly" data-detail-pane-overlay-visual>
@@ -2585,7 +2589,7 @@ export function ConversationDetail({
                 aria-hidden={runOptionsGeometry.overflowed ? 'true' : undefined}
                 inert={runOptionsGeometry.overflowed || undefined}
               >
-                {renderRunOptionFields()}
+                {renderRunOptionFields(true)}
               </div>
             ) : null}
             <span ref={runOptionsGeometry.fixedRef} className="conv-compose__runtime-actions">
@@ -2648,6 +2652,9 @@ export function ConversationDetail({
     <ChatFailureNotice
       failure={controlFailure}
       busy={continueBusy}
+      onRetry={controlFailure.retryable && submitIntent?.state === 'failed' && !continueDisabledReason
+        ? () => document.getElementById(`conversation-compose-${conversationId}`)?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+        : undefined}
       onDismiss={() => setControlFailure(null)}
     />
   ) : null;
@@ -2717,13 +2724,14 @@ export function ConversationDetail({
       ariaBusy={loading}
       onDragOverCapture={handleFileDragOver}
       onDropCapture={handleFileDrop}
-      notice={controlFailureNotice || creationNotice || actionErrorNotice || externalNotice || loadErrorNotice ? <>
+      notice={<>
+        <ManagedConversationControlActions state={managedControlState} />
         {controlFailureNotice}
         {creationNotice}
         {actionErrorNotice}
         {externalNotice}
         {loadErrorNotice}
-      </> : null}
+      </>}
     >
       <div className="conv-transcript">
         <ChatEntityLinkBoundary
@@ -3137,14 +3145,15 @@ export function ConversationsView({
   const selectedSessionId = selection?.type === 'session' ? selection.id : null;
   const previewMutationsRejected = Boolean(instance && instance.allowed_effects?.includes('ledger:write') !== true);
   const isConversationPinned = useCallback((conversation: Conversation): boolean => {
+    if (previewMutationsRejected && Object.prototype.hasOwnProperty.call(chatViewState.previewPinOverrides, conversation.id)) {
+      return chatViewState.previewPinOverrides[conversation.id];
+    }
     if (sidebarOrder.value.pinnedConversationIds !== null) {
       return sidebarOrder.value.pinnedConversationIds.includes(conversation.id);
     }
-    if (!previewMutationsRejected) return conversation.starred;
-    return Object.prototype.hasOwnProperty.call(chatViewState.previewPinOverrides, conversation.id)
-      ? chatViewState.previewPinOverrides[conversation.id]
-      : conversation.starred;
-  }, [chatViewState.previewPinOverrides, previewMutationsRejected, sidebarOrder.value.pinnedConversationIds]);
+    if (previewMutationsRejected && chatViewState.pinnedConversationIds.includes(conversation.id)) return true;
+    return conversation.starred;
+  }, [chatViewState.previewPinOverrides, chatViewState.pinnedConversationIds, previewMutationsRejected, sidebarOrder.value.pinnedConversationIds]);
 
   const liveSessions = useMemo(() => {
     return consoleSessions
@@ -3735,6 +3744,14 @@ export function ConversationsView({
 
   const handleToggleEntryPin = async (entry: ChatEntry) => {
     if (!entry.conversation) return;
+    if (previewMutationsRejected) {
+      const id = entry.conversation.id;
+      const pinned = !isConversationPinned(entry.conversation);
+      pendingPinIntents.current.set(id, pinned);
+      pendingPinFocusKey.current = entry.key;
+      setChatViewState(current => ({ ...current, previewPinOverrides: { ...current.previewPinOverrides, [id]: pinned } }));
+      return;
+    }
     if (!sidebarOrder.ready) {
       setSidebarToast({ message: sidebarOrder.notice ?? 'Sidebar order is still reconnecting.', type: 'error' });
       return;

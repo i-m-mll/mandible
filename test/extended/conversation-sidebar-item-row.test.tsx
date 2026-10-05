@@ -1,3 +1,5 @@
+import { mockConversationStructureFromWindow, mockManagedSettings } from '../helpers/conversation-ui-transport';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,7 +28,13 @@ vi.mock('@xterm/xterm', () => ({
 
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await establishTestClientAccess();
+  vi.stubGlobal('ResizeObserver', class { observe(): void {} unobserve(): void {} disconnect(): void {} });
+  mockConversationStructureFromWindow();
+  mockManagedSettings();
+  Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
+  vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});
   queryClient.clear();
   const rows = new Map<string, string>();
   const storage = {
@@ -190,7 +198,7 @@ describe('conversation sidebar labeled-item rows', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
     await waitFor(() => expect(updateArchive).toHaveBeenCalledWith(conversation.id, true));
     await waitFor(() => expect(screen.queryByRole('button', { name: `Open conversation ${conversation.title}` })).toBeNull());
-    expect(document.querySelector('.chat-history-detail')?.textContent).toContain(conversation.title);
+    await waitFor(() => expect(document.querySelector('.chat-history-detail')?.textContent).toContain(conversation.title));
 
     fireEvent.click(screen.getByRole('button', { name: 'Search and filter options' }));
     fireEvent.click(screen.getByRole('button', { name: 'Archived' }));
@@ -371,8 +379,7 @@ describe('conversation sidebar labeled-item rows', () => {
       `Open conversation ${conversation.title}`,
     ]);
     await waitFor(() => expect(savedSidebarOrder.pinnedConversationIds).toEqual([
-      existingPinnedConversation.id,
-      conversation.id,
+      existingPinnedConversation.id, conversation.id,
     ]));
 
     cleanup();
@@ -442,10 +449,9 @@ describe('conversation sidebar labeled-item rows', () => {
     expect(updateConversation).not.toHaveBeenCalled();
     const pinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('section')!;
     expect(within(pinnedSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
-    await waitFor(() => expect(savedSidebarOrder.pinnedConversationIds).toEqual([
-      existingPinnedConversation.id,
-      conversation.id,
-    ]));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}').previewPinOverrides)
+      .toMatchObject({ [conversation.id]: true }));
+    expect(api.updateSidebarOrderPreference).not.toHaveBeenCalled();
 
     cleanup();
     renderPreview();
@@ -461,8 +467,8 @@ describe('conversation sidebar labeled-item rows', () => {
     expect(updateConversation).not.toHaveBeenCalled();
     const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('section')!;
     expect(within(chatsSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
-    await waitFor(() => expect(savedSidebarOrder.pinnedConversationIds).toEqual([
-      existingPinnedConversation.id,
-    ]));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}').previewPinOverrides)
+      .toMatchObject({ [conversation.id]: false }));
+    expect(api.updateSidebarOrderPreference).not.toHaveBeenCalled();
   });
 });

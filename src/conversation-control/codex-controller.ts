@@ -111,6 +111,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       if (aborted) throw new Error("Codex controller acquisition was cancelled");
       if (input.kind === "resume-provider-session") {
         const stored = responseThread(await client.request("thread/read", { threadId: input.provider_session_id }));
+        if (aborted) throw new Error("Codex controller acquisition was cancelled");
         if (stringField(stored, "id") !== input.provider_session_id) {
           throw new UncertainCodexAcquisition("Codex App Server read a different thread identity");
         }
@@ -124,6 +125,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
           }
         }
       }
+      if (aborted) throw new Error("Codex controller acquisition was cancelled");
       const result = input.kind === "start"
         ? await client.request("thread/start", {
           cwd: input.cwd,

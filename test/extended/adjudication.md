@@ -337,3 +337,21 @@ The UI reachability gate also identified eight unused Console modules and the re
 The human-authored Settings autosave change (`8b83f517`) removed manual save/reset controls from simple preferences. Typography retains accessible bounds, per-field autosave, and saving default values; obsolete Reset-button queries are retired. Inbox retains acknowledgement, filter state, loading authorization, and executable error Retry. Its removed manual Refresh menu item no longer defines an action contract.
 
 Copied Work previews keep static host-operation gates and copied-ledger metadata edits. Add-project has dynamic effects, so its browser catalog entry is an optimistic hint; the UI regression now checks a denied daemon response and retained state rather than inventing a parallel frontend permission policy. Authoritative dynamic effect denial remains covered by the operation-policy boundary tests.
+
+The provider UI follow-up retains exact operations, runtime payloads, full-text
+serialization, startup identity, selection, focus, reload, source freshness,
+transcript continuity, responsive run controls, and retry behavior. Fixtures now
+resolve local access through the shared helper and supply both transcript content
+and its structure index. The managed settings fixture replaces retired ACP/Console
+option transport while retaining model, effort, and permissions interaction; the
+popover and inline fields share one draft, and the test verifies the exact next-turn
+payload. Claude-specific instructions, tools, turn/cost limits, and settings sources
+remain available. Native select changes use the DOM event API because the Preact
+helper rewrites them to input events after compat rendering. Failed-save completion
+after A to B to A cannot clear newer settings edits. Preview pin tests preserve
+browser-local intent and assert that no durable preference write occurs.
+
+Archived Codex continuation is covered through the canonical App Server adapter:
+read the exact native identity, restore only a native archived rollout, verify its
+identity, then resume it. Failed or mismatched restoration is refused; SessionManager
+still rejects managed continuation. No provider message is sent by these fixtures.

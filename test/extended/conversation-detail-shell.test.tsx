@@ -1,3 +1,5 @@
+import { mockConversationStructureFromWindow, mockManagedSettings, changeNativeSelect } from '../helpers/conversation-ui-transport';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ComponentChildren } from 'preact';
@@ -48,7 +50,16 @@ vi.mock('@xterm/xterm', () => ({
 
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await establishTestClientAccess();
+  window.localStorage.clear();
+  mockConversationStructureFromWindow();
+  mockManagedSettings({ model: conversation.model!, effort: 'medium', permission_mode: 'agent' });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2400);
+  vi.stubGlobal('WebSocket', class { static OPEN = 1; readyState = 0; addEventListener(): void {} removeEventListener(): void {} send(): void {} close(): void {} });
+  Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
+  vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});
   queryClient.clear();
   vi.stubGlobal('ResizeObserver', class {
     observe(): void {}
@@ -571,7 +582,7 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByText('Recent visible message')).toBeTruthy();
     await waitFor(() => expect(edgeAttempts).toBe(1));
     expect(screen.getByText('Recent visible message')).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Load earlier history' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText('No messages yet')).toBeNull();
     expect(screen.queryByText('source pending')).toBeNull();
     expect(await screen.findByText('Older recovered message', {}, { timeout: 3_000 })).toBeTruthy();
   });
@@ -830,7 +841,7 @@ describe('compact detail pane shell', () => {
     expect(shell?.classList.contains('chat-detail-frame--not-found')).toBe(true);
     expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
       .toBeTruthy();
-    expect(shell?.querySelector(':scope > .detail-pane-shell__notice')).toBeNull();
+    expect(shell?.querySelector(':scope > .detail-pane-shell__notice')?.textContent ?? '').toBe('');
   });
 
   it('parses exact block and turn anchors from shareable Chat URLs', () => {
@@ -1022,9 +1033,9 @@ describe('compact detail pane shell', () => {
     expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     fireEvent.click(runOptions);
     const runOptionsDialog = screen.getByRole('dialog', { name: 'Run options' });
-    const modelSelect = within(runOptionsDialog).getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
+    const modelSelect = within(runOptionsDialog).getByRole('textbox', { name: 'Model' }) as HTMLInputElement;
     await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
-    expect(modelSelect.title).toBe('Model');
+    expect(modelSelect.getAttribute('aria-label')).toBe('Model');
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy markdown' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('Server-only unread tail')));
@@ -1053,8 +1064,8 @@ describe('compact detail pane shell', () => {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
       if (this.classList.contains('conv-compose__runtime')) return domRect(0, 0, runtimeWidth, 30);
       if (this.classList.contains('session-controls__field')) {
-        const label = this.querySelector('select')?.getAttribute('aria-label');
-        return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Mode' ? modeWidth : 90, 30);
+        const label = this.querySelector('input, select')?.getAttribute('aria-label');
+        return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Permissions' ? modeWidth : 90, 30);
       }
       if (this.classList.contains('context-usage') || this.classList.contains('conv-compose__send')) {
         return domRect(0, 0, 30, 30);
@@ -1117,27 +1128,28 @@ describe('compact detail pane shell', () => {
     const runtime = document.querySelector('.conv-compose__runtime');
     const inlineRunOptions = runtime?.querySelector('.conv-compose__run-options-inline');
     const actions = runtime?.querySelector('.conv-compose__runtime-actions');
-    await waitFor(() => expect(inlineRunOptions?.querySelectorAll('select')).toHaveLength(3));
+    await waitFor(() => expect(inlineRunOptions?.querySelectorAll('input, select')).toHaveLength(3));
     expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false);
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBeNull();
-    fireEvent.input(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'read-only' } });
+    changeNativeSelect(screen.getByRole('combobox', { name: 'Permissions' }) as HTMLSelectElement, 'read-only');
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modeWidth = 230;
-    fireEvent.change(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'agent' } });
-    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow'), `widths:${modelWidth}:${modeWidth}:${runtimeWidth}`).toBe(true));
     modeWidth = 70;
-    fireEvent.change(inlineRunOptions?.querySelector('select[aria-label="Mode"]') as HTMLSelectElement, { target: { value: 'read-only' } });
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    changeNativeSelect(inlineRunOptions?.querySelector('select[aria-label="Permissions"]') as HTMLSelectElement, 'read-only');
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modelWidth = 220;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
-    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow'), `widths:${modelWidth}:${modeWidth}:${runtimeWidth}`).toBe(true));
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBe('true');
     modelWidth = 100;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     runtimeWidth = 180;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
-    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow'), `widths:${modelWidth}:${modeWidth}:${runtimeWidth}`).toBe(true));
     runtimeWidth = 380;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
@@ -1145,28 +1157,38 @@ describe('compact detail pane shell', () => {
     expect(actions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(actions?.children[2]?.classList.contains('conv-compose__send')).toBe(true);
     expect(screen.queryByRole('combobox', { name: 'Permission mode' })).toBeNull();
+    fireEvent.input(inlineRunOptions?.querySelector('input[aria-label="Model"]') as HTMLInputElement, { target: { value: 'edited-model' } });
     fireEvent.click(trigger);
     await screen.findByRole('dialog', { name: 'Run options' });
     await waitFor(() => expect(Array.from(
-      screen.getByRole('dialog', { name: 'Run options' }).querySelectorAll('select'),
+      screen.getByRole('dialog', { name: 'Run options' }).querySelectorAll('input, select'),
       (select) => select.getAttribute('aria-label'),
-    )).toEqual(expect.arrayContaining(['Mode', 'Model', 'Reasoning effort'])));
+    )).toEqual(expect.arrayContaining(['Permissions', 'Model', 'Thinking effort'])));
     const popover = screen.getByRole('dialog', { name: 'Run options' });
-    const permission = popover.querySelector<HTMLSelectElement>('select[aria-label="Mode"]')!;
-    const effort = popover.querySelector<HTMLSelectElement>('select[aria-label="Reasoning effort"]')!;
+    expect((within(popover).getByRole('textbox', { name: 'Model' }) as HTMLInputElement).value).toBe('edited-model');
+    const permission = popover.querySelector<HTMLSelectElement>('select[aria-label="Permissions"]')!;
+    const effort = popover.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!;
 
-    expect(Array.from((permission as HTMLSelectElement).options, (option) => option.value)).toEqual(['read-only', 'agent']);
-    expect(Array.from((effort as HTMLSelectElement).options, (option) => option.value)).toEqual(['medium', 'high']);
+    expect(permission.value).toBe('read-only');
+    expect(Array.from((permission as HTMLSelectElement).options, (option) => option.value)).toEqual(['', 'read-only', 'agent', 'agent-full-access']);
+    expect(Array.from((effort as HTMLSelectElement).options, (option) => option.value)).toEqual(['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+    const submit = vi.spyOn(api, 'submitConversationControl').mockResolvedValue({
+      kind: 'accepted', delivery_id: 'settings-delivery', turn_id: 'settings-turn', snapshot: ownedControl,
+    });
+    fireEvent.input(screen.getByPlaceholderText('Message...'), { target: { value: 'Use these settings.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.any(Object), 'Use these settings.', undefined,
+      { model: 'edited-model', effort: 'medium', permission_mode: 'read-only' }, expect.any(String), []));
   });
 
-  it('surfaces run-option descriptor failures instead of hiding provider controls', async () => {
+  it('surfaces managed settings failures instead of hiding provider controls', async () => {
     const scopedConversation = mockConversationDetail(defaultControl);
-    vi.spyOn(api, 'getConsoleRunOptions').mockRejectedValue(new Error('descriptor service unavailable'));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'settings_unavailable', message: 'settings service unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } })));
 
     renderConversationDetail(scopedConversation);
 
     const notice = await screen.findByRole('alert');
-    expect(notice.textContent).toContain('Run options could not be loaded: descriptor service unavailable');
+    expect(notice.textContent).toContain('settings service unavailable');
   });
 
   it('clamps the Chat header menu and dismisses with Escape, outside click, and focus restoration', async () => {
@@ -1385,7 +1407,7 @@ describe('compact detail pane shell', () => {
     expect(Boolean(document.querySelector('.conv-compose'))).toBe(hasComposer);
     if (control.capability.kind === 'blocked-external') {
       expect(document.querySelectorAll('.conv-compose__hint')).toHaveLength(0);
-      expect((screen.getByPlaceholderText('Message...') as HTMLTextAreaElement).disabled).toBe(true);
+      expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true);
       expect(document.querySelector('.conv-compose')?.textContent).toContain('Another controller owns this provider session.');
     }
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
