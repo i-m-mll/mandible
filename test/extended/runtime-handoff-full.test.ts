@@ -1,6 +1,6 @@
 // @vitest-environment node
 // Explicit integration gate. It runs the actual archived old daemon, then
-// lets its existing finalizer/drain path hand over to candidate production.
+// lets its finalizer arm a handoff, then exercises its real signal/drain path.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -120,6 +120,13 @@ it('hands the actual old daemon over to the candidate through isolated productio
     // This is a signed fixture publication, never a production approval. The
     // actual old daemon discovers it through its deployed finalizer sweep.
     db.prepare("UPDATE auth_requests SET status='completed', exit_code=0, output=?, merge_finalized_at=NULL WHERE id=?").run(`${publication.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT '))}\n`, request.id);
+    await until(() => { journal = readRuntimeHandoff(home, request.id, hook.id); return !!journal?.bridgeInstalled; }, 60000, 'Actual old daemon handoff admission');
+    // A periodic finalizer recovery does not schedule the normal execution's
+    // self-merge exit. Signal this exact private daemon after admission so its
+    // actual shutdown handler drains; the helper still must await its death.
+    const oldProcess = journal.binding.oldProcess;
+    expect(command('/bin/ps', ['-p', String(oldProcess.pid), '-o', 'lstart=']).trim()).toBe(oldProcess.startedAt);
+    process.kill(oldProcess.pid, 'SIGTERM');
     await until(() => {
       journal = readRuntimeHandoff(home, request.id, hook.id);
       if (journal?.phase === 'failed') throw new Error(journal.error);
@@ -130,7 +137,7 @@ it('hands the actual old daemon over to the candidate through isolated productio
     await until(() => readRuntimeHandoff(home, request.id, hook.id)?.phase === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
     const row = db.prepare('SELECT state, exit_code FROM auth_hook_executions WHERE id=?').get(hook.id) as any; expect(row.state).toBe('complete'); expect(row.exit_code).toBe(0);
     const newJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(newJob).toContain(runtime); expect(newJob).not.toContain(legacy);
-    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, hook.id), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
+    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, hook.id), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'SIGTERM to exact bound private old daemon after handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
   } catch (error) {
     const logs = [path.join(scratch, '.cache/mandible/production-stderr.log'), ...(requestId ? [path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'convergence.log')] : [])].filter(file => fs.existsSync(file)).map(file => ({ name: path.basename(file), sha256: digest(fs.readFileSync(file)), excerpt: fs.readFileSync(file, 'utf8').slice(-16000) }));
     fs.writeFileSync(path.join(evidence, `${Date.now()}-failed.json`), JSON.stringify({ status: 'failed', oldRevision, candidateRevision: candidate, error: String(error), logs, journal: requestId ? readRuntimeHandoff(home, requestId, executionId) : null }, null, 2)); throw error;
