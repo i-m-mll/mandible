@@ -347,7 +347,7 @@ export function evaluateGlobalCapability(db: Db, input: {
 
 export function requireProjectAccess(
   db: Db,
-  req: RequestLike,
+  req: Pick<RequestLike, "client_identity">,
   projectId: string,
   requiredRole: ProjectRole,
 ): AccessDecision {

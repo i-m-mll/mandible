@@ -14,7 +14,7 @@ import { createUser, setupOperator } from '../../src/users/store.js';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from '../../scripts/local-ca-trust.mjs';
 import { validateRuntimeSource } from '../../src/runtime-handoff-proof.js';
 import { readRuntimeHandoff } from '../../scripts/runtime-handoff.mjs';
-import { parseLoadedService } from '../../scripts/local-runtime.mjs';
+import { parseLoadedService, loadedServiceMatches } from '../../scripts/local-runtime.mjs';
 import { configureSigningCredential, createAuthCheckRepo, createLedgerProject, git, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
 import { createLedgerIssue } from '../helpers/auth-queue-fixtures.js';
 import { addOrUpdateCheckout } from '../../src/ledger/project-registry.js';
@@ -133,6 +133,12 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     command(legacy, ['scripts/local-runtime.mjs', 'start'], { cwd: repo, env });
     await until(async () => { try { const r = await fetch(`http://127.0.0.1:${ports.backend}/api/health`); return (await r.json()).ready === true; } catch { return false; } }, 30000, 'Actual old daemon readiness');
     const oldJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(oldJob).toContain(legacy);
+    const oldGatewayJob = command('/bin/launchctl', ['print', `${domain}/${gatewayLabel}`]);
+    const oldServices = [[backendLabel, oldJob], [gatewayLabel, oldGatewayJob]].map(([label, detail]) => {
+      const pid = Number(/pid = (\d+)/.exec(detail)?.[1]);
+      expect(pid).toBeGreaterThan(0);
+      return { label, pid, startedAt: command('/bin/ps', ['-p', String(pid), '-o', 'lstart=']).trim(), definition: parseLoadedService(detail) };
+    });
     // Bootstrap a complete candidate installation first. The canonical root
     // remains on its protected branch, and the candidate keeps independent
     // dependencies so final convergence cannot mutate its retained bytes.
@@ -171,12 +177,18 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     if (!installedUpdate) await stage(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], candidateRoot);
     const sourceManifest = { revision: git(candidateRoot, ['rev-parse', 'HEAD']), cliSha256: digest(fs.readFileSync(path.join(candidateRoot, 'bin/mandible'))), installedPath };
     if (!installedUpdate) {
-      // The explicit private bootstrap unloads only its exact old backend and
-      // waits for its real shutdown, while the stable native gateway remains.
-      const oldPid = Number(/pid = (\d+)/.exec(oldJob)?.[1]);
-      expect(oldPid).toBeGreaterThan(0);
-      command('/bin/launchctl', ['bootout', `${domain}/${backendLabel}`]);
-      await until(() => spawnSync('/bin/ps', ['-p', String(oldPid)], { stdio: 'ignore' }).status !== 0 && spawnSync('/bin/launchctl', ['print', `${domain}/${backendLabel}`], { stdio: 'ignore' }).status !== 0, 30000, 'Exact old bootstrap process drain');
+      // This explicit private bootstrap replaces both captured definitions.
+      // Start must load the newly installed gateway environment too.
+      for (const prior of oldServices) {
+        const current = command('/bin/launchctl', ['print', `${domain}/${prior.label}`]);
+        expect(parseLoadedService(current)).toEqual(prior.definition);
+        expect(Number(/pid = (\d+)/.exec(current)?.[1])).toBe(prior.pid);
+        expect(command('/bin/ps', ['-p', String(prior.pid), '-o', 'lstart=']).trim()).toBe(prior.startedAt);
+        command('/bin/launchctl', ['bootout', `${domain}/${prior.label}`]);
+        await until(() => spawnSync('/bin/ps', ['-p', String(prior.pid)], { stdio: 'ignore' }).status !== 0
+          && spawnSync('/bin/launchctl', ['print', `${domain}/${prior.label}`], { stdio: 'ignore' }).status !== 0,
+          30000, 'Exact old private bootstrap service drain');
+      }
       await stage('/bin/bash', ['cli/install-desktop-app.sh'], candidateRoot, { ...bootstrapEnv, MANDIBLE_DESKTOP_DEPENDENCY_COMMAND: 'true', MANDIBLE_DESKTOP_BUILD_COMMAND: 'true' });
       command(runtime, ['scripts/local-runtime.mjs', 'start'], { cwd: candidateRoot, env: bootstrapEnv });
       await until(async () => { try { const health = await (await fetch(`http://127.0.0.1:${ports.backend}/api/health`)).json(); return health.ready === true && health.instance.backend_generation === sourceManifest.revision; } catch { return false; } }, 30000, 'Candidate executor bootstrap readiness');
@@ -189,6 +201,13 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     }
     const bootstrapJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]);
     if (installedUpdate) { expect(bootstrapJob).toBe(oldJob); expect(bootstrapJob).toContain(repo); }
+    for (const label of [backendLabel, gatewayLabel]) {
+      const detail = command('/bin/launchctl', ['print', `${domain}/${label}`]);
+      const definitionPath = detail.split('\n').map(line => line.trim()).find(line => line.startsWith('path = '))?.slice(7);
+      expect(definitionPath).toBeTruthy();
+      const definition = JSON.parse(command('/usr/bin/plutil', ['-convert', 'json', '-o', '-', definitionPath!]));
+      expect(loadedServiceMatches(definition, parseLoadedService(detail))).toBe(true);
+    }
     expect(digest(fs.readFileSync(path.join(candidateRoot, 'bin/mandible')))).toBe(sourceManifest.cliSha256);
     // Use supported setup mechanisms for private identities and custody. Auth
     // request publication and approval are exclusively ordinary HTTP routes.
@@ -278,7 +297,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const nativeRuns = db.prepare('SELECT hook_id, position, state, exit_code FROM auth_hook_executions WHERE auth_request_id=? AND position < 0 ORDER BY position').all(request.id) as any[];
     expect(nativeRuns.map(row => [row.position, row.state, row.exit_code])).toEqual([[-2, 'complete', 0], [-1, 'complete', 0]]);
     const newJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(newJob).toContain(runtime); if (legacy !== runtime) expect(newJob).not.toContain(legacy); expect(newJob).toContain(`${repo}/bin`); expect(newJob).toContain(securityAdapter);
-    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', topology: installedUpdate ? 'installed protected-root update' : 'retained-source handoff', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), sourceManifest, nativeHooks, executorCredentialStore: { kind: 'native private Keychain', adapterSha256: digest(fs.readFileSync(securityAdapter)), defaultUnchanged: true, searchListUnchanged: true }, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: git(repo, ['rev-parse', 'main']) }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'canonical managed self-update drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
+    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', topology: installedUpdate ? 'installed protected-root update' : 'retained-source handoff', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), oldGatewayLoadedDefinitionHash: digest(oldGatewayJob), sourceManifest, nativeHooks, executorCredentialStore: { kind: 'native private Keychain', adapterSha256: digest(fs.readFileSync(securityAdapter)), defaultUnchanged: true, searchListUnchanged: true }, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: git(repo, ['rev-parse', 'main']) }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'canonical managed self-update drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
   } catch (error) {
     const logs = [path.join(scratch, 'bootstrap.log'), path.join(scratch, '.cache/mandible/production-stderr.log'), path.join(scratch, '.cache/mandible/local-front-door-stderr.log'), ...(requestId ? [path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'convergence.log'), path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'helper.log')] : [])].filter(file => fs.existsSync(file)).map(file => ({ name: path.basename(file), sha256: digest(fs.readFileSync(file)), excerpt: fs.readFileSync(file, 'utf8').slice(-16000) }));
     const requestState = requestId && db ? db.prepare('SELECT id, status, exit_code, error, output, merge_head_sha FROM auth_requests WHERE id=?').get(requestId) as any : null;

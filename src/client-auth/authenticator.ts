@@ -33,6 +33,7 @@ import {
   mintApiToken,
   normalizeBearer,
   verifyApiToken,
+  resolvedApiTokenIdentity,
   type MintedToken,
 } from "./tokens.js";
 import {
@@ -255,14 +256,7 @@ export class ClientAuthenticator implements ClientAuthGate {
 
     const verified = verifyApiToken(this.db, this.pepper, token);
     if (verified) {
-      return {
-        user_id: verified.user.id,
-        slug: verified.user.slug,
-        method: "api_token",
-        credential_id: verified.credentialId,
-        source,
-        effect_ceiling: this.instance?.allowed_effects ?? PRODUCTION_EFFECTS,
-      };
+      return resolvedApiTokenIdentity(verified, source, this.instance?.allowed_effects ?? PRODUCTION_EFFECTS);
     }
     return null;
   }

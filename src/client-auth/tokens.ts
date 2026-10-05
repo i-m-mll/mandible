@@ -17,6 +17,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "../db.js";
 import { addCredential, getUserById } from "../users/store.js";
 import type { User, UserCredential } from "../users/types.js";
+import type { ResolvedClientIdentity } from "../server.js";
 
 /** Human-recognizable prefix so a leaked token is identifiable as a Mandible PAT. */
 export const API_TOKEN_PREFIX = "mandible_pat_";
@@ -85,6 +86,16 @@ export function mintApiToken(
 export interface VerifiedToken {
   user: User;
   credentialId: string;
+}
+
+/** Preserve the complete verified principal at transport boundaries. */
+export function resolvedApiTokenIdentity(
+  verified: VerifiedToken,
+  source: ResolvedClientIdentity["source"],
+  effectCeiling: ResolvedClientIdentity["effect_ceiling"],
+): ResolvedClientIdentity {
+  return { user_id: verified.user.id, slug: verified.user.slug, method: "api_token",
+    credential_id: verified.credentialId, source, effect_ceiling: effectCeiling };
 }
 
 interface CredentialLookupRow {
