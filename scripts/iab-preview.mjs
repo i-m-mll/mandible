@@ -562,7 +562,7 @@ function validateBriefingDemoCustody() {
   const expectedPolicy = {
     MANDIBLE_INSTANCE_ROLE: "preview",
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
-    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(["ledger:read", "ledger:write", "files:preview"]),
+    MANDIBLE_ALLOWED_EFFECTS: previewIsolationEnv(previewRoot, metadata.sourceDb).MANDIBLE_ALLOWED_EFFECTS,
   };
   for (const [key, value] of Object.entries(expectedPolicy)) {
     if (metadata.instanceEnv?.[key] !== value) {
@@ -570,7 +570,7 @@ function validateBriefingDemoCustody() {
     }
   }
   const persistedInstance = metadata.health?.instance;
-  if (persistedInstance?.role !== "preview" || persistedInstance?.allowed_effects?.join(",") !== "ledger:read,ledger:write,files:preview" ||
+  if (persistedInstance?.role !== "preview" || JSON.stringify(persistedInstance?.allowed_effects) !== expectedPolicy.MANDIBLE_ALLOWED_EFFECTS ||
       persistedInstance?.db_path_source !== "iab-preview-copy") {
     throw new Error("Refusing demo seed: metadata instance policy does not match the persisted preview contract.");
   }
