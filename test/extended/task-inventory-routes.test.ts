@@ -296,7 +296,7 @@ describe("POST /api/tasks/inventory", () => {
       ) as { status: number; body: Record<string, unknown> };
       expect(response("anonymous")).toMatchObject({
         status: 401,
-        body: { error: "authentication_required", operation: "tasks.inventory" },
+        body: { error: "authentication_required", operation: router.listRoutePolicies().find(route => route.method === "POST" && route.path === "/api/tasks/inventory")!.operationId },
       });
       expect(response("unmapped")).toMatchObject({
         status: 403,
@@ -450,7 +450,7 @@ describe("read-only instance policy", () => {
     expect(response.status).toBe(403);
     expect(response.body).toMatchObject({
       error: "effect_forbidden",
-      operation: "tasks.inventory",
+      operation: readOnly.listRoutePolicies().find(route => route.method === "POST" && route.path === "/api/tasks/inventory")!.operationId,
       missing_effects: ["process:external"],
     });
 

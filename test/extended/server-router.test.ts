@@ -9,7 +9,7 @@ describe("Router error handling", () => {
 
     router.get("/api/fails", () => {
       throw new Error("private details");
-    }, { fileRpc: "deny" });
+    }, { fileRpc: "deny", operation: { id: "fixture.failure", effects: [], reportingCategory: null, requestSchema: null } });
 
     const response = await router.invoke({ method: "GET", url: "/api/fails" });
 
@@ -34,12 +34,15 @@ describe("Router route policies", () => {
     const router = new Router();
     router.post("/api/ledger/issues/:issueId/comments", (_req, res) => res.json({ ok: true }), {
       fileRpc: "allow",
+      operation: { id: "fixture.comment", effects: ["ledger:write"], reportingCategory: "ledger", requestSchema: null },
     });
     router.post("/api/auth/check", (_req, res) => res.json({ ok: true }), {
       fileRpc: "allow",
+      operation: { id: "fixture.auth-check", effects: ["ledger:read"], reportingCategory: null, requestSchema: null },
     });
     router.get("/api/projects", (_req, res) => res.json({ ok: true }), {
       fileRpc: "allow",
+      operation: { id: "fixture.projects", effects: ["ledger:read"], reportingCategory: null, requestSchema: null },
     });
 
     expect(router.listRoutePolicies()).toEqual([
@@ -47,17 +50,22 @@ describe("Router route policies", () => {
         method: "POST",
         path: "/api/ledger/issues/:issueId/comments",
         fileRpc: "allow",
+        operationId: "fixture.comment", effects: ["ledger:write"], requestSchema: "handler",
         operationalMutationCategory: "ledger",
       },
       {
         method: "POST",
         path: "/api/auth/check",
         fileRpc: "allow",
+        operationId: "fixture.auth-check", effects: ["ledger:read"], requestSchema: "handler",
+        operationalMutationCategory: null,
       },
       {
         method: "GET",
         path: "/api/projects",
         fileRpc: "allow",
+        operationId: "fixture.projects", effects: ["ledger:read"], requestSchema: "handler",
+        operationalMutationCategory: null,
       },
     ]);
   });

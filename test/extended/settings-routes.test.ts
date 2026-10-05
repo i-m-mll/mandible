@@ -90,6 +90,7 @@ describe("settings routes", () => {
     } else {
       process.env.MANDIBLE_TEST_CLI_LOG = originalCliLog;
     }
+    vi.restoreAllMocks();
     vi.resetModules();
     if (tempHome) {
       fs.rmSync(tempHome, { recursive: true, force: true });
@@ -146,6 +147,8 @@ describe("settings routes", () => {
   it("keeps deprecated reaper settings writable without creating the legacy config", async () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-settings-home-"));
     process.env.HOME = tempHome;
+    // Bun caches os.homedir independently of later HOME changes.
+    vi.spyOn(os, "homedir").mockReturnValue(tempHome);
     vi.resetModules();
 
     const db = createSettingsDb();
@@ -188,6 +191,8 @@ describe("settings routes", () => {
   it("returns default instruction targets and applies delivery changes immediately", async () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-settings-home-"));
     process.env.HOME = tempHome;
+    // Bun caches os.homedir independently of later HOME changes.
+    vi.spyOn(os, "homedir").mockReturnValue(tempHome);
     const cliLog = path.join(tempHome, "instructions-cli.log");
     const fakeCli = path.join(tempHome, "instructions.sh");
     fs.writeFileSync(fakeCli, [
@@ -280,6 +285,8 @@ describe("settings routes", () => {
   it("saves preview instruction settings without exporting or writing shared config", async () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-settings-preview-"));
     process.env.HOME = tempHome;
+    // Bun caches os.homedir independently of later HOME changes.
+    vi.spyOn(os, "homedir").mockReturnValue(tempHome);
     const cliLog = path.join(tempHome, "instructions-cli.log");
     const fakeCli = path.join(tempHome, "instructions.sh");
     fs.writeFileSync(fakeCli, "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$MANDIBLE_TEST_CLI_LOG\"\n", "utf8");
