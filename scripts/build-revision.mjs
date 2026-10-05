@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const SOURCE_PATHS = ["package.json", "package-lock.json", "tsconfig.json", "src", "channel-server", "ui"];
+const SOURCE_PATHS = ["package.json", ".bun-version", "bun.lock", "bunfig.toml", "tsconfig.json", "src", "channel-server", "ui", "scripts", "bin", "cli", "config", "src-tauri"];
 
 function git(root, ...args) {
   const result = spawnSync("git", args, {

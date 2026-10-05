@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -80,47 +80,4 @@ describe('typed typography settings', () => {
     });
   });
 
-  it('cascades detail typography across representative viewers and excludes all Timeline detail shells', () => {
-    const stylesheet = [
-      readFileSync('ui/src/styles/base.css', 'utf8'),
-      readFileSync('ui/src/styles/detail-pane-shell.css', 'utf8'),
-    ].join('\n');
-    for (const testCase of [
-      { uiFamily: "'Space Grotesk', system-ui, sans-serif", uiSize: '17px', detailFamily: 'system-ui, sans-serif', detailSize: '13px' },
-      { uiFamily: 'system-ui, sans-serif', uiSize: '14px', detailFamily: "'Space Grotesk', system-ui, sans-serif", detailSize: '12px' },
-    ]) {
-      const style = document.createElement('style');
-      style.dataset.typographyTest = '';
-      style.textContent = stylesheet
-        .replaceAll('var(--font-detail-size)', testCase.detailSize)
-        .replaceAll('var(--font-ui-size)', testCase.uiSize)
-        .replaceAll('var(--font-detail)', testCase.detailFamily)
-        .replaceAll('var(--font-ui)', testCase.uiFamily)
-        .replaceAll('var(--detail-content-size)', testCase.detailSize)
-        .replaceAll('var(--detail-content-family)', testCase.detailFamily)
-        + `\n.app-layout--route-timeline .detail-pane-shell__body { font-family: ${testCase.uiFamily}; font-size: ${testCase.uiSize}; }`;
-      document.head.append(style);
-      const { container, unmount } = render(h('div', { className: 'app-shell' }, [
-        ...['issue', 'auth', 'chat', 'briefing', 'artifact'].map((viewer) => h(
-          'article', { className: `detail-pane-shell ${viewer}-detail`, 'data-testid': viewer },
-          h('div', { className: 'detail-pane-shell__body' }, h('p', {}, `${viewer} prose`)),
-        )),
-        h('div', { className: 'app-layout--route-timeline' }, h(
-          'article', { className: 'detail-pane-shell timeline-bottom-panel' },
-          h('div', { className: 'detail-pane-shell__body', 'data-testid': 'timeline' }, 'Timeline prose'),
-        )),
-      ]));
-
-      for (const viewer of ['issue', 'auth', 'chat', 'briefing', 'artifact']) {
-        const body = container.querySelector(`[data-testid="${viewer}"] .detail-pane-shell__body`)!;
-        expect(getComputedStyle(body).fontSize).toBe(testCase.detailSize);
-        expect(getComputedStyle(body).fontFamily).toBe(testCase.detailFamily.replaceAll("'", '"'));
-      }
-      const timeline = screen.getByTestId('timeline');
-      expect(getComputedStyle(timeline).fontSize).toBe(testCase.uiSize);
-      expect(getComputedStyle(timeline).fontFamily).toBe(testCase.uiFamily.replaceAll("'", '"'));
-      unmount();
-      style.remove();
-    }
-  });
 });

@@ -15,7 +15,7 @@ END_MARKER="<!-- END MANDIBLE MANAGED INSTRUCTIONS -->"
 CLI_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 MANDIBLE_ROOT="$(cd "$CLI_DIR/.." && pwd -P)"
 CONTRACT_PATH="$CLI_DIR/instructions-contract.md"
-BUN_BIN="$("$MANDIBLE_ROOT/scripts/bun-runtime.sh")"
+BUN_RUNTIME="$("$MANDIBLE_ROOT/scripts/bun-runtime.sh")"
 
 usage() {
   mandible_command_help instructions
@@ -26,7 +26,7 @@ default_target() {
 }
 
 render_fragment() {
-  "$BUN_BIN" --no-install "$CLI_DIR/command-syntax.cjs" render "$CONTRACT_PATH"
+  "$BUN_RUNTIME" --no-install "$CLI_DIR/command-syntax.cjs" render "$CONTRACT_PATH"
 }
 
 render_block() {
@@ -36,7 +36,7 @@ render_block() {
 }
 
 settings_helper() {
-  "$BUN_BIN" --no-install - "$MANDIBLE_ROOT" "$@" <<'NODE'
+  "$BUN_RUNTIME" --no-install - "$MANDIBLE_ROOT" "$@" <<'NODE'
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -171,7 +171,7 @@ NODE
 }
 
 absolute_path() {
-  "$BUN_BIN" --no-install - "$1" <<'NODE'
+  "$BUN_RUNTIME" --no-install - "$1" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const target = path.resolve(process.argv[2]);
@@ -185,7 +185,7 @@ NODE
 }
 
 write_target_path() {
-  "$BUN_BIN" --no-install - "$1" <<'NODE'
+  "$BUN_RUNTIME" --no-install - "$1" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -248,7 +248,7 @@ git_root_for_path() {
 repo_relative_path() {
   local root="$1"
   local target="$2"
-  "$BUN_BIN" --no-install - "$root" "$target" <<'NODE'
+  "$BUN_RUNTIME" --no-install - "$root" "$target" <<'NODE'
 const path = require("node:path");
 const root = path.resolve(process.argv[2]);
 const target = path.resolve(process.argv[3]);
@@ -325,7 +325,7 @@ write_desired_file() {
   render_block > "$block_file"
 
   BEGIN_MARKER="$BEGIN_MARKER" END_MARKER="$END_MARKER" \
-    "$BUN_BIN" --no-install - "$target" "$block_file" <<'NODE' > "$output"
+    "$BUN_RUNTIME" --no-install - "$target" "$block_file" <<'NODE' > "$output"
 const fs = require("node:fs");
 const target = process.argv[2];
 const blockFile = process.argv[3];
@@ -391,7 +391,7 @@ cleanup_block() {
   write_target="$(write_target_path "$target")"
   tmp="$(temp_for_target "$write_target")"
   BEGIN_MARKER="$BEGIN_MARKER" END_MARKER="$END_MARKER" \
-    "$BUN_BIN" --no-install - "$target" <<'NODE' > "$tmp"
+    "$BUN_RUNTIME" --no-install - "$target" <<'NODE' > "$tmp"
 const fs = require("node:fs");
 const target = process.argv[2];
 const current = fs.readFileSync(target, "utf8");

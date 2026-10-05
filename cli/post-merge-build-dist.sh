@@ -16,8 +16,12 @@ err() {
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
 cd "$repo_root"
 
-dependency_command="${MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND:-npm install --ignore-scripts --no-audit --no-fund}"
-build_command="${MANDIBLE_POST_MERGE_BUILD_COMMAND:-npm run build}"
+runtime="$("$repo_root/scripts/bun-runtime.sh")"
+export MANDIBLE_RUNTIME="$runtime"
+export PATH="$(dirname "$runtime"):$PATH"
+
+dependency_command="${MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND:-bun install --frozen-lockfile}"
+build_command="${MANDIBLE_POST_MERGE_BUILD_COMMAND:-bun run build}"
 desktop_command="${MANDIBLE_POST_MERGE_DESKTOP_COMMAND:-bash cli/install-desktop-app.sh}"
 
 build_needed=false
@@ -40,14 +44,14 @@ fi
 
 if [[ -n "$merge_base_sha" && -n "$merge_head_sha" ]]; then
   build_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
-    package.json package-lock.json tsconfig.json \
-    src channel-server ui/src ui/index.html ui/esbuild.config.js)"
+    package.json .bun-version bun.lock bunfig.toml tsconfig.json \
+    src channel-server ui/src ui/index.html ui/esbuild.config.js scripts cli config src-tauri)"
   if [[ -n "$build_changes" ]]; then
     build_needed=true
   fi
   desktop_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
-    package.json package-lock.json \
-    src-tauri scripts/make-dist.sh scripts/local-runtime.mjs scripts/local-session-production-runner.mjs \
+    package.json .bun-version bun.lock bunfig.toml \
+    scripts/bun-runtime.sh src-tauri scripts/make-dist.sh scripts/local-runtime.mjs scripts/local-session-production-runner.mjs \
     scripts/build-revision.mjs scripts/canonical-origin.mjs \
     scripts/local-front-door.mjs scripts/local-ca-trust.mjs scripts/pinned-caddy.mjs \
     cli/install-desktop-app.sh)"
@@ -55,7 +59,7 @@ if [[ -n "$merge_base_sha" && -n "$merge_head_sha" ]]; then
     desktop_build_needed=true
   fi
   instruction_install_changes="$(git diff --name-only "$merge_base_sha" "$merge_head_sha" -- \
-    package.json package-lock.json tsconfig.json \
+    package.json .bun-version bun.lock bunfig.toml tsconfig.json \
     src channel-server ui/src ui/index.html ui/esbuild.config.js \
     cli/instructions.sh cli/instructions-contract.md cli/command-syntax.json cli/command-syntax.cjs cli/command-syntax.sh)"
   if [[ -n "$instruction_install_changes" ]]; then
@@ -68,9 +72,9 @@ else
 fi
 
 # Keep the daemon-selected runtime PATH. A login shell can silently switch
-# Node versions and invalidate the native modules used by production.
+# Bun versions and invalidate the native modules used by production.
 if [[ "$build_needed" == "true" ]]; then
-  err "[post-merge-build] aligning dependencies from package-lock.json"
+  err "[post-merge-build] aligning dependencies from bun.lock"
   bash -c "$dependency_command"
   err "[post-merge-build] running: ${build_command}"
   bash -c "$build_command"

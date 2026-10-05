@@ -719,6 +719,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
     closing = true;
     cancelStartupIngestion();
+    const scannerDrain = workScanner.stop();
     // Bug: 645f8a8 — a draining daemon is no longer ready for mutations.
     setDaemonReady(false);
     setDaemonWarm(false);
@@ -748,7 +749,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     stopTrashGcScheduler();
     stopManagedReminderScheduler();
     daemonLogCopyForward.stop();
-    daemonLogRetention.stop();
+    await daemonLogRetention.stop();
     reaperTimer.stop();
     workUnitReconciler.stop();
     navEnricher.stop();
@@ -765,6 +766,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       (server as { closeAllConnections: () => void }).closeAllConnections();
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await scannerDrain;
     clearInterval(healthCheckTimer);
     eventLoopDiagnostics.close();
     clearTimeout(shutdownTimeout);

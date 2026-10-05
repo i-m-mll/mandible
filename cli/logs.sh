@@ -12,7 +12,7 @@ usage() {
 
 if [[ "${1:-}" == "daemon" ]]; then
   shift
-  exec node "$SCRIPT_DIR/../dist/cli/operational-logs.js" "$@"
+  exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$SCRIPT_DIR/../dist/cli/operational-logs.js" "$@"
 fi
 
 logs_source() {
@@ -143,6 +143,7 @@ export MANDIBLE_DB="$(api_live_db_path)"
 
 export MANDIBLE_PARSED_COMMAND
 MANDIBLE_PARSED_COMMAND=$(mandible_parse_command logs "$@") || exit $?
+export MANDIBLE_RUNTIME="$("$SCRIPT_DIR/../scripts/bun-runtime.sh")"
 exec python3 - "$@" <<'PY'
 from __future__ import annotations
 
@@ -360,7 +361,7 @@ def inspect(args: SimpleNamespace) -> int:
     summary = summarize_file(source, path)
     if args.parse:
         cmd = [
-            "node",
+            os.environ["MANDIBLE_RUNTIME"],
             str(pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "dist" / "cli" / "conversation-blocks.js"),
             "logs",
             str(path),
@@ -414,7 +415,7 @@ def main() -> int:
         return inventory(args)
     if args.command == "capabilities":
         cmd = [
-            "node",
+            os.environ["MANDIBLE_RUNTIME"],
             str(pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "dist" / "cli" / "conversation-blocks.js"),
             "capabilities",
         ]

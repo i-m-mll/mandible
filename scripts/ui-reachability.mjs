@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Import-graph reachability guard for the UI bundle.
 //
 // The UI ships from a single esbuild entry (`ui/src/app.tsx`). Modules that no
@@ -143,7 +143,7 @@ export function computeReachability() {
       // Ambient declaration files are not modules: they emit no runtime bytes
       // and no stylesheet, so they cannot be the dead weight this walker looks
       // for. Their consumer is `ui/tsconfig.json`'s project include, which
-      // `npm run typecheck` enforces.
+      // `bun run typecheck` enforces.
       else if (!entry.name.endsWith('.d.ts')) allFiles.push(absolute);
     }
   })(UI_SRC);

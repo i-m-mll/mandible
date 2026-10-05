@@ -78,6 +78,7 @@ mandible_work_unit_claim() {
 
   [[ -n "$issue_id" ]] || mandible_ledger_die "Missing --issue" 2 || return $?
   [[ -n "$repo_id" ]] || mandible_ledger_die "Missing --repo" 2 || return $?
+  [[ -z "$expected_generation" || "$expected_generation" =~ ^[0-9]+$ ]] || mandible_ledger_die "Invalid --expected-generation" 2 || return $?
   mandible_ledger_require_tools || return $?
 
   local payload

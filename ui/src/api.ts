@@ -1,3 +1,6 @@
+import { isBriefingEvent } from '../../src/contracts';
+import { queryClient } from './query/client';
+import { browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import { operationForRequest } from '../../src/security/operation-policy';
 import { browserSessionFetch } from './client-auth-token';
@@ -13,10 +16,10 @@ import type {
   ArtifactAliasResolutionStatus as ContractArtifactAliasResolutionStatus,
   ArtifactLinkRecord as ContractArtifactLinkRecord,
   ArtifactRecord as ContractArtifactRecord,
-  ArtifactResolveResult as ContractArtifactResolveResult,
+  ArtifactIdentityResolution as ContractArtifactResolveResult,
   ArtifactSeriesRecord as ContractArtifactSeriesRecord,
   ArtifactSeriesSummary as ContractArtifactSeriesSummary,
-  ArtifactDraftPublishResult as ContractArtifactDraftPublishResult,
+  ArtifactDraftWriteResult as ContractArtifactDraftPublishResult,
   ArtifactDraftRecord as ContractArtifactDraftRecord,
   ArtifactVersionRecord as ContractArtifactVersionRecord,
   AuthRequestAction as ContractAuthRequestAction,
@@ -41,13 +44,13 @@ import type {
   WorkflowRunStatus as ContractWorkflowRunStatus,
   WorkflowWorkerStatus as ContractWorkflowWorkerStatus,
   WorkflowWarning as ContractWorkflowWarning,
+  SpaceBlock as ContractSpaceBlock,
+  SpaceBlockType as ContractSpaceBlockType,
   Space as ContractSpace,
   SpaceGroup as ContractSpaceGroup,
   SpaceItem as ContractSpaceItem,
   SpaceOccurrence as ContractSpaceOccurrence,
   SpaceEdge as ContractSpaceEdge,
-  SpaceExport as ContractSpaceExport,
-  SpaceExportStatus as ContractSpaceExportStatus,
   CreateSpaceRequest,
   UpdateSpaceRequest,
   AddSpaceItemRequest,
@@ -366,12 +369,12 @@ export function isApiErrorStatus(error: unknown, status: number): error is ApiEr
   return error instanceof ApiError && error.status === status;
 }
 
-async function apiGet(path: string, init: RequestInit = {}): Promise<Response> {
+async function apiGet(path: string, init: RequestInit = {}, fetchImpl?: typeof fetch): Promise<Response> {
   const headers = new Headers(DEFAULT_HEADERS);
   if (init.headers) {
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
   }
-  const response = await browserSessionFetch(path, { ...init, headers });
+  const response = await browserSessionFetch(path, { ...init, headers }, fetchImpl);
   if (!response.ok) {
     await throwOnError(response, 'GET', path);
   }
@@ -392,12 +395,9 @@ async function throwOnError(response: Response, method: string, path: string): P
   throw new ApiError(message, response.status, code);
 }
 
-
-
-
 type JsonWriteMethod = 'POST' | 'PATCH' | 'PUT';
 
-async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown): Promise<Response> {
+async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown, fetchImpl?: typeof fetch): Promise<Response> {
   const response = await browserSessionFetch(path, {
     method,
     headers: {
@@ -405,7 +405,7 @@ async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown): 
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
-  });
+  }, fetchImpl);
   if (!response.ok) {
     await throwOnError(response, method, path);
   }
@@ -416,11 +416,11 @@ const apiPost = (path: string, body?: unknown): Promise<Response> => apiWrite('P
 const apiPatch = (path: string, body?: unknown): Promise<Response> => apiWrite('PATCH', path, body);
 const apiPut = (path: string, body?: unknown): Promise<Response> => apiWrite('PUT', path, body);
 
-async function apiDelete(path: string): Promise<Response> {
+async function apiDelete(path: string, fetchImpl?: typeof fetch): Promise<Response> {
   const response = await browserSessionFetch(path, {
     method: 'DELETE',
     headers: DEFAULT_HEADERS,
-  });
+  }, fetchImpl);
   if (!response.ok) {
     await throwOnError(response, 'DELETE', path);
   }
@@ -638,23 +638,9 @@ export function invalidateApiGetCache(
   }
 }
 
-const BRIEFING_EVENTS = new Set([
-  'briefing:created',
-  'briefing:bundle-created',
-  'briefing:bundle-member-added',
-  'briefing:bundle-members-replaced',
-  'briefing:bundle-name-updated',
-  'briefing:bundle-deleted',
-  'briefing:round-published',
-  'briefing:answered',
-  'briefing:annotated',
-  'briefing:submitted',
-  'briefing:title-updated',
-]);
-
 /** Exact cache families affected by a Briefing lifecycle event. */
 export function briefingApiCacheFamiliesForEvent(type: string): readonly string[] {
-  if (BRIEFING_EVENTS.has(type)) {
+  if (isBriefingEvent(type)) {
     return ['/api/briefings', '/api/briefing-bundles', '/api/briefing-groups', '/api/dashboard/badges'];
   }
   return [];
@@ -663,6 +649,7 @@ export function briefingApiCacheFamiliesForEvent(type: string): readonly string[
 /** Narrow Briefing invalidation; returns whether the event was handled. */
 export function invalidateBriefingApiCacheForEvent(type: string): boolean {
   const families = briefingApiCacheFamiliesForEvent(type);
+  if (families.length) void refreshBrowserResources(queryClient, browserResourceKeysForEvent(type));
   for (const family of families) invalidateApiGetCache(family);
   return families.length > 0;
 }
@@ -1055,12 +1042,18 @@ export async function setAuthRequestActionVeto(
   throw new Error('Invalid action veto response.');
 }
 
+export async function cancelApprovalProof(requestId: string): Promise<void> {
+  const path = `/api/auth/request/${encodeURIComponent(requestId)}/cancel-proof`;
+  const response = await apiWrite('POST', path);
+  if (!response.ok) throw new Error('Could not cancel operator signing.');
+}
+
 export async function approveAuthRequest(requestId: string): Promise<void> {
   // Bug: 58d93ee — extract server error message so the dashboard can surface it
   // (e.g. invalid_command: "Auth request has no command set")
   // Bug: 737df04 — wrap in AbortController so the fetch does not hang indefinitely
   // if Mandible is mid-startup-scan and the event loop is saturated.
-  const APPROVE_TIMEOUT_MS = 10_000;
+  const APPROVE_TIMEOUT_MS = 65_000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), APPROVE_TIMEOUT_MS);
 
@@ -2542,7 +2535,6 @@ export async function updateBackupSettings(settings: {
   }
 }
 
-
 // ── Conversations API ──
 
 export async function getConversations(params?: {
@@ -3127,7 +3119,6 @@ export async function navigateToDesktopDashboard(): Promise<void> {
 export type BlockType = ContractBlockType;
 export type Role = ContractRole;
 export type ConversationSource = ContractConversationSource;
-
 
 export type ConversationBlock = ContractConversationBlock;
 
@@ -3838,157 +3829,21 @@ export async function resolveSpaceRef(ref: string): Promise<ResolverResult> {
   return payload.resolution;
 }
 
-// --- Spaces document custody: export-and-track + repo-file registration (C13b
-// backend, issue 8730bf9) typed client glue consumed by the export dialog + the
-// repo-file registration UI (C13f, issue f7be021). Committing a document to a
-// repo is ALWAYS an explicit user action: these helpers are only ever called
-// from an explicit user-triggered dialog submit, never on a background tick.
-// ---------------------------------------------------------------------------
-
-/**
- * Resolved export settings for a Space: the global default repo-relative path /
- * branch, the resolved value after applying any per-repo override, and the repo
- * scope the dialog is operating against. Mirrors `resolveDocsSettings`
- * (`src/spaces/export.ts`) which the `GET .../exports` route returns.
- */
-export type SpaceExportSettings = {
-  /** Effective repo-relative export path after global → per-repo resolution. */
-  path: string;
-  /** Effective docs branch after global → per-repo resolution. */
-  branch: string;
-  /** True when a per-repo override (not just the global default) is in effect. */
-  overridden?: boolean;
-};
-
-/**
- * The export tracking read surface for a Space: the existing `space_exports`
- * rows + the resolved export settings + the repo scope. Backs the export dialog
- * default/override resolution (custody-doc §5.1).
- */
-export type SpaceExportsReadResult = {
-  exports: ContractSpaceExport[];
-  repo_id: string;
-  settings: SpaceExportSettings;
-};
-
-/** Read the tracked exports + resolved export settings for a Space. */
-export async function getSpaceExports(
-  spaceId: string,
-  repoId?: string,
-): Promise<SpaceExportsReadResult> {
-  const response = await apiGet(
-    `/api/spaces/${encodeURIComponent(spaceId)}/exports${buildQuery({ repo_id: repoId })}`,
-  );
-  return (await parseMaybeJson(response)) as SpaceExportsReadResult;
+export type SpacePublication = import('../../src/spaces/publication').SpacePublication;
+export type SpaceDocumentHistory = { id: string; kind: string; content: string | null; blocks_json: string | null; artifact_ref: string | null; provenance_json: string };
+export async function getSpacePublications(spaceId: string,signal?:AbortSignal): Promise<{ publications: SpacePublication[]; history: SpaceDocumentHistory[]; destinations:import('../../src/spaces/publication').PublicationDestination[] }> {
+  const result = await parseMaybeJson(await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}/publications`,{signal})) as { publications: SpacePublication[]; history: SpaceDocumentHistory[]; destinations:import('../../src/spaces/publication').PublicationDestination[] };
+  if (!result || !Array.isArray(result.publications) || !Array.isArray(result.history) || !Array.isArray(result.destinations)) throw new Error('The Spaces service returned invalid publication history.');
+  return result;
 }
-
-/** Confirmed inputs the export dialog posts for an explicit export-and-track. */
-export type ExportAndTrackRequest = {
-  /** Confirmed repo-relative target path (dialog confirm/override output). */
-  path?: string | null;
-  /** Docs branch override; defaults to the resolved per-repo/global branch. */
-  branch?: string | null;
-  /** Explicit project-checkout id; defaults to the Space's project checkout. */
-  repo_id?: string | null;
-  /** Issue refs for ledger links to the exported commit (required). */
-  issues: string[];
-  /** Commit subject; a deterministic default is used when omitted. */
-  message?: string | null;
-};
-
-export type ExportAndTrackResult = {
-  export: ContractSpaceExport;
-  document_content_sha256: string;
-  commit: string;
-  pre_export_snapshot_artifact_id: string;
-  last_export_artifact_id: string;
-};
-
-/**
- * Explicit export-and-track: serialize the Space document, write it to the
- * managed docs-branch worktree at the confirmed path, agent-key linked-commit
- * it, and upsert the `space_exports` tracking row. Re-exporting the SAME
- * document to the SAME confirmed path is idempotent (custody-doc §5.2). This is
- * ONLY ever invoked from the export dialog's explicit user confirm.
- */
-export async function exportSpaceTracked(
-  spaceId: string,
-  body: ExportAndTrackRequest,
-): Promise<ExportAndTrackResult> {
-  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/exports`, body);
-  return (await parseMaybeJson(response)) as ExportAndTrackResult;
+export async function prepareSpacePublication(spaceId: string, body: { path: string; repo_id?: string; issue: string; message?: string }): Promise<SpacePublication> {
+  return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/publications`,body)) as SpacePublication;
 }
-
-/** Persist the global default or a per-repo export-path override. */
-export type SetExportSettingsRequest = {
-  /** Per-repo override target; omit/empty for the global default. */
-  repo_id?: string | null;
-  path?: string | null;
-  branch?: string | null;
-};
-
-export async function setSpaceExportSettings(
-  body: SetExportSettingsRequest,
-): Promise<{ ok: boolean; scope: 'global' | 'repo'; repo_id: string | null }> {
-  const response = await apiPost('/api/spaces/exports/settings', body);
-  return (await parseMaybeJson(response)) as {
-    ok: boolean;
-    scope: 'global' | 'repo';
-    repo_id: string | null;
-  };
+export async function submitSpacePublication(spaceId: string,id: string): Promise<SpacePublication> {
+  return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/publications/${encodeURIComponent(id)}/submit`,{})) as SpacePublication;
 }
-
-/**
- * Register an EXISTING tracked repo file as a Space document with link custody
- * (custody-doc §1.4): the canonical bytes stay in the repo, the document starts
- * at `authority='repo'`, and its source is a `repo://<repo>@<ref>/<path>` ref.
- * This is an explicit user action (no auto-track), so it only ever fires from
- * the registration dialog's confirm.
- *
- * Backend glue: `POST /api/spaces/:id/exports/register` (C13b owned route,
- * issue 8730bf9). The route creates the `authority='repo'` `space_exports` row
- * + the link-custody artifact and returns the new tracking row.
- */
-export type RegisterRepoFileRequest = {
-  /** Explicit project-checkout id; defaults to the Space's project checkout. */
-  repo_id?: string | null;
-  /** Docs branch / ref the existing file lives on. */
-  branch?: string | null;
-  /** Repo-relative path of the existing tracked file to register. */
-  path: string;
-};
-
-export type RegisterRepoFileResult = {
-  export: ContractSpaceExport;
-  /** The `repo://<repo>@<ref>/<path>` source ref recorded for the document. */
-  source_ref: string;
-};
-
-export async function registerRepoFileDocument(
-  spaceId: string,
-  body: RegisterRepoFileRequest,
-): Promise<RegisterRepoFileResult> {
-  const response = await apiPost(
-    `/api/spaces/${encodeURIComponent(spaceId)}/exports/register`,
-    body,
-  );
-  return (await parseMaybeJson(response)) as RegisterRepoFileResult;
-}
-
-/** Re-check drift for one tracked export row (custody-doc §6). */
-export type ExportDriftResult = {
-  export_id: string;
-  status: ContractSpaceExportStatus;
-  changed: boolean;
-  last_seen_commit: string | null;
-  last_seen_content_sha256: string | null;
-};
-
-export async function getSpaceExportDrift(
-  spaceId: string,
-): Promise<{ space_id: string; drift: ExportDriftResult[] }> {
-  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}/exports/drift`);
-  return (await parseMaybeJson(response)) as { space_id: string; drift: ExportDriftResult[] };
+export async function importSpaceDocument(body: { title: string; project_id?: string } & ({ ref: string } | { project: string; commit: string; path: string })): Promise<ContractSpace> {
+  return await parseMaybeJson(await apiPost('/api/spaces/documents/import',body)) as ContractSpace;
 }
 
 function briefingRecord(value: unknown): Record<string, unknown> {
@@ -4591,9 +4446,20 @@ export async function getClientAuthWhoami(signal?: AbortSignal): Promise<ClientA
   };
 }
 
+function briefingOptionalRows(value: unknown, key: string): unknown[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`The Briefing service returned an invalid ${key} collection.`);
+  return value;
+}
+
+function briefingRows(payload: unknown, key: string): unknown[] {
+  const rows = briefingRecord(payload)[key];
+  if (!Array.isArray(rows)) throw new Error(`The Briefing service returned an invalid ${key} collection.`);
+  return rows;
+}
+
 export function normalizeBriefings(payload: unknown): FeedbackCollection[] {
-  const root = briefingRecord(payload);
-  const rows = Array.isArray(root.briefings) ? root.briefings : [];
+  const rows = briefingRows(payload, 'briefings');
   return rows.map((entry) => {
     const row = briefingRecord(entry);
     const id = briefingString(row.id);
@@ -4611,7 +4477,10 @@ export function normalizeBriefings(payload: unknown): FeedbackCollection[] {
       createdAt: briefingOptionalNumber(row.created_at) ?? 0,
       updatedAt: briefingOptionalNumber(row.updated_at) ?? 0,
     };
-  }).filter((entry) => Boolean(entry.collectionId && entry.latestRoundId));
+  }).filter((entry) => {
+    if (!entry.collectionId || !entry.latestRoundId) throw new Error('The Briefing service returned an invalid Briefing.');
+    return true;
+  });
 }
 
 const BRIEFINGS_PATH = '/api/briefings';
@@ -4705,7 +4574,7 @@ export type BriefingSidebarSnapshot = {
 function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
   const bundle = briefingRecord(entry);
   const id = briefingString(bundle.id);
-  const memberRows = Array.isArray(bundle.members) ? bundle.members : [];
+  const memberRows = briefingOptionalRows(bundle.members, 'members');
   const members = memberRows.map((memberEntry) => {
     const member = briefingRecord(memberEntry);
     const normalized = normalizeBriefings({ briefings: [member.briefing] })[0];
@@ -4713,7 +4582,7 @@ function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
     return normalized && position !== null && position >= 0 ? { position, briefing: normalized } : null;
   }).filter((member): member is { position: number; briefing: FeedbackCollection } => member !== null)
     .sort((left, right) => left.position - right.position);
-  const layoutRows = Array.isArray(bundle.layout) ? bundle.layout : [];
+  const layoutRows = briefingOptionalRows(bundle.layout, 'layout');
   const layout = layoutRows.map((layoutEntry): BriefingBundleLayoutEntry | null => {
     const row = briefingRecord(layoutEntry);
     if (row.kind === 'briefing') {
@@ -4722,7 +4591,7 @@ function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
     }
     if (row.kind === 'subgroup') {
       const name = briefingString(row.name);
-      const briefings = (Array.isArray(row.briefings) ? row.briefings : [])
+      const briefings = (briefingOptionalRows(row.briefings, 'subgroup briefings'))
         .map((entry) => {
           const member = briefingRecord(entry);
           return normalizeBriefings({ briefings: [member.briefing ?? entry] })[0];
@@ -4750,21 +4619,22 @@ function normalizeBriefingBundle(entry: unknown): BriefingBundle | null {
 }
 
 export function normalizeBriefingBundles(payload: unknown): BriefingBundle[] {
-  const root = briefingRecord(payload);
-  const rows = Array.isArray(root.bundles) ? root.bundles : [];
-  return rows.map(normalizeBriefingBundle).filter((bundle): bundle is BriefingBundle => bundle !== null);
+  const rows = briefingRows(payload, 'bundles');
+  return rows.map(normalizeBriefingBundle).filter((bundle): bundle is BriefingBundle => {
+    if (!bundle) throw new Error('The Briefing service returned an invalid bundle.');
+    return true;
+  });
 }
 
 export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
-  const root = briefingRecord(payload);
-  const rows = Array.isArray(root.groups) ? root.groups : [];
+  const rows = briefingRows(payload, 'groups');
   return rows.map((entry): BriefingGroup | null => {
     const group = briefingRecord(entry);
     const id = briefingString(group.id);
     const key = briefingString(group.key);
     const name = briefingString(group.name);
     const current = group.current == null ? null : normalizeBriefingBundle(group.current);
-    const updates = (Array.isArray(group.updates) ? group.updates : [])
+    const updates = (briefingOptionalRows(group.updates, 'updates'))
       .map(normalizeBriefingBundle)
       .filter((update): update is BriefingBundle => update !== null);
     const parseReviewItem = (entry: unknown): BriefingGroupReviewItem | null => {
@@ -4885,49 +4755,22 @@ export function normalizeBriefingGroups(payload: unknown): BriefingGroup[] {
       reviewCandidates,
       history,
     } : null;
-  }).filter((group): group is BriefingGroup => group !== null);
-}
-
-export function getCachedBriefings(now: number = Date.now()): FeedbackCollection[] | null {
-  const cached = getJsonCache.get(cacheKeyForGet(BRIEFINGS_PATH));
-  if (!cached || now >= cached.staleUntil) return null;
-  return normalizeBriefings(cached.value);
+  }).filter((group): group is BriefingGroup => {
+    if (!group) throw new Error('The Briefing service returned an invalid group.');
+    return true;
+  });
 }
 
 export async function getBriefings(signal?: AbortSignal): Promise<FeedbackCollection[]> {
-  const payload = await cachedApiGetJson<unknown>(BRIEFINGS_PATH, {
-    ...WARMED_ROUTE_GET_OPTIONS,
-    signal,
-  });
-  return normalizeBriefings(payload);
-}
-
-export function getCachedBriefingBundles(now: number = Date.now()): BriefingBundle[] | null {
-  const cached = getJsonCache.get(cacheKeyForGet(BRIEFING_BUNDLES_PATH));
-  if (!cached || now >= cached.staleUntil) return null;
-  return normalizeBriefingBundles(cached.value);
+  return normalizeBriefings(await parseMaybeJson(await apiGet(BRIEFINGS_PATH, { signal })));
 }
 
 export async function getBriefingBundles(signal?: AbortSignal): Promise<BriefingBundle[]> {
-  const payload = await cachedApiGetJson<unknown>(BRIEFING_BUNDLES_PATH, {
-    ...WARMED_ROUTE_GET_OPTIONS,
-    signal,
-  });
-  return normalizeBriefingBundles(payload);
-}
-
-export function getCachedBriefingGroups(now: number = Date.now()): BriefingGroup[] | null {
-  const cached = getJsonCache.get(cacheKeyForGet(BRIEFING_GROUPS_PATH));
-  if (!cached || now >= cached.staleUntil) return null;
-  return normalizeBriefingGroups(cached.value);
+  return normalizeBriefingBundles(await parseMaybeJson(await apiGet(BRIEFING_BUNDLES_PATH, { signal })));
 }
 
 export async function getBriefingGroups(signal?: AbortSignal): Promise<BriefingGroup[]> {
-  const payload = await cachedApiGetJson<unknown>(BRIEFING_GROUPS_PATH, {
-    ...WARMED_ROUTE_GET_OPTIONS,
-    signal,
-  });
-  return normalizeBriefingGroups(payload);
+  return normalizeBriefingGroups(await parseMaybeJson(await apiGet(BRIEFING_GROUPS_PATH, { signal })));
 }
 
 export async function dispositionBriefingGroupProposal(
@@ -4959,37 +4802,15 @@ export async function dispositionBriefingGroupProposal(
   }
   invalidateApiGetCache(BRIEFING_GROUPS_PATH);
   invalidateApiGetCache('/api/dashboard/badges');
-  getJsonCache.delete(BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY);
+  void refreshBrowserResources(queryClient, browserResourceKeysForEvent('briefing:group-proposal-accepted'));
   return { group, disposition, changed: root.changed };
-}
-
-const BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY = cacheKeyForGet(
-  `${BRIEFINGS_PATH}|${BRIEFING_BUNDLES_PATH}|${BRIEFING_GROUPS_PATH}`,
-);
-
-export function getCachedBriefingSidebarSnapshot(now: number = Date.now()): BriefingSidebarSnapshot | null {
-  const cached = getJsonCache.get(BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY);
-  if (!cached || now >= cached.staleUntil) return null;
-  const snapshot = cached.value as Partial<BriefingSidebarSnapshot>;
-  return Array.isArray(snapshot.briefings) && Array.isArray(snapshot.bundles) && Array.isArray(snapshot.groups)
-    ? snapshot as BriefingSidebarSnapshot
-    : null;
 }
 
 export async function getBriefingSidebarSnapshot(signal?: AbortSignal): Promise<BriefingSidebarSnapshot> {
   const [briefings, bundles, groups] = await Promise.all([
-    getBriefings(signal),
-    getBriefingBundles(signal),
-    getBriefingGroups(signal),
+    getBriefings(signal), getBriefingBundles(signal), getBriefingGroups(signal),
   ]);
-  const snapshot = { briefings, bundles, groups };
-  const now = Date.now();
-  getJsonCache.set(BRIEFING_SIDEBAR_SNAPSHOT_CACHE_KEY, {
-    value: snapshot,
-    freshUntil: now + WARMED_ROUTE_GET_OPTIONS.ttlMs,
-    staleUntil: now + WARMED_ROUTE_GET_OPTIONS.ttlMs + WARMED_ROUTE_GET_OPTIONS.staleWhileRevalidateMs,
-  });
-  return snapshot;
+  return { briefings, bundles, groups };
 }
 
 export function normalizeBriefingProjection(payload: unknown): BriefingProjection {
@@ -6030,4 +5851,54 @@ export async function cancelTaskDisable(commandId: string): Promise<TaskCommandM
   const command = normalizeTaskCommand(row.command);
   if (!command) throw new Error('Server returned an invalid task command receipt.');
   return { command, stored: row.stored === true };
+}
+
+/** Embed snapshot placeholder posted alongside an `item_id` (C11 invariant). */
+export type BlockItemSnapshot = Record<string, unknown>;
+
+/** Create-block request body (mirrors `parseBlockCreateInput`, C11). */
+export type CreateBlockBody = {
+  block_type: ContractSpaceBlockType;
+  parent_id?: string | null;
+  item_id?: string | null;
+  item_snapshot?: BlockItemSnapshot | null;
+  sort_key?: string | null;
+  markdown?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+/** Update-block request body (mirrors `parseBlockUpdateInput`, C11). */
+export type UpdateBlockBody = {
+  block_type?: ContractSpaceBlockType;
+  parent_id?: string | null;
+  item_id?: string | null;
+  item_snapshot?: BlockItemSnapshot | null;
+  sort_key?: string | null;
+  markdown?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+const spaceBlocksPath = (spaceId: string) => `/api/spaces/${encodeURIComponent(spaceId)}/blocks`;
+export async function listSpaceBlocks(spaceId: string, fetchImpl?: typeof fetch, signal?: AbortSignal): Promise<ContractSpaceBlock[]> {
+  const payload = await parseMaybeJson(await apiGet(spaceBlocksPath(spaceId), { signal }, fetchImpl)) as { blocks?: ContractSpaceBlock[] };
+  if (!Array.isArray(payload.blocks)) throw new Error('The Spaces service returned an invalid block collection.');
+  return payload.blocks;
+}
+export async function createSpaceBlock(spaceId: string, body: CreateBlockBody, fetchImpl?: typeof fetch): Promise<ContractSpaceBlock> {
+  const payload = await parseMaybeJson(await apiWrite('POST', spaceBlocksPath(spaceId), body, fetchImpl)) as { block: ContractSpaceBlock };
+  return payload.block;
+}
+export async function updateSpaceBlock(spaceId: string, blockId: string, body: UpdateBlockBody, fetchImpl?: typeof fetch): Promise<ContractSpaceBlock> {
+  const payload = await parseMaybeJson(await apiWrite('PATCH', `${spaceBlocksPath(spaceId)}/${encodeURIComponent(blockId)}`, body, fetchImpl)) as { block: ContractSpaceBlock };
+  return payload.block;
+}
+export async function deleteSpaceBlock(spaceId: string, blockId: string, fetchImpl?: typeof fetch): Promise<void> {
+  await apiDelete(`${spaceBlocksPath(spaceId)}/${encodeURIComponent(blockId)}`, fetchImpl);
+}
+export async function detachItemFromBlocks(spaceId: string, itemId: string, fetchImpl?: typeof fetch): Promise<{ detached: ContractSpaceBlock[] }> {
+  return await parseMaybeJson(await apiWrite('POST', `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}/detach-blocks`, {}, fetchImpl)) as { detached: ContractSpaceBlock[] };
+}
+
+export async function importSpaceHistory(spaceId: string,id: string,title: string): Promise<ContractSpace> {
+  return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/history/${encodeURIComponent(id)}/import`,{title})) as ContractSpace;
 }

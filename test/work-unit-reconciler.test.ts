@@ -34,8 +34,10 @@ beforeEach(() => {
     );
 
     CREATE TABLE branches (
-      branch TEXT PRIMARY KEY,
-      ahead_default INTEGER DEFAULT 0
+      repo_root TEXT NOT NULL DEFAULT '',
+      branch TEXT NOT NULL,
+      ahead_default INTEGER DEFAULT 0,
+      PRIMARY KEY (repo_root, branch)
     );
   `);
   setDb(db);
@@ -234,6 +236,20 @@ describe("work unit reconciler", () => {
       auth_request_id: "auth-dotfiles",
       resolved_at: 30,
     });
+  });
+
+  it("keeps same-named branches in different repositories independent", () => {
+    db.prepare("INSERT INTO branches (repo_root, branch, ahead_default) VALUES ('repo-b', 'feature/shared', 2)").run();
+    const insert = db.prepare("INSERT INTO work_units (id, repo_id, branch, state) VALUES (?, ?, 'feature/shared', ?)");
+    insert.run('missing-a', 'repo-a', 'committed');
+    insert.run('exists-b', 'repo-b', 'committed');
+    insert.run('open-a', 'repo-a', 'open');
+    insert.run('open-b', 'repo-b', 'open');
+    reconciler().reconcile();
+    expect(db.prepare("SELECT id, state FROM work_units ORDER BY id").all()).toEqual([
+      { id: 'exists-b', state: 'committed' }, { id: 'missing-a', state: 'abandoned' },
+      { id: 'open-a', state: 'open' }, { id: 'open-b', state: 'committed' },
+    ]);
   });
 
   it("auto-commits open work units whose branch is ahead of default", () => {

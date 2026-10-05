@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { canonicalJson } from "../canonical-json.js";
 import type { Db } from "../db.js";
-import { resolveArtifactRefReadonlyFull } from "../provider-artifacts.js";
+import { resolveArtifactIdentity } from "../provider-artifacts.js";
 import { BriefingStoreError, resolveBriefingId } from "./briefings.js";
 import { resolveBundleId, type BriefingBundleViewer } from "./briefing-bundles.js";
 import { resolveGroupId } from "./briefing-groups.js";
@@ -55,7 +55,7 @@ function successorBundle(db: Db, oldId: string | null, next: LayoutMember[], now
 }
 
 function exactArtifactId(db: Db, ref: string): string {
-  const resolved = resolveArtifactRefReadonlyFull(db, ref);
+  const resolved = resolveArtifactIdentity(db, ref, "strict-read");
   if (resolved.status !== "resolved" || resolved.target_type !== "artifact" || !resolved.target_id) {
     throw new BriefingStoreError("Placement requires one exact logical Artifact ref", 404, "artifact_not_found");
   }

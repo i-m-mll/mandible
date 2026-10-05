@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Ensure node-pty prebuilt spawn-helper binaries are executable.
 // npm install doesn't always preserve execute bits from the tarball.
 import fs from "node:fs";

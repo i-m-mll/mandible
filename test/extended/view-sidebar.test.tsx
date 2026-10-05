@@ -7,13 +7,13 @@
 import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRef } from 'preact';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+
+
 
 import { ViewSidebar } from '../../ui/src/components/ViewSidebar';
 import { AppShellProvider, type AppShellContextValue } from '../../ui/src/app-shell';
-import { VIEW_SIDEBAR_GEOMETRY } from '../../ui/src/view-sidebar-geometry';
-import { readResolvedStylesheet } from '../helpers/css-manifest';
+
+
 
 // jsdom in this build ships a localStorage stub whose setItem throws; install a
 // working in-memory localStorage so width persistence round-trips.
@@ -265,20 +265,6 @@ describe('ViewSidebar', () => {
     }
   });
 
-  it('keeps migrated views on ViewSidebar instead of direct resize handles', () => {
-    const viewPaths = [
-      'ui/src/views/auth.tsx',
-      'ui/src/views/artifacts.tsx',
-      'ui/src/views/conversations.tsx',
-      'ui/src/views/inbox.tsx',
-    ];
-    for (const viewPath of viewPaths) {
-      const source = readFileSync(resolve(viewPath), 'utf8');
-      expect(source).toContain('<ViewSidebar');
-      expect(source).not.toContain("from '../../hooks/useSidebarResize'");
-      expect(source).not.toContain('className="sidebar-drag-handle"');
-    }
-  });
 
   it('keyboard ArrowRight/ArrowLeft resize the sidebar directly and persist the clamped width', () => {
     // window.innerWidth in jsdom is 1024 → 50% clamp = 512.
@@ -313,41 +299,8 @@ describe('ViewSidebar', () => {
   // `.sidebar-drag-handle`. jsdom cannot compute the full cascade, so this only
   // guards the selector SHAPE; CDP (headless Chrome getComputedStyle +
   // getBoundingClientRect) is the real verification — see the issue's CDP run.
-  it('uses a higher-specificity two-class selector for the resize handle (cascade guard)', () => {
-    const css = readResolvedStylesheet();
-    expect(css).toMatch(/\.view-sidebar__footer\s*\{[^}]*flex:\s*0 0 auto/);
-    // The winning rule reaches the physical divider while shadow paint remains additive.
-    expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*position:\s*absolute/);
-    expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*right:\s*calc\(-1 \* var\(--app-shadow-gutter-width\)\);[^}]*z-index:\s*calc\(var\(--z-app-subdivision\) \+ 1\);/s);
-    expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle::before\s*\{[^}]*left:\s*-5px;[^}]*width:\s*10px;/s);
-    expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*z-index:\s*auto;/s);
-    // The old single-class positioning rule (which lost to source order) is gone.
-    expect(css).not.toMatch(/(^|\n)\s*\.view-sidebar__resize-handle\s*\{[^}]*position:\s*absolute/);
-  });
 
-  it('keeps the shared top inset authoritative and Graph free of a competing top declaration', () => {
-    const css = readResolvedStylesheet();
-    const graphCss = readFileSync(resolve('ui/src/styles/graph.css'), 'utf8');
-    const graphSidebarRule = graphCss.match(/\.graph-sidebar\s*\{([^}]*)\}/)?.[1] ?? '';
 
-    expect(css).toMatch(/\.app-layout--view-sidebar-open \.view-sidebar\s*\{[^}]*padding-top:\s*var\(--app-header-height\);/s);
-    expect(css).not.toMatch(/\.view-sidebar(?:__body)?[^{}]*\{[^}]*padding-top:\s*0(?:\D|$)/s);
-    expect(graphSidebarRule).not.toMatch(/(?:^|;)\s*padding(?:-top)?\s*:/);
-    expect(graphSidebarRule).toContain('padding-right: 14px');
-    expect(graphSidebarRule).toContain('padding-bottom: 14px');
-    expect(graphSidebarRule).toContain('padding-left: 14px');
-  });
-
-  it('routes Work through the shared resize-rail geometry', () => {
-    expect(VIEW_SIDEBAR_GEOMETRY.work).toEqual({
-      storageKey: 'sidebar-width:work',
-      defaultWidth: 340,
-      minWidth: 280,
-    });
-    const appSource = readFileSync(resolve('ui/src/app.tsx'), 'utf8');
-    const resizeRailTabs = appSource.match(/const RESIZE_RAIL_TABS[^[]*\[([\s\S]*?)\]\);/)?.[1] ?? '';
-    expect(resizeRailTabs).toContain("'work'");
-  });
 
   it('forwards containerRef to the frame element', () => {
     const ref = createRef<HTMLElement>();

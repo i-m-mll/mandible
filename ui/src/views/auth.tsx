@@ -27,6 +27,7 @@ import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import {
   fetchAuthHooks,
+  cancelApprovalProof,
   canPerformOperation,
   findIssue,
   getAuthRequestActions,
@@ -2810,8 +2811,11 @@ export function AuthQueueView({
             className="btn btn--success btn--submitting"
             disabled
           >
-            Submitting…
+            Verify signing key; touch it if prompted…
           </button>
+          <button type="button" className="btn btn--ghost" onClick={() => {
+            void cancelApprovalProof(id).catch((error) => setActionError(id, error, 'Could not cancel signing.', { kind: 'approve' }));
+          }}>Cancel signing</button>
         </div>
       );
     }
@@ -2849,7 +2853,7 @@ export function AuthQueueView({
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
             : !approvalAllowed ? 'Approval is unavailable in this instance.' : undefined}
         >
-          {dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
+          {actionDisabled ? 'Verify signing key…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
         </button>
         <button
           type="button"

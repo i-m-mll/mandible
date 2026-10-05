@@ -13,17 +13,19 @@ import {
   ingestArtifact,
   listArtifacts,
   listArtifactSeries,
-  publishArtifactDraft,
   rebaseArtifactDraft,
-  recordArtifactVersion,
   registerArtifactAlias,
   registerArtifactLink,
   resolveAndLinkArtifact,
-  resolveArtifactRef,
-  resolveArtifactRefReadonlyFull,
   saveArtifactDraft,
   snapshotArtifactBytes,
 } from "../../src/provider-artifacts.js";
+import {
+  publishArtifactDraft,
+  recordArtifactVersion,
+  resolveArtifactRef,
+  resolveArtifactRefReadonlyFull,
+} from "../helpers/artifact-http-write-fixtures.js";
 
 let db: Db;
 let tempDir = "";

@@ -12,7 +12,7 @@ import type {
 import { readArtifactBytesFull } from "../artifact-content.js";
 import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
-import { resolveArtifactRefReadonlyFull } from "../provider-artifacts.js";
+import { resolveArtifactIdentity } from "../provider-artifacts.js";
 import { parseJsonObject } from "../row-coerce.js";
 import { BriefingStoreError } from "./briefings.js";
 import { readBriefingBundle, resolveBundleId, type BriefingBundleViewer } from "./briefing-bundles.js";
@@ -113,7 +113,7 @@ export type BriefingGroupDestinationChangeInput = {
 };
 
 function destinationChangeIdentity(db: Db, change: BriefingGroupDestinationChangeInput) {
-  const artifact = resolveArtifactRefReadonlyFull(db, change.logicalArtifactRef);
+  const artifact = resolveArtifactIdentity(db, change.logicalArtifactRef, "strict-read");
   if (artifact.status !== "resolved" || artifact.target_type !== "artifact" || !artifact.target_id) {
     throw new BriefingStoreError("Destination changes require exact logical Artifact refs", 404,
       "artifact_not_found");
@@ -584,7 +584,7 @@ export function bindBriefingDestinationOwner(
   now = Date.now(),
 ): { group: BriefingGroup; changed: boolean } {
   const groupId = resolveGroupId(db, input.groupRef);
-  const artifact = resolveArtifactRefReadonlyFull(db, input.logicalArtifactRef);
+  const artifact = resolveArtifactIdentity(db, input.logicalArtifactRef, "strict-read");
   if (artifact.status !== "resolved" || artifact.target_type !== "artifact" || !artifact.target_id) {
     throw new BriefingStoreError("Destination ownership requires one exact logical Artifact ref", 404,
       "artifact_not_found");

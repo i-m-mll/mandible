@@ -18,7 +18,7 @@ import { publishBriefingFromArtifactVersion } from "../../src/feedback/briefings
 import { createBriefingBundle } from "../../src/feedback/briefing-bundles.js";
 import { bindBriefingDestinationOwner, createBriefingGroup } from "../../src/feedback/briefing-groups.js";
 import { registerBriefingDestinationRoute } from "../../src/feedback/briefing-composer.js";
-import { recordArtifactVersion } from "../../src/provider-artifacts.js";
+import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
 import { addProject } from "../../src/ledger/project-registry.js";
 import { addGrant } from "../../src/permissions/store.js";
 import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
