@@ -37,8 +37,11 @@ export function createOwnedRun({ root, instanceId, project, workUnit, outputs, d
 
 export function saveOwnedMetadata(file, metadata) {
   const temp = `${file}.partial-${process.pid}`;
-  fs.writeFileSync(temp, `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  const fd = fs.openSync(temp, 'wx', 0o600);
+  try { fs.writeFileSync(fd, `${JSON.stringify(metadata, null, 2)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(temp, file);
+  const directoryFd = fs.openSync(path.dirname(file), 'r');
+  try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
 }
 
 function readOwnedMetadata(file) {
@@ -60,7 +63,7 @@ export function inspectRunConsumers(root) {
     return { idle: false, reason: `open-file inspection failed: ${result.error?.message ?? result.stderr ?? result.status}` };
   }
   return result.stdout.trim()
-    ? { idle: false, reason: 'owned files have active consumers' }
+    ? { idle: false, reason: `owned files have active consumers: ${result.stdout.trim().slice(0, 2000)}` }
     : { idle: true };
 }
 

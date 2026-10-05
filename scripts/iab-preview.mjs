@@ -127,7 +127,7 @@ async function createOrReusePreview(options) {
   let worktree;
   let mode;
 
-  if (!options.forceNew && currentIsIntegration && !currentIsProtected) {
+  if (!options.forceNew && currentIsIntegration && !currentIsProtected && (!options.branch || options.branch === currentBranch)) {
     branch = currentBranch;
     worktree = repoRoot;
     mode = "current-integration";
@@ -301,15 +301,15 @@ async function createOrReusePreview(options) {
 
   fs.writeFileSync(stdoutLog, "");
   fs.writeFileSync(stderrLog, "");
-  ownership.outputs = previewOwnedOutputs(path.basename(dbCopy), previewLogSegments(dbCopy)).map(output => ({ ...output, disposition: "pending" }));
-  ownership.state = "active";
-  ownership.revision += 1;
-  saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, pidFile, port, instanceEnv, ownership });
   const priorRegistration = registerPreviewInstance(instanceEnv);
   let started = null;
   let health;
   try {
     reloadLocalFrontDoor();
+    ownership.outputs = previewOwnedOutputs(path.basename(dbCopy), previewLogSegments(dbCopy)).map(output => ({ ...output, disposition: "pending" }));
+    ownership.state = "active";
+    ownership.revision += 1;
+    saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, pidFile, port, instanceEnv, ownership });
     started = await startPreviewProcess({
       runScript,
       worktree,
