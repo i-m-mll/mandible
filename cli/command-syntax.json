@@ -256,14 +256,14 @@
         "work-unit",
         "resolve"
       ],
-      "syntax": "mandible work-unit resolve --id <work-unit-id> [--auth-request-id <id>] [--graceful]"
+      "syntax": "mandible work-unit resolve --id <work-unit-id> --expected-generation <n> [--auth-request-id <id>] [--graceful]"
     },
     "work-unit.release": {
       "route": [
         "work-unit",
         "release"
       ],
-      "syntax": "mandible work-unit release --issue <id> --repo <repo> [--graceful]"
+      "syntax": "mandible work-unit release (--id <work-unit-id> | --repo <repo> --branch <branch> [--issue <id>]) --expected-generation <n> [--graceful]"
     },
     "work-unit.custody-assume": {
       "route": [
@@ -815,6 +815,13 @@
         "request"
       ],
       "syntax": "mandible auth request --type <commit|force-push|branch-delete|config-change|data-delete> --command <command> --cwd <path> --repo <ref> --title <text> --issue <id> [--spec <text>|--spec-file <file>] [--no-watch]"
+    },
+    "work-unit.release-issue": {
+      "route": [
+        "work-unit",
+        "release-issue"
+      ],
+      "syntax": "mandible work-unit release-issue --issue <id> --repo <repo> --units-file <snapshot.json> [--graceful]"
     }
   }
 }

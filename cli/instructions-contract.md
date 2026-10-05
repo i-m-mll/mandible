@@ -42,7 +42,8 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - {{command work-unit.activate}} - Mark the matching work unit committed, or auto-claim it in committed state, using explicit mechanism inputs only. --worker explicitly binds the caller's ambient Codex thread as the implementation worker authorized for direct post-merge archival.
 - {{command work-unit.find}} - Find work units by repo plus issue or branch, with optional state filtering.
 - {{command work-unit.resolve}} - Patch a work unit to resolved after a successful merge, optionally linking the auth request.
-- {{command work-unit.release}} - Release active work units for an abandoned issue/repo lane without encoding worktree layout policy.
+- {{command work-unit.release}} - Abandon exactly one work unit selected by ID or repository/branch, guarded by current durable custody and generation.
+- {{command work-unit.release-issue}} - Intentionally abandon all active issue/repository work units using an explicit array of `{id, expected_generation}` snapshots; every unit requires current durable custody and the set must match exactly.
 - {{command work-unit.custody-assume}} - Transfer durable work-unit custody to the authenticated credential with an immutable generation receipt. Integration handoff by an agent requires its audited parent-role checkpoint; solo recovery and displacement of a live integration holder are operator-only.
 - {{command trash.list-or-create-or-restore-or-gc}} - List, snapshot/remove, restore, or expire reversible branch/worktree trash custody. Create accepts a canonical-project-resolvable ref and reports when the removed worktree path can no longer be used.
 - {{command issue-file.path}} - Resolve the git-root .issue helper file path for a caller-supplied or current working directory.

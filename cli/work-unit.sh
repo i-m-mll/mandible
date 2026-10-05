@@ -15,6 +15,7 @@ Usage:
   {{command work-unit.find}}
   {{command work-unit.resolve}}
   {{command work-unit.release}}
+  {{command work-unit.release-issue}}
   {{command work-unit.custody-assume}}
 USAGE
 }
@@ -28,6 +29,7 @@ case "$action" in
   find) mandible_work_unit_find "$@" ;;
   resolve) mandible_work_unit_resolve "$@" ;;
   release) mandible_work_unit_release "$@" ;;
+  release-issue) mandible_work_unit_release_issue "$@" ;;
   custody-assume) mandible_work_unit_custody_assume "$@" ;;
   ""|-h|--help|help) usage ;;
   *) mandible_ledger_err "Unknown work-unit action: $action"; usage >&2; exit 2 ;;
