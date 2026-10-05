@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setSetting } from "../../src/client-auth/settings-kv.js";
@@ -75,7 +75,7 @@ describe("operational incident API routes", () => {
   let reviewerId: string;
 
   beforeEach(() => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
     operatorId = createUser(db, {

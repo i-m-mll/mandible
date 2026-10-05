@@ -1,5 +1,5 @@
 // Quarantined: e9cd064 — registerAuthRoutes opens the production database.
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../../src/auth-queue.js";
@@ -18,7 +18,7 @@ afterEach(() => {
 
 describe("auth request update route", () => {
   it("rebinds a pending request to a new merge head", async () => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     setupOperator(db, { slug: "auth-route-test", display_name: "Auth Route Test" });
     const router = new Router();
@@ -47,7 +47,7 @@ describe("auth request update route", () => {
   });
 
   it("rejects an invalid merge head without changing the request", async () => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     setupOperator(db, { slug: "auth-route-test", display_name: "Auth Route Test" });
     const router = new Router();

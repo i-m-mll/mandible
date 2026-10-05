@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import { getDb, inspectDbBinding, resetDb, setDb } from "../../src/db.js";
@@ -8,8 +8,8 @@ import { restoreDbSingleton, withTestDb } from "../helpers/db-lifecycle.js";
 // installed it. These tests pin the reset contract, including the ordering
 // dependency on the vitest setupFiles backstop.
 
-function openTestDb(): InstanceType<typeof Database> {
-  return new Database(":memory:");
+function openTestDb(): InstanceType<typeof SqliteDatabase> {
+  return new SqliteDatabase(":memory:");
 }
 
 describe("db singleton lifecycle", () => {

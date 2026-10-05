@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../sqlite.js";
 import { migrate, type Db } from "../db.js";
 import { ConversationSourceStore } from "../conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../conversations/source-types.js";
@@ -146,7 +146,7 @@ export async function prepareSourceBackedConversationStorage(options: {
   managedCustodyRoot?: string;
   onProgress?: (message: string) => void;
 }) {
-  const db = new Database(options.dbPath, options.apply ? undefined : { readonly: true, fileMustExist: true }) as Db;
+  const db = new SqliteDatabase(options.dbPath, options.apply ? undefined : { readonly: true, fileMustExist: true }) as Db;
   try {
     db.pragma("foreign_keys = ON");
     db.pragma("busy_timeout = 5000");

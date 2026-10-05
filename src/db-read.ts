@@ -1,40 +1,12 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "./sqlite.js";
+import { constants as nativeConstants } from "node:sqlite";
+
+const constants = nativeConstants as typeof nativeConstants & Record<"SQLITE_READ" | "SQLITE_SELECT" | "SQLITE_RECURSIVE" | "SQLITE_FUNCTION" | "SQLITE_PRAGMA" | "SQLITE_OK" | "SQLITE_DENY", number>;
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 
-/**
- * Read-only access to the live ledger database (issue 78163ba).
- *
- * Agents auditing the ledger need arbitrary counts and joins that the
- * structured commands do not cover, so they open the database file directly.
- * The idiom a search returns for "read SQLite without disturbing the writer" is
- * `sqlite3 'file:...mandible.db?immutable=1'`, and Mandible's database is in
- * WAL mode: `immutable=1` skips the `-wal` file and answers from the main file
- * alone. Recently written rows are simply absent, with no error and no warning,
- * so the wrong answer is self-consistent and plausible.
- *
- * This module is the surface that removes that failure rather than warning
- * about it. Three properties make the stale read unreachable rather than
- * discouraged:
- *
- *  1. **No URI filenames.** better-sqlite3 hands the filename to SQLite without
- *     `SQLITE_OPEN_URI`, so `?immutable=1` is not a spelling this code path can
- *     accept at all. `assertPlainDatabasePath` turns an attempt into a loud
- *     error instead of a mysterious "directory does not exist".
- *  2. **Read-only in fact, not by intent.** The connection is opened
- *     `SQLITE_OPEN_READONLY` with `fileMustExist`, and `query_only` is set on
- *     top of it. Nothing here imports the migration runner, so no read path can
- *     drift into migrating the caller's live ledger.
- *  3. **Statement-level refusal.** Only statements SQLite itself classifies as
- *     read-only *and* row-returning are executed, so a write reaching this
- *     surface is refused before it is stepped rather than relying on the open
- *     mode to fail it later.
- *
- * A read-only WAL connection takes a read mark in the `-shm` file and releases
- * it when the implicit transaction ends. It never blocks the daemon's writes;
- * the only thing it defers is a WAL checkpoint overlapping the query itself.
- */
+/** Read-only ledger access includes the live WAL and never runs migrations. */
 
 const require_ = createRequire(import.meta.url);
 
@@ -49,7 +21,7 @@ const { liveDbPath } = require_("../cli/mandible-paths.cjs") as {
 };
 
 export interface ReadOnlyLedger {
-  readonly db: Database.Database;
+  readonly db: SqliteDatabase;
   readonly path: string;
   close(): void;
 }
@@ -120,9 +92,9 @@ export function openReadOnlyLedger(dbPath: string = resolveLedgerDbPath()): Read
     throw new Error(`No Mandible database at ${resolved}`);
   }
 
-  let db: Database.Database;
+  let db: SqliteDatabase;
   try {
-    db = new Database(resolved, { readonly: true, fileMustExist: true, timeout: 2000 });
+    db = new SqliteDatabase(resolved, { readonly: true, fileMustExist: true, timeout: 2000 });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -135,25 +107,12 @@ export function openReadOnlyLedger(dbPath: string = resolveLedgerDbPath()): Read
   return { db, path: resolved, close: () => db.close() };
 }
 
-/** Everything before the first token that is not whitespace or a comment. */
-function firstKeyword(sql: string): string {
-  let rest = sql;
-  for (;;) {
-    const trimmed = rest.replace(/^\s+/, "");
-    if (trimmed.startsWith("--")) {
-      const newline = trimmed.indexOf("\n");
-      if (newline === -1) return "";
-      rest = trimmed.slice(newline + 1);
-      continue;
-    }
-    if (trimmed.startsWith("/*")) {
-      const end = trimmed.indexOf("*/");
-      if (end === -1) return "";
-      rest = trimmed.slice(end + 2);
-      continue;
-    }
-    return (/^[a-zA-Z_]+/.exec(trimmed)?.[0] ?? "").toLowerCase();
-  }
+const safeFunctions = new Set(`abs avg changes char coalesce concat concat_ws count date datetime format glob group_concat hex ifnull iif instr julianday last_insert_rowid length likelihood likely lower ltrim max min nullif octet_length printf quote random randomblob replace round rtrim sign soundex sqlite_compileoption_get sqlite_compileoption_used sqlite_source_id sqlite_version strftime string_agg substr substring sum time timediff total total_changes trim typeof unicode unixepoch unlikely upper zeroblob json json_array json_array_length json_error_position json_extract json_group_array json_group_object json_insert json_object json_patch json_pretty json_quote json_remove json_replace json_set json_type json_valid jsonb jsonb_array jsonb_extract jsonb_group_array jsonb_group_object jsonb_insert jsonb_object jsonb_patch jsonb_remove jsonb_replace jsonb_set match bm25 highlight snippet`.split(" "));
+
+function readAuthorizer(action: number, _first: string | null, second: string | null): number {
+  if (action === constants.SQLITE_READ || action === constants.SQLITE_SELECT || action === constants.SQLITE_RECURSIVE) return constants.SQLITE_OK;
+  if (action === constants.SQLITE_FUNCTION && second && safeFunctions.has(second.toLowerCase())) return constants.SQLITE_OK;
+  return constants.SQLITE_DENY;
 }
 
 export const DEFAULT_ROW_LIMIT = 500;
@@ -172,49 +131,31 @@ export function runReadOnlyQuery(
 ): QueryResult {
   if (sql.trim().length === 0) throw new Error("No SQL given.");
 
-  if (firstKeyword(sql) === "pragma") {
-    throw new Error(
-      "PRAGMA is not accepted here: SQLite classifies every pragma as a potential write, " +
-        "so this surface cannot tell a read pragma from one that rewrites the file. " +
-        "Use `mandible db schema [table]` for table and index definitions, " +
-        "`mandible db info` for page/journal facts, or query sqlite_master directly.",
-    );
-  }
-
-  let statement: Database.Statement;
+  let executing = false;
+  ledger.db.setAuthorizer((action, first, second) => {
+    // FTS5 reads data_version while stepping; user PRAGMA is refused during preparation.
+    if (executing && action === constants.SQLITE_PRAGMA && first === "data_version" && second === null) return constants.SQLITE_OK;
+    return readAuthorizer(action, first, second);
+  });
   try {
-    statement = ledger.db.prepare(sql);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Could not prepare the statement: ${detail}`);
-  }
-
-  if (!statement.readonly) {
-    throw new Error(
-      "Refusing a statement that can modify the database. This surface is read-only; " +
-        "use the `mandible` commands that own the record you want to change.",
-    );
-  }
-  if (!statement.reader) {
-    throw new Error(
-      "Refusing a statement that returns no rows. Only queries are accepted here — " +
-        "ATTACH, DETACH, and transaction control are not.",
-    );
-  }
-
-  statement.raw(true);
-  const columns = statement.columns().map((column) => column.name);
-  const rows: unknown[][] = [];
-  let truncated = false;
-  const cap = limit > 0 ? limit : Number.POSITIVE_INFINITY;
-  for (const row of statement.iterate() as Iterable<unknown[]>) {
-    if (rows.length >= cap) {
-      truncated = true;
-      break;
+    const statement = ledger.db.prepareSingle(sql);
+    const columns = statement.columns().map(column => column.name);
+    if (columns.length === 0) throw new Error("Only row-returning queries are accepted");
+    statement.arrays();
+    const rows: unknown[][] = [];
+    let truncated = false;
+    const cap = limit > 0 ? limit : Number.POSITIVE_INFINITY;
+    executing = true;
+    for (const row of statement.iterate() as Iterable<unknown[]>) {
+      if (rows.length >= cap) { truncated = true; break; }
+      rows.push(row.map(renderValue));
     }
-    rows.push(row.map(renderValue));
+    return { columns, rows, truncated };
+  } catch (error) {
+    throw new Error(`Read-only query refused: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  } finally {
+    ledger.db.setAuthorizer(null);
   }
-  return { columns, rows, truncated };
 }
 
 /**

@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { MANAGED_REMINDER_SCHEMA } from "../../src/contracts.js";
 import { migrate, type Db } from "../../src/db.js";
@@ -36,7 +36,7 @@ function request(
 }
 
 beforeEach(() => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   userId = createUser(db, { slug: "reminder-agent", kind: "agent", display_name: "Reminder Agent" }, NOW).id;
   projectId = resolveProjectForCheckout(db, {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
 import { setupOperator } from "../src/users/store.js";
@@ -317,7 +317,7 @@ describe("backup routes", () => {
     expect(result.size_bytes).toBe(Buffer.byteLength(streamed));
     expect(fs.readdirSync(tempHome).some((name) => name.endsWith(".tmp"))).toBe(false);
 
-    const restored = new Database(":memory:");
+    const restored = new SqliteDatabase(":memory:");
     try {
       restored.exec(streamed);
       expect(restored.pragma("foreign_key_check")).toEqual([]);
@@ -376,7 +376,7 @@ describe("backup routes", () => {
       '{"worktree_removed":true,"branch_removed":true}',
     );
 
-    const restored = new Database(":memory:");
+    const restored = new SqliteDatabase(":memory:");
     try {
       restored.exec(buildMetadataBackupSql(db));
       expect(restored.prepare(

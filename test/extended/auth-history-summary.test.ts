@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../../src/auth-queue.js";
@@ -24,8 +24,8 @@ import {
 // `approved_by_user_id`, and `execution_evidence_id`, so `GET /api/auth/history`
 // resolved requester/approver/verified-signature from fabricated nulls.
 
-function createQueue(): { db: InstanceType<typeof Database>; queue: AuthQueue } {
-  const db = new Database(":memory:");
+function createQueue(): { db: InstanceType<typeof SqliteDatabase>; queue: AuthQueue } {
+  const db = new SqliteDatabase(":memory:");
   migrate(db);
   setupOperator(db, { slug: "history-summary-operator", display_name: "History Summary" }, 1);
   return { db, queue: new AuthQueue({ db }) };
@@ -56,7 +56,7 @@ function submitCompleted(queue: AuthQueue): string {
  * in-memory harness does not run.
  */
 function attributeRequest(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   id: string,
 ): { approverId: string; evidenceId: string; credentialId: string } {
   const approver = createUser(db, {

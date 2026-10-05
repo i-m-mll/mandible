@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -42,7 +42,7 @@ afterEach(() => {
 });
 
 function createFloorDatabase(dbPath: string): void {
-  const db = new Database(dbPath);
+  const db = new SqliteDatabase(dbPath);
   try {
     db.exec(FLOOR_FIXTURE);
   } finally {
@@ -53,7 +53,7 @@ function createFloorDatabase(dbPath: string): void {
 /** A database whose recorded version is outside what this build can serve. */
 function createDatabaseAtVersion(dbPath: string, version: number): Db {
   createFloorDatabase(dbPath);
-  const db = new Database(dbPath);
+  const db = new SqliteDatabase(dbPath);
   db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(version));
   return db;
 }
@@ -99,7 +99,7 @@ describe.sequential("supported schema version range", () => {
   it("reconciles the retained Chat preview schema-version collision without losing archive state", () => {
     const dbPath = path.join(tempDir, "collided-chat-preview.db");
     createFloorDatabase(dbPath);
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
       createHash("sha256").update(String(value)).digest("hex"));
     try {

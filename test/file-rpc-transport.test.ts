@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { FileRpcTransport, defaultFileRpcDirForInstance } from "../src/file-rpc-transport.js";
@@ -412,7 +412,7 @@ describe("file RPC transport", () => {
   });
 
   it("serves the real mandible CLI through file RPC and registered project routes", async () => {
-    const db: Db = new Database(":memory:");
+    const db: Db = new SqliteDatabase(":memory:");
     try {
       migrate(db);
       setDb(db);
