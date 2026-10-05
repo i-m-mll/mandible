@@ -81,7 +81,7 @@ export function registerRedirectRoutes(
           extraQuery: req.query,
         }),
       });
-    }, { fileRpc: "deny" });
+    }, { operation: { id: `redirect.${kind}`, effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
   }
 }
 

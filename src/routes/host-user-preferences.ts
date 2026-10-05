@@ -45,7 +45,7 @@ export function registerHostUserPreferencesRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/host-preferences/chat-shown-projects", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // A host preference is user-owned UI intent, not an operational/ledger
   // mutation. The route deliberately remains available on reject-mode previews.
@@ -70,7 +70,7 @@ export function registerHostUserPreferencesRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "put:/api/host-preferences/chat-shown-projects", effects: ["preferences:instance"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/host-preferences/sidebar-order", async (req, res) => {
     try {
@@ -79,7 +79,7 @@ export function registerHostUserPreferencesRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/host-preferences/sidebar-order", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.put("/api/host-preferences/sidebar-order", async (req, res) => {
     try {
@@ -102,7 +102,7 @@ export function registerHostUserPreferencesRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "put:/api/host-preferences/sidebar-order", effects: ["preferences:instance"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/host-preferences/app-theme", async (req, res) => {
     try {
@@ -111,7 +111,7 @@ export function registerHostUserPreferencesRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/host-preferences/app-theme", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.put("/api/host-preferences/app-theme", async (req, res) => {
     try {
@@ -130,5 +130,5 @@ export function registerHostUserPreferencesRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "put:/api/host-preferences/app-theme", effects: ["preferences:instance"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 }

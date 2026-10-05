@@ -384,7 +384,7 @@ export function registerWorkUnitRoutes(
       ...ledgerLinkFields(ledgerLink),
       ...ledgerIssueMetadataFields(db, ledgerLink),
     });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/work-units/claim", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
 
   // POST /api/work-units/activate — mark as committed, update timestamps
   server.post("/api/work-units/activate", (req, res) => {
@@ -518,7 +518,7 @@ export function registerWorkUnitRoutes(
         ...ledgerIssueMetadataFields(db, ledgerLink),
       });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/work-units/activate", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
 
   server.post("/api/work-units/release", (req, res) => {
     const body = readBody<ReleaseInput>(req);
@@ -560,7 +560,7 @@ export function registerWorkUnitRoutes(
       WHERE id = ? AND custody_generation = ? AND state != 'abandoned'`)
       .run(row.id, body.expected_generation);
     sendJson(res, 200, { ok: true, id: row.id, released: changed.changes, unchanged: changed.changes === 0 });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/work-units/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
 
   server.post("/api/work-units/release-issue", (req, res) => {
     const body = readBody<ReleaseIssueInput>(req);
@@ -591,7 +591,7 @@ export function registerWorkUnitRoutes(
       for (const row of rows) release.run(row.id);
     })();
     sendJson(res, 200, { ok: true, released: rows.length });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/work-units/release-issue", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
 
   // GET /api/work-units — list with optional filters, includes liveness overlay
   // Bug: 8a281b3 — liveness overlay on work-unit responses
@@ -627,7 +627,7 @@ export function registerWorkUnitRoutes(
     );
 
     sendJson(res, 200, { work_units: enriched });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/work-units", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/work-units/:id/custody/assume", (req, res) => {
     const identity = durableCredential(req);
@@ -722,7 +722,7 @@ export function registerWorkUnitRoutes(
     }
     const updated = db.prepare("SELECT * FROM work_units WHERE id = ?").get(row.id) as Record<string, unknown>;
     sendJson(res, 200, { work_unit: mapRow(updated), authority_path: operatorRecovery ? "operator_recovery" : "parent_role_handoff" });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/work-units/:id/custody/assume", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
 
   // GET /api/work-units/:id — single work unit with liveness overlay
   // Bug: 8a281b3
@@ -744,7 +744,7 @@ export function registerWorkUnitRoutes(
 
     const workUnit = mapRow(row);
     sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/work-units/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // PATCH /api/work-units/:id — update mutable fields
   // Bug: 8a281b3
@@ -840,7 +840,7 @@ export function registerWorkUnitRoutes(
 
     const workUnit = mapRow(updatedRow);
     sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/work-units/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
 }
 
 function durableCredential(req: RequestLike): { user_id: string; credential_id: string } | null {

@@ -80,14 +80,14 @@ export function registerConversationControlRoutes(
       if (!(error instanceof AttachmentValidationError)) throw error;
       sendJson(res, 400, { error: "invalid_attachment", message: error.message });
     }
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "post:/api/chat-attachments", effects: ["ledger:write"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
 
   server.get("/api/chat-attachments/:id/content", operatorOnlyManagedSessionRoute((req, res) => {
     if (!attachmentStore) return sendJson(res, 503, { error: "attachment_store_unavailable" });
     const file = attachmentStore.get(req.params.id);
     if (!file) return sendJson(res, 404, { error: "attachment_not_found" });
     res.binary?.(attachmentStore.content(file), file.media_type);
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "get:/api/chat-attachments/:id/content", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/conversations/:id/control/attachments", operatorOnlyManagedSessionRoute((req, res) => {
     if (!options.db) return sendJson(res, 503, { error: "attachment_store_unavailable" });
@@ -97,17 +97,17 @@ export function registerConversationControlRoutes(
       FROM conversation_control_outbox WHERE conversation_id = ? AND attachments_json != '[]' ORDER BY created_at, id`)
       .all(req.params.id) as { delivery_id: string; turn_id: string; attachments_json: string; state: string; created_at: number }[];
     sendJson(res, 200, rows.map(({ attachments_json, ...row }) => ({ ...row, attachments: JSON.parse(attachments_json) })));
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "get:/api/conversations/:id/control/attachments", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/conversations/:id/control", (req, res) => {
     const result = control.getSnapshot(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/conversations/:id/control", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/conversations/:id/control/live", (req, res) => {
     const result = control.getLiveProjection(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/conversations/:id/control/live", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/conversations/:id/control/submit", operatorOnlyManagedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);
@@ -162,7 +162,7 @@ export function registerConversationControlRoutes(
       return;
     }
     sendJson(res, result.ok ? 202 : statusFor(result.error), result);
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "post:/api/conversations/:id/control/submit", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
   server.post("/api/conversations/:id/control/stop", operatorOnlyManagedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);
@@ -178,5 +178,5 @@ export function registerConversationControlRoutes(
     }
     const result = await control.stop(req.params.id, generation);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "post:/api/conversations/:id/control/stop", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 }

@@ -20,5 +20,5 @@ export function registerTimelineRoutes(router: RouteRegistrar): void {
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/timeline/project", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 }
