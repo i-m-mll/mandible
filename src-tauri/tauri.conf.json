@@ -43,6 +43,8 @@
     "resources": {
       "../scripts/bun-runtime.sh": "scripts/bun-runtime.sh",
       "../scripts/bun-runtime-lock.tsv": "scripts/bun-runtime-lock.tsv",
+      "../scripts/sqlite-runtime-install.mjs": "scripts/sqlite-runtime-install.mjs",
+      "../dist/sqlite-runtime.js": "dist/sqlite-runtime.js",
       "resources/bun-runtime/bun.zip": "runtime/bun.zip",
       "resources/bun-runtime/sqlite.tar.gz": "runtime/sqlite.tar.gz",
       "../.bun-version": ".bun-version",

@@ -657,6 +657,18 @@ fn resolve_runtime_binary(app: &AppHandle) -> Result<PathBuf, String> {
         }
         command.env_remove("MANDIBLE_RUNTIME");
         command.env("MANDIBLE_RUNTIME_ARCHIVE", archive);
+        let sqlite_archive = script
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("packaged SQLite selector has no resource root")?
+            .join("runtime/sqlite.tar.gz");
+        if !sqlite_archive.is_file() {
+            return Err(
+                "the verified offline SQLite archive is missing from the desktop package".into(),
+            );
+        }
+        command.env_remove("MANDIBLE_SQLITE_LIBRARY");
+        command.env("MANDIBLE_SQLITE_LIBRARY_ARCHIVE", sqlite_archive);
     }
     let output = command
         .output()

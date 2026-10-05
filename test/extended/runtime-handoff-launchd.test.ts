@@ -14,6 +14,7 @@ import { renderLaunchAgent } from '../../scripts/local-runtime.mjs';
 import { readRuntimeHandoff } from '../../scripts/runtime-handoff.mjs';
 import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerProject, createMigratedDb, git, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
 import { publishTestCandidate } from '../helpers/auth-delivery-fixtures.js';
+import { sqliteRuntimePaths } from '../../src/sqlite-runtime.js';
 
 const wait = async (predicate: () => boolean, timeout = 15000) => {
   const deadline = Date.now() + timeout;
@@ -37,7 +38,7 @@ it('arms one independent helper under loaded legacy Node arguments and survives 
   const control = (args: string[]) => spawnSync('/bin/launchctl', args, { encoding: 'utf8', timeout: 5000 });
   const db = createMigratedDb(); let queue: AuthQueue | undefined; let journal: any; let requestRef = ''; let executionRef = ''; let bridgeChild: ReturnType<typeof spawn> | undefined;
   try {
-    const sources = ['src/sqlite.ts', 'src/sqlite-bindings.ts', 'cli/production-db-guard.cjs', 'cli/mandible-paths.cjs', 'src/runtime-handoff-proof.ts', 'src/auth-signature-verification.ts', 'src/auth-change-message.ts',
+    const sources = ['src/sqlite.ts', 'src/sqlite-runtime.ts', 'src/sqlite-bindings.ts', 'scripts/sqlite-runtime-install.mjs', 'scripts/bun-runtime-lock.tsv', 'cli/production-db-guard.cjs', 'cli/mandible-paths.cjs', 'src/runtime-handoff-proof.ts', 'src/auth-signature-verification.ts', 'src/auth-change-message.ts',
       'scripts/runtime-handoff.mjs', 'scripts/runtime-log-assessment.mjs', 'scripts/bun-runtime.sh', 'scripts/local-runtime.mjs', 'scripts/canonical-origin.mjs', 'scripts/build-revision.mjs', 'scripts/local-ca-trust.mjs', 'scripts/pinned-caddy.mjs', '.bun-version'];
     const files: Record<string, string> = Object.fromEntries(sources.map(name => [name, fs.readFileSync(path.join(process.cwd(), name), 'utf8')]));
     files['package.json'] = '{"type":"module"}\n'; files['dist/index.js'] = '// Owned admission-only fixture.\n';
@@ -66,7 +67,9 @@ it('arms one independent helper under loaded legacy Node arguments and survives 
     fs.writeFileSync(backendFile, renderLaunchAgent({ label: backend, programArguments: [legacy, runner, 'run'], workingDirectory: runtimeDir, environment: { HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_PRODUCTION_ROOT: repo, OLD_MARKER: marker, MANDIBLE_LAUNCH_MODE: 'manual' }, stdoutPath: path.join(scratch, 'old.log'), stderrPath: path.join(scratch, 'old.log') }));
     fs.writeFileSync(path.join(services, `${gateway}.plist`), renderLaunchAgent({ label: gateway, programArguments: ['/usr/bin/true', 'fixture'], workingDirectory: runtimeDir, environment: { HOME: userHome }, stdoutPath: path.join(scratch, 'gateway.log'), stderrPath: path.join(scratch, 'gateway.log') }));
     expect(control(['bootstrap', domain, backendFile]).status).toBe(0); await wait(() => fs.existsSync(marker));
+    const sqliteFiles = sqliteRuntimePaths();
     const env = { ...process.env, HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_RUNTIME: process.execPath,
+      MANDIBLE_SQLITE_LIBRARY: sqliteFiles.library, MANDIBLE_SQLITE_LIBRARY_ARCHIVE: sqliteFiles.archive,
       MANDIBLE_AUTH_REQUEST_ID: request.id, MANDIBLE_AUTH_REPO: 'mandible', MANDIBLE_HOOK_ID: hook.hook_id, MANDIBLE_HOOK_EXECUTION_ID: hook.id, MANDIBLE_HOOK_COMMAND_DIGEST: hook.command_digest };
     const arm = () => spawnSync(process.execPath, [path.join(repo, 'scripts/runtime-handoff.mjs'), 'arm', repo], { cwd: repo, env, encoding: 'utf8', timeout: 15000 });
     const result = arm(); expect(result.status, result.stderr).toBe(75);

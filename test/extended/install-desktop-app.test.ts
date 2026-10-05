@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { copyRuntimeFixture } from '../helpers/runtime-fixture.js';
 
 const tempRoots: string[] = [];
 
@@ -20,10 +21,7 @@ function makeBundle(appPath: string, marker: string, signed = true): void {
 }
 
 function makeTooling(root: string): { codesign: string; ditto: string; plist: string } {
-  fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
-  fs.copyFileSync(path.join(process.cwd(), "scripts/bun-runtime.sh"), path.join(root, "scripts/bun-runtime.sh"));
-  fs.chmodSync(path.join(root, "scripts/bun-runtime.sh"), 0o755);
-  fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(root, ".bun-version"));
+  copyRuntimeFixture(root);
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin, { recursive: true });
 

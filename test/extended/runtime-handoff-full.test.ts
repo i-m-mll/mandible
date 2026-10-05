@@ -61,8 +61,12 @@ it('hands the actual old daemon over to the candidate through isolated productio
   const oldRevision = process.env.MANDIBLE_TEST_OLD_REVISION || oldMarker.commit;
   const sourceCa = localCaPaths(sourceHome); expect(assertLocalCaIdentity(sourceCa).state).toBe('trusted'); probeCurrentMacOsTrust(sourceCa);
   const runtime = command('/bin/sh', ['scripts/bun-runtime.sh'], { cwd: process.cwd(), env: process.env }).trim();
-  const repo = createAuthCheckRepo();
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-actual-upgrade-'));
+  // Node resolves imported module URLs through macOS /var symlinks. Use the
+  // same real paths in its argv and launch definition so the deployed main
+  // entry guard actually starts the daemon.
+  const repo = fs.realpathSync(createAuthCheckRepo());
+  // Keep HOME short enough for macOS's Unix-domain socket path limit.
+  const scratch = fs.realpathSync(fs.mkdtempSync('/tmp/mandible-upgrade-'));
   const userHome = path.join(scratch, 'user'); const home = path.join(scratch, 'installation');
   fs.mkdirSync(userHome); fs.mkdirSync(home);
   const ports = { public: await freePort(), backend: await freePort(), admin: await freePort() };
@@ -113,7 +117,7 @@ it('hands the actual old daemon over to the candidate through isolated productio
     requestId = request.id; executionId = hook.id;
     // This is a signed fixture publication, never a production approval. The
     // actual old daemon discovers it through its deployed finalizer sweep.
-    db.prepare("UPDATE auth_requests SET status='completed', exit_code=0, output=?, merge_commit_sha=?, merge_finalized_at=NULL WHERE id=?").run(publication.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT ')), publication.mergeSha, request.id);
+    db.prepare("UPDATE auth_requests SET status='completed', exit_code=0, output=?, merge_finalized_at=NULL WHERE id=?").run(publication.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT ')), request.id);
     await until(() => { journal = readRuntimeHandoff(home, request.id, hook.id); if (journal?.phase === 'failed') throw new Error(journal.error); return journal?.phase === 'complete' || journal?.phase === 'acknowledged'; }, 15 * 60 * 1000, 'Actual old-to-candidate convergence');
     await until(() => readRuntimeHandoff(home, request.id, hook.id)?.phase === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
     const row = db.prepare('SELECT state, exit_code FROM auth_hook_executions WHERE id=?').get(hook.id) as any; expect(row.state).toBe('complete'); expect(row.exit_code).toBe(0);
