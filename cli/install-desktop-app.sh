@@ -88,8 +88,12 @@ fi
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
 cd "$repo_root"
 
-dependency_command="${MANDIBLE_DESKTOP_DEPENDENCY_COMMAND:-npm install --ignore-scripts --no-audit --no-fund}"
-build_command="${MANDIBLE_DESKTOP_BUILD_COMMAND:-npm run tauri:build -- --bundles app}"
+runtime="$("$repo_root/scripts/bun-runtime.sh")"
+export MANDIBLE_RUNTIME="$runtime"
+export PATH="$(dirname "$runtime"):$PATH"
+
+dependency_command="${MANDIBLE_DESKTOP_DEPENDENCY_COMMAND:-bun install --frozen-lockfile}"
+build_command="${MANDIBLE_DESKTOP_BUILD_COMMAND:-bun run tauri:build -- --bundles app}"
 built_app="${MANDIBLE_DESKTOP_BUNDLE_PATH:-$repo_root/src-tauri/target/release/bundle/macos/Mandible.app}"
 install_app="${MANDIBLE_DESKTOP_INSTALL_PATH:-/Applications/Mandible.app}"
 # Issue 24f0316 — app backups are durable state, so they live under the
@@ -97,7 +101,7 @@ install_app="${MANDIBLE_DESKTOP_INSTALL_PATH:-/Applications/Mandible.app}"
 backup_dir="${MANDIBLE_DESKTOP_BACKUP_DIR:-${MANDIBLE_HOME:-${HOME}/.mandible}/app-backups}"
 expected_bundle_id="${MANDIBLE_DESKTOP_BUNDLE_ID:-bio.mll.mandible}"
 expected_executable="${MANDIBLE_DESKTOP_EXECUTABLE:-mandible-app}"
-node_command="${MANDIBLE_DESKTOP_NODE:-node}"
+runtime_command="${MANDIBLE_DESKTOP_RUNTIME:-bun}"
 codesign_command="${MANDIBLE_DESKTOP_CODESIGN:-/usr/bin/codesign}"
 ditto_command="${MANDIBLE_DESKTOP_DITTO:-/usr/bin/ditto}"
 plist_command="${MANDIBLE_DESKTOP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
@@ -147,13 +151,13 @@ validate_bundle() {
   fi
 }
 
-err "[desktop-install] aligning dependencies from package-lock.json"
-bash -lc "$dependency_command"
+err "[desktop-install] aligning dependencies from bun.lock"
+bash -c "$dependency_command"
 err "[desktop-install] running: ${build_command}"
 if [[ "${CI:-}" == "1" ]]; then
-  CI=true bash -lc "$build_command"
+  CI=true bash -c "$build_command"
 else
-  bash -lc "$build_command"
+  bash -c "$build_command"
 fi
 validate_bundle "$built_app" "built app"
 
@@ -212,7 +216,7 @@ fi
 
 # Register the built checkout as the source named by the user's persistent
 # LaunchAgents. This prepares ownership without restarting a healthy service.
-"$node_command" "$repo_root/scripts/local-runtime.mjs" install --root "$repo_root"
+"$runtime_command" "$repo_root/scripts/local-runtime.mjs" install --root "$repo_root"
 err "[desktop-install] installed persistent Mandible runtime LaunchAgents"
 
 if [[ "$was_running" == "true" ]]; then

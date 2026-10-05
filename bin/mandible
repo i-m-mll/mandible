@@ -160,7 +160,7 @@ case "${1:-}" in
   issue-file) shift; exec "$MANDIBLE_CLI_DIR/issue-file.sh" "$@" ;;
   session) shift; exec "$MANDIBLE_CLI_DIR/session.sh" "$@" ;;
   search)  shift; exec "$MANDIBLE_CLI_DIR/search.sh" "$@" ;;
-  help) shift; if (( $# )); then exec "${NODE_BIN:-node}" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help "$@"; else usage; fi ;;
+  help) shift; if (( $# )); then exec "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" "$MANDIBLE_CLI_DIR/command-syntax.cjs" help "$@"; else usage; fi ;;
   -h|--help) usage ;;
   "") usage >&2; exit 1 ;;
   *) echo "Unknown command: $1" >&2; usage >&2; exit 1 ;;

@@ -2,4 +2,4 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
-exec node "$SCRIPT_DIR/../scripts/conversation-cutover-proof.mjs" "$@"
+exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$SCRIPT_DIR/../scripts/conversation-cutover-proof.mjs" "$@"

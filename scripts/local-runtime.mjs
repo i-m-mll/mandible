@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -315,7 +315,7 @@ export function renderLaunchAgent({ label, programArguments, workingDirectory, e
   ].join('\n');
 }
 
-function nodeBinary() {
+function runtimeBinary() {
   return process.execPath;
 }
 
@@ -451,7 +451,7 @@ function installedLaunchMode() {
 }
 
 function prepareServicePlists(production, main, launchMode) {
-  const node = nodeBinary();
+  const runtime = runtimeBinary();
   const pathValue = process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin";
   const backendEnvironment = {
     ...existingBackendEnvironment(),
@@ -474,7 +474,7 @@ function prepareServicePlists(production, main, launchMode) {
   const oldGatewayRunner = path.join(production.root, "scripts", "local-front-door.mjs");
   const backendContents = renderLaunchAgent({
     label: BACKEND_LABEL,
-    programArguments: [node, path.join(RUNTIME_DIR, "production-runner.mjs"), "run"],
+    programArguments: [runtime, path.join(RUNTIME_DIR, "production-runner.mjs"), "run"],
     workingDirectory: RUNTIME_DIR,
     environment: backendEnvironment,
     stdoutPath: path.join(LOG_DIR, "production-stdout.log"),
@@ -548,7 +548,7 @@ function ensureGatewayBinary() {
 
 function configureGateway(root) {
   const script = path.join(root, "scripts", "local-front-door.mjs");
-  const result = spawnSync(nodeBinary(), [script, "configure"], {
+  const result = spawnSync(runtimeBinary(), [script, "configure"], {
     cwd: root,
     env: { ...process.env, HOME: HOME_DIR, MANDIBLE_HOME: HOME, GIT_OPTIONAL_LOCKS: "0" },
     encoding: "utf8", timeout: 12_000, maxBuffer: 2 * 1024 * 1024,
@@ -736,7 +736,7 @@ export function reconcileMainRegistration(authority, instance, backendOrigin) {
 
 async function initializeMainRegistration(root) {
   if (!fs.existsSync(INSTALLATION_AUTHORITY)) {
-    const result = spawnSync(nodeBinary(), [path.join(root, "scripts", "local-front-door.mjs"), "initialize"], {
+    const result = spawnSync(runtimeBinary(), [path.join(root, "scripts", "local-front-door.mjs"), "initialize"], {
       cwd: root,
       env: { ...process.env, HOME: os.homedir(), MANDIBLE_HOME: HOME },
       encoding: "utf8",
@@ -807,7 +807,7 @@ async function main() {
     const mainInstance = readMainInstance(root);
     const effectiveLaunchMode = launchModeArg ? launchMode : installedLaunchMode();
     const installScript = path.join(production.root, "scripts", "local-front-door.mjs");
-    const result = spawnSync(nodeBinary(), [installScript, "install"], {
+    const result = spawnSync(runtimeBinary(), [installScript, "install"], {
       cwd: production.root, env: { ...process.env, HOME: HOME_DIR, MANDIBLE_HOME: HOME },
       encoding: "utf8", timeout: 30_000, maxBuffer: 2 * 1024 * 1024,
     });
