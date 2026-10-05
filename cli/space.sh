@@ -114,7 +114,7 @@ cmd_create() {
   local binding
   binding=$(mandible_bind_arguments "space.create" '{"project":{"option":"project"},"title":{"option":"title"},"renderer":{"option":"renderer"},"description":{"option":"description"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$project" && -n "$title" ]] || die "Usage: mandible space create --project <id> --title <text> [--renderer <r>] [--description <text>] [--json]" 2
+  [[ -n "$project" && -n "$title" ]] || die "Usage: $(mandible_command_syntax space.create)" 2
   require_tools
   local payload response
   payload="$(jq -n --arg project "$project" --arg title "$title" --arg renderer "$renderer" --arg description "$description" \
@@ -130,7 +130,7 @@ cmd_list() {
   local binding
   binding=$(mandible_bind_arguments "space.list" '{"project":{"option":"project"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$project" ]] || die "Usage: mandible space list --project <id> [--json]" 2
+  [[ -n "$project" ]] || die "Usage: $(mandible_command_syntax space.list)" 2
   require_tools
   local response
   response="$(api_get "/api/spaces?project_id=$(urlencode "$project")")" || die "${RED}Failed to list spaces.${RESET}" 1
@@ -142,7 +142,7 @@ cmd_show() {
   local binding
   binding=$(mandible_bind_arguments "space.show" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" ]] || die "Usage: mandible space show <space-id> [--json]" 2
+  [[ -n "$id" ]] || die "Usage: $(mandible_command_syntax space.show)" 2
   require_tools
   local response
   response="$(api_get "/api/spaces/$(urlencode "$id")")" || die "${RED}Failed to show space.${RESET}" 1
@@ -154,7 +154,7 @@ cmd_add_item() {
   local binding
   binding=$(mandible_bind_arguments "space.add-item" '{"title":{"option":"title"},"json":{"option":"json","constant":"1"},"id":{"position":0},"ref":{"position":1}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" && -n "$ref" ]] || die "Usage: mandible space add-item <space-id> <ref> [--title <text>] [--json]" 2
+  [[ -n "$id" && -n "$ref" ]] || die "Usage: $(mandible_command_syntax space.add-item)" 2
   require_tools
   local parsed payload response
   parsed="$(parse_item_ref "$ref")"
@@ -171,7 +171,7 @@ cmd_rm_item() {
   local binding
   binding=$(mandible_bind_arguments "space.rm-item" '{"json":{"option":"json","constant":"1"},"id":{"position":0},"item_id":{"position":1}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" && -n "$item_id" ]] || die "Usage: mandible space rm-item <space-id> <item-id> [--json]" 2
+  [[ -n "$id" && -n "$item_id" ]] || die "Usage: $(mandible_command_syntax space.rm-item)" 2
   require_tools
   local response
   response="$(api_send DELETE "/api/spaces/$(urlencode "$id")/items/$(urlencode "$item_id")" "")" \
@@ -185,7 +185,7 @@ cmd_place() {
   local binding
   binding=$(mandible_bind_arguments "space.place" '{"item":{"option":"item"},"renderer":{"option":"renderer"},"x":{"option":"x"},"y":{"option":"y"},"width":{"option":"width"},"height":{"option":"height"},"parent":{"option":"parent"},"section":{"option":"section"},"note":{"option":"note"},"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" ]] || die "Usage: mandible space place <space-id> [--item <item-id>] [--renderer <r>] [--x N] [--y N] ... [--json]" 2
+  [[ -n "$id" ]] || die "Usage: $(mandible_command_syntax space.place)" 2
   require_tools
   local payload response
   payload="$(jq -n \
@@ -211,7 +211,7 @@ cmd_link() {
   local binding
   binding=$(mandible_bind_arguments "space.link" '{"source":{"option":"source"},"target":{"option":"target"},"label":{"option":"label"},"style":{"option":"style"},"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" && -n "$source" && -n "$target" ]] || die "Usage: mandible space link <space-id> --source <occ-id> --target <occ-id> [--label <text>] [--style <text>] [--json]" 2
+  [[ -n "$id" && -n "$source" && -n "$target" ]] || die "Usage: $(mandible_command_syntax space.link)" 2
   require_tools
   local payload response
   payload="$(jq -n --arg source "$source" --arg target "$target" --arg label "$label" --arg style "$style" \
@@ -227,7 +227,7 @@ cmd_unlink() {
   local binding
   binding=$(mandible_bind_arguments "space.unlink" '{"json":{"option":"json","constant":"1"},"id":{"position":0},"edge_id":{"position":1}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" && -n "$edge_id" ]] || die "Usage: mandible space unlink <space-id> <edge-id> [--json]" 2
+  [[ -n "$id" && -n "$edge_id" ]] || die "Usage: $(mandible_command_syntax space.unlink)" 2
   require_tools
   local response
   response="$(api_send DELETE "/api/spaces/$(urlencode "$id")/edges/$(urlencode "$edge_id")" "")" \
@@ -245,7 +245,7 @@ cmd_promote_edge() {
   local binding
   binding=$(mandible_bind_arguments "space.promote-edge" '{"source":{"option":"source"},"target":{"option":"target"},"link_type":{"option":"link-type"},"space":{"option":"space"},"edge":{"option":"edge"},"note":{"option":"note"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$source" && -n "$target" ]] || die "Usage: mandible space promote-edge --source <ref> --target <ref> [--link-type <type>] [--space <id>] [--edge <id>] [--note <text>] [--json]" 2
+  [[ -n "$source" && -n "$target" ]] || die "Usage: $(mandible_command_syntax space.promote-edge)" 2
   require_tools
 
   # Constrain --link-type to the 9 ledger relationship types.
@@ -304,7 +304,7 @@ cmd_seed_from_filter() {
   local binding
   binding=$(mandible_bind_arguments "space.seed-from-filter" '{"predicate":{"option":"predicate"},"with_shelf":{"option":"with-shelf","constant":"1"},"no_artifacts":{"option":"no-artifacts","constant":"1"},"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" && -n "$predicate" ]] || die "Usage: mandible space seed-from-filter <space-id> --predicate <json> [--with-shelf] [--no-artifacts] [--json]" 2
+  [[ -n "$id" && -n "$predicate" ]] || die "Usage: $(mandible_command_syntax space.seed-from-filter)" 2
   require_tools
   printf '%s' "$predicate" | jq empty 2>/dev/null || die "--predicate must be valid JSON." 2
   local payload response
@@ -376,7 +376,7 @@ cmd_block_add() {
   local binding
   binding=$(mandible_bind_arguments "space.block.add" '{"block_type":{"option":"type"},"parent":{"option":"parent"},"have_parent":{"option":"parent","constant":"1"},"item":{"option":"item"},"have_item":{"option":"item","constant":"1"},"snapshot":{"option":"snapshot"},"have_snapshot":{"option":"snapshot","constant":"1"},"sort_key":{"option":"sort-key"},"have_sort":{"option":"sort-key","constant":"1"},"markdown":{"option":"markdown"},"have_markdown":{"option":"markdown","constant":"1"},"metadata":{"option":"metadata"},"have_metadata":{"option":"metadata","constant":"1"},"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" && -n "$block_type" ]] || die "Usage: mandible space block add <space-id> --type <block-type> [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]" 2
+  [[ -n "$id" && -n "$block_type" ]] || die "Usage: $(mandible_command_syntax space.block.add)" 2
   require_tools
   block_validate_type "$block_type"
   local payload response
@@ -393,7 +393,7 @@ cmd_block_edit() {
   local binding
   binding=$(mandible_bind_arguments "space.block.edit" '{"block_type":{"option":"type"},"have_type":{"option":"type","constant":"1"},"parent":{"option":"parent"},"have_parent":{"option":"parent","constant":"1"},"item":{"option":"item"},"have_item":{"option":"item","constant":"1"},"snapshot":{"option":"snapshot"},"have_snapshot":{"option":"snapshot","constant":"1"},"sort_key":{"option":"sort-key"},"have_sort":{"option":"sort-key","constant":"1"},"markdown":{"option":"markdown"},"have_markdown":{"option":"markdown","constant":"1"},"metadata":{"option":"metadata"},"have_metadata":{"option":"metadata","constant":"1"},"json":{"option":"json","constant":"1"},"id":{"position":0},"block_id":{"position":1}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" && -n "$block_id" ]] || die "Usage: mandible space block edit <space-id> <block-id> [--type <block-type>] [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]" 2
+  [[ -n "$id" && -n "$block_id" ]] || die "Usage: $(mandible_command_syntax space.block.edit)" 2
   require_tools
   (( have_type )) && block_validate_type "$block_type"
   local payload response
@@ -410,7 +410,7 @@ cmd_block_rm() {
   local binding
   binding=$(mandible_bind_arguments "space.block.rm" '{"json":{"option":"json","constant":"1"},"id":{"position":0},"block_id":{"position":1}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" && -n "$block_id" ]] || die "Usage: mandible space block rm <space-id> <block-id> [--json]" 2
+  [[ -n "$id" && -n "$block_id" ]] || die "Usage: $(mandible_command_syntax space.block.rm)" 2
   require_tools
   local response
   response="$(api_send DELETE "/api/spaces/$(urlencode "$id")/blocks/$(urlencode "$block_id")" "")" \

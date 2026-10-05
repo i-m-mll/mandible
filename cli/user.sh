@@ -600,7 +600,7 @@ token_list() {
   local binding
   binding=$(mandible_bind_arguments "user.token.list" '{"all":{"option":"all","constant":"1"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$ref" ]] || die "Usage: mandible user token list <ref> [--all] [--json]" 2
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.token.list)" 2
   require_tools
   local query="" response
   (( all )) && query="?all=1"
@@ -667,19 +667,14 @@ cmd_group() {
   local ref="" name="" user="" operation="" json=0 response payload
   case "$sub" in
     -h|--help|help)
-      cat <<'EOF'
-Usage:
-  mandible user group add <slug> [--name <n>] [--json]
-  mandible user group rm <ref> [--json]
-  mandible user group members <ref> [--add <user>|--rm <user>] [--json]
-EOF
+      mandible_command_help user group
       return 0
       ;;
     add)
       local binding
       binding=$(mandible_bind_arguments "user.group.add" '{"name":{"option":"name"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
       eval "$binding"
-      [[ -n "$ref" ]] || die "Usage: mandible user group add <slug> [--name <n>]" 2
+      [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.group.add)" 2
       require_tools
       payload="$(jq -n --arg slug "$ref" --arg name "$name" \
         '{slug:$slug} + (if $name == "" then {} else {display_name:$name} end)')"
@@ -690,7 +685,7 @@ EOF
       local binding
       binding=$(mandible_bind_arguments "user.group.rm" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
       eval "$binding"
-      [[ -n "$ref" ]] || die "Usage: mandible user group rm <ref>" 2
+      [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.group.rm)" 2
       require_tools
       response="$(api_send DELETE "/api/users/groups/$(urlencode "$ref")" "")" || die "Failed to remove group." 1
       emit "$response" "$json" '"removed group"'
@@ -699,7 +694,7 @@ EOF
       local binding
       binding=$(mandible_bind_arguments "user.group.members" '{"operation":[{"option":"add","constant":"add"},{"option":"rm","constant":"rm"}],"user":[{"option":"add"},{"option":"rm"}],"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
       eval "$binding"
-      [[ -n "$ref" ]] || die "Usage: mandible user group members <ref> [--add <user>|--rm <user>]" 2
+      [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.group.members)" 2
       require_tools
       if [[ "$operation" == "add" ]]; then
         payload="$(jq -n --arg user "$user" '{user:$user}')"
@@ -720,12 +715,7 @@ cmd_grant() {
   local id="" subject_type="" subject="" project="" capability="" role="" resource_type="" resource_id="" json=0 response payload query=""
   case "$sub" in
     -h|--help|help)
-      cat <<'EOF'
-Usage:
-  mandible user grant add --subject-type user|group --subject <ref> (--project <ref> --role read|write|admin | --global <capability>) [--json]
-  mandible user grant rm <id> [--json]
-  mandible user grant list [--resource-type project|global] [--resource-id <id>] [--json]
-EOF
+      mandible_command_help user grant
       return 0
       ;;
     add)
@@ -753,7 +743,7 @@ EOF
       local binding
       binding=$(mandible_bind_arguments "user.grant.rm" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
       eval "$binding"
-      [[ -n "$id" ]] || die "Usage: mandible user grant rm <id>" 2
+      [[ -n "$id" ]] || die "Usage: $(mandible_command_syntax user.grant.rm)" 2
       require_tools
       response="$(api_send DELETE "/api/users/grants/$(urlencode "$id")" "")" || die "Failed to remove grant." 1
       emit "$response" "$json" '"removed grant"'

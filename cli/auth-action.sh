@@ -114,7 +114,7 @@ shift || true
 case "$subcommand" in
   list)
     request_id="${1:-}"
-    [[ -n "$request_id" ]] || { echo "Usage: mandible auth action list <request-id> [--json]" >&2; exit 2; }
+    [[ -n "$request_id" ]] || { echo "Usage: $(mandible_command_syntax auth.action.list)" >&2; exit 2; }
     shift
     json=0
     binding=$(mandible_bind_main_arguments "auth.action.list" '{"json":{"option":"json","constant":"1"}}' "$request_id" "$@") || exit $?
@@ -135,7 +135,7 @@ case "$subcommand" in
     ;;
   add)
     request_id="${1:-}"
-    [[ -n "$request_id" ]] || { echo "Usage: mandible auth action add <request-id> --kind <kind> --issue <issue-ref>" >&2; exit 2; }
+    [[ -n "$request_id" ]] || { echo "Usage: $(mandible_command_syntax auth.action.add)" >&2; exit 2; }
     shift
     parse_action_options "$@"
     payload=$(json_payload_from_options "$kind" "$payload_json" "$body" "$reason_comment" "$status_value" "$label" "$checkpoint_kind" "$checkpoint_payload_json" "$target" "$link_type" "$note")
@@ -145,7 +145,7 @@ case "$subcommand" in
   edit)
     request_id="${1:-}"
     action_id="${2:-}"
-    [[ -n "$request_id" && -n "$action_id" ]] || { echo "Usage: mandible auth action edit <request-id> <action-id> --kind <kind> --issue <issue-ref>" >&2; exit 2; }
+    [[ -n "$request_id" && -n "$action_id" ]] || { echo "Usage: $(mandible_command_syntax auth.action.edit)" >&2; exit 2; }
     shift 2
     parse_action_options "$@"
     payload=$(json_payload_from_options "$kind" "$payload_json" "$body" "$reason_comment" "$status_value" "$label" "$checkpoint_kind" "$checkpoint_payload_json" "$target" "$link_type" "$note")

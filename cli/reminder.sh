@@ -122,7 +122,7 @@ cmd_show() {
   local binding
   binding=$(mandible_bind_arguments "reminder.show" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" ]] || fail "Usage: mandible reminder show <id> [--json]"
+  [[ -n "$id" ]] || fail "Usage: $(mandible_command_syntax reminder.show)"
   require_tools
   local response_file status response
   response_file="$(api_temp_file)"
@@ -169,7 +169,7 @@ cmd_cancel() {
   local binding
   binding=$(mandible_bind_arguments "reminder.cancel" '{"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" ]] || fail "Usage: mandible reminder cancel <id> [--json]"
+  [[ -n "$id" ]] || fail "Usage: $(mandible_command_syntax reminder.cancel)"
   require_tools
   local response_file status response
   response_file="$(api_temp_file)"
