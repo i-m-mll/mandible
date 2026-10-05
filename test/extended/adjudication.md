@@ -74,7 +74,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `codex-thread-archive.test.ts` | Retain | Codex CLI thread archiver / codex thread archive candidates. Process/transport boundary retained. |
 | `codex-title-authority.test.ts` | Retain | exact Codex title authority. Behavioral, persisted-record, or format boundary retained. |
 | `comment-edit-cli.test.ts` | Retain | comment edit CLI / comment edit file-RPC allowlist. Process/transport boundary retained. |
-| `console-composer.test.tsx` | Retain | Composer / SessionControls. Mounted interaction/projection evidence retained. |
+| `console-composer.test.tsx` | Retire with unreachable Console composer | Canonical Chat draft and mounted managed settings tests protect current behavior. |
 | `console-prompt-route.test.ts` | Retain | console prompt route. Process/transport boundary retained. |
 | `console-session-create-api.test.ts` | Retain | console session creation payload / canonical Chat project registry payload. Process/transport boundary retained. |
 | `console-session-options.test.tsx` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
@@ -329,3 +329,5 @@ paths perform no mutation, replacing helper-only restatements; its 31 cases rema
 executable. Reported focused results are 13 cache/artifact-link cases and 22 default
 artifact cases passing. Signed CLI checkpoints are `bfc627be`, `5741d506`, and
 `7ef66fb6`, after operations `93c96ab6`; the parent integrates that separate lane.
+
+The UI reachability gate also identified eight unused Console modules and the retired stream cache. They are removed without deleting browser storage or historical Console records. The canonical Chat draft tests preserve current composer intent; the generic sidebar fixture uses simple content for its layout contract.

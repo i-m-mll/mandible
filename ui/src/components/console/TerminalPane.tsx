@@ -3,7 +3,6 @@ import type { ConsoleSession } from '../../state';
 import { useTerminalView } from './useTerminalView';
 import { DetailPaneNotice } from '../shared/DetailPaneNotice';
 
-export type ViewMode = 'terminal' | 'rich' | 'events';
 
 /** Real terminals carry raw PTY bytes. Managed conversations render in Chats. */
 export function TerminalPane({ sessionId, sessionStatus, isVisible }: {
