@@ -14,6 +14,7 @@ import { preparePublication as prepareResult, executePublication as executeResul
 import { preserveLegacyDocuments, listDocumentHistory } from '../src/spaces/history.js';
 import { serializeSpaceDocument } from '../src/spaces/export.js';
 import { recordArtifactVersion } from '../src/provider-artifacts.js';
+import { documentArtifactImportEffects } from '../src/security/document-import-effects.js';
 
 function unwrap<T>(result:import('../src/spaces/publication.js').PublicationResult<T>):T {
   if(!result.ok)throw new Error(result.error.message);return result.value;
@@ -44,6 +45,8 @@ it('freezes saved revision, retains failed proposal, refuses changed destination
   const originalBlock=listSpaceBlocks(db,space)[0];updateSpaceBlock(db,space,originalBlock.id,{markdown:'edited later'});
   expect(getPublication(db,space,publication.id).content).toContain('original');
   expect(serializeSpaceDocument(db,space)).toContain('edited later');
+  expect(documentArtifactImportEffects(db, publication.snapshot_ref)).toEqual(['ledger:read', 'ledger:write']);
+  expect(documentArtifactImportEffects(db, 'artifact-version:missing')).toContain('files:production');
   const copy=importManagedDocument(db,{ref:publication.snapshot_ref,title:'Copy',projectId:'p'});
   expect(copy.id).not.toBe(space);expect(listSpaceBlocks(db,copy.id)[0].markdown).toBe('original');
   updateSpaceBlock(db,copy.id,listSpaceBlocks(db,copy.id)[0].id,{markdown:'copy edit'});
@@ -73,6 +76,7 @@ it('publishes the frozen bytes once, and later editing leaves Git publication pi
   expect(git(repo,'show',`${published.commit_sha}:doc.md`)).toContain('original');
   expect(serializeSpaceDocument(db,space)).toContain('later');
   await executePublication(db,space,publication.id,runner);expect(submissions).toBe(1);
+  expect(documentArtifactImportEffects(db, published.version_ref)).toContain('files:production');
   const imported=importManagedDocument(db,{ref:published.version_ref!,title:'Git import',projectId:'p'});
   expect(listSpaceBlocks(db,imported.id)[0].markdown).toBe('original');
 });
