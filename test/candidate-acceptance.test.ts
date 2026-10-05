@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
-import { acceptanceGatewayConfig, acceptanceHealth, assessLogs } from '../scripts/candidate-acceptance.mjs';
+import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessLogs } from '../scripts/candidate-acceptance.mjs';
 
 describe('production acceptance evidence', () => {
   it('rejects closed-database shutdown errors and event storms', () => {
@@ -22,6 +22,9 @@ it('routes only the exact private HTTPS dashboard and retains certificate valida
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-acceptance-tls-'));
   let server: https.Server | undefined;
   try {
+    const privateHome = path.join(home, 'private-home');
+    createAcceptanceHome(privateHome);
+    expect(fs.statSync(privateHome).mode & 0o777).toBe(0o700);
     for (const name of ['root', 'unrelated']) {
       const result = spawnSync('/usr/bin/openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
         '-subj', '/CN=app.mandible.localhost', '-addext', 'subjectAltName=DNS:app.mandible.localhost',

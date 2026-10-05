@@ -27,6 +27,10 @@ function command(binary, args, options = {}) {
 export { assessLogs } from './runtime-log-assessment.mjs';
 import { assessLogs } from './runtime-log-assessment.mjs';
 
+export function createAcceptanceHome(home) {
+  fs.mkdirSync(home, { mode: 0o700 });
+}
+
 export function acceptanceGatewayConfig({ origin, backendPort, adminPort, storageRoot }) {
   const url = new URL(origin);
   if (url.protocol !== 'https:' || url.hostname !== 'app.mandible.localhost' || !url.port || url.origin !== origin) throw new Error('Acceptance requires an exact Mandible HTTPS origin.');
@@ -116,7 +120,7 @@ async function main() {
   const metadataFile = path.join(run, 'metadata.json');
   saveOwnedMetadata(metadataFile, { ownership, candidate });
   const home = path.join(run, 'home');
-  fs.mkdirSync(home);
+  createAcceptanceHome(home);
   const result = { schema: 'mandible-candidate-acceptance@1', scope: 'isolated production daemon and packaged dashboard; live installation and protected delivery excluded', status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
   let daemon, desktop, gateway;
   const files = [];
