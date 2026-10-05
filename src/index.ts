@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -314,13 +315,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   );
   const conversationControl = new ConversationControlService(db, {
     onChange: (snapshot) => broadcast({
-      type: "conversation:control-updated",
-      event: "conversation:control-updated",
+      type: DOMAIN_EVENTS.CONVERSATION_CONTROL_UPDATED,
+      event: DOMAIN_EVENTS.CONVERSATION_CONTROL_UPDATED,
       data: snapshot,
     }),
     onProviderEvent: (event) => broadcast({
-      type: "conversation:provider-event",
-      event: "conversation:provider-event",
+      type: DOMAIN_EVENTS.CONVERSATION_PROVIDER_EVENT,
+      event: DOMAIN_EVENTS.CONVERSATION_PROVIDER_EVENT,
       data: event,
     }),
     onTerminalTurn: async ({ conversation_id, provider_session_id }) => {

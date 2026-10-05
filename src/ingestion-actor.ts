@@ -1,3 +1,4 @@
+import type { MandibleEventType } from "./contracts.js";
 import { Worker } from "node:worker_threads";
 import type { Logger } from "./types.js";
 import type {
@@ -15,7 +16,7 @@ interface PendingRequest {
 export interface IngestionActorOptions {
   dbPath: string;
   logger: Logger;
-  publish: (event: string, data: unknown) => void;
+  publish: (event: MandibleEventType, data: unknown) => void;
   workerUrl?: URL;
 }
 

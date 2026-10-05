@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "../contracts.js";
 /**
  * Webhook ingestion routes.
  * Bug: 9f66ad9 — accept structured events from external systems (CI, monitoring,
@@ -334,7 +335,7 @@ export function registerWebhookRoutes(
         markDelivered(id, result.delivered_to);
       }
 
-      broadcast("webhook:received", {
+      broadcast(DOMAIN_EVENTS.WEBHOOK_RECEIVED, {
         id,
         source: event.source,
         event_type: event.event_type,
@@ -353,7 +354,7 @@ export function registerWebhookRoutes(
       // No active session can receive — queue for manual dispatch
       queueWebhookEvent(event, id);
 
-      broadcast("webhook:received", {
+      broadcast(DOMAIN_EVENTS.WEBHOOK_RECEIVED, {
         id,
         source: event.source,
         event_type: event.event_type,
@@ -467,7 +468,7 @@ export function registerWebhookRoutes(
 
     markDelivered(webhookId, targetSessionId);
 
-    broadcast("webhook:delivered", {
+    broadcast(DOMAIN_EVENTS.WEBHOOK_DELIVERED, {
       id: webhookId,
       delivered_to: targetSessionId,
     });
@@ -496,7 +497,7 @@ export function registerWebhookRoutes(
       return;
     }
 
-    broadcast("webhook:dismissed", { id: webhookId });
+    broadcast(DOMAIN_EVENTS.WEBHOOK_DISMISSED, { id: webhookId });
     sendJson(res, 200, { ok: true, id: webhookId });
   }, { fileRpc: "deny" });
 }
