@@ -1,6 +1,10 @@
 # Bun execution and SQLite foundation
 
-Mandible uses Bun 1.4.2 for dependency management and JavaScript execution. `.bun-version` is the runtime pin; `package.json` declares the same exact package-manager and engine version. `scripts/bun-runtime.sh` selects a cached executable or provisions a checksum-verified release without changing the user's ambient installation. `MANDIBLE_RUNTIME` may select another executable only if it reports the pinned version.
+Mandible uses the exact upstream Bun candidate `900eae300` for dependency management and JavaScript execution. The executable reports version `1.4.3` and revision label `1.4.3-canary.1+900eae300`; this is a qualified prerelease build. `.bun-version` and `package.json` declare the reported version. `scripts/bun-runtime-lock.tsv` pins its full source revision, platform archives, executable checksums, upstream URLs, and execution evidence. The selector verifies bytes before executing version and full revision checks. `MANDIBLE_RUNTIME` follows those same checks.
+
+The immutable cache path includes the full revision and executable checksum. `MANDIBLE_RUNTIME_ARCHIVE` supplies a preserved platform ZIP for offline installation; a portable kit may instead place that ZIP under `runtime/`. The packaged desktop app supplies its bundled archive through the same selector. Neither offline path needs a running daemon or network access. An unavailable upstream artifact fails with offline recovery instructions. Corrupt cache entries are preserved and refused. There is no fallback to the released 1.4.2 runtime, whose native SQLite close retains database handles while statement wrappers remain reachable.
+
+The upstream build is [Buildkite 113725](https://buildkite.com/bun/bun/builds/113725), from [the exact source revision](https://github.com/oven-sh/bun/tree/900eae3009991d27a524a8c0d54f9ed66e4acef4). It includes 81 commits and changes 432 files relative to Bun 1.4.2, including fixes beyond SQLite. Its upstream archives expire on 2027-03-09; the original archive and portable kit must remain in durable custody. macOS arm64 has execution evidence. The other three archive and binary identities are verified but unexecuted; x64 archives require AVX2 because this build provides no baseline archive.
 
 For a clean checkout or worktree:
 
@@ -22,10 +26,14 @@ Online backup uses SQLite backup in a separate Bun process. The child finalizes 
 
 ## Local verification
 
-On macOS arm64, pinned Bun reported SQLite 3.54.0. Its mmap setting applied a 1 GiB cap, below the requested tuning budget; tuning checks therefore verify the applied budget rather than assuming the previous driver's compile limit.
+The original macOS arm64 Bun 1.4.2 baseline reported SQLite 3.54.0. Its mmap setting applied a 1 GiB cap, below the requested tuning budget; tuning checks therefore verify the applied budget rather than assuming the previous driver's compile limit.
 
 Two private frozen installs produced identical lock bytes and distinct package-file inodes; editing one installed file did not change the other. Clonefile installation was requested explicitly. The inspected package file had 9,042 logical bytes and 24 allocated 512-byte blocks in each checkout; these per-file statistics do not quantify physically shared extents. A third clean frozen install succeeded with no Node executable on PATH, and esbuild transformed TypeScript under Bun.
 
 Focused evidence covers strict bindings, integer/blob preservation, immediate-lock contention, nested and outer rollback, async refusal, live WAL reads, FTS/JSON queries, parsed query refusals, ordered duplicate columns, asynchronous backup, cancellation, existing-destination preservation, fresh schema, retained-floor upgrades, artifact custody and failed-migration consistency. Source typechecking and emitted database startup passed under the pinned runtime. The integration owner runs the combined build, suites and exact-candidate production daemon/packaged-desktop gate after all lanes stabilize.
+
+The exact candidate passes 39 schema, migration, hardening and auth cases; eight binding, transaction, read-only, FTS and backup cases; and a close regression that retains statement wrappers and an active iterator while confirming no database, WAL or SHM handles remain open. Closed statements and iterators refuse further use, and repeated close safely rejects. The close regression fails on released Bun 1.4.2 without relying on garbage collection. The earliest upstream patch binary proved the close mechanism but crashed the boundary corpus; the selected candidate includes the later virtual-table ownership and callback-root fixes.
+
+Cold-cache offline installation succeeded with the network command blocked and the daemon endpoint unavailable. Corrupt archive and executable inputs were rejected before execution. A Node-free frozen install preserved the existing lockfile. The parent owns the full acceptance suite, real preview cleanup, production daemon and packaged desktop gate, and protected delivery.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>
