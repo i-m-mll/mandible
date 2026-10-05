@@ -4,6 +4,8 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { configureSqliteRuntime } from "../../src/sqlite-runtime.js";
+import { copyRuntimeFixture } from "../helpers/runtime-fixture.js";
 import { renderMandibleInstructionsFragment } from "../../src/instructions/fragment.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
@@ -51,18 +53,15 @@ describe("instructions CLI", () => {
     tempRoots.push(root);
     const cli = path.join(root, "cli");
     fs.cpSync(path.join(process.cwd(), "cli"), cli, { recursive: true });
-    fs.mkdirSync(path.join(root, "scripts"));
-    for (const file of ["bun-runtime.sh", "bun-runtime-lock.tsv"]) {
-      fs.copyFileSync(path.join(process.cwd(), "scripts", file), path.join(root, "scripts", file));
-    }
-    fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(root, ".bun-version"));
+    configureSqliteRuntime();
+    const runtimeEnv = copyRuntimeFixture(root);
     const authored = "# Authored\n{{command absent.command}}\n";
     fs.writeFileSync(path.join(cli, "instructions-contract.md"), authored);
     const target = path.join(root, "AGENTS.md");
     fs.writeFileSync(target, "preserve my policy\n");
     const result = spawnSync("bash", [path.join(cli, "instructions.sh"), "install", "--target", target], {
       encoding: "utf8", timeout: 10_000,
-      env: { ...process.env, HOME: root, MANDIBLE_CLI_DIR: cli,
+      env: { ...process.env, ...runtimeEnv, HOME: root, MANDIBLE_CLI_DIR: cli,
         MANDIBLE_DB: path.join(root, "fixture.db"), NODE_PATH: path.join(process.cwd(), "node_modules") },
     });
     expect(result.status).not.toBe(0);
