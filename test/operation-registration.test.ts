@@ -10,6 +10,10 @@ describe("registered operation boundary", () => {
     const router = new Router();
     expect(() => router.post("/api/new", () => {}, { fileRpc: "allow" } as RouteOptions))
       .toThrow("Incomplete operation descriptor");
+    for (const patch of [{ requestSchema: undefined }, { reportingCategory: undefined }, { effects: ["unknown"] }, { fileRpc: "unknown" }]) {
+      const options = { operation: { id: "test", effects: [], requestSchema: null, reportingCategory: null, ...patch }, fileRpc: patch.fileRpc ?? "allow" };
+      expect(() => router.post("/api/new", () => {}, options as RouteOptions)).toThrow("Incomplete operation descriptor");
+    }
   });
 
   it("validates and transforms the body before resolving its effects", async () => {

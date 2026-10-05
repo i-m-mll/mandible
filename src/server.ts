@@ -11,7 +11,7 @@ import {
   resolveInstanceInfo,
 } from "./instance-policy.js";
 import { authorizeEffects } from "./security/effect-policy.js";
-import { resolveOperation, type OperationDescriptor } from "./security/operation-policy.js";
+import { EFFECTS, resolveOperation, type OperationDescriptor } from "./security/operation-policy.js";
 import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
 import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";
@@ -414,9 +414,12 @@ export class Router implements RouteRegistrar {
 
   private addRoute(method: string, path: string, handler: RouteHandler, options: RouteOptions): void {
     const operation = options?.operation;
-    if (!operation || !operation.id || !Object.hasOwn(operation, "reportingCategory")
-        || !Object.hasOwn(operation, "requestSchema") || !operation.effects
-        || !options.fileRpc) {
+    if (!operation || typeof operation.id !== "string" || !operation.id.trim()
+        || !(operation.reportingCategory === null || typeof operation.reportingCategory === "string" && operation.reportingCategory.length > 0)
+        || !(operation.requestSchema === null || typeof operation.requestSchema?.safeParse === "function")
+        || !(typeof operation.effects === "function" || Array.isArray(operation.effects) && operation.effects.every(effect => EFFECTS.includes(effect)))
+        || !(options.fileRpc === "allow" || options.fileRpc === "deny"
+          || typeof options.fileRpc === "object" && typeof options.fileRpc?.allowWhen === "function")) {
       throw new Error(`Incomplete operation descriptor: ${method} ${path}`);
     }
     const { regex, paramNames } = compileRoute(path);

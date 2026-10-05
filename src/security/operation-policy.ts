@@ -65,8 +65,9 @@ export interface OperationDescriptor {
 }
 
 export function resolveOperation(descriptor: OperationDescriptor, context: OperationContext): Operation {
-  return {
-    id: descriptor.id,
-    effects: typeof descriptor.effects === "function" ? descriptor.effects(context) : descriptor.effects,
-  };
+  const effects = typeof descriptor.effects === "function" ? descriptor.effects(context) : descriptor.effects;
+  if (!Array.isArray(effects) || effects.some(effect => !EFFECTS.includes(effect))) {
+    throw new Error(`Invalid effects from operation ${descriptor.id}`);
+  }
+  return { id: descriptor.id, effects };
 }
