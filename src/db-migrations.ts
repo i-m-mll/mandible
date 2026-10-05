@@ -12,7 +12,7 @@ import {
 } from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { createHash } from "node:crypto";
-import { CONVERSATION_CONTROL_SCHEMA_V163_SQL } from "./conversation-control/schema.js";
+import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL } from "./conversation-control/schema.js";
 import {
   CONVERSATION_SPAWN_SCHEMA_SQL,
   CONVERSATION_SPAWN_SCHEMA_V2_SQL,
@@ -1755,7 +1755,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TABLE managed_task_events_v187",
     "CREATE INDEX idx_managed_task_events_task\n        ON managed_task_events(task_id, occurred_at, id)",
   ] },
-  { version: 189, name: "managed_conversation_runtime", statements: [...CONVERSATION_RUNTIME_SCHEMA_SQL] },
+  { version: 189, name: "managed_conversation_runtime", statements: [...CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, ...CONVERSATION_RUNTIME_SCHEMA_SQL] },
 ];
 
 /**
