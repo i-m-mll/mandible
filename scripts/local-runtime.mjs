@@ -541,7 +541,7 @@ function prepareRunner(root) {
 }
 
 const PRESERVED_BACKEND_ENVIRONMENT = new Set([
-  "MANDIBLE_DB", "MANDIBLE_LAUNCH_MODE", "MANDIBLE_PID_FILE", "MANDIBLE_STDERR_LOG_PATH", "MANDIBLE_SQLITE_LIBRARY", "MANDIBLE_SQLITE_LIBRARY_ARCHIVE", "NODE_OPTIONS", "PATH",
+  "MANDIBLE_DB", "MANDIBLE_LAUNCH_MODE", "MANDIBLE_PID_FILE", "MANDIBLE_STDERR_LOG_PATH", "MANDIBLE_SQLITE_LIBRARY", "MANDIBLE_SQLITE_LIBRARY_ARCHIVE", "MANDIBLE_SECURITY_BIN", "NODE_OPTIONS", "PATH",
 ]);
 
 function existingBackendEnvironment() {
@@ -568,7 +568,9 @@ function prepareServicePlists(production, main, launchMode) {
   const pathValue = process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin";
   const backendEnvironment = {
     ...existingBackendEnvironment(),
-    ...Object.fromEntries(['MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE'].filter(key => process.env[key]).map(key => [key, process.env[key]])),
+    // Preserve the CLI's documented credential-tool test seam for isolated
+    // native Keychains. This is a tool path, never a bearer or approval flag.
+    ...Object.fromEntries(['MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE', 'MANDIBLE_SECURITY_BIN'].filter(key => process.env[key]).map(key => [key, process.env[key]])),
     HOME: os.homedir(),
     MANDIBLE_HOME: HOME,
     MANDIBLE_PRODUCTION_ROOT: production.root,
