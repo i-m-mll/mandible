@@ -95,7 +95,7 @@ it('backfills only consistent sources and preserves duplicate/ambiguous history 
     CREATE TABLE ledger_project_checkouts(project_id TEXT,work_repo_id TEXT,name TEXT);
     CREATE TABLE artifact(id TEXT PRIMARY KEY,identity_key TEXT,source_kind TEXT,source_project_id TEXT,source_repo_id TEXT,source_path TEXT,metadata_json TEXT DEFAULT '{}',updated_at INTEGER);
     CREATE INDEX idx_artifact_source_repo ON artifact(source_repo_id) WHERE source_repo_id IS NOT NULL;
-    CREATE TABLE artifact_version(id TEXT PRIMARY KEY,artifact_id TEXT,source_kind TEXT,source_project_id TEXT,source_repo_id TEXT,repo_path TEXT,observed_path TEXT,created_at INTEGER DEFAULT 1);
+    CREATE TABLE artifact_version(id TEXT PRIMARY KEY,artifact_id TEXT,blob_id TEXT,source_kind TEXT,source_project_id TEXT,source_repo_id TEXT,repo_path TEXT,observed_path TEXT,created_at INTEGER DEFAULT 1);
     CREATE TABLE project_artifact_associations(id TEXT PRIMARY KEY,project_id TEXT,target_type TEXT,target_id TEXT,association_kind TEXT,role TEXT,status TEXT,source TEXT,created_at INTEGER,updated_at INTEGER);
     INSERT INTO ledger_projects VALUES ('p','repo','repo');
     INSERT INTO artifact VALUES ('one','one','tracked_repo',NULL,'repo','a','{}',1),('two','two','tracked_repo',NULL,'repo','a','{}',1),('mixed','mixed','mixed',NULL,'repo','c','{}',1),('unknown','unknown','external',NULL,NULL,NULL,'{}',1),('managed','managed','managed',NULL,NULL,NULL,'{}',1);
