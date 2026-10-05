@@ -1,13 +1,9 @@
 import { bindOperationCatalog, type InstanceInfo } from '../../ui/src/api';
-import { MAIN_CLI_INSTANCE_RESPONSE } from './cli-instance-response';
+import { operationCatalogFixture } from './operation-catalog-fixture';
 
 /** Registered route descriptors are shared; bind them to the exact fixture generation. */
-export function bindTestInstanceCatalog(instance: InstanceInfo): void {
-  const registered = MAIN_CLI_INSTANCE_RESPONSE.operations;
-  const catalog = { ...registered, runtime: {
-    ...registered.runtime,
-    instance_id: instance.instance_id,
-    backend_generation: instance.backend_generation,
-  } };
-  if (!bindOperationCatalog(instance, catalog)) throw new Error('Fixture operation catalog is incompatible with its instance');
+export function bindTestInstanceCatalog(instance: InstanceInfo, files?: string[]): void {
+  if (!bindOperationCatalog(instance, operationCatalogFixture(instance, files))) {
+    throw new Error('Fixture operation catalog is incompatible with its instance');
+  }
 }

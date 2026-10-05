@@ -1,6 +1,6 @@
 import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
 import type { InstanceInfo } from "../../src/types.js";
-import { registeredOperationRouter } from "./registered-operation-router.js";
+import { operationCatalogFixture } from "./operation-catalog-fixture.js";
 
 const instance: InstanceInfo = {
   role: "main",
@@ -17,5 +17,5 @@ const instance: InstanceInfo = {
 
 export const MAIN_CLI_INSTANCE_RESPONSE = {
   instance,
-  operations: registeredOperationRouter(instance).operationCatalog("test-candidate"),
+  operations: operationCatalogFixture(instance),
 };
