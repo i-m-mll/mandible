@@ -56,7 +56,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `channel-registry.test.ts` | Retain | ChannelRegistry. Behavioral, persisted-record, or format boundary retained. |
 | `channel-server.test.ts` | Retain | channel-server base URL / channel-server local socket. Process/transport boundary retained. |
 | `chat-context-usage.test.ts` | Retain | chat context usage. Mounted interaction/projection evidence retained. |
-| `chat-failure-notice.test.tsx` | Retain | Chat provider failure notice. Mounted interaction/projection evidence retained. |
+| `chat-failure-notice.test.tsx` | Retain | Preview denial, accessible notice, raw-code hiding, diagnostics, retry, and dismissal retained. Literal saved-draft wording retired; canonical draft-state tests prove preservation. |
 | `chat-message-stream.test.tsx` | Retain | chat message stream render model / ChatSurface stream behavior. Mounted interaction/projection evidence retained. |
 | `chat-project-preferences.test.tsx` | Retain | Chat project preference migration. Mounted interaction/projection evidence retained. |
 | `chat-render-orchestration.test.ts` | Retain | chat render orchestration. Behavioral, persisted-record, or format boundary retained. |
