@@ -244,7 +244,7 @@ file_rpc_show() {
   if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; exit 2; fi
   shift
   local binding
-  binding=$(mandible_bind_arguments "conversations.show" '{"json":{"option":"json","constant":"1"},"blocks":{"option":"blocks","constant":"1"}}' "$target" "$@") || return $?
+  binding=$(mandible_bind_arguments "conversations.show" '{"json":{"option":"json","constant":"1"},"blocks":{"option":"blocks","constant":"1"}}' "$ident" "$@") || return $?
   eval "$binding"
   response=$(api_get "/api/conversations/$(urlencode "$ident")?target=latest")
   if (( json )); then
@@ -273,7 +273,7 @@ file_rpc_blocks() {
   if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; exit 2; fi
   shift
   local binding
-  binding=$(mandible_bind_arguments "conversations.blocks" '{"type_filter":{"option":"type"},"role_filter":{"option":"role"},"content_filter":{"option":["content","contains"]},"limit":{"option":"limit"},"offset":{"option":"offset"},"json":{"option":"json","constant":"1"}}' "$target" "$@") || return $?
+  binding=$(mandible_bind_arguments "conversations.blocks" '{"type_filter":{"option":"type"},"role_filter":{"option":"role"},"content_filter":{"option":["content","contains"]},"limit":{"option":"limit"},"offset":{"option":"offset"},"json":{"option":"json","constant":"1"}}' "$ident" "$@") || return $?
   eval "$binding"
   request="/api/conversations/$(urlencode "$ident")/blocks?limit=$(urlencode "$limit")&offset=$(urlencode "$offset")"
   if [[ -n "$type_filter" ]]; then request="${request}&type=$(urlencode "$type_filter")"; fi
@@ -297,7 +297,7 @@ conversation_export_api() {
   if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; return 2; fi
   shift
   local binding
-  binding=$(mandible_bind_arguments "conversations.export" '{"format":{"option":"format"}}' "$target" "$@") || return $?
+  binding=$(mandible_bind_arguments "conversations.export" '{"format":{"option":"format"}}' "$ident" "$@") || return $?
   eval "$binding"
   [[ "$format" == "json" || "$format" == "markdown" ]] || {
     echo "Error: format must be json or markdown." >&2

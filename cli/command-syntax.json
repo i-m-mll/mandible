@@ -219,11 +219,11 @@
         "kind": "sequence",
         "items": [
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--repo"],"values": [{"kind": "argument","name": "repo","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--head"],"values": [{"kind": "argument","name": "branch","value": {"type": "integer","min": 1}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--head"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--status"],"values": [{"kind": "argument","name": "status","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--type"],"values": []}}
+          {"kind": "optional","item": {"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "type","value": {"type": "string"}}]}}
         ]
       }
     },
