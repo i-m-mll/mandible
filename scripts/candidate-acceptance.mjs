@@ -25,7 +25,7 @@ function command(binary, args, options = {}) {
 }
 
 export { assessLogs } from './runtime-log-assessment.mjs';
-import { assessLogs } from './runtime-log-assessment.mjs';
+import { assessRuntimeLogs } from './runtime-log-assessment.mjs';
 
 export function createAcceptanceHome(home) {
   fs.mkdirSync(home, { mode: 0o700 });
@@ -223,7 +223,9 @@ async function main() {
     const logs = ['daemon', 'desktop', 'gateway'].map(name => {
       const file = path.join(run, `${name}.log`); return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
     }).join('\n');
-    result.checks.log_failures = assessLogs(logs);
+    const assessment = assessRuntimeLogs(logs);
+    result.checks.log_failures = assessment.failures;
+    result.checks.log_diagnostics = assessment.diagnostics;
     if (result.status !== 'passed' && fs.existsSync(path.join(run, 'build.log'))) result.checks.build_failure_excerpt = fs.readFileSync(path.join(run, 'build.log'), 'utf8').split('\n').slice(-30).join('\n').slice(-8000);
     result.checks.log_digest = createHash('sha256').update(logs).digest('hex');
     result.checks.log_bytes = Buffer.byteLength(logs);

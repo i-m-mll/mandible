@@ -60,3 +60,25 @@ it('routes only the exact private HTTPS dashboard and retains certificate valida
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+
+it('separates startup traffic and health cadence from a repeated same-route request loop', async () => {
+  const { assessRuntimeLogs } = await import('../scripts/runtime-log-assessment.mjs');
+  const start = Date.parse('2026-10-05T05:00:00Z');
+  const request = (pathname: string, offset: number) => JSON.stringify({ level: 'info', message: 'http_request', method: 'GET', pathname, status: 200, time: new Date(start + offset).toISOString() });
+  const normal = [
+    ...Array.from({ length: 75 }, (_, i) => request('/api/health', i * 500)),
+    ...Array.from({ length: 128 }, (_, i) => request(`/api/startup/${i}`, i * 5)),
+  ].join('\n');
+  const assessment = assessRuntimeLogs(normal);
+  expect(assessment.failures).toEqual([]);
+  expect(assessment.diagnostics.http_requests).toMatchObject({ total: 203, route_count: 129, omitted_routes: 109 });
+  expect(assessment.diagnostics.http_requests.routes[0]).toMatchObject({ pathname: '/api/health', count: 75, peak_window_count: 21, statuses: { '200': 75 } });
+  expect(assessment.diagnostics.http_requests.routes).toHaveLength(20);
+  const loop = Array.from({ length: 101 }, (_, i) => request('/api/projects', i * 50)).join('\n');
+  expect(assessRuntimeLogs(loop).failures).toEqual(['Repeated request storm: GET /api/projects (101 in 10000ms)']);
+  const cadence = Array.from({ length: 101 }, (_, i) => request('/api/projects', i * 1000)).join('\n');
+  expect(assessRuntimeLogs(cadence).failures).toEqual([]);
+  const untimed = Array.from({ length: 101 }, () => JSON.stringify({ level: 'info', message: 'http_request', method: 'GET', pathname: '/api/projects' })).join('\n');
+  expect(assessRuntimeLogs(untimed).failures).toEqual(['Repeated request storm: GET /api/projects (101 in 10000ms)']);
+});
