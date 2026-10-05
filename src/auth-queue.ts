@@ -1135,6 +1135,8 @@ export class AuthQueue {
       return { outcome: "atomic_applied", mergeSha: prepared.merge_sha };
     }
     if (indexTree === candidateTree && !trackedStatus) {
+      try { git(["update-ref", "ORIG_HEAD", baseSha]); }
+      catch { return { outcome: "atomic_needs_recovery", detail: "Native post-hook original-head input could not be restored." }; }
       return { outcome: "atomic_applied", mergeSha: prepared.merge_sha };
     }
     const baseTree = git(["rev-parse", "--verify", `${baseSha}^{tree}`]);
@@ -1155,6 +1157,8 @@ export class AuthQueue {
     if (syncedIndex !== candidateTree || syncedStatus) {
       return { outcome: "atomic_needs_recovery", detail: "protected worktree synchronization did not converge" };
     }
+    try { git(["update-ref", "ORIG_HEAD", baseSha]); }
+    catch { return { outcome: "atomic_needs_recovery", detail: "Native post-hook original-head input could not be restored." }; }
     return { outcome: "atomic_applied", mergeSha: prepared.merge_sha };
   }
 
@@ -5685,6 +5689,9 @@ export class AuthQueue {
         user_id: null,
         reason: "verification_error",
       };
+    }
+    if (!verification.verified || verification.user_id !== request.approved_by_user_id || this.successfulMergeEvidenceFailure(request)) {
+      throw new AuthQueueError("invalid_status", "Exact operator-authorized publication evidence became unavailable during completion; retain the request for recovery.");
     }
     const verifiedAt = request.resolved_at ?? this.now();
     return this.db.transaction(() => {
