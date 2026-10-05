@@ -2,34 +2,7 @@ import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../../query/client';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from '../../query/browserResources';
 import { browserSessionFetch } from '../../client-auth-token';
-// Spaces document block editor (umbrella de56ffa, C14c / issue cef3eac).
-//
-// The EDITOR over the `space_blocks` tree. It is the writable counterpart to the
-// C14b read-only `DocumentRenderer`: it creates / edits / reorders / deletes
-// blocks and embeds issue/artifact/comment items through the C11 block routes,
-// and renders the live block tree through the C14b renderer (`renderSpaceBlocks`
-// + `DocumentBody`) so the authored result is shown by exactly the same
-// sanitize/grammar/ref path the reader sees. It owns NO renderer internals, NO
-// `space_blocks` grammar/schema, and NO custody backend.
-//
-// CUSTODY GATING (C13d, `./custodyEditorUx`): the editor gates against the
-// single custody rule module. A document under `authority='repo'` whose tracked
-// export has drifted from `clean` is READ-ONLY + STALE; the editor renders the
-// read-only tree and surfaces the two explicit reconciliation affordances
-// (re-import / fork). Both are user-initiated callbacks — the editor never
-// silently forks the repo-authoritative bytes (Dataful-UX: canonical mutations
-// require explicit user action). Mandible-custody documents are freely editable.
-//
-// EMBED-ON-DELETE (DEFERRED): deleting a `space_items` row that blocks embed is
-// `ON DELETE RESTRICT` + an `item_snapshot_json` placeholder, so degrading to a
-// placeholder is always POSSIBLE — but WHICH behavior is correct (auto-detach to
-// a placeholder vs. block the delete and make the user remove embeds first) is a
-// deferred product decision. This editor does NOT pick it: when a delete is
-// blocked by embeds it raises an explicit, user-prompted decision point
-// (`onEmbedDeleteDecision`) and takes no destructive action until the user
-// chooses. The default (no handler) is the SAFE, non-destructive path: surface
-// the conflict and stop.
-
+import { SpaceExportDialog } from './SpaceExportDialog';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { EditorSelection } from '@codemirror/state';
@@ -37,19 +10,13 @@ import type { EditorView } from '@codemirror/view';
 
 import type { SpaceBlock, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
-import { canPerformOperation, getSpaceExports } from '../../api';
+import { canPerformOperation } from '../../api';
 import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { DocumentBody, renderSpaceBlocks } from './DocumentRenderer';
 import {
-  resolveCustodyEditorUx,
-  type CustodyAffordance,
-  type CustodyEditorUx,
-} from './custodyEditorUx';
-import {
   appendSortKey,
-  deriveDocumentCustody,
   placementForIndex,
   siblingIndexOf,
 } from './blockEditorModel';
@@ -145,15 +112,6 @@ type OverlayPosition = { top: number; left: number };
 export interface DocumentBlockEditorProps extends SpaceRendererMountProps {
   /** Test seam: inject a fetch implementation for block reads/writes. */
   fetchImpl?: typeof fetch;
-  /**
-   * Explicit re-import affordance: pull the repo's current version into Mandible
-   * working state. Surfaced only when custody is repo-authoritative + stale. The
-   * reconciliation backend is out of this lane's scope (C13*); the editor only
-   * OFFERS the affordance as an explicit user action.
-   */
-  onReimport?: () => void;
-  /** Explicit fork affordance: fork a fresh Mandible-custody copy to edit. */
-  onFork?: () => void;
   /**
    * The DEFERRED embed-on-delete decision point. Invoked when a user tries to
    * remove an embedded item: the editor presents the decision and takes no
@@ -288,8 +246,6 @@ export function DocumentBlockEditor({
   spaceId,
   fetchImpl,
   instance = null,
-  onReimport,
-  onFork,
   onEmbedDeleteDecision,
 }: DocumentBlockEditorProps): JSX.Element {
   const [viewState, setViewState] = usePersistedViewState(
@@ -298,6 +254,7 @@ export function DocumentBlockEditor({
     EMPTY_BLOCK_EDITOR_VIEW_STATE,
   );
   const [busy, setBusy] = useState(false);
+  const [publicationOpen,setPublicationOpen]=useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [itemCommandRange, setItemCommandRange] = useState<ItemCommandRange | null>(null);
   const [pickerPosition, setPickerPosition] = useState<OverlayPosition | null>(null);
@@ -342,11 +299,8 @@ export function DocumentBlockEditor({
     queryKey: documentKey,
     enabled: Boolean(spaceId),
     queryFn: async ({ signal }) => {
-      const [blocks, exportsResult] = await Promise.all([
-        listSpaceBlocks(spaceId!, fetchRef.current, signal),
-        getSpaceExports(spaceId!, undefined, signal, fetchRef.current),
-      ]);
-      return { spaceId: spaceId!, blocks, exports: exportsResult.exports };
+      const blocks = await listSpaceBlocks(spaceId!, fetchRef.current, signal);
+      return { spaceId: spaceId!, blocks };
     },
     refetchOnWindowFocus: true,
   }, queryClient);
@@ -386,14 +340,9 @@ export function DocumentBlockEditor({
       return draft === undefined ? block : { ...block, markdown: draft };
     });
   }, [load, viewState.drafts]);
-  const exports = load.status === 'ready' ? load.exports : [];
   const spaceItems = itemsQuery.data ?? [];
 
-  const custody: CustodyEditorUx = useMemo(
-    () => resolveCustodyEditorUx(deriveDocumentCustody(exports)),
-    [exports],
-  );
-  const editable = load.status === 'ready' && !documentQuery.error && custody.editable && spaceId !== null && canPerformOperation(
+  const editable = load.status === 'ready' && !documentQuery.error && spaceId !== null && canPerformOperation(
     instance,
     'PATCH',
     `/api/spaces/${encodeURIComponent(spaceId)}/blocks/_`,
@@ -937,10 +886,12 @@ export function DocumentBlockEditor({
       className="spaces-block-editor"
       data-testid="spaces-block-editor"
       data-editable={String(editable)}
-      data-stale={String(custody.stale)}
       ref={bodyRef}
     >
       <div className="spaces-block-editor__viewport" ref={viewportRef}>
+        <button disabled={!editable || busy || Object.keys(viewState.drafts).length > 0 || saveState.status === 'saving'} onClick={()=>setPublicationOpen(true)}>Publications and import</button>
+        {publicationOpen && <SpaceExportDialog spaceId={spaceId} projectId={projectId} onClose={()=>setPublicationOpen(false)} onImported={()=>void queryClient.invalidateQueries()}/>}
+
         {saveState.status !== 'idle' && (
           <div
             className="spaces-block-editor__save-state"
@@ -994,14 +945,6 @@ export function DocumentBlockEditor({
               </div>
             </div>
           )}
-          {!editable && custody.stale && (
-            <CustodyStaleBanner
-              custody={custody}
-              onReimport={onReimport}
-              onFork={onFork}
-            />
-          )}
-
           {/* The live document, rendered through the C14b renderer (read path). */}
 
           {!editable && rendered && (
@@ -1229,53 +1172,6 @@ function ReferenceInspector({
     </aside>
   );
 }
-
-/** Read-only/stale custody banner with the explicit re-import / fork affordances. */
-function CustodyStaleBanner({
-  custody,
-  onReimport,
-  onFork,
-}: {
-  custody: CustodyEditorUx;
-  onReimport?: () => void;
-  onFork?: () => void;
-}): JSX.Element {
-  const handlers: Record<CustodyAffordance, (() => void) | undefined> = {
-    reimport: onReimport,
-    fork: onFork,
-  };
-  const labels: Record<CustodyAffordance, string> = {
-    reimport: 'Re-import repo version',
-    fork: 'Fork a Mandible copy',
-  };
-  return (
-    <div
-      className="spaces-block-editor__banner"
-      role="status"
-      data-testid="spaces-block-editor-stale-banner"
-      data-status={custody.status}
-    >
-      <span className="spaces-block-editor__bannertext">
-        {custody.reason ?? 'This document is read-only.'}
-      </span>
-      <span className="spaces-block-editor__banneractions">
-        {custody.affordances.map((aff) => (
-          <button
-            key={aff}
-            type="button"
-            className="spaces-block-editor__affordance"
-            data-testid={`spaces-block-editor-affordance-${aff}`}
-            disabled={!handlers[aff]}
-            onClick={() => handlers[aff]?.()}
-          >
-            {labels[aff]}
-          </button>
-        ))}
-      </span>
-    </div>
-  );
-}
-
 /** Inline rendering of the deferred embed-on-delete decision (no host handler). */
 function EmbedDeletePrompt({
   decision,

@@ -1,3 +1,5 @@
+import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
+import { preserveLegacyDocuments } from "./spaces/history.js";
 import { artifactDescriptiveMetadataJson } from "./artifact-metadata.js";
 import { CONVERSATION_RUNTIME_SCHEMA_SQL } from "./conversation-control/runtime-schema.js";
 import { reconcileRecoveredArtifactSources } from './artifact-source-recovery.js';
@@ -1756,6 +1758,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "CREATE INDEX idx_managed_task_events_task\n        ON managed_task_events(task_id, occurred_at, id)",
   ] },
   { version: 189, name: "managed_conversation_runtime", statements: [...CONVERSATION_RUNTIME_SCHEMA_SQL] },
+  { version: 190, name: "managed_document_publications", statements: SPACE_PUBLICATION_SCHEMA_SQL },
 ];
 
 /**
@@ -1895,6 +1898,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
     db.transaction(() => {
       for (const migration of group) {
         for (const statement of migration.statements) db.exec(statement);
+        if (migration.version === 190) preserveLegacyDocuments(db);
         setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
       }
     })();

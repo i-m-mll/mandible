@@ -173,7 +173,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `project-db-snapshot.test.ts` | Retain | project-db-snapshot. Process/transport boundary retained. |
 | `pty-backend-lifecycle.test.ts` | Retain | PTYBackend lifecycle. Process/transport boundary retained. |
 | `reminder-cli.test.ts` | Retain | mandible reminder CLI parser and routing / mandible reminder CLI file-RPC parity. Process/transport boundary retained. |
-| `repo-file-register-dialog.test.tsx` | Retain | previewRepoSourceRef / RepoFileRegisterDialog. Mounted interaction/projection evidence retained. |
+| `repo-file-register-dialog.test.tsx` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
 | `repo-identity.test.ts` | Retain | canonicalRepoKeyForPath / canonicalRepoKeysForRef. Process/transport boundary retained. |
 | `resource-refs.test.ts` | Default | Sole named boundary readmission; see ../README.md. |
 | `restart-availability.test.ts` | Retain | restart availability receipt. Behavioral, persisted-record, or format boundary retained. |
@@ -205,7 +205,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `space-canvas-react-flow-contract.test.ts` | Retain | Real React Flow applier wiring; the mocked canvas fixture cannot prove third-party update compatibility. |
 | `space-canvas.test.tsx` | Retain | partitionOccurrences / shelf vs canvas / occurrencesToGraph + seedLayoutPositions. Mounted interaction/projection evidence retained. |
 | `space-cli.test.ts` | Retain | space CLI surface / space CLI write round-trips. Process/transport boundary retained. |
-| `space-export-dialog.test.tsx` | Retain | SpaceExportDialog. Mounted interaction/projection evidence retained. |
+| `space-export-dialog.test.tsx` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
 | `space-promote-docs.test.ts` | Retain | mandible space promote-docs. Process/transport boundary retained. |
 | `space-seed-dialog.test.tsx` | Retain | SpaceSeedDialog. Mounted interaction/projection evidence retained. |
 | `spaces-add-to-space.test.tsx` | Trim / retain | AddToSpace picker / AddToSpace cross-project (default). Mounted interaction/projection evidence retained. |
@@ -217,13 +217,13 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `spaces-collection-read.test.ts` | Retain | GET /api/spaces/:id fact packet (C8 read surface). Behavioral, persisted-record, or format boundary retained. |
 | `spaces-collection-view.test.tsx` | Retain | SpaceCollectionRenderer. Mounted interaction/projection evidence retained. |
 | `spaces-contracts.test.ts` | Retain | spaces contract enums / spaces route responses satisfy the contract types. Behavioral, persisted-record, or format boundary retained. |
-| `spaces-custody-editor-ux.test.ts` | Retain | resolveCustodyEditorUx / isDocumentEditable. Behavioral, persisted-record, or format boundary retained. |
+| `spaces-custody-editor-ux.test.ts` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
 | `spaces-doc-pipeline.test.ts` | Default | Sole named boundary readmission; see ../README.md. |
 | `spaces-doc-refs.test.ts` | Retain | C6 shared parser: spaces-doc.v1 directive extension. Behavioral, persisted-record, or format boundary retained. |
 | `spaces-doc-serialize.test.ts` | Default | Sole named boundary readmission; see ../README.md. |
 | `spaces-document-renderer.test.tsx` | Retain | renderSpaceBlocks (C12 + C14a) / DocumentBody render. Mounted interaction/projection evidence retained. |
-| `spaces-drift.test.ts` | Retain | decideDriftStatus (§6 status table) / checkExportDrift (persistence + last_seen). Process/transport boundary retained. |
-| `spaces-export.test.ts` | Retain | default custody (no row until explicit commit) / export-and-track (linked commit + tracking row). Process/transport boundary retained. Distinct export surface; no cross-layer deletion. |
+| `spaces-drift.test.ts` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
+| `spaces-export.test.ts` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
 | `spaces-exports.test.ts` | Retain | space_exports schema (issue 9041bb3) / space_exports metadata backup classification (issue 9041bb3). Behavioral, persisted-record, or format boundary retained. Distinct export surface; no cross-layer deletion. |
 | `spaces-grouped-headings.test.ts` | Retain | (a) zero-space projects are excluded from listSpacesGrouped output / (b) project_key is present on every emitted group. Behavioral, persisted-record, or format boundary retained. |
 | `spaces-item-picker.test.tsx` | Retain | SpaceItemPicker projection helpers / SpaceItemPicker component. Mounted interaction/projection evidence retained. |
