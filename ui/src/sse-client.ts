@@ -1,4 +1,4 @@
-import type { MandibleEvent } from '../../src/contracts';
+import { parseDomainEvent, type MandibleEvent } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
 
 export type SSEPayload = MandibleEvent;
@@ -14,7 +14,7 @@ export type SseConnectionState = 'idle' | 'connecting' | 'open' | 'down';
  * reconnect after a drop), never on the first open or on the first open after a
  * full {@link SSEClient.disconnect}.
  */
-export type SseStateHandler = (state: SseConnectionState, meta: { reconnected: boolean }) => void;
+export type SseStateHandler = (state: SseConnectionState, meta: { reconnected: boolean; error?: string | null }) => void;
 
 export type SSEClientOptions = {
   url?: string;
@@ -41,6 +41,7 @@ export class SSEClient {
   // by disconnect() so a fresh acquire's first open is not treated as a
   // reconnect, but preserved across the backoff reconnect path.
   private hasOpened = false;
+  private wireError: string | null = null;
 
   constructor(options: SSEClientOptions = {}) {
     this.url = options.url || '/api/events/subscribe';
@@ -68,6 +69,7 @@ export class SSEClient {
     this.abortController?.abort();
     this.abortController = null;
     this.connecting = false;
+    this.wireError = null;
     this.setState('idle');
   }
 
@@ -89,6 +91,7 @@ export class SSEClient {
     this.closed = false;
     this.currentBackoff = this.backoffMs;
     this.hasOpened = false;
+    this.wireError = null;
     this.setState('idle');
   }
 
@@ -135,11 +138,11 @@ export class SSEClient {
     }
   }
 
-  private setState(next: SseConnectionState, reconnected = false): void {
+  private setState(next: SseConnectionState, reconnected = false, error: string | null = null): void {
     this.state = next;
     this.stateListeners.forEach((handler) => {
       try {
-        handler(next, { reconnected });
+        handler(next, { reconnected, error });
       } catch (err) {
         console.error('SSE state handler threw', err);
       }
@@ -219,7 +222,17 @@ export class SSEClient {
   }
 
   private handleMessage(data: string): void {
-    const payload = this.parsePayload(data);
+    const parsed = this.parsePayload(data);
+    if (!parsed.ok) {
+      this.wireError = `A live update could not be read: ${parsed.error}. Reload Mandible to reconnect.`;
+      this.setState('down', false, this.wireError);
+      return;
+    }
+    if (this.wireError) {
+      this.wireError = null;
+      this.markOpened();
+    }
+    const payload = parsed.value;
     if (!this.dispatch(payload.type, payload)) {
       // No handler matched -- queue for late-registered handlers
       this.pendingEvents.push(payload);
@@ -241,14 +254,14 @@ export class SSEClient {
     }, this.currentBackoff);
   }
 
-  private parsePayload(data: string): SSEPayload {
+  private parsePayload(data: string): ReturnType<typeof parseDomainEvent> {
+    let value: unknown;
     try {
-      const parsed = JSON.parse(data) as SSEPayload;
-      const type = parsed.type || (parsed as { event?: string }).event || 'message';
-      return { ...parsed, type };
+      value = JSON.parse(data);
     } catch {
-      return { type: 'message', data };
+      return { ok: false, error: 'Invalid JSON' };
     }
+    return parseDomainEvent(value);
   }
 
   /**

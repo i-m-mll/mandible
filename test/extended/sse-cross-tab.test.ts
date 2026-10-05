@@ -225,6 +225,8 @@ describe('cross-tab SSE coordinator', () => {
 
     leader.on('issue:updated', (payload) => leaderEvents.push(payload));
     follower.on('issue:updated', (payload) => followerEvents.push(payload));
+    const followerErrors: Array<string | null | undefined> = [];
+    follower.onState((_state, meta) => followerErrors.push(meta.error));
     leader.connect();
     leaderTransports[0].open();
     follower.connect();
@@ -233,6 +235,11 @@ describe('cross-tab SSE coordinator', () => {
     expect(followerTransports).toHaveLength(0);
     expect(locks.maxActiveCount).toBe(1);
     expect(follower.getState()).toBe('open');
+    leaderTransports[0].stateListeners.forEach((handler) => handler('down', { reconnected: false, error: 'Invalid live update' }));
+    expect(follower.getState()).toBe('down');
+    expect(followerErrors.at(-1)).toBe('Invalid live update');
+    leaderTransports[0].open();
+    expect(followerErrors.at(-1)).toBeNull();
 
     leaderTransports[0].emit({ type: 'issue:updated', issue_id: 'abc' } as SSEPayload);
     expect(leaderEvents).toHaveLength(1);

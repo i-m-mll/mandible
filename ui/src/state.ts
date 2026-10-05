@@ -262,18 +262,18 @@ function parseAuthOutputEvent(payload: SSEPayload): { requestId: string; text: s
     payload.data && typeof payload.data === 'object'
       ? (payload.data as Record<string, unknown>)
       : null;
-  const requestId = String(outputData?.request_id ?? payload.request_id ?? '');
-  const text = String(outputData?.text ?? payload.output ?? payload.chunk ?? '');
+  const requestId = String(outputData?.request_id ?? '');
+  const text = String(outputData?.text ?? '');
   return { requestId, text };
 }
 
 /** Extract the request id from an `auth:resolved` SSE payload ('' if absent). */
 function parseAuthResolvedId(payload: SSEPayload): string {
-  const rd = (payload.data && typeof payload.data === 'object' ? payload.data : payload) as Record<
+  const rd = (payload.data && typeof payload.data === 'object' ? payload.data : {}) as Record<
     string,
     unknown
   >;
-  const rId = rd.request_id ?? payload.request_id;
+  const rId = rd.request_id;
   return rId ? String(rId) : '';
 }
 
@@ -519,12 +519,6 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
       // Bug: f690657 — auth:updated was not handled; server broadcasts it when
       // update() changes fields without a status transition. Treat it the same
       // as auth:new (upsert) so the UI stays in sync with server state.
-      if (payload.request && typeof payload.request === 'object') {
-        return appReducer(state, { type: 'upsertAuth', request: payload.request as AuthRequest });
-      }
-      if (payload.auth && typeof payload.auth === 'object') {
-        return appReducer(state, { type: 'upsertAuth', request: payload.auth as AuthRequest });
-      }
       if (payload.data && typeof payload.data === 'object') {
         const nested = payload.data as Record<string, unknown>;
         const req = (nested.request ?? nested) as AuthRequest;
@@ -551,9 +545,9 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
     // reconciliation carrying the completed action_outcomes.
     case 'auth:merged':
     case 'auth:resolved': {
-      const rd = (payload.data && typeof payload.data === 'object' ? payload.data : payload) as Record<string, unknown>;
+      const rd = (payload.data && typeof payload.data === 'object' ? payload.data : {}) as Record<string, unknown>;
       const rId = parseAuthResolvedId(payload) || undefined;
-      const rStatus = rd.status ?? rd.decision ?? payload.status ?? payload.decision;
+      const rStatus = rd.status ?? rd.decision;
       if (rId && rStatus) {
         const resolvedAt = typeof rd.resolved_at === 'number' ? rd.resolved_at : undefined;
         const exitCode = typeof rd.exit_code === 'number' ? rd.exit_code : undefined;
@@ -581,14 +575,10 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
               ? (record as WorkBranch)
               : null;
         const repoId =
-          (record?.repo_id ?? record?.repo ?? payload.repo_id ?? payload.repo) as
+          (record?.repo_id ?? record?.repo) as
             | string
             | undefined;
-        const branch =
-          branchPayload ||
-          (payload.branch && typeof payload.branch === 'object'
-            ? (payload.branch as WorkBranch)
-            : undefined);
+        const branch = branchPayload;
         if (repoId && branch) {
           return appReducer(state, {
             type: 'updateBranch',

@@ -141,6 +141,7 @@ export function BriefingDocumentRenderer({
   registerInitialRouteLoadRef.current = registerInitialRouteLoad;
   const [draft, setDraft] = useState<BriefingDraft>({});
   const [draftScope, setDraftScope] = useState<string | null>(null);
+  const draftBaseline = useRef<{ scope: string | null; values: BriefingDraft } | null>(null);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -229,9 +230,23 @@ export function BriefingDocumentRenderer({
     const nextDraftScope = storageScope
       ? `${userId ?? 'memory'}:${storageScope.briefingId}:${storageScope.roundId}:${storageScope.artifactVersionId}:${storageScope.profile}`
       : null;
+    const nextBaseline = effectiveDraft(round.items);
+    const previousBaseline = draftBaseline.current;
+    draftBaseline.current = { scope: nextDraftScope, values: nextBaseline };
     setDraft((current) => {
-      if (round.selected_submission_overlay) return effectiveDraft(round.items);
-      if (draftScope === nextDraftScope) return current;
+      if (round.selected_submission_overlay) return nextBaseline;
+      if (draftScope === nextDraftScope && previousBaseline?.scope === nextDraftScope) {
+        // Refresh canonical defaults without overwriting values the user edited.
+        let reconciled = current;
+        for (const [id, value] of Object.entries(nextBaseline)) {
+          if ((!(id in current) || responseValuesEqual(current[id], previousBaseline.values[id] ?? null))
+            && !responseValuesEqual(current[id] ?? null, value)) {
+            if (reconciled === current) reconciled = { ...current };
+            reconciled[id] = value;
+          }
+        }
+        return reconciled;
+      }
       const stored = storageScope ? loadBriefingDraft(storageOrNull(), userId, storageScope, round.items) : {};
       return Object.keys(stored).length > 0 ? stored : effectiveDraft(round.items);
     });
