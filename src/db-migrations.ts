@@ -1,3 +1,4 @@
+import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
 import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
 import { preserveLegacyDocuments } from "./spaces/history.js";
 import { artifactDescriptiveMetadataJson } from "./artifact-metadata.js";
@@ -1759,6 +1760,7 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 189, name: "managed_conversation_runtime", statements: [...CONVERSATION_RUNTIME_SCHEMA_SQL] },
   { version: 190, name: "managed_document_publications", statements: SPACE_PUBLICATION_SCHEMA_SQL },
+  { version: 191, name: "frozen_publication_auth_binding", statements: SPACE_PUBLICATION_AUTH_SCHEMA_SQL },
 ];
 
 /**
