@@ -25,10 +25,10 @@ export function preserveLegacyDocuments(db: Db): void {
     for (const [kind, commit] of [['published-git', row.last_export_commit], ['checkout-head', 'HEAD']] as const) {
       const cwd = kind === 'published-git' ? root : worktree;
       const read = cwd && commit ? spawnSync('git', ['show', `${commit}:${file}`], {
-        cwd, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+        cwd, encoding: 'utf8', timeout:10_000,maxBuffer:64*1024*1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
       }) : null;
       insert.run(`${id}:${kind}`, space, kind, read?.status === 0 ? read.stdout : null, null, null,
-        JSON.stringify({ ...row, worktree, available: read?.status === 0, error: read?.status === 0 ? null : read?.stderr ?? 'checkout unavailable' }), Date.now());
+        JSON.stringify({ ...row, worktree, available: read?.status === 0, error: read?.status === 0 ? null : String(read?.error ?? read?.stderr ?? 'checkout unavailable') }), Date.now());
     }
     let content: string | null = null, error: string | null = null;
     try { if (!worktree) throw new Error('checkout unavailable'); content = fs.readFileSync(path.join(worktree, file), 'utf8'); }
@@ -40,4 +40,8 @@ export function preserveLegacyDocuments(db: Db): void {
 
 export function listDocumentHistory(db: Db, spaceId: string): Array<Record<string, unknown>> {
   return db.prepare('SELECT * FROM space_document_history WHERE space_id=? ORDER BY created_at,id').all(spaceId) as Array<Record<string, unknown>>;
+}
+
+export function documentHistoryEntry(db: Db, spaceId: string, id: string): Record<string, unknown> | null {
+  return db.prepare('SELECT * FROM space_document_history WHERE space_id=? AND id=?').get(spaceId,id) as Record<string, unknown> | null ?? null;
 }

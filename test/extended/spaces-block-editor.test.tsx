@@ -5,9 +5,7 @@
 //     live tree through the C14b renderer. Authoring controls must stay
 //     transparent: typed document commands and transient overlays, not persistent
 //     block chrome.
-//   - Custody-aware gating (C13d): a repo-authoritative + drifted document is
-//     read-only/stale with re-import / fork affordances; Mandible-custody and
-//     clean repo documents are freely editable.
+//   - Managed authoring stays editable independently of historical publication state.
 //   - Embed-on-delete is a user-prompted decision point, NOT hardcoded: deleting
 //     an embedded item raises an explicit choice and takes no destructive action
 //     until the user resolves it.
@@ -39,7 +37,6 @@ import {
   prependSortKey,
   placementForIndex,
   siblingIndexOf,
-  deriveDocumentCustody,
 } from '../../ui/src/views/spaces/blockEditorModel';
 import {
   blockEditorStorageKey,
@@ -434,37 +431,6 @@ describe('blockEditorModel sort keys', () => {
     ];
     expect(siblingIndexOf(blocks, 'b2')).toBe(1);
     expect(siblingIndexOf(blocks, 'missing')).toBe(-1);
-  });
-});
-
-// --- pure model: custody derivation (C13a exports -> C13d custody) -----------
-
-describe('deriveDocumentCustody', () => {
-  it('returns null (Mandible custody) when there is no tracked export row', () => {
-    expect(deriveDocumentCustody([])).toBeNull();
-  });
-
-  it('returns the repo-authority row as the binding custody', () => {
-    const custody = deriveDocumentCustody([
-      makeExport({ id: 'm', authority: 'mandible', status: 'clean' }),
-      makeExport({ id: 'r', authority: 'repo', status: 'repo_changed' }),
-    ]);
-    expect(custody).toEqual({ authority: 'repo', status: 'repo_changed' });
-  });
-
-  it('prefers the most-recently-updated repo row when several exist', () => {
-    const custody = deriveDocumentCustody([
-      makeExport({ id: 'r1', authority: 'repo', status: 'clean', updated_at: NOW }),
-      makeExport({ id: 'r2', authority: 'repo', status: 'conflict', updated_at: NOW + 5 }),
-    ]);
-    expect(custody).toEqual({ authority: 'repo', status: 'conflict' });
-  });
-
-  it('treats mandible-only rows as Mandible custody', () => {
-    const custody = deriveDocumentCustody([
-      makeExport({ authority: 'mandible', status: 'stale' }),
-    ]);
-    expect(custody).toEqual({ authority: 'mandible', status: 'stale' });
   });
 });
 
@@ -1372,45 +1338,17 @@ describe('DocumentBlockEditor (editable)', () => {
   });
 });
 
-// --- component: custody gating (C13d) ----------------------------------------
+// --- component: independent managed authoring ----------------------------------------
 
-describe('DocumentBlockEditor (custody gating)', () => {
-  it('renders read-only/stale with re-import + fork affordances for a drifted repo doc', async () => {
+describe('DocumentBlockEditor (managed authoring)', () => {
+  it('keeps the managed document editable without reading legacy export authority', async () => {
     const backend = makeBackend(
-      [makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Repo body.' })],
+      [makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Managed body.' })],
       [makeExport({ authority: 'repo', status: 'repo_changed' })],
     );
-    vi.stubGlobal('fetch', backend.fetchImpl);
-    const onReimport = vi.fn();
-    const onFork = vi.fn();
-    render(
-      <DocumentBlockEditor
-        projectId="prj1"
-        spaceId="sp1"
-        renderer="document"
-        fetchImpl={backend.fetchImpl}
-        instance={mainInstance}
-        onReimport={onReimport}
-        onFork={onFork}
-      />,
-    );
-
-    await waitFor(() => expect(screen.getByTestId('spaces-block-editor-stale-banner')).toBeTruthy());
-    const editor = screen.getByTestId('spaces-block-editor');
-    expect(editor.getAttribute('data-editable')).toBe('false');
-    expect(editor.getAttribute('data-stale')).toBe('true');
-
-    // Read path still renders the document.
-    expect(screen.getByText('Repo body.')).toBeTruthy();
-    // No editing affordances.
-    expect(screen.queryByTestId('spaces-block-editor-toolbar')).toBeNull();
-    expect(screen.queryByTestId('spaces-block-editor-list')).toBeNull();
-
-    // Explicit reconciliation affordances fire their callbacks.
-    fireEvent.click(screen.getByTestId('spaces-block-editor-affordance-reimport'));
-    fireEvent.click(screen.getByTestId('spaces-block-editor-affordance-fork'));
-    expect(onReimport).toHaveBeenCalledOnce();
-    expect(onFork).toHaveBeenCalledOnce();
+    await renderEditor({ backend });
+    expect(screen.getByTestId('spaces-block-editor').getAttribute('data-editable')).toBe('true');
+    expect(backend.calls.some(call=>call.url.includes('/exports'))).toBe(false);
   });
 
   it('stays editable for a clean repo-authoritative document', async () => {

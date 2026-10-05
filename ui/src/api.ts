@@ -3831,8 +3831,10 @@ export async function resolveSpaceRef(ref: string): Promise<ResolverResult> {
 
 export type SpacePublication = import('../../src/spaces/publication').SpacePublication;
 export type SpaceDocumentHistory = { id: string; kind: string; content: string | null; blocks_json: string | null; artifact_ref: string | null; provenance_json: string };
-export async function getSpacePublications(spaceId: string): Promise<{ publications: SpacePublication[]; history: SpaceDocumentHistory[] }> {
-  return await parseMaybeJson(await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}/publications`)) as { publications: SpacePublication[]; history: SpaceDocumentHistory[] };
+export async function getSpacePublications(spaceId: string,signal?:AbortSignal): Promise<{ publications: SpacePublication[]; history: SpaceDocumentHistory[]; destinations:import('../../src/spaces/publication').PublicationDestination[] }> {
+  const result = await parseMaybeJson(await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}/publications`,{signal})) as { publications: SpacePublication[]; history: SpaceDocumentHistory[]; destinations:import('../../src/spaces/publication').PublicationDestination[] };
+  if (!result || !Array.isArray(result.publications) || !Array.isArray(result.history) || !Array.isArray(result.destinations)) throw new Error('The Spaces service returned invalid publication history.');
+  return result;
 }
 export async function prepareSpacePublication(spaceId: string, body: { path: string; repo_id?: string; issue: string; message?: string }): Promise<SpacePublication> {
   return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/publications`,body)) as SpacePublication;
@@ -3840,8 +3842,8 @@ export async function prepareSpacePublication(spaceId: string, body: { path: str
 export async function submitSpacePublication(spaceId: string,id: string): Promise<SpacePublication> {
   return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/publications/${encodeURIComponent(id)}/submit`,{})) as SpacePublication;
 }
-export async function importSpaceDocument(body: { ref: string; title: string; project_id?: string }): Promise<Space> {
-  return await parseMaybeJson(await apiPost('/api/spaces/documents/import',body)) as Space;
+export async function importSpaceDocument(body: { title: string; project_id?: string } & ({ ref: string } | { project: string; commit: string; path: string })): Promise<ContractSpace> {
+  return await parseMaybeJson(await apiPost('/api/spaces/documents/import',body)) as ContractSpace;
 }
 
 function briefingRecord(value: unknown): Record<string, unknown> {
@@ -5895,4 +5897,8 @@ export async function deleteSpaceBlock(spaceId: string, blockId: string, fetchIm
 }
 export async function detachItemFromBlocks(spaceId: string, itemId: string, fetchImpl?: typeof fetch): Promise<{ detached: ContractSpaceBlock[] }> {
   return await parseMaybeJson(await apiWrite('POST', `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}/detach-blocks`, {}, fetchImpl)) as { detached: ContractSpaceBlock[] };
+}
+
+export async function importSpaceHistory(spaceId: string,id: string,title: string): Promise<ContractSpace> {
+  return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/history/${encodeURIComponent(id)}/import`,{title})) as ContractSpace;
 }

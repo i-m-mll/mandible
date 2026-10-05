@@ -1,3 +1,7 @@
+import { useQuery } from '@tanstack/preact-query';
+import { queryClient } from '../../query/client';
+import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from '../../query/browserResources';
+import { browserSessionFetch } from '../../client-auth-token';
 import { SpaceExportDialog } from './SpaceExportDialog';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
@@ -1168,48 +1172,6 @@ function ReferenceInspector({
     </aside>
   );
 }
-
-: {
-  custody: CustodyEditorUx;
-  onReimport?: () => void;
-  onFork?: () => void;
-}): JSX.Element {
-  const handlers: Record<CustodyAffordance, (() => void) | undefined> = {
-    reimport: onReimport,
-    fork: onFork,
-  };
-  const labels: Record<CustodyAffordance, string> = {
-    reimport: 'Re-import repo version',
-    fork: 'Fork a Mandible copy',
-  };
-  return (
-    <div
-      className="spaces-block-editor__banner"
-      role="status"
-      data-testid="spaces-block-editor-stale-banner"
-      data-status={custody.status}
-    >
-      <span className="spaces-block-editor__bannertext">
-        {custody.reason ?? 'This document is read-only.'}
-      </span>
-      <span className="spaces-block-editor__banneractions">
-        {custody.affordances.map((aff) => (
-          <button
-            key={aff}
-            type="button"
-            className="spaces-block-editor__affordance"
-            data-testid={`spaces-block-editor-affordance-${aff}`}
-            disabled={!handlers[aff]}
-            onClick={() => handlers[aff]?.()}
-          >
-            {labels[aff]}
-          </button>
-        ))}
-      </span>
-    </div>
-  );
-}
-
 /** Inline rendering of the deferred embed-on-delete decision (no host handler). */
 function EmbedDeletePrompt({
   decision,

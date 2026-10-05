@@ -9,10 +9,13 @@ export const SPACE_PUBLICATION_SCHEMA_SQL = [
     source_revision TEXT NOT NULL, snapshot_ref TEXT NOT NULL, content TEXT NOT NULL,
     repo_id TEXT NOT NULL REFERENCES ledger_project_checkouts(id) ON DELETE RESTRICT,
     path TEXT NOT NULL, expected_destination_sha256 TEXT,
-    issue_id TEXT NOT NULL, message TEXT NOT NULL,
+    issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT, message TEXT NOT NULL,
     branch TEXT, worktree TEXT, commit_sha TEXT, version_ref TEXT, auth_request_id TEXT,
     state TEXT NOT NULL CHECK(state IN ('prepared','committed','submitted')),
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    CHECK ((branch IS NULL) = (worktree IS NULL)),
+    CHECK (state = 'prepared' OR (branch IS NOT NULL AND commit_sha IS NOT NULL)),
+    CHECK (state != 'submitted' OR (version_ref IS NOT NULL AND auth_request_id IS NOT NULL))
   )`,
   `CREATE TRIGGER space_publication_snapshot_immutable BEFORE UPDATE OF
     source_revision, snapshot_ref, content, repo_id, path, expected_destination_sha256, issue_id, message

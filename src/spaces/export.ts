@@ -3,7 +3,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "../db.js";
-import { getArtifact, projectArtifactPublicValue } from "../provider-artifacts.js";
 import { getSpace, type SpaceRecord } from "../ledger/spaces.js";
 import { listSpaceBlocks, toDocBlock } from "../ledger/space-blocks.js";
 import { exportDocument, type DocBlock, type DocTree } from "./serialize.js";
@@ -15,20 +14,25 @@ import { exportDocument, type DocBlock, type DocTree } from "./serialize.js";
  * of truth; this is the export-side projection (C11 owns the table, C12 owns the
  * format).
  */
-export function buildSpaceDocTree(db: Db, spaceId: string, _now = Date.now()): DocTree {
+export function buildSpaceDocTree(db: Db, spaceId: string): DocTree {
   const space = getSpace(db, spaceId);
   if (!space) throw new ExportError("space_not_found", `space not found: ${spaceId}`);
-  const blocks: DocBlock[] = listSpaceBlocks(db, spaceId).map(toDocBlock);
+  const storedBlocks = listSpaceBlocks(db, spaceId);
+  const blocks: DocBlock[] = storedBlocks.map(toDocBlock);
   const frontmatter: Record<string, string> = {
     mandible_space: space.id,
     mandible_space_title: space.title,
+    mandible_document_state: Buffer.from(JSON.stringify({
+      description: space.description, metadata: space.metadata,
+      blocks: Object.fromEntries(storedBlocks.map(block => [block.id,{ metadata:block.metadata,item_snapshot:block.item_snapshot }])),
+    })).toString('base64'),
   };
   return { frontmatter, blocks };
 }
 
 /** Serialize a Space directly to canonical `spaces-doc.v1` text. */
-export function serializeSpaceDocument(db: Db, spaceId: string, _now = Date.now()): string {
-  return exportDocument(buildSpaceDocTree(db, spaceId, now));
+export function serializeSpaceDocument(db: Db, spaceId: string): string {
+  return exportDocument(buildSpaceDocTree(db, spaceId));
 }
 
 // --- errors ------------------------------------------------------------------
@@ -89,7 +93,7 @@ export function resolveCheckoutForSpace(
   if (explicitRepoId) {
     const checkout = getProjectCheckout(db, explicitRepoId);
     if (!checkout) throw new ExportError("checkout_not_found", `repo checkout not found: ${explicitRepoId}`);
-    if (checkout.project_id !== space.project_id) {
+    if (space.project_id !== null && checkout.project_id !== space.project_id) {
       throw new ExportError("checkout_not_found", "repo checkout belongs to a different project than the space");
     }
     return checkout;
@@ -128,79 +132,6 @@ export function normalizeRepoRelativePath(input: string): string {
   return normalized;
 }
 
-/** Read-model of a `space_exports` row (the FROZEN tracking record). */
-export interface SpaceExportRow {
-  id: string;
-  space_id: string;
-  repo_id: string;
-  branch: string;
-  path: string;
-  authority: "mandible" | "repo";
-  status: "clean" | "stale" | "repo_changed" | "worktree_dirty" | "conflict";
-  last_export_artifact_id: string | null;
-  pre_export_snapshot_artifact_id: string | null;
-  last_export_commit: string | null;
-  last_export_blob_sha: string | null;
-  last_export_content_sha256: string | null;
-  last_seen_commit: string | null;
-  last_seen_content_sha256: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-interface SpaceExportStoredRow extends SpaceExportRow {
-  last_export_blob_id: string | null;
-  pre_export_snapshot_blob_id: string | null;
-}
-
-/**
- * `last_export_artifact_id` and `pre_export_snapshot_artifact_id` are public
- * compatibility names computed from the canonical blob columns. Nothing stores
- * them.
- */
-function projectSpaceExportRow(db: Db, row: SpaceExportStoredRow): SpaceExportRow {
-  const compatibilityRef = (blobId: string | null): string | null => {
-    const artifactId = blobId ? getArtifact(db, blobId)?.id ?? null : null;
-    return artifactId ? projectArtifactPublicValue(db, artifactId) as string : null;
-  };
-  const {
-    last_export_blob_id: lastExportBlobId,
-    pre_export_snapshot_blob_id: preExportSnapshotBlobId,
-    ...compatibility
-  } = row;
-  return {
-    ...compatibility,
-    last_export_artifact_id: compatibilityRef(lastExportBlobId),
-    pre_export_snapshot_artifact_id: compatibilityRef(preExportSnapshotBlobId),
-  };
-}
-
-export function getSpaceExport(db: Db, exportId: string): SpaceExportRow | null {
-  const row = db.prepare("SELECT * FROM space_exports WHERE id = ?").get(exportId) as
-    | SpaceExportStoredRow
-    | undefined;
-  return row ? projectSpaceExportRow(db, row) : null;
-}
-
-export function findSpaceExport(
-  db: Db,
-  repoId: string,
-  branch: string,
-  relativePath: string,
-): SpaceExportRow | null {
-  const row = db
-    .prepare("SELECT * FROM space_exports WHERE repo_id = ? AND branch = ? AND path = ?")
-    .get(repoId, branch, relativePath) as SpaceExportStoredRow | undefined;
-  return row ? projectSpaceExportRow(db, row) : null;
-}
-
-export function listSpaceExportsForSpace(db: Db, spaceId: string): SpaceExportRow[] {
-  const rows = db
-    .prepare("SELECT * FROM space_exports WHERE space_id = ? ORDER BY created_at ASC")
-    .all(spaceId) as SpaceExportStoredRow[];
-  return rows.map((row) => projectSpaceExportRow(db, row));
-}
-
 // --- untracked export-of-copy ------------------------------------------------
 
 export interface UntrackedExportInput {
@@ -228,15 +159,13 @@ export interface UntrackedExportResult {
 export function exportUntrackedCopy(
   db: Db,
   input: UntrackedExportInput,
-  options: { now?: number } = {},
 ): UntrackedExportResult {
-  const now = options.now ?? Date.now();
   const space = getSpace(db, input.spaceId);
   if (!space) throw new ExportError("space_not_found", `space not found: ${input.spaceId}`);
   if (!path.isAbsolute(input.destPath)) {
     throw new ExportError("invalid_path", "untracked export destPath must be absolute");
   }
-  const docText = serializeSpaceDocument(db, space.id, now);
+  const docText = serializeSpaceDocument(db, space.id);
   const contentSha = sha256Hex(docText);
   fs.mkdirSync(path.dirname(input.destPath), { recursive: true });
   fs.writeFileSync(input.destPath, docText, "utf8");

@@ -55,7 +55,7 @@ import {
 } from "../ledger/space-blocks.js";
 import { SPACE_EVENTS, type SpaceEvent } from "../spaces/events.js";
 import { exportUntrackedCopy, serializeSpaceDocument, ExportError } from "../spaces/export.js";
-import { preparePublication, executePublication, listPublications, importManagedDocument } from "../spaces/publication.js";
+import { preparePublication, executePublication, listPublications, importManagedDocument, importHistoryDocument, importGitDocument, type PublicationResult, publicationDestinations } from "../spaces/publication.js";
 import { listDocumentHistory } from "../spaces/history.js";
 import { broadcastSpaceEvent } from "../sse.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
@@ -789,36 +789,44 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
 
   router.get("/api/spaces/:id/publications", (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
-      sendJson(res,200,{ publications:listPublications(db,space.id), history:listDocumentHistory(db,space.id) });
+      sendJson(res,200,{ publications:listPublications(db,space.id), history:listDocumentHistory(db,space.id), destinations:publicationDestinations(db,space.id) });
     } catch(error) { handleExportError(res,error); }
   }, { fileRpc: "allow" });
   router.post("/api/spaces/:id/publications", (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id), body=bodyRecord(req);
-      const publication=preparePublication(db,{ spaceId:space.id,repoId:optionalString(body,"repo_id"),
-        path:requireString(body,"path"),issue:requireString(body,"issue"),message:optionalString(body,"message") ?? undefined });
+      const publication=publicationValue(preparePublication(db,{ spaceId:space.id,repoId:optionalString(body,"repo_id"),
+        path:requireString(body,"path"),issue:requireString(body,"issue"),message:optionalString(body,"message") ?? undefined }));
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
       sendJson(res,201,publication);
     } catch(error) { handleExportError(res,error); }
   }, { fileRpc: "allow" });
   router.post("/api/spaces/:id/publications/:publication_id/submit", async (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
-      const publication=await executePublication(db,space.id,req.params.publication_id);
+      const publication=publicationValue(await executePublication(db,space.id,req.params.publication_id));
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
       sendJson(res,200,publication);
     } catch(error) { handleExportError(res,error); }
   }, { fileRpc: "allow" });
   router.post("/api/spaces/documents/import", (req,res)=> {
     try { const db=getDb(),body=bodyRecord(req);
-      const space=importManagedDocument(db,{ ref:requireString(body,"ref"),title:requireString(body,"title"),projectId:optionalString(body,"project_id") });
+      const space = publicationValue(body.ref ? importManagedDocument(db,{ ref:requireString(body,"ref"),title:requireString(body,"title"),projectId:optionalString(body,"project_id") })
+        : importGitDocument(db,{project:requireString(body,"project"),commit:requireString(body,"commit"),path:requireString(body,"path"),title:requireString(body,"title"),projectId:optionalString(body,"project_id")}));
       emit(SPACE_EVENTS.SPACE_CREATED,space.id);
       sendJson(res,201,space);
     } catch(error) { handleExportError(res,error); }
   }, { fileRpc: "allow" });
+  router.post("/api/spaces/:id/history/:history_id/import",(req,res)=> {
+    try {const db=getDb(),source=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
+      const space=publicationValue(importHistoryDocument(db,source.id,req.params.history_id,requireString(body,"title")));
+      emit(SPACE_EVENTS.SPACE_CREATED,space.id);sendJson(res,201,space);
+    } catch(error){handleExportError(res,error);}
+  },{fileRpc:"allow"});
   router.get("/api/spaces/:id/document/download", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id);
       const result=serializeSpaceDocument(db,space.id);
-      res.header("Content-Type","text/markdown; charset=utf-8");
-      res.header("Content-Disposition",`attachment; filename="space-${space.id}.md"`);
+      res.header?.("Content-Type","text/markdown; charset=utf-8");
+      res.header?.("Content-Disposition",`attachment; filename="space-${space.id}.md"`);
+      if (!res.text) throw new HttpError(500,"Download response unavailable");
       res.text(result,"text/markdown; charset=utf-8");
     } catch(error) { handleExportError(res,error); }
   }, { fileRpc: "allow" });
@@ -1011,4 +1019,12 @@ function requireOccurrenceExists(db: Db, spaceId: string, occurrenceId: string, 
  */
 function emit(event: SpaceEvent, spaceId: string): void {
   broadcastSpaceEvent(event, { space_id: spaceId });
+}
+
+function publicationValue<T>(result:PublicationResult<T>):T {
+  if(result.ok)return result.value;
+  const status=result.error.code==='stale_destination'||result.error.code==='locked' ? 409
+    : result.error.code==='space_not_found'||result.error.code==='checkout_not_found' ? 404
+    : result.error.code==='git_failed'||result.error.code==='storage_failed' ? 500:400;
+  throw new HttpError(status,result.error.message);
 }
