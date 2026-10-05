@@ -19,6 +19,7 @@ import { addOrUpdateCheckout } from '../../src/ledger/project-registry.js';
 import { addGrant } from '../../src/permissions/store.js';
 import { loadOrCreatePepper } from '../../src/client-auth/secret-store.js';
 import { mintApiToken } from '../../src/client-auth/tokens.js';
+import { setSetting } from '../../src/client-auth/settings-kv.js';
 import { activateBootstrapWorkUnit, submitBootstrapDelivery, approveBootstrapDelivery, readBootstrapDelivery, assertBootstrapOperatorProof } from '../helpers/bootstrap-delivery-api.js';
 import { runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs';
 
@@ -187,7 +188,7 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
     git(repo, ['config', 'core.hooksPath', fixtureHooks]);
     const hookCommand = `MANDIBLE_HOME=${quote(home)} MANDIBLE_RUNTIME=${quote(runtime)} MANDIBLE_RUNTIME_ARCHIVE=${quote(archivePath)} MANDIBLE_DESKTOP_INSTALL_PATH=${quote(nativeApp)} ${Object.entries(libraryInputs).map(([key, value]) => `${key}=${quote(value)}`).join(' ')} bash cli/post-merge-build-dist.sh`;
     db.prepare('UPDATE auth_hooks SET command = ?, repo_pattern = ? WHERE id = ?').run(hookCommand, '*', 'builtin-mandible-rebuild');
-    db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('auth_hooks.path', installedPath);
+    setSetting(db, 'auth_hooks.path', installedPath);
     const workUnitId = await activateBootstrapWorkUnit(agentApi, issue.id, 'mandible', 'feature/actual-upgrade');
     const verification = 'Private candidate bootstrap is ready at the retained exact source revision.';
     const request = await submitBootstrapDelivery({ ...agentApi, cwd: repo, repo: 'mandible', headBranch: 'feature/actual-upgrade', baseBranch: 'main', headSha: sourceManifest.revision, baseSha: git(repo, ['rev-parse', 'main']), issueRef: issue.id, workUnitId, requesterCredentialId: agentToken.credential.id, verification,
