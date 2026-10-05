@@ -1,19 +1,6 @@
 "use strict";
 
-// Issue 07edc0d — production-database isolation guard, dependency-free CommonJS
-// twin of the TypeScript guard in src/db.ts
-// (assertNotProductionDbUnderTest / resolvesToProductionDbPath). Keep the two
-// implementations in sync.
-//
-// The TypeScript guard only covers opens that funnel through openDb(). Several
-// entry points open the production database directly, bypassing openDb()
-// entirely: the bash-embedded node settings helper in cli/instructions.sh
-// (which writes to the settings table) and the standalone .mjs maintenance
-// scripts under scripts/. Those live outside the TypeScript build, so they
-// require this shared, plain-node module rather than importing src/db.ts. Each
-// direct-open entry point calls assertNotProductionDbUnderTest(dbPath) before
-// constructing its Database handle, so no test can migrate or write the live
-// database regardless of which helper resolved the path.
+/** Shared production database refusal used by all SQLite connections and CLI tools. */
 
 const fs = require("node:fs");
 const os = require("node:os");

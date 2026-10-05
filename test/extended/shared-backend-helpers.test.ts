@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { columnExists, tableExists } from "../../src/db-introspection.js";
 import { readBody, sendJson } from "../../src/routes/http.js";
@@ -37,14 +37,14 @@ describe("shared HTTP helpers", () => {
 });
 
 describe("shared database introspection helpers", () => {
-  const databases: Database.Database[] = [];
+  const databases: SqliteDatabase[] = [];
 
   afterEach(() => {
     for (const db of databases.splice(0)) db.close();
   });
 
   it("detects tables and columns", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     databases.push(db);
     db.exec("CREATE TABLE example (id TEXT PRIMARY KEY, value INTEGER)");
 
@@ -55,7 +55,7 @@ describe("shared database introspection helpers", () => {
   });
 
   it("treats introspection failures as absent schema", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     db.close();
 
     expect(tableExists(db, "example")).toBe(false);

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate } from "../../src/db.js";
@@ -56,7 +56,7 @@ async function parse(filePath: string): Promise<ParseResult> {
   return result;
 }
 
-function insertConversation(db: Database.Database, id: string, filePath: string, result: ParseResult): void {
+function insertConversation(db: SqliteDatabase, id: string, filePath: string, result: ParseResult): void {
   db.prepare(`
     INSERT INTO conversations (
       id, source, source_path, source_hash, source_mtime, title, started_at,
@@ -70,7 +70,7 @@ function insertConversation(db: Database.Database, id: string, filePath: string,
   replaceBlocks(db, id, result);
 }
 
-function replaceBlocks(db: Database.Database, conversationId: string, result: ParseResult): void {
+function replaceBlocks(db: SqliteDatabase, conversationId: string, result: ParseResult): void {
   db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(conversationId);
   const insert = db.prepare(`
     INSERT INTO conversation_blocks (
@@ -89,7 +89,7 @@ function replaceBlocks(db: Database.Database, conversationId: string, result: Pa
     .run(result.blocks.length, result.conversation.source_hash, result.conversation.source_mtime, conversationId);
 }
 
-async function record(db: Database.Database, id: string, filePath: string): Promise<string> {
+async function record(db: SqliteDatabase, id: string, filePath: string): Promise<string> {
   return new ConversationSourceStore(db).recordConversation({
     conversationId: id,
     provider: "codex",
@@ -101,7 +101,7 @@ async function record(db: Database.Database, id: string, filePath: string): Prom
 
 describe("versioned conversation source reader", () => {
   it("creates and advances source versions with production foreign keys enabled", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     db.pragma("foreign_keys = ON");
     const filePath = rolloutPath();
@@ -130,7 +130,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("seals the parser extent when the writer appends before source indexing", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());
@@ -177,7 +177,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("reads verified multi-record tool linkage and resolves every legacy block id", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());
@@ -209,7 +209,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("pages exact native records after dense structural rows and aliases are reclaimed", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());
@@ -250,7 +250,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("serves the sealed sparse prefix during append growth and rejects an in-place rewrite", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());
@@ -290,7 +290,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("restores Codex model metadata from the durable conversation context for bounded reads", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     const sourceRecords = records([
@@ -326,7 +326,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("surfaces the exact source failure after legacy payload has been stripped", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());
@@ -344,7 +344,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("keeps byte-identical appended records structurally distinct", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     const repeated = {
@@ -403,7 +403,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("feeds the disposable search cache from the verified source version", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());
@@ -434,7 +434,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("keeps structural ids across append, and fails closed to legacy on same-size rewrite", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());
@@ -469,7 +469,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("rejects truncation, prepend, CRLF conversion, and replacement as stale locators", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());
@@ -497,7 +497,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("falls back when the parser epoch is unavailable or the cold-read bound is exceeded", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());
@@ -522,7 +522,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("rejects a symlink escape and preserves metadata plus fallback bodies on missing source", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());
@@ -556,7 +556,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("does not treat a duplicate provider session id as conversation identity", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const first = rolloutPath("rollout-2026-08-17T00-00-00-first.jsonl");
     const second = rolloutPath("rollout-2026-08-17T00-00-00-second.jsonl");
@@ -578,7 +578,7 @@ describe("versioned conversation source reader", () => {
   });
 
   it("uses a full immutable digest rather than the append generation marker", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const filePath = rolloutPath();
     writeRecords(filePath, records());

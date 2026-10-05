@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import SqliteDatabase from "../src/sqlite.ts";
 import { MIGRATIONS } from '../src/db-migrations.js';
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -17,7 +17,7 @@ import { insertRawLedgerCheckout, insertRawLedgerProject } from "./helpers/ledge
 import type { Db } from "../src/db.js";
 
 function createMigratedDb(): Db {
-  const db=new Database(':memory:');
+  const db=new SqliteDatabase(':memory:');
   db.exec(fs.readFileSync('test/fixtures/schema-v158.sql','utf8'));
   db.function('mandible_sha256',{deterministic:true},(value:unknown)=>crypto.createHash('sha256').update(String(value)).digest('hex'));
   for(const migration of MIGRATIONS.filter(m=>m.version>158 && m.version<=184)) {

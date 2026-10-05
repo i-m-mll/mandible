@@ -12,7 +12,7 @@
 //   - a stale executor report is visibly stale in the list.
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/preact';
 import { render } from './notice-test-render';
-import Database from 'better-sqlite3';
+import SqliteDatabase from "../../src/sqlite.ts";
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -255,7 +255,7 @@ function stubInventory(payload: TaskInventoryResponse | (() => TaskInventoryResp
 }
 
 beforeEach(() => {
-  db = new Database(':memory:');
+  db = new SqliteDatabase(':memory:');
   migrate(db);
   setDb(db);
   publisherId = createUser(db, {

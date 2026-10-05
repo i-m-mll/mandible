@@ -724,7 +724,7 @@ export function registerConsoleRoutes(
     }
     const operatorId = db.prepare(
       "SELECT value FROM settings WHERE key = 'console_operator_session_id'",
-    ).pluck().get() as string | undefined;
+    ).get()?.value as string | undefined;
     if (operatorId && !isOperatorRequest(req)) {
       ids = ids.filter((id) => id !== operatorId);
     }
@@ -744,7 +744,7 @@ export function registerConsoleRoutes(
     const db = getDb();
     const operatorId = db.prepare(
       "SELECT value FROM settings WHERE key = 'console_operator_session_id'",
-    ).pluck().get() as string | undefined;
+    ).get()?.value as string | undefined;
     let responseIds = requestedIds;
     let persistedIds = requestedIds;
     if (operatorId && !isOperatorRequest(req)) {

@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AuthQueue } from "../../src/auth-queue.js";
@@ -32,7 +32,7 @@ afterEach(() => resetDb({ reason: "auth clearance API test ended" }));
 
 describe("auth clearance API", () => {
   it("keeps prospective create operator-only and forwards explicit exact scope", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const operator = setupOperator(db, { slug: "clearance-api-operator", display_name: "Clearance API Operator" });
     setDb(db);

@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 
 import { migrate, type Db } from "../../src/db.js";
@@ -71,7 +71,7 @@ describe("operational incident ledger and reconciliation", () => {
   let humanId: string;
 
   beforeEach(() => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     publisherId = createUser(db, {
       slug: "incident-publisher",

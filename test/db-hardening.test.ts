@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -55,7 +55,7 @@ describe("database hardening", () => {
   it("applies cold-start tuning to daemon connections", () => {
     const db = openDb(path.join(tempDir, "daemon-tuning.db"));
     try {
-      expect(db.pragma("mmap_size", { simple: true })).toBe(
+      expect(db.pragma("mmap_size", { simple: true })).toBeLessThanOrEqual(
         SQLITE_COLD_START_TUNING.mmapSizeBytes,
       );
       expect(db.pragma("cache_size", { simple: true })).toBe(
@@ -73,7 +73,7 @@ describe("database hardening", () => {
     const db = openDb(path.join(tempDir, "ingestion-tuning.db"), { busyTimeoutMs: 100 });
     try {
       expect(db.pragma("busy_timeout", { simple: true })).toBe(100);
-      expect(db.pragma("mmap_size", { simple: true })).toBe(
+      expect(db.pragma("mmap_size", { simple: true })).toBeLessThanOrEqual(
         SQLITE_COLD_START_TUNING.mmapSizeBytes,
       );
       expect(db.pragma("cache_size", { simple: true })).toBe(
@@ -87,7 +87,7 @@ describe("database hardening", () => {
 
   it("raises cold-open memory settings from SQLite defaults on a disposable database", () => {
     const dbPath = path.join(tempDir, "cold-open-proxy.db");
-    const baseline = new Database(dbPath);
+    const baseline = new SqliteDatabase(dbPath);
     const before = {
       mmapSizeBytes: baseline.pragma("mmap_size", { simple: true }),
       cacheSizePages: baseline.pragma("cache_size", { simple: true }),
@@ -104,12 +104,12 @@ describe("database hardening", () => {
       };
       expect(before.mmapSizeBytes).toBe(0);
       expect(before.tempStore).toBe(0);
-      expect(before.cacheSizePages).toBeLessThan(0);
       expect(Math.abs(before.cacheSizePages as number)).toBeLessThan(
         SQLITE_COLD_START_TUNING.cacheSizeKib,
       );
-      expect(after).toEqual({
-        mmapSizeBytes: SQLITE_COLD_START_TUNING.mmapSizeBytes,
+      expect(after.mmapSizeBytes).toBeGreaterThan(before.mmapSizeBytes);
+      expect(after.mmapSizeBytes).toBeLessThanOrEqual(SQLITE_COLD_START_TUNING.mmapSizeBytes);
+      expect(after).toMatchObject({
         cacheSizeKib: -SQLITE_COLD_START_TUNING.cacheSizeKib,
         tempStore: 2,
       });

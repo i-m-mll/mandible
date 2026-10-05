@@ -17,7 +17,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 
 import { computeAuthMergeReviewMetadata } from "../src/auth-context.js";
 import { AuthQueue } from "../src/auth-queue.js";
@@ -287,7 +287,7 @@ describe("auth request review counts are correctable in place", () => {
   });
 
   it("accepts corrected diff stats through PUT", async () => {
-    queueDb = new Database(":memory:");
+    queueDb = new SqliteDatabase(":memory:");
     migrate(queueDb);
     setDb(queueDb);
     const operator = setupOperator(queueDb, { slug: "review-counts", display_name: "Review Counts" });

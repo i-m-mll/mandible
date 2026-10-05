@@ -10,7 +10,7 @@
 //   - the docs worktree dirty-rejection + serialized-write lock.
 //   - export routes are registered + emit `space:export:*` events, and are
 //     self-allowlisted on the file transport.
-import Database from 'better-sqlite3';
+import SqliteDatabase from "../../src/sqlite.ts";
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -113,7 +113,7 @@ function makeStubRunner(worktreeDir: string): {
 }
 
 beforeEach(() => {
-  db = new Database(':memory:');
+  db = new SqliteDatabase(':memory:');
   migrate(db);
   setDb(db);
   router = new Router();

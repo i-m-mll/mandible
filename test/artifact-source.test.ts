@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import Database from 'better-sqlite3';
+import SqliteDatabase from "../src/sqlite.ts";
 import { openDb, type Db } from '../src/db.js';
 import { appendArtifactVersion, planArtifactVersionBatch, commitArtifactVersionBatch, planArtifactVersion, commitArtifactVersion, recordArtifactVersion, associateProjectArtifact, getCanonicalArtifactVersion } from '../src/provider-artifacts.js';
 import { getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove, type ArtifactLifecycleResult } from '../src/artifact-source.js';
@@ -84,7 +84,7 @@ it('retains source for managed snapshots and resolves uploaded bytes against the
 });
 
 it('backfills only consistent sources and preserves duplicate/ambiguous history for reconciliation',()=>{
-  const legacy=new Database(':memory:');
+  const legacy=new SqliteDatabase(':memory:');
   legacy.exec(`CREATE TABLE ledger_projects(id TEXT PRIMARY KEY,project_key TEXT,display_name TEXT);
     CREATE TABLE ledger_project_checkouts(project_id TEXT,work_repo_id TEXT,name TEXT);
     CREATE TABLE artifact(id TEXT PRIMARY KEY,identity_key TEXT,source_kind TEXT,source_project_id TEXT,source_repo_id TEXT,source_path TEXT,metadata_json TEXT DEFAULT '{}',updated_at INTEGER);

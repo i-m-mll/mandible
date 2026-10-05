@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -63,7 +63,7 @@ function configuredRoot() {
 
 function mainRegistration(root) {
   const requireFromProject = createRequire(path.join(root, "package.json"));
-  const Database = requireFromProject("better-sqlite3");
+  const Database = requireFromProject("./dist/sqlite.js").default;
   const db = new Database(path.join(runtimeDir, "sessions.db"), { readonly: true, fileMustExist: true });
   try {
     const rows = db.prepare(`SELECT instance_id, installation_id, role, public_origin, backend_origin,

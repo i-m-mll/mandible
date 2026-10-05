@@ -11,9 +11,6 @@ import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-
 import { LedgerStore, type ResolveIssueRefResult } from "./store.js";
 import type { LedgerIssue, LedgerIssueDetail } from "./types.js";
 
-// SQLite compiled into better-sqlite3 caps a statement at 32766 bound
-// parameters. Chunk IN() lists well under that so a project with thousands of
-// issues never overflows the limit.
 const IN_CLAUSE_CHUNK = 900;
 
 function chunk<T>(items: T[], size: number): T[][] {
