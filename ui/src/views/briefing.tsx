@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useQuery } from '@tanstack/preact-query';
+import { queryClient } from '../query/client';
+import { browserResourceKeys } from '../query/browserResources';
+import { useEffect, useMemo } from 'preact/hooks';
 
 import {
   getBriefing,
   getBriefingSidebarSnapshot,
-  getCachedBriefingSidebarSnapshot,
   ApiError,
   type BriefingBundle,
   type BriefingGroup,
   type BriefingSidebarSnapshot,
   type InstanceInfo,
 } from '../api';
-import { writePersistedDetail } from '../detail-cache';
+
 import { useAppShell, useRegisterInitialRouteLoad } from '../app-shell';
 import { briefingGroupRoute, briefingRoute } from '../routing';
 import { readPersistedViewState } from '../hooks/usePersistedViewState';
@@ -31,11 +33,6 @@ import {
   indexBriefingGroupBundleOwners,
   resolveBriefingGroupProjection,
 } from './feedback/briefing-group-projection';
-import { subscribeClientAccessState } from '../client-auth-token';
-import {
-  briefingProjectionCacheKey,
-  BRIEFING_PROJECTION_CACHE_NAMESPACE,
-} from './feedback/briefing-projection-cache';
 
 export type BriefingViewProps = {
   instance: InstanceInfo | null;
@@ -43,7 +40,6 @@ export type BriefingViewProps = {
   initialRoundId?: string | null;
   initialGroupId?: string | null;
   sidebarHidden?: boolean;
-  nowMs?: number;
   keepSubmittedAnnotations?: boolean;
 };
 
@@ -127,18 +123,26 @@ function briefingDisplayContext(
   return undefined;
 }
 
-export function BriefingView({ instance, initialBriefingId, initialRoundId, initialGroupId, sidebarHidden = false, nowMs, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
+export function BriefingView({ instance, initialBriefingId, initialRoundId, initialGroupId, sidebarHidden = false, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const [viewState, setViewState] = useBriefingCollectionViewState();
-  const [sidebar, setSidebar] = useState<BriefingSidebarSnapshot>(() =>
-    getCachedBriefingSidebarSnapshot(nowMs) ?? { briefings: [], bundles: [], groups: [] });
+  const sidebarQuery = useQuery({
+    queryKey: browserResourceKeys.briefingSidebar,
+    queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal),
+    enabled: appShell.active,
+    refetchOnWindowFocus: true,
+  }, queryClient);
+  const sidebar = sidebarQuery.data ?? { briefings: [], bundles: [], groups: [] };
+  const setSidebar = (update: (current: BriefingSidebarSnapshot) => BriefingSidebarSnapshot) =>
+    queryClient.setQueryData<BriefingSidebarSnapshot>(browserResourceKeys.briefingSidebar, (current) => current ? update(current) : current);
   const { briefings, bundles, groups } = sidebar;
-  const [error, setError] = useState<string | null>(null);
-  const [accessUnavailable, setAccessUnavailable] = useState(false);
-  const [sidebarLoaded, setSidebarLoaded] = useState(() => getCachedBriefingSidebarSnapshot(nowMs) !== null);
-  const [reloadNonce, setReloadNonce] = useState(0);
-  const sequence = useRef(0);
+  const error = sidebarQuery.error instanceof ApiError && sidebarQuery.error.code === 'local_access_unavailable' ? null : sidebarQuery.error?.message ?? null;
+  const accessUnavailable = sidebarQuery.error instanceof ApiError && sidebarQuery.error.code === 'local_access_unavailable';
+  const sidebarLoaded = sidebarQuery.data !== undefined;
+  useEffect(() => {
+    if (appShell.active) registerInitialRouteLoad(sidebarQuery.refetch());
+  }, [appShell.active, registerInitialRouteLoad]);
 
   useEffect(() => {
     if (!initialBriefingId) return;
@@ -161,71 +165,6 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     if (!group) return;
     setViewState((current) => ({ ...current, selectedGroupId: group.id, selectedCollectionId: null }));
   }, [groups, initialGroupId, setViewState]);
-
-  const load = useCallback(async (signal: AbortSignal) => {
-    const request = ++sequence.current;
-    try {
-      const next = await getBriefingSidebarSnapshot(signal);
-      if (!signal.aborted && request === sequence.current) {
-        setSidebar(next);
-        setSidebarLoaded(true);
-        setAccessUnavailable(false);
-        setError(null);
-      }
-    } catch (cause) {
-      if (!signal.aborted && request === sequence.current) {
-        if (cause instanceof ApiError && cause.code === 'local_access_unavailable') {
-          setAccessUnavailable(true);
-          setError(null);
-          return;
-        }
-        setAccessUnavailable(false);
-        setError(cause instanceof Error ? cause.message : String(cause));
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!appShell.active) return undefined;
-    const controller = new AbortController();
-    const initialRead = load(controller.signal);
-    registerInitialRouteLoad(initialRead);
-    void initialRead;
-    return () => controller.abort();
-  }, [appShell.active, load, registerInitialRouteLoad, reloadNonce]);
-
-  useEffect(() => {
-    if (!appShell.active) return undefined;
-    const reloadWhenVisible = () => {
-      if (document.visibilityState === 'visible') setReloadNonce((value) => value + 1);
-    };
-    const unsubscribe = subscribeClientAccessState((state) => {
-      if (state.phase === 'ready') setReloadNonce((value) => value + 1);
-    });
-    window.addEventListener('focus', reloadWhenVisible);
-    document.addEventListener('visibilitychange', reloadWhenVisible);
-    return () => {
-      unsubscribe();
-      window.removeEventListener('focus', reloadWhenVisible);
-      document.removeEventListener('visibilitychange', reloadWhenVisible);
-    };
-  }, [appShell.active]);
-
-  useEffect(() => {
-    if (!appShell.active) return undefined;
-    let timer: number | null = null;
-    const reconcile = (event: Event) => {
-      const type = (event as CustomEvent<{ type?: string }>).detail?.type;
-      if (type !== 'reconnected' && !type?.startsWith('briefing:')) return;
-      if (timer !== null) return;
-      timer = window.setTimeout(() => { timer = null; setReloadNonce((value) => value + 1); }, 100);
-    };
-    window.addEventListener('briefing:sse', reconcile);
-    return () => {
-      window.removeEventListener('briefing:sse', reconcile);
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [appShell.active]);
 
   const selected = useMemo(() => briefings.find((entry) => entry.id === viewState.selectedCollectionId) ?? null, [briefings, viewState.selectedCollectionId]);
   const selectedGroup = useMemo(() => groups.find((group) => group.id === viewState.selectedGroupId) ?? null, [groups, viewState.selectedGroupId]);
@@ -372,7 +311,10 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
 
 /** Warm the Briefing sidebar and only its explicit, saved, or default selection. */
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
-  const sidebar = await getBriefingSidebarSnapshot();
+  const sidebar = await queryClient.fetchQuery({
+    queryKey: browserResourceKeys.briefingSidebar,
+    queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal),
+  });
   const viewState = readPersistedViewState(
     BRIEFING_VIEW_STATE_KEY,
     normalizeBriefingCollectionViewState,
@@ -383,12 +325,10 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
 
   const briefingId = selection.briefing.collectionId;
   const displayContext = briefingDisplayContext(selection.briefing, sidebar.groups, viewState);
-  const projection = await getBriefing(briefingId, selection.roundId, null, undefined, displayContext);
-  writePersistedDetail(
-    BRIEFING_PROJECTION_CACHE_NAMESPACE,
-    briefingProjectionCacheKey(briefingId, selection.roundId, null, displayContext),
-    projection,
-  );
+  await queryClient.fetchQuery({
+    queryKey: browserResourceKeys.briefingProjection(briefingId, selection.roundId, null, displayContext),
+    queryFn: ({ signal }) => getBriefing(briefingId, selection.roundId, null, signal, displayContext),
+  });
 }
 
 export default BriefingView;
