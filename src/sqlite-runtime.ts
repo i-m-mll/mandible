@@ -22,7 +22,7 @@ export const SQLITE_RUNTIME_LOCK = {
 
 function hash(filename: string) { return createHash("sha256").update(fs.readFileSync(filename)).digest("hex"); }
 export function sqliteRuntimePaths() {
-  const root = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "mandible", "sqlite", SQLITE_RUNTIME_LOCK.librarySha256);
+  const root = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), "mandible", "runtimes", "sqlite", SQLITE_RUNTIME_LOCK.librarySha256);
   return { root, library: path.join(root, "libsqlite3.dylib"), archive: path.join(root, "sqlite.tar.gz") };
 }
 export function verifySqliteLibrary(filename: string) {

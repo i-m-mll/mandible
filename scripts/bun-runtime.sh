@@ -43,7 +43,7 @@ if [ -n "${MANDIBLE_RUNTIME:-}" ]; then
     exit 0
   fi
 fi
-runtime="${XDG_CACHE_HOME:-$HOME/.cache}/mandible/runtimes/bun/$revision/$binary_sha/bun"
+runtime="${XDG_DATA_HOME:-$HOME/.local/share}/mandible/runtimes/bun/$revision/$binary_sha/bun"
 archive_cache="$(dirname "$runtime")/runtime.zip"
 if [ -e "$archive_cache" ]; then
   [ "$(hash "$archive_cache")" = "$archive_sha" ] || { echo "Pinned Bun archive cache is corrupt: $archive_cache" >&2; exit 1; }
