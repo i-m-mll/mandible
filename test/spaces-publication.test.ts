@@ -78,7 +78,7 @@ it('publishes the frozen bytes once, and later editing leaves Git publication pi
   git(proposal,'config','user.name','Fixture');git(proposal,'config','user.email','fixture@example.test');git(proposal,'config','gpg.format','ssh');git(proposal,'config','user.signingkey',path.join(root,'fixture-key'));git(proposal,'config','commit.gpgsign','true');
   const runner:PublicationRunner={createWorktree:()=>proposal,commit:(directory,value)=> {
     git(directory,'add',value.path);git(directory,'commit','-m','Fixture publication');git(repo,'fetch',directory,'HEAD:refs/heads/fixture-proposal');return git(directory,'rev-parse','HEAD');
-  },submit:()=>{submissions++;return 'fixture-auth';}};
+  },submit:(_directory,value)=>{submissions++;db.prepare("UPDATE space_publications SET auth_request_id='fixture-auth',state='submitted' WHERE id=?").run(value.id);return 'fixture-auth';}};
   const published=await executePublication(db,space,publication.id,runner);
   expect(published.state).toBe('submitted');expect(published.version_ref).toBeTruthy();
   expect(git(repo,'show',`${published.commit_sha}:doc.md`)).toContain('original');
@@ -165,6 +165,9 @@ it('rechecks the destination after a committed submission failure without changi
   fs.unlinkSync(path.join(repo,'doc.md'));fs.writeFileSync(path.join(proposal,'doc.md'),'changed proposal');
   await expect(executePublication(db,space,prepared.id,runner)).rejects.toThrow('Publication checkout changed');
   expect(getPublication(db,space,prepared.id)).toEqual(committed);expect(submissions).toBe(1);
+  fs.writeFileSync(path.join(proposal,'doc.md'),prepared.content);runner.submit=()=> 'unbound-auth';
+  await expect(executePublication(db,space,prepared.id,runner)).rejects.toThrow('did not atomically bind');
+  expect(getPublication(db,space,prepared.id)).toEqual(committed);
   expect(git(repo,'show',`${committed.commit_sha}:doc.md`)+'\n').toBe(prepared.content);
 });
 
