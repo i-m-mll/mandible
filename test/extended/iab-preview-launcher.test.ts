@@ -1843,7 +1843,7 @@ describe("iab-preview launcher", () => {
       ready: true,
       instance: {
         role: "preview",
-        allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
+        allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"],
         operational_mutations: "reject",
       },
       file_rpc_dir: sharedFileRpcDir,
@@ -1902,7 +1902,7 @@ describe("iab-preview launcher", () => {
       startup_commit: { hash: currentHead, summary: "current", date: "" },
       instance: {
         role: "preview",
-        allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
+        allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"],
         operational_mutations: "reject",
         preview_browser_enrollment: "allow",
         db_path: db,
@@ -1958,7 +1958,7 @@ describe("iab-preview launcher", () => {
       startup_commit: { hash: head, summary: "current", date: "" },
       instance: {
         role: "preview",
-        allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
+        allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"],
         operational_mutations: "reject",
         preview_browser_enrollment: "allow",
         db_path: db,
