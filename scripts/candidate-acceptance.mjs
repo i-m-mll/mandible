@@ -4,6 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import http from 'node:http';
+import https from 'node:https';
+import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from './local-ca-trust.mjs';
+import { installPinnedCaddy } from './pinned-caddy.mjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
@@ -23,6 +26,48 @@ function command(binary, args, options = {}) {
 
 export { assessLogs } from './runtime-log-assessment.mjs';
 import { assessLogs } from './runtime-log-assessment.mjs';
+
+export function acceptanceGatewayConfig({ origin, backendPort, adminPort, storageRoot }) {
+  const url = new URL(origin);
+  if (url.protocol !== 'https:' || url.hostname !== 'app.mandible.localhost' || !url.port || url.origin !== origin) throw new Error('Acceptance requires an exact Mandible HTTPS origin.');
+  const ports = [Number(url.port), backendPort, adminPort];
+  if (!ports.every(port => Number.isInteger(port) && port > 0 && port < 65536) || new Set(ports).size !== 3 || !path.isAbsolute(storageRoot)) throw new Error('Acceptance gateway requires distinct valid ports and owned absolute storage.');
+  return `{\n  admin 127.0.0.1:${adminPort}\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\n${origin} {\n  bind 127.0.0.1 ::1\n  tls internal\n  header -Server\n  reverse_proxy http://127.0.0.1:${backendPort} {\n    header_up -X-Mandible-Target-Instance\n    header_up -X-Mandible-Session-Context\n  }\n}\n`;
+}
+
+export function copyAcceptanceCa(sourceHome, home) {
+  const source = localCaPaths(sourceHome);
+  if (assertLocalCaIdentity(source).state !== 'trusted') throw new Error('Acceptance requires an already trusted installation CA; run explicit secure-local-connections setup first.');
+  probeCurrentMacOsTrust(source);
+  const ca = localCaPaths(home);
+  fs.mkdirSync(path.dirname(ca.installationAuthority), { recursive: true });
+  fs.copyFileSync(source.installationAuthority, ca.installationAuthority);
+  fs.cpSync(source.storageRoot, ca.storageRoot, { recursive: true });
+  const receipt = JSON.parse(fs.readFileSync(source.receipt, 'utf8'));
+  fs.writeFileSync(ca.receipt, JSON.stringify({ ...receipt, storage_root: ca.storageRoot, fixture_source_digest: sha256(source.receipt) }), { mode: 0o600 });
+  assertLocalCaIdentity(ca);
+  return ca;
+}
+
+export function acceptanceHealth(origin, rootCert) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(`${origin}/api/health`, {
+      ca: fs.readFileSync(rootCert),
+      lookup: (_host, options, callback) => options.all ? callback(null, [{ address: '127.0.0.1', family: 4 }]) : callback(null, '127.0.0.1', 4),
+    }, response => {
+      let bytes = ''; response.on('data', chunk => { bytes += chunk; });
+      response.on('error', reject);
+      response.on('end', () => {
+        try {
+          if (response.statusCode !== 200) throw new Error(`Health HTTPS ${response.statusCode}`);
+          resolve(JSON.parse(bytes));
+        } catch (error) { reject(error); }
+      });
+    });
+    request.setTimeout(1500, () => request.destroy(new Error('Acceptance HTTPS health timed out')));
+    request.on('error', reject);
+  });
+}
 
 async function freePort() {
   const server = net.createServer();
@@ -67,13 +112,13 @@ async function main() {
   return withOwnedRunLock(run, async () => {
   const nonce = randomBytes(32).toString('hex');
   const instanceId = `acceptance-${nonce.slice(0, 16)}`;
-  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs: ['home', 'Mandible.app', 'build.log', 'daemon.log', 'desktop.log'].map(path => ({ path, kind: 'generated' })) });
+  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs: ['home', 'Mandible.app', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' })) });
   const metadataFile = path.join(run, 'metadata.json');
   saveOwnedMetadata(metadataFile, { ownership, candidate });
   const home = path.join(run, 'home');
   fs.mkdirSync(home);
   const result = { schema: 'mandible-candidate-acceptance@1', scope: 'isolated production daemon and packaged dashboard; live installation and protected delivery excluded', status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
-  let daemon, desktop;
+  let daemon, desktop, gateway;
   const files = [];
   const launch = (binary, args, env, name) => {
     const fd = fs.openSync(path.join(run, `${name}.log`), 'w'); files.push(fd);
@@ -82,7 +127,7 @@ async function main() {
     return child;
   };
   let interrupted = false;
-  const interrupt = () => { interrupted = true; daemon?.kill('SIGTERM'); desktop?.kill('SIGTERM'); };
+  const interrupt = () => { interrupted = true; daemon?.kill('SIGTERM'); desktop?.kill('SIGTERM'); gateway?.kill('SIGTERM'); };
   process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt);
   try {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
@@ -107,17 +152,27 @@ async function main() {
       if (sha256(path.join(resources, name)) !== sha256(path.join(root, 'scripts', name))) throw new Error(`Native package has stale ${name}`);
     }
     result.provenance = { marker, daemon_sha256: sha256(path.join(root, 'dist', 'index.js')), native_sha256: sha256(path.join(app, 'Contents', 'MacOS', 'mandible-app')), harness_sha256: sha256(fileURLToPath(import.meta.url)), packaged_runtime_sha256: sha256(packagedRuntime), packaged_runtime_revision: command(packagedRuntime, ['--no-install', '--print', 'Bun.revision']), packaged_archive_sha256: sha256(path.join(resources, 'runtime/bun.zip')), packaged_sqlite_archive_sha256: sha256(path.join(resources, 'runtime/sqlite.tar.gz')), packaged_sqlite_sha256: sha256(packagedSqlite) };
-    const port = await freePort(); const origin = `http://127.0.0.1:${port}`;
+    const ports = new Set();
+    while (ports.size < 3) ports.add(await freePort());
+    const [port, publicPort, adminPort] = [...ports];
+    const origin = `https://app.mandible.localhost:${publicPort}`;
+    const caHome = option('--ca-home') || process.env.MANDIBLE_TEST_CA_HOME || process.env.MANDIBLE_HOME || path.join(os.homedir(), '.mandible');
+    const ca = copyAcceptanceCa(caHome, home);
+    const gatewayBinary = installPinnedCaddy(home);
+    const gatewayConfig = path.join(run, 'Caddyfile');
+    fs.writeFileSync(gatewayConfig, acceptanceGatewayConfig({ origin, backendPort: port, adminPort, storageRoot: ca.storageRoot }), { mode: 0o600 });
+    result.provenance.ca_root_sha256 = sha256(ca.rootCert);
+    result.provenance.gateway_sha256 = sha256(gatewayBinary);
     fs.writeFileSync(path.join(home, 'acceptance.json'), JSON.stringify({ home, origin, nonce }), { mode: 0o600 });
     const env = { ...Object.fromEntries(Object.entries(buildEnv).filter(([key]) => !key.startsWith('MANDIBLE_'))), HOME: home, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(port), MANDIBLE_PUBLIC_ORIGIN: origin, MANDIBLE_INSTANCE_ROLE: 'main', MANDIBLE_INSTANCE_ID: instanceId, MANDIBLE_INSTALLATION_ID: instanceId, MANDIBLE_BACKEND_GENERATION: candidate, MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: home, depth: 1 }]), MANDIBLE_PID_FILE: path.join(home, 'daemon.pid'), MANDIBLE_SOCKET: path.join(home, 'api.sock'), MANDIBLE_STDERR_LOG_PATH: path.join(run, 'daemon.log'), MANDIBLE_USER_PREFERENCES_DIR: path.join(home, 'settings', 'users'), MANDIBLE_CANDIDATE_ACCEPTANCE: path.join(home, 'acceptance.json') };
     Object.assign(env, { XDG_CACHE_HOME: resourceEnv.XDG_CACHE_HOME, XDG_DATA_HOME: resourceEnv.XDG_DATA_HOME });
     daemon = launch(runtime, [path.join(root, 'dist', 'index.js')], env, 'daemon');
+    gateway = launch(gatewayBinary, ['run', '--config', gatewayConfig, '--adapter', 'caddyfile'], env, 'gateway');
     let health;
     const probe = async () => {
       if (interrupted || daemon.exitCode !== null || daemon.signalCode !== null) throw new Error('Owned daemon exited before acceptance completed.');
-      const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1500) });
-      if (!response.ok) throw new Error(`Health HTTP ${response.status}`);
-      const value = await response.json();
+      if (gateway.exitCode !== null || gateway.signalCode !== null) throw new Error('Owned HTTPS gateway exited before acceptance completed.');
+      const value = await acceptanceHealth(origin, ca.rootCert);
       if (value.instance?.instance_id !== env.MANDIBLE_INSTANCE_ID || value.instance?.backend_generation !== candidate || value.instance?.public_origin !== origin) throw new Error('Wrong or stale instance answered acceptance health.');
       return value;
     };
@@ -157,11 +212,11 @@ async function main() {
     result.status = 'passed';
   } catch (error) { result.error = error.message; }
   finally {
-    for (const child of [desktop, daemon]) {
+    for (const child of [desktop, gateway, daemon]) {
       try { await stopOwned(child); } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
     }
     for (const fd of files) fs.closeSync(fd);
-    const logs = ['daemon', 'desktop'].map(name => {
+    const logs = ['daemon', 'desktop', 'gateway'].map(name => {
       const file = path.join(run, `${name}.log`); return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
     }).join('\n');
     result.checks.log_failures = assessLogs(logs);
@@ -169,9 +224,9 @@ async function main() {
     result.checks.log_digest = createHash('sha256').update(logs).digest('hex');
     result.checks.log_bytes = Buffer.byteLength(logs);
     if (result.checks.log_failures.length) result.status = 'failed';
-    result.checks.shutdown = { daemon_exit: daemon?.exitCode, daemon_signal: daemon?.signalCode, desktop_exit: desktop?.exitCode, desktop_signal: desktop?.signalCode };
-    if (daemon && (daemon.exitCode !== 0 || daemon.signalCode)) result.status = 'failed';
-    if (![daemon, desktop].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
+    result.checks.shutdown = { daemon_exit: daemon?.exitCode, daemon_signal: daemon?.signalCode, desktop_exit: desktop?.exitCode, desktop_signal: desktop?.signalCode, gateway_exit: gateway?.exitCode, gateway_signal: gateway?.signalCode };
+    if ([daemon, gateway].some(child => child && (child.exitCode !== 0 || child.signalCode))) result.status = 'failed';
+    if (![daemon, desktop, gateway].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
       result.status = 'failed'; result.cleanup_error = 'Owned process remains alive; scratch data preserved';
     } else {
       try {

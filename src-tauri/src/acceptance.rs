@@ -9,6 +9,13 @@ pub struct CandidateAcceptance {
     pub home: PathBuf,
 }
 
+fn accepts_origin(url: &tauri::Url, origin: &str) -> bool {
+    url.scheme() == "https"
+        && url.host_str() == Some("app.mandible.localhost")
+        && url.port().is_some()
+        && url.origin().ascii_serialization() == origin
+}
+
 pub fn configuration() -> Result<Option<CandidateAcceptance>, String> {
     let Some(file) = std::env::var_os("MANDIBLE_CANDIDATE_ACCEPTANCE") else {
         return Ok(None);
@@ -17,10 +24,7 @@ pub fn configuration() -> Result<Option<CandidateAcceptance>, String> {
         serde_json::from_slice(&fs::read(file).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     let url = tauri::Url::parse(&config.origin).map_err(|e| e.to_string())?;
-    if url.scheme() != "http"
-        || url.host_str() != Some("127.0.0.1")
-        || url.port().is_none()
-        || url.origin().ascii_serialization() != config.origin
+    if !accepts_origin(&url, &config.origin)
         || config.nonce.len() != 64
         || !config.home.is_absolute()
         || config.home != crate::mandible_home()
@@ -29,7 +33,8 @@ pub fn configuration() -> Result<Option<CandidateAcceptance>, String> {
             != config.home.join("acceptance.json")
     {
         return Err(
-            "Candidate acceptance requires an exact loopback origin and owned isolated home".into(),
+            "Candidate acceptance requires an exact Mandible HTTPS origin and owned isolated home"
+                .into(),
         );
     }
     Ok(Some(config))
@@ -120,5 +125,35 @@ pub fn page_loaded(
     );
     if let Err(error) = webview.eval(&script) {
         eprintln!("candidate_acceptance_eval_failed: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::accepts_origin;
+
+    #[test]
+    fn acceptance_requires_the_exact_https_local_dashboard_origin() {
+        for origin in [
+            "https://app.mandible.localhost:19420",
+            "https://app.mandible.localhost:60408",
+        ] {
+            assert!(accepts_origin(&tauri::Url::parse(origin).unwrap(), origin));
+        }
+        for origin in [
+            "http://127.0.0.1:60408",
+            "http://app.mandible.localhost:60408",
+            "https://other.mandible.localhost:60408",
+            "https://app.mandible.localhost",
+            "https://app.mandible.localhost:60408/path",
+            "https://app.mandible.localhost:60408?query=1",
+            "https://user@app.mandible.localhost:60408",
+            "https://app.mandible.localhost.example:60408",
+        ] {
+            assert!(
+                !accepts_origin(&tauri::Url::parse(origin).unwrap(), origin),
+                "{origin}"
+            );
+        }
     }
 }
