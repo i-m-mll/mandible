@@ -30,6 +30,8 @@ export interface CoworkCliCacheGeneratedFile {
 }
 
 export interface CoworkCliCacheManifest {
+  schema: "mandible-cowork-cli-cache@2";
+  content_digest: string;
   version: string;
   source_root: string;
   generated_at: string;
@@ -82,6 +84,10 @@ export function materializeCoworkCliCache(options: CoworkCliCacheOptions): Cowor
   }
 
   const manifest: CoworkCliCacheManifest = {
+    schema: "mandible-cowork-cli-cache@2",
+    content_digest: crypto.createHash("sha256").update(JSON.stringify(
+      manifestFiles.map(({ source, path, sha256 }) => ({ source, path, sha256 })),
+    )).digest("hex"),
     version: options.version ?? "0.0.0",
     source_root: sourceRoot,
     generated_at: new Date().toISOString(),
@@ -131,6 +137,18 @@ function collectCacheFiles(sourceRoot: string): Array<{ source: string; path: st
       if (![".sh", ".cjs", ".json", ".md", ".jq"].includes(path.extname(entry))) continue;
       const source = path.join(CLI_SOURCE_DIR, entry);
       files.push({ source, path: entry });
+    }
+  }
+
+  // A flattened CLI bundle needs the selector's complete, platform-independent
+  // identity contract. Reuse its verification/install path rather than inventing
+  // a cache-specific runtime or trusting the destination's ambient executable.
+  if (files.some((file) => file.path === "command-syntax.sh")) {
+    for (const source of [".bun-version", "scripts/bun-runtime.sh", "scripts/bun-runtime-lock.tsv"]) {
+      if (!fs.statSync(path.join(sourceRoot, source)).isFile()) {
+        throw new Error(`missing CLI runtime dependency: ${source}`);
+      }
+      files.push({ source, path: path.join("runtime", source) });
     }
   }
 
