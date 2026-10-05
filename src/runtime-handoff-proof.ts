@@ -31,18 +31,15 @@ export function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePublicat
   const commit = extractSuccessfulMergeCommitSha(row.output ?? "");
   if (!commit || binding.mergeCommit && binding.mergeCommit !== commit) fail("exact publication receipt is unavailable");
   const events = db.prepare("SELECT revision, snapshot_json, snapshot_sha256 FROM auth_request_lifecycle_events WHERE auth_request_id = ? AND next_status IN ('approved', 'executing') ORDER BY revision DESC").all(row.id) as Array<{ revision: number; snapshot_json: string; snapshot_sha256: string }>;
-  const event = events.find(item => {
-    if (createHash("sha256").update(item.snapshot_json).digest("hex") !== item.snapshot_sha256) return false;
-    try { const r = JSON.parse(item.snapshot_json).request; return r.id === row.id && r.approved_by_user_id === row.approved_by_user_id && r.merge_preflight_base_sha && r.merge_head_sha && r.merge_candidate_tree_sha; }
-    catch { return false; }
-  });
-  if (!event) fail("frozen approved candidate is unavailable");
+  const event = events[0];
+  if (!event || createHash("sha256").update(event.snapshot_json).digest("hex") !== event.snapshot_sha256) fail("latest frozen approval snapshot is unavailable or corrupt");
   const frozen = JSON.parse(event!.snapshot_json).request;
+  if (frozen.type !== "merge" || frozen.id !== row.id || frozen.approved_by_user_id !== row.approved_by_user_id || !frozen.merge_preflight_base_sha || !frozen.merge_head_sha || !frozen.merge_candidate_tree_sha) fail("frozen approved candidate is unavailable");
   const base = frozen.merge_preflight_base_sha as string;
   const head = frozen.merge_head_sha as string;
   const tree = frozen.merge_candidate_tree_sha as string;
   if (binding.mergeBase && binding.mergeBase !== base || binding.mergeHead && binding.mergeHead !== head) fail("reviewed revisions differ");
-  for (const field of ["base_branch", "head_branch", "approved_by_user_id", "commit_message", "commit_message_digest", "approval_lease_id"]) {
+  for (const field of ["command", "repo", "base_branch", "head_branch", "approved_by_user_id", "commit_message", "commit_message_digest", "approval_lease_id"]) {
     if (row[field] !== frozen[field]) fail(`frozen ${field} differs`);
   }
   const atomic = extractAtomicMergeState(row.output ?? "");
@@ -60,6 +57,6 @@ export function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePublicat
       git(["write-tree"]) !== tree || git(["status", "--porcelain", "--untracked-files=no"])) fail("exact applied checkout differs");
   if (frozen.commit_message_digest && canonicalizeChangeMessage(git(["show", "-s", "--format=%B", commit!])) !== frozen.commit_message) fail("canonical merge message differs");
   const frozenCandidate = { tree, snapshotRevision: event!.revision, snapshotDigest: event!.snapshot_sha256, signerCredentialId: signature.credential_id! };
-  if (binding.frozenCandidate && JSON.stringify(binding.frozenCandidate) !== JSON.stringify(frozenCandidate)) fail("frozen proof binding differs");
+  if (binding.frozenCandidate && (Object.keys(frozenCandidate) as Array<keyof typeof frozenCandidate>).some(key => binding.frozenCandidate![key] !== frozenCandidate[key])) fail("frozen proof binding differs");
   return { mergeCommit: commit!, mergeBase: base, mergeHead: head, frozenCandidate };
 }
