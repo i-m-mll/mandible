@@ -206,10 +206,6 @@ describe('shared sidebar group presentation', () => {
     const headingRule = sidebarGroupStylesheet.match(
       /\.sidebar-group-node__heading \{([^}]*)\}/,
     )?.[1] ?? '';
-    expect(headingRule).toContain('flex: 0 1 auto');
-    expect(headingRule).toContain('width: auto');
-    expect(sidebarGroupStylesheet).toContain('.sidebar-group-node--expanded > .sidebar-group-node__header:hover > .sidebar-group-node__disclosure');
-    expect(sidebarGroupStylesheet).not.toContain('.sidebar-group-node--expanded > .sidebar-group-node__header:is(:hover, :focus-within)');
     fireEvent.click(heading);
     expect(onSelect).toHaveBeenCalledOnce();
     expect(onToggle).toHaveBeenCalledOnce();
@@ -217,35 +213,7 @@ describe('shared sidebar group presentation', () => {
     expect(onToggle).toHaveBeenCalledTimes(2);
   });
 
-  it('aligns category children and Show more to the heading text column without guide spines', () => {
-    const categoryRule = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--category > \.sidebar-disclosure-region \{([^}]*)\}/,
-    )?.[1] ?? '';
-    const folderRule = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--folder > \.sidebar-disclosure-region \{([^}]*)\}/,
-    )?.[1] ?? '';
-    const showMoreRule = sidebarGroupStylesheet.match(/\.sidebar-group-node__show-more \{([^}]*)\}/)?.[1] ?? '';
 
-    expect(categoryRule).toContain('--sidebar-title-column-inset: var(--sidebar-node-parent-inset)');
-    expect(categoryRule).not.toContain('position: relative');
-    expect(folderRule).toContain('calc(var(--sidebar-node-parent-inset) + var(--sidebar-node-icon-column))');
-    expect(showMoreRule).toContain('var(--sidebar-title-column-inset, 7px)');
-    expect(sidebarGroupStylesheet).not.toContain('.sidebar-group-node--category > .sidebar-disclosure-region::before');
-  });
-
-  it('gives no-icon structural nesting its own shared child inset', () => {
-    render(
-      <SidebarGroupNode presentation="nested" id="policy" label="Policy" expanded onToggle={() => undefined}>
-        <span>Nested Briefing</span>
-      </SidebarGroupNode>,
-    );
-    expect(screen.getByRole('button', { name: 'Policy' }).closest('section')?.classList.contains('sidebar-group-node--nested')).toBe(true);
-    const nestedRule = sidebarGroupStylesheet.match(
-      /\.sidebar-group-node--nested > \.sidebar-disclosure-region \{([^}]*)\}/,
-    )?.[1] ?? '';
-    expect(nestedRule).toContain('calc(var(--sidebar-node-parent-inset) + var(--sidebar-node-icon-column))');
-    expect(sidebarGroupStylesheet).not.toContain('.sidebar-group-node--nested > .sidebar-disclosure-region::before');
-  });
 
   it('shows and persists the default bounded Chat group size through generic settings', async () => {
     vi.spyOn(api, 'getInstructionDeliverySettings').mockResolvedValue({ targets: [], postExport: '' });

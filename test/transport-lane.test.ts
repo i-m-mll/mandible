@@ -1,9 +1,9 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, setDb } from "../../src/db.js";
-import { CLAUDE_PTY_LANE_ENV_KEY } from "../../src/claude-lane-policy.js";
-import { SessionManager } from "../../src/session-manager.js";
+import { migrate, setDb } from "../src/db.js";
+import { CLAUDE_PTY_LANE_ENV_KEY } from "../src/claude-lane-policy.js";
+import { SessionManager } from "../src/session-manager.js";
 
 function createManager(): { db: InstanceType<typeof Database>; manager: SessionManager } {
   const db = new Database(":memory:");

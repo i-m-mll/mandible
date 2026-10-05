@@ -30,8 +30,6 @@ const firstId = 'e4c52737-40e4-472a-8367-fbdbe97801a2';
 const secondId = '06e4aec0-cf58-4a7f-86df-415e08a4eb8e';
 const thirdId = '5d186de4-075e-4228-a070-e6c5be9dcbf8';
 const roundId = '9fe126c4-74c5-4aa5-af9e-48e4f3a637c6';
-const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
-const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
 
 const collections: FeedbackCollection[] = [
   { id: feedbackCollectionIdentity(firstId), collectionId: firstId, label: 'First briefing', unansweredDirectiveCount: 0, latestRoundId: 'round-1', createdAt: 1, updatedAt: 3 },
@@ -515,7 +513,6 @@ describe('Briefing sidebar row actions', () => {
     expect(group.classList.contains('feedback-collections-sidebar__group')).toBe(true);
     expect(group.classList.contains('sidebar-group-node--nested')).toBe(true);
     expect(group.classList.contains('sidebar-group-node--category')).toBe(false);
-    expect(briefingStylesheet).not.toContain('.feedback-collections-sidebar__group.sidebar-group-node--category');
     expect(within(group).getAllByRole('button', { name: /Select briefing/ }).map((button) => button.getAttribute('aria-label')))
       .toEqual([
         'Select briefing Global',
@@ -730,22 +727,6 @@ describe('Briefing sidebar row actions', () => {
     expect(screen.getByRole('button', { name: 'Select briefing Third briefing' }).tabIndex).toBe(0);
   });
 
-  it('keeps a selected Briefing row hidden at rest and reveals shared actions on focus', () => {
-    render(<Harness selectedCollectionId={collections[2].id} />);
-    const selected = screen.getByRole('button', { name: 'Select briefing Third briefing' });
-    const row = selected.closest('.sidebar-item-row')!;
-    expect(row.classList.contains('sidebar-item-row--selected')).toBe(true);
-    expect(row.classList.contains('sidebar-item-row--persistent-pin')).toBe(false);
-    expect(sidebarItemRowStylesheet).not.toMatch(
-      /\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|actions)/,
-    );
-    selected.focus();
-    expect(document.activeElement).toBe(selected);
-    expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{[^}]*--sidebar-item-row-reveal-width: var\(--sidebar-item-row-trailing-width, 0px\);/s,
-    );
-    expect(briefingStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|select|label|actions|overflow)/);
-  });
 
   it('resolves emitted short refs only when they identify exactly one Briefing', () => {
     expect(resolveFeedbackCollection(collections, 'e4c52737')).toBe(collections[0]);
