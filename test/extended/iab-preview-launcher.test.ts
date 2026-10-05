@@ -1011,6 +1011,7 @@ async function createRefreshFixture(options: { buildFails?: boolean; legacyUserP
 
   fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
   fs.copyFileSync(path.join(process.cwd(), "scripts", "bun-runtime.sh"), path.join(repo, "scripts", "bun-runtime.sh"));
+  fs.copyFileSync(path.join(process.cwd(), "scripts", "sqlite-runtime-install.mjs"), path.join(repo, "scripts", "sqlite-runtime-install.mjs"));
   fs.copyFileSync(path.join(process.cwd(), "scripts", "bun-runtime-lock.tsv"), path.join(repo, "scripts", "bun-runtime-lock.tsv"));
   fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(repo, ".bun-version"));
   fs.writeFileSync(path.join(repo, "package.json"), JSON.stringify({ private: true, scripts: { build: options.buildFails ? "exit 23" : "exit 0" } }));
