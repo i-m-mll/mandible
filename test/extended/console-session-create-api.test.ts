@@ -1,13 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ConversationSpawnApiError, invalidateApiGetCache, listCanonicalProjects, startProviderChat } from '../../ui/src/api';
 import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 
-function authenticatedWhoami(): Response {
-  return new Response(JSON.stringify({ authenticated: true, session: {
-    csrf_token: 'csrf',
-  } }), { status: 200, headers: { 'content-type': 'application/json' } });
-}
+import { establishTestClientAccess } from '../helpers/local-client-access';
+
+beforeEach(establishTestClientAccess);
 
 afterEach(() => {
   invalidateApiGetCache();
@@ -17,9 +15,7 @@ afterEach(() => {
 
 describe('provider Chat creation payload', () => {
   it('posts only the version-3 UUID, provider, and canonical placement', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/client-auth/whoami'
-      ? authenticatedWhoami()
-      : new Response(JSON.stringify({ session: {} }), {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify({ session: {} }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     }));
@@ -71,9 +67,7 @@ describe('provider Chat creation payload', () => {
       created_at: 1,
       updated_at: 2,
     };
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/client-auth/whoami'
-      ? authenticatedWhoami()
-      : new Response(JSON.stringify({ ok: false, error: failure, spawn }), {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify({ ok: false, error: failure, spawn }), {
       status: 502,
       headers: { 'content-type': 'application/json' },
     })));
@@ -88,9 +82,7 @@ describe('provider Chat creation payload', () => {
   });
 
   it('forwards caller cancellation without adding a second browser deadline', async () => {
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input) === '/api/client-auth/whoami'
-      ? Promise.resolve(authenticatedWhoami())
-      : new Promise<Response>((_resolve, reject) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       if (init?.signal?.aborted) {
         reject(init.signal.reason);
         return;
@@ -114,9 +106,7 @@ describe('provider Chat creation payload', () => {
 
 describe('canonical Chat project registry payload', () => {
   it('retains canonical project and checkout IDs while reading the existing projects route', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/client-auth/whoami'
-      ? authenticatedWhoami()
-      : new Response(JSON.stringify({
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify({
       projects: [{
         id: 'prj-1', project_key: 'mandible', display_name: 'Mandible',
         checkouts: [{
