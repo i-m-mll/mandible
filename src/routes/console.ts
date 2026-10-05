@@ -187,7 +187,7 @@ export function registerConsoleRoutes(
       return;
     }
     sendJson(res, 200, { runOptions: manager.describeRunOptions("pty", command) });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/run-options", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions — create a real terminal
@@ -203,7 +203,7 @@ export function registerConsoleRoutes(
     const session = manager.create({ label: typeof body.label === "string" ? body.label : "Terminal", command: body.command,
       args: body.args as string[] | undefined, cwd: typeof body.cwd === "string" ? body.cwd : undefined, backend_type: "pty", transport_lane: "pty" });
     sendJson(res, 201, { session });
-  }, { authenticated: true }), { fileRpc: "deny" });
+  }, { authenticated: true }), { operation: { id: "post:/api/console/sessions", effects: ["ledger:write", "process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
 
   // ------------------------------------------------------------------
@@ -261,7 +261,7 @@ export function registerConsoleRoutes(
     if (!requireTerminalMutation(res, session)) return;
 
     sendJson(res, 422, { error: "terminal_has_no_managed_options", message: "Set provider options on the conversation in Chats." });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "patch:/api/console/sessions/:id/options", effects: ["ledger:read"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // DELETE /api/console/sessions/:id — stop and delete
@@ -414,7 +414,7 @@ export function registerConsoleRoutes(
     }
     if (!requireManagedSessionAccess(req, res, manager, session)) return;
     res.status(200).json({ requests: [] });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/permissions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.post("/api/console/sessions/:id/permission/:requestId", (req, res) => {
     const id = req.params.id;
@@ -427,7 +427,7 @@ export function registerConsoleRoutes(
     if (!requireTerminalMutation(res, session)) return;
 
     sendJson(res, 422, { error: "terminal_has_no_permission_protocol" });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/permission/:requestId", effects: ["ledger:read"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   server.get("/api/console/sessions/:id/usage", (req, res) => {
     const id = req.params.id;
@@ -527,7 +527,7 @@ export function registerConsoleRoutes(
     if (!requireTerminalMutation(res, session)) return;
 
     sendJson(res, 422, { error: "terminal_has_no_managed_turn", message: "Use terminal input to interrupt a shell process." });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/cancel", effects: ["ledger:read"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/pinned — ordered list of pinned session IDs

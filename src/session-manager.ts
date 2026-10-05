@@ -215,7 +215,7 @@ export class SessionManager {
     const row = db.prepare("SELECT * FROM console_sessions WHERE id = ?").get(id) as ConsoleSessionRow;
     const meta = rowToSession(row, new AttributionReadResolver(db));
     this.sessions.set(id, this.terminal(meta));
-    broadcast("console:session:created", { session: meta });
+    broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_CREATED, { session: meta });
     this.evict();
     return meta;
   }
@@ -256,7 +256,7 @@ export class SessionManager {
     const terminal = this.requireTerminal(id);
     terminal.destroy(); this.sessions.delete(id);
     getDb().prepare("DELETE FROM console_sessions WHERE id = ?").run(id);
-    broadcast("console:session:deleted", { id });
+    broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_DELETED, { id });
   }
   updateConfig(id: string, patch: Partial<Pick<ConsoleSession, "label" | "args" | "cwd" | "provider_session_id" | "allowed_tools" | "mandible_session_id">>, { silent = false } = {}): ConsoleSession {
     const terminal = this.requireTerminal(id);
@@ -265,7 +265,7 @@ export class SessionManager {
     getDb().prepare("UPDATE console_sessions SET label = ?, args_json = ?, cwd = ?, updated_at = ? WHERE id = ?")
       .run(meta.label, JSON.stringify(meta.args), meta.cwd, meta.updated_at, id);
     terminal.meta = meta;
-    if (!silent) broadcast("console:session:updated", { session: meta });
+    if (!silent) broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_UPDATED, { session: meta });
     return meta;
   }
   describeRunOptionDeclaration(backendType: BackendType, command: string): BackendRunOptionDeclaration { return { backendType, command, options: [] }; }
@@ -307,9 +307,9 @@ export class SessionManager {
       const next = { ...terminal.meta, ...patch };
       getDb().prepare("UPDATE console_sessions SET cols = ?, rows = ?, status = ?, pid = ?, exit_code = ?, started_at = ?, stopped_at = ?, updated_at = ? WHERE id = ?")
         .run(next.cols, next.rows, next.status, next.pid, next.exit_code, next.started_at, next.stopped_at, next.updated_at, next.id);
-      broadcast("console:session:updated", { session: next });
+      broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_UPDATED, { session: next });
     });
-    terminal.on("status", (event) => broadcast("console:status", { console_session_id: terminal.id, ...event }));
+    terminal.on("status", (event) => broadcast(DOMAIN_EVENTS.CONSOLE_STATUS, { console_session_id: terminal.id, ...event }));
     return terminal;
   }
   private evict(exclude?: string): void {
