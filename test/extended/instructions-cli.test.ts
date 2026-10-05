@@ -4,7 +4,6 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { configureSqliteRuntime } from "../../src/sqlite-runtime.js";
 import { copyRuntimeFixture } from "../helpers/runtime-fixture.js";
 import { renderMandibleInstructionsFragment } from "../../src/instructions/fragment.js";
 
@@ -53,7 +52,6 @@ describe("instructions CLI", () => {
     tempRoots.push(root);
     const cli = path.join(root, "cli");
     fs.cpSync(path.join(process.cwd(), "cli"), cli, { recursive: true });
-    configureSqliteRuntime();
     const runtimeEnv = copyRuntimeFixture(root);
     const authored = "# Authored\n{{command absent.command}}\n";
     fs.writeFileSync(path.join(cli, "instructions-contract.md"), authored);

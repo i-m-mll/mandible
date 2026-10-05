@@ -1,6 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { sqliteRuntimePaths, verifySqliteArchive } from '../../src/sqlite-runtime.js';
+import { configureSqliteRuntime, sqliteRuntimePaths, verifySqliteArchive } from '../../src/sqlite-runtime.js';
+
+// Provision the qualified library before returning paths. Catalog fixtures are
+// metadata-only and deliberately do not prepare database dependencies.
+export function qualifiedRuntimeFixtureEnv() {
+  configureSqliteRuntime();
+  const paths = sqliteRuntimePaths();
+  return { MANDIBLE_SQLITE_LIBRARY: paths.library, MANDIBLE_SQLITE_LIBRARY_ARCHIVE: paths.archive };
+}
 
 // Deployment fixtures exercise the real selector with the qualified source
 // and preserved stock library, without network acquisition per test.

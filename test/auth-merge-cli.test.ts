@@ -5,13 +5,12 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { sqliteRuntimePaths } from "../src/sqlite-runtime.js";
+import { qualifiedRuntimeFixtureEnv } from "./helpers/runtime-fixture.js";
 import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 
 const fixtureRuntimeEnv = {
   MANDIBLE_RUNTIME: process.execPath,
-  MANDIBLE_SQLITE_LIBRARY: sqliteRuntimePaths().library,
-  MANDIBLE_SQLITE_LIBRARY_ARCHIVE: sqliteRuntimePaths().archive,
+  ...qualifiedRuntimeFixtureEnv(),
   GIT_OPTIONAL_LOCKS: "0",
 };
 
