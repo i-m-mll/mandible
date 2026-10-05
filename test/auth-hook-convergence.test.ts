@@ -31,6 +31,7 @@ import { Router } from "../src/server.js";
 import type { AuthHookRun, AuthRequest } from "../src/types.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import {
+  SYSTEM_ACTOR,
   createLedgerIssue,
   createLedgerProject,
   createMigratedDb,
@@ -428,7 +429,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
 });
 
 describe("convergence gates deferred issue closure (issue 27241e6)", () => {
-  it("withholds issue closure while convergence is outstanding and applies it once the hook converges", async () => {
+  it.each(["fresh-first", "stale-first", "all-fresh"])("releases guarded closures after convergence: %s", async (mode) => {
     const db = createMigratedDb({
       setGlobal: true,
       operator: { slug: "withhold-operator", display_name: "Withhold Operator" },
@@ -449,6 +450,12 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
         actor_type: "agent",
         author_display: "Codex",
         alias: "withhold1",
+      });
+      const second = createLedgerIssue(db, {
+        project_id: issue.project_id, title: "Second withheld target", kind: "feature", alias: "withhold2",
+      });
+      const progress = createLedgerIssue(db, {
+        project_id: issue.project_id, title: "Progress target", kind: "feature", alias: "withhold3",
       });
       const repoName = path.basename(repoRoot);
 
@@ -473,8 +480,10 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
         cwd: repoRoot,
         repo: repoName,
         actions: [
-          { kind: "comment_add", target_issue_ref: issue.short_id, payload: { body: "Closeout comment" } },
-          { kind: "issue_close", target_issue_ref: issue.short_id, payload: {} },
+          { kind: "comment_add", target_issue_ref: progress.short_id, payload: { body: "Closeout comment" } },
+          ...(mode === "stale-first" ? [second, issue] : [issue, second]).map((target) => ({
+            kind: "issue_close" as const, target_issue_ref: target.short_id, payload: { on_stale: "skip" },
+          })),
         ],
       });
       await approveFixtureRequest(queue, request.id);
@@ -484,17 +493,27 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
       // issue stays open, while the non-closure action still ran.
       expect(queue.convergenceForRequest(request.id).state).toBe("pending");
       const staged = queue.listActions(request.id);
-      expect(staged.find((action) => action.kind === "comment_add")!.state).toBe("applied");
+      expect(staged.map((action) => action.state)).toEqual(["applied", "staged", "staged"]);
+      expect(db.prepare("SELECT body FROM ledger_comments WHERE issue_id = ?").all(progress.id))
+        .toEqual([{ body: "Closeout comment" }]);
       expect(staged.find((action) => action.kind === "issue_close")!.state).toBe("staged");
       expect(new LedgerStore(db).getIssue(issue.id)!.status).toBe("open");
 
       // Once convergence completes the withheld closure is released.
+      if (mode !== "all-fresh") new LedgerStore(db).addComment(second.id, {
+        body: "Changed while convergence was pending", source: "mandible", ...SYSTEM_ACTOR,
+      });
       fs.writeFileSync(marker, "ok");
       await queue.resumeHookConvergence();
 
       expect(queue.convergenceForRequest(request.id).state).toBe("complete");
       const applied = queue.listActions(request.id);
-      expect(applied.find((action) => action.kind === "issue_close")!.state).toBe("applied");
+      expect(applied.filter((action) => action.kind === "issue_close").map((action) => action.state)).toEqual(mode === "all-fresh"
+        ? ["applied", "applied"] : mode === "stale-first" ? ["skipped_stale", "applied"] : ["applied", "skipped_stale"]);
+      expect(new LedgerStore(db).getIssue(second.id).status).toBe(mode === "all-fresh" ? "closed" : "open");
+      await queue.resumeHookConvergence();
+      expect(queue.listActions(request.id)).toEqual(applied);
+      expect(new LedgerStore(db).getIssue(second.id).status).toBe(mode === "all-fresh" ? "closed" : "open");
       expect(new LedgerStore(db).getIssue(issue.id)!.status).toBe("closed");
       queue.dispose();
     } finally {

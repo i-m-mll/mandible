@@ -6405,12 +6405,17 @@ export class AuthQueue {
           auth_request_id: request.id,
           repo_ref: repoRef,
           issue_closures: [action.target_issue_ref],
+          closure_issue_ids: [issueId],
           merge_output: request.output,
           approval_source: request.approval_source,
           approval_lease_id: request.approval_lease_id,
           approved_by_user_id: request.approved_by_user_id,
           execution_evidence_id: request.execution_evidence_id,
         });
+        const closedIssue = store.getIssue(issueId);
+        if (closedIssue.status !== "closed" || closedIssue.resolution !== "delivered") {
+          throw new Error(`Issue-close action did not establish closed/delivered for ${action.target_issue_ref}`);
+        }
         break;
       case "worker_status_set": {
         const value = stringPayload(action.payload, "value");

@@ -329,6 +329,55 @@ describe("auth request action execution", () => {
     }
   });
 
+  it.each(["fresh-first", "stale-first", "all-fresh", "tracker", "failed"])(
+    "guards each closure independently: %s", async (mode) => {
+      const db = createMigratedDb();
+      let queue: AuthQueue | undefined;
+      try {
+        const { repoRoot, issue: first } = createLedgerIssue(db, "guard1");
+        const store = new LedgerStore(db);
+        const second = createSharedLedgerIssue(db, {
+          project_id: first.project_id, title: "Second guarded target",
+          kind: mode === "tracker" ? "tracker" : "feature", alias: "guard2",
+        });
+        queue = new AuthQueue({ db, now: () => 30_000, backgroundMaintenance: false });
+        const targets = mode === "stale-first" ? [second, first] : [first, second];
+        const request = submitActionMerge(queue, {
+          type: "merge", command: "mandible auth merge feature/stale --into main",
+          title: "Independent guarded closures", cwd: repoRoot, repo: path.basename(repoRoot),
+          actions: targets.map((issue) => ({ kind: "issue_close", target_issue_ref: issue.short_id,
+            payload: { on_stale: "skip" } })),
+        });
+        if (mode === "failed") {
+          const apply = (queue as any).applyDeferredLedgerAction.bind(queue);
+          (queue as any).applyDeferredLedgerAction = (request: unknown, action: { ordinal: number }) => {
+            if (action.ordinal === 2) throw new Error("Injected target execution failure");
+            return apply(request, action);
+          };
+        }
+        if (mode === "fresh-first" || mode === "stale-first") {
+          store.addComment(second.id, { body: "Changed since review", source: "mandible", ...SYSTEM_ACTOR });
+        }
+        await approvePausedFixtureRequest(queue, request.id);
+        await completeFixturePublication(queue, request.id);
+        const expected = mode === "all-fresh" ? "applied" : mode === "tracker" || mode === "failed" ? "failed" : "skipped_stale";
+        expect(queue.listActions(request.id).map((action) => action.state)).toEqual(
+          mode === "stale-first" ? [expected, "applied"] : ["applied", expected],
+        );
+        expect(store.getIssue(first.id)).toMatchObject({ status: "closed", resolution: "delivered" });
+        expect(store.getIssue(second.id).status).toBe(mode === "all-fresh" ? "closed" : "open");
+        // Replay request-wide completion and delayed release: neither may undo
+        // the individual guard, even if a resolve link still exists.
+        const terminal = queue.listActions(request.id);
+        const current = queue.getRequest(request.id)!;
+        (queue as any).applyLedgerCompletionForRequest(current);
+        (queue as any).releaseWithheldClosures(current);
+        expect(queue.listActions(request.id)).toEqual(terminal);
+        expect(store.getIssue(second.id).status).toBe(mode === "all-fresh" ? "closed" : "open");
+      } finally { queue?.dispose(); db.close(); }
+    },
+  );
+
   it("preserves legacy issue_closures through the unified close executor", async () => {
     const db = createMigratedDb();
     try {

@@ -330,6 +330,8 @@ export function applyAuthRequestLedgerCompletion(
      * resolution and "this is done" assertion wait.
      */
     withhold_issue_closure?: boolean;
+    /** Canonical target selected by the guarded deferred action executor. */
+    closure_issue_ids?: string[];
   },
 ): OperationalLinkResult[] {
   const actor = authFinalizationActor(db, input);
@@ -344,7 +346,8 @@ export function applyAuthRequestLedgerCompletion(
     `SELECT issue_id, link_type FROM ledger_auth_issue_links
      WHERE auth_request_id = ? AND link_type IN ('resolves', 'fixed_by')`,
   ).all(input.auth_request_id) as Array<{ issue_id: string; link_type: string }>;
-  const uniqueIssueIds = Array.from(new Set(linked.map((row) => row.issue_id)));
+  const closureTargets = new Set(authClosureTargets(db, input, linked.map((row) => row.issue_id)));
+  const uniqueIssueIds = Array.from(new Set(input.closure_issue_ids ?? linked.map((row) => row.issue_id)));
   for (const issueId of uniqueIssueIds) {
     const issue = store.getIssue(issueId);
     if (issue.status === "open" && completedAt != null && latestIssueReopenedAt(db, issueId) > completedAt) {
@@ -367,31 +370,9 @@ export function applyAuthRequestLedgerCompletion(
         execution_evidence_id: input.execution_evidence_id ?? null,
       },
     });
-    if (issue.kind === "tracker") {
-      continue;
+    if (!input.withhold_issue_closure && closureTargets.has(issueId)) {
+      closeAuthRequestIssue(db, input, issueId, actor, mergeSha, completedAt);
     }
-    if (input.withhold_issue_closure) {
-      continue;
-    }
-    if (mergeSha) {
-      recordIssueResolution(db, {
-        authRequestId: input.auth_request_id,
-        issueId,
-        commitSha: mergeSha,
-        repoRef: input.repo_ref ?? "",
-      }, actor);
-    }
-    store.setIssueStatus(
-      issueId,
-      "closed",
-      input.resolution ?? "delivered",
-      {
-        actor_type: "system",
-        actor_id: input.approval_lease_id ?? null,
-        attribution: actor.attribution,
-      },
-      "auth_queue",
-    );
   }
   return results;
 }
@@ -421,7 +402,6 @@ export function applyWithheldAuthRequestClosures(
 ): string[] {
   if (!ledgerOperationalLinksAvailable(db)) return [];
   const actor = authFinalizationActor(db, input);
-  const store = new LedgerStore(db);
   const mergeSha = parseMergeResult(input.merge_output)?.merge_sha ?? null;
   const completedAt = authRequestCompletedAt(db, input.auth_request_id);
   const linked = db.prepare(
@@ -430,33 +410,57 @@ export function applyWithheldAuthRequestClosures(
   ).all(input.auth_request_id) as Array<{ issue_id: string }>;
 
   const closed: string[] = [];
-  for (const issueId of Array.from(new Set(linked.map((row) => row.issue_id)))) {
-    const issue = store.getIssue(issueId);
-    if (issue.status !== "open") continue;
-    if (completedAt != null && latestIssueReopenedAt(db, issueId) > completedAt) continue;
-    if (issue.kind === "tracker") continue;
-    if (mergeSha) {
-      recordIssueResolution(db, {
-        authRequestId: input.auth_request_id,
-        issueId,
-        commitSha: mergeSha,
-        repoRef: input.repo_ref ?? "",
-      }, actor);
-    }
-    store.setIssueStatus(
-      issueId,
-      "closed",
-      input.resolution ?? "delivered",
-      {
-        actor_type: "system",
-        actor_id: input.approval_lease_id ?? null,
-        attribution: actor.attribution,
-      },
-      "auth_queue",
-    );
-    closed.push(issueId);
+  for (const issueId of authClosureTargets(db, input, linked.map((row) => row.issue_id))) {
+    if (new LedgerStore(db).getIssue(issueId).status !== "open") continue;
+    if (closeAuthRequestIssue(db, input, issueId, actor, mergeSha, completedAt)) closed.push(issueId);
   }
   return closed;
+}
+
+// Persisted action targets belong exclusively to their individual guards, in
+// every state. Legacy request-wide completion must never bypass those guards.
+function authClosureTargets(
+  db: Db,
+  input: { auth_request_id: string; repo_ref?: string | null; closure_issue_ids?: string[] },
+  linkedIds: string[],
+): string[] {
+  if (input.closure_issue_ids) return Array.from(new Set(input.closure_issue_ids));
+  const owned = new Set<string>();
+  if (tableExists(db, "auth_request_actions")) {
+    const actions = db.prepare(
+      "SELECT target_issue_ref FROM auth_request_actions WHERE auth_request_id = ? AND kind = 'issue_close'",
+    ).all(input.auth_request_id) as Array<{ target_issue_ref: string }>;
+    for (const action of actions) {
+      const target = resolveOperationalIssueRef(db, action.target_issue_ref, input.repo_ref);
+      if (!target.ok) throw new Error(`Cannot resolve action-owned closure target '${action.target_issue_ref}'`);
+      owned.add(target.issue_id);
+    }
+  }
+  return Array.from(new Set(linkedIds)).filter((id) => !owned.has(id));
+}
+
+function closeAuthRequestIssue(
+  db: Db,
+  input: {
+    auth_request_id: string; repo_ref?: string | null;
+    approval_lease_id?: string | null; resolution?: LedgerIssueResolution;
+  },
+  issueId: string,
+  actor: LedgerActorInput,
+  mergeSha: string | null,
+  completedAt: number | null,
+): boolean {
+  const store = new LedgerStore(db);
+  const issue = store.getIssue(issueId);
+  if (issue.kind === "tracker") return false;
+  if (issue.status === "open" && completedAt != null && latestIssueReopenedAt(db, issueId) > completedAt) return false;
+  if (mergeSha) recordIssueResolution(db, {
+    authRequestId: input.auth_request_id, issueId, commitSha: mergeSha, repoRef: input.repo_ref ?? "",
+  }, actor);
+  store.setIssueStatus(issueId, "closed", input.resolution ?? "delivered", {
+    actor_type: "system", actor_id: input.approval_lease_id ?? null, attribution: actor.attribution,
+  }, "auth_queue");
+  return true;
 }
 
 /**
