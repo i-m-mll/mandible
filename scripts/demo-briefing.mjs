@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 
-import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -78,12 +77,6 @@ function usage() {
   return "Usage: bun run demo:briefing -- --db <absolute-fresh-path> [--json]";
 }
 
-async function buildServer() {
-  await runSupervisedCommand(process.execPath, ['--smol', '--no-install', path.join(repoRoot, 'scripts/run-tsc.js')], {
-    cwd: repoRoot, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, stdio: 'inherit', timeout: 180000,
-  });
-}
-
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
   if (args.help) {
@@ -91,10 +84,9 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   const paths = resolveFreshDemoPaths(args.db);
-  await buildServer();
   const [{ openDb }, { seedRichBriefingDemo }] = await Promise.all([
-    import("../dist/db.js"),
-    import("../dist/feedback/rich-briefing-demo.js"),
+    import("../src/db.ts"),
+    import("../src/feedback/rich-briefing-demo.ts"),
   ]);
   fs.mkdirSync(path.dirname(paths.databasePath), { recursive: true });
   let db = null;
