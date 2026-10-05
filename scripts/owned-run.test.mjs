@@ -27,9 +27,9 @@ test('unresolved interactive material survives; transferred bytes and compact re
       assert.throws(() => finalizeOwnedRun(f.metadata, { expectedRevision: 1, outcome: 'accepted', converged: true, summary: 'Accepted documents' }, idle), /unresolved/);
       const destination = path.join(f.base, 'accepted'); fs.mkdirSync(destination);
       fs.copyFileSync(path.join(f.root, 'ledger.db'), path.join(destination, 'ledger.db'));
-      assert.throws(() => finalizeOwnedRun(f.metadata, { expectedRevision: 1, outcome: 'accepted', converged: true, disposition: 'transferred', destination, summary: 'Accepted documents' }, idle), /not verified/);
+      assert.throws(() => finalizeOwnedRun(f.metadata, { expectedRevision: 1, outcome: 'accepted', converged: true, disposition: 'transferred', destination, transferReference: 'artifact-version:fixture-transfer', summary: 'Accepted documents' }, idle), /not verified/);
       fs.cpSync(path.join(f.root, 'artifacts'), path.join(destination, 'artifacts'), { recursive: true });
-      const finalized = finalizeOwnedRun(f.metadata, { expectedRevision: 1, outcome: 'accepted', converged: true, disposition: 'transferred', destination, summary: 'Accepted documents' }, idle);
+      const finalized = finalizeOwnedRun(f.metadata, { expectedRevision: 1, outcome: 'accepted', converged: true, disposition: 'transferred', destination, transferReference: 'artifact-version:fixture-transfer', summary: 'Accepted documents' }, idle);
       const result = cleanupOwnedRun(f.metadata, { ...idle, apply: true });
       assert.equal(result.action, 'delete-owned'); assert.ok(result.reclaimedBytes > 0);
       assert.equal(fs.existsSync(f.root), false);
@@ -95,5 +95,23 @@ test('partial deletion retries only remaining bytes and root replacement is bloc
     fs.rmSync(f.root, { recursive: true }); fs.renameSync(moved, f.root);
     assert.equal(cleanupOwnedRun(f.metadata, { ...idle, apply: true }).action, 'delete-owned');
     assert.equal(fs.existsSync(f.root), false);
+  } finally { f.dispose(); }
+});
+
+test('investigation has a bounded review and expiry reclaims generated output while preserving unresolved edits', () => {
+  const f = fixture();
+  try {
+    assert.throws(() => finalizeOwnedRun(f.metadata, { expectedRevision: 1, outcome: 'investigating', summary: 'Need reproduction', reviewBy: '2099-01-01' }, idle), /seven days/);
+    finalizeOwnedRun(f.metadata, { expectedRevision: 1, outcome: 'investigating', summary: 'Need reproduction', reviewBy: new Date(Date.now() + 60000).toISOString() }, idle);
+    assert.match(cleanupOwnedRun(f.metadata, { ...idle, apply: true }).reason, /investigation owned/);
+    const metadata = JSON.parse(fs.readFileSync(f.metadata)); metadata.ownership.investigation.reviewBy = Date.now() - 1;
+    saveOwnedMetadata(f.metadata, metadata);
+    const result = cleanupOwnedRun(f.metadata, { ...idle, apply: true });
+    assert.equal(fs.existsSync(path.join(f.root, 'stdout.log')), false);
+    assert.equal(fs.readFileSync(path.join(f.root, 'ledger.db'), 'utf8'), 'unique edited ledger');
+    assert.ok(result.remaining.includes('ledger.db'));
+    const latest = JSON.parse(fs.readFileSync(f.metadata));
+    finalizeOwnedRun(f.metadata, { expectedRevision: latest.ownership.revision, outcome: 'abandoned', disposition: 'discard', summary: 'Owner explicitly discarded reproduction' }, idle);
+    assert.equal(cleanupOwnedRun(f.metadata, { ...idle, apply: true }).remaining.length, 0);
   } finally { f.dispose(); }
 });

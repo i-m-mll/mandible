@@ -1,5 +1,6 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import fs from "node:fs";
+import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from "./owned-run.mjs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -48,7 +49,7 @@ if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(fileURLT
 }
 
 async function runCli() {
-  const command = process.argv[2] === "cleanup"
+  const command = process.argv[2] === "finalize" ? "finalize" : process.argv[2] === "cleanup"
     ? "cleanup"
     : process.argv[2] === "seed-briefing-demo" ? "seed-briefing-demo"
       : process.argv[2] === "seed-agents-review" ? "seed-agents-review" : "preview";
@@ -64,7 +65,7 @@ async function runCli() {
       throw new Error("seed-agents-review requires --artifact-version");
     }
     assertOrdinaryPreviewLifecycleAllowed();
-    const result = command === "cleanup"
+    const result = command === "finalize" ? await finalizePreview(args) : command === "cleanup"
       ? await cleanupPreviewCache(args)
       : command === "seed-briefing-demo" ? await seedBriefingDemo(args) : await main(args);
     printResult(result, args.json);
@@ -81,11 +82,32 @@ async function runCli() {
 
 async function main(options) {
   assertOrdinaryPreviewLifecycleAllowed();
-  // Runs before any reuse decision. A surviving legacy job is a supervised
-  // preview: booting it out frees its port and makes the reuse check see the
-  // truth, so the next start is an ordinary unsupervised child process.
-  const legacyLaunchdCleanup = deregisterLegacyPreviewJobs({ apply: !options.dryRun });
-  const result = await createOrReusePreview(options);
+  const legacyLaunchdCleanup = inspectLegacyPreviewJobs();
+  if (legacyLaunchdCleanup.error || legacyLaunchdCleanup.labels.length) throw new Error("Registered preview service requires explicit retirement before launch; other instances are preserved");
+  const repo = git(["rev-parse", "--show-toplevel"]).stdout.trim();
+  const current = git(["branch", "--show-current"], { cwd: repo }).stdout.trim();
+  const base = resolveProtectedBranch(repo);
+  const selected = options.branch ?? (!options.forceNew && (current.startsWith("integration/") || current.startsWith("codex/integration/")) ? current
+    : `integration/mandible-iab-preview-${formatDateStamp(new Date())}-${git(["rev-parse", "--short=7", base], { cwd: repo }).stdout.trim()}${options.forceNew ? `-${formatTimeStamp(new Date())}` : ""}`);
+  const root = previewPaths(selected).root;
+  const result = await withOwnedRunLock(root, async () => {
+    try { return await createOrReusePreview({ ...options, branch: selected }); }
+    catch (error) {
+      const file = path.join(root, "metadata.json");
+      const metadata = readJsonFile(file);
+      if (metadata?.ownership && (metadata.ownership.state === "creating" || metadata.ownership.disposable)) {
+        const active = await previewConsumerReason(metadata, root);
+        if (!active) {
+          try {
+            finalizeOwnedRun(file, { expectedRevision: metadata.ownership.revision, outcome: "failed", summary: String(error).slice(0, 2000) });
+            const cleanup = cleanupOwnedRun(file, { apply: true });
+            if (cleanup.action !== "delete-owned" || cleanup.remaining?.length) throw new Error(cleanup.reason);
+          } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Preview failed; cleanup is pending owner action"); }
+        }
+      }
+      throw error;
+    }
+  });
   return { ...result, legacyLaunchdCleanup };
 }
 
@@ -98,7 +120,7 @@ async function createOrReusePreview(options) {
   const protectedHead = git(["rev-parse", "--short=7", protectedBranch], { cwd: repoRoot }).stdout.trim();
   const dateStamp = formatDateStamp(new Date());
   const currentIsProtected = currentBranch === protectedBranch;
-  const currentIsIntegration = currentBranch.startsWith("integration/");
+  const currentIsIntegration = currentBranch.startsWith("integration/") || currentBranch.startsWith("codex/integration/");
 
   let branch;
   let worktree;
@@ -111,11 +133,11 @@ async function createOrReusePreview(options) {
     const existing = await healthyExistingPreview(branch, { worktree });
     if (existing) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
-      if (existing.legacyContractDrift && !existing.userPreferencesIsolationUpgrade) {
+      if (existing.legacyContractDrift && !existing.userPreferencesIsolationUpgrade && !existing.logIsolationUpgrade) {
         throw legacyPreviewRetirementRequired(existing);
       }
       const currentHead = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
-      if (existing.userPreferencesIsolationUpgrade || existing.health?.startup_commit?.hash !== currentHead) {
+      if (existing.userPreferencesIsolationUpgrade || existing.logIsolationUpgrade || existing.health?.startup_commit?.hash !== currentHead) {
         return refreshExistingPreview(existing, { branch, worktree, mode, currentHead, options });
       }
       return {
@@ -143,14 +165,14 @@ async function createOrReusePreview(options) {
       : null;
     if (existing && !options.dryRun) {
       if (options.artifactVersion) throw new Error("Refusing agents review seed: preview is already running; use --force-new for a pre-start seed.");
-      if (existing.legacyContractDrift && !existing.userPreferencesIsolationUpgrade) {
+      if (existing.legacyContractDrift && !existing.userPreferencesIsolationUpgrade && !existing.logIsolationUpgrade) {
         throw legacyPreviewRetirementRequired(existing);
       }
       if (!selectedWorktree) {
         throw new Error(`Healthy preview metadata exists for ${branch}, but its worktree is not registered.`);
       }
       const currentHead = git(["rev-parse", "HEAD"], { cwd: selectedWorktree }).stdout.trim();
-      if (existing.userPreferencesIsolationUpgrade || existing.health?.startup_commit?.hash !== currentHead) {
+      if (existing.userPreferencesIsolationUpgrade || existing.logIsolationUpgrade || existing.health?.startup_commit?.hash !== currentHead) {
         return refreshExistingPreview(existing, {
           branch,
           worktree: selectedWorktree,
@@ -211,15 +233,19 @@ async function createOrReusePreview(options) {
   }
 
   fs.mkdirSync(preview.root, { recursive: true });
-  fs.rmSync(path.join(preview.root, "preview-browser-enrollment.json"), { force: true });
+  if (fs.existsSync(preview.metadata)) {
+    throw new Error(`Stopped preview material requires finalization before relaunch: ${preview.root}`);
+  }
+  if (fs.readdirSync(preview.root).length) throw new Error(`Unclassified preview material prevents launch: ${preview.root}`);
   const preStartCleanup = await cleanupPreviewCache({
     apply: true,
     previewBaseDir: options.previewBaseDir,
+    excludeRoot: preview.root,
   });
 
   if (!options.noBuild) {
     ensureDependencies(worktree);
-    run("npm", ["run", "build"], { cwd: worktree });
+    runBun(worktree, ["run", "--bun", "build"]);
   }
 
   const port = options.port ?? (
@@ -237,7 +263,13 @@ async function createOrReusePreview(options) {
   }
 
   const dbCopy = path.join(preview.root, `mandible-${formatDateTimeForFile(new Date())}.db`);
-  const projection = await createProjectedSnapshot({ sourceDb, dbCopy, worktree });
+  const allocation = assertPreviewAllocation(preview.root, sourceDb);
+  const owner = resolvePreviewOwner(worktree, branch, options);
+  const ownership = createOwnedRun({ root: preview.root, instanceId: `preview-${createHash("sha256").update(preview.root).digest("hex").slice(0, 16)}`, ...owner,
+    disposable: options.disposableFixture, outputs: previewOwnedOutputs(path.basename(dbCopy)).map(output => ({ ...output, kind: "generated" })) });
+  ownership.allocation = allocation;
+  saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, ownership });
+  const projection = await createProjectedSnapshot({ sourceDb, dbCopy, worktree, allocation });
   sanitizePreviewDatabase(dbCopy);
   const agentsReview = options.artifactVersion
     ? await materializeProjectedAgentsReview({ worktree, previewRoot: preview.root, db: dbCopy, sourceDb,
@@ -260,7 +292,7 @@ async function createOrReusePreview(options) {
     dbCopy,
     sourceDb,
     pidFile,
-    nodePath: process.execPath,
+    nodePath: bunRuntime(worktree),
     stdoutLog,
     stderrLog,
     generation: currentHead,
@@ -268,6 +300,10 @@ async function createOrReusePreview(options) {
 
   fs.writeFileSync(stdoutLog, "");
   fs.writeFileSync(stderrLog, "");
+  ownership.outputs = previewOwnedOutputs(path.basename(dbCopy), previewLogSegments(dbCopy)).map(output => ({ ...output, disposition: "pending" }));
+  ownership.state = "active";
+  ownership.revision += 1;
+  saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, pidFile, port, instanceEnv, ownership });
   const priorRegistration = registerPreviewInstance(instanceEnv);
   let started = null;
   let health;
@@ -330,19 +366,19 @@ async function createOrReusePreview(options) {
     runScript,
     health,
     startedAt: new Date().toISOString(),
+    ownership,
   };
 
-  fs.writeFileSync(preview.metadata, `${JSON.stringify(metadata, null, 2)}\n`);
-  metadata.cacheCleanup = prunePreviewSnapshots(preview.root, {
-    apply: true,
-    keepDbPaths: [dbCopy],
-  });
-  fs.writeFileSync(preview.metadata, `${JSON.stringify(metadata, null, 2)}\n`);
+  saveOwnedMetadata(preview.metadata, metadata);
   return await withBrowserReadyUrl(metadata, { pairBrowser: options.pairBrowser });
 }
 
 async function seedBriefingDemo(options) {
   const custody = validateBriefingDemoCustody();
+  return withOwnedRunLock(custody.previewRoot, () => seedBriefingDemoLocked(options, custody));
+}
+
+async function seedBriefingDemoLocked(options, custody) {
   if (!options.noBuild) buildServer(custody.worktree);
 
   const manifest = await materializeProjectedBriefingDemo(custody);
@@ -564,12 +600,12 @@ function validateBriefingDemoCustody() {
 function buildServer(worktree) {
   const typescriptEntry = require.resolve("typescript");
   const compiler = path.join(path.dirname(typescriptEntry), "tsc.js");
-  run(process.execPath, [compiler, "-p", path.join(worktree, "tsconfig.json")], { cwd: worktree });
+  run(bunRuntime(worktree), [compiler, "-p", path.join(worktree, "tsconfig.json")], { cwd: worktree });
 }
 
-async function cleanupPreviewCache(options) {
+export async function cleanupPreviewCache(options) {
   const root = previewBaseDir(options.previewBaseDir);
-  const legacyLaunchdCleanup = deregisterLegacyPreviewJobs({ apply: options.apply });
+  const legacyLaunchdCleanup = inspectLegacyPreviewJobs();
   const report = {
     ok: true,
     status: options.apply ? "applied" : "dry-run",
@@ -585,27 +621,25 @@ async function cleanupPreviewCache(options) {
     return report;
   }
 
-  const rootEntries = fs.readdirSync(root, { withFileTypes: true });
+  const rootEntries = fs.readdirSync(root, { withFileTypes: true }).slice(0, 64);
+  const passDeadline = Date.now() + 5_000;
   const protectedDbPaths = new Set();
 
   for (const dirent of rootEntries) {
+    if (Date.now() >= passDeadline) { report.hasMore = true; break; }
     const entryPath = path.join(root, dirent.name);
     if (dirent.isDirectory()) {
-      const entry = await analyzePreviewDirForCleanup(entryPath, options.apply);
+      if (path.resolve(entryPath) === path.resolve(options.excludeRoot ?? "/" ) || dirent.name.startsWith(".")) continue;
+      let entry;
+      try { entry = await withOwnedRunLock(entryPath, () => analyzePreviewDirForCleanup(entryPath, options.apply)); }
+      catch (error) { entry = { path: entryPath, action: "skip", reason: String(error), bytes: 0 }; }
       report.entries.push(entry);
       for (const dbPath of [entry.metadataDb, entry.currentDb]) {
         addProtectedSnapshotPaths(protectedDbPaths, dbPath);
       }
-      if (entry.action === "delete-dir") {
-        report.reclaimableBytes += entry.bytes;
-        if (options.apply) {
-          fs.rmSync(entryPath, { recursive: true, force: true });
-          report.reclaimedBytes += entry.bytes;
-        }
-      } else if (entry.action === "skip-active" && entry.snapshotCleanup) {
-        report.reclaimableBytes += entry.snapshotCleanup.reclaimableBytes;
-        report.reclaimedBytes += entry.snapshotCleanup.reclaimedBytes;
-      }
+      report.reclaimableBytes += entry.bytes ?? 0;
+      report.reclaimedBytes += entry.reclaimedBytes ?? 0;
+      await new Promise(resolve => setImmediate(resolve));
     }
   }
 
@@ -626,16 +660,12 @@ async function cleanupPreviewCache(options) {
       const entry = {
         path: entryPath,
         kind: "root-db",
-        action: "delete-file",
-        reason: "root-level preview database snapshot is not owned by a preview directory",
-        bytes,
+        action: "skip",
+        reason: "unowned snapshot requires explicit disposition",
+        bytes: 0,
       };
       report.entries.push(entry);
-      report.reclaimableBytes += bytes;
-      if (options.apply) {
-        fs.rmSync(entryPath, { force: true });
-        report.reclaimedBytes += bytes;
-      }
+
     }
   }
 
@@ -645,6 +675,7 @@ async function cleanupPreviewCache(options) {
 }
 
 function parseArgs(argv, commandName) {
+  if (commandName === "finalize") return parseFinalizeArgs(argv);
   if (commandName === "cleanup") {
     return parseCleanupArgs(argv);
   }
@@ -663,6 +694,9 @@ function parseArgs(argv, commandName) {
     pairBrowser: false,
     port: null,
     artifactVersion: null,
+    disposableFixture: false,
+    ownerProject: null,
+    ownerWorkUnit: null,
   };
 
   if (commandName === "seed-agents-review") {
@@ -672,6 +706,9 @@ function parseArgs(argv, commandName) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     switch (arg) {
+      case "--disposable-fixture": options.disposableFixture = true; break;
+      case "--owner-project": options.ownerProject = requireValue(argv, ++index, arg); break;
+      case "--owner-work-unit": options.ownerWorkUnit = requireValue(argv, ++index, arg); break;
       case "--branch":
         options.branch = requireValue(argv, ++index, arg);
         break;
@@ -711,6 +748,76 @@ function parseArgs(argv, commandName) {
     }
   }
   return options;
+}
+
+function parseFinalizeArgs(argv) {
+  const options = { help: false, json: false, converged: false };
+  const fields = { "--root": "root", "--revision": "revision", "--outcome": "outcome", "--disposition": "disposition", "--destination": "destination", "--summary": "summary", "--review-by": "reviewBy", "--transfer-reference": "transferReference" };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--help" || argv[i] === "-h") options.help = true;
+    else if (argv[i] === "--json") options.json = true;
+    else if (argv[i] === "--converged") options.converged = true;
+    else if (fields[argv[i]]) options[fields[argv[i]]] = requireValue(argv, ++i, argv[i - 1]);
+    else throw new Error(`Unknown finalization option: ${argv[i]}`);
+  }
+  return options;
+}
+
+export async function finalizePreview(options) {
+  if (!options.root) throw new Error("finalize requires --root");
+  const root = path.resolve(expandHome(options.root));
+  if (canonicalPath(root) !== root || !isPathWithin(previewBaseDir(), root) || root === previewBaseDir()) throw new Error("Finalization root must be an exact owned preview child");
+  return withOwnedRunLock(root, async () => {
+    const file = path.join(root, "metadata.json");
+    const metadata = readJsonFile(file);
+    if (!metadata?.ownership) throw new Error("Legacy/unowned preview requires manual disposition; no ownership inferred");
+    const active = await previewConsumerReason(metadata, root);
+    if (active) throw new Error(active);
+    const finalized = finalizeOwnedRun(file, { expectedRevision: Number(options.revision), outcome: options.outcome,
+      converged: options.converged, disposition: options.disposition, destination: options.destination, summary: options.summary, reviewBy: options.reviewBy, transferReference: options.transferReference });
+    return { ok: true, status: "finalized", ...cleanupOwnedRun(file, { apply: true }), runId: finalized.ownership.runId };
+  });
+}
+
+function resolvePreviewOwner(worktree, branch, options) {
+  if (options.ownerProject && options.ownerWorkUnit) return { project: options.ownerProject, workUnit: options.ownerWorkUnit };
+  const project = JSON.parse(run("mandible", ["project", "show", worktree, "--json"], { cwd: worktree }).stdout);
+  const found = JSON.parse(run("mandible", ["work-unit", "find", "--repo", worktree, "--branch", branch], { cwd: worktree }).stdout);
+  const units = Array.isArray(found) ? found : found.work_units ?? (found.id ? [found] : []);
+  const active = units.filter(unit => !["resolved", "abandoned"].includes(unit.state));
+  if (active.length !== 1) throw new Error("Preview requires one owning delivery work unit; supply --owner-project and --owner-work-unit from the ledger");
+  return { project: project.id ?? project.project?.id, workUnit: active[0].id };
+}
+
+function previewLogSegments(dbPath) {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const value = Number.parseInt(db.prepare("SELECT value FROM settings WHERE key = 'stderr_rotation_keep_segments'").get()?.value ?? "5", 10);
+    return Number.isFinite(value) && value > 0 ? value : 5;
+  } finally { db.close(); }
+}
+
+function previewOwnedOutputs(dbName, keepSegments = 5) {
+  const interactive = [dbName, `${dbName}-wal`, `${dbName}-shm`, `${dbName}.manifest.json`, "artifacts", "rich-briefing-demo-artifacts", "agents-review-artifacts", "settings", "config", "conversations", "agent-rpc", "operational", "operational-logs.db", "operational-logs.db-wal", "operational-logs.db-shm"];
+  const generated = [".snapshot-work", "stdout.log", "stderr.log", "run.sh", "mandible.pid", "cli", "preview-browser-enrollment.json", "current.db"];
+  for (let segment = 1; segment <= keepSegments; segment++) generated.push(`stdout.log.${segment}`, `stderr.log.${segment}`);
+  return [...interactive.map(path => ({ path, kind: "interactive" })), ...generated.map(path => ({ path, kind: "generated" }))];
+}
+
+export function assertPreviewAllocation(root, sourceDb, options = {}) {
+  const policy = { schema: "mandible-preview-budget@1", reserveBytes: 512 * 1024 * 1024, maxIntermediateBytes: 2 * 1024 * 1024 * 1024 };
+  if (!fs.statSync(sourceDb).isFile()) throw new Error("Preview source database must be a file");
+  const estimate = 128 * 1024 * 1024;
+  const volume = options.volume ?? fs.statfsSync(root);
+  const available = Number(volume.bavail) * Number(volume.bsize);
+  const base = path.dirname(root);
+  const ownedRoots = fs.readdirSync(base, { withFileTypes: true }).filter(entry => entry.isDirectory() && !entry.name.startsWith("."));
+  const measurementDeadline = Date.now() + 5_000;
+  const currentBytes = ownedRoots.reduce((total, entry) => total + directorySize(path.join(base, entry.name), measurementDeadline), 0);
+  if (estimate > available - policy.reserveBytes || currentBytes + estimate > policy.maxIntermediateBytes) {
+    throw new Error(`Preview allocation refused: estimated ${formatBytes(estimate)}, available ${formatBytes(available)}, existing preview material ${formatBytes(currentBytes)}. Finalize blocked preview owners before allocating; protected material is preserved.`);
+  }
+  return { ...policy, estimate, available, currentBytes };
 }
 
 function parseSeedBriefingDemoArgs(argv) {
@@ -768,8 +875,12 @@ function requireValue(argv, index, flag) {
 }
 
 function printUsage(commandName = "preview") {
+  if (commandName === "finalize") {
+    console.log("Usage: bun scripts/iab-preview.mjs finalize --root <preview-root> --revision <n> --outcome accepted|assessed|failed|abandoned|investigating --summary <text> [--converged] [--disposition discard|transferred --destination <verified-copy> --transfer-reference <accepted-output-ref>] [--review-by <ISO-time>] [--json]\nStop the exact preview first. Accepted delivery requires convergence. Ordinary interactive material requires exact verified transfer or explicit discard. Cleanup retries never repeat transfer or publication.");
+    return;
+  }
   if (commandName === "seed-agents-review") {
-    console.log(`Usage: node scripts/iab-preview.mjs seed-agents-review --artifact-version <exact-ref> [options]
+    console.log(`Usage: bun scripts/iab-preview.mjs seed-agents-review --artifact-version <exact-ref> [options]
 
 Create a launcher-owned preview copy, bind one committed link-custody v3 review artifact,
 and only then start the preview daemon. The source database and artifact are never mutated.
@@ -777,7 +888,7 @@ and only then start the preview daemon. The source database and artifact are nev
     return;
   }
   if (commandName === "seed-briefing-demo") {
-    console.log(`Usage: node scripts/iab-preview.mjs seed-briefing-demo [--json]
+    console.log(`Usage: bun scripts/iab-preview.mjs seed-briefing-demo [--json]
 
 Seed the deterministic rich Briefing fixture into the current integration
 branch's launcher-owned preview copy after validating metadata custody.
@@ -785,7 +896,7 @@ branch's launcher-owned preview copy after validating metadata custody.
     return;
   }
   if (commandName === "cleanup") {
-    console.log(`Usage: node scripts/iab-preview.mjs cleanup [options]
+    console.log(`Usage: bun scripts/iab-preview.mjs cleanup [options]
 
 Clean stale Mandible IAB preview cache entries.
 
@@ -796,15 +907,14 @@ Options:
   --preview-base-dir P  Override the preview cache root. Defaults to MANDIBLE_PREVIEW_BASE_DIR or ~/.cache/mandible/previews.
   -h, --help            Show this help.
 
-Cleanup is conservative: active preview directories are never removed wholesale.
-When open-file inspection is available, stale snapshot artifacts inside active
-directories may still be pruned if they are not referenced by metadata/current.db
-and are not held open.
+Cleanup removes only exact disposed outputs of a terminal owned run with a saved
+compact outcome. Active, interactive, legacy and unclassified material is preserved.
+Use finalize to account for stopped preview material before cleanup.
 `);
     return;
   }
 
-  console.log(`Usage: node scripts/iab-preview.mjs [options]
+  console.log(`Usage: bun scripts/iab-preview.mjs [options]
 
 Create or reuse an isolated Mandible integration preview instance.
 
@@ -814,7 +924,10 @@ Options:
   --db PATH        Source database to copy. Defaults to MANDIBLE_DB or ~/.mandible/mandible.db.
   --port PORT      Use an explicit preview port.
   --force-new      Do not reuse the current integration preview; create a new default branch/instance.
-  --no-build       Skip dependency checks and npm run build.
+  --no-build       Skip frozen dependency installation and Bun build.
+  --disposable-fixture  Explicitly declare automated fixture mutations disposable.
+  --owner-project <id>  Canonical owning project.
+  --owner-work-unit <id>  Exact delivery work unit.
   --pair-browser   Mint one bounded pairing URL for a new browser profile.
   --dry-run        Resolve the plan without creating a DB copy or starting a daemon.
   -h, --help       Show this help.
@@ -862,7 +975,7 @@ function printResult(result, json) {
 }
 
 function resolveProtectedBranch(repoRoot) {
-  const hasDevelop = spawnSync("git", ["rev-parse", "--verify", "--quiet", "develop"], {
+  const hasDevelop = spawnSync("git", ["--no-optional-locks", "rev-parse", "--verify", "--quiet", "develop"], {
     cwd: repoRoot,
     encoding: "utf8",
   }).status === 0;
@@ -886,25 +999,8 @@ function ensureIntegrationWorktree(repoRoot, worktreeHostRoot, branch, base, opt
   const existing = worktreeForBranch(repoRoot, branch);
   if (existing) return existing;
 
-  const target = path.join(worktreeHostRoot, "worktrees", branch.replaceAll("/", "__"));
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-
-  if (branchExists(repoRoot, branch)) {
-    run("git", ["worktree", "add", target, branch], { cwd: repoRoot });
-    return target;
-  }
-
-  if (commandExists("wt") && !options.forceGitWorktree) {
-    const result = run("wt", [branch, base], { cwd: worktreeHostRoot });
-    const afterWt = worktreeForBranch(repoRoot, branch);
-    if (afterWt) return afterWt;
-
-    const lastPath = result.stdout.trim().split(/\r?\n/).reverse()
-      .find((line) => line.startsWith("/"));
-    if (lastPath && fs.existsSync(lastPath)) return lastPath;
-  } else {
-    run("git", ["worktree", "add", "-b", branch, target, base], { cwd: repoRoot });
-  }
+  if (!commandExists("wt")) throw new Error("Mandible previews require the configured wt worktree tool");
+  run("wt", ["new", branch, base], { cwd: worktreeHostRoot });
 
   const created = worktreeForBranch(repoRoot, branch);
   if (!created) {
@@ -976,9 +1072,11 @@ export async function healthyExistingPreview(branch, expected = {}) {
   if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return null;
   validatePreviewIdentity(metadata, preview, branch, expected.worktree);
   const drift = previewInstanceEnvDrift(metadata, preview.root);
+  const logIsolationUpgrade = metadata.instanceEnv?.MANDIBLE_STDOUT_LOG_PATH === undefined && drift.includes("MANDIBLE_STDOUT_LOG_PATH")
+    && hasExpectedPreviewPolicy(health) && drift.every(key => key === "MANDIBLE_STDOUT_LOG_PATH");
   if (!hasExpectedPreviewPolicy(health) || drift.length > 0) {
     const userPreferencesIsolationUpgrade = isUserPreferencesIsolationUpgrade(metadata, health, preview.root, drift);
-    if (!userPreferencesIsolationUpgrade
+    if (!userPreferencesIsolationUpgrade && !logIsolationUpgrade
         && !isExactLegacyPreview(metadata, health, preview.root, drift)
         && !isLegacyPreviewListener(health)) return null;
     return {
@@ -986,6 +1084,7 @@ export async function healthyExistingPreview(branch, expected = {}) {
       health,
       legacyContractDrift: drift,
       userPreferencesIsolationUpgrade,
+      logIsolationUpgrade,
     };
   }
 
@@ -1019,7 +1118,7 @@ function isExactLegacyPreview(metadata, health, previewRoot, drift) {
 }
 
 function isUserPreferencesIsolationUpgrade(metadata, health, previewRoot, drift) {
-  const allowedDrift = ["MANDIBLE_ALLOWED_EFFECTS", "MANDIBLE_USER_PREFERENCES_DIR"];
+  const allowedDrift = ["MANDIBLE_ALLOWED_EFFECTS", "MANDIBLE_USER_PREFERENCES_DIR", ...(metadata.instanceEnv?.MANDIBLE_STDOUT_LOG_PATH === undefined ? ["MANDIBLE_STDOUT_LOG_PATH"] : [])];
   if ([...drift].sort().join(",") !== [...allowedDrift].sort().join(",")) return false;
   if (metadata.instanceEnv?.MANDIBLE_ALLOWED_EFFECTS !== JSON.stringify(["ledger:read", "ledger:write", "files:preview"])) {
     return false;
@@ -1062,7 +1161,7 @@ async function refreshExistingPreview(existing, details) {
   const validated = validateRefreshContract(existing, preview, details);
 
   ensureDependencies(details.worktree);
-  run("npm", ["run", "build"], { cwd: details.worktree });
+  runBun(details.worktree, ["run", "--bun", "build"]);
 
   const briefingDemo = await materializeProjectedBriefingDemo({
     worktree: details.worktree,
@@ -1081,7 +1180,7 @@ async function refreshExistingPreview(existing, details) {
     dbCopy: validated.dbCopy,
     sourceDb: validated.sourceDb,
     pidFile: validated.pidFile,
-    nodePath: process.execPath,
+    nodePath: bunRuntime(details.worktree),
     stdoutLog: validated.stdoutLog,
     stderrLog: validated.stderrLog,
     generation: details.currentHead,
@@ -1121,6 +1220,7 @@ async function refreshExistingPreview(existing, details) {
   );
   const refreshed = {
     ...existing,
+    ...(existing.ownership ? { ownership: { ...existing.ownership, revision: existing.ownership.revision + 1 } } : {}),
     ok: true,
     status: "refreshed",
     mode: details.mode,
@@ -1147,9 +1247,10 @@ async function refreshExistingPreview(existing, details) {
   };
   delete refreshed.legacyContractDrift;
   delete refreshed.userPreferencesIsolationUpgrade;
+  delete refreshed.logIsolationUpgrade;
   delete refreshed.freshUrl;
   delete refreshed.browserEnrollment;
-  fs.writeFileSync(preview.metadata, `${JSON.stringify(refreshed, null, 2)}\n`);
+  saveOwnedMetadata(preview.metadata, refreshed);
   return await withBrowserReadyUrl(refreshed, { pairBrowser: details.options.pairBrowser });
 }
 
@@ -1207,7 +1308,8 @@ function validateRefreshContract(existing, preview, details) {
   const drift = previewInstanceEnvDrift(existing, preview.root);
   const safePreferenceUpgrade = existing.userPreferencesIsolationUpgrade === true
     && isUserPreferencesIsolationUpgrade(existing, existing.health, preview.root, drift);
-  if (drift.length > 0 && !safePreferenceUpgrade) {
+  const safeLogUpgrade = existing.logIsolationUpgrade === true && drift.length === 1 && drift[0] === "MANDIBLE_STDOUT_LOG_PATH" && existing.instanceEnv?.MANDIBLE_STDOUT_LOG_PATH === undefined;
+  if (drift.length > 0 && !safePreferenceUpgrade && !safeLogUpgrade) {
     throw new Error(
       `Refusing preview refresh: persisted ${drift.join(", ")} does not match the required preview contract.`,
     );
@@ -1246,190 +1348,21 @@ export async function withBrowserReadyUrl(preview, options = {}) {
 
 async function analyzePreviewDirForCleanup(dirPath, apply) {
   const metadataPath = path.join(dirPath, "metadata.json");
-  const currentPath = path.join(dirPath, "current.db");
   const metadata = readJsonFile(metadataPath);
-  const currentTarget = readSymlinkTarget(currentPath);
-  const pidCandidates = [
-    metadata?.pidFile,
-    path.join(dirPath, "mandible.pid"),
-  ].filter(Boolean);
-  const livePid = pidCandidates.some((pidFile) => {
-    const pid = readPidFile(pidFile);
-    return pid !== null && isProcessAlive(pid);
-  });
-  const liveHealth = metadata?.port ? await readHealth(metadata.port) : null;
-  const shellReadiness = liveHealth ? await probeApplicationShell(metadata.port) : null;
-  const applicationReady = liveHealth && shellReadiness?.ok === true;
-
-  if (!metadata) {
-    return {
-      path: dirPath,
-      kind: "preview-dir",
-      action: "skip",
-      reason: "missing or unreadable metadata; manual inspection required",
-      bytes: 0,
-      metadataDb: null,
-      currentDb: currentTarget,
-    };
-  }
-
-  if (livePid || applicationReady) {
-    const openFileInspection = inspectOpenSnapshotArtifacts(dirPath);
-    const snapshotCleanup = prunePreviewSnapshots(dirPath, {
-      apply,
-      keepDbPaths: [metadata.db, currentTarget].filter(Boolean),
-      keepArtifactPaths: openFileInspection.paths,
-      protectAllReason: openFileInspection.available
-        ? null
-        : "lsof is unavailable; active preview snapshot artifacts require manual inspection",
-    });
-    return {
-      path: dirPath,
-      kind: "preview-dir",
-      action: "skip-active",
-      reason: applicationReady
-        ? `metadata port ${metadata.port} passed health and application shell readiness`
-        : "metadata or directory pid file points to a live process",
-      bytes: snapshotCleanup.reclaimableBytes,
-      reclaimedBytes: snapshotCleanup.reclaimedBytes,
-      reclaimable: snapshotCleanup.reclaimable,
-      reclaimed: snapshotCleanup.reclaimed,
-      port: metadata.port ?? null,
-      pidFiles: pidCandidates,
-      metadataDb: metadata.db ?? null,
-      currentDb: currentTarget,
-      openFileInspection,
-      snapshotCleanup,
-    };
-  }
-
-  if (liveHealth) {
-    return {
-      path: dirPath,
-      kind: "preview-dir",
-      action: "skip",
-      reason: `metadata port ${metadata.port} answered /api/health but failed application shell readiness: ${shellReadiness?.reason ?? "unknown shell failure"}; manual inspection required`,
-      bytes: 0,
-      port: metadata.port,
-      pidFiles: pidCandidates,
-      metadataDb: metadata.db ?? null,
-      currentDb: currentTarget,
-      shellReadiness,
-    };
-  }
-
-  const bytes = directorySize(dirPath);
-  return {
-    path: dirPath,
-    kind: "preview-dir",
-    action: "delete-dir",
-    reason: apply
-      ? "stale preview directory removed after metadata, pid, and health checks"
-      : "stale preview directory; metadata exists, no live pid, and health check failed",
-    bytes,
-    port: metadata.port ?? null,
-    pidFiles: pidCandidates,
-    metadataDb: metadata.db ?? null,
-    currentDb: currentTarget,
-  };
+  const result = { path: dirPath, kind: "preview-dir", metadataDb: metadata?.db, currentDb: readSymlinkTarget(path.join(dirPath, "current.db")), bytes: 0 };
+  if (!metadata) return { ...result, action: "skip", reason: "missing or unreadable metadata; manual inspection required" };
+  const active = await previewConsumerReason(metadata, dirPath);
+  if (active) return { ...result, action: "skip-active", reason: active };
+  return { ...result, ...cleanupOwnedRun(metadataPath, { apply }) };
 }
 
-function prunePreviewSnapshots(previewRoot, options) {
-  const keep = new Set();
-  for (const candidate of options.keepDbPaths ?? []) {
-    addProtectedSnapshotPaths(keep, candidate);
-  }
-  for (const candidate of options.keepArtifactPaths ?? []) {
-    addProtectedSnapshotArtifactPaths(keep, candidate);
-  }
-  const currentTarget = readSymlinkTarget(path.join(previewRoot, "current.db"));
-  addProtectedSnapshotPaths(keep, currentTarget);
-
-  const entries = [];
-  let reclaimableBytes = 0;
-  let reclaimedBytes = 0;
-  for (const dirent of fs.readdirSync(previewRoot, { withFileTypes: true })) {
-    if (!dirent.isFile() || !DB_SNAPSHOT_ARTIFACT_PATTERN.test(dirent.name)) continue;
-
-    const filePath = path.join(previewRoot, dirent.name);
-    const resolved = canonicalPath(filePath);
-    if (options.protectAllReason) {
-      entries.push({
-        path: filePath,
-        action: "skip",
-        reason: options.protectAllReason,
-        bytes: 0,
-      });
-      continue;
-    }
-    if (keep.has(resolved)) {
-      entries.push({
-        path: filePath,
-        action: "skip",
-        reason: "preview database snapshot artifact is protected by metadata, current.db, or open file inspection",
-        bytes: 0,
-      });
-      continue;
-    }
-
-    const bytes = fs.statSync(filePath).size;
-    const entry = {
-      path: filePath,
-      action: "delete-file",
-      reason: "older preview database snapshot artifact superseded by healthy preview start",
-      bytes,
-    };
-    entries.push(entry);
-    reclaimableBytes += bytes;
-    if (options.apply) {
-      fs.rmSync(filePath, { force: true });
-      reclaimedBytes += bytes;
-    }
-  }
-
-  return {
-    status: options.apply ? "applied" : "dry-run",
-    keptDbPaths: [...keep],
-    reclaimableBytes,
-    reclaimedBytes,
-    reclaimable: formatBytes(reclaimableBytes),
-    reclaimed: formatBytes(reclaimedBytes),
-    entries,
-  };
-}
-
-function inspectOpenSnapshotArtifacts(previewRoot) {
-  if (!commandExists("lsof")) {
-    return {
-      available: false,
-      reason: "lsof is not available",
-      paths: [],
-    };
-  }
-
-  const result = run("lsof", ["-F", "n", "+D", previewRoot], { allowFailure: true });
-  if (result.error) {
-    return {
-      available: false,
-      reason: result.error.message,
-      paths: [],
-    };
-  }
-
-  const paths = new Set();
-  for (const line of result.stdout.split(/\r?\n/)) {
-    if (!line.startsWith("n")) continue;
-    const filePath = line.slice(1);
-    if (!filePath || !DB_SNAPSHOT_ARTIFACT_PATTERN.test(path.basename(filePath))) continue;
-    const resolved = canonicalPath(filePath);
-    if (isPathWithin(previewRoot, resolved)) paths.add(resolved);
-  }
-
-  return {
-    available: true,
-    reason: paths.size > 0 ? "lsof reported open snapshot artifacts" : "lsof reported no open snapshot artifacts",
-    paths: [...paths],
-  };
+async function previewConsumerReason(metadata, root) {
+  const pids = [metadata.pidFile, path.join(root, "mandible.pid")].filter(Boolean).map(readPidFile);
+  if (pids.some(pid => pid && isProcessAlive(pid))) return "recorded pid is live; identity or ownership may be shared";
+  if (metadata.port && await isPortOpen(metadata.port)) return "recorded port has a consumer; health is not deletion authority";
+  const jobs = inspectLegacyPreviewJobs();
+  if (jobs.error || jobs.labels.length) return "registered preview service may respawn; explicitly retire it before cleanup";
+  return null;
 }
 
 function addProtectedSnapshotPaths(paths, dbPath) {
@@ -1440,24 +1373,6 @@ function addProtectedSnapshotPaths(paths, dbPath) {
   for (const sidecarPath of snapshotSidecarPaths(resolved)) {
     paths.add(sidecarPath);
   }
-}
-
-function addProtectedSnapshotArtifactPaths(paths, artifactPath) {
-  if (!artifactPath) return;
-  const resolved = canonicalPath(artifactPath);
-  paths.add(resolved);
-  const dbPath = snapshotBaseDbPath(resolved);
-  if (dbPath) addProtectedSnapshotPaths(paths, dbPath);
-}
-
-function snapshotBaseDbPath(artifactPath) {
-  const basename = path.basename(artifactPath);
-  if (!DB_SNAPSHOT_ARTIFACT_PATTERN.test(basename)) return null;
-  if (basename.endsWith(".db")) return artifactPath;
-  return artifactPath.replace(
-    /\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)$/,
-    ".db",
-  );
 }
 
 function snapshotSidecarPaths(dbPath) {
@@ -1490,35 +1405,33 @@ function canonicalFuturePath(candidatePath) {
   return path.join(canonicalPath(probe), ...suffix);
 }
 
-function ensureDependencies(worktree) {
-  const tsc = path.join(worktree, "node_modules", "typescript", "lib", "tsc.js");
-  const esbuild = path.join(worktree, "node_modules", "esbuild", "bin", "esbuild");
-  if (fs.existsSync(tsc) && fs.existsSync(esbuild)) return;
-
-  const nodeModules = path.join(worktree, "node_modules");
-  if (fs.existsSync(nodeModules) && fs.lstatSync(nodeModules).isSymbolicLink()) {
-    throw new Error(`Refusing to install dependencies through symlinked node_modules: ${nodeModules}`);
-  }
-
-  const ci = run("npm", ["ci", "--no-audit", "--no-fund"], {
-    cwd: worktree,
-    allowFailure: true,
-  });
-  if (ci.status === 0) return;
-
-  run("npm", ["install", "--no-package-lock", "--no-audit", "--no-fund"], { cwd: worktree });
+function bunRuntime(worktree) {
+  return run(path.join(worktree, "scripts", "bun-runtime.sh"), [], { cwd: worktree }).stdout.trim();
 }
 
-export async function createProjectedSnapshot({ sourceDb, dbCopy, worktree }) {
+function runBun(worktree, args) {
+  const runtime = bunRuntime(worktree);
+  return run(runtime, args, { cwd: worktree, env: { ...process.env, PATH: `${path.dirname(runtime)}:${process.env.PATH}` } });
+}
+
+function ensureDependencies(worktree) {
+  const nodeModules = path.join(worktree, "node_modules");
+  if (fs.existsSync(nodeModules) && fs.lstatSync(nodeModules).isSymbolicLink()) throw new Error(`Refusing dependency installation through shared node_modules: ${nodeModules}`);
+  runBun(worktree, ["install", "--frozen-lockfile", "--backend", "clonefile"]);
+}
+
+export async function createProjectedSnapshot({ sourceDb, dbCopy, worktree, allocation }) {
   const script = path.join(worktree, "scripts", "project-db-snapshot.mjs");
   if (!fs.existsSync(script)) {
     throw new Error(`Projected database extractor does not exist: ${script}`);
   }
-  const result = run(process.execPath, [
+  const result = run(bunRuntime(worktree), [
     script,
     "--source", sourceDb,
     "--output", dbCopy,
+    "--staging-dir", path.join(path.dirname(dbCopy), ".snapshot-work"),
     "--json",
+    ...(allocation ? ["--reserve-bytes", String(allocation.reserveBytes), "--max-output-bytes", String(allocation.maxIntermediateBytes - allocation.currentBytes)] : []),
   ], { cwd: worktree });
   let projection;
   try {
@@ -1691,32 +1604,12 @@ async function stopPreviewProcess(pidFile, timeoutMs = 10_000) {
   throw new Error(`Preview daemon ${pid} did not exit after SIGTERM and SIGKILL.`);
 }
 
-/**
- * Remove every launchd job a previous version of this launcher registered.
- *
- * Previews were submitted as `bio.mll.mandible.preview.<port>.<branch-slug>`
- * KeepAlive jobs and nothing ever deregistered them, so anyone who has run a
- * preview still carries their own set. They write no plist, existing only in
- * launchd's in-memory registry, which is why they are invisible to anyone
- * inspecting ~/Library/LaunchAgents and why this has to be done by label.
- *
- * `bootout` rather than `remove`: removal leaves a window in which KeepAlive
- * can still respawn the job, and observed cleanup on a real machine needed
- * bootout to make the daemons stay down. Labels outside the preview namespace
- * are never touched — in particular `com.mll.mandible`, which supervises the
- * live daemon and is supposed to.
- */
-/**
- * Previews no longer register with launchd, but deregistration still needs to
- * find it. `MANDIBLE_IAB_PREVIEW_LAUNCHCTL` lets the tests point this at a
- * stand-in rather than the real service registry.
- */
 function launchctlCommand() {
   return process.env.MANDIBLE_IAB_PREVIEW_LAUNCHCTL ||
     (process.platform === "darwin" && commandExists("launchctl") ? "launchctl" : null);
 }
 
-function deregisterLegacyPreviewJobs({ apply = true } = {}) {
+function inspectLegacyPreviewJobs() {
   const launchctl = launchctlCommand();
   if (!launchctl) return { supported: false, labels: [], booted: [] };
 
@@ -1730,25 +1623,7 @@ function deregisterLegacyPreviewJobs({ apply = true } = {}) {
     const label = line.trim().split(/\s+/).pop();
     if (label && LEGACY_PREVIEW_LABEL_PATTERN.test(label)) labels.push(label);
   }
-  if (!apply || labels.length === 0) return { supported: true, labels, booted: [] };
-
-  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-  const booted = [];
-  for (const label of labels) {
-    const target = `gui/${uid}/${label}`;
-    const result = run(launchctl, ["bootout", target], { allowFailure: true });
-    // `remove` is the fallback for a job that was submitted but never bootstrapped
-    // into a domain, which `bootout` reports as not-found.
-    const fallback = result.status === 0
-      ? null
-      : run(launchctl, ["remove", label], { allowFailure: true });
-    booted.push({
-      label,
-      mechanism: result.status === 0 ? "bootout" : "remove",
-      ok: result.status === 0 || fallback?.status === 0,
-    });
-  }
-  return { supported: true, labels, booted };
+  return { supported: true, labels, booted: [] };
 }
 
 function describeCommandResult(command, args, result) {
@@ -1811,6 +1686,7 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversationsDir, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversationsDir, "search-cache.db"),
     MANDIBLE_STDERR_LOG_PATH: path.join(previewRoot, "stderr.log"),
+    MANDIBLE_STDOUT_LOG_PATH: path.join(previewRoot, "stdout.log"),
     // Found by watching a real preview's own log: it materialized 38 CLI files
     // into the shared ~/.cache/mandible/cli, overwriting every one
     // unconditionally and stamping the manifest's source_root to a preview
@@ -1961,7 +1837,7 @@ function assertOrdinaryPreviewLifecycleAllowed() {
 
 function readInstallationId() {
   const filePath = path.join(mandibleHome(), "config", "client-auth", "authority-id");
-  if (!fs.existsSync(filePath)) throw new Error("Local installation authority is missing; run `npm run local-front-door -- initialize` first.");
+  if (!fs.existsSync(filePath)) throw new Error("Local installation authority is missing; run `bun run --bun local-front-door -- initialize` first.");
   const value = fs.readFileSync(filePath, "utf8").trim();
   if (!value) throw new Error("Local installation authority is empty.");
   return value;
@@ -2035,15 +1911,15 @@ export function reloadLocalFrontDoor() {
   const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "local-front-door.mjs");
   const configured = spawnSync(process.execPath, [script, "configure"], { encoding: "utf8" });
   if (configured.status !== 0) {
-    throw new Error(`Failed to configure the local HTTPS front door: ${configured.stderr.trim()} Open the installed desktop setup action with mandible://connections/setup, or run node scripts/local-ca-trust.mjs setup locally. No gateway reload occurred.`);
+    throw new Error(`Failed to configure the local HTTPS front door: ${configured.stderr.trim()} Open the installed desktop setup action with mandible://connections/setup, or run bun scripts/local-ca-trust.mjs setup locally. No gateway reload occurred.`);
   }
   const binary = path.join(mandibleHome(), "runtime", "caddy", "2.11.3", "caddy");
   if (!fs.existsSync(binary)) {
-    throw new Error("The pinned local HTTPS front door is not installed. Run `npm run local-front-door -- install`, open mandible://connections/setup for the explicit native CA action, then start it.");
+    throw new Error("The pinned local HTTPS front door is not installed. Run `bun run --bun local-front-door -- install`, open mandible://connections/setup for the explicit native CA action, then start it.");
   }
   const reloaded = spawnSync(binary, ["reload", "--config", path.join(localSessionAuthorityDir(), "Caddyfile"), "--adapter", "caddyfile"], { encoding: "utf8" });
   if (reloaded.status !== 0) {
-    throw new Error("The local HTTPS front door is not running; start `npm run local-front-door -- run` before launching a preview.");
+    throw new Error("The local HTTPS front door is not running; start `bun run --bun local-front-door -- run` before launching a preview.");
   }
 }
 
@@ -2366,12 +2242,13 @@ function isProcessAlive(pid) {
   }
 }
 
-function directorySize(targetPath) {
+function directorySize(targetPath, deadline = Date.now() + 5_000) {
+  if (Date.now() >= deadline) throw new Error(`Preview size inspection exceeded its bound; owner inspection required: ${targetPath}`);
   let total = 0;
   for (const dirent of fs.readdirSync(targetPath, { withFileTypes: true })) {
     const entryPath = path.join(targetPath, dirent.name);
     if (dirent.isDirectory()) {
-      total += directorySize(entryPath);
+      total += directorySize(entryPath, deadline);
     } else if (dirent.isFile()) {
       total += fs.statSync(entryPath).size;
     } else if (dirent.isSymbolicLink()) {
@@ -2419,7 +2296,7 @@ function run(command, commandArgs, options = {}) {
 }
 
 function git(commandArgs, options = {}) {
-  return run("git", commandArgs, options);
+  return run("git", ["--no-optional-locks", ...commandArgs], options);
 }
 
 function commandExists(command) {

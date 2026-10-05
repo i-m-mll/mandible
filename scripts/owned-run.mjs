@@ -84,20 +84,30 @@ function inventory(root, relative, hashBytes = true) {
     ...(hashBytes ? { sha256: createHash('sha256').update(fs.readFileSync(target)).digest('hex') } : {}) }];
 }
 
-export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, converged = false, disposition, destination, summary }, { inspect = inspectRunConsumers } = {}) {
+export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, converged = false, disposition, destination, summary, reviewBy, transferReference }, { inspect = inspectRunConsumers } = {}) {
   const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
   const run = metadata.ownership;
   const root = path.dirname(metadataFile);
   if (!run || !identityMatches(root, run) || run.revision !== expectedRevision) throw new Error('Owned run identity or revision changed');
+  if (outcome === 'investigating') {
+    const deadline = Date.parse(reviewBy);
+    if (!summary?.trim() || !Number.isFinite(deadline) || deadline <= Date.now() || deadline > Date.now() + 7 * 86400000 || run.state === 'terminal') throw new Error('Investigation requires a named need and review within seven days before acceptance');
+    run.state = 'investigating';
+    run.investigation = { owner: run.workUnit, reviewBy: deadline, summary };
+    run.revision += 1;
+    saveOwnedMetadata(metadataFile, metadata);
+    return metadata;
+  }
   if (!['accepted', 'assessed', 'failed', 'abandoned'].includes(outcome) || !summary?.trim()) throw new Error('Finalization requires a terminal outcome and compact summary');
   if (outcome === 'accepted' && !converged) throw new Error('Accepted cleanup requires completed convergence');
-  if (run.state === 'terminal') throw new Error('Run already finalized; retry cleanup instead');
+  if (run.state === 'terminal' && run.outputs.every(output => output.disposition === 'disposable')) throw new Error('Run already finalized; retry cleanup instead');
   const consumers = inspect(root);
   if (!consumers.idle) throw new Error(consumers.reason);
   const outputs = run.outputs.map(output => {
     const manifest = inventory(root, output.path, output.kind === 'interactive');
     if (output.kind === 'interactive' && manifest.length) {
       if (disposition === 'transferred') {
+        if (!transferReference?.trim()) throw new Error('Transfer requires the established accepted output reference');
         if (!destination || path.resolve(destination).startsWith(`${root}${path.sep}`) || path.resolve(destination) === root) throw new Error('Transfer destination must be outside the cleanup root');
         for (const file of manifest.filter(file => file.kind !== 'directory')) {
           const target = contained(path.resolve(destination), file.path, file.kind === 'symlink');
@@ -118,7 +128,7 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
   const receipt = path.join(receiptDir, `${run.runId}.json`);
   const result = { schema: OWNED_RUN_SCHEMA, runId: run.runId, instanceId: run.instanceId,
     project: run.project, workUnit: run.workUnit, outcome, converged, disposition: disposition ?? 'disposable-fixture',
-    destination: destination ? path.resolve(destination) : null, summary, finalizedAt: new Date().toISOString(),
+    destination: destination ? path.resolve(destination) : null, transferReference: transferReference ?? null, summary, finalizedAt: new Date().toISOString(),
     cleanup: 'pending', apparentBytes: outputs.flatMap(output => output.manifest).reduce((total, file) => total + (file.size ?? 0), 0) };
   saveOwnedMetadata(receipt, result);
   metadata.ownership = { ...run, revision: run.revision + 1, state: 'terminal', outcome, converged, outputs, receipt,
@@ -129,10 +139,23 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
 
 export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspectRunConsumers } = {}) {
   const root = path.dirname(metadataFile);
-  const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
-  const run = metadata.ownership;
+  let metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+  let run = metadata.ownership;
   const blocked = reason => ({ action: 'skip', reason, bytes: 0, reclaimedBytes: 0 });
   if (!run || !identityMatches(root, run)) return blocked('missing or invalid ownership; manual inspection required');
+  if (run.state === 'investigating') {
+    if (run.investigation.reviewBy > Date.now()) return blocked(`investigation owned by ${run.investigation.owner}; review by ${new Date(run.investigation.reviewBy).toISOString()}`);
+    if (!apply) return blocked(`investigation expired for ${run.workUnit}; generated intermediates eligible, interactive material preserved`);
+    const consumers = inspect(root);
+    if (!consumers.idle) return blocked(consumers.reason);
+    const receiptDir = path.join(path.dirname(root), '.receipts'); fs.mkdirSync(receiptDir, { recursive: true });
+    run.receipt = path.join(receiptDir, `${run.runId}.json`);
+    saveOwnedMetadata(run.receipt, { schema: OWNED_RUN_SCHEMA, runId: run.runId, project: run.project, workUnit: run.workUnit, outcome: 'failed', summary: `Investigation review expired: ${run.investigation.summary}`, cleanup: 'pending' });
+    run.outputs = run.outputs.map(output => output.kind === 'generated'
+      ? { ...output, disposition: 'disposable', manifest: inventory(root, output.path, false) } : output);
+    run.state = 'terminal'; run.outcome = 'failed'; run.revision += 1;
+    saveOwnedMetadata(metadataFile, metadata);
+  }
   if (run.state !== 'terminal' || !run.receipt || !fs.existsSync(run.receipt)
       || (run.outcome === 'accepted' && !run.converged)) return blocked('cleanup blocked: unresolved preview material');
   const receipt = JSON.parse(fs.readFileSync(run.receipt, 'utf8'));
@@ -140,6 +163,7 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
   const consumers = inspect(root);
   if (!consumers.idle) return blocked(consumers.reason);
   const files = run.outputs.flatMap(output => {
+    if (output.disposition === 'pending' && output.kind === 'interactive') return [];
     if (output.disposition !== 'disposable' || !Array.isArray(output.manifest)) throw new Error('Output disposition is not proven');
     return output.manifest;
   });

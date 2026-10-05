@@ -20,7 +20,8 @@ import { RICH_BRIEFING_DEMO } from "../../src/feedback/rich-briefing-demo.js";
 import { recordArtifactVersion } from "../../src/provider-artifacts.js";
 import { createUser, setupOperator } from "../../src/users/store.js";
 import { insertRawLedgerCheckout, insertRawLedgerProject } from "../helpers/ledger-fixtures.js";
-import { seedPreviewUserPreferences } from "../../scripts/iab-preview.mjs";
+import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun } from "../../scripts/owned-run.mjs";
+import { seedPreviewUserPreferences, cleanupPreviewCache, assertPreviewAllocation } from "../../scripts/iab-preview.mjs";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "iab-preview.mjs");
 const execFileAsync = promisify(execFile);
@@ -196,14 +197,14 @@ function fixtureGitEnv(): NodeJS.ProcessEnv {
 }
 
 function git(args: string[], cwd: string): void {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: fixtureGitEnv() });
+  const result = spawnSync("git", ["--no-optional-locks", ...args], { cwd, encoding: "utf8", env: fixtureGitEnv() });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   }
 }
 
 function gitOutput(args: string[], cwd: string): string {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: fixtureGitEnv() });
+  const result = spawnSync("git", ["--no-optional-locks", ...args], { cwd, encoding: "utf8", env: fixtureGitEnv() });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   }
@@ -854,6 +855,7 @@ function previewContractEnv(details: {
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversations, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversations, "search-cache.db"),
     MANDIBLE_STDERR_LOG_PATH: path.join(details.previewRoot, "stderr.log"),
+    MANDIBLE_STDOUT_LOG_PATH: path.join(details.previewRoot, "stdout.log"),
     MANDIBLE_CLI_CACHE_DIR: path.join(details.previewRoot, "cli"),
   };
 }
@@ -1009,8 +1011,12 @@ async function createRefreshFixture(options: { buildFails?: boolean; legacyUserP
 
   const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-shims-"));
   tempRoots.push(shimDir);
-  const npmShim = path.join(shimDir, "npm");
-  fs.writeFileSync(npmShim, `#!/bin/sh\n${options.buildFails ? "exit 23" : "exit 0"}\n`, { mode: 0o755 });
+  fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
+  fs.copyFileSync(path.join(process.cwd(), "scripts", "bun-runtime.sh"), path.join(repo, "scripts", "bun-runtime.sh"));
+  fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(repo, ".bun-version"));
+  const runtimeShim = path.join(shimDir, "bun");
+  const realRuntime = `'${process.execPath.replaceAll("'", "'\\''")}'`;
+  fs.writeFileSync(runtimeShim, `#!/bin/sh\nif [ "$1" = --version ]; then echo 1.4.2; exit 0; fi\nif [ "$1" = install ]; then exit 0; fi\nif [ "$1" = run ]; then ${options.buildFails ? "exit 23" : "exit 0"}; fi\nexec ${realRuntime} "$@"\n`, { mode: 0o755 });
 
   return {
     repo,
@@ -1032,12 +1038,53 @@ async function createRefreshFixture(options: { buildFails?: boolean; legacyUserP
     env: {
       ...previewLauncherEnv(previewBase),
       PATH: `${shimDir}:${process.env.PATH}`,
+      MANDIBLE_RUNTIME: runtimeShim,
       MANDIBLE_PREVIEW_BASE_DIR: previewBase,
     },
   };
 }
 
 describe("iab-preview launcher", () => {
+  it("preserves stopped interactive ledger and managed bytes including older snapshots", async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-cleanup-"))); tempRoots.push(base);
+    const root = path.join(base, "edited"); fs.mkdirSync(root);
+    const db = path.join(root, "mandible-20261004-100000.db");
+    const older = path.join(root, "mandible-20261003-100000.db");
+    fs.writeFileSync(db, "unique ledger edit"); fs.writeFileSync(`${db}-wal`, "uncheckpointed edit"); fs.writeFileSync(older, "older writable edits");
+    fs.mkdirSync(path.join(root, "artifacts")); fs.writeFileSync(path.join(root, "artifacts", "document"), "managed edits");
+    fs.writeFileSync(path.join(root, "metadata.json"), JSON.stringify({ db, previewRoot: root }));
+    fs.symlinkSync(db, path.join(root, "current.db"));
+    const report = await cleanupPreviewCache({ apply: true, previewBaseDir: base });
+    expect(report.reclaimedBytes).toBe(0);
+    expect(fs.readFileSync(`${db}-wal`, "utf8")).toBe("uncheckpointed edit");
+    expect(fs.readFileSync(older, "utf8")).toBe("older writable edits");
+    expect(fs.readFileSync(path.join(root, "artifacts", "document"), "utf8")).toBe("managed edits");
+  });
+
+  it("cleans a disposed fixture after its report while preserving unknown entries", async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-cleanup-"))); tempRoots.push(base);
+    const root = path.join(base, "fixture"); fs.mkdirSync(root);
+    const file = path.join(root, "metadata.json");
+    const ownership = createOwnedRun({ root, instanceId: "preview-fixture", project: "fixture-project", workUnit: "fixture-work-unit", disposable: true, outputs: [{ path: "db", kind: "interactive" }] });
+    saveOwnedMetadata(file, { ownership }); fs.writeFileSync(path.join(root, "db"), "fixture bytes");
+    const finalized = finalizeOwnedRun(file, { expectedRevision: 1, outcome: "assessed", summary: "Disposable fixture succeeded" });
+    fs.writeFileSync(path.join(root, "unknown"), "unclassified bytes");
+    const report = await cleanupPreviewCache({ apply: true, previewBaseDir: base });
+    expect(report.reclaimedBytes).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(root, "db"))).toBe(false);
+    expect(fs.readFileSync(path.join(root, "unknown"), "utf8")).toBe("unclassified bytes");
+    expect(fs.existsSync(finalized.ownership.receipt)).toBe(true);
+  });
+
+  it("refuses low headroom without changing the existing preview", () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-budget-"))); tempRoots.push(base);
+    const root = path.join(base, "preview"); fs.mkdirSync(root);
+    const db = path.join(base, "source.db"); fs.writeFileSync(db, "source bytes");
+    fs.writeFileSync(path.join(root, "user-edit"), "keep this");
+    expect(() => assertPreviewAllocation(root, db, { volume: { bavail: 1, bsize: 4096 } })).toThrow(/allocation refused/);
+    expect(fs.readFileSync(path.join(root, "user-edit"), "utf8")).toBe("keep this");
+  });
+
   it("seeds only exact projected conversation versions into the isolated structure cache", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-structure-cache-"));
     tempRoots.push(root);
@@ -1868,10 +1915,9 @@ describe("iab-preview launcher", () => {
       return candidate.path === previewRoot;
     });
     expect(entry).toMatchObject({
-      action: "skip",
-      shellReadiness: { ok: false, reason: "application root returned HTTP 404" },
+      action: "skip-active",
     });
-    expect(entry.reason).toContain("failed application shell readiness");
+    expect(entry.reason).toContain("recorded port has a consumer");
     expect(entry.reason).not.toContain("passed health and application shell readiness");
   });
 
@@ -2261,7 +2307,7 @@ describe("iab-preview launcher", () => {
     expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
   });
 
-  it("boots out leaked preview launchd jobs and never touches the live daemon label", () => {
+  it("reports registered preview services without stopping them or the live daemon", () => {
     const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-launchctl-"));
     const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
     tempRoots.push(shimDir, previewBase);
@@ -2293,11 +2339,11 @@ describe("iab-preview launcher", () => {
     expect(payload.legacyLaunchdCleanup).toMatchObject({
       supported: true,
       labels: ["bio.mll.mandible.preview.19421.foo"],
-      booted: [{ label: "bio.mll.mandible.preview.19421.foo", mechanism: "bootout", ok: true }],
+      booted: [],
     });
 
     const log = fs.readFileSync(commandLog, "utf8");
-    expect(log).toContain(`bootout gui/${process.getuid()}/bio.mll.mandible.preview.19421.foo`);
+    expect(log).toBe("list\n");
     // Safety-critical: com.mll.mandible supervises the live Mandible daemon.
     // Booting it out would stop the user's daemon, so no launchctl subcommand
     // may ever name a label outside the preview namespace.
