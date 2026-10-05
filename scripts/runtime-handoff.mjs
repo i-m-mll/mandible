@@ -4,11 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { assessLogs } from './runtime-log-assessment.mjs';
 
+const execFileAsync = promisify(execFile);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fileHash = file => hash(fs.readFileSync(file));
@@ -67,16 +69,24 @@ function save(journal, changes) {
   Object.assign(journal, changes, { updatedAt: Date.now() });
   atomic(journalFile(journal.binding), journal);
 }
-function controller(journal, command, { capture = true } = {}) {
+async function controller(journal, command) {
   const binding = journal.binding;
-  const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(binding) };
+  const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(binding), GIT_OPTIONAL_LOCKS: '0' };
   const installedController = journal.phase === 'acknowledged' || !!journal.cleanupStartedAt;
   const script = installedController ? path.join(binding.root, 'scripts/local-runtime.mjs') : path.join(path.dirname(journalFile(binding)), 'controller.mjs');
   if (installedController) delete env.MANDIBLE_RUNTIME_HANDOFF_STORAGE;
-  return run(binding.runtime.path, [script, command, '--root', binding.root], {
-    cwd: binding.root, env,
-    ...(capture ? {} : { log: path.join(path.dirname(journalFile(binding)), 'convergence.log') }), timeout: 30000 });
+  // Recovery runs inside the daemon that answers these health requests.
+  // Keep its event loop available while the bounded controller probes it.
+  try {
+    const result = await execFileAsync(binding.runtime.path, [script, command, '--root', binding.root], {
+      cwd: binding.root, env, timeout: 30000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8',
+    });
+    return result.stdout.trim();
+  } catch (error) {
+    throw new Error(`${binding.runtime.path} ${script} failed: ${error.stderr || error.message}`);
+  }
 }
+
 async function publication(journal) {
   const module = await import(pathToFileURL(path.join(path.dirname(journalFile(journal.binding)), 'proof.mjs')).href);
   const { default: SqliteDatabase } = await import(pathToFileURL(path.join(path.dirname(journalFile(journal.binding)), 'sqlite.mjs')).href);
@@ -200,7 +210,7 @@ export async function verifyRuntimeHandoffReceipt(journal, { probe = true } = {}
   const b = journal.binding;
   if (run('git', ['rev-parse', 'HEAD'], { cwd: b.root }) !== b.mergeCommit) throw new Error('Production checkout moved beyond the handoff candidate.');
   for (const [file, expected] of Object.entries(journal.receipt.files)) if (fileHash(file) !== expected) throw new Error(`Converged file changed: ${file}`);
-  const evidence = probe ? JSON.parse(controller(journal, 'handoff-verify')) : journal.receipt.evidence;
+  const evidence = probe ? JSON.parse(await controller(journal, 'handoff-verify')) : journal.receipt.evidence;
   return { bindingDigest: journal.bindingDigest, evidence };
 }
 
@@ -250,7 +260,7 @@ async function worker(file) {
     }
     await publication(journal);
     save(journal, { phase: 'unloading' });
-    controller(journal, 'handoff-remove');
+    await controller(journal, 'handoff-remove');
     const log = path.join(path.dirname(file), 'convergence.log');
     const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: file };
     for (const [stage, binary, args, timeout] of [
@@ -270,9 +280,9 @@ async function worker(file) {
     const deadline = Math.min(journal.deadline, Date.now() + 60000);
     let evidence;
     // Start once; readiness polling does not repeatedly restart the daemon.
-    try { controller(journal, 'handoff-start'); } catch (error) { journal.startObservation = error.message; }
+    try { await controller(journal, 'handoff-start'); } catch (error) { journal.startObservation = error.message; }
     while (Date.now() < deadline) {
-      try { evidence = JSON.parse(controller(journal, 'handoff-verify')); break; } catch { await sleep(200); }
+      try { evidence = JSON.parse(await controller(journal, 'handoff-verify')); break; } catch { await sleep(200); }
     }
     if (!evidence) throw new Error(`Candidate runtime readiness failed: ${journal.startObservation || 'health deadline'}`);
     if (b.desktopWasRunning && !journal.stages.desktopRelaunch) {
@@ -281,7 +291,7 @@ async function worker(file) {
       if (!desktopRunning(b.nativeApp)) throw new Error('Installed desktop did not remain running after relaunch.');
     }
     const observedUntil = Date.now() + 31000;
-    while (Date.now() < observedUntil) { await sleep(1000); evidence = JSON.parse(controller(journal, 'handoff-verify')); }
+    while (Date.now() < observedUntil) { await sleep(1000); evidence = JSON.parse(await controller(journal, 'handoff-verify')); }
     const daemonLog = fs.readFileSync(b.daemonLog).subarray(logOffset).toString('utf8');
     const resources = path.join(b.nativeApp, 'Contents/Resources');
     const marker = path.join(b.root, 'dist/build-revision.json');
