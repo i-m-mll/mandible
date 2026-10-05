@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { canonicalizeChangeMessage, changeMessageDigest, validateCanonicalChangeMessage } from '../../src/auth-change-message.js';
 import type { AuthRequest, AuthRequestLifecycleEvent } from '../../src/types.js';
 
 type Api = { baseUrl: string; headers: HeadersInit };
@@ -14,6 +15,7 @@ export type BootstrapDeliveryInputs = Api & {
   workUnitId: string;
   requesterCredentialId: string;
   commitMessage: string;
+  verification: string;
   spec: string;
 };
 
@@ -41,13 +43,15 @@ export async function activateBootstrapWorkUnit(api: Api, issueRef: string, repo
 
 /** Normal authenticated submission; the daemon owns custody, review and candidate preparation. */
 export async function submitBootstrapDelivery(input: BootstrapDeliveryInputs): Promise<BootstrapDeliveryDetail> {
+  const canonicalMessage = canonicalizeChangeMessage(input.commitMessage);
+  assert.equal(validateCanonicalChangeMessage(canonicalMessage, { verification: input.verification }), null);
   const command = `mandible auth merge ${input.headBranch} --into ${input.baseBranch} --preserve-head-branch`;
   const result = await jsonRequest(input, '/api/auth/request', 'POST', {
     type: 'merge', title: 'Qualified candidate bootstrap delivery', command,
     cwd: input.cwd, target_repo_root: input.cwd, repo: input.repo,
     head_branch: input.headBranch, base_branch: input.baseBranch, execution_mode: 'daemon',
     issue_references: [input.issueRef], canonical_message: true,
-    commit_message: input.commitMessage, spec_content: input.spec,
+    commit_message: input.commitMessage, verification: input.verification, spec_content: input.spec,
   }) as { request_id: string };
   assert.ok(result.request_id);
   const detail = await readBootstrapDelivery(input, result.request_id);
@@ -58,7 +62,8 @@ export async function submitBootstrapDelivery(input: BootstrapDeliveryInputs): P
   assert.equal(detail.custody_work_unit_id, input.workUnitId);
   assert.equal(detail.requester_credential_id, input.requesterCredentialId);
   assert.equal(detail.requester_evidence_method, 'api_token');
-  assert.equal(detail.commit_message, input.commitMessage);
+  assert.equal(detail.commit_message, canonicalMessage);
+  assert.equal(detail.commit_message_digest, changeMessageDigest(canonicalMessage));
   assert.ok(detail.merge_candidate_pin_sha, 'Submission must retain its exact candidate');
   assert.ok(detail.merge_candidate_tree_sha, 'Submission must retain its exact candidate tree');
   assert.equal(detail.merge_atomic_enabled, false, 'Atomic authority is decided by operator approval');
