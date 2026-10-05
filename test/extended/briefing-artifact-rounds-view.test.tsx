@@ -1484,7 +1484,7 @@ describe('artifact-backed Briefing rounds', () => {
       const reloadedView = render(shell());
       fireEvent.click(await screen.findByTitle('Comment · 1'));
       expect(within(screen.getByRole('dialog')).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
-      expect((screen.getByRole('radio', { name: '4' }) as HTMLInputElement).checked).toBe(true);
+      await waitFor(() => expect((screen.getByRole('radio', { name: '4' }) as HTMLInputElement).checked).toBe(true));
       expect(screen.getByRole('button', { name: 'Submit' })).toBeTruthy();
       expect(roundOneSnapshot()).toEqual(roundOneBefore);
       reloadedView.unmount();

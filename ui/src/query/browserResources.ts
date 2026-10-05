@@ -1,6 +1,6 @@
 import type { QueryClient, QueryKey } from '@tanstack/preact-query';
 import { isBriefingEvent } from '../../../src/contracts';
-import { isSpaceEvent } from '../../../src/spaces/events';
+import { isSpaceEvent, SPACE_EVENTS } from '../../../src/spaces/events';
 
 export const browserResourceKeys = {
   briefings: ['briefing'] as const,
@@ -14,6 +14,7 @@ export const browserResourceKeys = {
 export function browserResourceKeysForEvent(type: string, data?: unknown): readonly QueryKey[] {
   if (isBriefingEvent(type)) return [browserResourceKeys.briefings];
   if (!isSpaceEvent(type) || !data || typeof data !== 'object') return [];
+  if (type === SPACE_EVENTS.SPACE_DOCUMENT_SETTINGS_UPDATED) return [['space']];
   const id = (data as { space_id?: unknown }).space_id;
   return typeof id === 'string' ? [browserResourceKeys.spaceDocument(id), browserResourceKeys.spaceItems(id)] : [];
 }
