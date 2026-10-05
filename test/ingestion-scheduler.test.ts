@@ -4,7 +4,7 @@ import {
   BoundedDirtyPathSet,
   DIRTY_INGEST_BATCH_SIZE,
   RECONCILE_INTERVAL_MS,
-} from "../../src/ingestion.js";
+} from "../src/ingestion.js";
 
 describe("event-driven ingestion scheduling", () => {
   it("uses an hourly safety sweep rather than a minute-scale primary scan", () => {

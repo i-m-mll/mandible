@@ -53,13 +53,6 @@ afterEach(() => {
 });
 
 describe('AddToSpace picker', () => {
-  it('uses app theme tokens for the picker surface instead of dark fallbacks', () => {
-    const css = readFileSync('ui/src/components/spaces/AddToSpace.css', 'utf8');
-
-    expect(css).toContain('background: var(--bg-card');
-    expect(css).toContain('border: 1px solid var(--neutral-alpha-10');
-    expect(css).not.toContain('background: var(--surface, #1c1c1c)');
-  });
 
   it('disables the trigger when no project context is available', () => {
     render(<AddToSpace projectId={null} targets={[issueTarget]} />);

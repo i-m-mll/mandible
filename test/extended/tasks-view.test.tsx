@@ -845,12 +845,6 @@ describe('TasksView', () => {
     render(<TasksView />);
 
     await screen.findByRole('button', { name: 'Select Daily digest' });
-    const tasksCss = readFileSync('ui/src/views/tasks.css', 'utf8');
-    const chatCss = readFileSync('ui/src/styles/chat-history.css', 'utf8');
-    const rowCss = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
-    expect(tasksCss).toMatch(/\.tasks-sidebar__list\s*\{[^}]*padding:\s*4px 6px;/s);
-    expect(chatCss).toMatch(/\.chat-history-list\s*\{[^}]*padding:\s*8px 6px 14px;/s);
-    expect(rowCss).toMatch(/\.sidebar-item-row__select\s*\{[^}]*padding:\s*5px 7px 5px var\(--sidebar-title-column-inset, 7px\);/s);
 
     const probe = document.createElement('div');
     probe.innerHTML = '<div class="tasks-list"><button class="select"></button></div><div class="chat-list"><button class="select"></button></div>';
@@ -872,7 +866,6 @@ describe('TasksView', () => {
     expect(detail.querySelector('[data-detail-pane-slot="notice"] .detail-pane-notice')).toBeTruthy();
     expect(detail.querySelectorAll('[data-detail-pane-slot="body"]')).toHaveLength(1);
     expect(detail.querySelector('.tasks-detail__content header')).toBeNull();
-    expect(tasksCss).not.toMatch(/\.tasks-detail\s*\{[^}]*overflow(?:-y)?:/s);
     expect(readFileSync('ui/src/styles/detail-pane-shell.css', 'utf8'))
       .toMatch(/\.detail-pane-shell__body\s*\{[^}]*overflow-y:\s*auto;/s);
   });

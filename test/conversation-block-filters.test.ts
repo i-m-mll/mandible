@@ -4,7 +4,7 @@ import {
   makeEnvelope,
   parseBound,
   type InspectableBlock,
-} from "../../src/conversation-block-filters.js";
+} from "../src/conversation-block-filters.js";
 
 const blocks: InspectableBlock[] = [
   {

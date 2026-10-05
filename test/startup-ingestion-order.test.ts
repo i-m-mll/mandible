@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { startIngestionAfterStartupWorkScan } from "../../src/index.js";
+import { startIngestionAfterStartupWorkScan } from "../src/index.js";
 
 describe("startup ingestion ordering", () => {
   it("starts ingestion only after the initial work scan settles, including failure", async () => {

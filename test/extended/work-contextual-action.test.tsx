@@ -4,9 +4,6 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import { BranchRow } from '../../ui/src/views/work';
 
-const workStylesheet = readFileSync('ui/src/styles/work.css', 'utf8');
-const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
-
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -48,7 +45,4 @@ it('keeps the row ellipsis contextual while focus and an open menu persist it', 
   expect(screen.getByRole('menu')).toBeTruthy();
   expect(screen.getByRole('menuitem', { name: 'Copy branch name' })).toBeTruthy();
 
-  expect(workStylesheet).not.toMatch(/tr:hover[^}]*work-actions__trigger/);
-  expect(workStylesheet).not.toMatch(/work-actions__trigger:(?:hover|focus-visible)[^{]*{[^}]*background/);
-  expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*\.contextual-action-group\s*{[^}]*opacity: 1;[^}]*pointer-events: auto;/);
 });

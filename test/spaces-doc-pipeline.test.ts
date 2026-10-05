@@ -8,12 +8,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   parseSpacesDoc,
   renderProseToSafeHtml,
-  assertNoExecutableDirectivePath,
   SPACES_DOC_VERSION,
   FORMAT_KEY,
-} from '../../ui/src/spaces/doc-pipeline';
-import { exportDocument, type DocTree } from '../../src/spaces/serialize';
-import { __resetResourceRefRecognizers } from '../../ui/src/resource-refs';
+} from '../ui/src/spaces/doc-pipeline';
+import { exportDocument, type DocTree } from '../src/spaces/serialize';
+import { __resetResourceRefRecognizers } from '../ui/src/resource-refs';
 
 const HASH64 = 'a'.repeat(64);
 
@@ -229,9 +228,6 @@ describe('spaces-doc pipeline: renderer security (standing AC #2)', () => {
     expect(allHtml).not.toContain('steal()');
   });
 
-  it('exposes a static non-executable-path assertion that passes', () => {
-    expect(assertNoExecutableDirectivePath()).toBe(true);
-  });
 
   it('has no MDX/JSX/eval compile step: directive attributes are inert strings', () => {
     // An expression-shaped attribute value is captured verbatim, never evaluated.

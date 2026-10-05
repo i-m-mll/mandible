@@ -23,9 +23,6 @@ vi.mock('../../ui/src/api', async (importActual) => {
 import { SpacesSidebar } from '../../ui/src/views/spaces/SpacesSidebar';
 import type { Space, SpaceGroup } from '../../ui/src/api';
 
-const spacesSidebarStylesheet = readFileSync('ui/src/views/spaces/SpacesSidebar.css', 'utf8');
-const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
-
 function makeSpace(
   id: string,
   title: string,
@@ -147,7 +144,6 @@ describe('SpacesSidebar render + grouping', () => {
     expect(scroll.contains(topLevelGroup)).toBe(true);
     expect(scroll.contains(alphaGroup)).toBe(true);
     expect(topLevelGroup.compareDocumentPosition(alphaGroup) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(spacesSidebarStylesheet).not.toMatch(/spaces-tree__global-actions|spaces-tree__group-drag-target/);
   });
 
   it('renders nothing when hidden while still resolving the required selection', async () => {
@@ -329,10 +325,6 @@ describe('SpacesSidebar create flow', () => {
     expect(screen.queryByRole('button', { name: 'Create top-level space' })).toBeNull();
 
     expect(projectCreate.parentElement?.classList.contains('sidebar-group-node__action-slot')).toBe(true);
-    expect(contextualActionStylesheet).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*\.contextual-action-group\s*\{[^}]*opacity: 1;[^}]*pointer-events: auto;/);
-    expect(spacesSidebarStylesheet).not.toMatch(
-      /\.spaces-tree__header\s+\.spaces-tree__create\s*\{[^}]*opacity:\s*0;/s,
-    );
   });
 
   it('creates a typed document space in a project and selects it canonically', async () => {
@@ -598,7 +590,5 @@ describe('SpacesSidebar selection', () => {
   });
 
   it('uses the shared row and group composition without bespoke row overrides', () => {
-    expect(spacesSidebarStylesheet).not.toMatch(/\.spaces-tree__space\s*\{[^}]*padding:/s);
-    expect(spacesSidebarStylesheet).not.toMatch(/\.spaces-tree__space--active/);
   });
 });

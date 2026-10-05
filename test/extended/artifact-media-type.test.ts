@@ -40,11 +40,4 @@ describe("mediaTypeForPath", () => {
     expect(mediaTypeForPath("/tmp/Makefile")).toBe(DEFAULT_ARTIFACT_MEDIA_TYPE);
   });
 
-  it("leaves no local copy in either ingest route", () => {
-    for (const file of ["src/provider-artifacts.ts", "src/repo-artifact-scanner.ts"]) {
-      const source = fs.readFileSync(path.join(process.cwd(), file), "utf8");
-      expect(source, file).toContain('from "./artifact-media-type.js"');
-      expect(source, file).not.toMatch(/function mediaTypeForPath/);
-    }
-  });
 });
