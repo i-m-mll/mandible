@@ -331,3 +331,9 @@ artifact cases passing. Signed CLI checkpoints are `bfc627be`, `5741d506`, and
 `7ef66fb6`, after operations `93c96ab6`; the parent integrates that separate lane.
 
 The UI reachability gate also identified eight unused Console modules and the retired stream cache. They are removed without deleting browser storage or historical Console records. The canonical Chat draft tests preserve current composer intent; the generic sidebar fixture uses simple content for its layout contract.
+
+### Settings and Inbox preference controls
+
+The human-authored Settings autosave change (`8b83f517`) removed manual save/reset controls from simple preferences. Typography retains accessible bounds, per-field autosave, and saving default values; obsolete Reset-button queries are retired. Inbox retains acknowledgement, filter state, loading authorization, and executable error Retry. Its removed manual Refresh menu item no longer defines an action contract.
+
+Copied Work previews keep static host-operation gates and copied-ledger metadata edits. Add-project has dynamic effects, so its browser catalog entry is an optimistic hint; the UI regression now checks a denied daemon response and retained state rather than inventing a parallel frontend permission policy. Authoritative dynamic effect denial remains covered by the operation-policy boundary tests.

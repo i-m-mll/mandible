@@ -1,5 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
-import { afterEach, expect, it, vi } from 'vitest';
+import { render } from './notice-test-render';
+import { establishTestClientAccess } from '../helpers/local-client-access';
+import { bindTestInstanceCatalog } from '../helpers/instance-operation-fixtures';
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/preact';
+import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
@@ -17,6 +20,11 @@ const copiedPreview: InstanceInfo = {
   db_path: '/tmp/mandible-preview/db.sqlite',
   db_path_source: 'test',
 };
+
+beforeEach(async () => {
+  await establishTestClientAccess();
+  bindTestInstanceCatalog(copiedPreview);
+});
 
 afterEach(() => {
   cleanup();
@@ -40,6 +48,11 @@ it('keeps copied project metadata writable while gating host Git operations', as
     if (url.pathname === '/api/client-auth/whoami') {
       return new Response(JSON.stringify({ authenticated: true, session: { csrf_token: 'test-csrf' } }), {
         headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.pathname === '/api/work/repos/add' && method === 'POST') {
+      return new Response(JSON.stringify({ error: 'effect_not_allowed: process:external' }), {
+        status: 403, headers: { 'content-type': 'application/json' },
       });
     }
     if (url.pathname === '/api/work/repos') {
@@ -72,9 +85,16 @@ it('keeps copied project metadata writable while gating host Git operations', as
   await screen.findByText('Live branch audit is unavailable in this copied preview.');
   const addProject = screen.getByRole('button', { name: '+ Add project' }) as HTMLButtonElement;
   const pushAll = screen.getByRole('button', { name: /Push All/ }) as HTMLButtonElement;
-  expect(addProject.disabled).toBe(true);
+  // Dynamic route hints admit the attempt; the daemon owns exact effect permission.
+  expect(addProject.disabled).toBe(false);
   expect(pushAll.disabled).toBe(true);
   fireEvent.click(addProject);
+  fireEvent.input(screen.getByRole('textbox', { name: 'Project path' }), { target: { value: '/tmp/new-project' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Add project' }));
+  await screen.findByText('effect_not_allowed: process:external');
+  expect(requests).toContainEqual({ path: '/api/work/repos/add', method: 'POST' });
+  expect(onRescan).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   fireEvent.click(pushAll);
 
   fireEvent.click(screen.getByRole('button', { name: 'Repo settings' }));
@@ -92,6 +112,6 @@ it('keeps copied project metadata writable while gating host Git operations', as
   expect(onRescan).not.toHaveBeenCalled();
   expect(requests.filter(({ path }) =>
     /\/audit$|\/commits$|\/compare$/.test(path)
-    || ['/api/work/scan', '/api/work/push', '/api/work/repos/add', '/api/system/open-path'].includes(path),
+    || ['/api/work/scan', '/api/work/push', '/api/system/open-path'].includes(path),
   )).toEqual([]);
 });

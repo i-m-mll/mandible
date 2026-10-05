@@ -1,3 +1,6 @@
+import { establishTestClientAccess } from '../helpers/local-client-access';
+import { MAIN_CLI_INSTANCE_RESPONSE } from '../helpers/cli-instance-response';
+import { bindTestInstanceCatalog } from '../helpers/instance-operation-fixtures';
 // Tasks view tests — issue 0bc2279.
 //
 // The fixtures below are built by the REAL server projection
@@ -28,7 +31,7 @@ import { createUser } from '../../src/users/store.js';
 import { createManagedReminder } from '../../src/managed-reminders.js';
 import { parseManagedReminderCreateRequest } from '../../src/managed-reminder-parser.js';
 import { resolveProjectForCheckout } from '../../src/ledger/projects.js';
-import { normalizeTaskInventory } from '../../ui/src/api';
+import { invalidateApiGetCache, normalizeTaskInventory } from '../../ui/src/api';
 import { parseRouteFromHash } from '../../ui/src/routing';
 import { taskFact, TasksView } from '../../ui/src/views/tasks';
 
@@ -254,7 +257,10 @@ function stubInventory(payload: TaskInventoryResponse | (() => TaskInventoryResp
   }));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  invalidateApiGetCache();
+  await establishTestClientAccess();
+  bindTestInstanceCatalog(MAIN_CLI_INSTANCE_RESPONSE.instance);
   db = new SqliteDatabase(':memory:');
   migrate(db);
   setDb(db);
@@ -329,7 +335,7 @@ describe('TasksView', () => {
       }],
     };
     stubInventory(normalizeTaskInventory(response));
-    render(<TasksView initialTaskKey={`mandible-reminder:${created.reminder.id}`} />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} initialTaskKey={`mandible-reminder:${created.reminder.id}`} />);
 
     await waitFor(() => expect(screen.getAllByText('Review the twentieth canonical merge')).toHaveLength(2));
     const detail = document.querySelector('.tasks-detail') as HTMLElement;
@@ -379,7 +385,7 @@ describe('TasksView', () => {
       reminder: created.reminder,
     });
     stubInventory(inventory);
-    render(<TasksView initialTaskKey={`mandible-reminder:${created.reminder.id}`} />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} initialTaskKey={`mandible-reminder:${created.reminder.id}`} />);
 
     const search = await screen.findByRole('searchbox', { name: 'Search tasks' });
     const sidebar = document.querySelector('.tasks-sidebar') as HTMLElement;
@@ -403,6 +409,7 @@ describe('TasksView', () => {
 
     const inventoryReadsBeforeSse = vi.mocked(fetch).mock.calls
       .filter(([input]) => String(input) === '/api/tasks').length;
+    invalidateApiGetCache('/api/tasks');
     window.dispatchEvent(new CustomEvent('managed-reminder:sse'));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls
       .filter(([input]) => String(input) === '/api/tasks').length).toBeGreaterThan(inventoryReadsBeforeSse));
@@ -419,7 +426,7 @@ describe('TasksView', () => {
 
   it('says plainly that no executor has registered an inventory', async () => {
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
 
     await waitFor(() => {
       expect(screen.getAllByText(/No executor has registered an inventory/i).length)
@@ -432,7 +439,7 @@ describe('TasksView', () => {
   it('distinguishes a registered executor that reported an empty task set', async () => {
     post([]);
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
 
     await waitFor(() => {
       expect(screen.getAllByText(/executor reported no tasks|executor has reported, but listed no tasks/i))
@@ -447,7 +454,7 @@ describe('TasksView', () => {
   it('renders reported facts, keeps activation as two readings, and shows unknown as unknown', async () => {
     post([knownTask()]);
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
 
     // The name appears in both the sidebar row and the detail header.
     await waitFor(() => expect(screen.getAllByText('Daily digest').length).toBe(2));
@@ -496,7 +503,7 @@ describe('TasksView', () => {
   it('keeps a stale reported no-op request enabled but de-emphasized', async () => {
     post([knownTask()], Date.now() - TASK_INVENTORY_STALE_AFTER_MS - HOUR);
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
 
     const button = await screen.findByRole('button', { name: 'Request disable' });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
@@ -513,7 +520,7 @@ describe('TasksView', () => {
     task.activation = { config_enabled: false, locally_activated: true };
     post([task]);
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
 
     const button = await screen.findByRole('button', { name: 'Request disable' });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
@@ -568,7 +575,7 @@ describe('TasksView', () => {
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     }));
 
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     const button = await screen.findByRole('button', { name: 'Request disable' });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     button.click();
@@ -600,7 +607,7 @@ describe('TasksView', () => {
       return Promise.reject(new Error(`unexpected fetch: ${String(input)}`));
     }));
 
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     await waitFor(() => expect(screen.getAllByText('Daily digest')).toHaveLength(2));
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toMatch(/Only the local operator/i);
@@ -655,7 +662,7 @@ describe('TasksView', () => {
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     }));
 
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     const button = await screen.findByRole('button', { name: 'Request disable' });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     button.click();
@@ -695,7 +702,7 @@ describe('TasksView', () => {
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     }));
 
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     const button = await screen.findByRole('button', { name: 'Request disable' });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     button.click();
@@ -742,7 +749,7 @@ describe('TasksView', () => {
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     }));
 
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     await waitFor(() => expect(screen.getByText(/Accepted by executor and durably journaled/i)).toBeTruthy());
     expect(screen.queryByText(/executor reported the local task disabled/i)).toBeNull();
     expect((screen.getByRole('button', { name: 'Request disable' }) as HTMLButtonElement).disabled)
@@ -752,7 +759,7 @@ describe('TasksView', () => {
   it('removes provider and freshness badges from rows while retaining them in typed detail', async () => {
     post([knownTask()], Date.now() - TASK_INVENTORY_STALE_AFTER_MS - HOUR);
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
 
     await waitFor(() => expect(screen.getAllByText('Daily digest').length).toBe(2));
     const sidebar = document.querySelector('.tasks-sidebar') as HTMLElement;
@@ -776,7 +783,7 @@ describe('TasksView', () => {
   it('keeps every explicit unknown visible, including unknown freshness', async () => {
     post([unknownTask()], Date.now() + HOUR);
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
 
     await waitFor(() => expect(screen.getAllByText('Unknown task').length).toBe(2));
     const detail = document.querySelector('.tasks-detail') as HTMLElement;
@@ -826,7 +833,7 @@ describe('TasksView', () => {
       now: observedAt + TASK_INVENTORY_STALE_AFTER_MS,
     });
     stubInventory(normalizeTaskInventory(view));
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
 
     await waitFor(() => expect(screen.getAllByText('Daily digest').length).toBe(2));
     const row = within(document.querySelector('.tasks-sidebar') as HTMLElement)
@@ -838,7 +845,7 @@ describe('TasksView', () => {
   it('uses Chat-equal native row geometry and one typed detail scroll owner', async () => {
     post([knownTask()]);
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
 
     await screen.findByRole('button', { name: 'Select Daily digest' });
 
@@ -869,7 +876,7 @@ describe('TasksView', () => {
   it('surfaces the cba4353 invalidation as one important sequential recovery notice', async () => {
     postV3();
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
-    render(<TasksView initialTaskKey="agent-schedule/task-health" />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} initialTaskKey="agent-schedule/task-health" />);
 
     expect(await screen.findByText('Important: activation invalidated')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Dry run' })).toBeTruthy();
@@ -906,7 +913,7 @@ describe('TasksView', () => {
       }],
     });
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
-    render(<TasksView initialTaskKey="agent-schedule/task-health" />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} initialTaskKey="agent-schedule/task-health" />);
 
     expect(await screen.findByText('Executor operational failure')).toBeTruthy();
     expect(screen.getAllByText('Disabled by operator').length).toBeGreaterThan(0);
@@ -917,7 +924,7 @@ describe('TasksView', () => {
 describe('TasksView task-command v2', () => {
   it('shows_v2_actions_only_for_capable_executor_with_known_hash', async () => {
     stubV2Fetch();
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     expect(await screen.findByRole('button', { name: 'Dry run' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Enable task' })).toBeTruthy();
     expect(screen.getAllByText(EXECUTION_HASH).length).toBeGreaterThan(0);
@@ -925,7 +932,7 @@ describe('TasksView task-command v2', () => {
 
   it('keeps_disable_available_during_non_disable_command', async () => {
     stubV2Fetch({ listedCommands: [commandFixture('dry_run', 'accepted')] });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     const disable = await screen.findByRole('button', { name: 'Request disable' });
     await waitFor(() => expect((disable as HTMLButtonElement).disabled).toBe(false));
   });
@@ -938,7 +945,7 @@ describe('TasksView task-command v2', () => {
       { id: 'progress-2', event: 'progress', payload: { sequence: 2, step: 'collector_started' } },
     ] });
     stubV2Fetch({ postCommand: () => command, pointCommand: () => command });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     (await screen.findByRole('button', { name: 'Dry run' })).click();
     const dialog = await screen.findByRole('dialog', { name: 'Dry run command' });
     expect(await within(dialog).findByText('Run started')).toBeTruthy();
@@ -949,7 +956,7 @@ describe('TasksView task-command v2', () => {
 
   it('dry_run_success_keeps_task_disabled', async () => {
     stubV2Fetch({ postCommand: () => commandFixture('dry_run', 'applied') });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     (await screen.findByRole('button', { name: 'Dry run' })).click();
     expect(await screen.findByText(/Dry run passed\. Receipt recorded for aaaaaaaaaaaa\. Task remains disabled\./))
       .toBeTruthy();
@@ -964,7 +971,7 @@ describe('TasksView task-command v2', () => {
         { id: `command-${String(body.verb)}` },
       ),
     });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     (await screen.findByRole('button', { name: 'Dry run' })).click();
     const dialog = await screen.findByRole('dialog', { name: 'Dry run command' });
     const enable = await within(dialog).findByRole('button', { name: 'Enable task' });
@@ -976,7 +983,7 @@ describe('TasksView task-command v2', () => {
 
   it('matching_receipt_enables_directly', async () => {
     const stub = stubV2Fetch({ postCommand: () => commandFixture('enable', 'applied') });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     (await screen.findByRole('button', { name: 'Enable task' })).click();
     expect(await screen.findByText('Enable request applied.')).toBeTruthy();
     expect(stub.postedBodies.map((body) => body.verb)).toEqual(['enable']);
@@ -988,7 +995,7 @@ describe('TasksView task-command v2', () => {
         rejectionReason: 'missing_receipt',
       }),
     });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     (await screen.findByRole('button', { name: 'Enable task' })).click();
     const dialog = await screen.findByRole('dialog', { name: 'Enable task command' });
     expect(await within(dialog).findByRole('button', { name: 'Run dry run' })).toBeTruthy();
@@ -1002,11 +1009,12 @@ describe('TasksView task-command v2', () => {
       postCommand: () => commandFixture('dry_run', 'requested'),
       pointCommand: () => accepted,
     });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     (await screen.findByRole('button', { name: 'Dry run' })).click();
     expect(await screen.findByRole('button', { name: 'Cancel unseen request' })).toBeTruthy();
     await waitFor(() => expect(intervalSpy.mock.calls
       .some((call) => call[1] === 2_000)).toBe(true));
+    invalidateApiGetCache('/api/tasks');
     window.dispatchEvent(new CustomEvent('task-command:sse', {
       detail: { type: 'tasks.commands.changed', data: { command_id: 'command-dry_run' } },
     }));
@@ -1023,7 +1031,7 @@ describe('TasksView task-command v2', () => {
         rejectionReason: 'stale_target',
       }),
     });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     const search = await screen.findByRole('searchbox', { name: 'Search tasks' });
     fireEvent.input(search, { target: { value: 'daily' } });
     fireEvent.click(screen.getByRole('button', { name: 'Task filters' }));
@@ -1032,6 +1040,7 @@ describe('TasksView task-command v2', () => {
     const before = stub.inventoryReads();
     await waitFor(() => expect(intervalSpy.mock.calls
       .some((call) => call[1] === 2_000)).toBe(true));
+    invalidateApiGetCache('/api/tasks');
     window.dispatchEvent(new CustomEvent('task-command:sse', {
       detail: { type: 'tasks.commands.changed', data: { command_id: 'command-enable' } },
     }));
@@ -1050,10 +1059,11 @@ describe('TasksView task-command v2', () => {
       postCommand: () => commandFixture('dry_run', 'requested'),
       pointCommand: () => accepted,
     });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     (await screen.findByRole('button', { name: 'Dry run' })).click();
     await screen.findByRole('button', { name: 'Cancel unseen request' });
     await waitFor(() => expect(intervalSpy.mock.calls.some((call) => call[1] === 2_000)).toBe(true));
+    invalidateApiGetCache('/api/tasks');
     window.dispatchEvent(new CustomEvent('task-command:sse', {
       detail: { type: 'tasks.commands.changed', data: { command_id: 'command-dry_run' } },
     }));
@@ -1091,7 +1101,7 @@ describe('TasksView task-command v2', () => {
       ],
     });
     stubV2Fetch({ postCommand: () => command });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     (await screen.findByRole('button', { name: 'Dry run' })).click();
     expect(await screen.findByText('Failure class: runner')).toBeTruthy();
     expect(screen.queryByText('SECRET RAW OUTPUT')).toBeNull();
@@ -1124,7 +1134,7 @@ describe('TasksView task-command v2', () => {
         }],
       });
       stubV2Fetch({ postCommand: () => command });
-      const view = render(<TasksView />);
+      const view = render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
       (await screen.findByRole('button', { name: 'Enable task' })).click();
       expect(await screen.findByText(line)).toBeTruthy();
       view.unmount();
@@ -1143,7 +1153,7 @@ describe('TasksView task-command v2', () => {
       }],
     });
     stubV2Fetch({ postCommand: () => command });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     (await screen.findByRole('button', { name: 'Enable task' })).click();
     expect(await screen.findByText('Rejected: policy_refused.')).toBeTruthy();
     expect(screen.queryByText(/^Refused because/)).toBeNull();
@@ -1165,7 +1175,7 @@ describe('TasksView task-command v2', () => {
       }],
     });
     stubV2Fetch({ postCommand: () => command });
-    render(<TasksView />);
+    render(<TasksView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} />);
     (await screen.findByRole('button', { name: 'Enable task' })).click();
     expect(await screen.findByText('Rejected: policy_refused.')).toBeTruthy();
     expect(screen.queryByText(/^Refused because/)).toBeNull();

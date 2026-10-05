@@ -1,9 +1,17 @@
+import { render } from './notice-test-render';
+import { establishTestClientAccess } from '../helpers/local-client-access';
+import { MAIN_CLI_INSTANCE_RESPONSE } from '../helpers/cli-instance-response';
+import { bindTestInstanceCatalog } from '../helpers/instance-operation-fixtures';
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/preact";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/preact";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { InboxView, type InboxData } from "../../ui/src/views/inbox";
 
+beforeEach(async () => {
+  await establishTestClientAccess();
+  bindTestInstanceCatalog(MAIN_CLI_INSTANCE_RESPONSE.instance);
+});
 afterEach(() => cleanup());
 
 describe("Inbox managed reminder occurrence", () => {
@@ -36,6 +44,7 @@ describe("Inbox managed reminder occurrence", () => {
 
     render(
       <InboxView
+        instance={MAIN_CLI_INSTANCE_RESPONSE.instance}
         data={data}
         loading={false}
         selectedItemId="managed_reminder_occurrence:remocc_01"
@@ -75,6 +84,7 @@ describe("Inbox shared sidebar header", () => {
 
   function renderInbox(overrides: Partial<Parameters<typeof InboxView>[0]> = {}) {
     const props: Parameters<typeof InboxView>[0] = {
+      instance: MAIN_CLI_INSTANCE_RESPONSE.instance,
       data,
       loading: false,
       selectedItemId: "continuation:session-1",
@@ -90,8 +100,7 @@ describe("Inbox shared sidebar header", () => {
 
   it("uses the shared adjacent menu and preserves its actions", async () => {
     const onAckAll = vi.fn(async () => undefined);
-    const onRefresh = vi.fn();
-    const { container } = renderInbox({ onAckAll, onRefresh });
+    const { container } = renderInbox({ onAckAll });
 
     const header = container.querySelector(".sidebar-search-filter");
     expect(header).toBeTruthy();
@@ -105,17 +114,26 @@ describe("Inbox shared sidebar header", () => {
     await waitFor(() => expect(onAckAll).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByRole("menu", { name: "Inbox menu" })).toBeNull());
 
-    fireEvent.click(screen.getByRole("button", { name: "Inbox menu" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Refresh" }));
-    expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
   it("preserves mutation and loading disabled states inside the menu", () => {
-    renderInbox({ loading: true, mutationsAllowed: false });
+    renderInbox({ loading: true, instance: { ...MAIN_CLI_INSTANCE_RESPONSE.instance, allowed_effects: ["ledger:read"] } });
     fireEvent.click(screen.getByRole("button", { name: "Inbox menu" }));
 
     expect((screen.getByRole("menuitem", { name: "Acknowledge All" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("menuitem", { name: "Refreshing…" }) as HTMLButtonElement).disabled).toBe(true);
+
+  });
+
+  it("retries a failed read and disables retry while loading", async () => {
+    const onRefresh = vi.fn();
+    const view = renderInbox({ data: null, error: "Read failed", onRefresh });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    view.rerender(<InboxView instance={MAIN_CLI_INSTANCE_RESPONSE.instance} data={data}
+      loading={true} error="Read failed" onRefresh={onRefresh}
+      onAckContinuation={async () => undefined} onAckAuthResult={async () => undefined}
+      onAckManagedReminderOccurrence={async () => undefined} onAckAll={async () => undefined} />);
+    await waitFor(() => expect((screen.getByRole("button", { name: "Retry" }) as HTMLButtonElement).disabled).toBe(true));
   });
 
   it("preserves chip autocomplete and empty-input Backspace removal", () => {
