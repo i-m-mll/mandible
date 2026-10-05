@@ -26,6 +26,7 @@ export function publishTestCandidate(repo: string, request: AuthRequest): { merg
   const mergeSha = git(repo, ["commit-tree", tree, "-p", base, "-p", head, "-S", "-F", "-"], request.commit_message ?? "Reviewed test merge\n");
   const prepared = `MANDIBLE_MERGE_PREPARED ${JSON.stringify({ merge_sha: mergeSha, base_sha: base, head_sha: head, tree_sha: tree })}`;
   git(repo, ["update-ref", `refs/heads/${request.base_branch}`, mergeSha, base]);
+  git(repo, ["update-ref", "ORIG_HEAD", base]);
   git(repo, ["read-tree", "-m", "-u", base, mergeSha]);
   const applied = `MANDIBLE_MERGE_APPLIED ${JSON.stringify({ merge_sha: mergeSha, base_sha: base })}`;
   const result = `MANDIBLE_MERGE_RESULT ${JSON.stringify({ merge_sha: mergeSha, repo_id: request.repo, declared_issues: request.issue_closures ?? [] })}`;
