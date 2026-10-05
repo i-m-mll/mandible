@@ -330,7 +330,7 @@ mandible_issue_title() {
 mandible_session_link_issue() {
   local session_id="" issue_id="" repo_id="" repo_name="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
   local binding
-  binding=$(mandible_bind_arguments "session.link-issue" '{"session_id":{"position":0},"issue_id":{"option":["issue","issue-id"]},"repo_id":{"option":["repo","repo-id"]},"repo_name":{"option":"repo-name"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "session.link-issue" '{"session_id":[{"option":["session","session-id"]},{"position":0}],"issue_id":{"option":["issue","issue-id"]},"repo_id":{"option":["repo","repo-id"]},"repo_name":{"option":"repo-name"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
   eval "$binding"
 
   [[ -n "$session_id" ]] || mandible_ledger_die "Missing session id" 2 || return $?

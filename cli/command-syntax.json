@@ -173,7 +173,7 @@
         "items": [
           {"kind": "argument","name": "comment-ref","value": {"type": "string"}},
           {"kind": "option","names": ["-m","--message"],"values": [{"kind": "argument","name": "body","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base-revision"],"values": [{"kind": "argument","name": "rev","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base-revision","--base-body-revision"],"values": [{"kind": "argument","name": "rev","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base-body-hash"],"values": [{"kind": "argument","name": "hash","value": {"type": "string"}}]}]}}
         ]
       }
@@ -185,7 +185,7 @@
         "items": [
           {"kind": "argument","name": "issue-ref","value": {"type": "string"}},
           {"kind": "option","names": ["-m","--message"],"values": [{"kind": "argument","name": "body","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base-revision"],"values": [{"kind": "argument","name": "rev","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base-revision","--base-body-revision"],"values": [{"kind": "argument","name": "rev","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base-body-hash"],"values": [{"kind": "argument","name": "hash","value": {"type": "string"}}]}]}}
         ]
       }
@@ -409,7 +409,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "argument","name": "session-id","value": {"type": "string"}},
+          {"kind": "choice","items": [{"kind": "argument","name": "session-id","value": {"type": "string"}},{"kind": "option","names": ["--session","--session-id"],"values": [{"kind": "argument","name": "session","value": {"type": "string"}}]}]},
           {"kind": "option","names": ["--issue","--issue-id"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]},
           {"kind": "option","names": ["--repo","--repo-id"],"values": [{"kind": "argument","name": "repo","value": {"type": "string"}}]},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--repo-name"],"values": [{"kind": "argument","name": "name","value": {"type": "string"}}]}]}},
@@ -1182,8 +1182,8 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "issue-ref","value": {"type": "string"}},
-          {"kind": "option","names": ["-m"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base-revision"],"values": [{"kind": "argument","name": "rev","value": {"type": "string"}}]}]}}
+          {"kind": "option","names": ["-m","--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base-revision","--expected-revision"],"values": [{"kind": "argument","name": "rev","value": {"type": "string"}}]}]}}
         ]
       }
     },
@@ -1193,7 +1193,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "issue-ref","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base-revision"],"values": [{"kind": "argument","name": "rev","value": {"type": "string"}}]}]}}
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--base-revision","--expected-revision"],"values": [{"kind": "argument","name": "rev","value": {"type": "string"}}]}]}}
         ]
       }
     },
@@ -1839,11 +1839,11 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--idempotency-key"],"values": [{"kind": "argument","name": "key","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--at"],"values": [{"kind": "argument","name": "RFC3339","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+          {"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "project","value": {"type": "string"}}]},
+          {"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "message","value": {"type": "string"}}]},
+          {"kind": "option","names": ["--idempotency-key"],"values": [{"kind": "argument","name": "idempotency-key","value": {"type": "string"}}]},
+          {"kind": "choice","items": [{"kind": "option","names": ["--at"],"values": [{"kind": "argument","name": "at","value": {"type": "string"}}]},{"kind": "option","names": ["--issue-closed"],"values": [{"kind": "argument","name": "issue-closed","value": {"type": "string"}}]},{"kind": "sequence","items": [{"kind": "option","names": ["--auth-merge-count-gte"],"values": [{"kind": "argument","name": "auth-merge-count-gte","value": {"type": "integer","min": 1}}]},{"kind": "optional","item": {"kind": "option","names": ["--base-branch"],"values": [{"kind": "argument","name": "base-branch","value": {"type": "string"}}]}},{"kind": "optional","item": {"kind": "option","names": ["--canonical-message"],"values": [{"kind": "argument","name": "canonical-message","value": {"type": "enum","values": ["true","false"]}}]}}]}]},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
         ]
       }
     },
@@ -2194,7 +2194,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "argument","name": "path","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "argument","name": "path","value": {"type": "string"}}},
           {"kind": "option","names": ["--kind"],"values": [{"kind": "argument","name": "tracked_repo|local_only|managed","value": {"type": "enum","values": ["tracked_repo","local_only","managed"]}}]},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--artifact"],"values": [{"kind": "argument","name": "artifact-ref","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--series-key"],"values": [{"kind": "argument","name": "key","value": {"type": "string"}}]}]}},
@@ -2206,7 +2206,9 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--note"],"values": [{"kind": "argument","name": "note","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "role","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--title"],"values": [{"kind": "argument","name": "title","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}},
+          {"kind": "optional","item": {"kind": "option","names": ["--ref"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]}},
+          {"kind": "optional","item": {"kind": "option","names": ["--custody"],"values": [{"kind": "argument","name": "custody","value": {"type": "string"}}]}}
         ]
       }
     },
@@ -2215,11 +2217,11 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "repeat","item": {"kind": "argument","name": "path","value": {"type": "string"}},"min": 1},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--issue"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "role","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--upload"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+          {"kind": "choice","items": [{"kind": "sequence","items": [{"kind": "argument","name": "artifact-ref","value": {"type": "string"}},{"kind": "option","names": ["--from"],"values": [{"kind": "argument","name": "from","value": {"type": "string"}}]}]},{"kind": "sequence","items": [{"kind": "repeat","min": 1,"item": {"kind": "argument","name": "path","value": {"type": "string"}}},{"kind": "optional","item": {"kind": "option","names": ["--dry-run"],"values": []}}]}]},
+          {"kind": "optional","item": {"kind": "option","names": ["--issue"],"values": [{"kind": "argument","name": "issue","value": {"type": "string"}}]}},
+          {"kind": "optional","item": {"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "role","value": {"type": "string"}}]}},
+          {"kind": "optional","item": {"kind": "option","names": ["--upload"],"values": []}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
         ]
       }
     },
@@ -2241,10 +2243,12 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "option","names": ["--name"],"values": [{"kind": "argument","name": "name","value": {"type": "string"}},{"kind": "argument","name": "path-or-ref","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--issue"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "role","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+          {"kind": "choice","items": [{"kind": "sequence","items": [{"kind": "option","names": ["--name"],"values": [{"kind": "argument","name": "name","value": {"type": "string"}}]},{"kind": "optional","item": {"kind": "option","names": ["--manifest"],"values": [{"kind": "argument","name": "manifest","value": {"type": "string"}}]}}]},{"kind": "sequence","items": [{"kind": "option","names": ["--manifest"],"values": [{"kind": "argument","name": "manifest","value": {"type": "string"}}]}]}]},
+          {"kind": "repeat","min": 0,"item": {"kind": "argument","name": "path-or-ref","value": {"type": "string"}}},
+          {"kind": "optional","item": {"kind": "option","names": ["--issue"],"values": [{"kind": "argument","name": "issue","value": {"type": "string"}}]}},
+          {"kind": "optional","item": {"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "role","value": {"type": "string"}}]}},
+          {"kind": "optional","item": {"kind": "option","names": ["--dry-run"],"values": []}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
         ]
       }
     },
@@ -2445,7 +2449,7 @@
         "items": [
           {"kind": "argument","name": "request-id","value": {"type": "string"}},
           {"kind": "option","names": ["--kind"],"values": [{"kind": "argument","name": "kind","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--issue"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]},
+          {"kind": "option","names": ["--issue","--target-issue"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--payload-json"],"values": [{"kind": "argument","name": "json","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--body"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--reason-comment"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}]}},
