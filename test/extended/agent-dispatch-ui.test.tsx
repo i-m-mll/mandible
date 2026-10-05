@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { AppShellProvider } from '../../ui/src/app-shell';
 import { AgentDispatchDialog } from '../../ui/src/components/agent-dispatch/AgentDispatchDialog';
 import { LedgerIssueDetail } from '../../ui/src/components/ledger/IssueDetail';
 import type { LedgerIssueDetailProjection } from '../../ui/src/api';
@@ -65,9 +66,28 @@ describe('issue header launch-agent affordance', () => {
 
 describe('dispatch dialog contract', () => {
   it('surfaces a preview failure instead of offering confirmation', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'human credential required' }, 403)));
-    render(<AgentDispatchDialog subject={{ kind: 'issue', issue_ref: 'ce83a84' }} instruction="do the thing" title="Start an agent" onClose={() => undefined} />);
-    expect((await screen.findByTestId('agent-dispatch-error')).textContent).toContain('human credential required');
-    expect((screen.getByRole('button', { name: 'Start agent' }) as HTMLButtonElement).disabled).toBe(true);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/client-auth/whoami') {
+        return jsonResponse({ authenticated: true, session: { csrf_token: 'csrf' } });
+      }
+      return jsonResponse({ error: 'human credential required' }, 403);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const noticeHost = document.createElement('div');
+    document.body.append(noticeHost);
+    try {
+      render(<AppShellProvider value={{ active: true, noticeHost, rightSidebar: null,
+        registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined,
+        setViewSidebarWidth: () => undefined }}>
+        <AgentDispatchDialog subject={{ kind: 'issue', issue_ref: 'ce83a84' }} instruction="do the thing" title="Start an agent" onClose={() => undefined} />
+      </AppShellProvider>);
+      expect((await screen.findByTestId('agent-dispatch-error')).textContent).toContain('human credential required');
+      expect((screen.getByRole('button', { name: 'Start agent' }) as HTMLButtonElement).disabled).toBe(true);
+      expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/agent-dispatch/preview')).toBe(true);
+      expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/agent-dispatch')).toBe(false);
+    } finally {
+      cleanup();
+      noticeHost.remove();
+    }
   });
 });

@@ -12,6 +12,7 @@ import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 import { AppShellProvider, RightSidebarIcon, useRegisterAppRightSidebar, type AppRightSidebarDescriptor, type AppShellContextValue } from '../../ui/src/app-shell';
 import { GraphView } from '../../ui/src/views/graph';
 import { readResolvedStylesheet } from '../helpers/css-manifest';
+import { registeredOperationRouter } from '../helpers/registered-operation-router';
 
 describe('app shell', () => {
   function RegisteredSidebar(): JSX.Element {
@@ -864,6 +865,7 @@ describe('app shell', () => {
 
   it('persists Settings theme choices, applies root attributes, and follows system changes', async () => {
     stubEventSource();
+    const operations = registeredOperationRouter(mainInstance).operationCatalog('theme-test');
     window.__MANDIBLE_BOOTSTRAP__ = { instance: mainInstance };
     window.history.replaceState(null, '', '#/settings');
     let storedTheme = 'system';
@@ -892,6 +894,8 @@ describe('app shell', () => {
           headers: { 'content-type': 'application/json' },
         });
       }
+      if (url === '/api/health') return new Response(JSON.stringify({ ready: true, instance: mainInstance }), { headers: { 'content-type': 'application/json' } });
+      if (url === '/api/instance') return new Response(JSON.stringify({ instance: mainInstance, operations }), { headers: { 'content-type': 'application/json' } });
       if (url === '/api/host-preferences/app-theme' && init?.method !== 'PUT') {
         return new Response(JSON.stringify({
           version: 1,
@@ -930,6 +934,7 @@ describe('app shell', () => {
     await waitFor(() => {
       expect(document.documentElement.dataset.themeMode).toBe('system');
       expect(document.documentElement.dataset.theme).toBe('light');
+      expect((themeSelect as HTMLSelectElement).disabled).toBe(false);
     });
 
     changeSelect(themeSelect, 'light');

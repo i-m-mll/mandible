@@ -57,6 +57,7 @@ function Harness({
   return (
     <>
       <CollectionsSidebar
+      confirmedLoaded
         collections={collections}
         bundles={bundles}
         groups={groups}
@@ -77,6 +78,7 @@ const groupedUpdates: BriefingGroup = {
   createdAt: 1,
   updatedAt: 2,
   destinations: [],
+  destinationHistory: [],
   current: {
     id: '00000000-1234-4123-8123-123456789abc',
     name: 'Accepted layout',
@@ -115,6 +117,7 @@ function GroupHarness(): JSX.Element {
   return (
     <>
       <CollectionsSidebar
+      confirmedLoaded
         collections={collections}
         groups={[groupedUpdates]}
         selectedCollectionId={viewState.selectedCollectionId}
@@ -145,6 +148,7 @@ function PersistedHarness(): JSX.Element {
   const [viewState, setViewState] = useBriefingCollectionViewState();
   return (
     <CollectionsSidebar
+      confirmedLoaded
       collections={collections}
       selectedCollectionId={null}
       viewState={viewState}
@@ -192,6 +196,7 @@ describe('Briefing sidebar row actions', () => {
     const groups = normalizeBriefingGroups({ groups: [{
       id: 'group-1', key: 'review-group', name: 'Review group', created_at: 1, updated_at: 2,
       destinations: [],
+      destination_history: [],
       current: {
         id: 'current-1', name: 'Current', created_at: 1, updated_at: 2,
         layout: [{ kind: 'briefing', briefing: row('baseline', 'Baseline') }],
@@ -294,7 +299,7 @@ describe('Briefing sidebar row actions', () => {
   it('describes published-report destinations without human review actions', () => {
     const group: BriefingGroup = {
       ...groupedUpdates,
-      destinations: [{ logicalArtifactId: 'digest-report', publicationMode: 'published-report' }],
+      destinations: [{ logicalArtifactId: 'digest-report', publicationMode: 'published-report', routeKeys: [] }],
       updates: [],
       reviewCandidates: [],
     };
@@ -425,6 +430,7 @@ describe('Briefing sidebar row actions', () => {
       },
       updates: [],
       destinations: [],
+      destinationHistory: [],
     };
     const selectedGroupUpdateIds = {
       [groupedUpdates.id]: groupedUpdates.updates[1].id,
@@ -502,6 +508,7 @@ describe('Briefing sidebar row actions', () => {
       },
       updates: [],
       destinations: [],
+      destinationHistory: [],
     };
 
     render(<Harness groups={[policyGroup]} initialViewState={{ pinnedCollectionIds: [] }} />);

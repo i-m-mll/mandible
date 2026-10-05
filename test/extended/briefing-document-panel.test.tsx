@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { useState } from 'preact/hooks';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { establishTestClientAccess } from '../helpers/local-client-access';
+import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 import type { BriefingResponseValue, BriefingRoundProjection } from '../../ui/src/api';
 
 import { BriefingDocumentPanel } from '../../ui/src/views/feedback/BriefingDocumentPanel';
@@ -83,8 +85,11 @@ function content() {
   };
 }
 
+beforeEach(establishTestClientAccess);
+
 afterEach(() => {
   cleanup();
+  __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
