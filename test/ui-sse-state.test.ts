@@ -13,12 +13,11 @@ describe('SSE handling', () => {
     let state = initialState;
     state = applySSEEvent(state, {
       type: 'auth:new',
-      request: { id: 'a1', status: 'pending' },
+      data: { request: { id: 'a1', status: 'pending' } },
     });
     state = applySSEEvent(state, {
       type: 'work:branch:updated',
-      repo_id: 'r1',
-      branch: { name: 'main', status: 'dirty' },
+      data: { repo_id: 'r1', branch: { name: 'main', status: 'dirty' } },
     });
 
     const badges = selectBadgeCounts(state);
