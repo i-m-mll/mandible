@@ -34,7 +34,7 @@ cmd_redact() {
   local binding
   binding=$(mandible_bind_arguments "credential.redact" '{"patch_sources":{"option":"patch-sources","constant":"1"},"json":{"option":"json","constant":"1"},"id":{"position":0}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" ]] || die "Usage: mandible credential redact <credential-id> [--patch-sources] [--json]" 2
+  [[ -n "$id" ]] || die "Usage: $(mandible_command_syntax credential.redact)" 2
   require_tools
 
   payload=$(jq -nc --argjson patch "$(( patch_sources ? 1 : 0 ))" \

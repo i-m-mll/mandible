@@ -26,7 +26,7 @@ eval "$binding"
 set -- "${wrapped_command[@]}"
 
 if [ $# -eq 0 ]; then
-  echo "Usage: mandible wrap [--app NAME] [--id ID] -- command [args...]" >&2
+  echo "Usage: $(mandible_command_syntax wrap)" >&2
   exit 2
 fi
 

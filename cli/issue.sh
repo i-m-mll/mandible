@@ -359,7 +359,7 @@ cmd_show() {
   eval "$binding"
 
   if [[ -z "$id" ]]; then
-    die "Usage: mandible issue show <id>" 2
+    die "Usage: $(mandible_command_syntax issue.show)" 2
   fi
 
   require_tools
@@ -737,7 +737,7 @@ cmd_changed() {
     die "--checkpoint requires --since-issue." 2
   fi
   if [[ -z "$manifest" && -z "$since_issue" ]]; then
-    die "Usage: mandible issue changed (--since-manifest <file> | --since-issue <id> [--kind <kind>] [--checkpoint <id>]) [--json]" 2
+    die "Usage: $(mandible_command_syntax issue.changed)" 2
   fi
 
   require_tools
@@ -1090,11 +1090,7 @@ cmd_parent_role() {
     status) cmd_parent_role_status "$@" ;;
     assume) cmd_parent_role_assume "$@" ;;
     ""|-h|--help)
-      cat <<'PARENT_ROLE_USAGE'
-Usage:
-  mandible issue parent-role status <umbrella> [--json]
-  mandible issue parent-role assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]
-PARENT_ROLE_USAGE
+      mandible_command_help issue parent-role
       ;;
     *)
       die "Unknown parent-role action: $action (expected status or assume)" 2
@@ -1109,7 +1105,7 @@ cmd_parent_role_status() {
   binding=$(mandible_bind_arguments "issue.parent-role.status" '{"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
   eval "$binding"
   if [[ -z "$issue_ref" ]]; then
-    die "Usage: mandible issue parent-role status <umbrella> [--json]" 2
+    die "Usage: $(mandible_command_syntax issue.parent-role.status)" 2
   fi
   require_tools
   local response
@@ -1140,7 +1136,7 @@ cmd_parent_role_assume() {
   binding=$(mandible_bind_arguments "issue.parent-role.assume" '{"session_id":{"option":"session"},"mechanism":{"option":"mechanism"},"override":{"option":"override","constant":"1"},"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
   eval "$binding"
   if [[ -z "$issue_ref" ]]; then
-    die "Usage: mandible issue parent-role assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]" 2
+    die "Usage: $(mandible_command_syntax issue.parent-role.assume)" 2
   fi
   if [[ -z "$session_id" ]]; then
     die "Missing parent-role session id. Pass --session <id>, or set MANDIBLE_SESSION_ID or CODEX_SESSION_ID for auto-detection." 2
@@ -1221,7 +1217,7 @@ cmd_open() {
   eval "$binding"
 
   if [[ -z "$id" ]]; then
-    die "Usage: mandible issue open <id>" 2
+    die "Usage: $(mandible_command_syntax issue.open)" 2
   fi
 
   require_tools
@@ -1263,7 +1259,7 @@ cmd_description_show() {
   eval "$binding"
 
   if [[ -z "$issue_ref" ]]; then
-    die "Usage: mandible issue description show <issue-ref> [--json]" 2
+    die "Usage: $(mandible_command_syntax issue.description.show)" 2
   fi
 
   require_tools
@@ -1287,7 +1283,7 @@ cmd_description_history() {
   eval "$binding"
 
   if [[ -z "$issue_ref" ]]; then
-    die "Usage: mandible issue description history <issue-ref> [--json] [--with-body]" 2
+    die "Usage: $(mandible_command_syntax issue.description.history)" 2
   fi
 
   require_tools
@@ -1364,7 +1360,7 @@ cmd_work_notes_show() {
   eval "$binding"
 
   if [[ -z "$issue_ref" ]]; then
-    die "Usage: mandible issue work-notes show <issue-ref> [--json]" 2
+    die "Usage: $(mandible_command_syntax issue.work-notes.show)" 2
   fi
 
   require_tools
@@ -1393,7 +1389,7 @@ cmd_work_notes_patch() {
     die "Usage: mandible issue work-notes ${action} <issue-ref> $([[ "$action" == edit ]] && printf '%s' '-m <text> ') [--base-revision <rev>]" 2
   fi
   if [[ "$action" == edit && -z "$message" ]]; then
-    die "Usage: mandible issue work-notes edit <issue-ref> -m <text> [--base-revision <rev>]" 2
+    die "Usage: $(mandible_command_syntax issue.work-notes.edit)" 2
   fi
 
   require_tools
@@ -1424,7 +1420,7 @@ cmd_work_notes_history() {
   eval "$binding"
 
   if [[ -z "$issue_ref" ]]; then
-    die "Usage: mandible issue work-notes history <issue-ref> [--json] [--with-body]" 2
+    die "Usage: $(mandible_command_syntax issue.work-notes.history)" 2
   fi
 
   require_tools
@@ -1526,7 +1522,7 @@ cmd_comment_show() {
   eval "$binding"
 
   if [[ -z "$comment_ref" ]]; then
-    die "Usage: mandible issue comment show <comment-ref> [--json]" 2
+    die "Usage: $(mandible_command_syntax issue.comment.show)" 2
   fi
 
   require_tools
@@ -1555,7 +1551,7 @@ cmd_comment_history() {
   eval "$binding"
 
   if [[ -z "$comment_ref" ]]; then
-    die "Usage: mandible issue comment history <comment-ref> [--json] [--with-body]" 2
+    die "Usage: $(mandible_command_syntax issue.comment.history)" 2
   fi
 
   require_tools
@@ -1642,7 +1638,7 @@ cmd_revision_show() {
   eval "$binding"
 
   if [[ -z "$revision_id" ]]; then
-    die "Usage: mandible issue revision show <revision-id> [--json]" 2
+    die "Usage: $(mandible_command_syntax issue.revision.show)" 2
   fi
 
   require_tools
@@ -1666,7 +1662,7 @@ cmd_revision_diff() {
   eval "$binding"
 
   if [[ -z "$old_revision_id" || -z "$new_revision_id" ]]; then
-    die "Usage: mandible issue revision diff <old-revision-id> <new-revision-id> [--force]" 2
+    die "Usage: $(mandible_command_syntax issue.revision.diff)" 2
   fi
 
   command -v python3 >/dev/null 2>&1 || die "python3 not found." 1
