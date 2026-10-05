@@ -7,6 +7,7 @@ vendor/
 target/
 src-tauri/gen/
 src-tauri/resources/local-ca-trust-helper
+src-tauri/resources/bun-runtime/
 worktrees/
 coverage/
 AGENT_HANDOFF.md

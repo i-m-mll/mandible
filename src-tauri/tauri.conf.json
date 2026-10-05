@@ -42,6 +42,9 @@
     "targets": ["dmg", "app"],
     "resources": {
       "../scripts/bun-runtime.sh": "scripts/bun-runtime.sh",
+      "../scripts/bun-runtime-lock.tsv": "scripts/bun-runtime-lock.tsv",
+      "resources/bun-runtime/bun.zip": "runtime/bun.zip",
+      "resources/bun-runtime/sqlite.tar.gz": "runtime/sqlite.tar.gz",
       "../.bun-version": ".bun-version",
       "../dist/build-revision.json": "build-revision.json",
       "../scripts/local-ca-trust.mjs": "local-ca-trust.mjs",
