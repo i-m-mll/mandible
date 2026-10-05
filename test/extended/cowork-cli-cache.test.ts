@@ -44,7 +44,20 @@ describe("Cowork CLI cache materializer", () => {
 
   it("ships command renderer dependencies for cached shell callers", () => {
     const targetDir = path.join(tempDir, "complete-cli");
-    materializeCoworkCliCache({ sourceRoot: process.cwd(), targetDir });
+    const manifest = materializeCoworkCliCache({ sourceRoot: process.cwd(), targetDir });
+    expect(manifest.schema).toBe("mandible-cowork-cli-cache@2");
+    const runtimeFiles = [
+      [".bun-version", "runtime/.bun-version"],
+      ["scripts/bun-runtime.sh", "runtime/scripts/bun-runtime.sh"],
+      ["scripts/bun-runtime-lock.tsv", "runtime/scripts/bun-runtime-lock.tsv"],
+    ];
+    for (const [source, cached] of runtimeFiles) {
+      expect(manifest.files).toContainEqual(expect.objectContaining({ source, path: cached }));
+      expect(fs.readFileSync(path.join(targetDir, cached))).toEqual(fs.readFileSync(source));
+    }
+    expect(manifest.content_digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(materializeCoworkCliCache({ sourceRoot: process.cwd(), targetDir }).content_digest)
+      .toBe(manifest.content_digest);
     const result = spawnSync("bash", [path.join(targetDir, "issue.sh"), "report"], {
       encoding: "utf8", env: { ...process.env, MANDIBLE_CLI_DIR: targetDir },
     });
@@ -58,7 +71,7 @@ describe("Cowork CLI cache materializer", () => {
     expect(rendered.stdout).not.toContain("{{");
   });
 
-  it("materializes generated route metadata into the cache manifest", () => {
+  it("preserves generated file bytes and provenance in the cache manifest", () => {
     const sourceRoot = path.join(tempDir, "source");
     const targetDir = path.join(tempDir, "cache", "cli");
     fs.mkdirSync(path.join(sourceRoot, "cli"), { recursive: true });
@@ -70,20 +83,27 @@ describe("Cowork CLI cache materializer", () => {
       version: "test-version",
       generatedFiles: [
         {
-          path: "route-mutation-categories.json",
-          contents: "{\"schema\":1,\"routes\":[]}\n",
+          path: "generated-fixture.md",
+          contents: "# Generated fixture\n",
         },
       ],
     });
 
-    expect(fs.readFileSync(path.join(targetDir, "route-mutation-categories.json"), "utf8")).toBe(
-      "{\"schema\":1,\"routes\":[]}\n",
+    expect(fs.readFileSync(path.join(targetDir, "generated-fixture.md"), "utf8")).toBe(
+      "# Generated fixture\n",
     );
     expect(manifest.files.map((file) => file.path)).toEqual([
       "api.sh",
-      "route-mutation-categories.json",
+      "generated-fixture.md",
     ]);
-    expect(manifest.files.at(-1)?.source).toBe("generated:route-mutation-categories.json");
+    expect(manifest.files.at(-1)?.source).toBe("generated:generated-fixture.md");
     expect(JSON.parse(fs.readFileSync(path.join(targetDir, "manifest.json"), "utf8")).files).toHaveLength(2);
+    const updated = materializeCoworkCliCache({
+      sourceRoot,
+      targetDir,
+      version: "test-version",
+      generatedFiles: [{ path: "generated-fixture.md", contents: "# Updated fixture\n" }],
+    });
+    expect(updated.content_digest).not.toBe(manifest.content_digest);
   });
 });
