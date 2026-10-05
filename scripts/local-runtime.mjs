@@ -58,7 +58,7 @@ function readProductionRecord() {
 function readMainInstance(root) {
   if (!fs.existsSync(AUTHORITY_DB)) throw new Error(`Local-session authority is missing: ${AUTHORITY_DB}`);
   const requireFromProject = createRequire(path.join(root, "package.json"));
-  const Database = requireFromProject("./dist/sqlite.js").default;
+  const Database = requireFromProject(process.env.MANDIBLE_RUNTIME_HANDOFF_STORAGE || "./dist/sqlite.js").default;
   const db = new Database(AUTHORITY_DB, { readonly: true, fileMustExist: true });
   try {
     const rows = db.prepare("SELECT instance_id, installation_id, role, public_origin, backend_origin, backend_generation, effect_ceiling_json, writable_roots_json FROM instance_registrations WHERE role = 'main'").all();
@@ -206,7 +206,91 @@ function inspectJob(label) {
   const result = runLaunchctl(["print", `${DOMAIN}/${label}`]);
   const loaded = result.status === 0;
   const pid = loaded ? Number(result.stdout.match(/\bpid = (\d+)/)?.[1] ?? 0) || null : null;
-  return { loaded, pid, detail: result.stderr.trim() };
+  const argumentsText = result.stdout.match(/\n\s*arguments = \{\n([\s\S]*?)\n\s*\}/)?.[1];
+  const argv = argumentsText?.split('\n').map(line => line.trim()).filter(Boolean) ?? [];
+  return { loaded, pid, argv, detail: result.stderr.trim() };
+}
+
+function processStart(pid) {
+  if (!pid) return null;
+  const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 1500 });
+  return result.status === 0 ? result.stdout.trim() || null : null;
+}
+
+function handoffService(label) {
+  const installed = locateLaunchAgent(label);
+  if (!installed) throw new Error(`Owned service ${label} is missing.`);
+  const job = inspectJob(label);
+  const argv = installed.record.ProgramArguments;
+  if (!Array.isArray(argv) || argv.length < 2 || (job.loaded && JSON.stringify(job.argv) !== JSON.stringify(argv))) {
+    throw new Error(`Loaded arguments differ from the owned service definition for ${label}.`);
+  }
+  return { file: installed.file, sha256: createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex'), argv, loaded: job.loaded };
+}
+
+export function captureRuntimeHandoff(root) {
+  const production = readProductionRecord();
+  if (production.root !== path.resolve(root)) throw new Error('Handoff checkout differs from the installed production checkout.');
+  const main = readMainInstance(root);
+  const backend = handoffService(BACKEND_LABEL);
+  const gateway = handoffService(GATEWAY_LABEL);
+  const job = inspectJob(BACKEND_LABEL);
+  const startedAt = processStart(job.pid);
+  if (!job.loaded || !job.pid || !startedAt) throw new Error('Handoff requires the exact running production LaunchAgent.');
+  return { installationId: main.installation_id, home: HOME, root: production.root, domain: DOMAIN,
+    backendLabel: BACKEND_LABEL, gatewayLabel: GATEWAY_LABEL, publicOrigin: main.public_origin,
+    daemonLog: readRunnerMetadata(production).logFile,
+    oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, launchMode: installedLaunchMode() }, priorGateway: gateway };
+}
+
+function assertHandoffInstallation(binding) {
+  if (binding.home !== HOME || binding.domain !== DOMAIN || binding.backendLabel !== BACKEND_LABEL || binding.gatewayLabel !== GATEWAY_LABEL
+    || fs.readFileSync(INSTALLATION_AUTHORITY, 'utf8').trim() !== binding.installationId) throw new Error('Runtime handoff belongs to another installation.');
+  if (processStart(binding.oldProcess.pid) === binding.oldProcess.startedAt) throw new Error('The old production process has not finished draining.');
+}
+
+export function removeHandoffDefinitions(binding) {
+  assertHandoffInstallation(binding);
+  for (const [label, prior] of [[BACKEND_LABEL, binding.priorBackend], [GATEWAY_LABEL, binding.priorGateway]]) {
+    // A stable Caddy gateway can remain live. A legacy JS gateway must be
+    // unloaded before its source/dependencies change under the old interpreter.
+    if (label === GATEWAY_LABEL && !prior.argv.some(arg => /\.m?js$/.test(arg))) continue;
+    const current = inspectJob(label);
+    if (!current.loaded) continue;
+    if (JSON.stringify(current.argv) !== JSON.stringify(prior.argv)) throw new Error(`Service ${label} changed during handoff; preserving it.`);
+    const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`]);
+    if (result.status !== 0 || inspectJob(label).loaded) throw new Error(`Could not unload exact service ${label}: ${result.stderr.trim()}`);
+  }
+}
+
+export async function startHandoffDefinitions(binding) {
+  assertHandoffInstallation(binding);
+  if (readBuildRevision(binding.root) !== binding.mergeCommit) throw new Error('Runtime handoff build differs from its applied merge.');
+  for (const label of [BACKEND_LABEL, GATEWAY_LABEL]) {
+    const installed = locateLaunchAgent(label);
+    if (!installed) throw new Error(`Candidate service ${label} is missing.`);
+    const job = inspectJob(label);
+    const gatewayDefinitionChanged = label === GATEWAY_LABEL && createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex') !== binding.priorGateway.sha256;
+    if (job.loaded && (gatewayDefinitionChanged || JSON.stringify(job.argv) !== JSON.stringify(installed.record.ProgramArguments))) {
+      if (JSON.stringify(job.argv) !== JSON.stringify(binding.priorGateway.argv) || label !== GATEWAY_LABEL) throw new Error(`Unrecognized loaded service ${label}; preserving it.`);
+      const removed = runLaunchctl(['bootout', `${DOMAIN}/${label}`]);
+      if (removed.status !== 0 || inspectJob(label).loaded) throw new Error(`Could not unload changed gateway ${label}.`);
+    }
+    ensureEnabledAndLoaded(label);
+    const started = runLaunchctl(['kickstart', `${DOMAIN}/${label}`]);
+    if (started.status !== 0) throw new Error(`Could not start candidate service ${label}: ${started.stderr.trim()}`);
+  }
+  return verifyHandoffDefinitions(binding);
+}
+
+export async function verifyHandoffDefinitions(binding) {
+  if (binding.home !== HOME || binding.installationId !== fs.readFileSync(INSTALLATION_AUTHORITY, 'utf8').trim()) throw new Error('Candidate installation identity differs.');
+  const backend = handoffService(BACKEND_LABEL);
+  const gateway = handoffService(GATEWAY_LABEL);
+  if (!backend.loaded || !gateway.loaded || backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services are not loaded with the pinned runtime.');
+  const status = await inspectRuntime({ launchMode: binding.priorBackend.launchMode });
+  if (!status.status.dashboard_ready || status.main.backend_generation !== binding.mergeCommit) throw new Error('Candidate production front door is not ready at the exact merge generation.');
+  return { backend, gateway, health: status.backend.document, frontDoorHealth: status.gateway.document };
 }
 
 function portOpen(url) {
@@ -776,6 +860,25 @@ async function initializeMainRegistration(root) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
+  const journalPath = process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL;
+  const activePath = path.join(RUNTIME_DIR, 'handoff-active.json');
+  const active = fs.existsSync(activePath) ? JSON.parse(fs.readFileSync(activePath, 'utf8')) : null;
+  const journal = journalPath ? JSON.parse(fs.readFileSync(journalPath, 'utf8')) : null;
+  const directHandoff = !!journal && active?.journal === journalPath && active?.bindingDigest === journal.bindingDigest && journal.binding.home === HOME;
+  if (active && !directHandoff && command !== 'status') throw new Error('A production runtime handoff is pending; preserve its owned service definitions.');
+  if (command === 'handoff-snapshot') {
+    const rootIndex = args.indexOf('--root');
+    process.stdout.write(`${JSON.stringify(captureRuntimeHandoff(args[rootIndex + 1] ?? process.cwd()))}\n`);
+    return;
+  }
+  if (command === 'handoff-remove' || command === 'handoff-start' || command === 'handoff-verify') {
+    const acceptedProbe = command === 'handoff-verify' && (journal?.phase === 'acknowledged' || journal?.phase === 'complete' && journal.cleanupStartedAt) && journal.binding.home === HOME;
+    if (!directHandoff && !acceptedProbe) throw new Error('Runtime handoff command requires its exact active journal.');
+    const result = command === 'handoff-remove' ? removeHandoffDefinitions(journal.binding)
+      : command === 'handoff-start' ? await startHandoffDefinitions(journal.binding) : await verifyHandoffDefinitions(journal.binding);
+    process.stdout.write(`${JSON.stringify(result ?? { removed: true })}\n`);
+    return;
+  }
   const launchModeArg = args.find((arg) => arg.startsWith("--launch-mode="))?.slice("--launch-mode=".length);
   if (launchModeArg && !["manual", "on_demand"].includes(launchModeArg)) {
     throw new Error(`Unsupported launch mode: ${launchModeArg}`);
@@ -798,6 +901,7 @@ async function main() {
     status = (await inspectRuntime({ launchMode })).status;
   }
   else if (command === "install") {
+    if (directHandoff && inspectJob(BACKEND_LABEL).loaded) throw new Error('The old backend definition must be unloaded before candidate installation.');
     const rootArgIndex = args.indexOf("--root");
     const root = path.resolve(rootArgIndex >= 0 ? (args[rootArgIndex + 1] ?? "") : process.cwd());
     if (!fs.existsSync(path.join(root, "package.json")) || !fs.existsSync(path.join(root, "dist", "index.js"))) {
@@ -813,7 +917,7 @@ async function main() {
     });
     if (result.error || result.status !== 0) throw new Error(`Gateway installation failed: ${(result.stderr || result.error?.message || "unknown failure").trim()}`);
     const installed = ensureInstalled(production, mainInstance, effectiveLaunchMode);
-    if (production.legacyEffectsMigrated) {
+    if (production.legacyEffectsMigrated && !directHandoff) {
       if (installed.wasBackendLoaded) restartOwnedJob(BACKEND_LABEL);
       else if (await portOpen(mainInstance.backendUrl)) {
         throw new Error("The production effect ceiling was updated, but the healthy backend is not owned by Mandible's LaunchAgent; restart it explicitly to apply the update.");
