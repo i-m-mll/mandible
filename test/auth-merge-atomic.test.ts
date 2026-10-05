@@ -3,8 +3,31 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { extractAtomicMergeState } from "../src/auth-signature-verification.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
+
+it("persists independently parseable prepared and applied checkpoint lines", () => {
+  const prepared = { merge_sha: "a".repeat(40), base_sha: "b".repeat(40), head_sha: "c".repeat(40), tree_sha: "d".repeat(40) };
+  const applied = { merge_sha: prepared.merge_sha, base_sha: prepared.base_sha };
+  const result = spawnSync("bash", ["-c", [
+    "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1 MANDIBLE_AUTH_REQUEST_ID=checkpoint-test",
+    'source "$MANDIBLE_TEST_AUTH_MERGE"',
+    'auth_merge_http_request() { printf \'%s\\n\' "$3" >> "$MANDIBLE_TEST_CHECKPOINTS"; }',
+    'persist_atomic_marker "$MANDIBLE_TEST_PREPARED"',
+    'persist_atomic_marker "$MANDIBLE_TEST_APPLIED"',
+  ].join("\n")], {
+    encoding: "utf8",
+    env: { ...process.env, MANDIBLE_TEST_AUTH_MERGE: AUTH_MERGE,
+      MANDIBLE_TEST_CHECKPOINTS: path.join(repo, "checkpoints.jsonl"),
+      MANDIBLE_TEST_PREPARED: `MANDIBLE_MERGE_PREPARED ${JSON.stringify(prepared)}`,
+      MANDIBLE_TEST_APPLIED: `MANDIBLE_MERGE_APPLIED ${JSON.stringify(applied)}` },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  const chunks = fs.readFileSync(path.join(repo, "checkpoints.jsonl"), "utf8").trim().split("\n")
+    .map(line => JSON.parse(line).chunk as string);
+  expect(extractAtomicMergeState(chunks.join(""))).toEqual({ prepared, applied, invalid: false });
+});
 
 let repo = "";
 let key = "";

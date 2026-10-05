@@ -740,7 +740,7 @@ persist_atomic_marker() {
   local marker=$1
   local request_id=${MANDIBLE_AUTH_REQUEST_ID:?missing auth request id}
   local payload
-  payload=$(jq -nc --arg chunk "${marker}\n" '{chunk:$chunk}') || return 1
+  payload=$(jq -nc --arg chunk "$marker" '{chunk:($chunk + "\n")}') || return 1
   auth_merge_http_request POST \
     "/api/auth/request/${request_id}/output" "$payload" 5 >/dev/null
 }
