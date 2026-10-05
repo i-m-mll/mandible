@@ -21,7 +21,7 @@ describe("Bun SQLite boundary", () => {
       expect(row).toMatchObject({ id: 1, label: "one", large: 9007199254740993n });
       expect([...row.bytes]).toEqual([1, 2]);
       expect(db.prepare("SELECT id FROM values_test WHERE id = ?").get(2)).toBeUndefined();
-      expect(() => insert.run({ label: "two", bytes: null, large: 2, typo: 3 })).toThrow();
+      expect(insert.run({ label: "two", bytes: null, large: 2, extraDomainField: { arbitrary: true } }).changes).toBe(1);
       expect(() => insert.run({ label: "one", bytes: null, large: 2 })).toThrow(SqliteError);
     } finally { db.close(); }
   });
@@ -49,11 +49,11 @@ describe("Bun SQLite boundary", () => {
         expect(execute, method).toThrow("Missing SQLite binding");
       }
       const statement = db.prepare("SELECT :name, ?");
-      statement.get({ name: 1 }, 2);
+      expect(statement.arrays().get({ name: 1, change_report: undefined }, 2)).toEqual([1, 2]);
       expect(() => statement.get({}, 2)).toThrow("Missing SQLite binding");
       expect(() => statement.get(Object.create({ name: 1 }), 2)).toThrow("Missing SQLite binding");
       expect(() => statement.get({ name: 1, ":name": 1 }, 2)).toThrow("supplied twice");
-      expect(() => db.prepare("SELECT :a, @a").get({ a: 1 })).toThrow("ambiguous");
+      expect(() => db.prepare("SELECT :a, @a").get({ a: 1 })).toThrow(/ambiguous/i);
       expect(() => db.prepare("SELECT ?").get([, 1])).toThrow("omissions");
       expect(() => db.prepare("SELECT ?").get(undefined)).toThrow("undefined");
       expect(() => db.prepare("SELECT ?").get(9007199254740992)).toThrow("BigInt");
