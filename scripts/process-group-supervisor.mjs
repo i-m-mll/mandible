@@ -1,4 +1,23 @@
 import process from "node:process";
+import { spawn } from 'node:child_process';
+
+export async function runSupervisedCommand(binary, args, { cwd, env, stdio, timeout, graceMs } = {}) {
+  const supervisor = new ProcessGroupSupervisor({ graceMs });
+  let timer; let timedOut = false; let cleanupError;
+  try {
+    const child = spawn(binary, args, { cwd, env, detached: true, stdio });
+    if (!child.pid) await waitForExit(child);
+    supervisor.attach(child);
+    timer = setTimeout(() => { timedOut = true; void supervisor.stopActive().catch(error => { cleanupError = error; }); }, timeout);
+    const result = await supervisor.settle(child);
+    if (cleanupError) throw cleanupError;
+    if (timedOut) throw new Error(`${binary} ${args[0]} exceeded its ${timeout}ms stage deadline.`);
+    if (result.code !== 0) throw new Error(`${binary} ${args[0]} failed: ${result.signal || result.code}; inspect the retained build log.`);
+  } finally {
+    clearTimeout(timer);
+    await supervisor.close();
+  }
+}
 
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
 

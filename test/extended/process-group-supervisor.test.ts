@@ -5,12 +5,25 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
+import { runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs';
 
 const temporaryRoots: string[] = [];
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
+
+it('bounds a stage whose process ignores graceful termination', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-stage-timeout-'));
+  temporaryRoots.push(root);
+  const pidFile = path.join(root, 'stage.pid');
+  await expect(runSupervisedCommand(process.execPath, ['-e', `
+    require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+    process.on('SIGTERM', () => {});
+    setInterval(() => {}, 1000);
+  `], { timeout: 1000, graceMs: 100, stdio: 'ignore' })).rejects.toThrow('stage deadline');
+  expect(isAlive(Number(fs.readFileSync(pidFile, 'utf8')))).toBe(false);
+}, 3000);
 
 it.each(["signal", "watchdog"] as const)("terminates the launcher shard group through the outer %s path", async (trigger) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-process-group-"));

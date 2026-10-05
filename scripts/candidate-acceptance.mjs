@@ -6,6 +6,7 @@ import net from 'node:net';
 import http from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 import { readBuildRevision } from './build-revision.mjs';
@@ -85,9 +86,9 @@ async function main() {
   process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt);
   try {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
-    command(runtime, ['run', 'build'], { env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: 180000 });
+    await runSupervisedCommand(runtime, ['run', 'build'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 180000 });
     if (readBuildRevision(root) !== candidate) throw new Error('Built daemon revision does not match the exact candidate.');
-    command(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
+    await runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
     const builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', builtApp]);
     const app = path.join(run, 'Mandible.app'); fs.cpSync(builtApp, app, { recursive: true });

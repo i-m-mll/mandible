@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { assessLogs } from './runtime-log-assessment.mjs';
 
@@ -30,6 +31,12 @@ function run(binary, args, { cwd, env = process.env, timeout = 5000, log } = {})
   } finally { if (fd !== null) fs.closeSync(fd); }
 }
 const launchctl = args => run('/bin/launchctl', args);
+async function runStage(binary, args, { cwd, env, timeout, log }) {
+  const fd = fs.openSync(log, 'a', 0o600);
+  try {
+    await runSupervisedCommand(binary, args, { cwd, env: { ...env, GIT_OPTIONAL_LOCKS: '0' }, timeout, stdio: ['ignore', fd, fd] });
+  } finally { fs.closeSync(fd); }
+}
 const startedAt = pid => {
   const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 1500 });
   return result.status === 0 ? result.stdout.trim() || null : null;
@@ -255,7 +262,7 @@ async function worker(file) {
       if (journal.stages[stage]) continue;
       await publication(journal);
       save(journal, { phase: stage });
-      run(binary, args, { cwd: b.root, env, timeout, log });
+      await runStage(binary, args, { cwd: b.root, env, timeout, log });
       save(journal, { stages: { ...journal.stages, [stage]: { completedAt: Date.now(), logDigest: fileHash(log) } } });
     }
     save(journal, { phase: 'starting' });

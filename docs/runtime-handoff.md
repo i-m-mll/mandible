@@ -76,6 +76,7 @@ MANDIBLE_TEST_LEGACY_RUNTIME="/absolute/path/to/deployed/old/node" \
 MANDIBLE_TEST_CANDIDATE_REVISION="<committed candidate SHA>" \
 MANDIBLE_TEST_CA_HOME="/absolute/path/to/existing/trusted/installation" \
 MANDIBLE_RUNTIME_ARCHIVE="/absolute/path/to/verified/bun.zip" \
+MANDIBLE_SQLITE_LIBRARY_ARCHIVE="/absolute/path/to/verified/sqlite.tar.gz" \
   "$runtime" node_modules/vitest/vitest.mjs run \
   --config vitest.extended.config.ts \
   test/extended/runtime-handoff-full.test.ts
@@ -84,7 +85,11 @@ MANDIBLE_RUNTIME_ARCHIVE="/absolute/path/to/verified/bun.zip" \
 Pass the qualified stock SQLite library inputs when required by its canonical
 startup contract. `MANDIBLE_TEST_OLD_REVISION` may explicitly select the retained
 old commit; otherwise the old build marker supplies it. The old checkout must
-retain its compatible dependencies. The candidate revision must include every
+retain its compatible dependencies. The fixture clones the qualified Bun
+dependency cache into its private home and references the existing Cargo and
+Rustup toolchain directories. These prerequisites come from the established
+frozen dependency install and native build setup; the fixture does not edit
+user toolchain configuration. The candidate revision must include every
 runtime, storage and handoff source change being qualified.
 
 Isolation transforms only the fixture copies: generated frontend/backend
