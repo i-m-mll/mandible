@@ -143,12 +143,12 @@ export function registerConversationControlRoutes(
   server.get("/api/conversations/:id/control/permissions", operatorOnlyManagedSessionRoute((req, res) => {
     const result = control.permissions(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "get:/api/conversations/:id/control/permissions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/conversations/:id/control/settings", operatorOnlyManagedSessionRoute((req, res) => {
     const result = control.getRuntimeSettings(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "get:/api/conversations/:id/control/settings", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.patch("/api/conversations/:id/control/settings", operatorOnlyManagedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);
@@ -163,7 +163,7 @@ export function registerConversationControlRoutes(
     } catch (error) {
       sendJson(res, 400, { error: "invalid_runtime_options", message: error instanceof Error ? error.message : String(error) });
     }
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "patch:/api/conversations/:id/control/settings", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
   server.post("/api/conversations/:id/control/permission/:requestId", operatorOnlyManagedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);
@@ -175,7 +175,7 @@ export function registerConversationControlRoutes(
     if (!await previewControlAllowed(req.params.id, generation)) return rejectIneligiblePreviewControl(res);
     const result = await control.decidePermission({ conversation_id: req.params.id, generation, request_id: req.params.requestId, decision: decision as "allow" | "deny" | "allow_always" });
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "post:/api/conversations/:id/control/permission/:requestId", effects: ["ledger:write", "provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
   server.post("/api/conversations/:id/control/interrupt", operatorOnlyManagedSessionRoute(async (req, res) => {
     const generation = Number(bodyRecord(req).generation);
@@ -183,7 +183,7 @@ export function registerConversationControlRoutes(
     if (!await previewControlAllowed(req.params.id, generation)) return rejectIneligiblePreviewControl(res);
     const result = await control.interrupt(req.params.id, generation);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "post:/api/conversations/:id/control/interrupt", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
   server.post("/api/conversations/:id/control/stop", operatorOnlyManagedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);

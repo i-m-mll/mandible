@@ -13,7 +13,9 @@ const registry = createRequire(import.meta.url)(path.resolve(path.dirname(fileUR
 };
 export function commandHelp(route: string[]): string { return registry.help(route); }
 export function parseCommand(route: string[], argv: string[]): ParsedCommand {
-  if (argv.some(value => value === "--help" || value === "-h")) {
+  const separator = argv.indexOf("--");
+  const helpArgs = separator < 0 ? argv : argv.slice(0, separator);
+  if (helpArgs.some(value => value === "--help" || value === "-h")) {
     process.stdout.write(commandHelp(route));
     process.exit(0);
   }

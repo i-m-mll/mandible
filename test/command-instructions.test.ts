@@ -41,6 +41,8 @@ describe("one CLI grammar", () => {
       .toBe("publication='frozen-row'");
     expect(() => syntax.parse(["auth", "request", "feature/x", "--title", "t", "--issue", "one", "--space-publication"]))
       .toThrow();
+    expect(syntax.bindEntry("wrap", { argv: { rest: 0 } }, ["--", "command", "--help"]))
+      .toBe("argv=('command' '--help')");
     expect(syntax.bindEntry("conversations.comment", { message: { option: "m" } }, ["id", "-m", "$(touch bad)'literal"]))
       .toContain("'$(touch bad)'\\''literal'");
   });

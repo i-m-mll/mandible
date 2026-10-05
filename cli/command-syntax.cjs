@@ -171,7 +171,9 @@ function parse(argv, commands = loadCommands()) {
 
 function shellQuote(value) { return "'" + String(value).replaceAll("'", "'\\''") + "'"; }
 function bindEntry(key, bindings, argv, commands = loadCommands(), main = false) {
-  if (argv.some(value => value === '--help' || value === '-h')) {
+  const separator = argv.indexOf('--');
+  const helpArgs = separator < 0 ? argv : argv.slice(0, separator);
+  if (helpArgs.some(value => value === '--help' || value === '-h')) {
     return `printf '%s' ${shellQuote(help(key.startsWith('@') ? key.slice(1).split(' ') : commands[key]?.route ?? [], commands))}; ${main ? 'exit' : 'return'} 0`;
   }
   const parsed = key.startsWith("@") ? parse([...key.slice(1).split(" "), ...argv], commands) : parseEntry(key, argv, commands);
