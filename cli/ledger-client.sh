@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 set -u
 set -o pipefail
 
-LEDGER_CLIENT_DIR="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+LEDGER_CLIENT_DIR="${MANDIBLE_CLI_DIR:-$MANDIBLE_COMMAND_SYNTAX_DIR}"
 API_HELPER="${LEDGER_CLIENT_DIR}/api.sh"
 source "$API_HELPER"
 
