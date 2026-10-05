@@ -318,7 +318,7 @@ cmd_comment_edit() {
   local base_body_hash=""
 
   local binding
-  binding=$(mandible_bind_arguments "issue.comment.edit" '{"message":{"option":["m","message"]},"base_revision_id":{"option":"base-revision"},"base_body_hash":{"option":"base-body-hash"},"comment_ref":{"position":0}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "issue.comment.edit" '{"message":{"option":["m","message"]},"base_revision_id":{"option":["base-revision","base-body-revision"]},"base_body_hash":{"option":"base-body-hash"},"comment_ref":{"position":0}}' "$@") || return $?
   eval "$binding"
 
   if [[ -z "$comment_ref" || -z "$message" ]]; then
@@ -1304,7 +1304,7 @@ cmd_description_edit() {
   local base_body_hash=""
 
   local binding
-  binding=$(mandible_bind_arguments "issue.description.edit" '{"message":{"option":["m","message"]},"base_revision_id":{"option":"base-revision"},"base_body_hash":{"option":"base-body-hash"},"issue_ref":{"position":0}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "issue.description.edit" '{"message":{"option":["m","message"]},"base_revision_id":{"option":["base-revision","base-body-revision"]},"base_body_hash":{"option":"base-body-hash"},"issue_ref":{"position":0}}' "$@") || return $?
   eval "$binding"
 
   if [[ -z "$issue_ref" || -z "$message" ]]; then
@@ -1382,7 +1382,7 @@ cmd_work_notes_patch() {
   local base_revision_id=""
 
   local binding
-  binding=$(mandible_bind_arguments "issue.work-notes.${action}" '{"message":{"option":"m"},"base_revision_id":{"option":"base-revision"},"issue_ref":{"position":0}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "issue.work-notes.${action}" '{"message":{"option":["m","message"]},"base_revision_id":{"option":["base-revision","expected-revision"]},"issue_ref":{"position":0}}' "$@") || return $?
   eval "$binding"
 
   if [[ -z "$issue_ref" ]]; then

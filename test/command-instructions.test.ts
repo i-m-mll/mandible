@@ -41,6 +41,15 @@ describe("one CLI grammar", () => {
       .toBe("publication='frozen-row'");
     expect(() => syntax.parse(["auth", "request", "feature/x", "--title", "t", "--issue", "one", "--space-publication"]))
       .toThrow();
+    expect(syntax.bindEntry("wrap", { argv: { rest: 0 } }, ["--", "command", "--help"]))
+      .toBe("argv=('command' '--help')");
+    expect(syntax.parse(["artifact", "bundle", "create", "--name", "smoke", "report.md", "--dry-run", "--json"]))
+      .toMatchObject({ options: { name: "smoke", "dry-run": true }, positionals: ["report.md"] });
+    expect(syntax.parse(["artifact", "snapshot", "artifact-version:one", "--from", "report.md", "--json"]).options.from)
+      .toBe("report.md");
+    expect(syntax.bindEntry("session.link-issue", { session: [{ option: ["session", "session-id"] }, { position: 0 }] },
+      ["--session-id", "session", "--issue", "issue", "--repo", "repo"]))
+      .toBe("session='session'");
     expect(syntax.bindEntry("conversations.comment", { message: { option: "m" } }, ["id", "-m", "$(touch bad)'literal"]))
       .toContain("'$(touch bad)'\\''literal'");
   });
