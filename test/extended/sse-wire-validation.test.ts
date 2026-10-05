@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { waitFor } from '@testing-library/preact';
 import { QueryClient } from '@tanstack/preact-query';
 import { createSSEClient, type SseStateHandler, type SSEPayload } from '../../ui/src/sse-client';
@@ -59,5 +59,56 @@ it('rejects malformed wire frames without replacing useful content and resumes o
   } finally {
     client.close();
     cache.clear();
+  }
+});
+
+
+it('ignores a delayed subscribe response after disconnect and a newer connection', async () => {
+  const responses: Array<(response: Response) => void> = [];
+  const fetchImpl = (async (input) => {
+    if (String(input) === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, session: { csrf_token: 'fixture' } }));
+    return await new Promise<Response>((resolve) => responses.push(resolve));
+  }) as typeof fetch;
+  const client = createSSEClient({ fetchImpl });
+  client.connect();
+  await waitFor(() => expect(responses).toHaveLength(1));
+  client.disconnect();
+  client.connect();
+  await waitFor(() => expect(responses).toHaveLength(2));
+  const canceled = vi.fn();
+  responses[0](new Response(new ReadableStream({ cancel: canceled })));
+  await waitFor(() => expect(canceled).toHaveBeenCalledOnce());
+  expect(client.getState()).toBe('connecting');
+  let currentStream!: ReadableStreamDefaultController<Uint8Array>;
+  responses[1](new Response(new ReadableStream({ start(controller) { currentStream = controller; } })));
+  await waitFor(() => expect(client.getState()).toBe('open'));
+  client.close();
+  currentStream.close();
+});
+
+it('does not retry when a connection-state listener disconnects at stream completion', async () => {
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  let subscriptions = 0;
+  const fetchImpl = (async (input) => {
+    if (String(input) === '/api/client-auth/whoami') return new Response(JSON.stringify({ authenticated: true, session: { csrf_token: 'fixture' } }));
+    subscriptions += 1;
+    return new Response(new ReadableStream({ start(controller) { stream = controller; } }));
+  }) as typeof fetch;
+  const client = createSSEClient({ fetchImpl });
+  client.connect();
+  await waitFor(() => expect(client.getState()).toBe('open'));
+  vi.useFakeTimers();
+  try {
+    const disconnected = new Promise<void>((resolve) => client.onState((state) => {
+      if (state === 'down') { client.disconnect(); resolve(); }
+    }));
+    stream.close();
+    await disconnected;
+    await vi.runAllTimersAsync();
+    expect(subscriptions).toBe(1);
+    expect(client.getState()).toBe('idle');
+  } finally {
+    client.close();
+    vi.useRealTimers();
   }
 });

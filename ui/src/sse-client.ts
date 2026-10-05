@@ -169,6 +169,7 @@ export class SSEClient {
     const controller = new AbortController();
     this.abortController = controller;
     let shouldReconnect = false;
+    const isCurrent = () => this.abortController === controller && !controller.signal.aborted && !this.closed;
     try {
       // The authenticated POST stream uses the shared cookie and CSRF boundary.
       const response = await browserSessionFetch(this.url, {
@@ -176,6 +177,10 @@ export class SSEClient {
         headers: { Accept: 'text/event-stream' },
         signal: controller.signal,
       }, this.fetchImpl);
+      if (!isCurrent()) {
+        void response.body?.cancel().catch(() => undefined);
+        return;
+      }
       if (response.status === 401 || response.status === 403) {
         this.setState('down');
         return;
@@ -189,13 +194,14 @@ export class SSEClient {
       let buffer = '';
       while (!this.closed && !controller.signal.aborted) {
         const { done, value } = await reader.read();
+        if (!isCurrent()) break;
         if (done) {
           shouldReconnect = true;
           break;
         }
         buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
         let boundary = buffer.indexOf('\n\n');
-        while (boundary >= 0) {
+        while (boundary >= 0 && isCurrent()) {
           const frame = buffer.slice(0, boundary);
           buffer = buffer.slice(boundary + 2);
           const data = frame
@@ -208,16 +214,20 @@ export class SSEClient {
         }
       }
     } catch {
-      if (!controller.signal.aborted && !this.closed) {
+      if (isCurrent()) {
         shouldReconnect = true;
       }
     } finally {
-      if (this.abortController === controller) this.abortController = null;
-      this.connecting = false;
-    }
-    if (shouldReconnect) {
-      this.setState('down');
-      this.scheduleReconnect();
+      if (this.abortController === controller) {
+        this.connecting = false;
+        if (shouldReconnect && !controller.signal.aborted && !this.closed) this.setState('down');
+        // Keep the controller attached while notifying listeners, so a listener's
+        // disconnect aborts this attempt and a new connection retains ownership.
+        if (this.abortController === controller) this.abortController = null;
+        if (shouldReconnect && !controller.signal.aborted && !this.closed && !this.abortController) {
+          this.scheduleReconnect();
+        }
+      }
     }
   }
 
