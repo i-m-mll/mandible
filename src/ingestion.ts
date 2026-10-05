@@ -1,3 +1,4 @@
+import { isSqliteBusy } from "./sqlite.js";
 // Ingestion service: watches filesystem for conversation files and maintains
 // the conversations/conversation_blocks tables in sync.
 
@@ -8,7 +9,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
-import Database from "better-sqlite3";
+import SqliteDatabase from "./sqlite.js";
 import { getDb, type Db } from "./db.js";
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
@@ -1254,9 +1255,9 @@ async function findTranscriptPathForSession(sessionRef: string | null): Promise<
     }
     if (row?.source === "codex") {
       const codexRoot = path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"));
-      let stateDb: Database.Database | null = null;
+      let stateDb: SqliteDatabase | null = null;
       try {
-        stateDb = new Database(path.join(codexRoot, "state_5.sqlite"), { readonly: true, fileMustExist: true });
+        stateDb = new SqliteDatabase(path.join(codexRoot, "state_5.sqlite"), { readonly: true, fileMustExist: true });
         const exact = stateDb.prepare("SELECT id, rollout_path FROM threads WHERE id = ?").get(sessionRef) as
           | { id: string; rollout_path: string }
           | undefined;
@@ -3913,11 +3914,7 @@ function foreignBlockIdHolders(
   return found;
 }
 
-function isSqliteBusy(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null)?.code;
-  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED"
-    || /SQLITE_(?:BUSY|LOCKED)|database is locked/i.test(String(error));
-}
+
 
 async function ingestWorkflowArtifact(
   filePath: string,

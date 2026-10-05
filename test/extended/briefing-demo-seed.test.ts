@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 const roots: string[] = [];
@@ -83,7 +83,7 @@ describe("rich Briefing demo seed command", () => {
     expect(result.stdout).not.toContain("Proceed with guarded monitoring");
     expect(fs.existsSync(target)).toBe(true);
     expect(fs.existsSync(`${target}.artifacts`)).toBe(true);
-    const db = new Database(target, { readonly: true });
+    const db = new SqliteDatabase(target, { readonly: true });
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefings").get()).toEqual({ n: 1 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 2 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get()).toEqual({ n: 1 });

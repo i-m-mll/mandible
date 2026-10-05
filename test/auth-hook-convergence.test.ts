@@ -6,7 +6,7 @@
  * production guard in src/db.ts exists for exactly this reason.
  */
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,7 +50,7 @@ function tempDir(prefix: string): string {
 }
 
 function plainDb(): Db {
-  const db = new Database(":memory:");
+  const db = new SqliteDatabase(":memory:");
   migrate(db);
   setupOperator(db, { slug: "hook-convergence", display_name: "Hook Convergence" }, 1);
   return db;
@@ -501,7 +501,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
 
 describe("hook registration authority (issue 27241e6)", () => {
   it("denies hook mutation without the change_settings capability and allows it with the grant", async () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     const dir = tempDir("mandible-hook-authority-");
     try {
       migrate(db);

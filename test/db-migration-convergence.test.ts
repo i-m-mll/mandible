@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { CURRENT_SCHEMA_VERSION, MINIMUM_SUPPORTED_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 function createFloorDatabase(dbPath: string): void {
-  const db = new Database(dbPath);
+  const db = new SqliteDatabase(dbPath);
   try {
     db.exec(FLOOR_FIXTURE);
   } finally {
@@ -51,7 +51,7 @@ function createFloorDatabase(dbPath: string): void {
   }
 }
 
-function migrateFixtureThrough(db: Database.Database, targetVersion: number): void {
+function migrateFixtureThrough(db: SqliteDatabase, targetVersion: number): void {
   for (const migration of MIGRATIONS.filter((candidate) => candidate.version > Number(schemaVersion(db)) && candidate.version <= targetVersion)) {
     db.transaction(() => {
       for (const statement of migration.statements) db.exec(statement);
@@ -61,7 +61,7 @@ function migrateFixtureThrough(db: Database.Database, targetVersion: number): vo
 }
 
 it("preserves v187 reminder events while admitting truthful local attribution", () => {
-  const db = new Database(":memory:");
+  const db = new SqliteDatabase(":memory:");
   try {
     migrate(db);
     const project = addProject(db, { project_key: "reminder-upgrade", display_name: "Reminder upgrade" });
@@ -111,7 +111,7 @@ it("preserves v187 reminder events while admitting truthful local attribution", 
 function createLegacyMetadataDatabase(): Db {
   const dbPath = path.join(tempDir, "metadata-v182.db");
   createFloorDatabase(dbPath);
-  const db = new Database(dbPath);
+  const db = new SqliteDatabase(dbPath);
   db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
     crypto.createHash("sha256").update(String(value)).digest("hex"));
   migrateFixtureThrough(db, 182);
@@ -167,7 +167,7 @@ describe("generic issue metadata upgrade", () => {
   });
 });
 
-function seedBriefingLineage(db: Database.Database, mixed: boolean): { rounds: unknown[] } {
+function seedBriefingLineage(db: SqliteDatabase, mixed: boolean): { rounds: unknown[] } {
   for (const [suffix, hash] of [["a", "a".repeat(64)], ["b", "b".repeat(64)]] as const) {
     db.prepare(`INSERT INTO artifact_blob
       (id, content_hash, size_bytes, metadata_json, custody_mode, availability,
@@ -205,7 +205,7 @@ describe.sequential("schema convergence", () => {
   it("rolls v171 back completely when destination ownership is ambiguous", () => {
     const dbPath = path.join(tempDir, "ambiguous-destination.db");
     createFloorDatabase(dbPath);
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     try {
       migrateFixtureThrough(db, 170);
       db.prepare(`INSERT INTO artifact (
@@ -244,7 +244,7 @@ describe.sequential("schema convergence", () => {
   it("moves the schema-171 operator click preference into the canonical app setting", () => {
     const dbPath = path.join(tempDir, "chat-click-preference.db");
     createFloorDatabase(dbPath);
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     try {
       migrateFixtureThrough(db, 171);
       const operator = db.prepare("SELECT id FROM users ORDER BY created_at LIMIT 1").get() as { id: string };
@@ -271,9 +271,9 @@ describe.sequential("schema convergence", () => {
   it("backfills only missing canonical Artifact parent locators without changing identity", () => {
     const dbPath = path.join(tempDir, "artifact-parent-lineage.db");
     createFloorDatabase(dbPath);
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     try {
-      db.function("mandible_sha256", (value: string) =>
+      db.function("mandible_sha256", { deterministic: true }, (value: string) =>
         crypto.createHash("sha256").update(value).digest("hex"));
       migrateFixtureThrough(db, 173);
       for (const [suffix, hash] of [["1", "1".repeat(64)], ["2", "2".repeat(64)], ["3", "3".repeat(64)], ["4", "4".repeat(64)]] as const) {
@@ -361,7 +361,7 @@ describe.sequential("schema convergence", () => {
   it("keeps nonempty retired patch history in place and in metadata backups", () => {
     const dbPath = path.join(tempDir, "patch-history.db");
     createFloorDatabase(dbPath);
-    const seed = new Database(dbPath);
+    const seed = new SqliteDatabase(dbPath);
     try {
       seed.prepare(`INSERT INTO runtime_patches
         (id, fingerprint, commit_hash, diff_summary, applied_at, source, submitted)
@@ -394,7 +394,7 @@ describe.sequential("schema convergence", () => {
       "convention_setting_links", "session_instruction_artifacts",
     ];
 
-    const seed = new Database(migratedPath);
+    const seed = new SqliteDatabase(migratedPath);
     try {
       // The floor fixture really does carry these tables and the chain's own
       // completion markers, so the drop below is doing work rather than passing
@@ -448,13 +448,13 @@ describe.sequential("schema convergence", () => {
   it("preserves one-lineage Briefings and refuses mixed logical Artifact history at v161", () => {
     const validPath = path.join(tempDir, "briefing-valid.db");
     createFloorDatabase(validPath);
-    const validSeed = new Database(validPath);
+    const validSeed = new SqliteDatabase(validPath);
     migrateFixtureThrough(validSeed, 160);
     const before = seedBriefingLineage(validSeed, false);
     validSeed.close();
 
     // This fixture tests the v161 lineage transition; its synthetic blobs have no recoverable bytes.
-    const migrated = new Database(validPath);
+    const migrated = new SqliteDatabase(validPath);
     migrateFixtureThrough(migrated, 161);
     expect(migrated.prepare("SELECT logical_artifact_id FROM briefings WHERE id = 'briefing-lineage'").get())
       .toEqual({ logical_artifact_id: "artifact:a" });
@@ -464,12 +464,12 @@ describe.sequential("schema convergence", () => {
 
     const mixedPath = path.join(tempDir, "briefing-mixed.db");
     createFloorDatabase(mixedPath);
-    const mixedSeed = new Database(mixedPath);
+    const mixedSeed = new SqliteDatabase(mixedPath);
     migrateFixtureThrough(mixedSeed, 160);
     seedBriefingLineage(mixedSeed, true);
     mixedSeed.close();
     expect(() => openDb(mixedPath)).toThrow(/briefing_lineage_guard|CHECK constraint failed/);
-    const refused = new Database(mixedPath);
+    const refused = new SqliteDatabase(mixedPath);
     expect(schemaVersion(refused)).toBe("160");
     expect(refused.prepare("PRAGMA table_info(briefings)").all())
       .not.toContainEqual(expect.objectContaining({ name: "logical_artifact_id" }));

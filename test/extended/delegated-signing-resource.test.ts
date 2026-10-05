@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import type { AuthAutoApproveManager, AuthApprovalContext } from "../../src/auth-auto-approve.js";
@@ -273,7 +273,7 @@ describe("delegated signer reconnect lifecycle", () => {
       f.addClearance(context.leaseId);
       const dump = buildMetadataBackupSql(f.db);
       expect(dump).not.toContain("delegated_signing_runtime_bindings");
-      const restored = new Database(":memory:");
+      const restored = new SqliteDatabase(":memory:");
       try {
         restored.exec(dump);
         expect(restored.prepare(

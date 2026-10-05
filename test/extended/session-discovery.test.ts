@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/sse", () => ({
@@ -16,9 +16,9 @@ const noopLogger: Logger = () => {};
 function createDiscovery(): {
   discovery: SessionDiscovery;
   registry: SessionRegistry;
-  db: InstanceType<typeof Database>;
+  db: InstanceType<typeof SqliteDatabase>;
 } {
-  const db = new Database(":memory:");
+  const db = new SqliteDatabase(":memory:");
   migrate(db);
   const registry = new SessionRegistry(db);
   // Empty repo roots keep discovery off the developer's real repositories: the
@@ -32,7 +32,7 @@ function createDiscovery(): {
 describe("SessionDiscovery", () => {
   let discovery: SessionDiscovery;
   let registry: SessionRegistry;
-  let db: InstanceType<typeof Database>;
+  let db: InstanceType<typeof SqliteDatabase>;
 
   beforeEach(() => {
     ({ discovery, registry, db } = createDiscovery());

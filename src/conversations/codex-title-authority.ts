@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../sqlite.js";
 import * as path from "node:path";
 import {
   codexRolloutPathsEquivalent,
@@ -31,7 +31,7 @@ export function readExactCodexTitleAuthority(input: {
   sourcePath: string;
   nativeSessionId: string;
   sourceMtimeMs: number;
-  /** Test/evidence seam; better-sqlite3 reports the executed, bound SQL. */
+  /** Optional evidence of the exact provider query. */
   traceSql?: (sql: string) => void;
 }): CodexTitleAuthorityResult {
   const location = locateCodexRollout(input.sourcePath);
@@ -43,24 +43,25 @@ export function readExactCodexTitleAuthority(input: {
   }
 
   const statePath = path.join(location.codexRoot, "state_5.sqlite");
-  let stateDb: Database.Database | null = null;
+  let stateDb: SqliteDatabase | null = null;
   try {
-    stateDb = new Database(statePath, {
+    stateDb = new SqliteDatabase(statePath, {
       readonly: true,
       fileMustExist: true,
-      ...(input.traceSql ? { verbose: (message?: unknown) => input.traceSql?.(String(message ?? "")) } : {}),
     });
-    const row = stateDb.prepare(`
+    const statement = stateDb.prepare(`
       SELECT id, title, rollout_path,
              COALESCE(updated_at_ms, updated_at * 1000) AS updated_at_ms
         FROM threads
        WHERE id = ?
-    `).get(input.nativeSessionId) as {
+    `);
+    const row = statement.get(input.nativeSessionId) as {
       id: string;
       title: string;
       rollout_path: string;
       updated_at_ms: number;
     } | undefined;
+    input.traceSql?.(statement.expandedSQL);
     if (!row) {
       return { status: "missing", message: "exact Codex thread metadata row is missing" };
     }

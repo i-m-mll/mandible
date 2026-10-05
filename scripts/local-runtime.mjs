@@ -58,7 +58,7 @@ function readProductionRecord() {
 function readMainInstance(root) {
   if (!fs.existsSync(AUTHORITY_DB)) throw new Error(`Local-session authority is missing: ${AUTHORITY_DB}`);
   const requireFromProject = createRequire(path.join(root, "package.json"));
-  const Database = requireFromProject("better-sqlite3");
+  const Database = requireFromProject("./dist/sqlite.js").default;
   const db = new Database(AUTHORITY_DB, { readonly: true, fileMustExist: true });
   try {
     const rows = db.prepare("SELECT instance_id, installation_id, role, public_origin, backend_origin, backend_generation, effect_ceiling_json, writable_roots_json FROM instance_registrations WHERE role = 'main'").all();
@@ -627,7 +627,7 @@ async function startRuntime({ launchMode = "on_demand" } = {}) {
 }
 
 function registeredPreviewCount(root) {
-  const Database = createRequire(path.join(root, "package.json"))("better-sqlite3");
+  const Database = createRequire(path.join(root, "package.json"))("./dist/sqlite.js").default;
   const db = new Database(AUTHORITY_DB, { readonly: true, fileMustExist: true });
   try { return db.prepare("SELECT COUNT(*) AS count FROM instance_registrations WHERE role = 'preview'").get().count; }
   finally { db.close(); }
