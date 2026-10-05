@@ -588,7 +588,8 @@ export function ArtifactsView({
 
   useLayoutEffect(() => {
     if (!selectedArtifactId) return;
-    if (selectedArtifact?.id === selectedArtifactId && resolvedArtifactRecord(resolution)?.id === selectedArtifactId) return;
+    if (selectedArtifact?.id === selectedArtifactId && resolvedArtifactRecord(resolution)?.id === selectedArtifactId
+      && selectedArtifact.links && selectedArtifact.aliases) return;
     const requestId = artifactRequestIdRef.current + 1;
     artifactRequestIdRef.current = requestId;
     const controller = new AbortController();

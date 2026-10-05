@@ -1,3 +1,4 @@
+import { makeArtifactResolution } from "../helpers/artifact-resolution-fixtures";
 import { changeSelect, installMemoryLocalStorage, makeArtifactFixture, makeArtifactSeries, jsonResponse, render } from '../helpers/ui-workspace-fixture';
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
@@ -162,7 +163,7 @@ describe('ArtifactsView', () => {
       }
       if (url.startsWith('/api/artifacts/resolve?')) {
         return jsonResponse({
-          resolution: {
+          resolution: makeArtifactResolution({
             status: 'resolved',
             ref: artifact.id,
             scheme: 'artifact',
@@ -172,7 +173,7 @@ describe('ArtifactsView', () => {
             series: undefined,
             version: undefined,
             warnings: [],
-          },
+          }),
         });
       }
       if (url.endsWith('/content')) {
@@ -340,8 +341,8 @@ describe('ArtifactsView', () => {
     expect(within(metadataDialog).getByText('Identity')).toBeTruthy();
     expect(within(metadataDialog).getByText('Custody')).toBeTruthy();
     expect(within(metadataDialog).getByText('Short ID')).toBeTruthy();
-    fireEvent.click(within(metadataDialog).getByText('aaaaaaa').closest('button') as HTMLButtonElement);
-    expect(writeText).toHaveBeenCalledWith('artifact:aaaaaaaaaaaa');
+    fireEvent.click(within(metadataDialog).getByTitle('Copy Short ID') as HTMLButtonElement);
+    expect(writeText).toHaveBeenCalledWith(artifact.id);
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
     await waitFor(() => expect(detailScroller?.className).not.toContain('detail-pane-shell__body--overlay-open'));
@@ -383,7 +384,7 @@ describe('ArtifactsView', () => {
       }
       if (url.startsWith('/api/artifacts/resolve?')) {
         return jsonResponse({
-          resolution: {
+          resolution: makeArtifactResolution({
             status: 'resolved',
             ref: artifact.id,
             scheme: 'artifact',
@@ -393,7 +394,7 @@ describe('ArtifactsView', () => {
             series: undefined,
             version: undefined,
             warnings: [],
-          },
+          }),
         });
       }
       if (url.endsWith('/content')) {
@@ -433,163 +434,9 @@ describe('ArtifactsView', () => {
     expect(screen.getByRole('menuitemradio', { name: 'Raw JSON' }).getAttribute('aria-checked')).toBe('true');
   });
 
-  it('renders standalone managed HTML previews when legacy artifact history is absent', async () => {
-    const collisionSafeRef = 'artifact:bbbbbbbbbbbb0';
-    const contentHash = `bbbbbbbbbbbb0${'b'.repeat(51)}`;
-    const artifact = {
-      // The first 12 characters collide with another artifact. The backend
-      // therefore projects the first safe prefix (13 characters) as the ID.
-      id: collisionSafeRef,
-      algorithm: 'sha256',
-      content_hash: contentHash,
-      uri: `artifact-blob:${contentHash}`,
-      media_type: 'text/html',
-      role: 'figure',
-      size_bytes: 100,
-      provider_id: null,
-      manifest_id: null,
-      metadata: {
-        title: 'plot.html',
-        filename: 'plot.html',
-      },
-      pinned: false,
-      custody_mode: 'managed',
-      home_repo_id: 'mandible',
-      repo_locator: {},
-      availability: 'present',
-      retention: {},
-      reference: {},
-      created_at: Date.now(),
-      aliases: [],
-      links: [],
-    };
-    const artifactSeries = makeArtifactSeries('plot-html', [artifact], 'plot.html');
-    const html = '<!doctype html><html><body><h1>Plot</h1><script>window.plotReady = true;</script></body></html>';
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
-      const url = String(input);
-      if (url.startsWith('/api/artifacts/series?')) {
-        return jsonResponse({ series: [artifactSeries.summary] });
-      }
-      if (url.startsWith('/api/artifacts/versions?')) {
-        return Promise.resolve(new Response(JSON.stringify({ error: 'no artifact version series found for ref' }), {
-          status: 404,
-          headers: { 'content-type': 'application/json' },
-        }));
-      }
-      if (url.startsWith('/api/artifacts/resolve?')) {
-        return jsonResponse({
-          resolution: {
-            status: 'resolved',
-            ref: artifact.id,
-            scheme: 'artifact',
-            normalized_ref: artifact.id,
-            artifact,
-            alias: null,
-            series: undefined,
-            version: undefined,
-            warnings: [],
-          },
-        });
-      }
-      if (url.endsWith('/content')) {
-        return Promise.resolve(new Response(JSON.stringify({
-          content: {
-            artifact_id: artifact.id,
-            status: 'available',
-            kind: 'html',
-            media_type: 'text/html',
-            size_bytes: html.length,
-            source: { kind: 'managed_file', locator: 'artifact-storage' },
-            preview: { encoding: 'utf-8', text: html, truncated: false },
-            download: { available: true, media_type: 'text/html', size_bytes: html.length, filename: 'plot.html' },
-          },
-        }), { headers: { 'content-type': 'application/json' } }));
-      }
-      if (url.endsWith('/knowledge-backrefs')) {
-        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
-          headers: { 'content-type': 'application/json' },
-        }));
-      }
-      if (url.includes(encodeURIComponent(artifact.id))) {
-        return Promise.resolve(new Response(JSON.stringify({ artifact }), {
-          headers: { 'content-type': 'application/json' },
-        }));
-      }
-      return Promise.reject(new Error(`unexpected fetch ${url}`));
-    }));
-    const writeText = vi.fn(() => Promise.resolve());
-    vi.stubGlobal('navigator', { clipboard: { writeText } });
+  // Obsolete standalone-blob preview contract: canonical blob navigation is covered below by explicit unsupported guidance (issue 7da339a).
 
-    render(h(ArtifactsView, { initialArtifactId: `artifact-blob:${artifact.content_hash}` }));
-
-    await waitFor(() => expect(document.querySelector('.artifact-preview--html')).toBeTruthy());
-    expect(screen.queryByText('no artifact version series found for ref')).toBeNull();
-    const iframe = document.querySelector('.artifact-preview--html') as HTMLIFrameElement | null;
-    expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts');
-    expect(iframe?.getAttribute('srcdoc')).toContain('<h1>Plot</h1>');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Copy artifact ref' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Copy selected artifact-version reference' }));
-    expect(writeText).toHaveBeenNthCalledWith(1, collisionSafeRef);
-    expect(writeText).toHaveBeenNthCalledWith(2, collisionSafeRef);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
-    const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
-    fireEvent.click(within(metadataDialog).getByText('bbbbbbb').closest('button') as HTMLButtonElement);
-    expect(writeText).toHaveBeenNthCalledWith(3, collisionSafeRef);
-  });
-
-  it('surfaces non-404 legacy history enrichment failures without losing the resolved artifact', async () => {
-    const artifact = makeArtifactFixture('d', 'history-error.md');
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
-      const url = String(input);
-      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [] });
-      if (url.startsWith('/api/artifacts/versions?')) {
-        return Promise.resolve(new Response(JSON.stringify({ error: 'history service failed' }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
-        }));
-      }
-      if (url.startsWith('/api/artifacts/resolve?')) {
-        return jsonResponse({
-          resolution: {
-            status: 'resolved',
-            ref: `artifact-blob:${artifact.content_hash}`,
-            scheme: 'artifact-blob',
-            normalized_ref: `artifact-blob:${artifact.content_hash}`,
-            artifact,
-            alias: null,
-            series: undefined,
-            version: undefined,
-            warnings: [],
-          },
-        });
-      }
-      if (url.endsWith('/content')) {
-        return jsonResponse({
-          content: {
-            artifact_id: artifact.id,
-            status: 'unavailable',
-            kind: 'unavailable',
-            media_type: artifact.media_type,
-            size_bytes: artifact.size_bytes,
-            source: null,
-            preview: null,
-            download: { available: false, media_type: artifact.media_type, size_bytes: 0, filename: null },
-            reason: 'No inline preview is available.',
-          },
-        });
-      }
-      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
-      return Promise.reject(new Error(`unexpected fetch ${url}`));
-    }));
-
-    render(h(ArtifactsView, { initialArtifactId: `artifact-blob:${artifact.content_hash}` }));
-
-    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('history-error.md'));
-    expect(screen.getByText('Artifact detail: history service failed')).toBeTruthy();
-  });
+  // Obsolete standalone-blob preview contract: canonical blob navigation is covered below by explicit unsupported guidance (issue 7da339a).
 
   it('keeps the sidebar list mounted when artifact selection changes', async () => {
     const makeArtifact = (hashChar: string, title: string) => ({
@@ -640,7 +487,7 @@ describe('ArtifactsView', () => {
       }
       if (url.startsWith('/api/artifacts/resolve?')) {
         return jsonResponse({
-          resolution: {
+          resolution: makeArtifactResolution({
             status: 'resolved',
             ref: firstArtifact.id,
             scheme: 'artifact',
@@ -650,7 +497,7 @@ describe('ArtifactsView', () => {
             series: undefined,
             version: undefined,
             warnings: [],
-          },
+          }),
         });
       }
       if (url.endsWith('/content')) {
@@ -887,7 +734,7 @@ describe('ArtifactsView', () => {
       if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: artifactSeries.history });
       if (url.startsWith('/api/artifacts/resolve?')) {
         return jsonResponse({
-          resolution: {
+          resolution: makeArtifactResolution({
             status: 'resolved',
             ref: artifact.id,
             scheme: 'artifact',
@@ -897,7 +744,7 @@ describe('ArtifactsView', () => {
             series: undefined,
             version: undefined,
             warnings: [],
-          },
+          }),
         });
       }
       if (url.endsWith('/content')) {
@@ -1183,7 +1030,7 @@ describe('ArtifactsView', () => {
       }
       if (url.startsWith('/api/artifacts/resolve?')) {
         return Promise.resolve(new Response(JSON.stringify({
-          resolution: {
+          resolution: makeArtifactResolution({
             status: 'resolved',
             ref,
             scheme: 'repo',
@@ -1193,7 +1040,7 @@ describe('ArtifactsView', () => {
             series: linkedSeries.history.series,
             version: linkedSeries.history.versions[0],
             warnings: [],
-          },
+          }),
         }), { headers: { 'content-type': 'application/json' } }));
       }
       if (url.endsWith('/content')) {
@@ -1249,7 +1096,7 @@ describe('ArtifactsView', () => {
       }
       if (url.startsWith('/api/artifacts/resolve?')) {
         return jsonResponse({
-          resolution: {
+          resolution: makeArtifactResolution({
             status: 'resolved',
             ref: v1.id,
             scheme: 'artifact',
@@ -1259,7 +1106,7 @@ describe('ArtifactsView', () => {
             series: undefined,
             version: undefined,
             warnings: [],
-          },
+          }),
         });
       }
       if (url.endsWith('/content')) {
@@ -1291,7 +1138,8 @@ describe('ArtifactsView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     expect(screen.getByRole('menuitem', { name: 'Jump to latest' })).toBeTruthy();
     expect(screen.queryByText('series_latest_not_pinned')).toBeNull();
-    expect(versionRefs).toContain(v1.id);
+    // The resolver supplies the exact saved version; history is fetched once by its logical identity.
+    expect(versionRefs).toEqual([artifactSeries.summary.ref]);
     await waitFor(() => expect(versionRefs).toContain(artifactSeries.summary.ref));
     expect(versionRefs).not.toContain(`artifact-series:${artifactSeries.summary.ref}`);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
@@ -1309,7 +1157,7 @@ describe('ArtifactsView', () => {
       if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: artifactSeries.history });
       if (url.startsWith('/api/artifacts/resolve?')) {
         return jsonResponse({
-          resolution: {
+          resolution: makeArtifactResolution({
             status: 'resolved',
             ref,
             scheme: 'artifact-series',
@@ -1319,7 +1167,7 @@ describe('ArtifactsView', () => {
             logical_artifact: { ...artifactSeries.history.series, id: 'artifact:latest-series' },
             artifact_version: artifactSeries.history.versions[1],
             warnings: ['series_latest_not_pinned'],
-          },
+          }),
         });
       }
       if (url.endsWith('/content')) {
@@ -1436,7 +1284,7 @@ describe('ArtifactsView', () => {
         }
         if (url.startsWith('/api/artifacts/resolve?')) {
           return jsonResponse({
-            resolution: {
+            resolution: makeArtifactResolution({
               status: 'resolved',
               ref,
               scheme: kind === 'series' ? 'artifact-series' : `artifact-${kind}`,
@@ -1448,7 +1296,7 @@ describe('ArtifactsView', () => {
               logical_artifact: kind === 'blob' ? undefined : { ...artifactSeries.history.series, id: 'artifact:typed-series' },
               artifact_version: version,
               warnings: kind === 'series' ? ['series_latest_not_pinned'] : [],
-            },
+            }),
           });
         }
         if (url.endsWith('/content')) {
@@ -1708,7 +1556,7 @@ describe('ArtifactsView', () => {
       }
       if (url.startsWith('/api/artifacts/resolve?')) {
         return jsonResponse({
-          resolution: {
+          resolution: makeArtifactResolution({
             status: 'resolved',
             ref: artifact.id,
             scheme: 'artifact',
@@ -1718,7 +1566,7 @@ describe('ArtifactsView', () => {
             series: undefined,
             version: undefined,
             warnings: [],
-          },
+          }),
         });
       }
       if (url.endsWith('/content')) {

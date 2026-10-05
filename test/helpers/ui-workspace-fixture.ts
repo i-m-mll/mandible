@@ -1,3 +1,4 @@
+import { registerArtifactFixtureHistory } from './artifact-resolution-fixtures';
 
 import { render as testingRender, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/preact';
 import { afterEach, beforeEach, expect, vi } from 'vitest';
@@ -667,7 +668,7 @@ function makeArtifactVersion(artifact: any, seriesId: string, versionNo: number)
   return {
     id: `artifact-version:${seriesId}:${versionNo}`,
     series_id: seriesId,
-    artifact_id: artifact.id,
+    artifact_id: `artifact-version:${seriesId}:${versionNo}`,
     version_no: versionNo,
     source_kind: 'managed',
     content_hash: artifact.content_hash,
@@ -734,6 +735,10 @@ function makeArtifactSeries(seriesId: string, artifacts: any[], title?: string):
     latest_artifact: latestArtifact ?? null,
     links: [],
   };
+  artifacts.forEach((artifact, index) => {
+    artifact.id = versions[index].id;
+    registerArtifactFixtureHistory(artifact, series, versions[index]);
+  });
   return {
     summary: series,
     history: {
