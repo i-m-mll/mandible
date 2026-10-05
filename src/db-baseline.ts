@@ -1,3 +1,5 @@
+import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
+import { CONVERSATION_RUNTIME_SCHEMA_SQL } from "./conversation-control/runtime-schema.js";
 import { ARTIFACT_CUSTODY_TRIGGERS_SQL } from './artifact-custody-schema.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL } from './artifact-source-schema.js';
 import type { Db } from "./db.js";
@@ -17,7 +19,7 @@ import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 188;
+export const BASELINE_SCHEMA_VERSION = 190;
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -222,6 +224,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE conversations (\n        id TEXT PRIMARY KEY,\n        source TEXT NOT NULL CHECK(source IN ('claude_code', 'codex', 'gemini')),\n        source_path TEXT NOT NULL,\n        source_hash TEXT NOT NULL,\n        source_mtime INTEGER NOT NULL,\n        title TEXT NOT NULL DEFAULT '',\n        summary TEXT,\n        started_at TEXT NOT NULL,\n        ended_at TEXT,\n        block_count INTEGER NOT NULL DEFAULT 0,\n        session_id TEXT NOT NULL,\n        project_path TEXT,\n        cwd TEXT,\n        branch TEXT,\n        model TEXT,\n        cli_version TEXT,\n        starred INTEGER NOT NULL DEFAULT 0,\n        notes TEXT,\n        created_at TEXT NOT NULL DEFAULT (datetime('now')),\n        updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n      , parent_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL, is_sidechain INTEGER NOT NULL DEFAULT 0, agent_id TEXT, started_at_ms INTEGER, ended_at_ms INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER, tags TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(tags) AND json_type(tags) = 'array'))",
   "CREATE TABLE conversation_archive_states (\n        conversation_id TEXT PRIMARY KEY,\n        archived_at INTEGER NOT NULL CHECK(archived_at > 0)\n      )",
   ...CONVERSATION_CONTROL_SCHEMA_SQL,
+  ...CONVERSATION_RUNTIME_SCHEMA_SQL,
   `CREATE TABLE chat_attachment_files (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -890,7 +893,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
   }
 
   const create = db.transaction(() => {
-    for (const statement of HEAD_SCHEMA_STATEMENTS) {
+    for (const statement of [...HEAD_SCHEMA_STATEMENTS, ...SPACE_PUBLICATION_SCHEMA_SQL]) {
       const executable = statement.startsWith("CREATE TABLE auth_requests")
         ? statement.replace(
             ", supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT, superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT",

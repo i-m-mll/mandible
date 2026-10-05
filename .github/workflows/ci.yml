@@ -11,23 +11,22 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: 22
-          cache: npm
+          bun-version-file: package.json
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Type check
-        run: npm run typecheck
+        run: bun run typecheck
 
       - name: Build
-        run: npm run build
+        run: bun run build
 
-      # `npm test` is the default suite: it must be green on a runner that has
-      # nothing beyond `npm ci`. The extended browser gate (`npm run test:browser`)
+      # `bun run test` is the default suite: it must be green on a runner that has
+      # nothing beyond `bun install --frozen-lockfile`. The extended browser gate (`bun run test:browser`)
       # needs a real Chromium and ImageMagick and is deliberately not run here.
       - name: Test
-        run: npm test
+        run: bun run test

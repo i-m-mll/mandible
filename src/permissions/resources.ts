@@ -24,7 +24,7 @@ export function resolveIssueProject(
 export function artifactAccessProjectIds(db: Db, artifactOrVersionId: string): string[] {
   return (db.prepare(`WITH target AS (
     SELECT id artifact_id, NULL version_id FROM artifact WHERE id=@id
-    UNION ALL SELECT artifact_id, id version_id FROM artifact_version WHERE id=@id
+    UNION ALL SELECT artifact_id, id version_id FROM artifact_version WHERE id=@id OR blob_id=@id
   ) SELECT DISTINCT project_id FROM (
     SELECT project_id FROM project_artifact_associations WHERE target_id=@id AND status='active'
     UNION

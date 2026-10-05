@@ -7,6 +7,11 @@ import { migrate, setDb, type Db } from "../src/db.js";
 import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import { Router, type ClientAuthGate } from "../src/server.js";
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { addProject } from "../src/ledger/project-registry.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { systemAction } from "../src/identity/resolver.js";
+import { addGrant } from "../src/permissions/store.js";
+import { createLedgerIssue } from "./helpers/ledger-fixtures.js";
 import { addCredential, createUser } from "../src/users/store.js";
 
 let db: Db;
@@ -49,6 +54,58 @@ describe("work unit routes", () => {
     expect(db.prepare("SELECT owner_user_id, owner_credential_id, custody_generation, state FROM work_units WHERE id = ?")
       .get(id)).toEqual({ owner_user_id: agent.id, owner_credential_id: credential.id,
         custody_generation: 1, state: "committed" });
+  });
+
+  it("corrects an explicit existing kind with exact custody and current umbrella authority", async () => {
+    const agent = createUser(db, { slug: "kind-custodian", kind: "agent", display_name: "Custodian" });
+    const credential = addCredential(db, agent.id, { type: "api_token", fingerprint: "kind-own" });
+    const other = addCredential(db, agent.id, { type: "api_token", fingerprint: "kind-other" });
+    const project = addProject(db, { project_key: "kind-project", display_name: "Kind project" });
+    addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project", resource: project.id, permission: "write" });
+    const issue = createLedgerIssue(db, { project_id: project.id, kind: "umbrella" });
+    const store = new LedgerStore(db);
+    const guarded = new Router({ clientAuth: {
+      authenticate: token => token === 'own' || token === 'other' ? {
+        user_id: agent.id, slug: agent.slug, method: "api_token", source: "in_process",
+        credential_id: token === 'own' ? credential.id : other.id, effect_ceiling: PRODUCTION_EFFECTS,
+      } : null,
+      mode: () => 'strict', recordUnattributedWrite: () => undefined,
+    } });
+    registerWorkUnitRoutes(guarded, {} as never, {} as never);
+    const request = { issue_id: issue.id, repo_id: 'kind-project', branch: 'feature/integration' };
+    const claimed = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own', body: request });
+    expect(claimed.status).toBe(201);
+    const id = (claimed.body as { id: string }).id;
+    const before = db.prepare('SELECT * FROM work_units WHERE id = ?').get(id) as Record<string, unknown>;
+    const checkpoint = (ownerCredential: string, createdAt: number) => store.addIssueCheckpoint(issue.id, {
+      kind: 'parent-role', payload: { authenticated_user_id: agent.id, authenticated_credential_id: ownerCredential, assumed_at: createdAt },
+      attribution: systemAction(), created_at: createdAt,
+    }).id;
+    const previous = checkpoint(credential.id, 1);
+    const current = checkpoint(credential.id, 2);
+    const promote = { ...request, kind: 'integration', expected_generation: 1, parent_role_checkpoint_id: current };
+    for (const [token, body] of [
+      ['own', { ...request, kind: 'invalid' }],
+      ['own', { ...request, kind: 'integration' }],
+      ['own', { ...promote, expected_generation: 0 }],
+      ['other', promote],
+      ['own', { ...promote, parent_role_checkpoint_id: previous }],
+      ['own', { ...promote, branch: 'feature/missing' }],
+    ] as const) {
+      expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: token, body })).status).toBeGreaterThanOrEqual(400);
+      expect(db.prepare('SELECT * FROM work_units WHERE id = ?').get(id)).toEqual(before);
+    }
+    const promoted = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own', body: promote });
+    expect(promoted.status).toBe(200);
+    expect(promoted.body).toMatchObject({ id, kind: 'integration', custody_generation: 1, existing: true });
+    expect(db.prepare('SELECT * FROM work_units WHERE id = ?').get(id)).toEqual({ ...before!, kind: 'integration' });
+    const retry = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own', body: promote });
+    expect(retry.status).toBe(200);
+    expect(store.listIssueCheckpoints(issue.id, 'work-unit-kind')).toHaveLength(1);
+    expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own',
+      body: { ...promote, kind: 'solo' } })).status).toBe(409);
+    expect(db.prepare('SELECT kind FROM work_units WHERE id = ?').get(id)).toEqual({ kind: 'integration' });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM work_units').get()).toEqual({ count: 1 });
   });
 
   async function createBoundWorkUnit(
@@ -448,57 +505,70 @@ describe("work unit routes", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM work_units").get()).toEqual({ count: 0 });
   });
 
-  it("persists explicit ambient identity from release requests", async () => {
-    const claim = await router.invoke({
-      method: "POST",
-      url: "/api/work-units/claim",
-      body: {
-        issue_id: "abc123",
-        repo_id: "mandible",
-        branch: "feature/abc123-demo",
-      },
-    });
-    expect(claim.status).toBe(201);
-    const claimBody = claim.body as { id: string };
-
-    const bindWorker = await router.invoke({
-      method: "POST",
-      url: "/api/work-units/activate",
-      ambient_identity: { provider: "codex", provider_session_id: "thread-bound-worker" },
-      body: {
-        issue_id: "abc123",
-        repo_id: "mandible",
-        branch: "feature/abc123-demo",
-        worker_owner: true,
-      },
-    });
-    expect(bindWorker.status).toBe(200);
-
-    const release = await router.invoke({
-      method: "POST",
-      url: "/api/work-units/release",
-      ambient_identity: { provider: "codex", provider_session_id: "thread-release" },
-      body: {
-        issue_id: "abc123",
-        repo_id: "mandible",
-      },
-    });
-
+  it("guards exact releases and authority-bearing updates without changing sibling assignments", async () => {
+    const agent = createUser(db, { slug: "release-owner", kind: "agent", display_name: "Owner" });
+    const own = addCredential(db, agent.id, { type: "api_token", fingerprint: "release-own" });
+    const other = addCredential(db, agent.id, { type: "api_token", fingerprint: "release-other" });
+    const guarded = new Router({ clientAuth: {
+      authenticate: token => token === 'own' || token === 'other' ? {
+        user_id: agent.id, slug: agent.slug, method: "api_token", source: "in_process",
+        credential_id: token === 'own' ? own.id : other.id, effect_ceiling: PRODUCTION_EFFECTS,
+      } : null,
+      mode: () => 'strict', recordUnattributedWrite: () => undefined,
+    } });
+    registerWorkUnitRoutes(guarded, {} as never, {} as never);
+    const create = async (branch: string) => {
+      const response = await guarded.invoke({ method: 'POST', url: '/api/work-units/activate',
+        credential: 'own', body: { issue_id: 'release-issue', repo_id: 'mandible', branch } });
+      expect(response.status).toBe(201);
+      return (response.body as { id: string }).id;
+    };
+    const first = await create('feature/first');
+    const second = await create('feature/second');
+    const before = db.prepare('SELECT * FROM work_units ORDER BY id').all();
+    expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/activate', credential: 'own',
+      body: { issue_id: 'release-issue', repo_id: 'mandible' } })).status).toBe(409);
+    for (const body of [
+      { issue_id: 'release-issue', repo_id: 'mandible', expected_generation: 1 },
+      { id: first, expected_generation: 0 },
+    ]) {
+      expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/release', credential: 'own', body })).status).toBeGreaterThanOrEqual(400);
+    }
+    for (const [method, url, body] of [
+      ['POST', '/api/work-units/release', { id: first, expected_generation: 1 }],
+      ['PATCH', `/api/work-units/${first}`, { state: 'resolved', expected_generation: 1 }],
+      ['POST', '/api/work-units/activate', { issue_id: 'release-issue', repo_id: 'mandible', branch: 'feature/first' }],
+    ] as const) {
+      expect((await guarded.invoke({ method, url, credential: 'other', body })).status).toBeGreaterThanOrEqual(400);
+    }
+    expect((await guarded.invoke({ method: 'PATCH', url: `/api/work-units/${first}`, credential: 'own',
+      body: { state: 'resolved', expected_generation: 0 } })).status).toBe(409);
+    expect(db.prepare('SELECT * FROM work_units ORDER BY id').all()).toEqual(before);
+    const metadata = await guarded.invoke({ method: 'PATCH', url: `/api/work-units/${second}`, credential: 'other',
+      body: { continuation: 'Review the lane' } });
+    expect(metadata.status).toBe(200);
+    db.prepare('UPDATE work_units SET continuation = NULL WHERE id = ?').run(second);
+    const snapshot = [{ id: first, expected_generation: 1 }, { id: second, expected_generation: 0 }];
+    expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/release-issue', credential: 'own',
+      body: { issue_id: 'release-issue', repo_id: 'mandible', work_units: snapshot } })).status).toBe(409);
+    expect(db.prepare('SELECT * FROM work_units ORDER BY id').all()).toEqual(before);
+    const release = await guarded.invoke({ method: 'POST', url: '/api/work-units/release', credential: 'own',
+      body: { repo_id: 'mandible', branch: 'feature/first', expected_generation: 1 } });
     expect(release.status).toBe(200);
-    expect(release.body).toMatchObject({ ok: true, released: 1 });
-    expect(
-      db.prepare(
-        `SELECT state, assigned_session_id, provider, provider_session_id,
-                worker_provider_session_id
-         FROM work_units WHERE id = ?`,
-      ).get(claimBody.id),
-    ).toEqual({
-      state: "open",
-      assigned_session_id: null,
-      provider: "codex",
-      provider_session_id: "thread-release",
-      worker_provider_session_id: "thread-bound-worker",
-    });
+    expect(db.prepare('SELECT state FROM work_units WHERE id = ?').get(first)).toEqual({ state: 'abandoned' });
+    expect(db.prepare('SELECT * FROM work_units WHERE id = ?').get(second)).toEqual(before.find((row: any) => row.id === second));
+    const retry = await guarded.invoke({ method: 'POST', url: '/api/work-units/release', credential: 'own',
+      body: { id: first, expected_generation: 1 } });
+    expect(retry.body).toMatchObject({ released: 0, unchanged: true });
+    expect((await guarded.invoke({ method: 'PATCH', url: `/api/work-units/${second}`, credential: 'own',
+      body: { state: 'resolved', expected_generation: 1 } })).status).toBe(200);
+    const third = await create('feature/third');
+    const fourth = await create('feature/fourth');
+    expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/release-issue', credential: 'own',
+      body: { issue_id: 'release-issue', repo_id: 'mandible', work_units: [
+        { id: third, expected_generation: 1 }, { id: fourth, expected_generation: 1 },
+      ] } })).status).toBe(200);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM work_units WHERE state IN ('open', 'committed')").get()).toEqual({ count: 0 });
   });
 
   it("persists explicit ambient identity from HTTP headers", async () => {

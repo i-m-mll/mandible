@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb, type Db } from "../../src/db.js";
 import {
   configureDaemonLogger,
+  startDaemonLogRetention,
+  stopDaemonLogger,
   daemonStderrLogPath,
   flushDaemonLogger,
   pruneDaemonLogs,
@@ -33,6 +35,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  stopDaemonLogger();
   stderrSpy.mockRestore();
   db.close();
   if (originalStderrLogPath === undefined) {
@@ -256,6 +259,30 @@ describe("daemon log batching", () => {
   });
 });
 
+describe("preview log ownership", () => {
+  it("rotates stdout and stderr with configured bounds and preserves production material", () => {
+    const preview = path.join(tempDir, "preview"); fs.mkdirSync(preview);
+    const stdout = path.join(preview, "stdout.log");
+    const stderr = path.join(preview, "stderr.log");
+    const production = path.join(tempDir, "production.log");
+    fs.writeFileSync(production, "production sentinel");
+    fs.writeFileSync(stdout, "preview stdout"); fs.writeFileSync(stderr, "preview stderr");
+    db.prepare("INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES('stderr_rotation_max_bytes','4',1),('stderr_rotation_keep_segments','2',1)").run();
+    vi.stubEnv("MANDIBLE_INSTANCE_ROLE", "preview"); vi.stubEnv("MANDIBLE_PREVIEW_ROOT", preview);
+    vi.stubEnv("MANDIBLE_STDOUT_LOG_PATH", stdout); vi.stubEnv("MANDIBLE_STDERR_LOG_PATH", stderr);
+    try {
+      configureDaemonLogger(db);
+      expect(fs.statSync(stdout).size).toBe(0); expect(fs.statSync(stderr).size).toBe(0);
+      expect(fs.readFileSync(`${stdout}.1`, "utf8")).toBe("preview stdout");
+      expect(fs.readFileSync(production, "utf8")).toBe("production sentinel");
+      fs.symlinkSync(production, `${stdout}.2`);
+      fs.writeFileSync(stdout, "new preview stdout");
+      expect(() => rotateStderrLogSegments({ filePath: stdout, maxBytes: 4, keepSegments: 2 })).toThrow(/symlink/);
+      expect(fs.readFileSync(production, "utf8")).toBe("production sentinel");
+    } finally { stopDaemonLogger(); vi.unstubAllEnvs(); }
+  });
+});
+
 describe("daemon log retention", () => {
   const dayMs = 24 * 60 * 60 * 1_000;
   const now = Date.UTC(2026, 6, 14);
@@ -304,6 +331,32 @@ describe("daemon log retention", () => {
       expect(db.prepare("SELECT id FROM daemon_log").all()).toEqual([{ id: "kept" }]);
     },
   );
+
+  it("drains an in-flight yielding retention batch before shutdown", async () => {
+    vi.useFakeTimers();
+    for (let index = 0; index < 3; index++) insertLog(`old-${index}`, now - 8 * dayMs);
+    const retention = startDaemonLogRetention(db, () => {}, { now, initialDelayMs: 0, maxBatches: 2, batchSize: 1, yieldMs: 10 });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      let drained = false;
+      const stopping = retention.stop().then(() => { drained = true; });
+      expect(drained).toBe(false);
+      await vi.advanceTimersByTimeAsync(10);
+      await stopping;
+      expect(drained).toBe(true);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 1 });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 1 });
+    } finally { await retention.stop(); vi.useRealTimers(); }
+  });
+
+  it("blocks retention when legacy verification cannot be inspected", async () => {
+    insertLog("old", now - 8 * dayMs);
+    vi.spyOn(db, "pragma").mockImplementation(() => { throw new Error("inspection unavailable"); });
+    await expect(pruneDaemonLogs(db, { now })).rejects.toThrow(/verification failed/);
+    expect(db.prepare("SELECT id FROM daemon_log").all()).toEqual([{ id: "old" }]);
+    vi.restoreAllMocks();
+  });
 
   it("guards blocking vacuum behind explicit acknowledgement", () => {
     expect(() => runDaemonLogMaintenance(db, { vacuum: true })).toThrow(/allowBlockingVacuum/);

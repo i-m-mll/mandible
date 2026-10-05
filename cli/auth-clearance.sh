@@ -4,18 +4,7 @@ set -euo pipefail
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/api.sh"
 
 usage() {
-  cat <<'EOF'
-Usage: mandible auth clearance <command> [options]
-
-Commands:
-  create --grantee <user> [--request <request-id>] [--project <project> --base <branch>]
-         [--issue <ref>] [--head <branch>] [--credential <id>]
-         [--duration-minutes <n>] [--max-uses <n>] [--json]
-  list [--request <request-id>] [--json]
-  show <clearance-id> [--json]
-  revoke <clearance-id> [--json]
-  execute <request-id> [--json]
-EOF
+  mandible_command_help auth clearance
 }
 
 command_name="${1:-}"
@@ -24,21 +13,8 @@ shift
 case "$command_name" in
   create)
     request_id=""; grantee=""; credential=""; project=""; base=""; issue=""; head=""; duration=""; max_uses=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --request) request_id="${2:-}"; shift 2 ;;
-        --grantee) grantee="${2:-}"; shift 2 ;;
-        --credential) credential="${2:-}"; shift 2 ;;
-        --project) project="${2:-}"; shift 2 ;;
-        --base) base="${2:-}"; shift 2 ;;
-        --issue) issue="${2:-}"; shift 2 ;;
-        --head) head="${2:-}"; shift 2 ;;
-        --duration-minutes) duration="${2:-}"; shift 2 ;;
-        --max-uses) max_uses="${2:-}"; shift 2 ;;
-        --json) shift ;;
-        *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
-      esac
-    done
+    binding=$(mandible_bind_main_arguments "auth.clearance.create" '{"request_id":{"option":"request"},"grantee":{"option":"grantee"},"credential":{"option":"credential"},"project":{"option":"project"},"base":{"option":"base"},"issue":{"option":"issue"},"head":{"option":"head"},"duration":{"option":"duration-minutes"},"max_uses":{"option":"max-uses"}}' "$@") || exit $?
+    eval "$binding"
     [[ -n "$grantee" && ( -n "$issue" || -n "$head" ) ]] || { usage >&2; exit 2; }
     [[ -n "$request_id" || ( -n "$project" && -n "$base" ) ]] || { usage >&2; exit 2; }
     payload=$(jq -n \
@@ -57,32 +33,27 @@ case "$command_name" in
     response=$(api_send POST "/api/auth/clearances" "$payload") ;;
   list)
     request_id=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --request) request_id="${2:-}"; shift 2 ;;
-        --json) shift ;;
-        *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
-      esac
-    done
+    binding=$(mandible_bind_main_arguments "auth.clearance.list" '{"request_id":{"option":"request"}}' "$@") || exit $?
+    eval "$binding"
     if [[ -n "$request_id" ]]; then
       response=$(api_get "/api/auth/clearances?request_id=$(jq -rn --arg v "$request_id" '$v|@uri')")
     else
       response=$(api_get "/api/auth/clearances")
     fi ;;
   show)
-    clearance_id="${1:-}"; [[ -n "$clearance_id" ]] || { usage >&2; exit 2; }; shift
-    [[ "${1:-}" != "--json" ]] || shift
-    [[ $# -eq 0 ]] || { usage >&2; exit 2; }
+    clearance_id=""
+    binding=$(mandible_bind_main_arguments "auth.clearance.show" '{"clearance_id":{"position":0}}' "$@") || exit $?
+    eval "$binding"
     response=$(api_get "/api/auth/clearances/$clearance_id") ;;
   revoke)
-    clearance_id="${1:-}"; [[ -n "$clearance_id" ]] || { usage >&2; exit 2; }; shift
-    [[ "${1:-}" != "--json" ]] || shift
-    [[ $# -eq 0 ]] || { usage >&2; exit 2; }
+    clearance_id=""
+    binding=$(mandible_bind_main_arguments "auth.clearance.revoke" '{"clearance_id":{"position":0}}' "$@") || exit $?
+    eval "$binding"
     response=$(api_send POST "/api/auth/clearances/$clearance_id/revoke" '{}') ;;
   execute)
-    request_id="${1:-}"; [[ -n "$request_id" ]] || { usage >&2; exit 2; }; shift
-    [[ "${1:-}" != "--json" ]] || shift
-    [[ $# -eq 0 ]] || { usage >&2; exit 2; }
+    request_id=""
+    binding=$(mandible_bind_main_arguments "auth.clearance.execute" '{"request_id":{"position":0}}' "$@") || exit $?
+    eval "$binding"
     response=$(api_send POST "/api/auth/request/$request_id/clearance/execute" '{}') ;;
   help|-h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;

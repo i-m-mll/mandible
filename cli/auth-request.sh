@@ -102,7 +102,7 @@ MANDIBLE_CLI_DIR="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 # --- Usage ---
 
 usage() {
-  sed -n '2,/^$/{ s/^# //; s/^#$//; p; }' "$0" | mandible_render_commands
+  mandible_command_help auth request
 }
 
 # --- Argument parsing ---
@@ -148,61 +148,8 @@ promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --title)          title="$2"; shift 2 ;;
-    --type)           auth_type="$2"; shift 2 ;;
-    --command)        command="$2"; command_set=1; shift 2 ;;
-    --commit-message) commit_message="$2"; shift 2 ;;
-    --message)        change_message_text="$2"; change_message_set=1; shift 2 ;;
-    --message-file)   change_message_file="$2"; change_message_set=1; shift 2 ;;
-    --verification)   verification_text="$2"; shift 2 ;;
-    --diff-summary)   diff_summary="$2"; shift 2 ;;
-    --spec)           spec_content="$2"; spec_inline_set=1; shift 2 ;;
-    --spec-file)      spec_file="$2"; spec_file_set=1; shift 2 ;;
-    --handoff)        post_merge_handoff="$2"; shift 2 ;;
-    --dirty-policy)   dirty_policy="$2"; shift 2 ;;
-    --dirty-branch-prefix) dirty_branch_prefix="$2"; shift 2 ;;
-    --depends-on)     depends_on_id="$2"; shift 2 ;;
-    --supersedes)     supersedes_request_id="$2"; shift 2 ;;
-    --expected-revision) expected_revision="$2"; shift 2 ;;
-    --expected-custody-generation) expected_custody_generation="$2"; shift 2 ;;
-    --drop-superseded-action)
-      SUPERSEDED_ACTION_DISPOSITIONS+=("$2"); shift 2 ;;
-    --issue|--ref-issue|--references-issue) ISSUE_REFERENCES+=("$2"); shift 2 ;;
-    --closes-issue|--close-issue) ISSUE_CLOSURES+=("$2"); shift 2 ;;
-    --promote-briefing)
-      if [[ $# -lt 4 ]]; then
-        echo "Error: --promote-briefing requires <group> <expected-base> <proposal>" >&2
-        exit 2
-      fi
-      if [[ -n "$promote_briefing_group" ]]; then
-        echo "Error: --promote-briefing may be specified only once" >&2
-        exit 2
-      fi
-      promote_briefing_group="$2"
-      promote_briefing_expected_base="$3"
-      promote_briefing_proposal="$4"
-      shift 4
-      ;;
-    --repo)           repo="$2"; shift 2 ;;
-    --cwd)            cwd_override="$2"; shift 2 ;;
-    --target)         target_override="$2"; shift 2 ;;
-    --timeout)        timeout="$2"; shift 2 ;;
-    --no-watch)       no_watch=1; shift ;;
-    --force|-f)       force=true; shift ;;
-    -h|--help)        usage; exit 0 ;;
-    -*)               echo "Unknown option: $1" >&2; exit 2 ;;
-    *)
-      if [[ -z "$branch" ]]; then
-        branch="$1"
-      else
-        echo "Unexpected argument: $1" >&2; exit 2
-      fi
-      shift
-      ;;
-  esac
-done
+binding=$(mandible_bind_main_arguments "@auth request" '{"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"commit_message":{"option":"commit-message"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"spec_content":{"option":"spec"},"spec_inline_set":{"option":"spec","constant":"1"},"spec_file":{"option":"spec-file"},"spec_file_set":{"option":"spec-file","constant":"1"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"depends_on_id":{"option":"depends-on"},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+eval "$binding"
 
 if [[ -z "$title" ]]; then
   echo "Error: --title is required" >&2

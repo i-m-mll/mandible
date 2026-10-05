@@ -54,6 +54,7 @@ export function isInlineManagedArtifactByteRequest(mode: "ingest" | "snapshot", 
 export interface OperationContext {
   instanceRole: InstanceRole;
   body: unknown;
+  params: Readonly<Record<string, string>>;
 }
 
 export interface OperationDescriptor {

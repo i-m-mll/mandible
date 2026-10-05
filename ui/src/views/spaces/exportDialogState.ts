@@ -1,29 +1,15 @@
-// Export-dialog browser-local view state (umbrella de56ffa, C13f / issue f7be021).
-//
-// The export dialog's user-confirmable inputs (the per-export path the user
-// last confirmed, the optional per-repo-override toggle, and the last commit
-// message) are BROWSER-LOCAL view state, not ledger state: the canonical
-// export-path defaults live server-side (`space_exports` settings, custody-doc
-// §5.1), and the only ledger mutations are the explicit export / settings POSTs.
-//
-// Per the project Dataful-UX rule we persist this per-Space to localStorage so a
-// re-open of the dialog (after a tab switch, refetch, or app restart) restores
-// the user's last-confirmed intent instead of silently resetting it. It is never
-// promoted to canonical state and is only ever changed by an explicit user edit.
-
 export type ExportDialogViewState = {
   /** Last per-export path the user confirmed/overrode (empty → use resolved default). */
   path: string;
   /** Last commit message the user typed (empty → deterministic default). */
   message: string;
-  /** Whether the user's last action also saved a per-repo path override. */
-  saveAsRepoDefault: boolean;
+  issue: string; ref: string; title: string; gitPath: string; gitCommit: string; selectedId: string; checkoutId:string;
 };
 
 export const EMPTY_EXPORT_DIALOG_STATE: ExportDialogViewState = {
   path: '',
   message: '',
-  saveAsRepoDefault: false,
+  issue:'',ref:'',title:'Imported document',gitPath:'',gitCommit:'',selectedId:'',checkoutId:'',
 };
 
 const STORAGE_PREFIX = 'mandible.spaces.export-dialog';
@@ -43,7 +29,9 @@ export function normalizeExportDialogState(raw: unknown): ExportDialogViewState 
   return {
     path: typeof raw.path === 'string' ? raw.path : '',
     message: typeof raw.message === 'string' ? raw.message : '',
-    saveAsRepoDefault: raw.saveAsRepoDefault === true,
+    issue:typeof raw.issue==='string'?raw.issue:'', ref:typeof raw.ref==='string'?raw.ref:'',
+    title:typeof raw.title==='string'?raw.title:'Imported document',gitPath:typeof raw.gitPath==='string'?raw.gitPath:'',
+    gitCommit:typeof raw.gitCommit==='string'?raw.gitCommit:'',selectedId:typeof raw.selectedId==='string'?raw.selectedId:'',checkoutId:typeof raw.checkoutId==='string'?raw.checkoutId:'',
   };
 }
 

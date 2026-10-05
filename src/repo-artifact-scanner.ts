@@ -421,8 +421,8 @@ export function scanRepoArtifacts(db: Db, options: RepoArtifactScannerOptions = 
       const recorded = recordArtifactVersion(db, {source_kind:'tracked_repo',path:artifact.absolute_path,
         role:artifact.role,logical_name:artifact.relative_path,media_type:artifact.media_type,
         issue:artifact.issue_id,metadata:{source:'repo_artifact_scanner'}},now);
-      if (artifact.issue_id) registerArtifactLink(db,recorded.version.id,{entity_type:'issue',entity_id:artifact.issue_id,link_type:'references',role:'repo_path_inferred',repo_id:artifact.repo_id,source:'repo_artifact_scanner'},now);
-      artifacts.push(getArtifact(db,recorded.version.id)!);
+      if (artifact.issue_id) registerArtifactLink(db,recorded.artifact_version.id,{entity_type:'issue',entity_id:artifact.issue_id,link_type:'references',role:'repo_path_inferred',repo_id:artifact.repo_id,source:'repo_artifact_scanner'},now);
+      artifacts.push(getArtifact(db,recorded.artifact_version.id)!);
     } catch(error) { discovered.errors.push({path:artifact.absolute_path,error:String(error)}); }
   }
   return {

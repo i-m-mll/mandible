@@ -44,7 +44,13 @@ function runHookAfterMerge(
   const desktopTracePath = path.join(tempDir, "desktop-trace");
   const runtimeTracePath = path.join(tempDir, "runtime-trace");
   fs.mkdirSync(cliDir, { recursive: true });
+  fs.mkdirSync(path.join(repo, "dist"));
+  const sqliteBuild = spawnSync(process.execPath, ["build", path.join(process.cwd(), "src/sqlite.ts"), "--target", "bun", "--outfile", path.join(repo, "dist/sqlite.js")], { encoding: "utf8" });
+  expect(sqliteBuild.status, sqliteBuild.stderr).toBe(0);
   fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
+  fs.copyFileSync(path.join(process.cwd(), "scripts/bun-runtime.sh"), path.join(repo, "scripts/bun-runtime.sh"));
+  fs.chmodSync(path.join(repo, "scripts/bun-runtime.sh"), 0o755);
+  fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(repo, ".bun-version"));
   fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
   fs.writeFileSync(path.join(home, ".codex", "AGENTS.md"), "# Codex\n\nLocal policy.\n", "utf8");
 
@@ -137,9 +143,11 @@ exec "$REAL_GIT" "$@"
     env: {
       ...hookEnv,
       HOME: home,
+      MANDIBLE_DB: path.join(tempDir, "fixture.db"),
+      MANDIBLE_RUNTIME: process.execPath,
       MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND: 'printf "dependencies\\n" >> "$MANDIBLE_TEST_TRACE"',
       MANDIBLE_POST_MERGE_BUILD_COMMAND: 'test "$PATH" = "$MANDIBLE_TEST_RUNTIME_PATH" && printf "build\\n" >> "$MANDIBLE_TEST_TRACE"',
-      MANDIBLE_TEST_RUNTIME_PATH: hookEnv.PATH,
+      MANDIBLE_TEST_RUNTIME_PATH: `${path.dirname(process.execPath)}${path.delimiter}${hookEnv.PATH}`,
       MANDIBLE_POST_MERGE_DESKTOP_COMMAND:
         'printf "desktop\\n" >> "$MANDIBLE_TEST_DESKTOP_TRACE"',
       MANDIBLE_TEST_TRACE: tracePath,
@@ -147,7 +155,6 @@ exec "$REAL_GIT" "$@"
       MANDIBLE_TEST_RUNTIME_TRACE: runtimeTracePath,
       MANDIBLE_AUTH_MERGE_BASE_SHA: replayAfterUnrelatedMerge ? mergeBaseSha : "",
       MANDIBLE_AUTH_MERGE_HEAD_SHA: replayAfterUnrelatedMerge ? mergeHeadSha : "",
-      NODE_PATH: path.join(process.cwd(), "node_modules"),
     },
   });
 
@@ -162,16 +169,15 @@ afterEach(() => {
 
 describe("post-merge build hook", () => {
   it.each(["cli/instructions-contract.md", "cli/command-syntax.json", "cli/command-syntax.cjs"])(
-    "skips the build but installs instructions after changing %s",
+    "refreshes build provenance and installs instructions after changing %s",
     (changedPath) => {
       const result = runHookAfterMerge(changedPath);
 
       expect(result.status).toBe(0);
-      expect(result.stderr).toContain("[post-merge-build] no Mandible source changes detected; skipping build");
-      expect(result.stderr).not.toContain("[post-merge-build] generated local build artifacts");
+      expect(result.stderr).toContain("[post-merge-build] generated local build artifacts");
       expect(result.stderr).toContain("no native desktop changes detected");
       expect(result.stderr).toContain("[post-merge-build] installed managed instruction fragments");
-      expect(fs.existsSync(result.tracePath)).toBe(false);
+      expect(fs.readFileSync(result.tracePath, "utf8")).toBe("dependencies\nbuild\n");
       expect(fs.existsSync(result.desktopTracePath)).toBe(false);
 
       const claudeTarget = path.join(result.home, ".claude", "CLAUDE.md");
@@ -205,9 +211,9 @@ describe("post-merge build hook", () => {
     const result = runHookAfterMerge("src-tauri/src/lib.rs");
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain("no Mandible source changes detected");
+    expect(result.stderr).toContain("generated local build artifacts");
     expect(result.stderr).toContain("installed native desktop bundle");
-    expect(fs.existsSync(result.tracePath)).toBe(false);
+    expect(fs.readFileSync(result.tracePath, "utf8")).toBe("dependencies\nbuild\n");
     expect(fs.readFileSync(result.desktopTracePath, "utf8")).toBe("desktop\n");
   });
 
@@ -245,7 +251,7 @@ describe("post-merge build hook", () => {
     expect(replay.status, replay.stderr).toBe(0);
     expect(replay.stderr).toContain("runtime restart remains with the production LaunchAgent");
     expect(fs.readFileSync(replay.desktopTracePath, "utf8")).toBe("desktop\n");
-    expect(fs.existsSync(replay.tracePath)).toBe(false);
+    expect(fs.readFileSync(replay.tracePath, "utf8")).toBe("dependencies\nbuild\n");
     expect(fs.existsSync(replay.runtimeTracePath)).toBe(false);
     expect(replay.stderr).not.toContain("converged");
   });

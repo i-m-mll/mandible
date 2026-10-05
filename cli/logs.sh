@@ -7,27 +7,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 source "$SCRIPT_DIR/api.sh"
 
 usage() {
-  cat <<'EOF'
-Usage:
-  mandible logs inventory [--provider codex|claude|gemini|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
-  mandible logs capabilities [--provider codex|claude_code|gemini] [--json]
-  mandible logs missing [--provider codex|claude|gemini|all] [--json]
-  mandible logs orphans [--provider codex|claude|gemini|all] [--json]
-  mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--parse] [filters] [--json] [--head N]
-  mandible logs daemon copy|reconcile|verify|reclaim-plan|export [options]
-
-Filters for --parse: --role ROLE --type TYPE --tool NAME --tool-kind KIND --since TIME --until TIME --content TEXT --limit N --offset N
-
-Raw provider source logs are the veridical transcript source. These commands do
-not import, reconcile, or mutate the Mandible database. The daemon subcommands
-operate only on the dedicated operational-log lifecycle; reclaim-plan is always
-read-only and copy is bounded and resumable.
-EOF
+  mandible_command_help logs
 }
 
 if [[ "${1:-}" == "daemon" ]]; then
   shift
-  exec node "$SCRIPT_DIR/../dist/cli/operational-logs.js" "$@"
+  exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$SCRIPT_DIR/../dist/cli/operational-logs.js" "$@"
 fi
 
 logs_source() {
@@ -54,16 +39,9 @@ logs_resolve_conversation_id() {
 
 file_rpc_inventory() {
   local provider="all" since="" limit=50 json=0 source request response
-  while (( $# > 0 )); do
-    case "$1" in
-      --provider) provider="${2:?--provider requires a value}"; shift 2 ;;
-      --since) since="${2:?--since requires a value}"; shift 2 ;;
-      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
-      --json) json=1; shift ;;
-      -h|--help) usage; exit 0 ;;
-      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "logs.inventory" '{"provider":{"option":"provider"},"since":{"option":"since"},"limit":{"option":"limit"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   source=$(logs_source "$provider")
   request="/api/conversations?limit=$(urlencode "$limit")"
   if [[ -n "$source" ]]; then request="${request}&source=$(urlencode "$source")"; fi
@@ -90,24 +68,9 @@ file_rpc_inspect() {
   local target="${1:-}" provider="all" head=20 parse=0 json=0 role_filter="" type_filter="" content_filter="" limit=50 offset=0 conv_id request response
   if [[ -z "$target" ]]; then echo "log path, conversation id, or session id required" >&2; exit 2; fi
   shift
-  while (( $# > 0 )); do
-    case "$1" in
-      --provider) provider="${2:?--provider requires a value}"; logs_source "$provider" >/dev/null; shift 2 ;;
-      --head) head="${2:?--head requires a value}"; shift 2 ;;
-      --parse) parse=1; shift ;;
-      --role) role_filter="${2:?--role requires a value}"; shift 2 ;;
-      --type) type_filter="${2:?--type requires a value}"; shift 2 ;;
-      --content|--contains) content_filter="${2:?--content requires a value}"; shift 2 ;;
-      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
-      --offset) offset="${2:?--offset requires a value}"; shift 2 ;;
-      --json) json=1; shift ;;
-      --tool|--tool-kind|--since|--until)
-        echo "Error: $1 is not supported through file-RPC logs inspect." >&2
-        exit 2 ;;
-      -h|--help) usage; exit 0 ;;
-      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "logs.inspect" '{"provider":{"option":"provider"},"head":{"option":"head"},"parse":{"option":"parse","constant":"1"},"role_filter":{"option":"role"},"type_filter":{"option":"type"},"content_filter":{"option":["content","contains"]},"limit":{"option":"limit"},"offset":{"option":"offset"},"json":{"option":"json","constant":"1"}}' "$target" "$@") || return $?
+  eval "$binding"
   conv_id=$(logs_resolve_conversation_id "$target")
   if (( parse )); then
     request="/api/conversations/$(urlencode "$conv_id")/blocks?limit=$(urlencode "$limit")&offset=$(urlencode "$offset")"
@@ -178,10 +141,13 @@ fi
 # python cannot call api_live_db_path) and hand it down through the env.
 export MANDIBLE_DB="$(api_live_db_path)"
 
+export MANDIBLE_PARSED_COMMAND
+MANDIBLE_PARSED_COMMAND=$(mandible_parse_command logs "$@") || exit $?
+export MANDIBLE_RUNTIME="$("$SCRIPT_DIR/../scripts/bun-runtime.sh")"
 exec python3 - "$@" <<'PY'
 from __future__ import annotations
 
-import argparse
+from types import SimpleNamespace
 import datetime as dt
 import glob
 import json
@@ -294,7 +260,7 @@ def summarize_file(source: str, path: pathlib.Path) -> dict[str, Any]:
     return summary
 
 
-def inventory(args: argparse.Namespace) -> int:
+def inventory(args: SimpleNamespace) -> int:
     cutoff = parse_since(args.since)
     rows = []
     for provider, path in iter_files(args.provider):
@@ -344,7 +310,7 @@ def db_paths(provider: str) -> dict[str, dict[str, Any]]:
         conn.close()
 
 
-def missing(args: argparse.Namespace) -> int:
+def missing(args: SimpleNamespace) -> int:
     indexed = db_paths(args.provider)
     rows = []
     for provider, path in iter_files(args.provider):
@@ -359,7 +325,7 @@ def missing(args: argparse.Namespace) -> int:
     return 0
 
 
-def orphans(args: argparse.Namespace) -> int:
+def orphans(args: SimpleNamespace) -> int:
     rows = []
     for path, row in db_paths(args.provider).items():
         if not pathlib.Path(path).exists():
@@ -384,7 +350,7 @@ def find_log(target: str, provider: str) -> tuple[str, pathlib.Path] | None:
     return None
 
 
-def inspect(args: argparse.Namespace) -> int:
+def inspect(args: SimpleNamespace) -> int:
     found = find_log(args.target, args.provider)
     if not found:
         print(f"log not found: {args.target}", file=sys.stderr)
@@ -395,7 +361,7 @@ def inspect(args: argparse.Namespace) -> int:
     summary = summarize_file(source, path)
     if args.parse:
         cmd = [
-            "node",
+            os.environ["MANDIBLE_RUNTIME"],
             str(pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "dist" / "cli" / "conversation-blocks.js"),
             "logs",
             str(path),
@@ -433,46 +399,23 @@ def inspect(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="mandible logs", add_help=False)
-    sub = parser.add_subparsers(dest="command")
-    cap = sub.add_parser("capabilities")
-    cap.add_argument("--provider", choices=["codex", "claude_code", "gemini"])
-    cap.add_argument("--json", action="store_true")
-    inv = sub.add_parser("inventory")
-    inv.add_argument("--provider", default="all", choices=["codex", "claude", "gemini", "all"])
-    inv.add_argument("--since")
-    inv.add_argument("--limit", type=int, default=50)
-    inv.add_argument("--json", action="store_true")
-    missing_parser = sub.add_parser("missing")
-    missing_parser.add_argument("--provider", default="all", choices=["codex", "claude", "gemini", "all"])
-    missing_parser.add_argument("--json", action="store_true")
-    orphans_parser = sub.add_parser("orphans")
-    orphans_parser.add_argument("--provider", default="all", choices=["codex", "claude", "gemini", "all"])
-    orphans_parser.add_argument("--json", action="store_true")
-    ins = sub.add_parser("inspect")
-    ins.add_argument("target")
-    ins.add_argument("--provider", default="all", choices=["codex", "claude", "gemini", "all"])
-    ins.add_argument("--head", type=int, default=20)
-    ins.add_argument("--parse", action="store_true")
-    ins.add_argument("--role")
-    ins.add_argument("--type")
-    ins.add_argument("--tool")
-    ins.add_argument("--tool-kind", dest="tool_kind")
-    ins.add_argument("--since")
-    ins.add_argument("--until")
-    ins.add_argument("--content")
-    ins.add_argument("--contains", dest="content")
-    ins.add_argument("--limit", type=int, default=50)
-    ins.add_argument("--json", action="store_true")
-    if len(sys.argv) == 1 or sys.argv[1] in {"-h", "--help", "help"}:
-        usage()
-        return 0 if len(sys.argv) > 1 else 2
-    args = parser.parse_args()
+    parsed = json.loads(os.environ["MANDIBLE_PARSED_COMMAND"])
+    values = {'provider': 'all', 'since': None, 'tag': None, 'limit': 50, 'json': False, 'blocks': False, 'format': 'markdown', 'head': 20, 'parse': False, 'role': None, 'type': None, 'tool': None, 'tool_kind': None, 'until': None, 'content': None, 'offset': 0}
+    values.update({key.replace("-", "_"): value for key, value in parsed["options"].items()})
+    for key in ("limit", "head", "offset"):
+        values[key] = int(values[key])
+    values["command"] = parsed["command"].split(".")[-1]
+    positions = parsed["positionals"]
+    values["ident"] = positions[0] if positions else None
+    values["target"] = positions[0] if positions else None
+    if "contains" in values:
+        values["content"] = values["contains"]
+    args = SimpleNamespace(**values)
     if args.command == "inventory":
         return inventory(args)
     if args.command == "capabilities":
         cmd = [
-            "node",
+            os.environ["MANDIBLE_RUNTIME"],
             str(pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "dist" / "cli" / "conversation-blocks.js"),
             "capabilities",
         ]
@@ -487,8 +430,7 @@ def main() -> int:
         return orphans(args)
     if args.command == "inspect":
         return inspect(args)
-    usage()
-    return 2
+    raise ValueError(f"Unsupported parsed command: {args.command}")
 
 
 if __name__ == "__main__":

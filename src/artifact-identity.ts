@@ -1,51 +1,41 @@
-import type {
-  ArtifactAliasRecord,
-  ArtifactBlobRecord,
-  ArtifactIdentityRecord,
-  ArtifactRecord,
-  ArtifactResolveResult,
-  CanonicalArtifactVersionRecord,
-} from "./types.js";
-
+import type { ArtifactRecord, ArtifactBlobRecord, ArtifactIdentityRecord, CanonicalArtifactVersionRecord } from "./contracts.js";
 export const MIN_ARTIFACT_ID_PREFIX_LENGTH = 7;
 export const DEFAULT_ARTIFACT_ID_PREFIX_LENGTH = 12;
 
 export type ArtifactResolutionMode = "strict-read" | "surface" | "link";
-export type CanonicalArtifactTargetType = "artifact" | "artifact_version" | "artifact_blob";
-export type ArtifactIdentityKind = "logical" | "pinned-version" | "blob" | "alias";
-export type ArtifactRequestedKind = ArtifactIdentityKind | "series" | "unknown";
+export type {
+  CanonicalArtifactTargetType, ArtifactIdentityKind, ArtifactRequestedKind,
+  ResolvedArtifactIdentity, FailedArtifactIdentity, ArtifactIdentityResolution,
+  ArtifactCustody, ArtifactMaterializationTarget, ArtifactMaterializationError, ArtifactMaterializationResult,
+} from "./contracts.js";
+import type { ArtifactIdentityResolution, FailedArtifactIdentity, ArtifactCustody, ArtifactMaterializationTarget, ArtifactMaterializationResult } from "./contracts.js";
 
-interface ArtifactIdentityPayload {
-  artifact: ArtifactRecord | null;
-  alias: ArtifactAliasRecord | null;
-  logical_artifact: ArtifactIdentityRecord | null;
-  artifact_version: CanonicalArtifactVersionRecord | null;
-  artifact_blob: ArtifactBlobRecord | null;
+export function artifactMaterializationTarget(resolution: ArtifactIdentityResolution): ArtifactMaterializationResult<ArtifactMaterializationTarget> {
+  if (resolution.status !== "resolved") return { ok: false, error: {
+    code: resolution.status === "ambiguous" ? "ambiguous_source" : "unknown_reference",
+    message: `Artifact reference is ${resolution.status}`,
+  }};
+  const blob = resolution.artifact_blob;
+  const version = resolution.artifact_version;
+  if (!blob) return { ok: false, error: { code: "unavailable_material", message: "Artifact has no saved material" }};
+  let custody: ArtifactCustody;
+  if (version?.custody_mode === "git") {
+    if (!version.source_project_id || !version.repo_path || !version.commit_sha
+      || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(version.commit_sha)) {
+      return { ok: false, error: { code: "invalid_custody", message: "Git custody requires a verified project, commit and path" }};
+    }
+    custody = { kind: "git", project_id: version.source_project_id, commit: version.commit_sha,
+      path: version.repo_path, hash: version.content_hash };
+  } else {
+    if (!blob.storage_uri?.startsWith("file://")) return { ok: false, error: {
+      code: "unavailable_material", message: "Stored artifact bytes are unavailable; select a saved version for Git custody",
+    }};
+    custody = { kind: "managed", storage_uri: blob.storage_uri, hash: version?.content_hash ?? blob.content_hash };
+  }
+  if (custody.hash !== blob.content_hash) return { ok: false, error: { code: "hash_mismatch", message: "Version and blob hashes disagree" }};
+  return { ok: true, value: { id: version?.id ?? blob.id, version_id: version?.id ?? null, blob, custody,
+    metadata: { ...blob.metadata, ...resolution.logical_artifact?.metadata, ...version?.metadata } }};
 }
-
-interface ArtifactIdentityBase extends ArtifactIdentityPayload {
-  ref: string;
-  scheme: string;
-  normalized_ref: string;
-  warnings: string[];
-}
-
-export interface ResolvedArtifactIdentity extends ArtifactIdentityBase {
-  status: "resolved";
-  kind: ArtifactIdentityKind;
-  target_type: CanonicalArtifactTargetType;
-  target_id: string;
-}
-
-export interface FailedArtifactIdentity extends ArtifactIdentityBase {
-  status: "unresolved" | "ambiguous" | "unsupported";
-  kind: "unresolved" | "ambiguous" | "unsupported";
-  requested_kind: ArtifactRequestedKind;
-  target_type: CanonicalArtifactTargetType | null;
-  target_id: null;
-}
-
-export type ArtifactIdentityResolution = ResolvedArtifactIdentity | FailedArtifactIdentity;
 
 export type ArtifactRefClassification =
   | { kind: "logical"; ref: string }
@@ -83,51 +73,33 @@ export function formatCompactArtifactId(hash: string, length = DEFAULT_ARTIFACT_
   return `artifact:${normalized.slice(0, safeLength)}`;
 }
 
-export function emptyArtifactIdentityPayload(): ArtifactIdentityPayload {
-  return {
-    artifact: null,
-    alias: null,
-    logical_artifact: null,
-    artifact_version: null,
-    artifact_blob: null,
-  };
+export function emptyArtifactIdentityPayload() {
+  return { alias: null, logical_artifact: null, artifact_version: null, artifact_blob: null };
 }
 
-export function resolvedArtifactIdentity(
-  input: Omit<ResolvedArtifactIdentity, "status">,
-): ResolvedArtifactIdentity {
-  if (!input.target_id) throw new Error("resolved artifact identity requires a canonical target id");
-  return { ...input, status: "resolved" };
-}
-
-export function failedArtifactIdentity(
-  input: Omit<FailedArtifactIdentity, "kind" | "target_id">,
-): FailedArtifactIdentity {
+export function failedArtifactIdentity(input: Omit<FailedArtifactIdentity, "kind" | "target_id">): FailedArtifactIdentity {
   return { ...input, kind: input.status, target_id: null };
 }
 
-/**
- * Compatibility-only projection for the historical public resolver shape.
- *
- * The deprecated `series` and `version` fields are deliberately absent here:
- * they are computed from canonical records by the caller that owns the HTTP
- * boundary, so no canonical code path can read them back as domain facts.
- */
-export function projectArtifactResolution(
-  resolution: ArtifactIdentityResolution,
-): ArtifactResolveResult {
+/** Project the selected version and its shared content descriptor. */
+export function projectCanonicalArtifactRecord(blob: ArtifactBlobRecord, logical: ArtifactIdentityRecord | null = null,
+  version: CanonicalArtifactVersionRecord | null = null): ArtifactRecord {
+  const git = version?.custody_mode === 'git';
+  const locator = git ? {repo_id: version.source_project_id, path: version.repo_path, commit: version.commit_sha} : {};
   return {
-    status: resolution.status,
-    ref: resolution.ref,
-    scheme: resolution.scheme,
-    normalized_ref: resolution.normalized_ref,
-    target_type: resolution.target_type ?? undefined,
-    target_id: resolution.target_id,
-    artifact: resolution.artifact,
-    alias: resolution.alias,
-    logical_artifact: resolution.logical_artifact,
-    artifact_version: resolution.artifact_version,
-    artifact_blob: resolution.artifact_blob,
-    warnings: resolution.warnings,
+    id: version?.id ?? blob.id, algorithm: blob.algorithm, content_hash: blob.content_hash,
+    uri: git ? `repo://${version.source_project_id}@${version.commit_sha}/${version.repo_path}` : blob.storage_uri ?? blob.id,
+    media_type: blob.media_type, role: blob.role, size_bytes: blob.size_bytes,
+    provider_id: blob.provider_id, manifest_id: blob.manifest_id,
+    metadata: { ...blob.metadata, ...logical?.metadata, ...version?.metadata },
+    pinned: true, custody_mode: version?.custody_mode ?? (blob.storage_uri ? 'managed' : null), home_repo_id: git ? version.source_project_id : null,
+    repo_locator: locator, availability: blob.storage_uri || git ? 'present' : 'missing', retention: {},
+    reference: {canonical_blob_id:blob.id,canonical_artifact_id:logical?.id ?? null,canonical_version_id:version?.id ?? null},
+    created_at:version?.created_at ?? blob.created_at,
   };
+}
+
+export function resolvedArtifactRecord(resolution: ArtifactIdentityResolution | null | undefined): ArtifactRecord | null {
+  if (resolution?.status !== "resolved" || !resolution.artifact_blob) return null;
+  return projectCanonicalArtifactRecord(resolution.artifact_blob, resolution.logical_artifact, resolution.artifact_version);
 }

@@ -109,15 +109,29 @@ export type MandibleEventType = (typeof DOMAIN_EVENTS)[keyof typeof DOMAIN_EVENT
   | (typeof TASK_COMMAND_EVENTS)[keyof typeof TASK_COMMAND_EVENTS]
   | (typeof MANAGED_REMINDER_EVENTS)[keyof typeof MANAGED_REMINDER_EVENTS];
 
+export const SESSION_DISCOVERY_PAYLOAD = z.object({ discovered: z.number(), dead_reaped: z.number(),
+  already_tracked: z.number(), processes_found: z.number(), duration_ms: z.number() });
+export type SessionDiscoveryResult = z.infer<typeof SESSION_DISCOVERY_PAYLOAD>;
+export const WORK_SCAN_PAYLOAD = z.object({ scanned_repos: z.number(), branches_updated: z.number(),
+  branches_removed: z.number(), missing_repos: z.array(z.string()), duration_ms: z.number() });
+export type WorkScanSummary = z.infer<typeof WORK_SCAN_PAYLOAD>;
+
 export type EventPayload<E extends MandibleEventType> =
-  E extends `briefing:group-${string}` ? { group_id: string; [key: string]: unknown }
+  E extends typeof DOMAIN_EVENTS.SESSION_REGISTERED | typeof DOMAIN_EVENTS.SESSION_UPDATED
+    | typeof DOMAIN_EVENTS.SESSION_ENDED ? import("./types.js").Session
+  : E extends typeof DOMAIN_EVENTS.SESSION_CHILD_ADDED | typeof DOMAIN_EVENTS.SESSION_CHILD_ENDED
+    ? { parent_id: string; child: import("./types.js").Session }
+  : E extends typeof DOMAIN_EVENTS.SESSION_DISCOVERY_COMPLETED ? SessionDiscoveryResult
+  : E extends typeof DOMAIN_EVENTS.WORK_SCAN_COMPLETED ? WorkScanSummary
+  : E extends `briefing:group-${string}` ? { group_id: string; [key: string]: unknown }
   : E extends `briefing:bundle-${string}` ? { bundle_id: string; [key: string]: unknown }
   : E extends BriefingEvent ? { briefing_id: string; round_id?: string | null; [key: string]: unknown }
   : E extends typeof SPACE_EVENTS.SPACE_DOCUMENT_SETTINGS_UPDATED ? { scope: "repo" | "global"; repo_id: string | null }
   : E extends import("./spaces/events.js").SpaceEvent ? { space_id: string; [key: string]: unknown }
   : E extends typeof DOMAIN_EVENTS.CONVERSATION_UPDATED ? { id: string; [key: string]: unknown }
   : E extends typeof DOMAIN_EVENTS.HEARTBEAT ? { timestamp: number }
-  : unknown;
+  : E extends typeof DOMAIN_EVENTS.CONSOLE_TELEMETRY ? unknown
+  : Record<string, unknown>;
 
 export type MandibleEvent<E extends MandibleEventType = MandibleEventType> = E extends MandibleEventType ? {
   type: E;
@@ -694,7 +708,9 @@ export type ArtifactAliasResolutionStatus = "resolved" | "unresolved" | "ambiguo
 
 export type ArtifactAliasRecord = {
   id: string;
-  artifact_id: string | null;
+  blob_id: string | null;
+  /** Historical HTTP projection; internal aliases carry blob_id. */
+  artifact_id?: string | null;
   scheme: string;
   alias: string;
   normalized_ref: string;
@@ -866,19 +882,68 @@ export type ArtifactVersionRecord = {
   created_at: number;
 };
 
-export type ArtifactResolveResult = {
-  status: ArtifactAliasResolutionStatus;
+export type CanonicalArtifactTargetType = "artifact" | "artifact_version" | "artifact_blob";
+export type ArtifactIdentityKind = "logical" | "pinned-version" | "blob";
+export type ArtifactRequestedKind = ArtifactIdentityKind | "alias" | "series" | "unknown";
+
+interface ArtifactIdentityBase {
   ref: string;
   scheme: string;
   normalized_ref: string;
-  target_type?: "artifact" | "artifact_version" | "artifact_blob";
-  target_id?: string | null;
-  artifact: ArtifactRecord | null;
+  warnings: string[];
   alias: ArtifactAliasRecord | null;
-  logical_artifact?: ArtifactIdentityRecord | null;
-  artifact_version?: CanonicalArtifactVersionRecord | null;
-  artifact_blob?: ArtifactBlobRecord | null;
-  warnings?: string[];
+}
+
+export type ResolvedArtifactIdentity = ArtifactIdentityBase & { status: "resolved" } & (
+  | { kind: "logical"; target_type: "artifact"; target_id: string;
+      logical_artifact: ArtifactIdentityRecord } & (
+      | { artifact_version: CanonicalArtifactVersionRecord; artifact_blob: ArtifactBlobRecord }
+      | { artifact_version: null; artifact_blob: null })
+  | { kind: "pinned-version"; target_type: "artifact_version"; target_id: string;
+      logical_artifact: ArtifactIdentityRecord; artifact_version: CanonicalArtifactVersionRecord;
+      artifact_blob: ArtifactBlobRecord }
+  | { kind: "blob"; target_type: "artifact_blob"; target_id: string;
+      logical_artifact: null; artifact_version: null; artifact_blob: ArtifactBlobRecord }
+);
+
+export interface FailedArtifactIdentity extends ArtifactIdentityBase {
+  status: "unresolved" | "ambiguous" | "unsupported";
+  kind: "unresolved" | "ambiguous" | "unsupported";
+  requested_kind: ArtifactRequestedKind;
+  target_type: CanonicalArtifactTargetType | null;
+  target_id: null;
+  logical_artifact: ArtifactIdentityRecord | null;
+  artifact_version: null;
+  artifact_blob: null;
+}
+
+export type ArtifactIdentityResolution = ResolvedArtifactIdentity | FailedArtifactIdentity;
+
+export type ArtifactCustody =
+  | { kind: "git"; project_id: string; commit: string; path: string; hash: string }
+  | { kind: "managed"; storage_uri: string; hash: string };
+
+export interface ArtifactMaterializationTarget {
+  id: string;
+  version_id: string | null;
+  blob: ArtifactBlobRecord;
+  custody: ArtifactCustody;
+  metadata: Record<string, unknown>;
+}
+
+export type ArtifactMaterializationError = {
+  code: "unknown_reference" | "unavailable_material" | "ambiguous_source" | "invalid_custody" | "hash_mismatch" | "size_limit";
+  message: string;
+};
+export type ArtifactMaterializationResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: ArtifactMaterializationError };
+
+/** Provider HTTP projection retained for historical and external consumers. */
+export type ArtifactResolveResult = ArtifactIdentityResolution & {
+  artifact: ArtifactRecord | null;
+  series: ArtifactSeriesRecord | null;
+  version: ArtifactVersionRecord | null;
 };
 
 export type ArtifactSeriesSummary = {
@@ -916,7 +981,12 @@ export type ArtifactDraftRecord = {
   updated_at: number;
 };
 
-export type ArtifactVersionRecordResult = {
+export type ArtifactVersionWriteResult = Extract<ResolvedArtifactIdentity, { kind: "pinned-version" }> & {
+  created: boolean;
+};
+export type ArtifactDraftWriteResult = { draft: ArtifactDraftRecord; result: ArtifactVersionWriteResult };
+
+export type ArtifactVersionRecordResult = ArtifactVersionWriteResult & {
   series: ArtifactSeriesRecord;
   version: ArtifactVersionRecord;
   artifact: ArtifactRecord;
@@ -2193,6 +2263,12 @@ const scopedChange = (key: string) => z.object({ [key]: z.string().min(1) }).pas
 const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.HEARTBEAT, z.object({ timestamp: z.number() })],
   [DOMAIN_EVENTS.CONVERSATION_UPDATED, scopedChange("id")],
+  [DOMAIN_EVENTS.SESSION_DISCOVERY_COMPLETED, SESSION_DISCOVERY_PAYLOAD],
+  [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],
+  ...[DOMAIN_EVENTS.SESSION_REGISTERED, DOMAIN_EVENTS.SESSION_UPDATED, DOMAIN_EVENTS.SESSION_ENDED,
+    ].map((event): [MandibleEventType, z.ZodType] => [event, scopedChange("id")]),
+  ...[DOMAIN_EVENTS.SESSION_CHILD_ADDED, DOMAIN_EVENTS.SESSION_CHILD_ENDED].map((event): [MandibleEventType, z.ZodType] =>
+    [event, z.object({ parent_id: z.string().min(1), child: scopedChange("id") })]),
   ...BRIEFING_EVENT_VALUES.map((event): [MandibleEventType, z.ZodType] => [event,
     scopedChange(event.startsWith("briefing:group-") ? "group_id"
       : event.startsWith("briefing:bundle-") ? "bundle_id" : "briefing_id")]),
@@ -2213,8 +2289,9 @@ export function parseDomainEvent(value: unknown): { ok: true; value: MandibleEve
   if (envelope.data.event !== undefined && envelope.data.event !== envelope.data.type) {
     return { ok: false, error: "Conflicting domain event names" };
   }
-  const schema = eventPayloadSchemas.get(envelope.data.type);
-  if (schema && !schema.safeParse(envelope.data.data).success) {
+  const schema = eventPayloadSchemas.get(envelope.data.type)
+    ?? (envelope.data.type === DOMAIN_EVENTS.CONSOLE_TELEMETRY ? z.unknown() : z.object({}).passthrough());
+  if (!schema.safeParse(envelope.data.data).success) {
     return { ok: false, error: `Invalid ${envelope.data.type} event payload` };
   }
   return { ok: true, value: envelope.data as MandibleEvent };

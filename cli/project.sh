@@ -31,17 +31,7 @@ die() {
 }
 
 usage() {
-  cat <<'EOF' | mandible_render_commands
-Usage:
-  {{command project.list}}
-  {{command project.show}}
-  {{command project.add}}
-  {{command project.update}}
-  {{command project.add-checkout}}
-  {{command project.update-checkout}}
-  {{command project.audit}}
-  {{command project.repair}}
-EOF
+  mandible_command_help project
 }
 
 require_tools() {
@@ -61,13 +51,9 @@ emit() {
 
 cmd_list() {
   local json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "project.list" '{"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   require_tools
   local response
   response="$(api_get "/api/projects")" || die "${RED}Failed to list projects.${RESET}" 1
@@ -77,13 +63,9 @@ cmd_list() {
 
 cmd_show() {
   local ref="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "project.show" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax project.show)" 2
   require_tools
   local tmp_response status_code response
@@ -109,18 +91,9 @@ cmd_show() {
 
 cmd_add() {
   local key="" display="" remote="" namespace="" root="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --key) key="$2"; shift 2 ;;
-      --display) display="$2"; shift 2 ;;
-      --remote) remote="$2"; shift 2 ;;
-      --namespace) namespace="$2"; shift 2 ;;
-      --root) root="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "project.add" '{"key":{"option":"key"},"display":{"option":"display"},"remote":{"option":"remote"},"namespace":{"option":"namespace"},"root":{"option":"root"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$key" ]] || die "Usage: $(mandible_command_syntax project.add)" 2
   require_tools
   local payload response
@@ -147,17 +120,9 @@ cmd_add() {
 
 cmd_update() {
   local ref="" key="" display="" remote="" namespace="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --key) key="$2"; shift 2 ;;
-      --display) display="$2"; shift 2 ;;
-      --remote) remote="$2"; shift 2 ;;
-      --namespace) namespace="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "project.update" '{"key":{"option":"key"},"display":{"option":"display"},"remote":{"option":"remote"},"namespace":{"option":"namespace"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax project.update)" 2
   require_tools
   local payload response
@@ -174,17 +139,9 @@ cmd_update() {
 
 cmd_add_checkout() {
   local ref="" root="" work_repo_id="" default_branch="" name="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --root) root="$2"; shift 2 ;;
-      --work-repo-id) work_repo_id="$2"; shift 2 ;;
-      --default-branch) default_branch="$2"; shift 2 ;;
-      --name) name="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "project.add-checkout" '{"root":{"option":"root"},"work_repo_id":{"option":"work-repo-id"},"default_branch":{"option":"default-branch"},"name":{"option":"name"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" && -n "$root" ]] || die "Usage: $(mandible_command_syntax project.add-checkout)" 2
   require_tools
   local payload response
@@ -202,18 +159,9 @@ cmd_add_checkout() {
 
 cmd_update_checkout() {
   local project="" root="" work_repo_id="" default_branch="" name="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --project) project="$2"; shift 2 ;;
-      --root) root="$2"; shift 2 ;;
-      --work-repo-id) work_repo_id="$2"; shift 2 ;;
-      --default-branch) default_branch="$2"; shift 2 ;;
-      --name) name="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "project.update-checkout" '{"project":{"option":"project"},"root":{"option":"root"},"work_repo_id":{"option":"work-repo-id"},"default_branch":{"option":"default-branch"},"name":{"option":"name"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$root" && -n "$project" ]] || die "Usage: $(mandible_command_syntax project.update-checkout)" 2
   require_tools
   local payload response
@@ -231,13 +179,9 @@ cmd_update_checkout() {
 
 cmd_audit() {
   local json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "project.audit" '{"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   require_tools
   local response
   response="$(api_get "/api/projects/audit")" || die "${RED}Failed to fetch audit.${RESET}" 1
@@ -268,18 +212,9 @@ cmd_audit() {
 
 cmd_repair() {
   local apply=0 force=0 merge_src="" merge_dst="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --apply) apply=1; shift ;;
-      --force) force=1; shift ;;
-      --merge)
-        [[ $# -ge 3 ]] || die "Usage: --merge <src> <dst>" 2
-        merge_src="$2"; merge_dst="$3"; shift 3 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "project.repair" '{"apply":{"option":"apply","constant":"1"},"force":{"option":"force","constant":"1"},"merge_src":{"option":"merge"},"merge_dst":{"option":"merge","valueIndex":1},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   require_tools
   local payload response
   payload="$(jq -n \

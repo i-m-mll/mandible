@@ -153,13 +153,7 @@ export interface RepoInfo {
   last_scanned_at: string | null;
 }
 
-export interface ScanSummary {
-  scanned_repos: number;
-  branches_updated: number;
-  branches_removed: number;
-  missing_repos: string[];
-  duration_ms: number;
-}
+export type ScanSummary = import("./contracts.js").WorkScanSummary;
 
 export interface WorkScannerOptions {
   db?: SqliteDatabase;
@@ -600,11 +594,13 @@ const execFileAsync = promisify(execFile);
 // throwing.
 async function runGitAsync(
   args: string[],
-  options: { cwd: string },
+  options: { cwd: string; signal?: AbortSignal },
 ): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync("git", args, {
       cwd: options.cwd,
+      signal: options.signal,
+      timeout: 5000,
       encoding: "utf8",
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
       maxBuffer: 64 * 1024 * 1024,
@@ -739,6 +735,9 @@ export class WorkScanner {
   private readonly emit: (event: SseEvent) => void;
   private readonly scanSkipWindowMs: number;
   private repoInfos: RepoInfo[] = [];
+  private stopped = false;
+  private readonly scanAbort = new AbortController();
+  private readonly repoRefreshes = new Set<Promise<RepoInfo>>();
   private activeScan: { promise: Promise<ScanSummary>; skipsRecent: boolean } | null = null;
 
   constructor(options: WorkScannerOptions = {}) {
@@ -1036,9 +1035,23 @@ export class WorkScanner {
     };
   }
 
-  // Explicit synchronous callers retain the original full-refresh semantics.
-  // Request/startup callers use scanAllAsync(), which yields after every branch.
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.scanAbort.abort();
+    const results = await Promise.allSettled([this.activeScan?.promise, ...this.repoRefreshes]);
+    for (const result of results) {
+      if (result.status === "rejected") {
+        workScannerLog("warn", "work_scanner_drain_failed", { error: String(result.reason) });
+      }
+    }
+  }
+
+  private emptyScan(): ScanSummary {
+    return { scanned_repos: 0, branches_updated: 0, branches_removed: 0, missing_repos: [], duration_ms: 0 };
+  }
+
   scanAll(): ScanSummary {
+    if (this.stopped) return this.emptyScan();
     const start = Date.now();
     this.refreshRepoInfos();
 
@@ -1054,6 +1067,7 @@ export class WorkScanner {
     let scannedRepos = 0;
 
     for (const repo of this.repoInfos) {
+      if (this.stopped) break;
       if (!repo.exists || !this.isGitRepo(repo.root)) {
         missingRepos.push(repo.root);
         continue;
@@ -1107,6 +1121,7 @@ export class WorkScanner {
   }
 
   scanAllAsync(options: { skip_recent?: boolean } = {}): Promise<ScanSummary> {
+    if (this.stopped) return Promise.resolve(this.emptyScan());
     const skipsRecent = options.skip_recent === true;
     if (this.activeScan) {
       if (skipsRecent || !this.activeScan.skipsRecent) {
@@ -1152,6 +1167,7 @@ export class WorkScanner {
     }
 
     await this.refreshRepoInfosAsync();
+    if (this.stopped) return this.emptyScan();
     this.emit({
       event: DOMAIN_EVENTS.WORK_SCAN_STARTED,
       type: DOMAIN_EVENTS.WORK_SCAN_STARTED,
@@ -1164,6 +1180,7 @@ export class WorkScanner {
     let scannedRepos = 0;
 
     for (const repo of this.repoInfos) {
+      if (this.stopped) break;
       if (!repo.exists || !this.isGitRepo(repo.root)) {
         missingRepos.push(repo.root);
         continue;
@@ -1177,6 +1194,10 @@ export class WorkScanner {
         let step = steps.next();
         while (!step.done) {
           await yieldToEventLoop();
+          if (this.stopped) {
+            steps.return({ updated: 0, removed: 0 });
+            return this.emptyScan();
+          }
           step = steps.next();
         }
         branchesUpdated += step.value.updated;
@@ -1246,7 +1267,15 @@ export class WorkScanner {
   // Issue 651e820 — audit-endpoint refresh that yields between branches instead
   // of running the fully synchronous scanRepo, so the per-repo audit GET does
   // not block the event loop for the whole scan.
-  async refreshRepoAsync(idOrPath: string): Promise<RepoInfo> {
+  refreshRepoAsync(idOrPath: string): Promise<RepoInfo> {
+    if (this.stopped) return Promise.reject(new Error("Work scanner is stopped"));
+    const refresh = this.runRepoRefresh(idOrPath);
+    this.repoRefreshes.add(refresh);
+    void refresh.then(() => this.repoRefreshes.delete(refresh), () => this.repoRefreshes.delete(refresh));
+    return refresh;
+  }
+
+  private async runRepoRefresh(idOrPath: string): Promise<RepoInfo> {
     const repo = this.getRepoById(idOrPath);
     if (!repo) {
       throw new Error("repo not found");
@@ -1259,6 +1288,10 @@ export class WorkScanner {
     let step = steps.next();
     while (!step.done) {
       await yieldToEventLoop();
+      if (this.stopped) {
+        steps.return({ updated: 0, removed: 0 });
+        return repo;
+      }
       step = steps.next();
     }
 
@@ -1549,13 +1582,14 @@ export class WorkScanner {
     const sortedRoots = this.resolveSortedRoots();
     const probes = new Map<string, { exists: boolean; defaultBranch: string }>();
     for (const root of sortedRoots) {
+      if (this.stopped) return;
       const exists = fs.existsSync(root);
       const defaultBranch = exists && this.isGitRepo(root)
         ? this.detectDefaultBranch(root)
         : "";
       probes.set(root, { exists, defaultBranch });
     }
-    this.applyRepoInfos(sortedRoots, probes);
+    if (!this.stopped) this.applyRepoInfos(sortedRoots, probes);
   }
 
   // Issue 651e820 — async discovery prefix for the yielding scan path. The
@@ -1566,6 +1600,7 @@ export class WorkScanner {
     const sortedRoots = this.resolveSortedRoots();
     const probes = new Map<string, { exists: boolean; defaultBranch: string }>();
     for (const root of sortedRoots) {
+      if (this.stopped) return;
       const exists = fs.existsSync(root);
       const defaultBranch = exists && (await this.isGitRepoAsync(root))
         ? await this.detectDefaultBranchAsync(root)
@@ -1573,7 +1608,7 @@ export class WorkScanner {
       probes.set(root, { exists, defaultBranch });
       await yieldToEventLoop();
     }
-    this.applyRepoInfos(sortedRoots, probes);
+    if (!this.stopped) this.applyRepoInfos(sortedRoots, probes);
   }
 
   private applyRepoInfos(
@@ -1646,6 +1681,7 @@ export class WorkScanner {
         name = CASE WHEN user_modified = 0 THEN excluded.name ELSE name END
     `);
     for (const repo of this.repoInfos) {
+      if (this.stopped) break;
       upsertStmt.run({
         id: repo.id,
         root: repo.root,
@@ -1749,7 +1785,7 @@ export class WorkScanner {
   }
 
   private async isGitRepoAsync(repoRoot: string): Promise<boolean> {
-    const output = await runGitAsync(["rev-parse", "--show-toplevel"], { cwd: repoRoot });
+    const output = await runGitAsync(["rev-parse", "--show-toplevel"], { cwd: repoRoot, signal: this.scanAbort.signal });
     return this.matchesToplevel(repoRoot, output);
   }
 
@@ -2161,7 +2197,8 @@ export class WorkScanner {
   private async detectDefaultBranchAsync(repoRoot: string): Promise<string> {
     const candidates = ["main", "develop"];
     for (const candidate of candidates) {
-      const result = await runGitAsync(["rev-parse", "--verify", candidate], { cwd: repoRoot });
+      if (this.stopped) return "";
+      const result = await runGitAsync(["rev-parse", "--verify", candidate], { cwd: repoRoot, signal: this.scanAbort.signal });
       if (result !== null) {
         return candidate;
       }

@@ -16,10 +16,10 @@ import type {
   ArtifactAliasResolutionStatus as ContractArtifactAliasResolutionStatus,
   ArtifactLinkRecord as ContractArtifactLinkRecord,
   ArtifactRecord as ContractArtifactRecord,
-  ArtifactResolveResult as ContractArtifactResolveResult,
+  ArtifactIdentityResolution as ContractArtifactResolveResult,
   ArtifactSeriesRecord as ContractArtifactSeriesRecord,
   ArtifactSeriesSummary as ContractArtifactSeriesSummary,
-  ArtifactDraftPublishResult as ContractArtifactDraftPublishResult,
+  ArtifactDraftWriteResult as ContractArtifactDraftPublishResult,
   ArtifactDraftRecord as ContractArtifactDraftRecord,
   ArtifactVersionRecord as ContractArtifactVersionRecord,
   AuthRequestAction as ContractAuthRequestAction,
@@ -51,8 +51,6 @@ import type {
   SpaceItem as ContractSpaceItem,
   SpaceOccurrence as ContractSpaceOccurrence,
   SpaceEdge as ContractSpaceEdge,
-  SpaceExport as ContractSpaceExport,
-  SpaceExportStatus as ContractSpaceExportStatus,
   CreateSpaceRequest,
   UpdateSpaceRequest,
   AddSpaceItemRequest,
@@ -3831,162 +3829,21 @@ export async function resolveSpaceRef(ref: string): Promise<ResolverResult> {
   return payload.resolution;
 }
 
-// --- Spaces document custody: export-and-track + repo-file registration (C13b
-// backend, issue 8730bf9) typed client glue consumed by the export dialog + the
-// repo-file registration UI (C13f, issue f7be021). Committing a document to a
-// repo is ALWAYS an explicit user action: these helpers are only ever called
-// from an explicit user-triggered dialog submit, never on a background tick.
-// ---------------------------------------------------------------------------
-
-/**
- * Resolved export settings for a Space: the global default repo-relative path /
- * branch, the resolved value after applying any per-repo override, and the repo
- * scope the dialog is operating against. Mirrors `resolveDocsSettings`
- * (`src/spaces/export.ts`) which the `GET .../exports` route returns.
- */
-export type SpaceExportSettings = {
-  /** Effective repo-relative export path after global → per-repo resolution. */
-  path: string;
-  /** Effective docs branch after global → per-repo resolution. */
-  branch: string;
-  /** True when a per-repo override (not just the global default) is in effect. */
-  overridden?: boolean;
-};
-
-/**
- * The export tracking read surface for a Space: the existing `space_exports`
- * rows + the resolved export settings + the repo scope. Backs the export dialog
- * default/override resolution (custody-doc §5.1).
- */
-export type SpaceExportsReadResult = {
-  exports: ContractSpaceExport[];
-  repo_id: string;
-  settings: SpaceExportSettings;
-};
-
-/** Read the tracked exports + resolved export settings for a Space. */
-export async function getSpaceExports(
-  spaceId: string,
-  repoId?: string,
-  signal?: AbortSignal,
-  fetchImpl?: typeof fetch,
-): Promise<SpaceExportsReadResult> {
-  const response = await apiGet(
-    `/api/spaces/${encodeURIComponent(spaceId)}/exports${buildQuery({ repo_id: repoId })}`,
-    { signal }, fetchImpl,
-  );
-  const payload = await parseMaybeJson(response) as SpaceExportsReadResult;
-  if (!Array.isArray(payload.exports)) throw new Error('The Spaces service returned an invalid exports collection.');
-  return payload;
+export type SpacePublication = import('../../src/spaces/publication').SpacePublication;
+export type SpaceDocumentHistory = { id: string; kind: string; content: string | null; blocks_json: string | null; artifact_ref: string | null; provenance_json: string };
+export async function getSpacePublications(spaceId: string,signal?:AbortSignal): Promise<{ publications: SpacePublication[]; history: SpaceDocumentHistory[]; destinations:import('../../src/spaces/publication').PublicationDestination[] }> {
+  const result = await parseMaybeJson(await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}/publications`,{signal})) as { publications: SpacePublication[]; history: SpaceDocumentHistory[]; destinations:import('../../src/spaces/publication').PublicationDestination[] };
+  if (!result || !Array.isArray(result.publications) || !Array.isArray(result.history) || !Array.isArray(result.destinations)) throw new Error('The Spaces service returned invalid publication history.');
+  return result;
 }
-
-/** Confirmed inputs the export dialog posts for an explicit export-and-track. */
-export type ExportAndTrackRequest = {
-  /** Confirmed repo-relative target path (dialog confirm/override output). */
-  path?: string | null;
-  /** Docs branch override; defaults to the resolved per-repo/global branch. */
-  branch?: string | null;
-  /** Explicit project-checkout id; defaults to the Space's project checkout. */
-  repo_id?: string | null;
-  /** Issue refs for ledger links to the exported commit (required). */
-  issues: string[];
-  /** Commit subject; a deterministic default is used when omitted. */
-  message?: string | null;
-};
-
-export type ExportAndTrackResult = {
-  export: ContractSpaceExport;
-  document_content_sha256: string;
-  commit: string;
-  pre_export_snapshot_artifact_id: string;
-  last_export_artifact_id: string;
-};
-
-/**
- * Explicit export-and-track: serialize the Space document, write it to the
- * managed docs-branch worktree at the confirmed path, agent-key linked-commit
- * it, and upsert the `space_exports` tracking row. Re-exporting the SAME
- * document to the SAME confirmed path is idempotent (custody-doc §5.2). This is
- * ONLY ever invoked from the export dialog's explicit user confirm.
- */
-export async function exportSpaceTracked(
-  spaceId: string,
-  body: ExportAndTrackRequest,
-): Promise<ExportAndTrackResult> {
-  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/exports`, body);
-  return (await parseMaybeJson(response)) as ExportAndTrackResult;
+export async function prepareSpacePublication(spaceId: string, body: { path: string; repo_id?: string; issue: string; message?: string }): Promise<SpacePublication> {
+  return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/publications`,body)) as SpacePublication;
 }
-
-/** Persist the global default or a per-repo export-path override. */
-export type SetExportSettingsRequest = {
-  /** Per-repo override target; omit/empty for the global default. */
-  repo_id?: string | null;
-  path?: string | null;
-  branch?: string | null;
-};
-
-export async function setSpaceExportSettings(
-  body: SetExportSettingsRequest,
-): Promise<{ ok: boolean; scope: 'global' | 'repo'; repo_id: string | null }> {
-  const response = await apiPost('/api/spaces/exports/settings', body);
-  return (await parseMaybeJson(response)) as {
-    ok: boolean;
-    scope: 'global' | 'repo';
-    repo_id: string | null;
-  };
+export async function submitSpacePublication(spaceId: string,id: string): Promise<SpacePublication> {
+  return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/publications/${encodeURIComponent(id)}/submit`,{})) as SpacePublication;
 }
-
-/**
- * Register an EXISTING tracked repo file as a Space document with link custody
- * (custody-doc §1.4): the canonical bytes stay in the repo, the document starts
- * at `authority='repo'`, and its source is a `repo://<repo>@<ref>/<path>` ref.
- * This is an explicit user action (no auto-track), so it only ever fires from
- * the registration dialog's confirm.
- *
- * Backend glue: `POST /api/spaces/:id/exports/register` (C13b owned route,
- * issue 8730bf9). The route creates the `authority='repo'` `space_exports` row
- * + the link-custody artifact and returns the new tracking row.
- */
-export type RegisterRepoFileRequest = {
-  /** Explicit project-checkout id; defaults to the Space's project checkout. */
-  repo_id?: string | null;
-  /** Docs branch / ref the existing file lives on. */
-  branch?: string | null;
-  /** Repo-relative path of the existing tracked file to register. */
-  path: string;
-};
-
-export type RegisterRepoFileResult = {
-  export: ContractSpaceExport;
-  /** The `repo://<repo>@<ref>/<path>` source ref recorded for the document. */
-  source_ref: string;
-};
-
-export async function registerRepoFileDocument(
-  spaceId: string,
-  body: RegisterRepoFileRequest,
-): Promise<RegisterRepoFileResult> {
-  const response = await apiPost(
-    `/api/spaces/${encodeURIComponent(spaceId)}/exports/register`,
-    body,
-  );
-  return (await parseMaybeJson(response)) as RegisterRepoFileResult;
-}
-
-/** Re-check drift for one tracked export row (custody-doc §6). */
-export type ExportDriftResult = {
-  export_id: string;
-  status: ContractSpaceExportStatus;
-  changed: boolean;
-  last_seen_commit: string | null;
-  last_seen_content_sha256: string | null;
-};
-
-export async function getSpaceExportDrift(
-  spaceId: string,
-): Promise<{ space_id: string; drift: ExportDriftResult[] }> {
-  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}/exports/drift`);
-  return (await parseMaybeJson(response)) as { space_id: string; drift: ExportDriftResult[] };
+export async function importSpaceDocument(body: { title: string; project_id?: string } & ({ ref: string } | { project: string; commit: string; path: string })): Promise<ContractSpace> {
+  return await parseMaybeJson(await apiPost('/api/spaces/documents/import',body)) as ContractSpace;
 }
 
 function briefingRecord(value: unknown): Record<string, unknown> {
@@ -6040,4 +5897,8 @@ export async function deleteSpaceBlock(spaceId: string, blockId: string, fetchIm
 }
 export async function detachItemFromBlocks(spaceId: string, itemId: string, fetchImpl?: typeof fetch): Promise<{ detached: ContractSpaceBlock[] }> {
   return await parseMaybeJson(await apiWrite('POST', `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}/detach-blocks`, {}, fetchImpl)) as { detached: ContractSpaceBlock[] };
+}
+
+export async function importSpaceHistory(spaceId: string,id: string,title: string): Promise<ContractSpace> {
+  return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/history/${encodeURIComponent(id)}/import`,{title})) as ContractSpace;
 }

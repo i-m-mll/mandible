@@ -3,7 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { readArtifactBytesFull } from "../artifact-content.js";
 import { canonicalJson } from "../canonical-json.js";
 import type { Db } from "../db.js";
-import { recordArtifactVersion, resolveArtifactRefReadonlyFull } from "../provider-artifacts.js";
+import {
+  recordArtifactVersion,
+  resolveArtifactIdentity,
+} from "../provider-artifacts.js";
 import { enforceActivePlacement } from "./briefing-placement.js";
 import { parseBriefingDirectives } from "./briefing-directives.js";
 import { BriefingStoreError, publishBriefingFromArtifactVersion, publishBriefingReportRound } from "./briefings.js";
@@ -378,7 +381,7 @@ type ResolvedRouteDeclaration = {
 };
 
 function resolveRouteDeclaration(db: Db, input: BriefingDestinationRouteDeclaration): ResolvedRouteDeclaration {
-  const logical = resolveArtifactRefReadonlyFull(db, input.logical_artifact_ref);
+  const logical = resolveArtifactIdentity(db, input.logical_artifact_ref, "strict-read");
   if (logical.status !== "resolved" || logical.target_type !== "artifact" || !logical.target_id) {
     throw new BriefingStoreError("logical_artifact_ref must resolve to one logical Artifact", 404,
       "artifact_not_found");
@@ -628,7 +631,7 @@ export function registerBriefingDestinationRoute(db: Db, input: BriefingDestinat
 }
 
 function exactVersionId(db: Db, ref: string): string {
-  const resolved = resolveArtifactRefReadonlyFull(db, ref);
+  const resolved = resolveArtifactIdentity(db, ref, "strict-read");
   if (resolved.status !== "resolved" || resolved.target_type !== "artifact_version" || !resolved.target_id) {
     throw new BriefingStoreError("expected_artifact_version_ref must resolve to one exact artifact version", 404,
       "artifact_version_not_found");
@@ -930,7 +933,7 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
         artifact_id: current.logicalArtifactId, logical_name: current.logicalName, title: current.title,
         role: "briefing-document", media_type: "text/markdown",
         metadata: { composer: BRIEFING_COMPOSITION_SCHEMA,
-          previous_current_artifact_version_id: current.artifactVersionId } }, now).version.id;
+          previous_current_artifact_version_id: current.artifactVersionId } }, now).artifact_version.id;
       const published = publishBriefingReportRound(db, { briefing_id: current.briefingId,
         artifact_version_ref: artifactVersionId,
         expected_current_round_id: inputs.get(documentRoutes[0].route_key)!.expected_current_round_id!,
@@ -1048,8 +1051,8 @@ export function publishBriefingCompositionRun(db: Db, request: BriefingCompositi
           artifact_id: document.base.logicalArtifactId, logical_name: document.base.logicalName, title: document.base.title,
           role: "briefing-document", media_type: "text/markdown",
           metadata: { composer: BRIEFING_COMPOSITION_SCHEMA, base_artifact_version_id: document.base.artifactVersionId } }, now);
-        const published = publishBriefingFromArtifactVersion(db, { briefing_key: `composition:${artifact.version.id}`,
-          title: document.base.title, artifact_version_ref: artifact.version.id,
+        const published = publishBriefingFromArtifactVersion(db, { briefing_key: `composition:${artifact.artifact_version.id}`,
+          title: document.base.title, artifact_version_ref: artifact.artifact_version.id,
           comparison_base_artifact_version_ref: document.base.artifactVersionId,
           profile: "mandible-briefing.v3", responder_user_ids: request.responder_user_ids,
           distinct_reason: "Base-relative destination proposal",

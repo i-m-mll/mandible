@@ -43,7 +43,7 @@ import {
 } from "../src/feedback/briefing-groups.js";
 import { METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createUser } from "../src/users/store.js";
-import { recordArtifactVersion } from "../src/provider-artifacts.js";
+import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import {
   inspectBriefingDestinationRoutes,
   registerBriefingDestinationRoute,

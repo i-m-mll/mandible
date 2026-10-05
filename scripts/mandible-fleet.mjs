@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Read-only inventory of running Mandible daemons and the files they hold open.
 //
 // This exists because there was no way to answer "what is running right now?"
@@ -362,7 +362,7 @@ function printReport(report) {
     for (const job of report.supervisedPreviews) {
       console.log(`  ${job.label}  pid ${job.pid ?? "-"}  last exit ${job.lastExitStatus}`);
     }
-    console.log("  Remove them with: npm run iab-preview-cleanup -- --apply");
+    console.log("  Remove them with: bun run iab-preview-cleanup -- --apply");
   }
 
   if (report.orphanedPreviewDirs.length > 0) {

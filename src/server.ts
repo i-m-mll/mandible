@@ -458,7 +458,7 @@ export class Router implements RouteRegistrar {
 
   resolveRequestOperation(method: string, requestUrl: string, body?: unknown) {
     const match = this.matchRoute(method.toUpperCase(), new URL(requestUrl, "http://localhost").pathname);
-    return match ? resolveOperation(match.route.options.operation, { instanceRole: this.instance.role, body }) : null;
+    return match ? resolveOperation(match.route.options.operation, { instanceRole: this.instance.role, body, params: match.params }) : null;
   }
 
   operationCatalog(version: string) {
@@ -655,12 +655,22 @@ export class Router implements RouteRegistrar {
         }
       }
 
+      const schema = route.options.operation.requestSchema;
+      if (schema !== null) {
+        const parsed = schema.safeParse(body);
+        if (!parsed.success) {
+          response.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+          return true;
+        }
+        body = parsed.data;
+      }
+
       // Direct invocation is a trusted process-local composition boundary.
       // HTTP and file-RPC are ingress and must satisfy both the instance and
       // credential effect ceilings; treating an omitted test/internal
       // transport as file-RPC would invent a remote caller that does not exist.
       if (gate && transport !== "in-process") {
-        const operation = resolveOperation(route.options.operation, { instanceRole: this.instance.role, body });
+        const operation = resolveOperation(route.options.operation, { instanceRole: this.instance.role, body, params });
         const effectDecision = authorizeEffects(this.instance, clientIdentity, operation);
         if (!effectDecision.allowed) {
           response.status(effectDecision.code === "authentication_required" ? 401 : 403).json({
@@ -671,16 +681,6 @@ export class Router implements RouteRegistrar {
           });
           return true;
         }
-      }
-
-      const schema = route.options.operation.requestSchema;
-      if (schema !== null) {
-        const parsed = schema.safeParse(body);
-        if (!parsed.success) {
-          response.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
-          return true;
-        }
-        body = parsed.data;
       }
 
       const query: Record<string, string> = {};

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -211,7 +211,7 @@ export async function setupLocalCa(paths, effects = systemTrustEffects(paths), a
 
 async function reconcileLocalCa(paths, effects, context) {
   const prior = assertLocalCaIdentity(paths);
-  if (!existsEntry(paths.installationAuthority)) throw new Error("Installation authority is not initialized; run npm run local-front-door -- initialize before secure-local-connections setup.");
+  if (!existsEntry(paths.installationAuthority)) throw new Error("Installation authority is not initialized; run bun run local-front-door -- initialize before secure-local-connections setup.");
   const installationDigest = digest(regularBytes(paths.installationAuthority, "installation authority"));
   const existingRoot = prior.state === "untracked_root" ? rootDigest(paths) : null;
   const existingKey = prior.state === "untracked_root" ? keyDigest(paths) : null;
