@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 import { spawn } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -235,7 +236,7 @@ async function preAuthSshHosts(
   }
 
   const hostList = Array.from(hosts);
-  broadcast({ type: "push:auth:pending", event: "push:auth:pending", data: { hosts: hostList } });
+  broadcast({ type: DOMAIN_EVENTS.PUSH_AUTH_PENDING, event: DOMAIN_EVENTS.PUSH_AUTH_PENDING, data: { hosts: hostList } });
 
   for (const host of hostList) {
     const sshArgs: string[] = [
@@ -258,7 +259,7 @@ async function preAuthSshHosts(
     await runGitAsync(sshArgs, os.tmpdir(), process.env, 120_000);
   }
 
-  broadcast({ type: "push:auth:complete", event: "push:auth:complete", data: {} });
+  broadcast({ type: DOMAIN_EVENTS.PUSH_AUTH_COMPLETE, event: DOMAIN_EVENTS.PUSH_AUTH_COMPLETE, data: {} });
 }
 
 async function pushRepo(
@@ -465,7 +466,7 @@ export function startPushSession(
     error: null,
   };
 
-  broadcast({ type: "push:started", event: "push:started", data: { session_id: sessionId, repo_count: repos.length } });
+  broadcast({ type: DOMAIN_EVENTS.PUSH_STARTED, event: DOMAIN_EVENTS.PUSH_STARTED, data: { session_id: sessionId, repo_count: repos.length } });
 
   // Run async push session
   void runPushSession(sessionId, repos, scope, scanner, startedAt);
@@ -496,7 +497,7 @@ async function runPushSession(
       activePushSession.error = errorMsg;
       activePushSession.done = true;
     }
-    broadcast({ type: "push:error", event: "push:error", data: { error: `SSH pre-auth failed: ${errorMsg}` } });
+    broadcast({ type: DOMAIN_EVENTS.PUSH_ERROR, event: DOMAIN_EVENTS.PUSH_ERROR, data: { error: `SSH pre-auth failed: ${errorMsg}` } });
     await cleanupControlMaster(socketPath);
     return;
   }
@@ -511,11 +512,11 @@ async function runPushSession(
         if (activePushSession) {
           activePushSession.error = timeoutError;
         }
-        broadcast({ type: "push:error", event: "push:error", data: { error: timeoutError } });
+        broadcast({ type: DOMAIN_EVENTS.PUSH_ERROR, event: DOMAIN_EVENTS.PUSH_ERROR, data: { error: timeoutError } });
         break;
       }
 
-      broadcast({ type: "push:repo:progress", event: "push:repo:progress", data: { repo_id: repo.id, repo_name: repo.name } });
+      broadcast({ type: DOMAIN_EVENTS.PUSH_REPO_PROGRESS, event: DOMAIN_EVENTS.PUSH_REPO_PROGRESS, data: { repo_id: repo.id, repo_name: repo.name } });
 
       const result = await pushRepo(repo, scope, gitSshEnv, scanner);
 
@@ -523,7 +524,7 @@ async function runPushSession(
         activePushSession.completedRepos.push(result);
       }
 
-      broadcast({ type: "push:repo:complete", event: "push:repo:complete", data: result });
+      broadcast({ type: DOMAIN_EVENTS.PUSH_REPO_COMPLETE, event: DOMAIN_EVENTS.PUSH_REPO_COMPLETE, data: result });
     }
 
     // Trigger a single rescan after all repos complete to refresh ahead/behind counts.
@@ -535,7 +536,7 @@ async function runPushSession(
     if (activePushSession) {
       activePushSession.error = errorMsg;
     }
-    broadcast({ type: "push:error", event: "push:error", data: { error: errorMsg } });
+    broadcast({ type: DOMAIN_EVENTS.PUSH_ERROR, event: DOMAIN_EVENTS.PUSH_ERROR, data: { error: errorMsg } });
   } finally {
     await cleanupControlMaster(socketPath);
 
@@ -552,7 +553,7 @@ async function runPushSession(
 
     recordPushHistory(sessionId, scope, sessionResult, activePushSession?.error ? "failed" : "completed");
 
-    broadcast({ type: "push:complete", event: "push:complete", data: sessionResult });
+    broadcast({ type: DOMAIN_EVENTS.PUSH_COMPLETE, event: DOMAIN_EVENTS.PUSH_COMPLETE, data: sessionResult });
   }
 }
 

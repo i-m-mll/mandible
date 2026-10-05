@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "../contracts.js";
 import fs from "node:fs";
 import type { Db } from "../db.js";
 import type { ConversationControlService, NewConversationControllerLease } from "../conversation-control/service.js";
@@ -49,7 +50,7 @@ export function registerConversationSpawnRoutes(
 
   const publish = (reservationId: string) => {
     const result = spawns.get(reservationId);
-    if (result.ok) broadcast("conversation-spawn:updated", { spawn: result.value });
+    if (result.ok) broadcast(DOMAIN_EVENTS.CONVERSATION_SPAWN_UPDATED, { spawn: result.value });
     return result;
   };
 

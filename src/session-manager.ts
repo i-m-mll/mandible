@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { WebSocket } from "ws";
@@ -635,7 +636,7 @@ export class SessionManager {
       void promise.finally(() => this.initialRunOptionApplications.delete(id)).catch(() => undefined);
     }
 
-    broadcast("console:session:created", { session });
+    broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_CREATED, { session });
     return session;
   }
 
@@ -894,7 +895,7 @@ export class SessionManager {
     this.sessions.delete(id);
     this.revokeClientToken(id);
     this.clientIdentities.delete(id);
-    broadcast("console:session:deleted", { id });
+    broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_DELETED, { id });
   }
 
   resize(id: string, cols: number, rows: number): void {
@@ -957,7 +958,7 @@ export class SessionManager {
     );
 
     if (!silent) {
-      broadcast("console:session:updated", { session: nextMeta });
+      broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_UPDATED, { session: nextMeta });
     }
     return nextMeta;
   }
@@ -1007,7 +1008,7 @@ export class SessionManager {
       this.persistAppliedRunOptions(id, applied);
     }
     const nextSession = this.requireSession(id).meta;
-    broadcast("console:session:updated", { session: nextSession });
+    broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_UPDATED, { session: nextSession });
     return {
       session: nextSession,
       runOptions: snapshot,
@@ -1233,12 +1234,12 @@ export class SessionManager {
 
   private wireBackend(backend: AgenticBackend): void {
     backend.on("stream_event", (event: ConsoleStreamEvent) => {
-      broadcast("console:stream_event", {
+      broadcast(DOMAIN_EVENTS.CONSOLE_STREAM_EVENT, {
         console_session_id: backend.id,
         event,
       });
       if (event.type === "system" && event.subtype === "subagent_start") {
-        broadcast("console:subagent:start", {
+        broadcast(DOMAIN_EVENTS.CONSOLE_SUBAGENT_START, {
           console_session_id: backend.id,
           agent_id: event.agent_id,
           agent_type: event.agent_type,
@@ -1247,7 +1248,7 @@ export class SessionManager {
         });
       }
       if (event.type === "system" && event.subtype === "subagent_stop") {
-        broadcast("console:subagent:stop", {
+        broadcast(DOMAIN_EVENTS.CONSOLE_SUBAGENT_STOP, {
           console_session_id: backend.id,
           agent_id: event.agent_id,
           agent_type: event.agent_type,
@@ -1257,7 +1258,7 @@ export class SessionManager {
       }
       if (event.type === "result") {
         this.recordUsage(backend.id, event);
-        broadcast("console:inbox:badge", { count: 1 });
+        broadcast(DOMAIN_EVENTS.CONSOLE_INBOX_BADGE, { count: 1 });
       }
     });
 
@@ -1266,15 +1267,15 @@ export class SessionManager {
         ...backend.meta,
         attention: attention?.active ? attention : null,
       };
-      broadcast("console:attention", {
+      broadcast(DOMAIN_EVENTS.CONSOLE_ATTENTION, {
         console_session_id: backend.id,
         attention,
       });
-      broadcast("console:session:updated", { session: backend.meta });
+      broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_UPDATED, { session: backend.meta });
     });
 
     backend.on("prompt_queue", () => {
-      broadcast("console:session:updated", { session: backend.meta });
+      broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_UPDATED, { session: backend.meta });
     });
 
     backend.on("meta_update", (fields: BackendMetaUpdate) => {
@@ -1290,14 +1291,14 @@ export class SessionManager {
     });
 
     backend.on("permission", (request: PermissionRequest) => {
-      broadcast("console:permission:request", {
+      broadcast(DOMAIN_EVENTS.CONSOLE_PERMISSION_REQUEST, {
         console_session_id: backend.id,
         request,
       });
     });
 
     backend.on("permission_cleared", (event: { request_id: string }) => {
-      broadcast("console:permission:cleared", {
+      broadcast(DOMAIN_EVENTS.CONSOLE_PERMISSION_CLEARED, {
         console_session_id: backend.id,
         request_id: event.request_id,
       });
@@ -1343,12 +1344,12 @@ export class SessionManager {
       getDb().prepare(`UPDATE console_sessions SET ${assignments.join(", ")} WHERE id = ?`).run(...values);
     }
 
-    broadcast("console:session:updated", { session: session.meta });
+    broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_UPDATED, { session: session.meta });
   }
 
   private broadcastStatus(id: string, event: BackendStatusEvent): void {
     if (event.kind === "started") {
-      broadcast("console:session:started", {
+      broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_STARTED, {
         id,
         pid: this.requireSession(id).meta.pid,
         started_at: event.started_at ?? this.requireSession(id).meta.started_at,
@@ -1356,14 +1357,14 @@ export class SessionManager {
       return;
     }
     if (event.kind === "stopped") {
-      broadcast("console:session:stopped", {
+      broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_STOPPED, {
         id,
         stopped_at: event.stopped_at ?? this.requireSession(id).meta.stopped_at,
       });
       this.evictExcessTerminalBackends(id);
       return;
     }
-    broadcast("console:session:exit", {
+    broadcast(DOMAIN_EVENTS.CONSOLE_SESSION_EXIT, {
       id,
       exitCode: event.exitCode ?? null,
       signal: event.signal ?? null,
