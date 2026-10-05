@@ -235,7 +235,7 @@
         "work-unit",
         "claim"
       ],
-      "syntax": "mandible work-unit claim --issue <id> --repo <repo> [--branch <branch>] [--parent-branch <branch>] [--kind solo|partition|integration] [--session <id>] [--graceful]"
+      "syntax": "mandible work-unit claim --issue <id> --repo <repo> [--branch <branch>] [--parent-branch <branch>] [--kind solo|partition|integration] [--expected-generation <n>] [--parent-role-checkpoint <id>] [--session <id>] [--graceful]"
     },
     "work-unit.activate": {
       "route": [

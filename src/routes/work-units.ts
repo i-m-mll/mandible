@@ -14,7 +14,8 @@ import type { SessionManager } from "../session-manager.js";
 import type { Logger } from "../types.js";
 import { resolveSessionOwnerUserId } from "../session-ownership.js";
 import { readBody, sendJson } from "./http.js";
-import { isOperator } from "../client-auth/authz.js";
+import { attributionForRequest, isOperator } from "../client-auth/authz.js";
+import { LedgerStore } from "../ledger/store.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { PermissionError, requireProjectAccess } from "../permissions/store.js";
 import {
@@ -38,6 +39,8 @@ interface ClaimInput {
   branch?: string | null;
   parent_branch?: string | null;
   kind?: string;
+  expected_generation?: number;
+  parent_role_checkpoint_id?: string;
   assigned_session_id?: string | null;
   provider?: string | null;
   provider_session_id?: string | null;
@@ -214,6 +217,10 @@ export function registerWorkUnitRoutes(
       return;
     }
 
+    if (body.kind !== undefined && !["solo", "partition", "integration"].includes(body.kind)) {
+      sendJson(res, 400, { error: "kind must be solo, partition or integration." });
+      return;
+    }
     const repoId = normalizeProjectRepoId(db, body.repo_id);
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
@@ -226,8 +233,41 @@ export function registerWorkUnitRoutes(
     const existing = match.work_unit;
 
     if (existing) {
+      const current = db.prepare("SELECT * FROM work_units WHERE id = ?").get(existing.id) as CustodyRow & { kind: string; ledger_issue_id: string | null };
+      const changingKind = body.kind !== undefined && body.kind !== current.kind;
+      if (changingKind || body.expected_generation !== undefined) {
+        const failure = custodyMutationFailure(db, req, current, body.expected_generation);
+        if (failure) { sendJson(res, failure.status, failure); return; }
+      }
+      if (changingKind) {
+        if (current.auth_request_id || current.kind === "integration") {
+          sendJson(res, 409, { error: current.auth_request_id
+            ? "Auth-bound work-unit kind cannot change."
+            : "Integration work units cannot be downgraded; their custody guards remain in force." });
+          return;
+        }
+        if (!current.ledger_issue_id) {
+          sendJson(res, 409, { error: "Kind correction requires a work unit linked to a ledger issue." });
+          return;
+        }
+        if (body.kind === "integration") {
+          const issue = db.prepare("SELECT kind FROM ledger_issues WHERE id = ?").get(current.ledger_issue_id) as { kind: string } | undefined;
+          const checkpoint = new LedgerStore(db).getLatestIssueCheckpoint(current.ledger_issue_id, "parent-role");
+          const payload = checkpoint ? JSON.parse(checkpoint.payload_json) as Record<string, unknown> : null;
+          const credential = durableCredential(req)!;
+          if (issue?.kind !== "umbrella" || !checkpoint || checkpoint.id !== body.parent_role_checkpoint_id ||
+              payload?.authenticated_user_id !== credential.user_id || payload?.authenticated_credential_id !== credential.credential_id) {
+            sendJson(res, 403, { error: "Integration promotion requires the latest audited parent-role checkpoint for this umbrella and durable credential. Run issue parent-role assume and pass --parent-role-checkpoint." });
+            return;
+          }
+        }
+      }
       const updates: string[] = [];
       const params: unknown[] = [];
+      if (changingKind) {
+        updates.push("kind = ?");
+        params.push(body.kind);
+      }
       if (!existing.branch && body.branch) {
         updates.push("branch = ?", "parent_branch = COALESCE(parent_branch, ?)");
         params.push(body.branch, body.parent_branch ?? null);
@@ -253,14 +293,42 @@ export function registerWorkUnitRoutes(
           return;
         }
       }
-      if (updates.length > 0) {
-        params.push(existing.id);
-        db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`).run(...params);
+      const corrected = db.transaction(() => {
+        if (updates.length > 0) {
+          const guard = changingKind
+            ? " AND custody_generation = ? AND owner_user_id = ? AND owner_credential_id = ? AND kind = ? AND auth_request_id IS NULL"
+            : "";
+          const changed = db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?${guard}`)
+            .run(...params, existing.id, ...(changingKind ? [body.expected_generation, current.owner_user_id, current.owner_credential_id, current.kind] : []));
+          if (changed.changes !== 1) return false;
+        }
+        if (changingKind) {
+          new LedgerStore(db).addIssueCheckpoint(current.ledger_issue_id!, {
+            kind: "work-unit-kind",
+            payload: {
+              work_unit_id: current.id, prior_kind: current.kind, kind: body.kind,
+              custody_generation: current.custody_generation,
+              authenticated_user_id: current.owner_user_id, authenticated_credential_id: current.owner_credential_id,
+              parent_role_checkpoint_id: body.kind === "integration" ? body.parent_role_checkpoint_id : null,
+            },
+            actor_type: "mandible_user", author_display: req.client_identity!.slug,
+            attribution: attributionForRequest(db, req), source: "mandible", created_at: now,
+          });
+        }
+        return true;
+      })();
+      if (!corrected) {
+        sendJson(res, 409, { error: "Work-unit kind or custody changed; refresh and retry.", code: "work_unit_custody_conflict" });
+        return;
       }
       const ledgerLink = linkLedgerIssue(db, existing.id, body.issue_id, repoId);
+      const updated = db.prepare("SELECT kind, custody_generation FROM work_units WHERE id = ?")
+        .get(existing.id) as { kind: string; custody_generation: number };
       sendJson(res, 200, {
         id: existing.id,
         state: existing.state,
+        kind: updated.kind,
+        custody_generation: updated.custody_generation,
         existing: true,
         ...ledgerLinkFieldsForExisting(ledgerLink, existing.ledger_issue_id),
         ...ledgerIssueMetadataFields(db, ledgerLink, existing.ledger_issue_id),
@@ -268,10 +336,12 @@ export function registerWorkUnitRoutes(
       return;
     }
 
+    if (body.expected_generation !== undefined || body.parent_role_checkpoint_id !== undefined) {
+      sendJson(res, 404, { error: "Kind correction requires an existing exact work unit; claim new work without correction guards." });
+      return;
+    }
     const id = randomUUID();
-    const kind = body.kind && ["solo", "partition", "integration"].includes(body.kind)
-      ? body.kind
-      : "solo";
+    const kind = body.kind ?? "solo";
     const credential = durableCredential(req);
     const ownerUserId = credential?.user_id ?? resolveSessionOwnerUserId(
       db,
@@ -309,6 +379,8 @@ export function registerWorkUnitRoutes(
     const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
     sendJson(res, 201, {
       id,
+      kind,
+      custody_generation: credential ? 1 : 0,
       ...ledgerLinkFields(ledgerLink),
       ...ledgerIssueMetadataFields(db, ledgerLink),
     });

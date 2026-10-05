@@ -58,7 +58,7 @@ mandible auth merge <branch> [opts]    # executes the merge; invoked by daemon
 
 ## LEDGER MECHANISM CLIENT
 source cli/ledger-client.sh
-mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--kind solo|partition|integration] [--session S] [--graceful]
+mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--kind solo|partition|integration] [--expected-generation N] [--parent-role-checkpoint C] [--session S] [--graceful]
 mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--worker] [--graceful]
 mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
 mandible work-unit resolve --id WU --expected-generation N [--auth-request-id AR] [--graceful]
