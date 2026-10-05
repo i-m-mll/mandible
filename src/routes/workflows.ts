@@ -14,7 +14,7 @@ export function registerWorkflowRoutes(server: RouteRegistrar): void {
     sendJson(res, 200, {
       workflows: listWorkflowRuns(db, { sessionId }),
     });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/workflows", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/workflows/:id", (req, res) => {
     const id = req.params.id;
@@ -28,5 +28,5 @@ export function registerWorkflowRoutes(server: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { workflow });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/workflows/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 }

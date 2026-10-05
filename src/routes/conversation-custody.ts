@@ -62,7 +62,7 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/conversations/:id/custody", effects: ["files:production"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/conversations/:id/custody/capture", (req, res) => {
     try {
@@ -143,7 +143,7 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/conversations/:id/custody/capture", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
 
   router.post("/api/conversations/:id/custody/verify", (req, res) => {
     try {
@@ -155,7 +155,7 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/conversations/:id/custody/verify", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
 
   router.post("/api/conversations/:id/custody/archive", (req, res) => {
     try {
@@ -172,7 +172,7 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/conversations/:id/custody/archive", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
 
   router.post("/api/conversations/:id/custody/stage-restore", (req, res) => {
     try {
@@ -186,7 +186,7 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/conversations/:id/custody/stage-restore", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
 
   router.post("/api/conversation-custody/import", (req, res) => {
     try {
@@ -197,5 +197,5 @@ export function registerConversationCustodyRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/conversation-custody/import", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
 }

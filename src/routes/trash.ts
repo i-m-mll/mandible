@@ -70,7 +70,7 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/v1/trash", effects: ["files:production"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/v1/trash", (req, res) => {
     try {
@@ -78,7 +78,7 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/v1/trash", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   // Register the literal gc route before the parameter route.
   router.post("/api/v1/trash/gc", (req, res) => {
@@ -92,7 +92,7 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/v1/trash/gc", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.post("/api/v1/trash/:id/restore", (req, res) => {
     try {
@@ -100,5 +100,5 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/v1/trash/:id/restore", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 }

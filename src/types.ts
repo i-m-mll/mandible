@@ -104,6 +104,7 @@ export interface HealthResponse {
   status: "ok";
   uptime: number;
   version: string;
+  operations?: ReturnType<import("./server.js").Router["operationCatalog"]>;
   /** Unique per daemon process/start, independent of the checked-out commit. */
   startup_epoch?: string;
   startup_commit: StartupCommitInfo;

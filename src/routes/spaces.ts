@@ -382,9 +382,9 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       handleError(res, error);
     }
   };
-  router.get("/api/spaces/resolve", resolveHandler, { fileRpc: "allow" });
+  router.get("/api/spaces/resolve", resolveHandler, { operation: { id: "get:/api/spaces/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  router.get("/api/refs/resolve", resolveHandler, { fileRpc: "allow" });
+  router.get("/api/refs/resolve", resolveHandler, { operation: { id: "get:/api/refs/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // --- spaces CRUD ---
   // List modes (issue 812df41):
@@ -411,7 +411,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/spaces", (req, res) => {
     try {
@@ -438,7 +438,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.get("/api/spaces/:id", (req, res) => {
     try {
@@ -458,7 +458,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id", (req, res) => {
     try {
@@ -478,7 +478,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id", (req, res) => {
     try {
@@ -490,7 +490,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- items ---
   router.post("/api/spaces/:id/items", (req, res) => {
@@ -518,7 +518,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/items", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/items/:item_id", (req, res) => {
     try {
@@ -541,7 +541,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id/items/:item_id", (req, res) => {
     try {
@@ -555,7 +555,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- occurrences ---
   router.post("/api/spaces/:id/occurrences", (req, res) => {
@@ -569,7 +569,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/occurrences", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.post("/api/spaces/:id/occurrences/batch", (req, res) => {
     try {
@@ -595,7 +595,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/occurrences/batch", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/occurrences/:occurrence_id", (req, res) => {
     try {
@@ -615,7 +615,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id/occurrences/:occurrence_id", (req, res) => {
     try {
@@ -629,7 +629,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- edges ---
   router.post("/api/spaces/:id/edges", (req, res) => {
@@ -653,7 +653,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/edges", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/edges/:edge_id", (req, res) => {
     try {
@@ -679,7 +679,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id/edges/:edge_id", (req, res) => {
     try {
@@ -693,7 +693,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- seed-from-filter ---
   router.post("/api/spaces/:id/seed", (req, res) => {
@@ -715,7 +715,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/seed", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- blocks (C11, issue d2a8e77) ---
   // The document/canvas block tree. Block identity (`id`/`parent`/`sort`/`type`/
@@ -731,7 +731,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id/blocks", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/spaces/:id/blocks", (req, res) => {
     try {
@@ -745,7 +745,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/blocks", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/blocks/:block_id", (req, res) => {
     try {
@@ -761,7 +761,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id/blocks/:block_id", (req, res) => {
     try {
@@ -775,7 +775,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // Detach/degrade: drop the item_id embed from every block in the Space that
   // embeds it (preserving item_snapshot_json as a placeholder) so the item can
@@ -793,7 +793,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/items/:item_id/detach-blocks", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- export / custody (C13b, issue 8730bf9) ---
   // The deterministic export-and-track op, untracked export-of-copy, the
@@ -816,7 +816,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleExportError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id/exports", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Export-and-track: the explicit user commit that moves a document into repo
   // custody (creates/refreshes a `space_exports` row + agent-key linked commit).
@@ -845,7 +845,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleExportError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/exports", effects: ["ledger:write","files:production","process:external"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // Untracked export-of-copy: a one-shot local file export with no custody.
   router.post("/api/spaces/:id/exports/untracked", (req, res) => {
@@ -867,7 +867,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleExportError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/exports/untracked", effects: ["files:production"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // Register/update the docs-path export settings (global default or per-repo
   // override). This is the settings storage backing the export dialog (§5.1).
@@ -894,7 +894,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleExportError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/exports/settings", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- drift / status detection (C13c, issue 21f36cb) ---
   // Read-only status reads that inspect the LIVE docs-branch worktree/HEAD/path
@@ -912,7 +912,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleExportError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id/exports/drift", effects: ["ledger:write","files:production","process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Re-check drift for one tracked export row.
   router.get("/api/spaces/:id/exports/:export_id/drift", (req, res) => {
@@ -927,7 +927,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleExportError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id/exports/:export_id/drift", effects: ["ledger:write","files:production","process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 }
 
 /** Parse a required non-empty `issues: string[]` (or single `issue`) field. */
