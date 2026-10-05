@@ -39,13 +39,10 @@ function processTreeRss(rootPid) {
 
 async function runPhase(label, script, args = []) {
   const runtime = createTestRuntime();
-  const child = spawn(process.execPath, [path.join(root, script), ...args], {
+  const child = spawn(process.execPath, ["--smol", path.join(root, script), ...args], {
     cwd: root,
     detached: true,
-    env: {
-      ...runtime.env,
-      NODE_OPTIONS: "--max-old-space-size=512",
-    },
+    env: runtime.env,
     stdio: "inherit",
   });
   supervisor.attach(child);

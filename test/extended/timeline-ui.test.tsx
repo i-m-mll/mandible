@@ -2,7 +2,6 @@ import { render, screen, waitFor, cleanup, fireEvent, within, act } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
-import { readFileSync } from 'node:fs';
 
 import { parseRouteFromHash } from '../../ui/src/routing';
 import {
@@ -18,14 +17,7 @@ import type {
   TimelineRowOccurrence,
   TimelineRowSpecInput,
 } from '../../ui/src/types/timeline';
-import { __resetBrowserSessionForTests, initializeBrowserSession } from '../../ui/src/client-auth-token';
-
-const timelineStylesheet = readFileSync('ui/src/styles/timeline.css', 'utf8');
-
-function timelineCssRule(selector: string): string {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return timelineStylesheet.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
-}
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
 
 function stubLocalStorage(): void {
   const store = new Map<string, string>();
@@ -48,9 +40,7 @@ function stubLocalStorage(): void {
 beforeEach(async () => {
   stubLocalStorage();
   __resetBrowserSessionForTests();
-  await initializeBrowserSession(async () => new Response(JSON.stringify({ authenticated: true, session: {
-    family_id: 'timeline-family', audience: 'production', csrf_token: 'timeline-csrf',
-    effect_ceiling: ['ledger:read', 'ledger:write'],
+  await ensureClientAccess(async () => new Response(JSON.stringify({ authenticated: true, session: { csrf_token: 'timeline-csrf',
   } }), { status: 200, headers: { 'content-type': 'application/json' } }));
 });
 
@@ -335,7 +325,7 @@ function TimelineView({ active = true, ...props }: TimelineViewProps & { active?
     return () => setRightSidebar((current) => (current?.id === ownerId ? null : current));
   }, []);
   const updateRightSidebar = useCallback((ownerId: string, descriptor: AppRightSidebarDescriptor) => {
-    if (ownerRef.current === ownerId) setRightSidebar(descriptor);
+    if (ownerRef.current === ownerId) setRightSidebar((current) => current === descriptor ? current : descriptor);
   }, []);
   const shell = useMemo<AppShellContextValue>(() => ({
     active,
@@ -860,6 +850,25 @@ describe('Timeline route', () => {
 });
 
 describe('TimelineView', () => {
+  it('does not refetch unchanged request meaning after installing a projection or selecting an event', async () => {
+    const fetchMock = stubTimelineFetchResolver(() => nearTimeProjection());
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+    const firstEvent = await screen.findByText('Near event A');
+    await act(async () => {
+      fireEvent.click(firstEvent.closest('button') as HTMLButtonElement);
+    });
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(JSON.parse(String(stored)).selectedEventId).toBe('event-near-a');
+    });
+    const payloads = fetchMock.mock.calls.map(([, init]) => String(init?.body));
+    expect(payloads.length).toBeGreaterThan(0);
+    expect(new Set(payloads).size).toBe(payloads.length);
+  });
+
   it('stops global arrow-key navigation when its keep-alive view becomes inactive', async () => {
     stubTimelineFetch(nearTimeProjection());
 
@@ -1158,20 +1167,6 @@ describe('TimelineView', () => {
     expect(bodyScroll.contains(timeScroll)).toBe(true);
     expect(tick.querySelector('.timeline-axis__tick-context')).toBeTruthy();
     expect(tick.querySelector('.timeline-axis__tick-label')).toBeTruthy();
-  });
-
-  it('keeps the unified native scroller and sticky Timeline shell contracts', () => {
-    expect(timelineCssRule('.timeline-body-scroll')).toContain('overflow-x: auto');
-    expect(timelineCssRule('.timeline-body-scroll')).toContain('overflow-y: auto');
-    expect(timelineCssRule('.timeline-axis__corner')).toContain('position: sticky');
-    expect(timelineCssRule('.timeline-axis__corner')).toContain('top: 0');
-    expect(timelineCssRule('.timeline-axis__corner')).toContain('left: 0');
-    expect(timelineCssRule('.timeline-axis__viewport')).toContain('position: sticky');
-    expect(timelineCssRule('.timeline-axis__viewport')).toContain('top: 0');
-    expect(timelineCssRule('.timeline-gutter-column')).toContain('position: sticky');
-    expect(timelineCssRule('.timeline-gutter-column')).toContain('left: 0');
-    expect(timelineCssRule('.timeline-axis__surface')).not.toContain('transform');
-    expect(timelineCssRule('.timeline-axis__surface')).not.toContain('will-change');
   });
 
   it('keeps the pinned axis and time canvas on one native horizontal scroller', async () => {

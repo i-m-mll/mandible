@@ -1,3 +1,4 @@
+import { UiRoundTripGate, createCopiedPreviewDatabase, exactTestInstanceEnv, installStorage, operatorSessionResponse } from '../helpers/briefing-preview-fixtures';
 import { BRIEFING_EVENT_VALUES } from '../../src/contracts';
 import { queryClient } from '../../ui/src/query/client';
 import { browserResourceKeys, refreshBrowserResources } from '../../ui/src/query/browserResources';
@@ -5,19 +6,19 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import SqliteDatabase from "../../src/sqlite.ts";
+
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getArtifactContent } from '../../src/artifact-content';
 import { setSetting } from '../../src/client-auth/settings-kv';
-import { migrate, type Db } from '../../src/db';
+
 import { resolveInstanceInfo } from '../../src/instance-policy';
 import { registerBriefingRoutes } from '../../src/routes/briefing';
-import { Router, type ClientAuthGate, type ResolvedClientIdentity } from '../../src/server';
+import { Router } from '../../src/server';
 import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../../src/security/effect-policy';
 import { createUser } from '../../src/users/store';
-import { recordArtifactVersion } from '../../src/provider-artifacts';
+import { recordArtifactVersion } from '../helpers/artifact-http-write-fixtures';
 import { AppShellProvider } from '../../ui/src/app-shell';
 import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
 import {
@@ -33,7 +34,7 @@ import { BriefingView } from '../../ui/src/views/briefing';
 import { briefingRoundOptions, BriefingDocumentRenderer } from '../../ui/src/views/feedback/BriefingDocumentRenderer';
 import { BRIEFING_VIEW_STATE_KEY, DEFAULT_BRIEFING_COLLECTION_VIEW_STATE, normalizeBriefingCollectionViewState } from '../../ui/src/views/feedback/collection-view-state';
 import { parseBriefingDirectives } from '../../src/feedback/briefing-directives';
-import { RICH_BRIEFING_DEMO, seedRichBriefingDemo } from '../../src/feedback/rich-briefing-demo';
+import { RICH_BRIEFING_DEMO } from '../../src/feedback/rich-briefing-demo';
 
 const source = 'Intro\n:::spec-item{key="decision" type="verdict" required="true"}\nReview this round\n:::\n';
 const bodyStart = source.indexOf('Review this round');
@@ -68,65 +69,6 @@ const TYPED_SOURCE = [
   ':::spec-item{key="rating" type="rating" required="true"}', 'Confidence rating', ':::',
 ].join('\n');
 const TYPED_DIRECTIVES = parseBriefingDirectives(TYPED_SOURCE);
-
-class UiRoundTripGate implements ClientAuthGate {
-  constructor(private readonly db: Db) {}
-
-  authenticate(credential: string | null | undefined): ResolvedClientIdentity | null {
-    if (!credential) return null;
-    const user = this.db.prepare('SELECT id, slug FROM users WHERE slug = ?').get(credential) as { id: string; slug: string } | undefined;
-    return user ? { user_id: user.id, slug: user.slug, method: 'api_token', credential_id: null, source: 'in_process', effect_ceiling: PRODUCTION_EFFECTS } : null;
-  }
-
-  mode() { return 'compat' as const; }
-  recordUnattributedWrite() {}
-}
-
-function createCopiedPreviewDatabase(root: string): {
-  db: Db;
-  dbPath: string;
-  sourceDbPath: string;
-  previewRoot: string;
-  sourceRoot: string;
-} {
-  const sourceRoot = path.join(root, 'source');
-  const previewRoot = path.join(root, 'preview');
-  fs.mkdirSync(path.join(sourceRoot, 'artifacts'), { recursive: true });
-  fs.mkdirSync(path.join(previewRoot, 'artifacts'), { recursive: true });
-  fs.mkdirSync(path.join(previewRoot, 'settings', 'users'), { recursive: true });
-  const sourceDbPath = path.join(sourceRoot, 'source.db');
-  const dbPath = path.join(previewRoot, 'copy.db');
-  const sourceDb = new SqliteDatabase(sourceDbPath);
-  try {
-    migrate(sourceDb);
-  } finally {
-    sourceDb.close();
-  }
-  fs.copyFileSync(sourceDbPath, dbPath);
-  return { db: new SqliteDatabase(dbPath), dbPath, sourceDbPath, previewRoot, sourceRoot };
-}
-
-function exactTestInstanceEnv(role: 'test' | 'preview', details: {
-  previewRoot?: string;
-  sourceRoot?: string;
-} = {}): NodeJS.ProcessEnv {
-  const suffix = role === 'preview' ? 'copied-preview' : 'test';
-  return {
-    MANDIBLE_INSTANCE_ROLE: role,
-    MANDIBLE_INSTANCE_ID: `${suffix}-briefing-rounds`,
-    MANDIBLE_INSTALLATION_ID: 'test-installation',
-    MANDIBLE_PUBLIC_ORIGIN: `https://${suffix}-briefing-rounds.mandible.localhost:19421`,
-    MANDIBLE_BACKEND_GENERATION: 'test-generation',
-    ...(details.previewRoot ? {
-      MANDIBLE_PREVIEW_ROOT: details.previewRoot,
-      MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS),
-      MANDIBLE_WRITABLE_ROOTS: JSON.stringify([details.previewRoot]),
-      MANDIBLE_ARTIFACT_DIR: path.join(details.previewRoot, 'artifacts'),
-      MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.join(details.sourceRoot!, 'artifacts'),
-      MANDIBLE_USER_PREFERENCES_DIR: path.join(details.previewRoot, 'settings', 'users'),
-    } : {}),
-  };
-}
 
 function typedDetail(roundId: string, annotations: unknown[] = []) {
   const artifactVersion = roundId === ROUND_ONE ? 'artifact-version:typed-one' : 'artifact-version:typed-two';
@@ -204,20 +146,6 @@ function detail(roundId = ROUND_TWO) {
   };
 }
 
-function installStorage(): void {
-  const rows = new Map<string, string>();
-  const storage = { get length() { return rows.size; }, clear: () => rows.clear(), getItem: (key: string) => rows.get(key) ?? null,
-    key: (index: number) => [...rows.keys()][index] ?? null, removeItem: (key: string) => rows.delete(key), setItem: (key: string, value: string) => rows.set(key, String(value)) } as Storage;
-  Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
-}
-
-function operatorSessionResponse(): Response {
-  return new Response(JSON.stringify({ authenticated: true, session: {
-    family_id: 'briefing-test-family', audience: 'production', csrf_token: 'briefing-test-csrf',
-    effect_ceiling: ['ledger:read', 'ledger:write'],
-  } }), { status: 200, headers: { 'content-type': 'application/json' } });
-}
-
 let noticeHost: HTMLElement;
 beforeEach(async () => {
   queryClient.clear();
@@ -229,7 +157,11 @@ beforeEach(async () => {
   noticeHost.id = 'app-operational-notices';
   document.body.append(noticeHost);
 });
-afterEach(() => { cleanup(); queryClient.clear(); noticeHost.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(async () => {
+  await queryClient.cancelQueries();
+  cleanup(); queryClient.clear(); noticeHost.remove();
+  __resetBrowserSessionForTests(); vi.unstubAllGlobals(); vi.restoreAllMocks();
+});
 
 describe('artifact-backed Briefing rounds', () => {
   it.each([
@@ -1332,165 +1264,6 @@ describe('artifact-backed Briefing rounds', () => {
       expect((secondDetail.body as any).selected_round).toMatchObject({
         id: secondIds.round_id, answers: [], annotations: [], latest_submission: null, latest_frozen_membership: null,
       });
-    } finally {
-      privateDb.close();
-      fs.rmSync(privateRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('round-trips the selected rich-demo round for the active operator on a private copied-preview database', async () => {
-    const privateRoot = fs.mkdtempSync(path.join(process.cwd(), '.tmp-briefing-selected-round-'));
-    const { db: privateDb, dbPath: privateDbPath, sourceDbPath, previewRoot, sourceRoot } = createCopiedPreviewDatabase(privateRoot);
-    try {
-      const artifactRoot = path.join(previewRoot, 'artifacts');
-      const operatorId = createUser(privateDb, { slug: 'active-operator', kind: 'human', display_name: 'Active operator' }).id;
-      setSetting(privateDb, 'user.operator_id', operatorId);
-      const manifest = seedRichBriefingDemo(privateDb, { databasePath: privateDbPath, artifactRoot });
-      const roundOneId = manifest.rounds[0].id;
-      const selectedRoundId = manifest.rounds[1].id;
-      const briefingId = manifest.briefing.id;
-      const previewInstance = resolveInstanceInfo({
-        env: exactTestInstanceEnv('preview', { previewRoot, sourceRoot }),
-        dbPath: privateDbPath, sourceDbPath,
-      });
-      expect(previewInstance).toMatchObject({
-        role: 'preview', allowed_effects: STANDARD_PREVIEW_EFFECTS,
-        db_path: privateDbPath, source_db_path: sourceDbPath,
-      });
-      const preview = new Router({ clientAuth: new UiRoundTripGate(privateDb), instance: previewInstance });
-      registerBriefingRoutes(preview, privateDb);
-      expect(privateDb.prepare(
-        'SELECT COUNT(*) AS count FROM briefing_members WHERE briefing_id = ? AND user_id = ?',
-      ).get(briefingId, operatorId)).toEqual({ count: 0 });
-      const selectedBeforeMutation = await preview.invoke({
-        method: 'GET', url: `/api/briefings/${briefingId}?round=${selectedRoundId}`,
-        credential: 'active-operator', transport: 'http',
-      });
-      expect(selectedBeforeMutation).toMatchObject({
-        status: 200,
-        body: { briefing: { id: briefingId }, selected_round: { id: selectedRoundId, answers: [], annotations: [] } },
-      });
-      const roundOneSnapshot = () => ({
-        responses: privateDb.prepare('SELECT * FROM briefing_response_events WHERE round_id = ? ORDER BY rowid').all(roundOneId),
-        annotations: privateDb.prepare('SELECT * FROM briefing_annotation_events WHERE round_id = ? ORDER BY rowid').all(roundOneId),
-        submissions: privateDb.prepare('SELECT * FROM briefing_submissions WHERE round_id = ? ORDER BY rowid').all(roundOneId),
-        frozenAnswers: privateDb.prepare('SELECT * FROM briefing_submission_answers WHERE round_id = ? ORDER BY position').all(roundOneId),
-        frozenAnnotations: privateDb.prepare('SELECT * FROM briefing_submission_annotations WHERE round_id = ? ORDER BY position').all(roundOneId),
-      });
-      const roundOneBefore = roundOneSnapshot();
-      const mutationResponses: Array<{ url: string; status: number }> = [];
-      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        const method = init?.method ?? 'GET';
-        if (url === '/api/client-auth/whoami') {
-          return new Response(JSON.stringify({ authenticated: true, user: {
-            id: operatorId, slug: 'active-operator', kind: 'human', display_name: 'Active operator',
-          } }), { status: 200, headers: { 'content-type': 'application/json' } });
-        }
-        const artifactMatch = /^\/api\/artifacts\/([^/]+)\/content$/.exec(url);
-        if (method === 'GET' && artifactMatch) {
-          const content = getArtifactContent(privateDb, decodeURIComponent(artifactMatch[1]));
-          return new Response(JSON.stringify({ content }), { status: content ? 200 : 404, headers: { 'content-type': 'application/json' } });
-        }
-        if (!url.startsWith('/api/briefings')) throw new Error(`unexpected copied-preview request ${method} ${url}`);
-        const result = await preview.invoke({
-          method, url, credential: 'active-operator', transport: 'http',
-          ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
-        });
-        if (method !== 'GET') mutationResponses.push({ url, status: result.status });
-        return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
-      }));
-      const shell = () => <AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}>
-        <BriefingDocumentRenderer briefingId={briefingId} roundId={selectedRoundId} instance={previewInstance} />
-      </AppShellProvider>;
-      const view = render(shell());
-
-      const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
-      await waitFor(() => expect(keep.disabled).toBe(false));
-      fireEvent.click(keep);
-      fireEvent.click(screen.getByRole('radio', { name: 'Authorize the 10% regional canary' }));
-      fireEvent.click(screen.getByRole('checkbox', { name: 'Integrity alarm during reconciliation' }));
-      fireEvent.click(screen.getByRole('checkbox', { name: 'Write latency exceeds the canary budget' }));
-      fireEvent.input(screen.getByRole('textbox', { name: 'Record the canary owner and the first expansion checkpoint.' }), {
-        target: { value: 'Avery Chen — verify the first regional checkpoint.' },
-      });
-      fireEvent.input(screen.getByRole('textbox', { name: /Summarize how the new downgrade/ }), {
-        target: { value: 'Authorize only the bounded canary; stop on integrity alarms, missed paging, or excess write latency.' },
-      });
-      const rating = screen.getByRole('radio', { name: '4' }) as HTMLInputElement;
-      fireEvent.click(rating);
-      expect(rating.checked).toBe(true);
-
-      fireEvent.click(screen.getAllByRole('button', { name: 'Comment' })[0]);
-      const annotationDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
-      fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Final IAB acceptance annotation.' } });
-      fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
-      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add annotation' })).toBeNull());
-      fireEvent.click(await screen.findByTitle('Comment · 1'));
-      expect(within(screen.getByRole('dialog')).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
-      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
-
-      const submit = screen.getByRole('button', { name: 'Submit' });
-      await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
-      fireEvent.click(submit);
-      await waitFor(() => expect(mutationResponses).toHaveLength(3));
-      expect(mutationResponses).toEqual([
-        { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/annotations`, status: 200 },
-        { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/answers`, status: 200 },
-        { url: `/api/briefings/${briefingId}/rounds/${selectedRoundId}/submit`, status: 200 },
-      ]);
-
-      const selectedDetail = await preview.invoke({
-        method: 'GET', url: `/api/briefings/${briefingId}?round=${selectedRoundId}`,
-        credential: 'active-operator', transport: 'http',
-      });
-      const selectedRound = (selectedDetail.body as any).selected_round;
-      expect(selectedRound.answers.map((answer: any) => [answer.directive_key, answer.value])).toEqual([
-        ['release.verdict', { verdict: 'keep' }],
-        ['release.posture', { option_key: 'authorize-canary' }],
-        ['release.residual_risks', { option_keys: ['integrity-alarm', 'write-latency'] }],
-        ['release.owner', { text: 'Avery Chen — verify the first regional checkpoint.' }],
-        ['release.rationale', { text: 'Authorize only the bounded canary; stop on integrity alarms, missed paging, or excess write latency.' }],
-        ['release.confidence', { rating: 4 }],
-      ]);
-      expect(selectedRound.annotations).toMatchObject([{ body: 'Final IAB acceptance annotation.' }]);
-      expect(selectedRound.latest_submission.actor_user_id).toBe(operatorId);
-      expect(selectedRound.latest_frozen_membership).toEqual({
-        answer_event_ids: selectedRound.answers.map((answer: any) => answer.response_event_id),
-        annotation_event_ids: selectedRound.annotations.map((annotation: any) => annotation.annotation_event_id),
-      });
-      expect(privateDb.prepare(
-        'SELECT COUNT(*) AS count FROM briefing_members WHERE briefing_id = ? AND user_id = ?',
-      ).get(briefingId, operatorId)).toEqual({ count: 1 });
-      expect(privateDb.prepare(
-        `SELECT DISTINCT briefing_id, round_id, actor_user_id
-           FROM briefing_response_events WHERE round_id = ? AND actor_user_id = ?`,
-      ).all(selectedRoundId, operatorId)).toEqual([{ briefing_id: briefingId, round_id: selectedRoundId, actor_user_id: operatorId }]);
-      expect(privateDb.prepare(
-        `SELECT DISTINCT briefing_id, round_id, actor_user_id
-           FROM briefing_annotation_events WHERE round_id = ? AND actor_user_id = ?`,
-      ).all(selectedRoundId, operatorId)).toEqual([{ briefing_id: briefingId, round_id: selectedRoundId, actor_user_id: operatorId }]);
-      expect(roundOneSnapshot()).toEqual(roundOneBefore);
-
-      view.unmount();
-      invalidateApiGetCache();
-      const reloadedView = render(shell());
-      fireEvent.click(await screen.findByTitle('Comment · 1'));
-      expect(within(screen.getByRole('dialog')).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
-      await waitFor(() => expect((screen.getByRole('radio', { name: '4' }) as HTMLInputElement).checked).toBe(true));
-      expect(screen.getByRole('button', { name: 'Submit' })).toBeTruthy();
-      expect(roundOneSnapshot()).toEqual(roundOneBefore);
-      reloadedView.unmount();
-
-      expect(await preview.invoke({
-        method: 'POST', url: `/api/briefings/${briefingId}-stale/rounds/${selectedRoundId}/annotations`, credential: 'active-operator',
-        body: { annotations: [{ operation: 'set', kind: 'comment', start_offset: 0, end_offset: 1,
-          quote: '#', body: 'wrong round', replacement_text: null }] }, transport: 'http',
-      })).toMatchObject({ status: 404, body: { code: 'not_found' } });
-      expect(await preview.invoke({
-        method: 'POST', url: `/api/briefings/${briefingId}/rounds/00000000-0000-4000-8000-000000000000/submit`, credential: 'active-operator',
-        body: { answers: [], annotation_event_ids: [], supersedes_submission_id: null }, transport: 'http',
-      })).toMatchObject({ status: 404, body: { code: 'not_found' } });
     } finally {
       privateDb.close();
       fs.rmSync(privateRoot, { recursive: true, force: true });

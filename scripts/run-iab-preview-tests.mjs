@@ -44,14 +44,14 @@ function processTreeRss(rootPid) {
 
 function spawnVitestShard(shard, env) {
   return spawn(process.execPath, [
-    vitest,
+    "--smol", vitest,
     "run",
     "--config", "vitest.iab-preview.config.ts",
     ...shard.args,
   ], {
     cwd: root,
     detached: true,
-    env: { ...env, NODE_OPTIONS: "--max-old-space-size=384" },
+    env,
     stdio: "inherit",
   });
 }

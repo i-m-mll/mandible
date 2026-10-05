@@ -173,7 +173,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `project-db-snapshot.test.ts` | Retain | project-db-snapshot. Process/transport boundary retained. |
 | `pty-backend-lifecycle.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `reminder-cli.test.ts` | Retain | mandible reminder CLI parser and routing / mandible reminder CLI file-RPC parity. Process/transport boundary retained. |
-| `repo-file-register-dialog.test.tsx` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
+| `repo-file-register-dialog.test.tsx` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in ../spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
 | `repo-identity.test.ts` | Retain | canonicalRepoKeyForPath / canonicalRepoKeysForRef. Process/transport boundary retained. |
 | `resource-refs.test.ts` | Default | Sole named boundary readmission; see ../README.md. |
 | `restart-availability.test.ts` | Retain | restart availability receipt. Behavioral, persisted-record, or format boundary retained. |
@@ -205,7 +205,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `space-canvas-react-flow-contract.test.ts` | Retain | Real React Flow applier wiring; the mocked canvas fixture cannot prove third-party update compatibility. |
 | `space-canvas.test.tsx` | Retain | partitionOccurrences / shelf vs canvas / occurrencesToGraph + seedLayoutPositions. Mounted interaction/projection evidence retained. |
 | `space-cli.test.ts` | Retain | space CLI surface / space CLI write round-trips. Process/transport boundary retained. |
-| `space-export-dialog.test.tsx` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
+| `space-export-dialog.test.tsx` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in ../spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
 | `space-promote-docs.test.ts` | Retain | mandible space promote-docs. Process/transport boundary retained. |
 | `space-seed-dialog.test.tsx` | Retain | SpaceSeedDialog. Mounted interaction/projection evidence retained. |
 | `spaces-add-to-space.test.tsx` | Trim / retain | AddToSpace picker / AddToSpace cross-project (default). Mounted interaction/projection evidence retained. |
@@ -217,13 +217,13 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `spaces-collection-read.test.ts` | Retain | GET /api/spaces/:id fact packet (C8 read surface). Behavioral, persisted-record, or format boundary retained. |
 | `spaces-collection-view.test.tsx` | Retain | SpaceCollectionRenderer. Mounted interaction/projection evidence retained. |
 | `spaces-contracts.test.ts` | Retain | spaces contract enums / spaces route responses satisfy the contract types. Behavioral, persisted-record, or format boundary retained. |
-| `spaces-custody-editor-ux.test.ts` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
+| `spaces-custody-editor-ux.test.ts` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in ../spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
 | `spaces-doc-pipeline.test.ts` | Default | Sole named boundary readmission; see ../README.md. |
 | `spaces-doc-refs.test.ts` | Retain | C6 shared parser: spaces-doc.v1 directive extension. Behavioral, persisted-record, or format boundary retained. |
 | `spaces-doc-serialize.test.ts` | Default | Sole named boundary readmission; see ../README.md. |
 | `spaces-document-renderer.test.tsx` | Retain | renderSpaceBlocks (C12 + C14a) / DocumentBody render. Mounted interaction/projection evidence retained. |
-| `spaces-drift.test.ts` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
-| `spaces-export.test.ts` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
+| `spaces-drift.test.ts` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in ../spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
+| `spaces-export.test.ts` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in ../spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
 | `spaces-exports.test.ts` | Retain | space_exports schema (issue 9041bb3) / space_exports metadata backup classification (issue 9041bb3). Behavioral, persisted-record, or format boundary retained. Distinct export surface; no cross-layer deletion. |
 | `spaces-grouped-headings.test.ts` | Retain | (a) zero-space projects are excluded from listSpacesGrouped output / (b) project_key is present on every emitted group. Behavioral, persisted-record, or format boundary retained. |
 | `spaces-item-picker.test.tsx` | Retain | SpaceItemPicker projection helpers / SpaceItemPicker component. Mounted interaction/projection evidence retained. |
@@ -245,7 +245,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `timeline-layout.test.ts` | Retain | buildTimelineLayout. Behavioral, persisted-record, or format boundary retained. |
 | `timeline-projection.test.ts` | Retain | project timeline projection. Behavioral, persisted-record, or format boundary retained. |
 | `timeline-time.test.ts` | Retain | timeline time helpers. Behavioral, persisted-record, or format boundary retained. |
-| `timeline-ui.test.tsx` | Retain | Timeline route / TimelineView. Mounted interaction/projection evidence retained. |
+| `timeline-ui.test.tsx` | Trim / retain | Mounted state, shared time coordinates, one native scroller, selection and bounded projection-fetch behavior remain. Removed a CSS-literal test; adjacent mounted scroller and axis interactions protect the behavior. |
 | `transport-lane.test.ts` | Default | Sole named boundary readmission; see ../README.md. |
 | `typography-settings.test.tsx` | Trim / retain | typed typography settings. Mounted interaction/projection evidence retained. |
 | `ui-static-assets.test.ts` | Retain | UI static asset delivery. Process/transport boundary retained. |
@@ -298,3 +298,27 @@ Co-Authored-By: Codex (GPT-5) <codex@openai.com>
 ## Managed controller consolidation (ccbb795)
 
 The retired SDK/ACP/spawn/managed-PTY tests above exercise execution paths removed after both retained providers passed one bounded live conversation. Their contract evidence now lives in `test/claude-sdk-controller.test.ts`, `test/conversation-controller-adapters.test.ts`, `test/conversation-control.test.ts`, `managed-conversation-controls.test.tsx`, `issue-resume-assignment.test.ts`, `terminal-runtime.test.ts`, and the historical-session and retention tests. Generic historical run-option composition and Composer behavior remain. Console route tests now prove real-terminal authority and refuse managed mutations; webhook tests retain authorization checks and prove undeliverable terminal-targeted messages remain queued. No test moved out of the default runner to suppress a failure.
+
+The rich copied-preview round trip now runs in
+`briefing-copied-preview-roundtrip.test.tsx`, with shared private database and
+browser fixtures in `helpers/briefing-preview-fixtures.ts`. It still executes in
+the extended gate and verifies all six answer controls, exact actor/round frozen
+membership, annotation persistence, reload, and wrong-round refusals. The original
+36 projection, reconciliation, and authority cases remain in the rounds view file.
+The split bounds the heavy integration lifecycle without changing the 950,000 KiB
+process-tree limit or retiring evidence.
+
+Authorization fixture adjudication preserves real operator-proof approval and
+signed candidate publication. Raw historical rows test read projections and
+refusals only. Queue admission is tested at the bounded queue; staged actions,
+hook convergence, exact candidate recovery, sibling pinning, and finalizer replay
+continue through authoritative publication. Unsigned ancestry alone cannot turn a
+pending request into an approved or finalized merge.
+
+CLI follow-up retains executable transport and grammar boundaries. Artifact link
+help-copy duplication, three synthetic comment-edit router-template assertions,
+and Briefing help/prose duplicates are retired; typed artifact identity, actual
+CLI round trips, stale revisions, invalid inputs, snapshot selection and registered
+route-policy coverage remain. Instruction targets retain preservation, hooks,
+symlinks and protected-target behavior. Project, Space, reminder, user credentials,
+ledger client and auth list keep their behavioral cases under the typed catalog.
