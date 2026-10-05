@@ -845,6 +845,7 @@ function resolveAuthRequester(
 }
 
 function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInput | null {
+  if (body.space_publication_id !== undefined && (typeof body.space_publication_id !== "string" || !body.space_publication_id.trim())) return null;
   if (typeof body.command !== "string" || typeof body.title !== "string") {
     return null;
   }
@@ -876,6 +877,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
       : undefined;
 
   return {
+    space_publication_id: typeof body.space_publication_id === "string" ? body.space_publication_id : undefined,
     session_id: typeof body.session_id === "string" ? body.session_id : null,
     type,
     command: body.command,
@@ -1073,6 +1075,7 @@ type ParseUpdateResult =
 function parseAuthRequestUpdatePayload(
   body: Record<string, unknown>
 ): ParseUpdateResult {
+  if (Object.hasOwn(body, "space_publication_id")) return { ok: false, error: "Publication identity is immutable; submit an exact successor or prepare a new publication." };
   const payload: Partial<AuthRequestInput> & { status?: "pending" } = {};
   const hasKey = (key: string): boolean => Object.prototype.hasOwnProperty.call(body, key);
 

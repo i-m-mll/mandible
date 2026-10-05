@@ -1,3 +1,4 @@
+import { assertAuthPublication, authPublicationSnapshot, bindAuthPublication } from "./auth-publication.js";
 import { operatorGitEnv, signOperatorChallenge } from "./auth-operator-proof.js";
 import { DOMAIN_EVENTS } from "./contracts.js";
 import { AUTH_REQUEST_TYPES } from "./contracts.js";
@@ -160,7 +161,7 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   // `GET /api/auth/history` feeds the summary straight into
   // `authAttributionReadFields`, which reads exactly these three ids. They are
   // small scalar id columns, so projecting them costs nothing.
-  "requested_by_user_id", "requester_evidence_method", "requester_credential_id",
+  "space_publication_id", "requested_by_user_id", "requester_evidence_method", "requester_credential_id",
   "approved_by_user_id", "execution_evidence_id", "clearance_use_id",
   "supersedes_request_id", "superseded_by_request_id",
   "custody_work_unit_id",
@@ -1349,6 +1350,7 @@ export class AuthQueue {
     const predecessor = payload.supersedes_request_id
       ? this.requireRequest(payload.supersedes_request_id)
       : null;
+    if (predecessor && !payload.space_publication_id) payload.space_publication_id = authPublicationSnapshot(this.db, predecessor.id)?.id;
     const custody = predecessor
       ? this.requireRequestCustody(predecessor, actor, payload.expected_revision, payload.expected_custody_generation)
       : this.resolveSubmissionCustody(payload, actor);
@@ -1456,6 +1458,7 @@ export class AuthQueue {
       requester_credential_id: payload.requester_credential_id ?? null,
       approved_by_user_id: null,
       execution_evidence_id: null,
+      space_publication_id: payload.space_publication_id ?? null,
       type: payload.type ?? "merge",
       command: payload.command,
       title: payload.title,
@@ -1534,6 +1537,7 @@ export class AuthQueue {
         head_branch,
         merge_head_sha,
         merge_candidate_tree_sha,
+        space_publication_id,
         merge_candidate_pin_sha,
         merge_atomic_enabled,
         merge_preflight_base_sha,
@@ -1593,6 +1597,7 @@ export class AuthQueue {
         @head_branch,
         @merge_head_sha,
         @merge_candidate_tree_sha,
+        @space_publication_id,
         @merge_candidate_pin_sha,
         @merge_atomic_enabled,
         @merge_preflight_base_sha,
@@ -1658,6 +1663,7 @@ export class AuthQueue {
         head_branch: request.head_branch ?? null,
         merge_head_sha: request.merge_head_sha ?? null,
         merge_candidate_tree_sha: request.merge_candidate_tree_sha ?? null,
+        space_publication_id: request.space_publication_id ?? null,
         merge_candidate_pin_sha: request.merge_candidate_pin_sha ?? null,
         merge_atomic_enabled: request.merge_atomic_enabled ? 1 : 0,
         merge_preflight_base_sha: request.merge_preflight_base_sha ?? null,
@@ -1671,6 +1677,7 @@ export class AuthQueue {
         issues: request.issues ? JSON.stringify(request.issues) : null
       });
       insertAuthRequestActions(this.db, request, actions, now);
+      if (payload.space_publication_id) bindAuthPublication(this.db, request, payload.space_publication_id);
       if (custody) {
         const bound = this.db.prepare(
           `UPDATE work_units SET auth_request_id = ?
@@ -1732,6 +1739,11 @@ export class AuthQueue {
       }
     });
 
+    if (payload.space_publication_id) {
+      this.requireExternalEffects("Publication auth binding");
+      this.assertPublication(request, payload.space_publication_id);
+      request.space_publication_id = payload.space_publication_id;
+    }
     request.merge_candidate_pin_sha = this.allowExternalEffects
       ? this.cacheMergeCandidate(request)
       : null;
@@ -3024,6 +3036,11 @@ export class AuthQueue {
     this.hookManager.planRuns?.(request, nativeHooks);
   }
 
+  private assertPublication(request: AuthRequest, publicationId?: string, baseSha?: string): void {
+    try { assertAuthPublication(this.db, request, publicationId, baseSha); }
+    catch (error) { throw new AuthQueueError("merge_check_failed", error instanceof Error ? error.message : String(error)); }
+  }
+
   private readonly operatorProofs = new Map<string, { digest: string; evidenceId: string; credentialId: string; userId: string; expiresAt: number }>();
   private readonly operatorProofInFlight = new Map<string, AbortController>();
 
@@ -3038,6 +3055,7 @@ export class AuthQueue {
     let request = this.requireRequest(id);
     if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
     if (this.operatorProofInFlight.has(request.id)) throw new AuthQueueError("invalid_status", "Operator signing is already in progress.");
+    this.assertPublication(request);
     this.enforceDependencyReadiness(request);
     this.enforceCanonicalMergeCommand(request);
     const contextUpdate = this.resolveExecutionContextBeforeApproval(request);
@@ -3095,6 +3113,7 @@ export class AuthQueue {
       operatorProof.digest !== this.approvalDigest(request))) {
       throw new AuthQueueError("invalid_status", "Fresh action-bound operator signing proof is required before approval.");
     }
+    this.assertPublication(request);
     this.enforceDependencyReadiness(request);
 
     // Bug: 58d93ee — guard against null/empty command before spawning execution
@@ -3252,6 +3271,7 @@ export class AuthQueue {
     if (request.status !== "pending") {
       throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
     }
+    this.assertPublication(request);
     this.enforceDependencyReadiness(request);
     if (!request.command?.trim()) {
       throw new AuthQueueError("invalid_command", "Auth request has no command set.");
@@ -4195,10 +4215,12 @@ export class AuthQueue {
     } catch {
       return fail("lifecycle_snapshot_drift");
     }
+    this.assertPublication(request, undefined, targetHeadSha);
     const candidate = this.mergeTree(request.cwd, targetHeadSha, request.merge_head_sha);
     if (candidate.status !== "clean" || !candidate.tree) {
       return fail(`merge_tree_${candidate.status}`);
     }
+    this.assertPublication({ ...request, merge_candidate_tree_sha: candidate.tree }, undefined, targetHeadSha);
     let pinSha: string;
     try {
       pinSha = this.createMergeCandidatePin({
@@ -6002,6 +6024,16 @@ export class AuthQueue {
       if (!current || current.status !== "pending" || this.inFlight.has(current.id)) {
         continue;
       }
+      try { this.assertPublication(current); }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (current.error !== reason) this.db.transaction(() => {
+          this.db.prepare("UPDATE auth_requests SET error=?,updated_at=? WHERE id=? AND status='pending'").run(reason,this.now(),current.id);
+          appendAuthLifecycleEvent(this.db,{ requestId:current.id,eventType:"revised",priorStatus:"pending",nextStatus:"pending",actor:systemAction(),reason,occurredAt:this.now() });
+        })();
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED,data:{ request:this.readRequestByExactId(current.id)! } });
+        continue;
+      }
       const report = this.checkMergeIndependence({
         request_id: current.id,
         repo: current.repo,
@@ -7527,6 +7559,7 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     : "merge";
 
   return {
+    space_publication_id: row.space_publication_id == null ? null : String(row.space_publication_id),
     id: String(row.id),
     session_id: row.session_id == null ? null : String(row.session_id),
     requested_by_user_id: row.requested_by_user_id == null ? null : String(row.requested_by_user_id),
