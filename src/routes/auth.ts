@@ -584,7 +584,7 @@ export function registerAuthRoutes(
       authQueue.cancelOperatorProof(req.params.id, req.client_identity!.user_id);
       res.status(200).json({ cancelled: true });
     } catch (error) { handleQueueError(error, res); }
-  }, { authenticated: true }), { fileRpc: "deny" });
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/cancel-proof", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/reject", globalCapabilityRoute("approve_auth", (req, res) => {
     try {

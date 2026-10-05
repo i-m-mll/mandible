@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as ts from "typescript";
+import * as z from "zod";
 import { Router } from "../../src/server.js";
 import { isInlineManagedArtifactByteRequest } from "../../src/security/operation-policy.js";
 import type { InstanceInfo } from "../../src/types.js";
@@ -22,7 +23,7 @@ export function registeredOperationRouter(instance?: InstanceInfo): Router {
           if (!operation) throw new Error(`Missing operation descriptor: ${filename} ${node.arguments[0].text}`);
           const expression = ts.transpileModule(`const descriptor = ${operation.initializer.getText(tree)}; descriptor;`,
             { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-          const descriptor = new Function("isInlineManagedArtifactByteRequest", `${expression.replace(/descriptor;\s*$/, "return descriptor;")}`)(isInlineManagedArtifactByteRequest);
+          const descriptor = new Function("z", "isInlineManagedArtifactByteRequest", `${expression.replace(/descriptor;\s*$/, "return descriptor;")}`)(z, isInlineManagedArtifactByteRequest);
           router[node.expression.name.text as "get"](node.arguments[0].text, () => {},
             { operation: descriptor, fileRpc: "deny" });
         }

@@ -58,6 +58,28 @@ function preview(overrides: NodeJS.ProcessEnv = {}) {
 }
 
 describe("instance effect policy", () => {
+  it("keeps publication and Git import host effects outside standard previews", () => {
+    const identity = { effect_ceiling: STANDARD_PREVIEW_EFFECTS };
+    const instance = preview();
+    for (const [method, url, body] of [
+      ["POST", "/api/spaces/space/publications", { path: "doc.md", issue: "issue" }],
+      ["POST", "/api/spaces/space/publications/publication/submit", {}],
+      ["POST", "/api/spaces/space/document/export", { dest_path: "/tmp/export.md" }],
+      ["POST", "/api/spaces/documents/import", { project: "project", commit: "commit", path: "doc.md", title: "Document" }],
+      ["POST", "/api/auth/request/request/cancel-proof", {}],
+    ] as const) {
+      expect(authorizeEffects(instance, identity, operationForRequest(method, url, "preview", body)!)).toMatchObject({ allowed: false });
+    }
+    for (const [method, url, body] of [
+      ["GET", "/api/spaces/space/publications", undefined],
+      ["GET", "/api/spaces/space/document/download", undefined],
+      ["POST", "/api/spaces/documents/import", { ref: "managed-version", title: "Document" }],
+      ["POST", "/api/spaces/space/history/history/import", { title: "Document" }],
+    ] as const) {
+      expect(authorizeEffects(instance, identity, operationForRequest(method, url, "preview", body)!)).toMatchObject({ allowed: true });
+    }
+  });
+
   it("defaults production to a stable HTTPS identity", () => {
     expect(resolveInstanceInfo({ env: {} })).toMatchObject({
       role: "main", instance_id: "production", public_origin: "https://app.mandible.localhost:19420",
