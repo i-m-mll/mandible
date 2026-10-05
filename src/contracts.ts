@@ -55,6 +55,7 @@ export const DOMAIN_EVENTS = Object.freeze({
   CHANNEL_SESSION_CONNECTED: "channel:session:connected",
   CHANNEL_SESSION_DISCONNECTED: "channel:session:disconnected",
   CONSOLE_ATTENTION: "console:attention",
+  CONSOLE_STATUS: "console:status",
   CONSOLE_INBOX_BADGE: "console:inbox:badge",
   CONSOLE_PERMISSION_CLEARED: "console:permission:cleared",
   CONSOLE_PERMISSION_REQUEST: "console:permission:request",
@@ -130,6 +131,7 @@ export type EventPayload<E extends MandibleEventType> =
   : E extends import("./spaces/events.js").SpaceEvent ? { space_id: string; [key: string]: unknown }
   : E extends typeof DOMAIN_EVENTS.CONVERSATION_UPDATED ? { id: string; [key: string]: unknown }
   : E extends typeof DOMAIN_EVENTS.HEARTBEAT ? { timestamp: number }
+  : E extends typeof DOMAIN_EVENTS.CONSOLE_STATUS ? import("./agentic-backend.js").BackendStatusEvent & { console_session_id: string }
   : E extends typeof DOMAIN_EVENTS.CONSOLE_TELEMETRY ? unknown
   : Record<string, unknown>;
 
@@ -2262,6 +2264,7 @@ export function isDomainEventType(value: unknown): value is MandibleEventType {
 const scopedChange = (key: string) => z.object({ [key]: z.string().min(1) }).passthrough();
 const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.HEARTBEAT, z.object({ timestamp: z.number() })],
+  [DOMAIN_EVENTS.CONSOLE_STATUS, z.object({ console_session_id: z.string().min(1), kind: z.enum(["started", "stopped", "exit"]), status: z.enum(["running", "stopped", "crashed"]), exitCode: z.number().optional(), signal: z.union([z.string(), z.number()]).nullable().optional(), started_at: z.number().nullable().optional(), stopped_at: z.number().nullable().optional() })],
   [DOMAIN_EVENTS.CONVERSATION_UPDATED, scopedChange("id")],
   [DOMAIN_EVENTS.SESSION_DISCOVERY_COMPLETED, SESSION_DISCOVERY_PAYLOAD],
   [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],

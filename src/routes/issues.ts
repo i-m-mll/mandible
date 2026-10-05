@@ -2746,7 +2746,7 @@ export function registerIssueRoutes(
     }
     sendJson(res, 200, { conversation_id: conversation.id, work_unit_id: row.id, continuation: row.continuation,
       branch: row.branch, cwd: checkout, custody_generation: row.custody_generation });
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "post:/api/issues/:repoId/:issueId/spawn", effects: ["ledger:write", "files:production", "process:external"], requestSchema: null, reportingCategory: "issues" }, fileRpc: "deny" });
 
 }
 
