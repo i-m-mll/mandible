@@ -5,15 +5,15 @@ After [installing](/docs/getting-started/installation) and building Mandible, st
 ## Starting the daemon
 
 ```bash
-npm start
+"$(scripts/bun-runtime.sh)" run start
 # or directly:
-node dist/index.js
+"$(scripts/bun-runtime.sh)" dist/index.js
 ```
 
 The daemon logs structured JSON to stderr. On startup you'll see:
 
 ```
-{"level":"info","message":"server_started","time":"...","port":19420}
+{"level":"info","message":"server_started","time":"...","port":29420}
 ```
 
 Complete the [secure local connection setup](../guides/local-browser-sessions.mdx), then open the dashboard at [https://app.mandible.localhost:19420](https://app.mandible.localhost:19420).
@@ -22,7 +22,7 @@ Complete the [secure local connection setup](../guides/local-browser-sessions.md
 
 The daemon performs several initialization steps:
 
-1. **Database creation** --- If `~/.cache/mandible/mandible.db` doesn't exist, it creates the database and runs all schema migrations for sessions, auth requests, conversations, work units, console sessions, and more.
+1. **Database creation** --- If `~/.mandible/mandible.db` doesn't exist, it creates the database and runs all schema migrations for sessions, auth requests, conversations, work units, console sessions, and more.
 
 2. **Session discovery** --- Scans running processes for known agent patterns (Claude, Codex, Gemini) and matches them against registered repository worktrees. Any running agents found are registered as sessions.
 
@@ -104,37 +104,19 @@ The daemon writes a PID file on startup and removes it on shutdown. It handles `
 
 A periodic self-health-check verifies the server is still accepting connections. If the check fails, the daemon exits so a process supervisor can restart it.
 
-If you need to run Mandible as a persistent service, any process supervisor (launchd on macOS, systemd on Linux) works. Point it at `node dist/index.js` in the Mandible directory.
+The production macOS installation uses owned launchd definitions with the pinned Bun executable. Install them through `bash cli/install-desktop-app.sh`; inspect and restart them with the runtime controller rather than writing another service definition.
 
-### launchd status and restart procedure
+### Runtime status and restart
 
-For the standard macOS service label, inspect the service and readiness without
-changing daemon state:
+Capture the auth queue before an explicit restart, then wait for exact production readiness:
 
 ```bash
-launchctl print "gui/$(id -u)/com.mll.mandible"
-curl -fsS http://127.0.0.1:19420/api/health | jq '{status, ready, memory, eventLoop}'
+runtime="$(scripts/bun-runtime.sh)"
 mandible auth list --json > /tmp/mandible-auth-before-restart.json
-```
-
-The auth snapshot is an operational safety record. Before restarting, note the
-IDs and statuses of queued (`pending`), active (`executing`), and recently
-completed requests. Restart only through launchd so the configured service
-environment and supervisor remain authoritative:
-
-```bash
-launchctl kickstart -k "gui/$(id -u)/com.mll.mandible"
-until curl -fsS http://127.0.0.1:19420/api/health | jq -e '.ready == true' >/dev/null; do
-  sleep 1
-done
+"$runtime" scripts/local-runtime.mjs status
+"$runtime" scripts/local-runtime.mjs restart
+"$runtime" scripts/local-runtime.mjs status
 mandible auth list --json > /tmp/mandible-auth-after-restart.json
 ```
 
-Compare the before and after snapshots by request ID. Queued and completed
-requests must still be present, demonstrating that queue state came from the
-database rather than process memory. Requests that were `executing` must be
-reloaded by startup recovery and either remain actively recoverable or reach a
-terminal status; investigate any request left stuck without progress. Finally,
-confirm `/api/health` reports `ready: true` before approving or rejecting new
-requests. These are the supported checks; do not infer restart safety from a
-new PID or a successful TCP connection alone.
+Compare the snapshots by request ID. Queued and completed requests must remain in the ledger. Startup recovery must resume interrupted execution or report its precise failure. The controller verifies the installation, main instance, build generation, and HTTPS front door; a new PID or an open TCP port alone is insufficient evidence.
