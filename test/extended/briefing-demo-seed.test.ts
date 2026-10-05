@@ -2,14 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 const roots: string[] = [];
 const script = path.resolve("scripts/demo-briefing.mjs");
-const { PRODUCTION_DB_PATH } = createRequire(import.meta.url)("../../cli/production-db-guard.cjs");
 
 function tempRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-rich-briefing-demo-"));
@@ -18,7 +16,7 @@ function tempRoot(): string {
 }
 
 function run(args: string[], env: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, [script, ...args], {
+  return spawnSync(process.execPath, ["--smol", script, ...args], {
     cwd: process.cwd(),
     env: { ...process.env, ...env },
     encoding: "utf8",
@@ -40,8 +38,18 @@ describe("rich Briefing demo seed command", () => {
     const previewRoot = path.join(root, "managed-previews");
     expect(run(["--db", path.join(previewRoot, "fixture.db")], { MANDIBLE_PREVIEW_BASE_DIR: previewRoot }))
       .toMatchObject({ status: 1, stderr: expect.stringContaining("managed preview root") });
-    expect(run(["--db", PRODUCTION_DB_PATH]))
-      .toMatchObject({ status: 1, stderr: expect.stringContaining("production database path") });
+    // Resolve the guard in the same child environment as the command. Bun captures
+    // home information before Vitest's per-file environment rebinding.
+    const guard = path.resolve("cli/production-db-guard.cjs");
+    const paths = spawnSync(process.execPath, ["--smol", "-e",
+      `console.log(JSON.stringify(require(${JSON.stringify(guard)}).PRODUCTION_DB_PATHS))`,
+    ], { cwd: process.cwd(), env: { ...process.env }, encoding: "utf8" });
+    expect(paths.status, paths.stderr).toBe(0);
+    for (const productionPath of JSON.parse(paths.stdout) as string[]) {
+      expect(run(["--db", productionPath]), productionPath)
+        .toMatchObject({ status: 1, stderr: expect.stringContaining("production database path") });
+      expect(fs.existsSync(`${productionPath}.artifacts`)).toBe(false);
+    }
   });
 
   it("creates the exact two-round semantic state and a useful JSON manifest", () => {
@@ -83,7 +91,7 @@ describe("rich Briefing demo seed command", () => {
     expect(result.stdout).not.toContain("Proceed with guarded monitoring");
     expect(fs.existsSync(target)).toBe(true);
     expect(fs.existsSync(`${target}.artifacts`)).toBe(true);
-    const db = new Database(target, { readonly: true });
+    const db = new SqliteDatabase(target, { readonly: true });
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefings").get()).toEqual({ n: 1 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 2 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get()).toEqual({ n: 1 });

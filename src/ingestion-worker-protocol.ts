@@ -1,3 +1,4 @@
+import type { MandibleEventType } from "./contracts.js";
 import type { LogLevel } from "./types.js";
 
 export type IngestionWorkerCommand =
@@ -23,4 +24,4 @@ export type IngestionWorkerResponse =
       message: string;
       details?: Record<string, unknown>;
     }
-  | { kind: "broadcast"; event: string; data: unknown };
+  | { kind: "broadcast"; event: MandibleEventType; data: unknown };

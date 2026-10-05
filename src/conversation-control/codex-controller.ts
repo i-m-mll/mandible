@@ -26,6 +26,8 @@ import type {
   ConversationOutboxItem,
   ProviderAdapterEvent,
   ProviderDeliveryReceipt,
+  ManagedPermissionRequest,
+  ProviderRuntimeEvent,
   Result,
 } from "./types.js";
 
@@ -44,7 +46,9 @@ type CodexController = {
   providerSequence: number;
   liveText: Map<string, string>;
   activeDelivery: ConversationOutboxItem | null;
+  startingNotifications: { method: string; params?: unknown; id?: string | number }[] | null;
   userMessageIds: Map<string, string>;
+  permissions: Map<string, { request: ManagedPermissionRequest; protocolId: string | number; method: string }>;
 };
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -77,7 +81,9 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
 
   private readonly lifecycle = new AdapterLifecycle();
   private readonly providerEvents = new AdapterProviderEvents();
+  private readonly runtimeListeners = new Set<(event: ProviderRuntimeEvent) => void>();
   private readonly controllers = new Map<string, CodexController>();
+  private readonly acquiring = new Set<string>();
   private readonly spawnProcess: StructuredProcessSpawner | undefined;
   private readonly codexExecutable: string | undefined;
 
@@ -90,16 +96,35 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     if (input.kind === "resume-message-anchor") {
       return { ok: false, error: adapterFailure(this.id, "message-anchor-unsupported", "Codex App Server cannot resume an exact message anchor") };
     }
+    if (this.controllers.has(input.conversation_id) || this.acquiring.has(input.conversation_id)) return { ok: false, error: adapterFailure(this.id, "controller-already-owned", "This conversation already has a controller acquisition") };
+    this.acquiring.add(input.conversation_id);
     let client: CodexAppServerClient | null = null;
-    let aborted = input.kind === "start" && input.signal?.aborted === true;
+    let aborted = input.signal?.aborted === true;
     const abort = () => {
       aborted = true;
       if (client) void client.close();
     };
-    if (input.kind === "start") input.signal?.addEventListener("abort", abort, { once: true });
+    input.signal?.addEventListener("abort", abort, { once: true });
     try {
       if (aborted) throw new Error("Codex controller acquisition was cancelled");
       client = await this.connectedClient();
+      if (aborted) throw new Error("Codex controller acquisition was cancelled");
+      if (input.kind === "resume-provider-session") {
+        const stored = responseThread(await client.request("thread/read", { threadId: input.provider_session_id }));
+        if (aborted) throw new Error("Codex controller acquisition was cancelled");
+        if (stringField(stored, "id") !== input.provider_session_id) {
+          throw new UncertainCodexAcquisition("Codex App Server read a different thread identity");
+        }
+        // The native metadata is authoritative for the current rollout location.
+        // Restore only an archived rollout, never infer archive state from our cached history.
+        const nativePath = stringField(stored, "path");
+        if (nativePath?.split(/[\\/]/).includes("archived_sessions")) {
+          const restored = responseThread(await client.request("thread/unarchive", { threadId: input.provider_session_id }));
+          if (stringField(restored, "id") !== input.provider_session_id) {
+            throw new UncertainCodexAcquisition("Codex App Server restored a different thread identity");
+          }
+        }
+      }
       if (aborted) throw new Error("Codex controller acquisition was cancelled");
       const result = input.kind === "start"
         ? await client.request("thread/start", {
@@ -110,7 +135,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
             ? { approvalPolicy: "never" as const, sandbox: "danger-full-access" as const }
             : {}),
         })
-        : await client.request("thread/resume", { threadId: input.provider_session_id });
+        : await client.request("thread/resume", { threadId: input.provider_session_id, cwd: input.cwd, model: input.runtime_options?.model });
       if (aborted) throw new Error("Codex controller acquisition was cancelled");
       const thread = responseThread(result);
       const providerSessionId = stringField(thread, "id");
@@ -138,7 +163,9 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         providerSequence: 0,
         liveText: new Map(),
         activeDelivery: null,
+        startingNotifications: null,
         userMessageIds: new Map(),
+        permissions: new Map(),
       };
       this.attach(controller);
       this.controllers.set(input.conversation_id, controller);
@@ -149,7 +176,8 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         thrown instanceof UncertainCodexAcquisition ? "acquisition-ambiguous" : "startup-failed",
         thrown, { retryable: true }) };
     } finally {
-      if (input.kind === "start") input.signal?.removeEventListener("abort", abort);
+      this.acquiring.delete(input.conversation_id);
+      input.signal?.removeEventListener("abort", abort);
     }
   }
 
@@ -165,6 +193,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     } catch (error) {
       return { ok: false, error: adapterFailure(this.id, "attachment-custody-failed", error) };
     }
+    if (controller.startingNotifications !== null) return { ok: false, error: adapterFailure(this.id, "delivery-in-flight", "Codex is binding another requested turn") };
     controller.activeDelivery = item;
     try {
       let providerTurnId: string;
@@ -205,7 +234,9 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
               excludeTmpdirEnvVar: false, excludeSlashTmp: false },
           } : {}),
         };
+        controller.startingNotifications = [];
         const result = await controller.client.request("turn/start", params);
+        if (controller.startingNotifications === null) throw new Error("Codex turn-start notifications became unprovable");
         const turn = responseTurn(result);
         const nativeTurnId = stringField(turn, "id");
         if (!nativeTurnId) throw new Error("Codex App Server returned no turn identity");
@@ -217,6 +248,9 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         this.lifecycle.emit(this.event(controller, { kind: "turn-started", turn_id: item.turn_id, at: Date.now() }));
         const status = stringField(turn, "status");
         if (status && status !== "inProgress") this.finishTurn(controller, turn);
+        const notifications = controller.startingNotifications;
+        controller.startingNotifications = null;
+        for (const notification of notifications) this.acceptNotification(controller, notification);
       }
       const receipt: ProviderDeliveryReceipt = {
         provider_receipt_id: `codex:turn:${providerTurnId}`,
@@ -230,8 +264,9 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       controller.delivered.set(item.id, receipt);
       return { ok: true, value: receipt };
     } catch (thrown) {
+      controller.startingNotifications = null;
       if (controller.activeDelivery?.id === item.id) controller.activeDelivery = null;
-      return { ok: false, error: adapterFailure(this.id, "delivery-failed", thrown, { retryable: true }) };
+      return { ok: false, error: { kind: "delivery-uncertain", delivery_id: item.id } };
     }
   }
 
@@ -252,6 +287,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         state: controller.state,
       } };
     }
+    if (input.provider_session_id === null) return { ok: true, value: { kind: "released" } };
     let client: CodexAppServerClient | null = null;
     try {
       client = await this.connectedClient();
@@ -303,8 +339,46 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     }
   }
 
+  async interrupt(input: { conversation_id: string; generation: number }): Promise<Result<void, ConversationControlError>> {
+    const controller = this.controllers.get(input.conversation_id);
+    if (!controller || controller.generation !== input.generation || !controller.activeNativeTurnId) {
+      return { ok: false, error: adapterFailure(this.id, "no-active-turn", "Codex has no owned active turn") };
+    }
+    try {
+      await controller.client.request("turn/interrupt", { threadId: controller.providerSessionId, turnId: controller.activeNativeTurnId });
+      return { ok: true, value: undefined };
+    } catch (error) { return { ok: false, error: adapterFailure(this.id, "interrupt-failed", error) }; }
+  }
+
+  permissions(conversationId: string): ManagedPermissionRequest[] {
+    return [...(this.controllers.get(conversationId)?.permissions.values() ?? [])].map(({ request }) => request);
+  }
+
+  async decidePermission(input: { conversation_id: string; generation: number; request_id: string; decision: "allow" | "deny" | "allow_always" }): Promise<Result<void, ConversationControlError>> {
+    const controller = this.controllers.get(input.conversation_id);
+    const pending = controller?.permissions.get(input.request_id);
+    if (!controller || controller.generation !== input.generation || !pending) {
+      return { ok: false, error: adapterFailure(this.id, "permission-not-found", "Permission request is no longer pending on this controller") };
+    }
+    if (input.decision === "allow_always") return { ok: false, error: adapterFailure(this.id, "unsupported-permission-decision", "Codex approval is scoped to this request") };
+    try {
+      if (pending.request.expires_at < Date.now()) return { ok: false, error: adapterFailure(this.id, "permission-expired", "This approval request expired") };
+      const response = pending.method === "item/permissions/requestApproval"
+        ? { permissions: input.decision === "allow" ? object(pending.request.tool_input)?.permissions ?? {} : {}, scope: "turn" }
+        : { decision: input.decision === "allow" ? "accept" : "decline" };
+      controller.client.respond(pending.protocolId, response);
+      controller.permissions.delete(input.request_id);
+      this.lifecycle.emit(this.event(controller, { kind: "controller-running", at: Date.now() }));
+      return { ok: true, value: undefined };
+    } catch (error) { return { ok: false, error: adapterFailure(this.id, "permission-response-failed", error) }; }
+  }
+
   subscribe(listener: (event: AdapterLifecycleEvent) => Result<void, ConversationControlError>): () => void {
     return this.lifecycle.subscribe(listener);
+  }
+
+  subscribeRuntimeEvents(listener: (event: ProviderRuntimeEvent) => void): () => void {
+    this.runtimeListeners.add(listener); return () => { this.runtimeListeners.delete(listener); };
   }
 
   subscribeProviderEvents(listener: (event: ProviderAdapterEvent) => void): () => void {
@@ -342,12 +416,40 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
   }
 
   private acceptNotification(controller: CodexController, record: { method: string; params?: unknown; id?: string | number }): void {
-    if (record.id !== undefined && record.method.includes("requestApproval") && controller.activeControlTurnId) {
-      this.lifecycle.emit(this.event(controller, {
-        kind: "turn-waiting-permission",
-        turn_id: controller.activeControlTurnId,
-        at: Date.now(),
-      }));
+    // A response and its notifications can share one stdio read. Bind the
+    // exact returned turn before applying any notification from that read.
+    if (controller.startingNotifications !== null) {
+      if (controller.startingNotifications.length >= 1_024) {
+        controller.startingNotifications = null;
+        this.markAmbiguous(controller);
+        return;
+      }
+      controller.startingNotifications.push(record);
+      return;
+    }
+    const params = object(record.params);
+    if (record.method === "thread/tokenUsage/updated") {
+      if (stringField(params, "threadId") !== controller.providerSessionId) return;
+      const usage = object(params?.tokenUsage);
+      if (!usage) return this.markAmbiguous(controller);
+      const event: ProviderRuntimeEvent = { kind: "usage", conversation_id: controller.conversationId, generation: controller.generation,
+        provider_session_id: controller.providerSessionId, provider_record_id: `${controller.providerSessionId}:${stringField(params, "turnId") ?? "usage"}`,
+        observed_at: Date.now(), snapshot: { usage } };
+      for (const listener of this.runtimeListeners) listener(event);
+      return;
+    }
+    if (record.method === "serverRequest/resolved") {
+      if (stringField(params, "threadId") === controller.providerSessionId) controller.permissions.delete(String(params?.requestId));
+      return;
+    }
+    if (record.id !== undefined && ["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval"].includes(record.method)) {
+      if (!controller.activeControlTurnId || stringField(params, "threadId") !== controller.providerSessionId
+        || stringField(params, "turnId") !== controller.activeNativeTurnId) return this.markAmbiguous(controller);
+      const id = String(record.id);
+      controller.permissions.set(id, { protocolId: record.id, method: record.method,
+        request: { id, tool_name: record.method, tool_input: params, description: stringField(params, "reason") ?? undefined,
+          created_at: Date.now(), expires_at: Date.now() + 120_000 } });
+      this.lifecycle.emit(this.event(controller, { kind: "turn-waiting-permission", turn_id: controller.activeControlTurnId, at: Date.now() }));
       return;
     }
     if (record.method === "turn/started") {

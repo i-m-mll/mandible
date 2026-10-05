@@ -1,3 +1,4 @@
+import { waitForStatus, publishFixtureExecution, approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -30,7 +31,7 @@ describe("auth queue", () => {
       git(repo, ["merge", "--no-ff", "feature/child-work", "-m", "merge child work"]);
       const integrationHead = git(repo, ["rev-parse", "integration/child-batch"]);
       git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "integration/child-batch", "-m", "merge integration"]);
+
 
       registerWorkRepo(db, repo);
       db.prepare(
@@ -42,7 +43,7 @@ describe("auth queue", () => {
          VALUES ('wu-child', 'child123', ?, 'feature/child-work', 'partition', 'committed', ?)`
       ).run(path.basename(repo), now);
 
-      const queue = new AuthQueue({ db, now: () => now });
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge integration/child-batch --into main",
@@ -52,12 +53,12 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "integration/child-batch",
         merge_head_sha: integrationHead,
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
       now = 1000;
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "ok");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
 
       expect(db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-child'").get())
@@ -81,7 +82,7 @@ describe("auth queue", () => {
       git(repo, ["merge", "--no-ff", "feature/abandoned-child", "-m", "merge child work"]);
       const integrationHead = git(repo, ["rev-parse", "integration/abandoned-batch"]);
       git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "integration/abandoned-batch", "-m", "merge integration"]);
+
       git(repo, ["branch", "-D", "feature/abandoned-child"]);
 
       registerWorkRepo(db, repo);
@@ -98,7 +99,7 @@ describe("auth queue", () => {
         )`
       ).run(path.basename(repo), now);
 
-      const queue = new AuthQueue({
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options),
         db,
         now: () => now,
         codexThreadArchiver: {
@@ -115,12 +116,12 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "integration/abandoned-batch",
         merge_head_sha: integrationHead,
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
       now = 1000;
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "ok");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
 
       expect(db.prepare(
@@ -148,7 +149,7 @@ describe("auth queue", () => {
       git(repo, ["merge", "--no-ff", "feature/closed-child", "-m", "merge child work"]);
       const integrationHead = git(repo, ["rev-parse", "integration/closed-batch"]);
       git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "integration/closed-batch", "-m", "merge integration"]);
+
       git(repo, ["branch", "-D", "feature/closed-child"]);
 
       registerWorkRepo(db, repo);
@@ -166,7 +167,7 @@ describe("auth queue", () => {
         )`
       ).run(issue.id, path.basename(repo), now);
 
-      const queue = new AuthQueue({
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options),
         db,
         now: () => now,
         codexThreadArchiver: {
@@ -184,12 +185,12 @@ describe("auth queue", () => {
         head_branch: "integration/closed-batch",
         merge_head_sha: integrationHead,
         issue_closures: [issue.id],
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
       now = 1000;
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "ok");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
 
       expect(db.prepare(
@@ -219,7 +220,7 @@ describe("auth queue", () => {
       git(repo, ["checkout", "main"]);
       git(repo, ["merge", "--no-ff", "feature/stale-abandoned", "-m", "merge stale work"]);
       git(repo, ["branch", "-D", "feature/stale-abandoned"]);
-      git(repo, ["merge", "--no-ff", "integration/unrelated-batch", "-m", "merge integration"]);
+
 
       registerWorkRepo(db, repo);
       db.prepare(
@@ -231,7 +232,7 @@ describe("auth queue", () => {
          VALUES ('wu-stale-abandoned', 'stale123', ?, 'feature/stale-abandoned', 'partition', 'abandoned', ?)`
       ).run(path.basename(repo), now);
 
-      const queue = new AuthQueue({ db, now: () => now });
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge integration/unrelated-batch --into main",
@@ -241,12 +242,12 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "integration/unrelated-batch",
         merge_head_sha: integrationHead,
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
       now = 1000;
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "ok");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
 
       expect(db.prepare(
@@ -270,7 +271,7 @@ describe("auth queue", () => {
       git(repo, ["merge", "--no-ff", "feature/snap-child", "-m", "merge child work"]);
       const integrationHead = git(repo, ["rev-parse", "integration/snap-batch"]);
       git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "integration/snap-batch", "-m", "merge integration"]);
+
       // Delete the branch: only the last_commit_hash snapshot proves containment,
       // which for-each-ref --merged could never see.
       git(repo, ["branch", "-D", "feature/snap-child"]);
@@ -285,7 +286,7 @@ describe("auth queue", () => {
          VALUES ('wu-snap', 'snap123', ?, 'feature/snap-child', 'partition', 'committed', ?)`
       ).run(path.basename(repo), now);
 
-      const queue = new AuthQueue({ db, now: () => now });
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge integration/snap-batch --into main",
@@ -295,12 +296,12 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "integration/snap-batch",
         merge_head_sha: integrationHead,
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
       now = 1000;
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "ok");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
 
       expect(db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-snap'").get())
@@ -332,7 +333,7 @@ describe("auth queue", () => {
       git(repo, ["merge", "--squash", "feature/squash-child"]);
       git(repo, ["commit", "-m", "squash child work"]);
       git(repo, ["branch", "-D", "feature/squash-child"]);
-      git(repo, ["merge", "--no-ff", "integration/squash-batch", "-m", "merge integration"]);
+
 
       registerWorkRepo(db, repo);
       db.prepare(
@@ -344,7 +345,7 @@ describe("auth queue", () => {
          VALUES ('wu-squash', 'squash123', ?, 'feature/squash-child', 'partition', 'committed', ?)`
       ).run(path.basename(repo), now);
 
-      const queue = new AuthQueue({ db, now: () => now });
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge integration/squash-batch --into main",
@@ -354,12 +355,12 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "integration/squash-batch",
         merge_head_sha: integrationHead,
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
       now = 1000;
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "ok");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
 
       expect(db.prepare(
@@ -393,7 +394,7 @@ describe("auth queue", () => {
       git(repo, ["commit", "-m", "integration work"]);
       const integrationHead = git(repo, ["rev-parse", "integration/budget-batch"]);
       git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "integration/budget-batch", "-m", "merge integration"]);
+
 
       registerWorkRepo(db, repo);
       // 50 committed candidate rows in one repo, each with a distinct branch and a
@@ -413,7 +414,7 @@ describe("auth queue", () => {
         insertUnit.run(`wu-budget-${i}`, `budget${i}`, path.basename(repo), branch, now);
       }
 
-      const queue = new AuthQueue({ db, now: () => now });
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge integration/budget-batch --into main",
@@ -424,15 +425,15 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "integration/budget-batch",
         merge_head_sha: integrationHead,
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
       const prevPath = process.env.PATH;
       process.env.PATH = `${traceDir}${path.delimiter}${prevPath ?? ""}`;
       try {
         now = 1000;
-        queue.approve(request.id);
-        queue.setResult(request.id, 0, "ok");
+        await approveFixtureRequest(queue, request.id);
+        await waitForStatus(queue, request.id, "completed");
         await queue.drainFinalizers();
       } finally {
         process.env.PATH = prevPath;
@@ -462,7 +463,7 @@ describe("auth queue", () => {
       git(repo, ["commit", "-m", "integration work"]);
       const integrationHead = git(repo, ["rev-parse", "integration/retire-batch"]);
       git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "integration/retire-batch", "-m", "merge integration"]);
+
 
       registerWorkRepo(db, repo);
       // Stale abandoned row: aged well past the retention window; never merged.
@@ -476,7 +477,7 @@ describe("auth queue", () => {
          VALUES ('wu-fresh-retire', 'fresh123', ?, 'feature/retire-fresh', 'partition', 'abandoned', ?)`
       ).run(path.basename(repo), now);
 
-      const queue = new AuthQueue({ db, now: () => now, workUnitAbandonedScanRetentionMs: 1000 });
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now, workUnitAbandonedScanRetentionMs: 1000 });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge integration/retire-batch --into main",
@@ -486,11 +487,11 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "integration/retire-batch",
         merge_head_sha: integrationHead,
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "ok");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
 
       // Retired, but not deleted: row survives with its abandoned state.
@@ -531,7 +532,7 @@ describe("auth queue", () => {
       git(repo, ["add", "."]);
       git(repo, ["commit", "-m", "integration bf work"]);
       git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "integration/bf-batch", "-m", "merge integration bf"]);
+
       const mainHead = git(repo, ["rev-parse", "main"]);
 
       registerWorkRepo(db, repo);
@@ -546,7 +547,7 @@ describe("auth queue", () => {
          VALUES ('wu-stale-bf', 'stale-bf', ?, 'feature/stale-bf', 'partition', 'abandoned', 0)`
       ).run(path.basename(repo));
 
-      const queue = new AuthQueue({ db, now: () => now, workUnitAbandonedScanRetentionMs: 1000 });
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now, workUnitAbandonedScanRetentionMs: 1000 });
       // A syntactically valid but nonexistent SHA makes `git rev-list <sha>`
       // fail for the request target, so the batch records a build failure.
       const bogusSha = "b".repeat(40);
@@ -558,13 +559,12 @@ describe("auth queue", () => {
         cwd: repo,
         base_branch: "main",
         head_branch: "integration/bf-batch",
-        merge_head_sha: bogusSha,
-        execution_mode: "remote",
+        merge_head_sha: git(repo, ["rev-parse", "integration/bf-batch"]),
+        execution_mode: "daemon",
       });
 
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "ok");
-      await queue.drainFinalizers();
+      await (queue as unknown as { resolveAncestryWorkUnitsOnMerge(r: unknown): Promise<string[]> })
+        .resolveAncestryWorkUnitsOnMerge({ ...request, merge_head_sha: bogusSha });
 
       // Batch build failed this pass → retirement sweep skipped → the stale row
       // is NOT tombstoned (a transient git failure must not cost data).
@@ -575,7 +575,7 @@ describe("auth queue", () => {
       // Repair the target so the batch builds cleanly, then re-run the ancestry
       // finalizer: the same stale row is now retired, proving the earlier skip
       // was caused specifically by the batch build failure.
-      db.prepare("UPDATE auth_requests SET merge_head_sha = ? WHERE id = ?").run(mainHead, request.id);
+
       await (queue as unknown as { resolveAncestryWorkUnitsOnMerge(r: unknown): Promise<string[]> })
         .resolveAncestryWorkUnitsOnMerge(queue.getRequest(request.id));
       expect(db.prepare(
@@ -600,7 +600,7 @@ describe("auth queue", () => {
       git(repo, ["merge", "--no-ff", "feature/excluded-child", "-m", "merge child work"]);
       const integrationHead = git(repo, ["rev-parse", "integration/excluded-batch"]);
       git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "integration/excluded-batch", "-m", "merge integration"]);
+
 
       registerWorkRepo(db, repo);
       db.prepare(
@@ -613,7 +613,7 @@ describe("auth queue", () => {
          VALUES ('wu-excluded', 'excl123', ?, 'feature/excluded-child', 'partition', 'abandoned', 0, 5)`
       ).run(path.basename(repo));
 
-      const queue = new AuthQueue({ db, now: () => now });
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge integration/excluded-batch --into main",
@@ -623,12 +623,12 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "integration/excluded-batch",
         merge_head_sha: integrationHead,
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
       now = 1000;
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "ok");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
 
       expect(db.prepare(
@@ -652,7 +652,7 @@ describe("auth queue", () => {
       git(repo, ["merge", "--no-ff", "feature/order-child", "-m", "merge child work"]);
       const integrationHead = git(repo, ["rev-parse", "integration/order-batch"]);
       git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "integration/order-batch", "-m", "merge integration"]);
+
       git(repo, ["branch", "-D", "feature/order-child"]);
 
       registerWorkRepo(db, repo);
@@ -666,7 +666,7 @@ describe("auth queue", () => {
          VALUES ('wu-order', 'order123', ?, 'feature/order-child', 'partition', 'abandoned', 0)`
       ).run(path.basename(repo));
 
-      const queue = new AuthQueue({ db, now: () => now, workUnitAbandonedScanRetentionMs: 1000 });
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now, workUnitAbandonedScanRetentionMs: 1000 });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge integration/order-batch --into main",
@@ -676,11 +676,11 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "integration/order-batch",
         merge_head_sha: integrationHead,
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "ok");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
 
       // Resolved in the same pass; the sweep only touches rows still abandoned,
@@ -708,7 +708,7 @@ describe("auth queue", () => {
       git(repo, ["merge", "--no-ff", "feature/nocol-child", "-m", "merge child work"]);
       const integrationHead = git(repo, ["rev-parse", "integration/nocol-batch"]);
       git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "integration/nocol-batch", "-m", "merge integration"]);
+
       git(repo, ["branch", "-D", "feature/nocol-child"]);
 
       registerWorkRepo(db, repo);
@@ -721,7 +721,7 @@ describe("auth queue", () => {
          VALUES ('wu-nocol', 'nocol123', ?, 'feature/nocol-child', 'partition', 'committed', ?)`
       ).run(path.basename(repo), now);
 
-      const queue = new AuthQueue({ db, now: () => now });
+      const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge integration/nocol-batch --into main",
@@ -731,12 +731,12 @@ describe("auth queue", () => {
         base_branch: "main",
         head_branch: "integration/nocol-batch",
         merge_head_sha: integrationHead,
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
 
       now = 1000;
-      queue.approve(request.id);
-      expect(() => queue.setResult(request.id, 0, "ok")).not.toThrow();
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
       expect(db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-nocol'").get())
         .toEqual({ state: "resolved", resolved_at: now });
@@ -750,11 +750,13 @@ describe("auth queue", () => {
   it("archives only reliably linked terminal Codex worker threads after successful merge", async () => {
     const archived: string[] = [];
     const db = createMigratedDb();
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-thread-archive-"));
+    const repoRoot = createAuthCheckRepo();
+    commitOnBranch(repoRoot, "feature/archive-worker", { "worker.txt": "delivered\n" });
+    registerWorkRepo(db, repoRoot);
     const project = createLedgerProject(db, repoRoot);
     const issue = createLedgerIssue(db, project.project.id, "done123", "Done issue");
     const parent = createLedgerIssue(db, project.project.id, "parent1", "Parent issue");
-    const queue = new AuthQueue({
+    const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options),
       db,
       codexThreadArchiver: {
         archive: async (threadId) => { archived.push(threadId); },
@@ -794,10 +796,12 @@ describe("auth queue", () => {
         command: "mandible auth merge feature/archive-worker --into main",
         title: "Archive workers",
         repo: project.checkout.root,
+        cwd: repoRoot,
+        merge_head_sha: git(repoRoot, ["rev-parse", "feature/archive-worker"]),
         base_branch: "main",
         head_branch: "feature/archive-worker",
         issue_closures: ["done123"],
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
       insertWorkUnit(db, {
         id: "wu-worker",
@@ -824,8 +828,8 @@ describe("auth queue", () => {
         authRequestId: request.id,
       });
 
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "MANDIBLE_MERGE_RESULT {\"merge_sha\":\"abc123\"}\n");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
 
       expect(archived).toEqual(["thread-worker"]);
@@ -845,10 +849,12 @@ describe("auth queue", () => {
   it("replays Codex archive attempts for a completed merge without rerunning merge finalizers", async () => {
     const archived: string[] = [];
     const db = createMigratedDb();
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-thread-archive-replay-"));
+    const repoRoot = createAuthCheckRepo();
+    commitOnBranch(repoRoot, "feature/archive-worker", { "worker.txt": "delivered\n" });
+    registerWorkRepo(db, repoRoot);
     const project = createLedgerProject(db, repoRoot);
     const issue = createLedgerIssue(db, project.project.id, "done123", "Done issue");
-    const queue = new AuthQueue({
+    const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options),
       db,
       codexThreadArchiver: {
         archive: async (threadId) => { archived.push(threadId); },
@@ -869,10 +875,12 @@ describe("auth queue", () => {
         command: "mandible auth merge feature/archive-worker --into main",
         title: "Archive workers",
         repo: project.checkout.root,
+        cwd: repoRoot,
+        merge_head_sha: git(repoRoot, ["rev-parse", "feature/archive-worker"]),
         base_branch: "main",
         head_branch: "feature/archive-worker",
         issue_closures: ["done123"],
-        execution_mode: "remote",
+        execution_mode: "daemon",
       });
       insertWorkUnit(db, {
         id: "wu-worker",
@@ -883,8 +891,8 @@ describe("auth queue", () => {
         authRequestId: request.id,
       });
 
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "MANDIBLE_MERGE_RESULT {\"merge_sha\":\"abc123\"}\n");
+      await approveFixtureRequest(queue, request.id);
+      await waitForStatus(queue, request.id, "completed");
       await queue.drainFinalizers();
       const finalizedAt = queue.getRequest(request.id)?.merge_finalized_at;
       const replay = await queue.replayCodexThreadArchives(request.id);
@@ -917,38 +925,48 @@ describe("auth queue", () => {
   it("does not replay finalized same-branch merge finalizers against newer pending requests on restart", async () => {
     let now = 1000;
     const db = createMigratedDb();
-    const queue = new AuthQueue({ db, now: () => now });
+    const repo = createAuthCheckRepo();
+    commitOnBranch(repo, "integration/reused", { "first.txt": "first\n" });
+    registerWorkRepo(db, repo);
+    const queue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
     const completed = queue.submit({
       type: "merge",
       command: "mandible auth merge integration/reused --into main",
       title: "First wave",
-      repo: "rlrmp",
+      repo: path.basename(repo),
+      cwd: repo,
       base_branch: "main",
       head_branch: "integration/reused",
-      merge_head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      execution_mode: "remote"
+      merge_head_sha: git(repo, ["rev-parse", "integration/reused"]),
+      execution_mode: "daemon"
     });
-    queue.approve(completed.id);
-    queue.setResult(completed.id, 0, "ok");
+    await approveFixtureRequest(queue, completed.id);
+    await waitForStatus(queue, completed.id, "completed");
     await queue.drainFinalizers();
     queue.dispose();
 
+    git(repo, ["checkout", "integration/reused"]);
+    writeFile(repo, "second.txt", "second\n");
+    git(repo, ["add", "second.txt"]);
+    git(repo, ["commit", "-m", "second wave"]);
+    git(repo, ["checkout", "main"]);
     now = 2000;
-    const secondQueue = new AuthQueue({ db, now: () => now });
+    const secondQueue = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
     const pending = secondQueue.submit({
       type: "merge",
       command: "mandible auth merge integration/reused --into main",
       title: "Second wave",
-      repo: "rlrmp",
+      repo: path.basename(repo),
+      cwd: repo,
       base_branch: "main",
       head_branch: "integration/reused",
-      merge_head_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      execution_mode: "remote"
+      merge_head_sha: git(repo, ["rev-parse", "integration/reused"]),
+      execution_mode: "daemon"
     });
     secondQueue.dispose();
 
     now = 3000;
-    const restarted = new AuthQueue({ db, now: () => now });
+    const restarted = new AuthQueue({ executor: async (options) => publishFixtureExecution(queue, options), db, now: () => now });
     try {
       const stillPending = restarted.getRequest(pending.id);
       const finalized = restarted.getRequest(completed.id);
@@ -961,91 +979,29 @@ describe("auth queue", () => {
     }
   });
 
-  it("does not supersede same-branch pending requests with a different recorded head", async () => {
-    let now = 2000;
+  it.each(['same', 'different'] as const)('leaves unverified historical completion and its %s-head pending sibling unchanged', async (headKind) => {
     const db = createMigratedDb();
-    db.prepare(
-      `INSERT INTO auth_requests (
-        id, session_id, type, command, title, repo, base_branch, head_branch,
-        merge_head_sha, status, created_at, updated_at, resolved_at, expires_at,
-        exit_code, output, execution_mode, files_changed, additions, deletions,
-        approval_source
-      ) VALUES (
-        'completed-old-head', NULL, 'merge', 'mandible auth merge feature/reused --into main',
-        'Old head', 'repo', 'main', 'feature/reused',
-        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'completed', 100, 1000, 1000, 10000,
-        0, 'ok', 'remote', 0, 0, 0, 'manual'
-      )`
-    ).run();
-    db.prepare(
-      `INSERT INTO auth_requests (
-        id, session_id, type, command, title, repo, base_branch, head_branch,
-        merge_head_sha, status, created_at, updated_at, expires_at, output,
-        execution_mode, files_changed, additions, deletions, approval_source
-      ) VALUES (
-        'pending-new-head', NULL, 'merge', 'mandible auth merge feature/reused --into main',
-        'New head', 'repo', 'main', 'feature/reused',
-        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'pending', 900, 900, 10000, '',
-        'remote', 0, 0, 0, 'manual'
-      )`
-    ).run();
-
-    const queue = new AuthQueue({ db, now: () => now });
+    const oldHead = 'a'.repeat(40);
+    const pendingHead = headKind === 'same' ? oldHead : 'b'.repeat(40);
+    db.prepare(`INSERT INTO auth_requests (
+      id, type, command, title, repo, base_branch, head_branch, merge_head_sha,
+      status, created_at, updated_at, resolved_at, expires_at, exit_code, output,
+      execution_mode, files_changed, additions, deletions, approval_source
+    ) VALUES ('history', 'merge', 'mandible auth merge feature/reused --into main',
+      'Historical completion', 'repo', 'main', 'feature/reused', ?,
+      'completed', 100, 1000, 1000, 10000, 0, 'ok', 'remote', 0, 0, 0, 'manual')`).run(oldHead);
+    db.prepare(`INSERT INTO auth_requests (
+      id, type, command, title, repo, base_branch, head_branch, merge_head_sha,
+      status, created_at, updated_at, expires_at, output, execution_mode,
+      files_changed, additions, deletions, approval_source
+    ) VALUES ('pending', 'merge', 'mandible auth merge feature/reused --into main',
+      'Pending sibling', 'repo', 'main', 'feature/reused', ?,
+      'pending', 900, 900, 10000, '', 'remote', 0, 0, 0, 'manual')`).run(pendingHead);
+    const queue = new AuthQueue({ db, now: () => 2000 });
     try {
-      // Issue 75f52ac — constructor sweep enqueues Stage 3 finalizers; drain
-      // before asserting finalized / sibling-supersession outcomes.
       await queue.drainFinalizers();
-      const pending = queue.getRequest("pending-new-head");
-      const completed = queue.getRequest("completed-old-head");
-      expect(completed?.merge_finalized_at).toBe(now);
-      expect(pending?.status).toBe("pending");
-      expect(pending?.error).toBeNull();
-    } finally {
-      queue.dispose();
-      db.close();
-    }
-  });
-
-  it("supersedes same-branch pending requests with the same recorded head", async () => {
-    let now = 2000;
-    const db = createMigratedDb();
-    db.prepare(
-      `INSERT INTO auth_requests (
-        id, session_id, type, command, title, repo, base_branch, head_branch,
-        merge_head_sha, status, created_at, updated_at, resolved_at, expires_at,
-        exit_code, output, execution_mode, files_changed, additions, deletions,
-        approval_source
-      ) VALUES (
-        'completed-same-head', NULL, 'merge', 'mandible auth merge feature/reused --into main',
-        'Merged head', 'repo', 'main', 'feature/reused',
-        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'completed', 100, 1000, 1000, 10000,
-        0, 'ok', 'remote', 0, 0, 0, 'manual'
-      )`
-    ).run();
-    db.prepare(
-      `INSERT INTO auth_requests (
-        id, session_id, type, command, title, repo, base_branch, head_branch,
-        merge_head_sha, status, created_at, updated_at, expires_at, output,
-        execution_mode, files_changed, additions, deletions, approval_source
-      ) VALUES (
-        'pending-same-head', NULL, 'merge', 'mandible auth merge feature/reused --into main',
-        'Duplicate head', 'repo', 'main', 'feature/reused',
-        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'pending', 900, 900, 10000, '',
-        'remote', 0, 0, 0, 'manual'
-      )`
-    ).run();
-
-    const queue = new AuthQueue({ db, now: () => now });
-    try {
-      // Issue 75f52ac — sibling supersession is a Stage 3 finalizer; drain first.
-      await queue.drainFinalizers();
-      const pending = queue.getRequest("pending-same-head");
-      expect(pending?.status).toBe("superseded");
-      expect(pending?.error).toContain("System supersession");
-      expect(pending?.superseded_by_request_id).toBe("completed-same-head");
-    } finally {
-      queue.dispose();
-      db.close();
-    }
+      expect(queue.getRequest('history')).toMatchObject({ status: 'completed', merge_finalized_at: null });
+      expect(queue.getRequest('pending')).toMatchObject({ status: 'pending', error: null, superseded_by_request_id: null });
+    } finally { queue.dispose(); db.close(); }
   });
 });

@@ -1,21 +1,18 @@
+import { establishTestClientAccess } from '../helpers/local-client-access';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 import { AuthHooksPanel } from '../../ui/src/views/auth';
+import { authMainInstance, bindAuthUiOperations } from '../helpers/auth-ui-fixture';
 import type { AuthHook, InstanceInfo } from '../../ui/src/api';
 
-const instance: InstanceInfo = {
-  role: 'main',
-  instance_id: 'auth-hooks-panel-test',
-  installation_id: 'auth-hooks-panel-test',
-  public_origin: 'http://localhost:19420',
-  backend_generation: 'test',
-  allowed_effects: ['auth:protected'],
-  writable_roots: [],
-  db_path: null,
-  db_path_source: null,
-};
+const instance: InstanceInfo = authMainInstance;
+
+beforeEach(async () => {
+  await establishTestClientAccess();
+  bindAuthUiOperations(instance);
+});
 
 function hook(id: string, label: string, command: string): AuthHook {
   return {
@@ -37,12 +34,6 @@ function setupFetch(initialHooks: AuthHook[]) {
   const updates: Array<{ id: string; fields: Record<string, unknown> }> = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url === '/api/client-auth/whoami') {
-      return new Response(JSON.stringify({ authenticated: true, session: {
-        family_id: 'auth-hooks-panel-test', audience: 'production', csrf_token: 'csrf',
-        effect_ceiling: ['auth:protected'],
-      } }), { status: 200, headers: { 'content-type': 'application/json' } });
-    }
     if (url === '/api/auth/hooks' && (!init?.method || init.method === 'GET')) {
       return new Response(JSON.stringify({ hooks }), { status: 200, headers: { 'content-type': 'application/json' } });
     }

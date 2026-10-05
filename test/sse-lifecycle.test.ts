@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SseManager, broadcastSpaceEvent, setSseManager } from "../src/sse.js";
+import { DOMAIN_EVENTS } from "../src/contracts.js";
 import { SPACE_EVENTS } from "../src/spaces/events.js";
 
 class FakeResponse extends EventEmitter {
@@ -61,8 +62,8 @@ describe("SseManager lifecycle", () => {
     res.writableLength = 2 * 1024 * 1024;
 
     manager.broadcast({
-      type: "test:event",
-      data: { ok: true },
+      type: DOMAIN_EVENTS.HEARTBEAT,
+      data: { timestamp: Date.now() },
       timestamp: new Date().toISOString(),
     });
 
@@ -156,7 +157,7 @@ describe("broadcastSpaceEvent", () => {
     expect(parsePayloads(authRes).some((e) => e.type === SPACE_EVENTS.SPACE_OCCURRENCE_MOVED)).toBe(false);
   });
 
-  it("ignores ad-hoc strings that are not in the frozen space:* enum", () => {
+  it("rejects ad-hoc strings that are not in the frozen space:* enum without broadcasting", () => {
     const manager = new SseManager();
     setSseManager(manager);
     const req = makeRequest();
@@ -164,7 +165,8 @@ describe("broadcastSpaceEvent", () => {
     manager.addClient(req, res, ["space:"]);
 
     // Bypass the type system the way a stray runtime caller might.
-    broadcastSpaceEvent("space:not:registered" as never, { space_id: "spc-3" });
+    expect(() => broadcastSpaceEvent("space:not:registered" as never, { space_id: "spc-3" }))
+      .toThrow("Unknown Space event: space:not:registered");
 
     expect(parsePayloads(res).some((e) => e.type === "space:not:registered")).toBe(false);
   });

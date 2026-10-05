@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readBuildRevision, writeBuildRevision } from "../scripts/build-revision.mjs";
+import { readBuildRevision, writeBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "../scripts/build-revision.mjs";
 
 const roots: string[] = [];
 
@@ -39,11 +39,37 @@ afterEach(() => {
 });
 
 describe("daemon build revision", () => {
+  it("binds transitive generated modules and installed dependency bytes", () => {
+    const root = makeCheckout();
+    fs.mkdirSync(path.join(root, "dist/cli"));
+    fs.writeFileSync(path.join(root, "dist/cli/db-read.js"), "// generated dependency\n");
+    const compiled = compiledBuildDigest(root);
+    fs.appendFileSync(path.join(root, "dist/cli/db-read.js"), "// drift\n");
+    expect(compiledBuildDigest(root)).not.toBe(compiled);
+    fs.mkdirSync(path.join(root, "node_modules/package"), { recursive: true });
+    fs.writeFileSync(path.join(root, "node_modules/package/index.js"), "// installed dependency\n");
+    fs.symlinkSync("package", path.join(root, "node_modules/alias"));
+    const dependencies = runtimeDependenciesDigest(root);
+    fs.appendFileSync(path.join(root, "node_modules/package/index.js"), "// drift\n");
+    expect(runtimeDependenciesDigest(root)).not.toBe(dependencies);
+    fs.symlinkSync("..", path.join(root, "node_modules/package/cycle"));
+    expect(() => runtimeDependenciesDigest(root)).toThrow("cycle");
+  });
+
   it("binds built bytes to a source commit and rejects later source drift", () => {
     const root = makeCheckout();
     const commit = git(root, "rev-parse", "HEAD");
     expect(writeBuildRevision(root)).toBe(commit);
     expect(readBuildRevision(root)).toBe(commit);
+
+    fs.mkdirSync(path.join(root, "scripts"));
+    fs.writeFileSync(path.join(root, "scripts", "runtime.mjs"), "export {};\n");
+    git(root, "add", "scripts/runtime.mjs");
+    git(root, "commit", "-m", "runtime support");
+    writeBuildRevision(root);
+    fs.appendFileSync(path.join(root, "scripts", "runtime.mjs"), "// drift\n");
+    expect(() => readBuildRevision(root)).toThrow("Daemon sources changed after the production build");
+    fs.writeFileSync(path.join(root, "scripts", "runtime.mjs"), "export {};\n");
 
     fs.appendFileSync(path.join(root, "src", "index.ts"), "// changed after build\n");
     expect(() => readBuildRevision(root)).toThrow("Daemon sources changed after the production build");

@@ -1,3 +1,6 @@
+import { invalidateApiGetCache, invalidateDashboardApiCacheForEvent } from '../../ui/src/api';
+import { queryClient } from '../../ui/src/query/client';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 // Collection renderer component tests (umbrella de56ffa, C8 / issue fa83ec7).
 //
 // Drives the rendered view with a mocked fetch (the `GET /api/spaces/:id` fact
@@ -169,7 +172,10 @@ function stubLocalStorage(): void {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  invalidateApiGetCache();
+  queryClient.clear();
+  await establishTestClientAccess();
   stubLocalStorage();
   MockEventSource.instances = [];
   listeners = [];
@@ -178,6 +184,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  invalidateApiGetCache();
+  queryClient.clear();
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -350,6 +358,8 @@ describe('SpaceCollectionRenderer', () => {
       items: [makeItem('a', { title: 'Alpha' }), makeItem('b', { title: 'Beta' })],
       occurrences: [makeOcc('root', { item_id: 'a' })],
     });
+    // The isolated renderer fixture also supplies the root app's cache invalidation.
+    invalidateDashboardApiCacheForEvent('space:item:added');
     MockEventSource.instances[0].emit({ type: 'space:item:added', data: { space_id: 'sp1' } });
     // New data shows up AND the selection survives reconciliation.
     await waitFor(() => expect(screen.getByText('Beta')).toBeTruthy());

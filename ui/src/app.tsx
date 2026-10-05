@@ -1,3 +1,5 @@
+import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
+import { BRIEFING_EVENT_VALUES } from '../../src/contracts';
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
@@ -23,8 +25,8 @@ import {
   getUserTypographySetting,
   getWorkRepos,
   invalidateApiGetCache,
-  invalidateDashboardApiCacheForEvent,
   normalizeInstanceInfo,
+  loadOperationCatalog,
   triggerWorkScan,
   rejectAuthRequest,
   retryAuthRequest,
@@ -182,7 +184,6 @@ import './components/spaces/AddToSpace.css';
 import './views/filters/issue-predicate-filter.css';
 import './views/spaces/DocumentBlockEditor.css';
 import './views/spaces/DocumentRenderer.css';
-import './views/spaces/RepoFileRegisterDialog.css';
 import './views/spaces/renderers.css';
 import './views/spaces/space-board.css';
 import './views/spaces/SpaceCanvas.css';
@@ -793,6 +794,7 @@ function App(): JSX.Element {
   // Current shared-SSE connection state, updated from onState, so the fallback
   // poll can gate on connection health rather than last-event receipt.
   const sseStateRef = useRef<SseConnectionState>('idle');
+  const [sseWireError, setSseWireError] = useState<string | null>(null);
   // Set when a graph-affecting event arrives while the graph tab is hidden or
   // inactive; the graph-activation effect flushes it on activation/visibility.
   const graphDirtyRef = useRef(false);
@@ -1473,22 +1475,14 @@ function App(): JSX.Element {
     };
     const handler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
-      invalidateDashboardApiCacheForEvent(payload.type);
       dispatch({ type: 'sse', payload });
       if (authEventRequiresProjectionRefresh(payload.type)) {
         scheduleAuthProjectionRefresh();
       }
       scheduleBadgeRefresh();
     };
-    // Briefing lifecycle events carry only a topic across this bridge. The
-    // active renderer refetches its normalized snapshot; directive bodies and
-    // answer values are never consumed from SSE payloads.
-    const briefingHandler = (payload: SSEPayload) => {
+    const briefingHandler = () => {
       lastDashboardSseAtRef.current = Date.now();
-      invalidateDashboardApiCacheForEvent(payload.type);
-      window.dispatchEvent(new CustomEvent('briefing:sse', {
-        detail: { type: payload.type },
-      }));
       scheduleBadgeRefresh();
     };
     const managedReminderHandler = (payload: SSEPayload) => {
@@ -1521,7 +1515,6 @@ function App(): JSX.Element {
     // suffices — the route.tab activation effect refetches on activation.
     const ledgerHandler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
-      invalidateDashboardApiCacheForEvent(payload.type);
       const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
       window.dispatchEvent(
         new CustomEvent('ledger:sse', { detail: { type: payload.type, data } }),
@@ -1648,7 +1641,6 @@ function App(): JSX.Element {
 
     // Bug: b5abaea — forward push SSE events to window so WorkOverviewView can subscribe
     const pushEventHandler = (payload: SSEPayload) => {
-      invalidateDashboardApiCacheForEvent(payload.type);
       const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
       window.dispatchEvent(
         new CustomEvent('work:push', { detail: { type: payload.type, data } }),
@@ -1669,8 +1661,7 @@ function App(): JSX.Element {
       setRebuilding(true);
     };
 
-    const graphRefreshHandler = (payload: SSEPayload) => {
-      invalidateDashboardApiCacheForEvent(payload.type);
+    const graphRefreshHandler = () => {
       // Only repaint the graph when it is the active, visible tab. Otherwise
       // mark it dirty; the graph-activation effect flushes one bump on
       // activation or when the tab becomes visible again.
@@ -1695,17 +1686,14 @@ function App(): JSX.Element {
       client.on('auth:finalized', handler),
       client.on('auth:lifecycle', handler),
       client.on('work:branch:updated', handler),
+      client.on('work:scan:completed', (payload) => {
+        handler(payload);
+        window.dispatchEvent(new CustomEvent('work:scan:completed'));
+      }),
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
       client.on('user-setting:updated', userSettingHandler),
-      client.on('briefing:created', briefingHandler),
-      client.on('briefing:bundle-name-updated', briefingHandler),
-      client.on('briefing:bundle-members-replaced', briefingHandler),
-      client.on('briefing:round-published', briefingHandler),
-      client.on('briefing:answered', briefingHandler),
-      client.on('briefing:annotated', briefingHandler),
-      client.on('briefing:submitted', briefingHandler),
-      client.on('briefing:title-updated', briefingHandler),
+      ...BRIEFING_EVENT_VALUES.map((type) => client.on(type, briefingHandler)),
       client.on('managed-reminders.changed', managedReminderHandler),
       client.on('managed-reminders.occurred', managedReminderHandler),
       client.on('tasks.commands.changed', taskCommandHandler),
@@ -1759,17 +1747,16 @@ function App(): JSX.Element {
     // dropped stream (e.g. a daemon self-merge restart) may have missed events.
     // On a real reconnect, bust the API cache and refetch the visible route plus
     // badges so the dashboard converges on current state.
-    const offState = client.onState((state, { reconnected }) => {
+    const offState = client.onState((state, { reconnected, error }) => {
       sseStateRef.current = state;
+      setSseWireError(error ?? null);
       if (!reconnected) return;
       invalidateApiGetCache();
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
       void refreshRailOrder();
-      window.dispatchEvent(new CustomEvent('briefing:sse', {
-        detail: { type: 'reconnected' },
-      }));
+      void refreshBrowserResources(queryClient, [browserResourceKeys.briefings]);
       // A reconnect gap may have missed graph-affecting events; converge the
       // graph too (bump now if active/visible, else mark dirty).
       if (routeTabRef.current === 'graph' && document.visibilityState === 'visible') {
@@ -1863,7 +1850,13 @@ function App(): JSX.Element {
       }
       if (cancelled) return;
       if (health?.instance) {
-        setInstanceInfo(normalizeInstanceInfo(health.instance));
+        const normalized = normalizeInstanceInfo(health.instance);
+        if (normalized) {
+          try { await loadOperationCatalog(normalized); }
+          catch (error) { console.error('Operation catalog unavailable', error); }
+          if (cancelled) return;
+        }
+        setInstanceInfo(normalized);
       }
       setDaemonWarm(daemonIsWarm(health));
       const previousEpoch = getLastSeenStartupEpoch();
@@ -2919,6 +2912,12 @@ function App(): JSX.Element {
           data-app-operational-notice-fallback
           ref={setFallbackNoticeHost}
         />
+        {sseWireError ? (
+          <DetailPaneNotice severity="error" source="live-update-wire" title="Live updates need attention"
+            actions={<button type="button" onClick={() => window.location.reload()}>Reload</button>}>
+            {sseWireError}
+          </DetailPaneNotice>
+        ) : null}
         {clientAccess.phase === 'initializing' || clientAccess.phase === 'recovering' ? (
           <DetailPaneNotice severity="info" source="local-access">
             {accessEverReady ? 'Reconnecting to Mandible…' : 'Connecting to Mandible…'}

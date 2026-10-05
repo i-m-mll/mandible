@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import { migrate, setDb } from "../../src/db.js";
@@ -6,18 +6,18 @@ import {
   SessionManager,
   TERMINAL_BACKEND_RETENTION_LIMIT,
 } from "../../src/session-manager.js";
-import { SDKBackend } from "../../src/backends/sdk-backend.js";
+import { PTYBackend } from "../../src/backends/pty-backend.js";
 
 describe("SessionManager terminal backend retention", () => {
   it("loads copied sessions without reconciling or starting them in read-only mode", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
     const seed = new SessionManager(db, () => undefined);
     const session = seed.create({
       label: "Copied running session",
-      command: "claude",
-      backend_type: "sdk",
+      command: "/bin/sh",
+      backend_type: "pty",
     });
     seed.close();
     db.prepare(
@@ -42,7 +42,7 @@ describe("SessionManager terminal backend retention", () => {
   });
 
   it("evicts backend resources while preserving list and on-demand lookup behavior", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
     const manager = new SessionManager(db, () => undefined);
@@ -52,8 +52,8 @@ describe("SessionManager terminal backend retention", () => {
       for (let index = 0; index < TERMINAL_BACKEND_RETENTION_LIMIT + 2; index += 1) {
         sessionIds.push(manager.create({
           label: `Finished ${index}`,
-          command: "claude",
-          backend_type: "sdk",
+          command: "/bin/sh",
+          backend_type: "pty",
         }).id);
       }
 
@@ -64,7 +64,7 @@ describe("SessionManager terminal backend retention", () => {
       });
 
       const rehydrated = manager.get(sessionIds[0]);
-      expect(rehydrated).toBeInstanceOf(SDKBackend);
+      expect(rehydrated).toBeInstanceOf(PTYBackend);
       expect(manager.getAll()).toHaveLength(TERMINAL_BACKEND_RETENTION_LIMIT + 2);
       expect(manager.getRetentionStats()).toEqual({
         retainedTerminal: TERMINAL_BACKEND_RETENTION_LIMIT,

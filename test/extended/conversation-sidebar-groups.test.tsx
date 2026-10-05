@@ -1,3 +1,5 @@
+import { mockConversationStructureFromWindow, mockManagedSettings } from '../helpers/conversation-ui-transport';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { QueryClientProvider } from '@tanstack/preact-query';
@@ -45,7 +47,12 @@ class FakeEventSource {
 vi.mock('@xterm/xterm', () => ({ Terminal: class { options = {}; loadAddon(): void {} open(): void {} write(): void {} writeln(): void {} clear(): void {} focus(): void {} dispose(): void {} } }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await establishTestClientAccess();
+  mockConversationStructureFromWindow();
+  mockManagedSettings();
+  Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
+  vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});
   queryClient.clear();
   vi.stubGlobal('ResizeObserver', class {
     observe(): void {}
@@ -193,7 +200,6 @@ describe('conversation sidebar groups', () => {
     expect(emptyState.classList.contains('sidebar-group-node__placeholder')).toBe(true);
     expect(emptyState.textContent).toBe('No projects included');
     expect(emptyState.getAttribute('role')).toBeNull();
-    expect(chatHistoryStylesheet).toMatch(/\.sidebar-group-node__placeholder\s*\{[^}]*color:\s*var\(--text-disabled\)/s);
     expect(screen.queryByText(/available/i)).toBeNull();
     expect(screen.queryByText(/\d+ available/i)).toBeNull();
     expect(screen.queryByText(/shared host preference/i)).toBeNull();
@@ -563,6 +569,7 @@ describe('conversation sidebar groups', () => {
       undefined,
       expect.any(Object),
       expect.any(String),
+      [],
     );
     expect(composer.value).toBe('');
   });

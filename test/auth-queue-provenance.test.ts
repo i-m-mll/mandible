@@ -1,3 +1,4 @@
+import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -64,7 +65,7 @@ describe("auth queue", () => {
     // Issue 08a5f04 (review F1 pass 2) — output-append forgery: an unrecorded
     // base advance cannot be laundered into provenance by appending a forged
     // MANDIBLE_MERGE_RESULT marker to a resolved request.
-    it("refuses post-completion output-append forgery as merge provenance", () => {
+    it("refuses post-completion output-append forgery as merge provenance", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -89,7 +90,7 @@ describe("auth queue", () => {
         expect(() => queue.appendOutput("forge-decoy", mergeResultOutput(newBase)))
           .toThrow(/only be appended while a request is executing/);
         // …and the transition stays unaccounted, so approval fails strict.
-        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(request.id)?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
@@ -130,7 +131,7 @@ describe("auth queue", () => {
         db.prepare("UPDATE auth_requests SET execution_evidence_id = ?, output = ? WHERE id = ?")
           .run(genuineEvidence.id, mergeResultOutput("f".repeat(40)), "merge-ev-1");
 
-        queue.approve(first.id);
+        await approveFixtureRequest(queue, first.id);
         await waitForStatus(queue, first.id, "completed");
         expect(calls).toHaveLength(1);
         expect(calls[0]!.MANDIBLE_AUTH_CANDIDATE_BASE_SHA).toBe(base1);
@@ -146,7 +147,7 @@ describe("auth queue", () => {
         db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?")
           .run(shaLessEvidence.id, "merge-ev-2");
 
-        expect(() => queue.approve(second.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, second.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(second.id)?.status).toBe("pending");
         expect(calls).toHaveLength(1);
       } finally {
@@ -158,7 +159,7 @@ describe("auth queue", () => {
 
     // Issue 08a5f04 (review F1 pass 2) — a merge SHA claimed by two completed
     // requests is reuse/forgery evidence and disqualifies the transition.
-    it("refuses provenance when two completed requests claim the same merge commit", () => {
+    it("refuses provenance when two completed requests claim the same merge commit", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -178,7 +179,7 @@ describe("auth queue", () => {
           "UPDATE auth_requests SET exit_code = 0, resolved_at = 100, merge_finalized_at = 100, output = ? WHERE id = ?",
         ).run(mergeResultOutput(newBase), "merge-reuse-2");
 
-        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(request.id)?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
@@ -190,7 +191,7 @@ describe("auth queue", () => {
 
     // Issue 08a5f04 (review F1 pass 2) — octopus merges (3+ parents) are never
     // queue merges; the ^1/^2 probes alone would have accepted them.
-    it("refuses provenance for an octopus merge commit on the base transition", () => {
+    it("refuses provenance for an octopus merge commit on the base transition", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -213,7 +214,7 @@ describe("auth queue", () => {
           "UPDATE auth_requests SET exit_code = 0, resolved_at = 100, merge_finalized_at = 100, output = ? WHERE id = ?",
         ).run(mergeResultOutput(octoSha), "merge-octo");
 
-        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(request.id)?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
@@ -226,7 +227,7 @@ describe("auth queue", () => {
     // Issue 08a5f04 (review F1 pass 2) — the chain-commit signature must
     // verify against the approving user's credentials specifically; another
     // registered user's trusted signature does not qualify.
-    it("refuses provenance signed by a registered credential that is not the approver's", () => {
+    it("refuses provenance signed by a registered credential that is not the approver's", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -261,7 +262,7 @@ describe("auth queue", () => {
         advanceMainViaAuthorizedMerge(db, repo, "feature/signer-sib", "merge-outsider-signed");
         git(repo, ["config", "user.signingkey", operatorSigning.keyPath]);
 
-        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(request.id)?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
@@ -300,7 +301,7 @@ describe("auth queue", () => {
           base = advanceMainViaAuthorizedMerge(db, repo, `feature/chain-${index}`, `merge-chain-${index}`);
         }
 
-        queue.approve(at32.id);
+        await approveFixtureRequest(queue, at32.id);
         await waitForStatus(queue, at32.id, "completed");
         expect(calls).toHaveLength(1);
         expect(calls[0]!.MANDIBLE_AUTH_CANDIDATE_BASE_SHA).toBe(base);
@@ -308,7 +309,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/chain-33", { "chain-33.txt": "33\n" });
         advanceMainViaAuthorizedMerge(db, repo, "feature/chain-33", "merge-chain-33");
 
-        expect(() => queue.approve(at33.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, at33.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(at33.id)?.status).toBe("pending");
         expect(calls).toHaveLength(1);
       } finally {

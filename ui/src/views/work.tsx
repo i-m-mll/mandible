@@ -790,6 +790,7 @@ export function WorkOverviewView({
     { scope: 'all_ahead' },
   );
   const [repos, setRepos] = useState<WorkRepo[]>(initialRepos);
+  const [repoLoadState, setRepoLoadState] = useState<"pending" | "ready" | "error">(initialRepos.length > 0 ? "ready" : "pending");
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(params.repo ?? null);
   const [selectedBranches, setSelectedBranches] = useState<Record<string, string>>(
     params.repo && params.branch ? { [params.repo]: params.branch } : {},
@@ -848,7 +849,12 @@ export function WorkOverviewView({
 
   // Sync repos when initialRepos changes (external updates)
   useEffect(() => {
+    if (initialRepos.length === 0 && repos.length > 0) {
+      void fetchRepos(showExcluded);
+      return;
+    }
     setRepos(initialRepos);
+    if (initialRepos.length > 0) setRepoLoadState("ready");
   }, [initialRepos]);
 
   useEffect(() => {
@@ -873,17 +879,28 @@ export function WorkOverviewView({
     try {
       const url = withExcluded ? '/api/work/repos?include_excluded=true' : '/api/work/repos';
       const res = await browserSessionFetch(url);
-      if (res.ok) {
-        const data = await res.json() as WorkRepo[];
-        setRepos(Array.isArray(data) ? data : []);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { code?: string };
+        setRepoLoadState(body.code === 'repo_discovery_pending' ? 'pending' : 'error');
+        return;
       }
+      const data = await res.json() as WorkRepo[];
+      if (!Array.isArray(data)) throw new Error('Invalid project response');
+      setRepos(data);
+      setRepoLoadState('ready');
     } catch {
-      // ignore
+      setRepoLoadState('error');
     }
   };
 
   useEffect(() => {
     void fetchRepos(showExcluded);
+  }, [showExcluded]);
+
+  useEffect(() => {
+    const refreshRepos = () => { void fetchRepos(showExcluded); };
+    window.addEventListener('work:scan:completed', refreshRepos);
+    return () => window.removeEventListener('work:scan:completed', refreshRepos);
   }, [showExcluded]);
 
   useEffect(() => {
@@ -1016,14 +1033,12 @@ export function WorkOverviewView({
   ]);
 
   useEffect(() => {
-    if (repoRows.length === 0) {
-      setSelectedRepoId(null);
-      return;
-    }
-    if (!selectedRepoId || !repoRows.some((row) => row.repoId === selectedRepoId)) {
-      setSelectedRepoId(repoRows[0].repoId);
-    }
-  }, [repoRows, selectedRepoId]);
+    setSelectedRepoId((current) => {
+      if (repoRows.length === 0) return repoLoadState === "ready" ? null : current;
+      if (current && repoRows.some(row => row.repoId === current)) return current;
+      return repoRows[0].repoId;
+    });
+  }, [repoRows, selectedRepoId, repoLoadState]);
 
   const selectedRepo = repoRows.find((row) => row.repoId === selectedRepoId) ?? repoRows[0] ?? null;
   const selectedBranchName = selectedRepo
@@ -1470,10 +1485,17 @@ export function WorkOverviewView({
             </>
           )}
         >
+          {repoLoadState === "error" && repoRows.length > 0 ? (
+            <div role="status">Could not refresh projects. Showing previous results.</div>
+          ) : null}
           <div role="list">
             {repoRows.length === 0 ? (
               <div className="empty-state">
-                {hasActiveFilters
+                {repoLoadState === 'pending'
+                  ? 'Projects are still loading.'
+                  : repoLoadState === 'error'
+                    ? 'Could not load projects. Try refreshing.'
+                    : hasActiveFilters
                   ? 'No projects match these filters.'
                   : 'No projects found. Register a session or add a project.'}
               </div>
@@ -1530,7 +1552,7 @@ export function WorkOverviewView({
         </ViewSidebar>
         <section className="work-detail" data-app-surface="main" aria-label="Repository details">
           {selectedRepo === null ? (
-            <div className="empty-state">No projects in this view.</div>
+            <div className="empty-state">{repoLoadState === "ready" ? "No projects in this view." : "Select a project when it becomes available."}</div>
           ) : (() => {
             const { repo, repoId, repoTitle, branches, sortKey } = selectedRepo;
             const repoPath = getRepoPath(repo);

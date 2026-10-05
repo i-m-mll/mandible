@@ -1,3 +1,4 @@
+import { invalidateDashboardApiCacheForEvent } from './api';
 import type {
   SSEHandler,
   SSEPayload,
@@ -10,7 +11,7 @@ const DEFAULT_CHANNEL_NAME = 'mandible:sse:v1';
 const DEFAULT_LOCK_NAME = 'mandible:sse:leader:v1';
 const ANNOUNCE_INTERVAL_MS = 10_000;
 
-type StateMeta = { reconnected: boolean };
+type StateMeta = { reconnected: boolean; error: string | null };
 
 export type SseTransport = {
   on(type: string, handler: SSEHandler): () => void;
@@ -56,6 +57,7 @@ type StateMessage = {
   sourceId: string;
   leaderEpoch: string;
   state: SseConnectionState;
+  error?: string | null;
 };
 
 type EventMessage = {
@@ -119,7 +121,7 @@ function isCrossTabMessage(value: unknown): value is CrossTabMessage {
     return true;
   }
   if (message.kind === 'state') {
-    return isConnectionState(message.state);
+    return isConnectionState(message.state) && (message.error === undefined || message.error === null || typeof message.error === 'string');
   }
   if (message.kind === 'event') {
     return Number.isSafeInteger(message.sequence)
@@ -156,6 +158,7 @@ export class CrossTabSseCoordinator {
   private readonly stateListeners = new Set<SseStateHandler>();
   private pendingEvents: SSEPayload[] = [];
   private state: SseConnectionState = 'idle';
+  private error: string | null = null;
   private hasOpened = false;
   private started = false;
   private channel: BroadcastChannelLike | null = null;
@@ -208,7 +211,7 @@ export class CrossTabSseCoordinator {
 
     if (message.kind === 'state') {
       this.activeLeaderEpoch = message.leaderEpoch;
-      this.setState(message.state);
+      this.setState(message.state, message.error ?? null);
       return;
     }
 
@@ -401,8 +404,8 @@ export class CrossTabSseCoordinator {
           });
         }
       }),
-      this.transport.onState((state) => {
-        this.setState(state);
+      this.transport.onState((state, meta) => {
+        this.setState(state, meta.error ?? null);
         if (this.isLeader) {
           this.announceState();
         }
@@ -457,6 +460,7 @@ export class CrossTabSseCoordinator {
       sourceId: this.instanceId,
       leaderEpoch: this.leaderEpoch,
       state: this.state,
+      error: this.error,
     });
   }
 
@@ -470,17 +474,19 @@ export class CrossTabSseCoordinator {
     }
   }
 
-  private setState(next: SseConnectionState): void {
-    if (this.state === next) {
+  private setState(next: SseConnectionState, error: string | null = null): void {
+    if (this.state === next && this.error === error) {
       return;
     }
     const meta: StateMeta = {
       reconnected: next === 'open' && this.hasOpened,
+      error,
     };
     if (next === 'open') {
       this.hasOpened = true;
     }
     this.state = next;
+    this.error = error;
     this.stateListeners.forEach((handler) => {
       try {
         handler(next, meta);
@@ -491,6 +497,8 @@ export class CrossTabSseCoordinator {
   }
 
   private dispatch(payload: SSEPayload): void {
+    // Reconcile cache freshness before any view can synchronously start a read.
+    invalidateDashboardApiCacheForEvent(payload.type);
     let handled = false;
     const exact = this.listeners.get(payload.type);
     if (exact?.size) {

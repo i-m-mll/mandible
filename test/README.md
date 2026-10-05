@@ -1,16 +1,16 @@
 # `test/` — the default gate
 
-`npm test` runs exactly the flat `test/*.test.{ts,tsx}` directory. That
+`bun run test` runs exactly the flat `test/*.test.{ts,tsx}` directory. That
 directory **is** the whitelist: a file is in the gate because it is here, and
 nothing else marks it. There is no annotation to keep in sync and no list to
 drift.
 
 | Suite | Command | Must |
 | --- | --- | --- |
-| `test/` | `npm test` | pass |
-| `test/extended/` | `npm run test:extended` | pass |
-| `test/quarantine/` | `npm run test:quarantine` | **fail** |
-| `test/browser/` | `npm run test:browser` | pass, on a provisioned machine |
+| `test/` | `bun run test` | pass |
+| `test/extended/` | `bun run test:extended` | pass |
+| `test/quarantine/` | `bun run test:quarantine` | **fail** |
+| `test/browser/` | `bun run test:browser` | pass, on a provisioned machine |
 
 ## What earns a place here
 
@@ -21,9 +21,9 @@ protected-merge and clearance; credential and custody handling; SQLite schema
 and durable ledger records; the HTTP API; the CLI grammar pinned by the
 Mandible Interface Contract, which agents in other repos depend on and which a
 silent change breaks with no local signal; provider log parsers and ingestion;
-daemon start/stop/readiness and SSE. Component composition, pane geometry,
-theme tokens, hover behaviour and copy are not boundaries — they are
-presentation.
+daemon start/stop/readiness and SSE. Browser-facing URL routing, sanitized prose, API requests, SSE reduction, and
+user-intent reconciliation are also boundaries. Component geometry, theme
+tokens, class names, and fixed copy do not by themselves name a defect.
 
 **Would the failure name a defect?** If the likeliest cause of a red is
 "someone changed a string, a class name, a pixel, or a component tree", no. If
@@ -38,12 +38,13 @@ Any one of these is fatal:
   directory.
 - It pins presentation.
 
-## What this deliberately does not cover
+## UI behavior boundaries
 
-UI interaction has no net in the default gate. Type-checking covers component
-shape, `test/browser/` covers paint, and `visible-first-boot` covers mount, so
-an interaction regression reaches a browser before it reaches CI. That is a
-deliberate, reversible trade, not an oversight.
+Pure routing, SSE reduction, API handling, Markdown sanitization, and rail-order
+normalization run here. Rendered state reconciliation and interaction belong in
+`test/extended/`; real focus, paint, and browser integration belong in
+`test/browser/`. Layered cases stay when they prove distinct behavior: a pure
+normalizer cannot prove a mounted view preserves a draft or rejects a stale reply.
 
 There is no global coverage threshold. A line-coverage floor is a proxy metric
 that contradicts a whitelist: it rewards adding tests for whatever is cheapest
@@ -51,7 +52,7 @@ to reach, which is exactly the pressure this directory exists to resist.
 
 ## The timing contract
 
-`npm test` prints a timing packet at the end of every run: wall time, worker
+`bun run test` prints a timing packet at the end of every run: wall time, worker
 count, per-file occupancy, their sum, the slowest two files, the true lower
 bound `max(sum / workers, slowest file)`, and the ratio of wall time to that
 bound. `test/helpers/timing-reporter.ts` owns it, and it is registered on the
@@ -132,3 +133,28 @@ not come back.
 - `trash-service` — the only cover for `mandible trash` preserving untracked,
   ignored, and submodule bytes before a worktree is removed. `trash-cli` pins
   the grammar against a stub and asserts nothing about the bytes.
+
+- `instructions` — rendered and installed Interface Contract syntax is an external agent interface.
+- `briefing-directives` — frozen review directive grammar, exact byte digests, and UTF-16 ranges.
+- `resource-refs` — typed, pinned, and historical reference parsing retains identity.
+- `spaces-doc-pipeline` — imported prose and directives remain sanitized, inert data.
+- `spaces-doc-serialize` — document identity and directives survive serialization.
+- `conversation-block-filters` — filtering and envelopes preserve position and metadata.
+- `git-read-transport` — read transport policy never changes the push destination.
+- `transport-lane` — persisted lane defaults and explicit selection reach the owning service.
+- `startup-ingestion-order` — ingestion waits for initial scan and respects cancellation.
+- `ingestion-scheduler` — bounded watcher deduplication and exact-read ownership prevent lost work.
+- `app-rail-order` — versioned preference reconciliation preserves surviving user order.
+- `ui-routing` — external deep links preserve page bindings and route-owned identity.
+- `ui-sse-state` — stream reduction bounds output, strips ANSI, and refetches canonical auth projections.
+- `ui-api-client` — mutation errors and boolean payloads preserve the HTTP client contract.
+- `ui-markdown-security` — dangerous markup, URL schemes, and transcript form controls stay inert.
+
+Readmission timing is checked on the coordinated candidate run; syntax parsing
+alone does not establish the under-one-second budget.
+
+The test launchers pass Bun's public `--smol` flag to the runner and actual test
+forks. The process-tree RSS watchdog remains authoritative; this flag encourages
+collection and does not raise or replace the memory limit. On macOS, the launcher
+resolves the hash-verified stock SQLite archive before isolating HOME, then passes
+that exact archive to private child runtimes. No ambient library fallback is used.

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/sse.js", () => ({ broadcast: vi.fn() }));
@@ -18,7 +18,7 @@ import { publishBriefingFromArtifactVersion } from "../../src/feedback/briefings
 import { createBriefingBundle } from "../../src/feedback/briefing-bundles.js";
 import { bindBriefingDestinationOwner, createBriefingGroup } from "../../src/feedback/briefing-groups.js";
 import { registerBriefingDestinationRoute } from "../../src/feedback/briefing-composer.js";
-import { recordArtifactVersion } from "../../src/provider-artifacts.js";
+import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
 import { addProject } from "../../src/ledger/project-registry.js";
 import { addGrant } from "../../src/permissions/store.js";
 import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
@@ -87,7 +87,7 @@ beforeEach(() => {
   fs.mkdirSync(path.join(root, "preview", "artifacts"), { recursive: true });
   fs.writeFileSync(path.join(root, "source", "source.db"), "");
   fs.copyFileSync(path.join(root, "source", "source.db"), path.join(root, "preview", "preview.db"));
-  db = new Database(path.join(root, "preview", "preview.db"));
+  db = new SqliteDatabase(path.join(root, "preview", "preview.db"));
   migrate(db);
   setSetting(db, "artifact_root", path.join(root, "preview", "artifacts"));
   createUser(db, { slug: "agent-schedule", kind: "agent", display_name: "Publisher" });
@@ -205,7 +205,7 @@ describe("plural Briefing routes", () => {
     expect(moved).toMatchObject({ status: 200, body: { changed: true, group_id: other.id } });
     expect(db.prepare("SELECT group_id, bound_by_user_id FROM briefing_destination_owners WHERE logical_artifact_id = ?")
       .get(logical.artifact_id)).toEqual({ group_id: other.id,
-        bound_by_user_id: db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").pluck().get() });
+        bound_by_user_id: db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").get()?.id });
     expect(await router.invoke({ method: "POST", url: endpoint, credential: "agent-schedule",
       body: { ...placement, operation_key: "stale" } }))
       .toMatchObject({ status: 409, body: { code: "briefing_destination_owner_drift" } });
@@ -248,7 +248,7 @@ describe("plural Briefing routes", () => {
       credential: "agent-schedule", body: { schema: "mandible-briefing-destination-routes@3", routes: [route] } }))
       .toMatchObject({ status: 409, body: { code: "briefing_destination_project_unresolved" } });
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_destination_mutations WHERE actor_user_id = ?")
-      .get(db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").pluck().get())).toEqual({ n: 5 });
+      .get(db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").get()?.id)).toEqual({ n: 5 });
   });
   it("guards deterministic destination-route plan, apply, replay, and inspect behind the operator token", async () => {
     setSetting(db, "user.operator_id", humanId);

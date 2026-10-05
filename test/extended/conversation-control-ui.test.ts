@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { establishTestClientAccess } from '../helpers/local-client-access';
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type ConversationControlSnapshot } from "../../ui/src/api.js";
 import { submitConversationControl } from "../../ui/src/api.js";
 import { conversationControlPresentation } from "../../ui/src/chat/conversationControl.js";
@@ -38,6 +39,7 @@ const owned: ConversationControlSnapshot = {
   capability: { kind: "live-send", revision: 1, generation: 1 },
 };
 
+beforeEach(establishTestClientAccess);
 afterEach(() => vi.unstubAllGlobals());
 
 describe("shared conversation control presentation", () => {

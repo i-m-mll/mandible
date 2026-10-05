@@ -1,4 +1,4 @@
-import type { MandibleEvent } from '../../src/contracts';
+import { parseDomainEvent, type MandibleEvent } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
 
 export type SSEPayload = MandibleEvent;
@@ -14,7 +14,7 @@ export type SseConnectionState = 'idle' | 'connecting' | 'open' | 'down';
  * reconnect after a drop), never on the first open or on the first open after a
  * full {@link SSEClient.disconnect}.
  */
-export type SseStateHandler = (state: SseConnectionState, meta: { reconnected: boolean }) => void;
+export type SseStateHandler = (state: SseConnectionState, meta: { reconnected: boolean; error?: string | null }) => void;
 
 export type SSEClientOptions = {
   url?: string;
@@ -41,6 +41,7 @@ export class SSEClient {
   // by disconnect() so a fresh acquire's first open is not treated as a
   // reconnect, but preserved across the backoff reconnect path.
   private hasOpened = false;
+  private wireError: string | null = null;
 
   constructor(options: SSEClientOptions = {}) {
     this.url = options.url || '/api/events/subscribe';
@@ -68,6 +69,7 @@ export class SSEClient {
     this.abortController?.abort();
     this.abortController = null;
     this.connecting = false;
+    this.wireError = null;
     this.setState('idle');
   }
 
@@ -89,6 +91,7 @@ export class SSEClient {
     this.closed = false;
     this.currentBackoff = this.backoffMs;
     this.hasOpened = false;
+    this.wireError = null;
     this.setState('idle');
   }
 
@@ -135,11 +138,11 @@ export class SSEClient {
     }
   }
 
-  private setState(next: SseConnectionState, reconnected = false): void {
+  private setState(next: SseConnectionState, reconnected = false, error: string | null = null): void {
     this.state = next;
     this.stateListeners.forEach((handler) => {
       try {
-        handler(next, { reconnected });
+        handler(next, { reconnected, error });
       } catch (err) {
         console.error('SSE state handler threw', err);
       }
@@ -166,6 +169,7 @@ export class SSEClient {
     const controller = new AbortController();
     this.abortController = controller;
     let shouldReconnect = false;
+    const isCurrent = () => this.abortController === controller && !controller.signal.aborted && !this.closed;
     try {
       // The authenticated POST stream uses the shared cookie and CSRF boundary.
       const response = await browserSessionFetch(this.url, {
@@ -173,6 +177,10 @@ export class SSEClient {
         headers: { Accept: 'text/event-stream' },
         signal: controller.signal,
       }, this.fetchImpl);
+      if (!isCurrent()) {
+        void response.body?.cancel().catch(() => undefined);
+        return;
+      }
       if (response.status === 401 || response.status === 403) {
         this.setState('down');
         return;
@@ -186,13 +194,14 @@ export class SSEClient {
       let buffer = '';
       while (!this.closed && !controller.signal.aborted) {
         const { done, value } = await reader.read();
+        if (!isCurrent()) break;
         if (done) {
           shouldReconnect = true;
           break;
         }
         buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
         let boundary = buffer.indexOf('\n\n');
-        while (boundary >= 0) {
+        while (boundary >= 0 && isCurrent()) {
           const frame = buffer.slice(0, boundary);
           buffer = buffer.slice(boundary + 2);
           const data = frame
@@ -205,21 +214,35 @@ export class SSEClient {
         }
       }
     } catch {
-      if (!controller.signal.aborted && !this.closed) {
+      if (isCurrent()) {
         shouldReconnect = true;
       }
     } finally {
-      if (this.abortController === controller) this.abortController = null;
-      this.connecting = false;
-    }
-    if (shouldReconnect) {
-      this.setState('down');
-      this.scheduleReconnect();
+      if (this.abortController === controller) {
+        this.connecting = false;
+        if (shouldReconnect && !controller.signal.aborted && !this.closed) this.setState('down');
+        // Keep the controller attached while notifying listeners, so a listener's
+        // disconnect aborts this attempt and a new connection retains ownership.
+        if (this.abortController === controller) this.abortController = null;
+        if (shouldReconnect && !controller.signal.aborted && !this.closed && !this.abortController) {
+          this.scheduleReconnect();
+        }
+      }
     }
   }
 
   private handleMessage(data: string): void {
-    const payload = this.parsePayload(data);
+    const parsed = this.parsePayload(data);
+    if (!parsed.ok) {
+      this.wireError = `A live update could not be read: ${parsed.error}. Reload Mandible to reconnect.`;
+      this.setState('down', false, this.wireError);
+      return;
+    }
+    if (this.wireError) {
+      this.wireError = null;
+      this.markOpened();
+    }
+    const payload = parsed.value;
     if (!this.dispatch(payload.type, payload)) {
       // No handler matched -- queue for late-registered handlers
       this.pendingEvents.push(payload);
@@ -241,14 +264,14 @@ export class SSEClient {
     }, this.currentBackoff);
   }
 
-  private parsePayload(data: string): SSEPayload {
+  private parsePayload(data: string): ReturnType<typeof parseDomainEvent> {
+    let value: unknown;
     try {
-      const parsed = JSON.parse(data) as SSEPayload;
-      const type = parsed.type || (parsed as { event?: string }).event || 'message';
-      return { ...parsed, type };
+      value = JSON.parse(data);
     } catch {
-      return { type: 'message', data };
+      return { ok: false, error: 'Invalid JSON' };
     }
+    return parseDomainEvent(value);
   }
 
   /**

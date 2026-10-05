@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setSetting } from "../src/client-auth/settings-kv.js";
@@ -20,7 +20,7 @@ import {
 import { createBriefingBundle } from "../src/feedback/briefing-bundles.js";
 import { bindBriefingDestinationOwner, createBriefingGroup } from "../src/feedback/briefing-groups.js";
 import { publishBriefingFromArtifactVersion } from "../src/feedback/briefings.js";
-import { recordArtifactVersion } from "../src/provider-artifacts.js";
+import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { createUser } from "../src/users/store.js";
 
 let db: Db;
@@ -80,7 +80,7 @@ function request(routeKey: string, baseVersionId: string, overrides: Record<stri
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-composer-"));
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setSetting(db, "artifact_root", root);
   publisherId = createUser(db, { slug: "publisher", kind: "agent", display_name: "Publisher" }).id;

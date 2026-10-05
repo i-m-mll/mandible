@@ -1,3 +1,5 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
+import { qualifiedRuntimeFixtureEnv } from "./helpers/runtime-fixture.js";
 // Issue e2cb93f — the secret-backend seam in cli/api.sh and the one-command
 // provisioning flow `mandible user token mint <ref> --store`.
 //
@@ -11,10 +13,10 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
-import type { InstanceInfo } from "../src/types.js";
 
 const API_HELPER = path.join(process.cwd(), "cli", "api.sh");
+const fixtureRuntimeEnv = qualifiedRuntimeFixtureEnv();
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 const SHELLS = ["bash", "zsh"];
 
@@ -195,7 +197,7 @@ exit $?
 function writeUnameStub(kernel: "Darwin" | "Linux"): void {
   fs.writeFileSync(
     path.join(stubDir, "uname"),
-    `#!/usr/bin/env bash\nprintf '${kernel}\\n'\n`,
+    `#!/usr/bin/env bash\nif [[ \"$1\" == \"-s\" ]]; then printf '${kernel}\\n'; else /usr/bin/uname \"$@\"; fi\n`,
     { mode: 0o755 },
   );
 }
@@ -242,6 +244,9 @@ function seedItem(service: string, account: string, secret: string): void {
 
 function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
+    MANDIBLE_RUNTIME: process.execPath,
+    ...fixtureRuntimeEnv,
+    GIT_OPTIONAL_LOCKS: "0",
     PATH: `${stubDir}:${process.env.PATH ?? ""}`,
     HOME: homeDir,
     TMPDIR: process.env.TMPDIR ?? "/tmp",
@@ -657,20 +662,7 @@ interface FakeUser {
 }
 
 const MINTED_TOKEN = "mandible_pat_test-token-value";
-const MAIN_INSTANCE_RESPONSE = {
-  instance: {
-    role: "main",
-    instance_id: "production",
-    installation_id: "test-installation",
-    public_origin: "https://app.mandible.localhost:19420",
-    backend_generation: "production",
-    allowed_effects: PRODUCTION_EFFECTS,
-    writable_roots: [],
-    user_preferences_root: "/tmp/mandible-test-user-preferences",
-    db_path: "/tmp/mandible-main.db",
-    db_path_source: "env",
-  },
-} satisfies { instance: InstanceInfo };
+const MAIN_INSTANCE_RESPONSE = MAIN_CLI_INSTANCE_RESPONSE;
 
 async function startUserServer(user: FakeUser, requests: string[]): Promise<number> {
   server = http.createServer((req, res) => {
@@ -1217,14 +1209,15 @@ describe("user token mint --store", () => {
   });
 
   it("fails before minting when no secret backend is available", async () => {
-    writeUnameStub("Linux");
     const requests: string[] = [];
     const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
 
-    const result = await runCli(["user", "token", "mint", "mll", "--store"], port);
+    const result = await runCli(["user", "token", "mint", "mll", "--store"], port, {
+      MANDIBLE_SECURITY_BIN: path.join(stubDir, "missing-security"),
+    });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("no secret backend available on this platform");
+    expect(result.stderr).toContain("keychain tool is missing");
     expect(requests.some((entry) => entry.startsWith("POST"))).toBe(false);
   });
 
@@ -1238,7 +1231,7 @@ describe("user token mint --store", () => {
     );
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("--service requires --store");
+    expect(result.stderr).toContain("Arguments do not match");
     expect(requests).toEqual([]);
   });
 

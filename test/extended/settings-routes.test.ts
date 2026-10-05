@@ -1,14 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../../src/server.js";
 import { PRODUCTION_EFFECTS } from "../../src/security/effect-policy.js";
 import { migrate } from "../../src/db.js";
 import { setupOperator } from "../../src/users/store.js";
 
-function testIdentity(db: Database.Database): NonNullable<RequestLike["client_identity"]> {
+function testIdentity(db: SqliteDatabase): NonNullable<RequestLike["client_identity"]> {
   const operator = setupOperator(db, { slug: "settings-test", display_name: "Settings Test" });
   return {
     user_id: operator.id,
@@ -66,8 +66,8 @@ function createResponse(): ResponseLike & { statusCode: number; payload: unknown
   };
 }
 
-function createSettingsDb(): Database.Database {
-  const db = new Database(":memory:");
+function createSettingsDb(): SqliteDatabase {
+  const db = new SqliteDatabase(":memory:");
   migrate(db);
   return db;
 }
@@ -90,6 +90,7 @@ describe("settings routes", () => {
     } else {
       process.env.MANDIBLE_TEST_CLI_LOG = originalCliLog;
     }
+    vi.restoreAllMocks();
     vi.resetModules();
     if (tempHome) {
       fs.rmSync(tempHome, { recursive: true, force: true });
@@ -100,7 +101,7 @@ describe("settings routes", () => {
   it("persists versioned app rail order across a route-layer restart", async () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-rail-order-"));
     const dbPath = path.join(tempHome, "settings.db");
-    let db = new Database(dbPath);
+    let db = new SqliteDatabase(dbPath);
     migrate(db);
     const identity = testIdentity(db);
     const { setDb } = await import("../../src/db.js");
@@ -125,7 +126,7 @@ describe("settings routes", () => {
     expect(put.statusCode).toBe(200);
     db.close();
 
-    db = new Database(dbPath);
+    db = new SqliteDatabase(dbPath);
     setDb(db);
     const restartedRoutes = new TestRoutes();
     registerSettingsRoutes(restartedRoutes);
@@ -146,6 +147,8 @@ describe("settings routes", () => {
   it("keeps deprecated reaper settings writable without creating the legacy config", async () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-settings-home-"));
     process.env.HOME = tempHome;
+    // Bun caches os.homedir independently of later HOME changes.
+    vi.spyOn(os, "homedir").mockReturnValue(tempHome);
     vi.resetModules();
 
     const db = createSettingsDb();
@@ -188,6 +191,8 @@ describe("settings routes", () => {
   it("returns default instruction targets and applies delivery changes immediately", async () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-settings-home-"));
     process.env.HOME = tempHome;
+    // Bun caches os.homedir independently of later HOME changes.
+    vi.spyOn(os, "homedir").mockReturnValue(tempHome);
     const cliLog = path.join(tempHome, "instructions-cli.log");
     const fakeCli = path.join(tempHome, "instructions.sh");
     fs.writeFileSync(fakeCli, [
@@ -280,6 +285,8 @@ describe("settings routes", () => {
   it("saves preview instruction settings without exporting or writing shared config", async () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-settings-preview-"));
     process.env.HOME = tempHome;
+    // Bun caches os.homedir independently of later HOME changes.
+    vi.spyOn(os, "homedir").mockReturnValue(tempHome);
     const cliLog = path.join(tempHome, "instructions-cli.log");
     const fakeCli = path.join(tempHome, "instructions.sh");
     fs.writeFileSync(fakeCli, "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$MANDIBLE_TEST_CLI_LOG\"\n", "utf8");

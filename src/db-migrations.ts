@@ -1,7 +1,11 @@
+import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
+import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
+import { preserveLegacyDocuments } from "./spaces/history.js";
+import { artifactDescriptiveMetadataJson } from "./artifact-metadata.js";
+import { CONVERSATION_RUNTIME_SCHEMA_SQL } from "./conversation-control/runtime-schema.js";
 import { reconcileRecoveredArtifactSources } from './artifact-source-recovery.js';
 import { recoverArtifactCustody } from './artifact-recovery.js';
 import { retainArtifactCommit } from './artifact-repo-resolution.js';
-import { artifactDescriptiveMetadataJson } from './artifact-metadata.js';
 import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from './artifact-custody-schema.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
@@ -11,7 +15,7 @@ import {
 } from "./db-baseline.js";
 import type { Db } from "./db.js";
 import { createHash } from "node:crypto";
-import { CONVERSATION_CONTROL_SCHEMA_V163_SQL } from "./conversation-control/schema.js";
+import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL } from "./conversation-control/schema.js";
 import {
   CONVERSATION_SPAWN_SCHEMA_SQL,
   CONVERSATION_SPAWN_SCHEMA_V2_SQL,
@@ -25,6 +29,7 @@ import {
   BRIEFING_GROUP_SCHEMA_SQL,
 } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
+import { DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL } from "./dotfiles-instruction-hook.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -1754,6 +1759,10 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TABLE managed_task_events_v187",
     "CREATE INDEX idx_managed_task_events_task\n        ON managed_task_events(task_id, occurred_at, id)",
   ] },
+  { version: 189, name: "managed_conversation_runtime", statements: [...CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, ...CONVERSATION_RUNTIME_SCHEMA_SQL] },
+  { version: 190, name: "managed_document_publications", statements: SPACE_PUBLICATION_SCHEMA_SQL },
+  { version: 191, name: "frozen_publication_auth_binding", statements: SPACE_PUBLICATION_AUTH_SCHEMA_SQL },
+  { version: 192, name: "compile_dotfiles_instructions_without_home_repair", statements: DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL },
 ];
 
 /**
@@ -1893,6 +1902,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
     db.transaction(() => {
       for (const migration of group) {
         for (const statement of migration.statements) db.exec(statement);
+        if (migration.version === 190) preserveLegacyDocuments(db);
         setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
       }
     })();

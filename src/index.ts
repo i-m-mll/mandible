@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "./contracts.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -215,10 +216,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const version = resolveVersion();
   const startupEpoch = randomUUID();
   let readyRestartGeneration: string | null = null;
+  let closing = false;
   let startupWorkScanComplete = false;
   let startupSessionDiscoveryComplete = false;
   const updateWarmReadiness = () => {
-    if (!startupWorkScanComplete || !startupSessionDiscoveryComplete) return;
+    if (closing || !startupWorkScanComplete || !startupSessionDiscoveryComplete) return;
     setDaemonWarm(true);
     if (readyRestartGeneration) {
       restartAvailability?.markWarm(readyRestartGeneration);
@@ -286,7 +288,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }));
   registerTrashRoutes(router, db);
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
-  const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager } = { sessionRegistry };
+  const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager; conversationControl?: ConversationControlService } = { sessionRegistry };
   registerIssueRoutes(router, workScanner, issueDeps);
   registerLedgerChangeRoutes(router, db);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
@@ -314,13 +316,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   );
   const conversationControl = new ConversationControlService(db, {
     onChange: (snapshot) => broadcast({
-      type: "conversation:control-updated",
-      event: "conversation:control-updated",
+      type: DOMAIN_EVENTS.CONVERSATION_CONTROL_UPDATED,
+      event: DOMAIN_EVENTS.CONVERSATION_CONTROL_UPDATED,
       data: snapshot,
     }),
     onProviderEvent: (event) => broadcast({
-      type: "conversation:provider-event",
-      event: "conversation:provider-event",
+      type: DOMAIN_EVENTS.CONVERSATION_PROVIDER_EVENT,
+      event: DOMAIN_EVENTS.CONVERSATION_PROVIDER_EVENT,
       data: event,
     }),
     onTerminalTurn: async ({ conversation_id, provider_session_id }) => {
@@ -340,6 +342,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerDefaultConversationControllers(conversationControl);
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
+  issueDeps.conversationControl = conversationControl;
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager, logger);
   registerInboxRoutes(router, sessionRegistry, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);
@@ -379,12 +382,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       sourceRoot: MANDIBLE_ROOT,
       version,
       logger,
-      generatedFiles: [
-        {
-          path: "route-mutation-categories.json",
-          contents: routeMutationCategoriesJson(router),
-        },
-      ],
     });
   } catch (error) {
     logger("warn", "cowork_cli_cache_materialize_failed", { error: String(error) });
@@ -709,7 +706,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     ? startDaemonLogRetention(operationalLogStore.db, logger, { settingsDb: db })
     : { stop: () => undefined };
 
-  let closing = false;
   const close = async () => {
     if (closing) {
       // Second signal while already shutting down — force exit immediately.
@@ -718,6 +714,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
     closing = true;
     cancelStartupIngestion();
+    if (startupDiscoveryTimer) clearTimeout(startupDiscoveryTimer);
+    const scannerDrain = workScanner.stop();
+    const discoveryDrain = reaperTimer.stop();
     // Bug: 645f8a8 — a draining daemon is no longer ready for mutations.
     setDaemonReady(false);
     setDaemonWarm(false);
@@ -747,14 +746,12 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     stopTrashGcScheduler();
     stopManagedReminderScheduler();
     daemonLogCopyForward.stop();
-    daemonLogRetention.stop();
-    reaperTimer.stop();
+    await daemonLogRetention.stop();
     workUnitReconciler.stop();
     navEnricher.stop();
     fileRpcTransport.stop();
     await closeLocalSocket();
     authQueue.dispose();
-    if (startupDiscoveryTimer) clearTimeout(startupDiscoveryTimer);
     clearInterval(channelPruneTimer);
     // Bug: 737df04 — destroy all open connections (including SSE streams) before
     // calling server.close(). Without this, server.close() waits indefinitely for
@@ -764,6 +761,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       (server as { closeAllConnections: () => void }).closeAllConnections();
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await Promise.all([scannerDrain, discoveryDrain]);
     clearInterval(healthCheckTimer);
     eventLoopDiagnostics.close();
     clearTimeout(shutdownTimeout);
@@ -821,22 +819,6 @@ function resolveMandibleRoot(): string {
 }
 
 const MANDIBLE_ROOT = resolveMandibleRoot();
-
-function routeMutationCategoriesJson(router: Router): string {
-  const routes = router.listRoutePolicies()
-    .filter((route) => route.operationalMutationCategory)
-    .map((route) => ({
-      method: route.method,
-      path: route.path,
-      category: route.operationalMutationCategory,
-    }));
-  return `${JSON.stringify({
-    schema: 1,
-    source: "Router.listRoutePolicies",
-    routes,
-    fallbackCategory: "api",
-  }, null, 2)}\n`;
-}
 
 function readStartupCommit(logger: Logger): Promise<StartupCommitInfo> {
   return new Promise((resolve) => {

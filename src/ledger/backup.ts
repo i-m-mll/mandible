@@ -102,6 +102,8 @@ export const METADATA_BACKUP_TABLES = [
   // table's own DDL, so duplicate (repo_id, branch, path) rows stay rejected after
   // a backup round-trip. Omitting it from this list would orphan tracked documents.
   "space_exports",
+  "space_document_history",
+  "space_publications",
   ...LEDGER_BACKUP_TABLES,
   // Reversible local cleanup custody. Project/checkout parents are emitted by
   // LEDGER_BACKUP_TABLES first; refs remain in Git while this preserves the

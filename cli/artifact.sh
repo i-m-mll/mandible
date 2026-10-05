@@ -69,46 +69,7 @@ artifact_api_request() {
 }
 
 usage() {
-  cat <<'EOF' | mandible_render_commands
-Usage:
-  {{command artifact.ingest}}
-  mandible artifact ref <uri...> [--issue <id>] [--role <role>] [--json]
-  mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--pinned|--living] [--json]
-  mandible artifact resolve <ref> [--json]
-  {{command artifact.format}}
-  mandible artifact list [--repo <repo>] [--issue <id>] [--role <role>] [--custody <mode>] [--json]
-  mandible artifact associate <ref> --project <project> [--canonical] [--role <role>] [--title <title>] [--json]
-  mandible artifact associations [--project <project>] [--canonical] [--json]
-  mandible artifact show <ref> [--json]
-  mandible artifact content <ref> [--output <path>] [--json]
-  mandible artifact check <ref...> [--json]
-  {{command artifact.move}}
-  {{command artifact.source.show}}
-  {{command artifact.source.move}}
-  mandible artifact versions <ref> [--json]
-  mandible artifact diff <refA> <refB> [--json]
-  mandible artifact record <path> --kind tracked_repo|local_only|managed [--artifact <artifact-ref>] [--series-key <key>] [--logical-name <name>] [--provider <id>] [--repo <id>] [--issue <id>] [--label <label>] [--note <note>] [--role <role>] [--title <title>] [--json]
-  mandible artifact record --ref <artifact-ref> --kind managed [--artifact <artifact-ref>] [--series-key <key>] [--logical-name <name>] [--provider <id>|--repo <id>|--issue <id>] [--json]
-  mandible artifact snapshot <path...> [--issue <id>] [--role <role>] [--upload] [--json]
-  mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--upload] [--json]
-  mandible artifact scan-repos [--repo <repo>] [--max-depth N] [--register] [--dry-run] [--json]
-  mandible artifact bundle create --name <name> <path-or-ref...> [--issue <id>] [--role <role>] [--json]
-  mandible artifact bundle create --manifest <bundle.json> [--issue <id>] [--json]
-  mandible artifact bundle add <bundle-ref> <path-or-ref...> [--json]
-  mandible artifact bundle show <bundle-ref> [--json]
-  mandible artifact bundle check <bundle-ref> [--json]
-
-Custody:
-  git        Exact committed bytes in a registered project, retained by a Git ref.
-  managed    Verified bytes stored in Mandible content-addressed storage.
-
-Current sources locate future updates; they never supply saved-version reads.
-
-Artifact refs:
-  artifact:<short-id>            logical artifact.
-  artifact-version:<short-id>    specific artifact version.
-  artifact-blob:<short-hash>     immutable artifact bytes only.
-EOF
+  mandible_command_help artifact
 }
 
 require_tools() {
@@ -568,7 +529,7 @@ payload_for_path() {
 print_batch_human() {
   api_jq_human '
     (.registered[]? |
-      if .version then "\(.status // (if .created == false then "unchanged" elif .version.version_no == 1 then "created" else "updated" end)) \(.artifact | mandible_display_ref) \(.version | mandible_display_ref)"
+      if .artifact_version then "\(.status // (if .created == false then "unchanged" elif .artifact_version.version_no == 1 then "created" else "updated" end)) \(.artifact | mandible_display_ref) \(.artifact_version | mandible_display_ref)"
       elif .blob_only then "registered blob \(.artifact | mandible_display_ref)"
       else "registered \(.artifact | mandible_display_ref) \(.artifact.custody_mode) \(.artifact.metadata.recoverability // .artifact.reference.recoverability // "-")" end),
     (.linked[]? | "linked \(.artifact | mandible_display_ref) \(.link.link_type) issue:\(.link.entity_id | mandible_short_id)"),
@@ -609,23 +570,9 @@ cmd_ingest_like() {
   shift
   local project="" commit="" artifact_target="" issue="" role="" json=0 dry_run=0 allow_local=0 allow_dirty=0 upload=0 mode_explicit=0 blob_only=0 relation="references"
   local paths=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --project) project="$2"; shift 2 ;;
-      --commit) commit="$2"; shift 2 ;;
-      --artifact) artifact_target="$2"; shift 2 ;;
-      --issue) issue="$2"; shift 2 ;;
-      --role) role="$2"; shift 2 ;;
-      --managed) mode="managed"; mode_explicit=1; shift ;;
-      --git) mode="git"; mode_explicit=1; shift ;;
-      --upload) upload=1; shift ;;
-      --blob-only) blob_only=1; shift ;;
-      --dry-run) dry_run=1; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) paths+=("$1"); shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "artifact.ingest" '{"project":{"option":"project"},"commit":{"option":"commit"},"artifact_target":{"option":"artifact"},"issue":{"option":"issue"},"role":{"option":"role"},"mode":[{"option":"managed","constant":"managed"},{"option":"git","constant":"git"}],"mode_explicit":{"option":["managed","git"],"constant":"1"},"upload":{"option":"upload","constant":"1"},"blob_only":{"option":"blob-only","constant":"1"},"dry_run":{"option":"dry-run","constant":"1"},"json":{"option":"json","constant":"1"},"paths":{"rest":0}}' "$@") || return $?
+  eval "$binding"
   (( ${#paths[@]} > 0 )) || die "No paths supplied." 2
   if [[ -n "$artifact_target" ]] && (( ${#paths[@]} != 1 || blob_only )); then
     die "--artifact requires exactly one path and cannot be combined with --blob-only" 2
@@ -748,19 +695,12 @@ PYBATCH
 cmd_ref() {
   local issue="" role="" json=0
   local refs=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --issue) issue="$2"; shift 2 ;;
-      --role) role="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) refs+=("$1"); shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "artifact.ref" '{"issue":{"option":"issue"},"role":{"option":"role"},"json":{"option":"json","constant":"1"},"refs":{"rest":0}}' "$@") || return $?
+  eval "$binding"
   (( ${#refs[@]} > 0 )) || die "No refs supplied." 2
   require_tools
   [[ -n "$issue" ]] && resolve_issue "$issue"
-  [[ -n "$mode" ]] || mode="managed"
 
   local registered='[]' failed='[]' ref response artifact link_payload link_response result
   for ref in "${refs[@]}"; do
@@ -800,23 +740,10 @@ cmd_ref() {
 
 cmd_link() {
   local ref="" issue="" role="" relation="references" link_kind="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --issue) issue="$2"; shift 2 ;;
-      --role) role="$2"; shift 2 ;;
-      --relation) relation="$2"; shift 2 ;;
-      --pinned)
-        [[ "$link_kind" != "living" ]] || die "--pinned and --living are mutually exclusive." 2
-        link_kind="pinned"; shift ;;
-      --living)
-        [[ "$link_kind" != "pinned" ]] || die "--pinned and --living are mutually exclusive." 2
-        link_kind="living"; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
-  [[ -n "$ref" && -n "$issue" ]] || die "Usage: mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--pinned|--living]" 2
+  local binding
+  binding=$(mandible_bind_arguments "artifact.link" '{"issue":{"option":"issue"},"role":{"option":"role"},"relation":{"option":"relation"},"link_kind":[{"option":"pinned","constant":"pinned"},{"option":"living","constant":"living"}],"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$ref" && -n "$issue" ]] || die "Usage: $(mandible_command_syntax artifact.link)" 2
   case "$relation" in references|output|evidence|handoff) ;; *) die "Unknown relation: $relation" 2 ;; esac
   require_tools
   resolve_issue "$issue"
@@ -847,23 +774,19 @@ cmd_link() {
       .link as $l
       | .resolution as $r
       | ($l.link_kind // "pinned") as $kind
-      | ($l.resolved_version_no // $r.resolved_version_no // $r.version.version_no // null) as $version
+      | ($l.resolved_version_no // $r.resolved_version_no // $r.artifact_version.version_no // null) as $version
       | (if $version == null then "" else " v\($version)" end) as $version_suffix
       | (if $kind == "living" then "[living · latest\($version_suffix)]" else "[pinned\($version_suffix)]" end) as $badge
-      | "linked \($r.artifact | mandible_display_ref) \($l.link_type) issue:\($l.entity_id | mandible_short_id) \($badge)"'
+      | "linked \(($r.logical_artifact // $r.artifact_version // $r.artifact_blob) | mandible_display_ref) \($l.link_type) issue:\($l.entity_id | mandible_short_id) \($badge)"'
   fi
 }
 
 cmd_resolve() {
   local ref="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
-  [[ -n "$ref" ]] || die "Usage: mandible artifact resolve <ref> [--json]" 2
+  local binding
+  binding=$(mandible_bind_arguments "artifact.resolve" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.resolve)" 2
   require_tools
   local response
   response="$(api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
@@ -879,15 +802,9 @@ cmd_resolve() {
 
 cmd_format() {
   local ref="" format="id" label="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --as) format="$2"; shift 2 ;;
-      --label) label="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "artifact.format" '{"format":{"option":"as"},"label":{"option":"label"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.format)" 2
   case "$format" in id|ref|url|markdown|full) ;; *) die "Unknown --as format: $format" 2 ;; esac
   require_tools
@@ -897,18 +814,18 @@ cmd_format() {
   identity="$(printf '%s\n' "$response" | jq -er --arg input_ref "$ref" '
     .resolution as $r
     | if $r.status != "resolved" then error("artifact ref did not resolve")
-      elif ($input_ref | test("^artifact-series:"; "i")) and $r.series then
-        ($r.series.ref // $r.series.id)
-        + (if ($input_ref | test("@[0-9]+$")) and $r.version then "@" + ($r.version.version_no | tostring) else "" end)
+      elif ($input_ref | test("^artifact-series:"; "i")) and $r.logical_artifact then
+        (($r.logical_artifact.ref // $r.logical_artifact.id) | sub("^artifact:"; "artifact-series:"))
+        + (if ($input_ref | test("@[0-9]+$")) and $r.artifact_version then "@" + ($r.artifact_version.version_no | tostring) else "" end)
       elif $r.target_type == "artifact" then ($r.logical_artifact.ref // $r.logical_artifact.id)
-      elif $r.target_type == "artifact_version" then ($r.artifact_version.ref // $r.version.ref // $r.target_id)
+      elif $r.target_type == "artifact_version" then ($r.artifact_version.ref // $r.target_id)
       elif $r.target_type == "artifact_blob" then ($r.artifact_blob.ref // $r.target_id)
       else error("unsupported artifact target type") end
   ')" || die "${RED}Artifact ref did not resolve to a typed identity.${RESET}" 1
   full_id="$(printf '%s\n' "$response" | jq -er --arg input_ref "$ref" '
     .resolution as $r
-    | if ($input_ref | test("^artifact-series:"; "i")) and $r.series then
-        $r.series.id + (if ($input_ref | test("@[0-9]+$")) and $r.version then "@" + ($r.version.version_no | tostring) else "" end)
+    | if ($input_ref | test("^artifact-series:"; "i")) and $r.logical_artifact then
+        ($r.logical_artifact.id | sub("^artifact:"; "artifact-series:")) + (if ($input_ref | test("@[0-9]+$")) and $r.artifact_version then "@" + ($r.artifact_version.version_no | tostring) else "" end)
       else $r.target_id end')"
   target_type="$(printf '%s\n' "$response" | jq -r --arg input_ref "$ref" '
     if ($input_ref | test("^artifact-series:"; "i")) then "artifact_series" else .resolution.target_type end')"
@@ -948,17 +865,9 @@ cmd_format() {
 
 cmd_list() {
   local repo="" issue="" role="" custody="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --repo) repo="$2"; shift 2 ;;
-      --issue) issue="$2"; shift 2 ;;
-      --role) role="$2"; shift 2 ;;
-      --custody) custody="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "artifact.list" '{"repo":{"option":"repo"},"issue":{"option":"issue"},"role":{"option":"role"},"custody":{"option":"custody"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   require_tools
   [[ -n "$issue" ]] && resolve_issue "$issue"
   local query="" sep="?"
@@ -982,18 +891,10 @@ cmd_list() {
 
 cmd_associate() {
   local ref="" project="" role="" title="" json=0 canonical=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --project) project="$2"; shift 2 ;;
-      --role) role="$2"; shift 2 ;;
-      --title) title="$2"; shift 2 ;;
-      --canonical) canonical=1; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
-  [[ -n "$ref" && -n "$project" ]] || die "Usage: mandible artifact associate <ref> --project <project> [--canonical] [--role <role>] [--title <title>] [--json]" 2
+  local binding
+  binding=$(mandible_bind_arguments "artifact.associate" '{"project":{"option":"project"},"role":{"option":"role"},"title":{"option":"title"},"canonical":{"option":"canonical","constant":"1"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$ref" && -n "$project" ]] || die "Usage: $(mandible_command_syntax artifact.associate)" 2
   require_tools
   local kind="associated"
   (( canonical )) && kind="canonical"
@@ -1020,15 +921,9 @@ cmd_associate() {
 
 cmd_associations() {
   local project="" json=0 canonical=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --project) project="$2"; shift 2 ;;
-      --canonical) canonical=1; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "artifact.associations" '{"project":{"option":"project"},"canonical":{"option":"canonical","constant":"1"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   require_tools
   local query="" sep="?"
   if [[ -n "$project" ]]; then
@@ -1049,11 +944,6 @@ cmd_associations() {
   fi
 }
 
-artifact_id_for_ref() {
-  local ref="$1"
-  api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")" | jq -r '.resolution.artifact.id'
-}
-
 artifact_route_target_for_ref() {
   local ref="$1"
   api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")" \
@@ -1070,14 +960,10 @@ canonical_ref_for_artifact_json() {
 
 cmd_show() {
   local ref="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
-  [[ -n "$ref" ]] || die "Usage: mandible artifact show <ref> [--json]" 2
+  local binding
+  binding=$(mandible_bind_arguments "artifact.show" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.show)" 2
   require_tools
   local id response
   id="$(artifact_route_target_for_ref "$ref")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
@@ -1091,15 +977,10 @@ cmd_show() {
 
 cmd_content() {
   local ref="" output="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --output) output="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
-  [[ -n "$ref" ]] || die "Usage: mandible artifact content <ref> [--output <path>] [--json]" 2
+  local binding
+  binding=$(mandible_bind_arguments "artifact.content" '{"output":{"option":"output"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.content)" 2
   require_tools
   local id response
   id="$(artifact_route_target_for_ref "$ref")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
@@ -1119,14 +1000,10 @@ cmd_content() {
 
 cmd_check() {
   local json=0 refs=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) refs+=("$1"); shift ;;
-    esac
-  done
-  (( ${#refs[@]} > 0 )) || die "Usage: mandible artifact check <ref...> [--json]" 2
+  local binding
+  binding=$(mandible_bind_arguments "artifact.check" '{"json":{"option":"json","constant":"1"},"refs":{"rest":0}}' "$@") || return $?
+  eval "$binding"
+  (( ${#refs[@]} > 0 )) || die "Usage: $(mandible_command_syntax artifact.check)" 2
   require_tools
   local refs_json result
   refs_json="$(printf '%s\n' "${refs[@]}" | jq -R . | jq -s .)"
@@ -1142,14 +1019,10 @@ cmd_check() {
 # Read-only version history for a logical artifact series (issue f7a994e).
 cmd_versions() {
   local ref="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
-    esac
-  done
-  [[ -n "$ref" ]] || die "Usage: mandible artifact versions <ref> [--json]" 2
+  local binding
+  binding=$(mandible_bind_arguments "artifact.versions" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.versions)" 2
   require_tools
   local response
   response="$(api_get "/api/artifacts/versions?ref=$(urlencode "$ref")")" \
@@ -1171,14 +1044,10 @@ cmd_versions() {
 # artifact-blob: forms accepted by the resolver.
 cmd_diff() {
   local refs=() json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) refs+=("$1"); shift ;;
-    esac
-  done
-  (( ${#refs[@]} == 2 )) || die "Usage: mandible artifact diff <refA> <refB> [--json]" 2
+  local binding
+  binding=$(mandible_bind_arguments "artifact.diff" '{"json":{"option":"json","constant":"1"},"refs":{"rest":0}}' "$@") || return $?
+  eval "$binding"
+  (( ${#refs[@]} == 2 )) || die "Usage: $(mandible_command_syntax artifact.diff)" 2
   require_tools
   local response
   response="$(api_get "/api/artifacts/diff?a=$(urlencode "${refs[0]}")&b=$(urlencode "${refs[1]}")")" \
@@ -1200,16 +1069,9 @@ cmd_move() {
   local ref="${1:-}" project="" target_path="" revision="" reconcile=0 json=0
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.move)" 2
   shift
-  while (( $# > 0 )); do
-    case "$1" in
-      --project) project="$2"; shift 2 ;;
-      --path) target_path="$2"; shift 2 ;;
-      --if-revision) revision="$2"; shift 2 ;;
-      --reconcile) reconcile=1; shift ;;
-      --json) json=1; shift ;;
-      *) die "Unknown option: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "artifact.move" '{"project":{"option":"project"},"target_path":{"option":"path"},"revision":{"option":"if-revision"},"reconcile":{"option":"reconcile","constant":"1"},"json":{"option":"json","constant":"1"}}' "$ref" "$@") || return $?
+  eval "$binding"
   [[ -n "$project" || -n "$target_path" ]] || die "move requires --project or --path" 2
   [[ -z "$revision" || "$revision" =~ ^[0-9]+$ ]] || die "--if-revision must be a nonnegative integer" 2
   require_tools
@@ -1231,15 +1093,9 @@ cmd_source() {
     || die "Usage: mandible artifact source <show|move> <artifact-ref> [--expected-revision N --source JSON] [--json]" 2
   shift 2
   local revision="" source_json="" reconcile=0 json=0 response
-  while (( $# > 0 )); do
-    case "$1" in
-      --expected-revision) revision="$2"; shift 2 ;;
-      --source) source_json="$2"; shift 2 ;;
-      --reconcile) reconcile=1; shift ;;
-      --json) json=1; shift ;;
-      *) die "Unknown option: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "artifact.source.${operation}" '{"revision":{"option":"expected-revision"},"source_json":{"option":"source"},"reconcile":{"option":"reconcile","constant":"1"},"json":{"option":"json","constant":"1"}}' "$ref" "$@") || return $?
+  eval "$binding"
   require_tools
   if [[ "$operation" == "show" ]]; then
     [[ -z "$revision" && -z "$source_json" && "$reconcile" == "0" ]] || die "show does not accept move options" 2
@@ -1260,27 +1116,10 @@ cmd_source() {
 
 cmd_record() {
   local artifact_target="" kind="" input_path="" ref="" series_key="" logical_name="" label="" note="" role="" title="" custody="" provider="" repo="" issue="" json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --artifact) artifact_target="$2"; shift 2 ;;
-      --kind) kind="$2"; shift 2 ;;
-      --ref) ref="$2"; shift 2 ;;
-      --series-key) series_key="$2"; shift 2 ;;
-      --logical-name) logical_name="$2"; shift 2 ;;
-      --label) label="$2"; shift 2 ;;
-      --note) note="$2"; shift 2 ;;
-      --role) role="$2"; shift 2 ;;
-      --title) title="$2"; shift 2 ;;
-      --custody) custody="$2"; shift 2 ;;
-      --provider) provider="$2"; shift 2 ;;
-      --repo) repo="$2"; shift 2 ;;
-      --issue) issue="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$input_path" ]] || die "Unexpected argument: $1" 2; input_path="$1"; shift ;;
-    esac
-  done
-  [[ -n "$kind" ]] || die "Usage: mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key K] [--logical-name N] [--provider P] [--repo R] [--issue I] [--label L] [--note T] [--role R] [--json]" 2
+  local binding
+  binding=$(mandible_bind_arguments "artifact.record" '{"artifact_target":{"option":"artifact"},"kind":{"option":"kind"},"ref":{"option":"ref"},"series_key":{"option":"series-key"},"logical_name":{"option":"logical-name"},"label":{"option":"label"},"note":{"option":"note"},"role":{"option":"role"},"title":{"option":"title"},"custody":{"option":"custody"},"provider":{"option":"provider"},"repo":{"option":"repo"},"issue":{"option":"issue"},"json":{"option":"json","constant":"1"},"input_path":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$kind" ]] || die "Usage: $(mandible_command_syntax artifact.record)" 2
   case "$kind" in tracked_repo|local_only|managed) ;; *) die "Unknown --kind: $kind (expected tracked_repo, local_only, or managed)" 2 ;; esac
   if [[ -z "$input_path" && -z "$ref" ]]; then
     die "record requires a <path> (or --ref for managed)" 2
@@ -1329,26 +1168,18 @@ cmd_record() {
   else
     printf '%s\n' "$response" | api_jq_human '
       .result as $r
-      | "\(if $r.created then "recorded" else "exists" end) v\($r.version.version_no) \($r.version | mandible_display_ref)",
-        "series \($r.series | mandible_display_ref) [\($r.series.source_kind)] \($r.series.version_count) version(s)",
-        "artifact \($r.artifact | mandible_display_ref)",
+      | "\(if $r.created then "recorded" else "exists" end) v\($r.artifact_version.version_no) \($r.artifact_version | mandible_display_ref)",
+        "series \($r.logical_artifact | mandible_display_ref) [\($r.logical_artifact.source_kind)] \($r.logical_artifact.version_count) version(s)",
+        "artifact \($r.logical_artifact | mandible_display_ref)",
         ( ($r.warnings // [])[] | "warning: \(.)" )'
   fi
 }
 
 cmd_scan_repos() {
   local repo="" max_depth="" register=0 dry_run=0 json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --repo) repo="$2"; shift 2 ;;
-      --max-depth) max_depth="$2"; shift 2 ;;
-      --register) register=1; shift ;;
-      --dry-run) dry_run=1; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) die "Unexpected argument: $1" 2 ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "artifact.scan-repos" '{"repo":{"option":"repo"},"max_depth":{"option":"max-depth"},"register":{"option":"register","constant":"1"},"dry_run":{"option":"dry-run","constant":"1"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
   require_tools
   local payload result
   payload="$(jq -n --arg repo "$repo" --arg max_depth "$max_depth" --argjson register "$register" --argjson dry_run "$dry_run" '{
@@ -1365,18 +1196,9 @@ cmd_scan_repos() {
 cmd_snapshot() {
   local from_path="" issue="" role="" json=0 upload=0 dry_run=0
   local args=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --from) from_path="$2"; shift 2 ;;
-      --issue) issue="$2"; shift 2 ;;
-      --role) role="$2"; shift 2 ;;
-      --upload) upload=1; shift ;;
-      --dry-run) dry_run=1; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) args+=("$1"); shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "artifact.snapshot" '{"from_path":{"option":"from"},"issue":{"option":"issue"},"role":{"option":"role"},"upload":{"option":"upload","constant":"1"},"dry_run":{"option":"dry-run","constant":"1"},"json":{"option":"json","constant":"1"},"args":{"rest":0}}' "$@") || return $?
+  eval "$binding"
 
   if [[ -z "$from_path" ]]; then
     local forwarded=("${args[@]}")
@@ -1389,8 +1211,8 @@ cmd_snapshot() {
     return
   fi
 
-  (( dry_run == 0 )) || die "Usage: mandible artifact snapshot <path...> --dry-run [--json] or snapshot <artifact-ref> --from <path> without --dry-run" 2
-  [[ ${#args[@]} -eq 1 ]] || die "Usage: mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--json]" 2
+  (( dry_run == 0 )) || die "Usage: $(mandible_command_syntax artifact.snapshot)" 2
+  [[ ${#args[@]} -eq 1 ]] || die "Usage: $(mandible_command_syntax artifact.snapshot)" 2
   [[ -f "$from_path" ]] || die "Snapshot source path not found or not a regular file." 2
   require_tools
   [[ -n "$issue" ]] && resolve_issue "$issue"
@@ -1455,18 +1277,9 @@ cmd_snapshot() {
 bundle_create() {
   local name="" manifest="" issue="" role="run_packet" json=0 dry_run=0 allow_local=0 allow_dirty=0
   local members=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --name) name="$2"; shift 2 ;;
-      --manifest) manifest="$2"; shift 2 ;;
-      --issue) issue="$2"; shift 2 ;;
-      --role) role="$2"; shift 2 ;;
-      --dry-run) dry_run=1; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) members+=("$1"); shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "artifact.bundle.create" '{"name":{"option":"name"},"manifest":{"option":"manifest"},"issue":{"option":"issue"},"role":{"option":"role"},"dry_run":{"option":"dry-run","constant":"1"},"json":{"option":"json","constant":"1"},"members":{"rest":0}}' "$@") || return $?
+  eval "$binding"
   require_tools
   [[ -n "$issue" ]] && resolve_issue "$issue"
   if [[ -n "$manifest" ]]; then
@@ -1591,17 +1404,13 @@ bundle_create() {
 
 bundle_add() {
   local bundle_ref="" json=0 allow_local=0 allow_dirty=0 members=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) if [[ -z "$bundle_ref" ]]; then bundle_ref="$1"; else members+=("$1"); fi; shift ;;
-    esac
-  done
-  [[ -n "$bundle_ref" && ${#members[@]} -gt 0 ]] || die "Usage: mandible artifact bundle add <bundle-ref> <path-or-ref...> [--json]" 2
+  local binding
+  binding=$(mandible_bind_arguments "artifact.bundle.add" '{"json":{"option":"json","constant":"1"},"bundle_ref":{"position":0},"members":{"rest":1}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$bundle_ref" && ${#members[@]} -gt 0 ]] || die "Usage: $(mandible_command_syntax artifact.bundle.add)" 2
   require_tools
   local bundle_id member artifact response payload linked='[]' failed='[]' members_payload='[]'
-  bundle_id="$(artifact_id_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
+  bundle_id="$(artifact_route_target_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
   for member in "${members[@]}"; do
     if [[ -e "$member" ]]; then
       members_payload="$(printf '%s' "$members_payload" | jq --arg path "$member" '. + [{path:$path}]')"
@@ -1622,7 +1431,7 @@ bundle_show() {
   local bundle_ref="$1" json="${2:-0}"
   require_tools
   local bundle_id result
-  bundle_id="$(artifact_id_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
+  bundle_id="$(artifact_route_target_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
   result="$(api_get "/api/artifacts/bundles/$(urlencode "$bundle_id")")" || die "${RED}Failed to show bundle.${RESET}" 1
   if (( json )); then printf '%s\n' "$result" | jq .; else printf '%s\n' "$result" | api_jq_human '"bundle \(.bundle | mandible_display_ref) members=\(.members|length)"'; fi
 }
@@ -1636,20 +1445,20 @@ cmd_bundle() {
     add) bundle_add "$@" ;;
     show)
       local json=0 ref=""
-      while (( $# > 0 )); do
-        case "$1" in --json) json=1; shift ;; *) ref="$1"; shift ;; esac
-      done
-      [[ -n "$ref" ]] || die "Usage: mandible artifact bundle show <bundle-ref> [--json]" 2
+      local binding
+      binding=$(mandible_bind_arguments "artifact.bundle.show" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+      eval "$binding"
+      [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.bundle.show)" 2
       bundle_show "$ref" "$json"
       ;;
     check)
       local json=0 ref=""
-      while (( $# > 0 )); do
-        case "$1" in --json) json=1; shift ;; *) ref="$1"; shift ;; esac
-      done
-      [[ -n "$ref" ]] || die "Usage: mandible artifact bundle check <bundle-ref> [--json]" 2
+      local binding
+      binding=$(mandible_bind_arguments "artifact.bundle.check" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+      eval "$binding"
+      [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.bundle.check)" 2
       local bundle_id refs=()
-      bundle_id="$(artifact_id_for_ref "$ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
+      bundle_id="$(artifact_route_target_for_ref "$ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
       for member_id in $(api_get "/api/artifacts/bundles/$(urlencode "$bundle_id")" | jq -r '.members[].artifact.id'); do
         refs+=("$member_id")
       done

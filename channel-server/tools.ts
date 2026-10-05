@@ -4,7 +4,7 @@
 // The MCP server registers these as tools that Claude Code can invoke.
 
 import { execSync } from "node:child_process";
-import { z } from "zod";
+import * as z from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as client from "./client.js";
 import type {

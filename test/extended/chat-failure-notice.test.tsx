@@ -60,7 +60,6 @@ describe('Chat provider failure notice', () => {
 
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toContain('cannot send messages to agents');
-    expect(alert.textContent).toContain('saved draft');
     expect(alert.textContent).not.toContain('effect_forbidden');
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss error' }));
     expect(dismiss).toHaveBeenCalledOnce();

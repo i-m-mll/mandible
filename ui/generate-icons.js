@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Generate PWA PNG icons from the shared Mandible SVG source.
 
 import { spawnSync } from "node:child_process";
@@ -24,11 +24,9 @@ function run(command, args) {
 const outputDir = mkdtempSync(join(tmpdir(), "mandible-icons-"));
 
 try {
-  run("npm", [
-    "exec",
-    "tauri",
+  run(process.execPath, [
+    join(__dirname, "..", "node_modules", "@tauri-apps", "cli", "tauri.js"),
     "icon",
-    "--",
     source,
     "-o",
     outputDir,

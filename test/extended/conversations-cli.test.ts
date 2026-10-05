@@ -1,3 +1,4 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -99,7 +100,7 @@ describe("conversations CLI file RPC", () => {
 
       expect(list.status).toBe(0);
       expect(JSON.parse(list.stdout)).toEqual([expect.objectContaining({ id: "conv-1", session_id: "session-1" })]);
-      expect(blocks.status).toBe(0);
+      expect(blocks.status, blocks.stderr).toBe(0);
       expect(JSON.parse(blocks.stdout)).toEqual([expect.objectContaining({ id: "block-1", role: "assistant" })]);
       expect(seenPaths.some((item) => item.startsWith("/api/conversations?"))).toBe(true);
       expect(seenPaths.some((item) => item.startsWith("/api/conversations/session-1/blocks"))).toBe(true);
@@ -294,7 +295,9 @@ describe("conversations CLI canonical HTTP reads", () => {
     const server = http.createServer((request, response) => {
       seen.push({ method: request.method ?? "", url: request.url ?? "" });
       response.setHeader("Content-Type", "application/json");
-      if (request.method === "GET" && request.url?.startsWith("/api/conversations/session-1?")) {
+      if (request.method === "GET" && request.url === "/api/instance") {
+        response.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
+      } else if (request.method === "GET" && request.url?.startsWith("/api/conversations/session-1?")) {
         response.end(JSON.stringify({ conversation, blocks: [block] }));
       } else if (request.method === "GET" && request.url?.startsWith("/api/conversations/session-1/blocks?")) {
         response.end(JSON.stringify({ blocks: [block], total: 1, offset: 0, limit: 50, truncated: false }));
@@ -316,9 +319,9 @@ describe("conversations CLI canonical HTTP reads", () => {
       const show = await run(["conversations", "show", "session-1", "--json", "--blocks"], env);
       const blocks = await run(["conversations", "blocks", "session-1", "--json"], env);
       const exported = await run(["conversations", "export", "session-1"], env);
-      expect(show.status).toBe(0);
-      expect(blocks.status).toBe(0);
-      expect(exported.status).toBe(0);
+      expect(show.status, show.stderr).toBe(0);
+      expect(blocks.status, blocks.stderr).toBe(0);
+      expect(exported.status, exported.stderr).toBe(0);
       expect(exported.stdout).toContain("canonical export");
       expect(seen).toEqual(expect.arrayContaining([
         { method: "GET", url: "/api/conversations/session-1?target=latest" },

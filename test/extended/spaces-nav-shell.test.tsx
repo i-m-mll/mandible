@@ -1,6 +1,10 @@
+import { AppShellProvider } from '../../ui/src/app-shell';
+import { invalidateApiGetCache } from '../../ui/src/api';
+import { queryClient } from '../../ui/src/query/client';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 // Routing + shell tests for Spaces nav/route scaffold (umbrella de56ffa,
 // child 22b50f5).
-import { render, screen, cleanup, waitFor } from '@testing-library/preact';
+import { render as testingRender, screen, cleanup, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
@@ -18,6 +22,15 @@ import {
   type SpaceRendererMountProps,
 } from '../../ui/src/views/spaces/SpacesViewShell';
 import type { Space, SpaceFactPacket } from '../../ui/src/api';
+
+const render: typeof testingRender = (view, options) => {
+  const wrap = (content: typeof view) => <AppShellProvider value={{
+    active:true, noticeHost:document.getElementById('spaces-test-notices'), rightSidebar:null,
+    registerRightSidebar:()=>()=>undefined, registerInitialRouteLoad:()=>undefined,
+  }}>{content}</AppShellProvider>;
+  const rendered=testingRender(wrap(view),options);
+  return {...rendered,rerender:(next)=>rendered.rerender(wrap(next))};
+};
 
 function installMemoryLocalStorage(): void {
   const store = new Map<string, string>();
@@ -57,13 +70,20 @@ function makePacket(space: Space = makeSpace()): SpaceFactPacket {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  invalidateApiGetCache();
+  queryClient.clear();
+  await establishTestClientAccess();
   installMemoryLocalStorage();
+  const host=document.createElement('div');host.id='spaces-test-notices';document.body.append(host);
   getSpaceFactPacketMock.mockReset();
 });
 
 afterEach(() => {
+  invalidateApiGetCache();
+  queryClient.clear();
   cleanup();
+  document.getElementById('spaces-test-notices')?.remove();
 });
 
 describe('Spaces routing', () => {

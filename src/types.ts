@@ -92,11 +92,7 @@ import type {
 import type { SessionIdentityMismatch } from "./identity/session-mismatch.js";
 import type { AnthropicBillingPosture } from "./claude-lane-policy.js";
 
-export interface SSEEvent {
-  type: string;
-  data: unknown;
-  timestamp: string;
-}
+export type { SSEEvent } from "./contracts.js";
 
 export interface StartupCommitInfo {
   hash: string;
@@ -237,6 +233,7 @@ export { AUTH_REQUEST_ACTION_KINDS };
 export type { AuthRequestActionKind, AuthRequestActionState };
 
 export interface AuthRequest {
+  space_publication_id?: string | null;
   id: string;
   session_id: string | null;
   requested_by_user_id: string | null;
@@ -364,6 +361,7 @@ export type AuthRequestSummary = Omit<
 > & { action_count: number };
 
 export interface AuthRequestInput {
+  space_publication_id?: string | null;
   session_id?: string | null;
   type?: AuthRequestType;
   command: string;
@@ -733,11 +731,7 @@ export interface SessionIssueLink {
 
 // --- SSE event type used by partitions (P2/P3/P4) ---
 
-export interface SseEvent {
-  event: string;
-  type?: string;
-  data: unknown;
-}
+export type { SseEvent } from "./contracts.js";
 
 // --- Console session types (Bug: e980dd8) ---
 

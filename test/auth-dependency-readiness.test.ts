@@ -1,5 +1,6 @@
+import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
@@ -17,7 +18,7 @@ afterEach(() => {
 });
 
 function setup(): { db: Db; queue: AuthQueue; router: Router } {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
   setupOperator(db, { slug: "dependency-test", display_name: "Dependency Test" });
@@ -50,7 +51,7 @@ function setDependencyResult(
 }
 
 function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): string {
-  const seed = queue.submit({ command: "echo ambiguous", title: "Ambiguous dependency seed" });
+  const seed = queue.submit({ type: "commit", command: "echo ambiguous", title: "Ambiguous dependency seed" });
   const columns = database.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
   const names = columns.map(({ name }) => `"${name}"`);
   const selections = columns.map(({ name }) => name === "id" ? "?" : `"${name}"`);
@@ -65,8 +66,8 @@ function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): string {
 describe("auth dependency readiness", () => {
   it("classifies every durable dependency state and permits only finalized success", () => {
     const { db: database, queue } = setup();
-    const dependency = queue.submit({ command: "echo dependency", title: "Dependency" });
-    const dependent = queue.submit({
+    const dependency = queue.submit({ type: "commit", command: "echo dependency", title: "Dependency" });
+    const dependent = queue.submit({ type: "commit",
       command: "echo dependent",
       title: "Dependent",
       depends_on_id: dependency.id,
@@ -102,12 +103,12 @@ describe("auth dependency readiness", () => {
 
   it("uses the same projection in detail, queue, and history", async () => {
     const { db: database, queue, router } = setup();
-    const dependency = queue.submit({ command: "echo dependency", title: "Dependency" });
+    const dependency = queue.submit({ type: "commit", command: "echo dependency", title: "Dependency" });
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
-    const active = queue.submit({
+    const active = queue.submit({ type: "commit",
       command: "echo active", title: "Active dependent", depends_on_id: dependency.id,
     });
-    const historical = queue.submit({
+    const historical = queue.submit({ type: "commit",
       command: "echo historical", title: "Historical dependent", depends_on_id: dependency.id,
     });
     setDependencyResult(database, historical.id, { status: "rejected", exitCode: null, finalizedAt: null });
@@ -126,34 +127,34 @@ describe("auth dependency readiness", () => {
     queue.dispose();
   });
 
-  it("blocks ordinary approval until the dependency is durably finalized", () => {
+  it("blocks ordinary approval until the dependency is durably finalized", async () => {
     const { db: database, queue } = setup();
-    const dependency = queue.submit({ command: "echo dependency", title: "Dependency" });
-    const dependent = queue.submit({
+    const dependency = queue.submit({ type: "commit", command: "echo dependency", title: "Dependency" });
+    const dependent = queue.submit({ type: "commit",
       command: "echo dependent", title: "Dependent", depends_on_id: dependency.id,
     });
 
-    expect(() => queue.approve(dependent.id)).toThrow(/Dependency .* is pending/);
+    await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/Dependency .* is pending/);
     setDependencyResult(database, dependency.id, { status: "rejected", exitCode: null, finalizedAt: null });
-    expect(() => queue.approve(dependent.id)).toThrow(/is failed/);
+    await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is failed/);
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 1, finalizedAt: 42 });
-    expect(() => queue.approve(dependent.id)).toThrow(/is failed/);
+    await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is failed/);
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: null });
-    expect(() => queue.approve(dependent.id)).toThrow(/is unfinalized/);
+    await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is unfinalized/);
 
     database.prepare("UPDATE auth_requests SET depends_on_id = ? WHERE id = ?")
       .run("missing-dependency", dependent.id);
-    expect(() => queue.approve(dependent.id)).toThrow(/is missing/);
+    await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is missing/);
 
     const ambiguousPrefix = createAmbiguousRequestPrefix(database, queue);
     database.prepare("UPDATE auth_requests SET depends_on_id = ? WHERE id = ?")
       .run(ambiguousPrefix, dependent.id);
-    expect(() => queue.approve(dependent.id)).toThrow(/is ambiguous/);
+    await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is ambiguous/);
 
     database.prepare("UPDATE auth_requests SET depends_on_id = ? WHERE id = ?")
       .run(dependency.id, dependent.id);
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
-    expect(queue.approve(dependent.id).status).toBe("executing");
+    expect((await approveFixtureRequest(queue, dependent.id)).status).toBe("executing");
     queue.dispose();
   });
 });

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MANAGED_REMINDER_SCHEMA } from "../../src/contracts.js";
 import { migrate, type Db } from "../../src/db.js";
@@ -54,7 +54,7 @@ function body(key: string) {
 }
 
 beforeEach(() => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   createUser(db, { slug: "route-agent", kind: "agent", display_name: "Route Agent" }, NOW);
   createUser(db, { slug: "retired-agent", kind: "agent", display_name: "Retired", status: "retired" }, NOW);
@@ -156,7 +156,7 @@ describe("managed reminder route admission", () => {
       ) as { status: number; body: Record<string, unknown> };
       expect(response("anonymous")).toMatchObject({
         status: 401,
-        body: { error: "authentication_required", operation: "delivery.background" },
+        body: { error: "authentication_required", operation: "post:/api/reminders" },
       });
       expect(response("authorized")).toMatchObject({ status: 201, body: { stored: true } });
     } finally {

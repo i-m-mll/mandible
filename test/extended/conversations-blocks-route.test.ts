@@ -171,7 +171,7 @@ describe("indexed conversation position window", () => {
     expect((response.body as { blocks: Array<{ position: number }> }).blocks[0]?.position).toBe(1);
   });
 
-  it("loads the retained tail when a source-backed projection keeps sparse positions", async () => {
+  it("refuses an unverified source tail when its structural index is incomplete", async () => {
     const now = "2026-07-08T12:00:00.000Z";
     db.prepare(
       `INSERT INTO conversations (
@@ -211,15 +211,9 @@ describe("indexed conversation position window", () => {
       url: "/api/conversations/conv-projected?target=initial",
     });
 
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect(response.body).toMatchObject({
-      body_source: "legacy",
-      source_version_id: sourceStore.resolveConversation("conv-projected")?.currentVersionId,
-      total: 3,
-      target: { kind: "initial", position: 9999, block_id: "projected-9999" },
-      window: { start_position: 9997, end_position: 9999, has_after: false },
-    });
-    expect((response.body as { blocks: unknown[] }).blocks).toHaveLength(3);
+    expect(response.status, JSON.stringify(response.body)).toBe(503);
+    expect(response.body).toMatchObject({ error: "freshness_error" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = 'conv-projected'").get()).toEqual({ count: 3 });
   });
 
   it("uses the block primary key and conversation-position index for exact resolution", () => {

@@ -1,9 +1,10 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
+import { createTestRuntime } from "./test-runtime-isolation.mjs";
 import { ProcessGroupSupervisor } from "./process-group-supervisor.mjs";
 
 const root = process.cwd();
@@ -41,16 +42,16 @@ function processTreeRss(rootPid) {
   return rows.filter((row) => descendants.has(row.pid)).reduce((total, row) => total + row.rss, 0);
 }
 
-function spawnVitestShard(shard) {
+function spawnVitestShard(shard, env) {
   return spawn(process.execPath, [
-    vitest,
+    "--smol", vitest,
     "run",
     "--config", "vitest.iab-preview.config.ts",
     ...shard.args,
   ], {
     cwd: root,
     detached: true,
-    env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=384" },
+    env,
     stdio: "inherit",
   });
 }
@@ -70,7 +71,8 @@ export async function runIabPreviewTests({
 }
 
 async function runShard({ supervisor, shard, spawnShard, measureRssKiB, rssLimitKiB, monitorIntervalMs }) {
-  const child = spawnShard(shard);
+  const runtime = createTestRuntime();
+  const child = spawnShard(shard, runtime.env);
   supervisor.attach(child);
   let peakKiB = 0;
   let memoryKilled = false;
@@ -88,6 +90,7 @@ async function runShard({ supervisor, shard, spawnShard, measureRssKiB, rssLimit
     result = await supervisor.settle(child);
   } finally {
     clearInterval(monitor);
+    runtime.close();
   }
   process.stdout.write(`iab-preview shard ${shard.label} peak_rss_kib=${peakKiB} memory_killed=${memoryKilled}\n`);
   if (memoryKilled) throw new Error(`IAB preview shard ${shard.label} exceeded ${rssLimitKiB} KiB RSS.`);

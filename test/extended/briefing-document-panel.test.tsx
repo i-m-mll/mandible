@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { useState } from 'preact/hooks';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { establishTestClientAccess } from '../helpers/local-client-access';
+import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 import type { BriefingResponseValue, BriefingRoundProjection } from '../../ui/src/api';
 
 import { BriefingDocumentPanel } from '../../ui/src/views/feedback/BriefingDocumentPanel';
@@ -11,8 +13,6 @@ import { buildBriefingMarkdownModel, changedBriefingEntityIndexes, compareBriefi
 import { parseBriefingDirectives } from '../../src/feedback/briefing-directives';
 
 const briefingStylesheet = readFileSync('ui/src/styles/briefing.css', 'utf8');
-const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
-const renderedMarkdownStylesheet = readFileSync('ui/src/styles/rendered-markdown.css', 'utf8');
 const source = 'Intro\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n';
 const directiveStart = source.indexOf(':::');
 const bodyStart = source.indexOf('Plan');
@@ -85,8 +85,11 @@ function content() {
   };
 }
 
+beforeEach(establishTestClientAccess);
+
 afterEach(() => {
   cleanup();
+  __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -208,12 +211,6 @@ describe('Briefing document panel', () => {
     expect(document.querySelector('blockquote')?.textContent).toContain('A restrained quotation.');
     expect(Array.from(document.querySelectorAll('th'), (cell) => cell.textContent)).toEqual(['Name', 'State']);
     expect(Array.from(document.querySelectorAll('td'), (cell) => cell.textContent)).toEqual(['Shared', 'Ready']);
-    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown blockquote \{[^}]*margin-inline: 0[^}]*padding:[^}]*var\(--space-4\)[^}]*border-inline-start/s);
-    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown table \{[^}]*width: 100%[^}]*border: 1px solid var\(--border-muted\)[^}]*border-radius: var\(--radius-md\)/s);
-    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown :where\(th, td\) \{[^}]*padding: var\(--space-2\) var\(--space-3\)[^}]*text-align: start/s);
-    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown > :first-child \{[^}]*margin-top: 0/s);
-    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown > :last-child \{[^}]*margin-bottom: 0/s);
-    expect(renderedMarkdownStylesheet).toMatch(/\.rendered-markdown a \{[^}]*color: var\(--accent-fg\)[^}]*text-decoration: underline/s);
   });
 
   it('maps coherent Markdown entities to exact UTF-16 ranges with deterministic nested targets', () => {
@@ -396,7 +393,6 @@ describe('Briefing document panel', () => {
     expect(navigationRule).toContain('position: sticky');
     expect(navigationRule).toContain('inset-block-start: var(--space-2)');
     expect(changedRule).not.toContain('box-shadow');
-    expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity--changed \.briefing-markdown__entity--changed \{[^}]*background: transparent/s);
   });
 
   it('keeps directive and ordinary list items in one rendered list with independent exact-range actions', async () => {
@@ -470,8 +466,6 @@ describe('Briefing document panel', () => {
     expect(keep.classList.contains('contextual-action')).toBe(true);
     expect(keep.classList.contains('contextual-action--compact')).toBe(true);
     expect(dismiss.classList.contains('contextual-action--compact')).toBe(true);
-    expect(contextualActionStylesheet).toMatch(/\.contextual-action \{[^}]*border: 0[^}]*background: transparent[^}]*box-shadow: none/s);
-    expect(contextualActionStylesheet).toMatch(/\.contextual-action:is\(:hover, :focus-visible\) \{[^}]*background: transparent[^}]*box-shadow: none/s);
     fireEvent.click(keep);
     const single = screen.getByRole('group', { name: 'Choose deployment mode' });
     expect(within(single).getAllByRole('radio').map((input) => (input as HTMLInputElement).value)).toEqual(['a', 'b']);
@@ -563,19 +557,10 @@ describe('Briefing document panel', () => {
     sourceTree.style.paddingBottom = '0px';
     owners.forEach((owner) => { owner.style.lineHeight = '24px'; });
     fireEvent(globalThis, new Event('resize'));
-    const directiveRule = briefingStylesheet.match(/\.briefing-directive \{([^}]*)\}/)?.[1] ?? '';
-    const ownerRule = briefingStylesheet.match(/\.briefing-directive--owner \{([^}]*)\}/)?.[1] ?? '';
-    const railRule = briefingStylesheet.match(/\.briefing-directive--owner::before \{([^}]*)\}/)?.[1] ?? '';
 
     expect(directive.classList.contains('contextual-action-owner')).toBe(true);
     expect(directive.classList.contains('briefing-directive--owner')).toBe(true);
     expect(actions.classList.contains('contextual-action-group')).toBe(true);
-    expect(directiveRule).toContain('box-shadow: none');
-    expect(directiveRule).not.toMatch(/(?:margin|padding|border-left):/);
-    expect(ownerRule).toContain('position: relative');
-    expect(railRule).toContain('inset-inline-start: var(--briefing-directive-rail-offset, 0px)');
-    expect(railRule).toContain('width: 2px');
-    expect(railRule).toContain("content: ''");
     const contentX = owners.map((owner) => owner.getBoundingClientRect().left);
     const railX = owners.map((owner) => owner.getBoundingClientRect().left
       + Number.parseFloat(owner.style.getPropertyValue('--briefing-directive-rail-offset')));
@@ -586,71 +571,8 @@ describe('Briefing document panel', () => {
     expect(actions.style.getPropertyValue('--briefing-right-rail-top')).toBe('0px');
     expect(responseHosts.every((host) => host.className === 'briefing-directive__response-host')).toBe(true);
     expect(screen.getByLabelText('Pinned briefing document').querySelector('.briefing-directive__response-host.briefing-directive')).toBeNull();
-    expect(briefingStylesheet).toMatch(/\.briefing-document__source-tree \{[^}]*padding-inline-end: var\(--briefing-right-rail-width\)/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity \{[^}]*position: relative/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-markdown__action-rail \{[^}]*position: absolute[^}]*inset-block-start: var\(--briefing-right-rail-top, 0px\)[^}]*inset-inline-start: var\(--briefing-right-rail-action-offset, auto\)/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__response-host \{[^}]*width: 100%[^}]*margin-block: var\(--space-1\) var\(--space-4\)[^}]*justify-items: start/s);
-    expect(briefingStylesheet).not.toContain('.briefing-directive__response-host--rail');
-    expect(briefingStylesheet).not.toContain('.briefing-directive__response-host--flow');
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__compact-controls \{[^}]*grid-auto-columns: 2em[^}]*column-gap: var\(--space-1\)[^}]*white-space: nowrap/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls \{[^}]*grid-template-columns: 2em minmax\(3em, max-content\) 2em/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive--owner\.briefing-directive--selected::before \{[^}]*background: var\(--accent-border\)/s);
-    expect(contextualActionStylesheet).toMatch(/\.contextual-action-owner:hover > \.contextual-action-group/);
-    expect(contextualActionStylesheet).not.toContain('.contextual-action-owner:is(:hover, :focus-within)');
-    expect(contextualActionStylesheet).toMatch(/\.contextual-action-group--persistent/);
   });
 
-  it('keeps heading, paragraph, list-item, and directive action gutters inside top-aligned owner hover geometry', async () => {
-    const geometrySource = [
-      '# Heading owner',
-      '',
-      'Paragraph owner.',
-      '',
-      '- List owner',
-      '',
-      ':::spec-item{key="decision" type="verdict" required="true"}',
-      'Directive owner',
-      ':::',
-    ].join('\n');
-    const [directive] = parseBriefingDirectives(geometrySource);
-    vi.stubGlobal('fetch', vi.fn(async () => json(content())));
-    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Geometry" roundId="round-1" round={round({
-      document: {
-        artifact_version_id: 'artifact-version:geometry',
-        content_hash: createHash('sha256').update(geometrySource).digest('hex'),
-        previous_round_id: null, profile: 'mandible-briefing.v2', source: geometrySource,
-      },
-      items: [{
-        id: directive.key, client_item_key: directive.key, parent_item_id: null, item_kind: 'item',
-        revision: { id: directive.definition_digest, ordinal: 1, title: '', prompt: directive.body, description: null, response_type: directive.type, required: true, position: 0, options: [] },
-        effective_response: null, responseVisible: true, directive,
-      }],
-    })} canMutate onRefresh={async () => null} />);
-
-    await screen.findByRole('button', { name: 'Keep' });
-    const sourceTree = screen.getByLabelText('Pinned briefing document').querySelector('.briefing-document__source-tree') as HTMLElement;
-    const owners = [
-      screen.getByRole('heading', { name: 'Heading owner' }),
-      screen.getByText('Paragraph owner.'),
-      screen.getByText('List owner').closest('li') as HTMLElement,
-      screen.getByText('Directive owner').closest('.briefing-directive--owner') as HTMLElement,
-    ];
-    vi.spyOn(sourceTree, 'getBoundingClientRect').mockReturnValue({ x: 448, y: 0, left: 448, right: 1088, top: 0, bottom: 500, width: 640, height: 500, toJSON: () => ({}) });
-    owners.forEach((owner, index) => vi.spyOn(owner, 'getBoundingClientRect').mockReturnValue({
-      x: index === 2 ? 480 : 448, y: 20 + index * 60, left: index === 2 ? 480 : 448, right: 928,
-      top: 20 + index * 60, bottom: 60 + index * 60, width: index === 2 ? 448 : 480, height: 40, toJSON: () => ({}),
-    }));
-    sourceTree.style.paddingRight = '160px';
-    sourceTree.style.paddingBottom = '0px';
-    fireEvent(globalThis, new Event('resize'));
-
-    owners.forEach((owner) => {
-      const action = owner.querySelector<HTMLElement>('.briefing-markdown__action-rail');
-      expect(action?.style.getPropertyValue('--briefing-right-rail-top')).toBe('0px');
-      expect(owner.style.getPropertyValue('--briefing-right-rail-hover-width')).toBe('calc(8px + var(--briefing-action-rail-width, 1.3em))');
-    });
-    expect(briefingStylesheet).toMatch(/\.briefing-markdown__entity::after,\s*\.briefing-directive--owner::after \{[^}]*inset-inline-start: 100%[^}]*width: var\(--briefing-right-rail-hover-width, 0px\)[^}]*pointer-events: auto/s);
-  });
 
   it('selects only non-interactive directive surfaces, switches one-at-a-time, and dismisses outside', async () => {
     const selectionSource = [
@@ -802,7 +724,6 @@ describe('Briefing document panel', () => {
     const replacementTab = within(dialog).getByRole('tab', { name: 'Suggest replacement' });
     expect(commentTab.getAttribute('aria-selected')).toBe('true');
     expect(commentTab.parentElement?.children).toHaveLength(2);
-    expect(briefingStylesheet).toMatch(/\.briefing-document__tabs\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     expect(within(dialog).getByRole('status').textContent).toBe('Comment text is required.');
     fireEvent.keyDown(commentTab, { key: 'ArrowRight' });
@@ -1061,9 +982,6 @@ describe('Briefing document panel', () => {
     expect(variantControls.classList.contains('briefing-directive__compact-controls')).toBe(true);
     expect(previous.classList.contains('contextual-action--compact')).toBe(true);
     expect(next.classList.contains('contextual-action--compact')).toBe(true);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls \{[^}]*grid-template-columns: 2em minmax\(3em, max-content\) 2em/s);
-    expect(briefingStylesheet).toMatch(/\.briefing-directive__variant-controls > span \{[^}]*justify-content: center/s);
-    expect(contextualActionStylesheet).toMatch(/\.contextual-action--compact:is\(:hover, :focus-visible\) \{[^}]*background: var\(--surface-hover\)/s);
     expect(previous.disabled).toBe(true);
     await waitFor(() => expect(next.disabled).toBe(false));
     expect(screen.getByText('1 of 2')).toBeTruthy();

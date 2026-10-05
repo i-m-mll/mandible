@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { getGraph, invalidateApiGetCache } from '../../ui/src/api';
+import { establishTestClientAccess } from '../helpers/local-client-access';
+import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 import {
   CrossTabSseCoordinator,
   type BroadcastChannelLike,
@@ -225,6 +228,8 @@ describe('cross-tab SSE coordinator', () => {
 
     leader.on('issue:updated', (payload) => leaderEvents.push(payload));
     follower.on('issue:updated', (payload) => followerEvents.push(payload));
+    const followerErrors: Array<string | null | undefined> = [];
+    follower.onState((_state, meta) => followerErrors.push(meta.error));
     leader.connect();
     leaderTransports[0].open();
     follower.connect();
@@ -233,6 +238,11 @@ describe('cross-tab SSE coordinator', () => {
     expect(followerTransports).toHaveLength(0);
     expect(locks.maxActiveCount).toBe(1);
     expect(follower.getState()).toBe('open');
+    leaderTransports[0].stateListeners.forEach((handler) => handler('down', { reconnected: false, error: 'Invalid live update' }));
+    expect(follower.getState()).toBe('down');
+    expect(followerErrors.at(-1)).toBe('Invalid live update');
+    leaderTransports[0].open();
+    expect(followerErrors.at(-1)).toBeNull();
 
     leaderTransports[0].emit({ type: 'issue:updated', issue_id: 'abc' } as SSEPayload);
     expect(leaderEvents).toHaveLength(1);
@@ -286,4 +296,38 @@ describe('cross-tab SSE coordinator', () => {
     expect(transports[0].connectCount).toBe(1);
     coordinator.disconnect();
   });
+});
+
+
+it('invalidates warmed data before exact and wildcard consumer reads while heartbeat stays warm', async () => {
+  await establishTestClientAccess();
+  invalidateApiGetCache();
+  let revision = 1;
+  const fetchMock = vi.fn(async () => new Response(JSON.stringify({ nodes: [], edges: [], mode: 'issue', revision }), {
+    headers: { 'content-type': 'application/json' },
+  }));
+  vi.stubGlobal('fetch', fetchMock);
+  const transport = new FakeTransport();
+  const coordinator = new CrossTabSseCoordinator({ createTransport: () => transport, channelFactory: null, lockManager: null });
+  const reads: Array<ReturnType<typeof getGraph>> = [];
+  coordinator.on('ledger:issue:updated', () => reads.push(getGraph({ mode: 'issue' })));
+  coordinator.on('*', () => reads.push(getGraph({ mode: 'issue' })));
+  coordinator.connect();
+  try {
+    expect(await getGraph({ mode: 'issue' })).toMatchObject({ revision: 1 });
+    revision = 2;
+    transport.emit({ type: 'heartbeat', data: { timestamp: Date.now() } });
+    expect(await reads.pop()).toMatchObject({ revision: 1 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    transport.emit({ type: 'ledger:issue:updated', data: { issue_id: 'issue-one', project_id: 'project-one' } });
+    expect(await Promise.all(reads)).toEqual([
+      expect.objectContaining({ revision: 2 }), expect.objectContaining({ revision: 2 }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  } finally {
+    coordinator.disconnect();
+    invalidateApiGetCache();
+    __resetBrowserSessionForTests();
+    vi.unstubAllGlobals();
+  }
 });

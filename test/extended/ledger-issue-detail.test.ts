@@ -1,3 +1,4 @@
+import { registerArtifactAlias } from "../../src/provider-artifacts.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -71,10 +72,10 @@ function insertArtifact(id: string, hash: string, uri: string): void {
   db.prepare(
     `INSERT INTO artifact_blob (
        id, algorithm, content_hash, storage_uri, media_type, role, size_bytes,
-       provider_id, manifest_id, custody_mode, availability, created_at
+       provider_id, manifest_id, created_at
      ) VALUES (
        ?, 'sha256', ?, ?, 'text/markdown', 'report', 42,
-       'provider_1', 'manifest_1', 'managed', 'present', 1000
+       'provider_1', 'manifest_1', 1000
      )`,
   ).run(`artifact-blob:${hash}`, hash, uri);
 }
@@ -546,6 +547,11 @@ describe("ledger issue detail projection", () => {
     const linkedHash = "b".repeat(64);
     const linkedId = `artifact:sha256:${linkedHash}`;
     insertArtifact(linkedId, linkedHash, `artifact:${linkedHash}`);
+    // URI references resolve through registered provenance; they do not fabricate artifact identities.
+    for (const [hash, ref] of [["c".repeat(64), "repo://repo@main/results/summary.md"], ["d".repeat(64), "feedbax://runs/demo"]]) {
+      insertArtifact(`artifact-blob:${hash}`, hash, ref);
+      registerArtifactAlias(db, { artifactId: `artifact-blob:${hash}`, ref });
+    }
     const issue = store.createIssue({
       ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
@@ -576,7 +582,7 @@ describe("ledger issue detail projection", () => {
 
     expect(artifacts).toHaveLength(3);
     expect(artifacts[0]).toMatchObject({
-      id: `artifact:${linkedHash.slice(0, 12)}`,
+      id: `artifact-blob:${linkedHash}`,
       uri: `artifact:${linkedHash}`,
       links: [{ id: "link_1", link_type: "produced_by", role: "report" }],
     });

@@ -9,7 +9,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setSetting } from "../../src/client-auth/settings-kv.js";
@@ -122,7 +122,7 @@ function post(body: unknown, credential?: string) {
 }
 
 beforeEach(() => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
   operatorId = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" }).id;
@@ -296,7 +296,7 @@ describe("POST /api/tasks/inventory", () => {
       ) as { status: number; body: Record<string, unknown> };
       expect(response("anonymous")).toMatchObject({
         status: 401,
-        body: { error: "authentication_required", operation: "tasks.inventory" },
+        body: { error: "authentication_required", operation: router.listRoutePolicies().find(route => route.method === "POST" && route.path === "/api/tasks/inventory")!.operationId },
       });
       expect(response("unmapped")).toMatchObject({
         status: 403,
@@ -450,7 +450,7 @@ describe("read-only instance policy", () => {
     expect(response.status).toBe(403);
     expect(response.body).toMatchObject({
       error: "effect_forbidden",
-      operation: "tasks.inventory",
+      operation: readOnly.listRoutePolicies().find(route => route.method === "POST" && route.path === "/api/tasks/inventory")!.operationId,
       missing_effects: ["process:external"],
     });
 

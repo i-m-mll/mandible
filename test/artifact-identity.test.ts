@@ -10,10 +10,9 @@ import {
   canonicalLogicalArtifactShortRef,
   canonicalArtifactShortRef,
   projectArtifactPublicValue,
-  recordArtifactVersion,
   resolveArtifactIdentity,
-  resolveArtifactRefReadonlyFull,
 } from "../src/provider-artifacts.js";
+import { recordArtifactVersion, resolveArtifactRefReadonlyFull } from "./helpers/artifact-http-write-fixtures.js";
 
 let db: Db;
 let tempDir = "";
@@ -78,7 +77,6 @@ describe("artifact identity contract", () => {
       requested_kind: "blob",
       target_type: "artifact_blob",
       target_id: null,
-      artifact: null,
     });
   });
 

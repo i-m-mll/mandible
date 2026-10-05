@@ -9,7 +9,7 @@ import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 
 import { openDb } from "../../src/db.js";
 import { setSetting } from "../../src/client-auth/settings-kv.js";
@@ -17,10 +17,11 @@ import { LocalSessionAuthority } from "../../src/client-auth/session-authority.j
 import { localCaPaths } from "../../scripts/local-ca-trust.mjs";
 import { retireBriefingV1ToCustody } from "../../src/feedback/migrate-legacy.js";
 import { RICH_BRIEFING_DEMO } from "../../src/feedback/rich-briefing-demo.js";
-import { recordArtifactVersion } from "../../src/provider-artifacts.js";
+import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
 import { createUser, setupOperator } from "../../src/users/store.js";
 import { insertRawLedgerCheckout, insertRawLedgerProject } from "../helpers/ledger-fixtures.js";
-import { seedPreviewUserPreferences } from "../../scripts/iab-preview.mjs";
+import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun } from "../../scripts/owned-run.mjs";
+import { seedPreviewUserPreferences, cleanupPreviewCache, assertPreviewAllocation } from "../../scripts/iab-preview.mjs";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "iab-preview.mjs");
 const execFileAsync = promisify(execFile);
@@ -196,14 +197,14 @@ function fixtureGitEnv(): NodeJS.ProcessEnv {
 }
 
 function git(args: string[], cwd: string): void {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: fixtureGitEnv() });
+  const result = spawnSync("git", ["--no-optional-locks", ...args], { cwd, encoding: "utf8", env: fixtureGitEnv() });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   }
 }
 
 function gitOutput(args: string[], cwd: string): string {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: fixtureGitEnv() });
+  const result = spawnSync("git", ["--no-optional-locks", ...args], { cwd, encoding: "utf8", env: fixtureGitEnv() });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   }
@@ -854,6 +855,7 @@ function previewContractEnv(details: {
     MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(conversations, "structure.db"),
     MANDIBLE_CONVERSATION_CACHE_DB: path.join(conversations, "search-cache.db"),
     MANDIBLE_STDERR_LOG_PATH: path.join(details.previewRoot, "stderr.log"),
+    MANDIBLE_STDOUT_LOG_PATH: path.join(details.previewRoot, "stdout.log"),
     MANDIBLE_CLI_CACHE_DIR: path.join(details.previewRoot, "cli"),
   };
 }
@@ -881,7 +883,7 @@ function installStandInDaemonDist(repo: string, details: {
 }): void {
   const realDist = path.join(process.cwd(), "dist");
   if (!fs.existsSync(path.join(realDist, "db.js"))) {
-    throw new Error(`the refresh fixture needs a built dist; run \`npm run build\` first (looked in ${realDist})`);
+    throw new Error(`the refresh fixture needs a built dist; run the pinned Bun build first (looked in ${realDist})`);
   }
   const repoDist = path.join(repo, "dist");
   fs.mkdirSync(repoDist, { recursive: true });
@@ -1007,10 +1009,12 @@ async function createRefreshFixture(options: { buildFails?: boolean; legacyUserP
   const metadataPath = path.join(previewRoot, "metadata.json");
   fs.writeFileSync(metadataPath, JSON.stringify(metadata), "utf8");
 
-  const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-shims-"));
-  tempRoots.push(shimDir);
-  const npmShim = path.join(shimDir, "npm");
-  fs.writeFileSync(npmShim, `#!/bin/sh\n${options.buildFails ? "exit 23" : "exit 0"}\n`, { mode: 0o755 });
+  fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
+  fs.copyFileSync(path.join(process.cwd(), "scripts", "bun-runtime.sh"), path.join(repo, "scripts", "bun-runtime.sh"));
+  fs.copyFileSync(path.join(process.cwd(), "scripts", "sqlite-runtime-install.mjs"), path.join(repo, "scripts", "sqlite-runtime-install.mjs"));
+  fs.copyFileSync(path.join(process.cwd(), "scripts", "bun-runtime-lock.tsv"), path.join(repo, "scripts", "bun-runtime-lock.tsv"));
+  fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(repo, ".bun-version"));
+  fs.writeFileSync(path.join(repo, "package.json"), JSON.stringify({ private: true, scripts: { build: options.buildFails ? "exit 23" : "exit 0" } }));
 
   return {
     repo,
@@ -1031,13 +1035,81 @@ async function createRefreshFixture(options: { buildFails?: boolean; legacyUserP
     refreshedHealthPath,
     env: {
       ...previewLauncherEnv(previewBase),
-      PATH: `${shimDir}:${process.env.PATH}`,
+      MANDIBLE_RUNTIME: process.execPath,
       MANDIBLE_PREVIEW_BASE_DIR: previewBase,
     },
   };
 }
 
 describe("iab-preview launcher", () => {
+  it("creates, uses and finalizes a real disposable preview with only its compact receipt retained", async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-real-lifecycle-"))); tempRoots.push(base);
+    const source = path.join(base, "source.db"); openDb(source).close();
+    const before = fileHash(source);
+    const env = { ...previewLauncherEnv(base), MANDIBLE_RUNTIME: process.execPath };
+    const launched = await execFileAsync(process.execPath, [SCRIPT, "--no-build", "--db", source, "--disposable-fixture", "--owner-project", "fixture-project", "--owner-work-unit", "fixture-work-unit", "--json"], { cwd: process.cwd(), env, encoding: "utf8", timeout: 40000 }).catch(error => {
+      throw new Error(`Real preview launch failed: ${error.stderr || error.stdout || error.message}`, { cause: error });
+    });
+    const preview = JSON.parse(launched.stdout);
+    standInPidFiles.push(preview.pidFile);
+    const health = await fetch(`http://127.0.0.1:${preview.port}/api/health`).then(response => response.json());
+    expect(health.ready).toBe(true); expect(health.instance.instance_id).toBe(preview.ownership.instanceId);
+    const edited = new SqliteDatabase(preview.db);
+    edited.prepare("INSERT INTO settings(key,value,updated_at) VALUES('fixture-edit','unique',1)").run(); edited.close();
+    fs.writeFileSync(path.join(preview.previewRoot, "artifacts", "fixture-document"), "disposable managed edits");
+    const pid = readPidFile(preview.pidFile); expect(pid).not.toBeNull();
+    process.kill(pid!, "SIGTERM");
+    const deadline = Date.now() + 5000;
+    while (isProcessAlive(pid!) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(isProcessAlive(pid!)).toBe(false);
+    const finalized = spawnSync(process.execPath, [SCRIPT, "finalize", "--root", preview.previewRoot, "--revision", String(preview.ownership.revision), "--outcome", "assessed", "--summary", "Disposable real preview interaction completed", "--json"], { cwd: process.cwd(), env, encoding: "utf8", timeout: 15000 });
+    expect(finalized.status, `fixture process ${process.pid}: ${finalized.stdout || finalized.stderr}`).toBe(0);
+    const result = JSON.parse(finalized.stdout);
+    expect(result.status).toBe("cleaned"); expect(result.reclaimedBytes).toBeGreaterThan(0);
+    expect(fs.existsSync(preview.previewRoot)).toBe(false); expect(fs.existsSync(result.receipt)).toBe(true);
+    expect(fileHash(source)).toBe(before);
+  }, 45000);
+
+  it("preserves stopped interactive ledger and managed bytes including older snapshots", async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-cleanup-"))); tempRoots.push(base);
+    const root = path.join(base, "edited"); fs.mkdirSync(root);
+    const db = path.join(root, "mandible-20261004-100000.db");
+    const older = path.join(root, "mandible-20261003-100000.db");
+    fs.writeFileSync(db, "unique ledger edit"); fs.writeFileSync(`${db}-wal`, "uncheckpointed edit"); fs.writeFileSync(older, "older writable edits");
+    fs.mkdirSync(path.join(root, "artifacts")); fs.writeFileSync(path.join(root, "artifacts", "document"), "managed edits");
+    fs.writeFileSync(path.join(root, "metadata.json"), JSON.stringify({ db, previewRoot: root }));
+    fs.symlinkSync(db, path.join(root, "current.db"));
+    const report = await cleanupPreviewCache({ apply: true, previewBaseDir: base });
+    expect(report.reclaimedBytes).toBe(0);
+    expect(fs.readFileSync(`${db}-wal`, "utf8")).toBe("uncheckpointed edit");
+    expect(fs.readFileSync(older, "utf8")).toBe("older writable edits");
+    expect(fs.readFileSync(path.join(root, "artifacts", "document"), "utf8")).toBe("managed edits");
+  });
+
+  it("cleans a disposed fixture after its report while preserving unknown entries", async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-cleanup-"))); tempRoots.push(base);
+    const root = path.join(base, "fixture"); fs.mkdirSync(root);
+    const file = path.join(root, "metadata.json");
+    const ownership = createOwnedRun({ root, instanceId: "preview-fixture", project: "fixture-project", workUnit: "fixture-work-unit", disposable: true, outputs: [{ path: "db", kind: "interactive" }] });
+    saveOwnedMetadata(file, { ownership }); fs.writeFileSync(path.join(root, "db"), "fixture bytes");
+    const finalized = finalizeOwnedRun(file, { expectedRevision: 1, outcome: "assessed", summary: "Disposable fixture succeeded" });
+    fs.writeFileSync(path.join(root, "unknown"), "unclassified bytes");
+    const report = await cleanupPreviewCache({ apply: true, previewBaseDir: base });
+    expect(report.reclaimedBytes).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(root, "db"))).toBe(false);
+    expect(fs.readFileSync(path.join(root, "unknown"), "utf8")).toBe("unclassified bytes");
+    expect(fs.existsSync(finalized.ownership.receipt)).toBe(true);
+  });
+
+  it("refuses low headroom without changing the existing preview", () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-budget-"))); tempRoots.push(base);
+    const root = path.join(base, "preview"); fs.mkdirSync(root);
+    const db = path.join(base, "source.db"); fs.writeFileSync(db, "source bytes");
+    fs.writeFileSync(path.join(root, "user-edit"), "keep this");
+    expect(() => assertPreviewAllocation(root, db, { volume: { bavail: 1, bsize: 4096 } })).toThrow(/allocation refused/);
+    expect(fs.readFileSync(path.join(root, "user-edit"), "utf8")).toBe("keep this");
+  });
+
   it("seeds only exact projected conversation versions into the isolated structure cache", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-structure-cache-"));
     tempRoots.push(root);
@@ -1045,7 +1117,7 @@ describe("iab-preview launcher", () => {
     const sourceCache = path.join(root, "source-structure.db");
     const targetCache = path.join(root, "preview", "conversations", "structure.db");
 
-    const projected = new Database(projectedDb);
+    const projected = new SqliteDatabase(projectedDb);
     projected.exec(`
       CREATE TABLE conversations (id TEXT PRIMARY KEY);
       CREATE TABLE conversation_sources (
@@ -1057,7 +1129,7 @@ describe("iab-preview launcher", () => {
     `);
     projected.close();
 
-    const source = new Database(sourceCache);
+    const source = new SqliteDatabase(sourceCache);
     source.exec(`
       PRAGMA foreign_keys = ON;
       CREATE TABLE cache_conversations (
@@ -1090,17 +1162,17 @@ describe("iab-preview launcher", () => {
       conversations: 1,
       blocks: 1,
     });
-    const seeded = new Database(targetCache, { readonly: true });
+    const seeded = new SqliteDatabase(targetCache, { readonly: true });
     expect(seeded.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
       .toEqual([{ conversation_id: "kept", source_version_id: "version-current" }]);
     expect(seeded.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
       .toEqual([{ cache_conversation_id: 1, position: 0 }]);
     seeded.close();
 
-    const previewDb = new Database(projectedDb);
+    const previewDb = new SqliteDatabase(projectedDb);
     previewDb.prepare("UPDATE conversation_sources SET current_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
     previewDb.close();
-    const privateCache = new Database(targetCache);
+    const privateCache = new SqliteDatabase(targetCache);
     privateCache.prepare("UPDATE cache_conversations SET source_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
     privateCache.prepare("UPDATE cache_blocks SET position = 17 WHERE cache_conversation_id = 1").run();
     privateCache.close();
@@ -1113,7 +1185,7 @@ describe("iab-preview launcher", () => {
     });
     expect(refreshed.status, refreshed.stderr).toBe(0);
     expect(JSON.parse(refreshed.stdout)).toMatchObject({ status: "preserved", conversations: 1, blocks: 1 });
-    const retained = new Database(targetCache, { readonly: true });
+    const retained = new SqliteDatabase(targetCache, { readonly: true });
     expect(retained.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
       .toEqual([{ conversation_id: "kept", source_version_id: "version-preview" }]);
     expect(retained.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
@@ -1146,7 +1218,7 @@ describe("iab-preview launcher", () => {
     setSetting(db, "user.operator_id", operator.id);
     const artifact = recordArtifactVersion(db, { source_kind: "tracked_repo", path: reviewPath,
       role: "review-document", media_type: "text/plain" });
-    expect(artifact.version).toMatchObject({ source_kind: "tracked_repo", custody_mode: "link" });
+    expect(artifact.version).toMatchObject({ source_kind: "tracked_repo", custody_mode: "git" });
     expect(db.prepare("SELECT media_type FROM artifact_blob WHERE content_hash = ?").get(artifact.artifact.content_hash))
       .toEqual({ media_type: "text/plain" });
     db.close();
@@ -1158,7 +1230,7 @@ describe("iab-preview launcher", () => {
     const second = await runLauncherExport("materializeProjectedAgentsReview", details);
     expect(second.status, second.stderr).toBe(0);
     expect(JSON.parse(second.stdout).round_id).toBe(JSON.parse(first.stdout).round_id);
-    const seeded = new Database(fixture.db, { readonly: true });
+    const seeded = new SqliteDatabase(fixture.db, { readonly: true });
     expect(seeded.prepare("SELECT profile, artifact_version_id FROM briefing_rounds").all()).toEqual([
       { profile: "mandible-briefing.v3", artifact_version_id: artifact.version.id },
     ]);
@@ -1168,7 +1240,7 @@ describe("iab-preview launcher", () => {
   it("materializes the exact retired copied-preview shape before startup preparation completes", async () => {
     const source = createSeedFixture();
     installRetiredV1Demo(source, { historicalCompatibleUsers: true });
-    const sourceDb = new Database(source.db);
+    const sourceDb = new SqliteDatabase(source.db);
     for (const ordinal of [2, 3]) {
       sourceDb.prepare(
         `INSERT INTO briefings
@@ -1222,7 +1294,7 @@ describe("iab-preview launcher", () => {
     });
     expect(projection.briefingDemo.rounds).toHaveLength(2);
 
-    const projected = new Database(targetDb, { readonly: true });
+    const projected = new SqliteDatabase(targetDb, { readonly: true });
     expect(projected.prepare(
       "SELECT ordinal, profile FROM briefing_rounds WHERE briefing_id = ? ORDER BY ordinal",
     ).all(projection.briefingDemo.briefing.id)).toEqual([
@@ -1253,7 +1325,7 @@ describe("iab-preview launcher", () => {
   it("fails closed during copied-preview preparation when retired custody is not verified", async () => {
     const source = createSeedFixture();
     const retired = installRetiredV1Demo(source);
-    const sourceDb = new Database(source.db);
+    const sourceDb = new SqliteDatabase(source.db);
     sourceDb.prepare("UPDATE briefing_legacy_custody SET disposition = 'sealed_ambiguous' WHERE briefing_id = ?")
       .run(retired.briefingId);
     sourceDb.pragma("wal_checkpoint(TRUNCATE)");
@@ -1272,7 +1344,7 @@ describe("iab-preview launcher", () => {
     expect(result.stderr).toContain("partial or conflicting: retired v1 custody integrity");
     expect(fileHash(source.db)).toBe(sourceHash);
     expect(fs.existsSync(path.join(targetRoot, "rich-briefing-demo-artifacts"))).toBe(false);
-    const rejectedCopy = new Database(targetDb, { readonly: true });
+    const rejectedCopy = new SqliteDatabase(targetDb, { readonly: true });
     expect(rejectedCopy.prepare("SELECT value FROM settings WHERE key = 'artifact_root'").get())
       .toEqual({ value: path.join(fs.realpathSync.native(source.previewRoot), "rich-briefing-demo-artifacts") });
     expect(rejectedCopy.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 0 });
@@ -1300,7 +1372,7 @@ describe("iab-preview launcher", () => {
     expect(firstPayload.briefing.id).not.toBe(retired.briefingId);
     expect(firstPayload.rounds).toHaveLength(2);
 
-    const upgraded = new Database(fixture.db, { readonly: true });
+    const upgraded = new SqliteDatabase(fixture.db, { readonly: true });
     expect(upgraded.prepare("SELECT title, round_count FROM briefings WHERE briefing_key = ?")
       .get(RICH_BRIEFING_DEMO.briefingKey)).toEqual({ title: RICH_BRIEFING_DEMO.title, round_count: 2 });
     expect(upgraded.prepare("SELECT title, round_count FROM briefings WHERE id = 'unrelated-briefing'").get())
@@ -1328,7 +1400,7 @@ describe("iab-preview launcher", () => {
   it("keeps an unverified zero-round demo shell fail-closed and byte-identical", () => {
     const fixture = createSeedFixture();
     const retired = installRetiredV1Demo(fixture);
-    const db = new Database(fixture.db);
+    const db = new SqliteDatabase(fixture.db);
     db.prepare("UPDATE briefing_legacy_custody SET disposition = 'sealed_ambiguous' WHERE briefing_id = ?")
       .run(retired.briefingId);
     db.close();
@@ -1370,7 +1442,7 @@ describe("iab-preview launcher", () => {
     });
     expect(firstPayload.rounds).toHaveLength(2);
     const dbAfterFirst = fileHash(fixture.db);
-    const countsAfterFirst = new Database(fixture.db, { readonly: true });
+    const countsAfterFirst = new SqliteDatabase(fixture.db, { readonly: true });
     const firstCounts = {
       briefings: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM briefings").get(),
       rounds: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get(),
@@ -1388,7 +1460,7 @@ describe("iab-preview launcher", () => {
     expect(secondPayload.briefing.id).toBe(firstPayload.briefing.id);
     expect(secondPayload.rounds).toEqual(firstPayload.rounds);
     expect(fileHash(fixture.db)).toBe(dbAfterFirst);
-    const dbAfterSecond = new Database(fixture.db, { readonly: true });
+    const dbAfterSecond = new SqliteDatabase(fixture.db, { readonly: true });
     expect({
       briefings: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM briefings").get(),
       rounds: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get(),
@@ -1405,7 +1477,7 @@ describe("iab-preview launcher", () => {
     expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
     expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
 
-    const conflicting = new Database(fixture.db);
+    const conflicting = new SqliteDatabase(fixture.db);
     conflicting.prepare("UPDATE users SET status = 'retired' WHERE slug = 'briefing-demo-reviewer'").run();
     conflicting.close();
     const beforeConflictCheck = fileHash(fixture.db);
@@ -1771,7 +1843,7 @@ describe("iab-preview launcher", () => {
       ready: true,
       instance: {
         role: "preview",
-        allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
+        allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"],
         operational_mutations: "reject",
       },
       file_rpc_dir: sharedFileRpcDir,
@@ -1830,7 +1902,7 @@ describe("iab-preview launcher", () => {
       startup_commit: { hash: currentHead, summary: "current", date: "" },
       instance: {
         role: "preview",
-        allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
+        allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"],
         operational_mutations: "reject",
         preview_browser_enrollment: "allow",
         db_path: db,
@@ -1868,10 +1940,9 @@ describe("iab-preview launcher", () => {
       return candidate.path === previewRoot;
     });
     expect(entry).toMatchObject({
-      action: "skip",
-      shellReadiness: { ok: false, reason: "application root returned HTTP 404" },
+      action: "skip-active",
     });
-    expect(entry.reason).toContain("failed application shell readiness");
+    expect(entry.reason).toContain("recorded port has a consumer");
     expect(entry.reason).not.toContain("passed health and application shell readiness");
   });
 
@@ -1887,7 +1958,7 @@ describe("iab-preview launcher", () => {
       startup_commit: { hash: head, summary: "current", date: "" },
       instance: {
         role: "preview",
-        allowed_effects: ["ledger:read", "ledger:write", "files:preview"],
+        allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"],
         operational_mutations: "reject",
         preview_browser_enrollment: "allow",
         db_path: db,
@@ -2261,7 +2332,7 @@ describe("iab-preview launcher", () => {
     expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
   });
 
-  it("boots out leaked preview launchd jobs and never touches the live daemon label", () => {
+  it("reports registered preview services without stopping them or the live daemon", () => {
     const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-launchctl-"));
     const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
     tempRoots.push(shimDir, previewBase);
@@ -2293,11 +2364,11 @@ describe("iab-preview launcher", () => {
     expect(payload.legacyLaunchdCleanup).toMatchObject({
       supported: true,
       labels: ["bio.mll.mandible.preview.19421.foo"],
-      booted: [{ label: "bio.mll.mandible.preview.19421.foo", mechanism: "bootout", ok: true }],
+      booted: [],
     });
 
     const log = fs.readFileSync(commandLog, "utf8");
-    expect(log).toContain(`bootout gui/${process.getuid()}/bio.mll.mandible.preview.19421.foo`);
+    expect(log).toBe("list\n");
     // Safety-critical: com.mll.mandible supervises the live Mandible daemon.
     // Booting it out would stop the user's daemon, so no launchctl subcommand
     // may ever name a label outside the preview namespace.

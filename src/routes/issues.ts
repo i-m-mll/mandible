@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
@@ -1296,6 +1297,7 @@ export function registerIssueRoutes(
   deps?: {
     sessionRegistry?: import("../registry.js").SessionRegistry;
     sessionManager?: import("../session-manager.js").SessionManager;
+    conversationControl?: import("../conversation-control/service.js").ConversationControlService;
     sessionAliasResolver?: SessionAliasResolver;
   },
 ): void {
@@ -1343,7 +1345,7 @@ export function registerIssueRoutes(
     });
 
     sendJson(res, 200, summaries);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // GET /api/ledger/issues/:issueId — canonical ledger issue detail projection
   server.get("/api/ledger/issues/:issueId", (req, res) => {
@@ -1363,7 +1365,7 @@ export function registerIssueRoutes(
       stage: getQueryParam(req, "stage") === "initial" ? "initial" : "full",
       profile: getQueryParam(req, "profile") === "1",
     });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/umbrella-status", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1384,7 +1386,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/umbrella-status", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/umbrella-adopt", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1415,7 +1417,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to adopt children" });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/umbrella-adopt", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/umbrella-manifest-refresh", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1441,7 +1443,7 @@ export function registerIssueRoutes(
         error: error instanceof Error ? error.message : "failed to refresh umbrella manifest",
       });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/umbrella-manifest-refresh", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/parent-role", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1457,7 +1459,7 @@ export function registerIssueRoutes(
     }
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     sendJson(res, 200, buildParentRoleStatus(db, resolved.issue_id, sessionAliasResolver));
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/parent-role", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1537,7 +1539,7 @@ export function registerIssueRoutes(
       parent_role: buildParentRoleStatus(db, resolved.issue_id, sessionAliasResolver),
       override_required: false,
     });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/head", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1596,7 +1598,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/head", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/body/revisions", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1616,7 +1618,7 @@ export function registerIssueRoutes(
       entity_id: resolved.issue_id,
     });
     sendJson(res, 200, { revisions });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/body/revisions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/work-notes/history", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1636,7 +1638,7 @@ export function registerIssueRoutes(
       entity_id: resolved.issue_id,
     });
     sendJson(res, 200, { revisions });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/work-notes/history", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/ledger/relationships", (req, res) => {
     const body = getBody(req) ?? {};
@@ -1700,7 +1702,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to link relationship" });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/relationships", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/relationships/unlink", (req, res) => {
     const body = getBody(req) ?? {};
@@ -1757,7 +1759,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to unlink relationship" });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/relationships/unlink", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.get("/api/ledger/comments/:commentId/revisions", (req, res) => {
     const commentId = getParam(req, "commentId");
@@ -1784,7 +1786,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "comment not found" });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/comments/:commentId/revisions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/ledger/body-revisions/:revisionId", (req, res) => {
     const revisionId = getParam(req, "revisionId");
@@ -1798,7 +1800,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "body revision not found" });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/body-revisions/:revisionId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // GET /api/issues/:repoId/:issueId/ledger-detail — resolve a route issue ref
   // into the canonical projection used by graph and issue detail panes.
@@ -1819,7 +1821,7 @@ export function registerIssueRoutes(
       stage: getQueryParam(req, "stage") === "initial" ? "initial" : "full",
       profile: getQueryParam(req, "profile") === "1",
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/:repoId/:issueId/ledger-detail", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // POST /api/issues/resolutions — record a commit that resolved an issue
   // Registered before /:repoId to avoid "resolutions" being treated as repoId.
@@ -1863,7 +1865,7 @@ export function registerIssueRoutes(
     }
 
     sendJson(res, 200, { ok: true, ledger_issue_id: ledgerIssueId });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/issues/resolutions", effects: ["ledger:write"], requestSchema: null, reportingCategory: "issues" }, fileRpc: "allow" });
 
   server.post("/api/issues/:repoId", (req, res) => {
     const repoRef = getParam(req, "repoId");
@@ -1963,7 +1965,7 @@ export function registerIssueRoutes(
       source: "mandible",
     });
     sendLedgerIssueProjection(res, db, issue.id, markdownPolicy.warnings);
-  }, { fileRpc: { allowWhen: ({ params }) => !["migration", "reconcile", "scan"].includes(params.repoId ?? "") } });
+  }, { operation: { id: "post:/api/issues/:repoId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "issues" }, fileRpc: { allowWhen: ({ params }) => !["migration", "reconcile", "scan"].includes(params.repoId ?? "") } });
 
   server.post("/api/ledger/issues/:issueId/comments", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1999,7 +2001,7 @@ export function registerIssueRoutes(
       reopen: body?.reopen === true,
     });
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownPolicy.warnings);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/comments", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/checkpoints", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2038,7 +2040,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "invalid checkpoint" });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/checkpoints", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/checkpoints", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2069,7 +2071,7 @@ export function registerIssueRoutes(
       .listIssueCheckpoints(resolved.issue_id, kind)
       .map(checkpointResponse);
     sendJson(res, 200, { checkpoints });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/checkpoints", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.patch?.("/api/ledger/comments/:commentId", (req, res) => {
     const commentId = getParam(req, "commentId");
@@ -2122,7 +2124,7 @@ export function registerIssueRoutes(
       }
       sendJson(res, 404, { error: error instanceof Error ? error.message : "comment not found" });
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/ledger/comments/:commentId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.patch?.("/api/ledger/issues/:issueId", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2233,7 +2235,7 @@ export function registerIssueRoutes(
       );
     }
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownWarnings);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/ledger/issues/:issueId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/worker-status", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2261,7 +2263,7 @@ export function registerIssueRoutes(
       "mandible",
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/worker-status", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/branches", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2295,7 +2297,7 @@ export function registerIssueRoutes(
       "mandible",
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/branches", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/labels", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2333,7 +2335,7 @@ export function registerIssueRoutes(
       attribution: attributionForRequest(db, req),
     });
     sendLedgerIssueProjection(res, db, resolved.issue_id);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/labels", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   // GET /api/issues/find/:issueId — search ledger-backed issues by ID prefix.
   // Registered before /:repoId/:issueId to avoid the literal "find" being treated as repoId.
@@ -2358,7 +2360,7 @@ export function registerIssueRoutes(
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
       return;
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/find/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // GET /api/issues/resolutions/:issueId — get resolutions for an issue
   // Bug: c934e60 — issue lifecycle tracking
@@ -2385,7 +2387,7 @@ export function registerIssueRoutes(
     ).all(issueId);
 
     sendJson(res, 200, rows);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/resolutions/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // GET /api/issues/:repoId/:issueId — issue detail with comments
   server.get("/api/issues/:repoId/:issueId", (req, res) => {
@@ -2413,7 +2415,7 @@ export function registerIssueRoutes(
     );
     if (ledgerIssueId && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
     sendJson(res, 200, result.resolved.issue);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/:repoId/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // GET /api/issues/:repoId/:issueId/context — comprehensive issue context hub
   // Bug: 84cd5ae — issue detail hub aggregation endpoint
@@ -2637,7 +2639,7 @@ export function registerIssueRoutes(
       auth_requests: authRequests,
       branch_info: branchInfo,
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/:repoId/:issueId/context", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // GET /api/issues/:repoId/:issueId/sessions — get linked sessions for an issue
   server.get("/api/issues/:repoId/:issueId/sessions", (req, res) => {
@@ -2691,145 +2693,66 @@ export function registerIssueRoutes(
       }
     }
     sendJson(res, 200, Array.from(linkMap.values()));
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/:repoId/:issueId/sessions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
-  // POST /api/issues/:repoId/:issueId/spawn — spawn an SDK console session for this issue
-  // Bug: cbbb3d9 — spawn agent from issue hub
-  server.post("/api/issues/:repoId/:issueId/spawn", operatorOnlyManagedSessionRoute((req, res) => {
-    const repoIdParam = getParam(req, "repoId");
-    const issueIdParam = getParam(req, "issueId");
-    if (!repoIdParam || !issueIdParam) {
-      sendJson(res, 400, { error: "missing repoId or issueId" });
-      return;
-    }
-
-    const sessionManager = deps?.sessionManager;
-    if (!sessionManager) {
-      sendJson(res, 503, { error: "session manager not available" });
-      return;
-    }
-
+  // Resume the explicitly selected assignment; this action never transfers custody.
+  server.post("/api/issues/:repoId/:issueId/spawn", operatorOnlyManagedSessionRoute(async (req, res) => {
     const db = getDb();
-    const resolvedIssue = resolveIssueDetailForRoute(
-      db,
-      workScanner,
-      repoIdParam,
-      issueIdParam,
-    );
-    if (!resolvedIssue.ok) {
-      sendJson(res, resolvedIssue.status, { error: resolvedIssue.error });
-      return;
-    }
-    const { repoId, issue } = resolvedIssue.resolved;
+    const resolved = resolveIssueDetailForRoute(db, workScanner, getParam(req, "repoId") ?? "", getParam(req, "issueId") ?? "");
+    if (!resolved.ok) return sendJson(res, resolved.status, { error: resolved.error });
+    const { repoId, issue } = resolved.resolved;
+    const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
+    if (!ledgerIssueId) return sendJson(res, 404, { error: "issue_not_found" });
+    if (!enforceIssueProjectAccess(db, req, res, ledgerIssueId, "write")) return;
     const body = getBody(req);
-    const label = typeof body?.label === "string" && body.label.trim()
-      ? body.label.trim()
-      : `Issue: ${issue.title.slice(0, 40)}`;
-
-    // 2. Look up work unit for branch and continuation
-    const workUnitRow = db
-      .prepare(
-        `SELECT * FROM work_units
-         WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')
-         ORDER BY created_at DESC LIMIT 1`
-      )
-      .get(issue.id, repoId) as Record<string, unknown> | undefined;
-
-    const branch = workUnitRow?.branch ? String(workUnitRow.branch) : null;
-    const continuation = workUnitRow?.continuation ? String(workUnitRow.continuation) : null;
-
-    // 3. Look up worktree path for the branch
-    let cwd: string | null = null;
-    if (branch) {
-      const scannerRepos = workScanner.getRepos();
-      const scannerRepo = scannerRepos.find((r) => r.id === repoId);
-      if (scannerRepo) {
-        const branches = workScanner.getBranches(scannerRepo.root);
-        const branchData = branches.find((b) => b.branch === branch);
-        if (branchData?.worktree_path) {
-          cwd = branchData.worktree_path;
-        } else {
-          // Fall back to repo root
-          cwd = scannerRepo.root;
-        }
+    if (typeof body?.work_unit_id !== "string" || !Number.isInteger(body.expected_custody_generation)) {
+      return sendJson(res, 400, { error: "exact_work_unit_required", message: "Select the assigned work unit and its current custody generation." });
+    }
+    const readUnit = () => db.prepare("SELECT * FROM work_units WHERE id = ? AND repo_id = ? AND (ledger_issue_id = ? OR issue_id = ?)")
+      .get(body.work_unit_id, repoId, ledgerIssueId, issue.id) as Record<string, unknown> | undefined;
+    const row = readUnit();
+    if (!row || !["open", "committed"].includes(String(row.state))) return sendJson(res, 409, { error: "work_unit_unavailable" });
+    if (row.custody_generation !== body.expected_custody_generation) return sendJson(res, 409, { error: "custody_generation_conflict" });
+    const assignment = typeof row.assigned_session_id === "string" ? sessionAliasResolver(db, row.assigned_session_id) : null;
+    const nativeId = assignment?.provider_session_id;
+    if (!nativeId) return sendJson(res, 422, { error: "assigned_conversation_unavailable", message: "This work unit has no exact assigned native conversation." });
+    const conversations = db.prepare("SELECT id, source, cwd FROM conversations WHERE session_id = ? AND parent_conversation_id IS NULL").all(nativeId) as { id: string; source: string; cwd: string | null }[];
+    if (conversations.length !== 1) return sendJson(res, 409, { error: "assigned_conversation_ambiguous" });
+    const conversation = conversations[0];
+    const normalizeProvider = (value: unknown) => value === "claude" || value === "claude_code" ? "claude_code" : value;
+    if (normalizeProvider(assignment.provider) !== conversation.source || row.provider && normalizeProvider(row.provider) !== conversation.source) {
+      return sendJson(res, 409, { error: "assigned_provider_conflict" });
+    }
+    const repo = workScanner.getRepos().find(value => value.id === repoId);
+    const checkout = repo && typeof row.branch === "string" ? workScanner.getBranches(repo.root).find(value => value.branch === row.branch)?.worktree_path : null;
+    if (!checkout || !existsSync(checkout)) return sendJson(res, 409, { error: "assigned_checkout_unavailable", message: "Restore the assigned branch checkout before resuming." });
+    const control = deps?.conversationControl;
+    if (!control) return sendJson(res, 503, { error: "conversation_controller_unavailable" });
+    const snapshot = control.getSnapshot(conversation.id);
+    if (!snapshot.ok) return sendJson(res, 422, snapshot);
+    if (snapshot.value.ownership.kind !== "mandible") {
+      const before = JSON.stringify(row);
+      const acquired = await control.resume({ conversation_id: conversation.id, expected_revision: snapshot.value.revision,
+        expected_generation: snapshot.value.ownership.generation, cwd: checkout });
+      if (!acquired.ok) return sendJson(res, 409, acquired);
+      if (JSON.stringify(readUnit()) !== before) {
+        const stopped = await control.stop(conversation.id, acquired.value.ownership.generation);
+        return sendJson(res, 409, { error: "assignment_changed_during_resume", stopped });
       }
+    } else {
+      if (conversation.cwd !== checkout) return sendJson(res, 409, { error: "assigned_controller_checkout_conflict" });
+      if (!await control.ownsController(conversation.id, snapshot.value.ownership.generation)) return sendJson(res, 409, { error: "assigned_controller_unavailable" });
+      if (JSON.stringify(readUnit()) !== JSON.stringify(row)) return sendJson(res, 409, { error: "assignment_changed_during_resume" });
     }
-    if (!cwd) {
-      // Fall back: find repo root from work scanner
-      const scannerRepos = workScanner.getRepos();
-      const scannerRepo = scannerRepos.find((r) => r.id === repoId);
-      if (scannerRepo) {
-        cwd = scannerRepo.root;
-      }
-    }
-
-    // 4. Find provider_session_id from latest conversation linked to this issue (for resume)
-    let providerSessionId: string | null = null;
-    try {
-      const sessionLink = db
-        .prepare(
-          `SELECT si.session_id FROM session_issues si
-           JOIN sessions s ON s.id = si.session_id
-           WHERE si.issue_id = ? AND si.repo_id = ?
-           ORDER BY si.created_at DESC LIMIT 1`
-        )
-        .get(issue.id, repoId) as { session_id: string } | undefined;
-
-      if (sessionLink) {
-        // Check if there's a console session with this mandible_session_id
-        const consoleRow = db
-          .prepare(
-            `SELECT provider_session_id FROM console_sessions
-             WHERE mandible_session_id = ? AND provider_session_id IS NOT NULL
-             ORDER BY created_at DESC LIMIT 1`
-          )
-          .get(sessionLink.session_id) as { provider_session_id: string } | undefined;
-
-        if (consoleRow?.provider_session_id) {
-          providerSessionId = consoleRow.provider_session_id;
-        }
-      }
-    } catch {
-      // Non-critical — proceed without provider_session_id
-    }
-
-    // 5. Create SDK console session (stopped — user sends the first prompt)
-    const consoleSession = sessionManager.create({
-      label,
-      command: "claude",
-      backend_type: "sdk",
-      cwd,
-      provider_session_id: providerSessionId,
-    });
-
-    // 6. Update work unit: assigned_session_id with the console session ID
-    if (workUnitRow?.id) {
-      db.prepare(
-        "UPDATE work_units SET assigned_session_id = ?, updated_at = ? WHERE id = ?"
-      ).run(consoleSession.id, Date.now(), String(workUnitRow.id));
-    }
-
-    sendJson(res, 200, {
-      console_session_id: consoleSession.id,
-      continuation,
-      branch,
-      cwd,
-    });
-  }), { fileRpc: "deny" });
+    sendJson(res, 200, { conversation_id: conversation.id, work_unit_id: row.id, continuation: row.continuation,
+      branch: row.branch, cwd: checkout, custody_generation: row.custody_generation });
+  }), { operation: { id: "post:/api/issues/:repoId/:issueId/spawn", effects: ["ledger:write", "files:production", "process:external"], requestSchema: null, reportingCategory: "issues" }, fileRpc: "deny" });
 
 }
 
 function parseJsonStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === "string");
-  }
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
   if (typeof value !== "string" || !value.trim()) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === "string")
-      : [];
-  } catch {
-    return [];
-  }
+  try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []; }
+  catch { return []; }
 }

@@ -11,68 +11,6 @@ import {
 import { getMandibleConfigPath, getMandibleHomePath } from "./platform-paths.js";
 import { PRODUCTION_ORIGIN } from "./canonical-origin.js";
 
-// Retained only as a reporting taxonomy for request telemetry. Authorization
-// is exclusively the typed effect policy in security/effect-policy.ts.
-export const UNSAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
-  "POST",
-  "PUT",
-  "PATCH",
-  "DELETE",
-]);
-
-// Unsafe-method routes that are read-only in effect and therefore stay
-// available on instances that reject operational mutations.
-export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
-  "POST /api/auth/check",
-  // User-owned appearance and navigation intent has its own effect and
-  // instance-custody boundary; it is not shared operational maintenance.
-  "PUT /api/host-preferences/chat-shown-projects",
-  "PUT /api/host-preferences/sidebar-order",
-  "PUT /api/host-preferences/app-theme",
-  "PUT /api/user-settings/app_rail_order",
-  "PUT /api/user-settings/ui_font_face",
-  "PUT /api/user-settings/ui_font_size",
-  "PUT /api/user-settings/detail_font_face",
-  "PUT /api/user-settings/detail_font_size",
-  "POST /api/briefing-destination-routes/plan",
-  "POST /api/timeline/project",
-]);
-
-export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; category: string }> = [
-  { prefix: "/api/admin", category: "system" },
-  // Issue ce83a84 — starting an external agent session is an operational
-  // mutation even though it writes little: a read-only instance must not be
-  // able to launch a worker against a real working directory.
-  { prefix: "/api/agent-dispatch", category: "agent_dispatch" },
-  { prefix: "/api/artifacts", category: "artifacts" },
-  { prefix: "/api/auth", category: "auth" },
-  { prefix: "/api/backup", category: "backup" },
-  { prefix: "/api/briefing-bundles", category: "briefing" },
-  { prefix: "/api/briefing-destination-routes", category: "briefing" },
-  { prefix: "/api/briefing-groups", category: "briefing" },
-  { prefix: "/api/briefings", category: "briefing" },
-  { prefix: "/api/console", category: "console" },
-  { prefix: "/api/conversation-spawns", category: "conversations" },
-  { prefix: "/api/conversations", category: "conversations" },
-  { prefix: "/api/conversation-custody", category: "conversations" },
-  { prefix: "/api/inbox", category: "inbox" },
-  { prefix: "/api/issues", category: "issues" },
-  { prefix: "/api/knowledge-backrefs", category: "artifacts" },
-  { prefix: "/api/ledger", category: "ledger" },
-  { prefix: "/api/projects", category: "projects" },
-  { prefix: "/api/provider-manifests", category: "providers" },
-  { prefix: "/api/providers", category: "providers" },
-  { prefix: "/api/settings", category: "settings" },
-  { prefix: "/api/sessions", category: "sessions" },
-  { prefix: "/api/spaces", category: "spaces" },
-  { prefix: "/api/system", category: "system" },
-  { prefix: "/api/tasks", category: "tasks" },
-  { prefix: "/api/timeline", category: "timeline" },
-  { prefix: "/api/webhooks", category: "webhooks" },
-  { prefix: "/api/work-units", category: "work_units" },
-  { prefix: "/api/work", category: "work" },
-];
-
 export function resolveInstanceInfo(options: {
   env?: NodeJS.ProcessEnv;
   dbPath?: string | null;
@@ -210,39 +148,6 @@ function hasIsolatedDatabaseCopy(dbPath: string | null, sourceDbPath: string | n
   } catch {
     return false;
   }
-}
-
-/**
- * Classify a request path or a registered route path pattern into its
- * operational mutation category, or null when the route is not an operational
- * mutation. Prefix matching makes this work for both concrete request
- * pathnames (`/api/ledger/issues/abc123/comments`) and route patterns
- * (`/api/ledger/issues/:issueId/comments`).
- */
-export function operationalMutationCategoryForPath(
-  method: string,
-  pathname: string,
-): string | null {
-  const normalizedMethod = method.toUpperCase();
-  if (!UNSAFE_MUTATION_METHODS.has(normalizedMethod)) {
-    return null;
-  }
-
-  if (OPERATIONAL_MUTATION_EXEMPT_ROUTES.has(`${normalizedMethod} ${pathname}`)) {
-    return null;
-  }
-
-  for (const route of OPERATIONAL_ROUTE_CATEGORIES) {
-    if (pathname === route.prefix || pathname.startsWith(`${route.prefix}/`)) {
-      return route.category;
-    }
-  }
-
-  if (pathname === "/api" || pathname.startsWith("/api/")) {
-    return "api";
-  }
-
-  return null;
 }
 
 function normalizeRole(value: string | undefined): InstanceRole {

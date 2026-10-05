@@ -1,3 +1,4 @@
+import { parseDomainEvent, type MandibleEventType } from "./contracts.js";
 import { Worker } from "node:worker_threads";
 import type { Logger } from "./types.js";
 import type {
@@ -15,7 +16,7 @@ interface PendingRequest {
 export interface IngestionActorOptions {
   dbPath: string;
   logger: Logger;
-  publish: (event: string, data: unknown) => void;
+  publish: (event: MandibleEventType, data: unknown) => void;
   workerUrl?: URL;
 }
 
@@ -120,7 +121,9 @@ export class IngestionActor {
       return;
     }
     if (message.kind === "broadcast") {
-      this.options.publish(message.event, message.data);
+      const parsed = parseDomainEvent({ type: message.event, data: message.data });
+      if (!parsed.ok) throw new Error(`Invalid ingestion worker event: ${parsed.error}`);
+      this.options.publish(parsed.value.type, parsed.value.data);
       return;
     }
     const pending = this.pending.get(message.id);

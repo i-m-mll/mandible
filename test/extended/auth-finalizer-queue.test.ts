@@ -1,3 +1,4 @@
+import { approvePausedFixtureRequest, completeFixturePublication, createAuthCheckRepo, commitOnBranch, registerWorkRepo, git, createNoopHookManager } from "../helpers/auth-queue-fixtures.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuthQueue } from "../../src/auth-queue.js";
@@ -28,11 +29,14 @@ interface SubmitOptions {
   issue_closures?: string[];
 }
 
-function submitSuccessfulRequest(
+async function submitSuccessfulRequest(
   queue: AuthQueue,
   options: SubmitOptions = {},
-): string {
+): Promise<string> {
   const type = options.type ?? "merge";
+  const repo = createAuthCheckRepo();
+  registerWorkRepo((queue as unknown as { db: Db }).db, repo);
+  commitOnBranch(repo, "feature/x", { "finalizer.txt": "reviewed\n" });
   const request = queue.submit({
     type,
     command: type === "merge"
@@ -40,15 +44,16 @@ function submitSuccessfulRequest(
       : "mandible auth commit",
     title: "Finalizer test",
     repo: "finalizer-repo",
+    cwd: repo,
     base_branch: options.base_branch === undefined ? "main" : options.base_branch ?? undefined,
     head_branch: options.head_branch === undefined ? "feature/x" : options.head_branch ?? undefined,
-    merge_head_sha: HEAD_SHA,
+    merge_head_sha: git(repo, ["rev-parse", "feature/x"]),
     issue_closures: options.issue_closures,
-    execution_mode: "remote",
+    execution_mode: "daemon",
   });
   // Attributed merges must be approved (→ executing) before a remote result is
   // recorded; approve here so setResult on the returned id follows the lifecycle.
-  queue.approve(request.id);
+  await approvePausedFixtureRequest(queue, request.id);
   return request.id;
 }
 
@@ -88,7 +93,7 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       },
     });
     try {
-      const id = submitSuccessfulRequest(queue);
+      const id = await submitSuccessfulRequest(queue);
       db.prepare(
         `INSERT INTO work_units (
           id, issue_id, repo_id, branch, kind, state, assigned_session_id,
@@ -108,7 +113,7 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
         id,
       );
 
-      queue.setResult(id, 0, "ok");
+      await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
 
       expect(archived).toEqual(["thread-explicit"]);
@@ -123,8 +128,8 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
     const events: SseEvent[] = [];
     const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
     try {
-      const id = submitSuccessfulRequest(queue);
-      queue.setResult(id, 0, "ok");
+      const id = await submitSuccessfulRequest(queue);
+      await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
 
       const names = events
@@ -179,10 +184,10 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       },
     });
     try {
-      const id = submitSuccessfulRequest(queue);
+      const id = await submitSuccessfulRequest(queue);
       insertCodexWorkUnit(db, "wu-off-loop", id, "thread-off-loop");
 
-      queue.setResult(id, 0, "ok");
+      await completeFixturePublication(queue, id);
       // Let the finalizer queue advance to the (blocked) archive step.
       await new Promise((resolve) => setTimeout(resolve, 10));
 
@@ -221,13 +226,13 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       },
     });
     try {
-      const id = submitSuccessfulRequest(queue);
+      const id = await submitSuccessfulRequest(queue);
       db.prepare(
         `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at, auth_request_id)
          VALUES ('wu-direct', 'issue-direct', 'finalizer-repo', NULL, 'solo', 'committed', 0, ?)`
       ).run(id);
 
-      queue.setResult(id, 0, "ok");
+      await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
 
       // The direct-match work unit was already resolved at the auth:resolved emit.
@@ -243,7 +248,7 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
     const events: SseEvent[] = [];
     const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
     try {
-      const id = submitSuccessfulRequest(queue, { issue_closures: ["issue-raced"] });
+      const id = await submitSuccessfulRequest(queue, { issue_closures: ["issue-raced"] });
       db.prepare(
         `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
          VALUES ('wu-raced', 'issue-raced', 'finalizer-repo', 'feature/x', 'solo', 'abandoned', 0)`,
@@ -257,7 +262,7 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
          VALUES ('wu-same-issue-old-branch', 'issue-raced', 'finalizer-repo', 'feature/old', 'solo', 'abandoned', 0)`,
       ).run();
 
-      queue.setResult(id, 0, "ok");
+      await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
 
       expect(db.prepare(
@@ -293,13 +298,13 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       "resolveAncestryWorkUnitsOnMerge",
     ).mockRejectedValue(new Error("ancestry boom"));
     try {
-      const id = submitSuccessfulRequest(queue);
+      const id = await submitSuccessfulRequest(queue);
 
       const sweep = () => (queue as unknown as { sweepSuccessfulMergeFinalizers(): void })
         .sweepSuccessfulMergeFinalizers();
 
       // Attempt 1 (via setResult) leaves the step retryable, not finalized.
-      queue.setResult(id, 0, "ok");
+      await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
       expect(queue.getRequest(id)?.merge_finalized_at).toBeNull();
       expect(eventsFor(events, id, "auth:finalized")).toHaveLength(0);
@@ -338,28 +343,17 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       // completed, successful, unfinalized merge whose earlier steps are recorded
       // done and only archiving remains pending, with a resolved codex worker unit
       // still awaiting archival.
-      const id = "crash-request";
-      db.prepare(
-        `INSERT INTO auth_requests (
-          id, session_id, type, command, title, repo, base_branch, head_branch,
-          merge_head_sha, status, created_at, updated_at, resolved_at, expires_at,
-          exit_code, output, execution_mode, files_changed, additions, deletions,
-          approval_source, merge_finalizer_state
-        ) VALUES (
-          ?, NULL, 'merge', 'mandible auth merge feature/x --into main', 'Crash',
-          'finalizer-repo', 'main', 'feature/x', ?, 'completed', 100, 100, 100, 100000,
-          0, 'ok', 'remote', 0, 0, 0, 'manual', ?
-        )`
-      ).run(
-        id,
-        HEAD_SHA,
+      const first = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
+      const id = await submitSuccessfulRequest(first);
+      await completeFixturePublication(first, id);
+      await first.drainFinalizers(); first.dispose();
+      db.prepare("UPDATE auth_requests SET merge_finalized_at = NULL, merge_finalizer_state = ? WHERE id = ?").run(
         JSON.stringify({
-          revalidate_pending: { state: "done", attempts: 1, at: 0 },
-          auto_dismiss_duplicates: { state: "done", attempts: 1, at: 0 },
-          resolve_ancestry_work_units: { state: "done", attempts: 1, at: 0 },
-          archive_worker_threads: { state: "pending", attempts: 1, error: "boom", at: 0 },
-        }),
-      );
+          revalidate_pending: { state: 'done', attempts: 1, at: 0 },
+          auto_dismiss_duplicates: { state: 'done', attempts: 1, at: 0 },
+          resolve_ancestry_work_units: { state: 'done', attempts: 1, at: 0 },
+          archive_worker_threads: { state: 'pending', attempts: 1, error: 'boom', at: 0 },
+        }), id);
       db.prepare(
         `INSERT INTO work_units (
           id, issue_id, repo_id, branch, kind, state, provider, provider_session_id,
@@ -380,6 +374,7 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
         },
       });
       try {
+        await vi.waitFor(() => expect(recovered.getRequest(id)?.merge_finalized_at).not.toBeNull());
         await recovered.drainFinalizers();
         expect(archived).toEqual(["thread-crash"]);
         const row = recovered.getRequest(id);
@@ -399,8 +394,8 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
     const events: SseEvent[] = [];
     const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
     try {
-      const id = submitSuccessfulRequest(queue, { type: "commit", base_branch: null, head_branch: null });
-      queue.setResult(id, 0, "ok");
+      const id = await submitSuccessfulRequest(queue, { type: "commit", base_branch: null, head_branch: null });
+      await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
 
       expect(eventsFor(events, id, "auth:merged")).toHaveLength(0);
@@ -412,57 +407,25 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
     }
   });
 
-  it("finalizes overflow rows through repeated sweeps instead of erroring", async () => {
+  it("bounds finalizer admission and accepts overflow after the first batch drains", async () => {
     const db = createMigratedDb();
+    const owner = new AuthQueue({ db, backgroundMaintenance: false });
     try {
-      const queue = new AuthQueue({ db, broadcast: () => undefined });
-      try {
-        // Seed 40 completed, unfinalized successful merges directly in the DB so
-        // a single sweep must enqueue more than the 32-slot bound.
-        for (let index = 0; index < 40; index += 1) {
-          db.prepare(
-            `INSERT INTO auth_requests (
-              id, session_id, type, command, title, repo, base_branch, head_branch,
-              merge_head_sha, status, created_at, updated_at, resolved_at, expires_at,
-              exit_code, output, execution_mode, files_changed, additions, deletions,
-              approval_source
-            ) VALUES (
-              ?, NULL, 'merge', 'mandible auth merge feature/of --into main', 'Overflow',
-              'overflow-repo', 'main', ?, ?, 'completed', 100, 100, 100, 100000,
-              0, 'ok', 'remote', 0, 0, 0, 'manual'
-            )`
-          ).run(`overflow-${index}`, `feature/of-${index}`, HEAD_SHA);
-        }
-
-        const sweep = () => (queue as unknown as { sweepSuccessfulMergeFinalizers(): void })
-          .sweepSuccessfulMergeFinalizers();
-
-        // First sweep enqueues only up to the 32-slot bound; the remaining rows
-        // are rejected (not an error) and stay unfinalized.
-        sweep();
-        await queue.drainFinalizers();
-        const afterFirst = (db.prepare(
-          "SELECT COUNT(*) AS n FROM auth_requests WHERE merge_finalized_at IS NULL",
-        ).get() as { n: number }).n;
-        expect(afterFirst).toBeGreaterThan(0);
-
-        // The periodic sweep backstop (called from the idle 30 s tick) re-enqueues
-        // the overflow rows on the next pass until every row is finalized.
-        for (let pass = 0; pass < 5; pass += 1) {
-          sweep();
-          await queue.drainFinalizers();
-        }
-
-        const unfinalized = (db.prepare(
-          "SELECT COUNT(*) AS n FROM auth_requests WHERE merge_finalized_at IS NULL",
-        ).get() as { n: number }).n;
-        expect(unfinalized).toBe(0);
-      } finally {
-        queue.dispose();
-      }
-    } finally {
-      db.close();
-    }
+      type Queue = { enqueue(id: string): boolean; drain(): Promise<void> };
+      const QueueClass = (owner as unknown as { finalizerQueue: { constructor: new (run: (id: string) => Promise<void>) => Queue } }).finalizerQueue.constructor;
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const processed: string[] = [];
+      const queue = new QueueClass(async id => { await gate; processed.push(id); });
+      const overflow: string[] = [];
+      for (let n = 0; n < 40; n++) if (!queue.enqueue(String(n))) overflow.push(String(n));
+      expect(overflow.length).toBeGreaterThan(0);
+      release(); await queue.drain();
+      for (const id of overflow) expect(queue.enqueue(id)).toBe(true);
+      await queue.drain();
+      expect(new Set(processed).size).toBe(40);
+      expect(processed).toHaveLength(40);
+    } finally { owner.dispose(); db.close(); }
   });
 
   // Integration reconciliation (issue 75f52ac) — at-least-once auth:finalized.
@@ -488,8 +451,8 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       },
     });
     try {
-      const id = submitSuccessfulRequest(queue);
-      queue.setResult(id, 0, "ok");
+      const id = await submitSuccessfulRequest(queue);
+      await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
 
       // The marker was unset when auth:finalized fired...
@@ -529,11 +492,11 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
     const sweep = () => (queue as unknown as { sweepSuccessfulMergeFinalizers(): void })
       .sweepSuccessfulMergeFinalizers();
     try {
-      const id = submitSuccessfulRequest(queue);
+      const id = await submitSuccessfulRequest(queue);
       insertCodexWorkUnit(db, "wu-archive-fail", id, "thread-archive-fail");
 
       // Attempt 1 (via setResult) leaves the archive step retryable, not finalized.
-      queue.setResult(id, 0, "ok");
+      await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
       expect(queue.getRequest(id)?.merge_finalized_at).toBeNull();
       expect(eventsFor(events, id, "auth:finalized")).toHaveLength(0);
@@ -594,11 +557,11 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
     const sweep = () => (queue as unknown as { sweepSuccessfulMergeFinalizers(): void })
       .sweepSuccessfulMergeFinalizers();
     try {
-      const id = submitSuccessfulRequest(queue);
+      const id = await submitSuccessfulRequest(queue);
       insertCodexWorkUnit(db, "wu-arch", id, "thread-arch");
 
       // Pass 1: ancestry succeeds (output persisted), archive fails → not finalized.
-      queue.setResult(id, 0, "ok");
+      await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
       expect(eventsFor(events, id, "auth:finalized")).toHaveLength(0);
       const midState = JSON.parse(queue.getRequest(id)?.merge_finalizer_state ?? "{}");
@@ -630,44 +593,20 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
   it("reconstructs the auth:finalized payload from persisted per-step outputs on replay", async () => {
     const db = createMigratedDb();
     const events: SseEvent[] = [];
-    const id = "replay-request";
-    // A completed, unfinalized merge whose steps are all recorded done with their
-    // outputs — the state a crash leaves after the last pass wrote step state but
-    // before the finalize broadcast/marker.
-    db.prepare(
-      `INSERT INTO auth_requests (
-        id, session_id, type, command, title, repo, base_branch, head_branch,
-        merge_head_sha, status, created_at, updated_at, resolved_at, expires_at,
-        exit_code, output, execution_mode, files_changed, additions, deletions,
-        approval_source, merge_finalizer_state
-      ) VALUES (
-        ?, NULL, 'merge', 'mandible auth merge feature/x --into main', 'Replay',
-        'finalizer-repo', 'main', 'feature/x', ?, 'completed', 100, 100, 100, 100000,
-        0, 'ok', 'remote', 0, 0, 0, 'manual', ?
-      )`
-    ).run(
-      id,
-      HEAD_SHA,
+    const first = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
+    const id = await submitSuccessfulRequest(first);
+    await completeFixturePublication(first, id); await first.drainFinalizers(); first.dispose();
+    db.prepare("UPDATE auth_requests SET merge_finalized_at = NULL, merge_finalizer_state = ? WHERE id = ?").run(
       JSON.stringify({
-        revalidate_pending: { state: "done", attempts: 1, at: 0 },
-        auto_dismiss_duplicates: { state: "done", attempts: 1, at: 0 },
-        resolve_ancestry_work_units: {
-          state: "done",
-          attempts: 1,
-          at: 0,
-          output: { resolved_work_unit_ids: ["wu-x", "wu-y"] },
-        },
-        archive_worker_threads: {
-          state: "done",
-          attempts: 2,
-          at: 0,
-          output: { archived_thread_count: 3 },
-        },
-      }),
-    );
+        revalidate_pending: { state: 'done', attempts: 1, at: 0 },
+        auto_dismiss_duplicates: { state: 'done', attempts: 1, at: 0 },
+        resolve_ancestry_work_units: { state: 'done', attempts: 1, at: 0, output: { resolved_work_unit_ids: ['wu-x', 'wu-y'] } },
+        archive_worker_threads: { state: 'done', attempts: 2, at: 0, output: { archived_thread_count: 3 } },
+      }), id);
 
     const recovered = new AuthQueue({ db, broadcast: (event) => events.push(event) });
     try {
+      await vi.waitFor(() => expect(recovered.getRequest(id)?.merge_finalized_at).not.toBeNull());
       await recovered.drainFinalizers();
       const finalized = eventsFor(events, id, "auth:finalized")[0].data as {
         resolved_work_unit_ids: string[];

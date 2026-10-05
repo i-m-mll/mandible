@@ -58,7 +58,7 @@ export function registerHookRoutes(server: RouteRegistrar): void {
     }
     const telemetry = readLatestStatuslineTelemetry(sessionRef, transcriptPath);
     sendJson(res, 200, { telemetry: telemetry ? serializeTelemetry(telemetry) : null });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/hooks/statusline", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/hooks/ingest-nudge", async (req, res) => {
     const payload = parseHookPayload(req);
@@ -69,7 +69,7 @@ export function registerHookRoutes(server: RouteRegistrar): void {
 
     const result = await triggerTargetedIngest(payload);
     sendJson(res, 202, result);
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/hooks/ingest-nudge", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   server.post("/api/hooks/notification", async (req, res) => {
     const payload = parseHookPayload(req);
@@ -83,7 +83,7 @@ export function registerHookRoutes(server: RouteRegistrar): void {
       ok: true,
       attention,
     });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/hooks/notification", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   server.post("/api/hooks/statusline", async (req, res) => {
     const parsed = parseStatuslinePayload(req);
@@ -104,7 +104,7 @@ export function registerHookRoutes(server: RouteRegistrar): void {
       telemetry: serializeTelemetry(telemetry),
       ingest,
     });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/hooks/statusline", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 }
 
 function parseHookPayload(req: RequestLike): {

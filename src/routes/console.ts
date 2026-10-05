@@ -6,155 +6,28 @@
 import { getDb, type Db } from "../db.js";
 import { AttributionReadResolver } from "../identity/read-projection.js";
 import { readSessionIdentityMismatchBatch } from "../identity/session-mismatch.js";
-import type { BackendType, PermissionDecision } from "../agentic-backend.js";
 import { SessionManager } from "../session-manager.js";
-import { SDKBackend, getSdkRunOptionDeclaration } from "../backends/sdk-backend.js";
-import { AcpBackend, getAcpRunOptionDeclaration } from "../backends/acp-backend.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type {
   ConsoleSession,
 } from "../types.js";
 import { sendJson } from "./http.js";
-import {
-  ClaudeLaneDisabledError,
-  DEFAULT_CLAUDE_BACKEND_TYPE,
-  isClaudePtyLaneEnabled,
-} from "../claude-lane-policy.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import {
   ClientAuthzError,
   requireOperator,
 } from "../client-auth/authz.js";
-import {
-  declaredRunOptionsSnapshot,
-  normalizeLegacyRunOptions,
-  SessionRunOptionError,
-  validateRunOptionsPatch,
-  type BackendRunOptionDeclaration,
-  type SessionRunOptionValue,
-} from "../session-run-options.js";
 
-function stripModelArgs(args: string[]): string[] {
-  const next: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === "--model" || args[i] === "-m") {
-      i += 1;
-      continue;
-    }
-    next.push(args[i]);
-  }
-  return next;
-}
-
-function parseStringArray(value: unknown): { ok: true; value: string[] } | { ok: false } | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
-    return { ok: false };
-  }
-  return { ok: true, value };
-}
-
-function parseSessionOptionsBody(
-  declaration: BackendRunOptionDeclaration,
-  body: unknown,
-): { ok: true; options: {
-  runOptions: Record<string, SessionRunOptionValue>;
-  allowedTools?: string[];
-} } | { ok: false; error: string } {
-  const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
-  const allowedKeys = new Set(["runOptions", "allowedTools"]);
-  for (const option of declaration.options) {
-    for (const alias of option.legacyRequestKeys ?? []) allowedKeys.add(alias);
-  }
-  const unsupportedAliases: Record<string, string> = {
-    thinkingEffort: "thinking_effort", permissionMode: "permission_mode", maxTurns: "max_turns",
-    maxCostUsd: "max_cost_usd", systemPrompt: "system_prompt", settingSourcesOverride: "setting_sources",
-  };
-  for (const key of Object.keys(record)) {
-    if (allowedKeys.has(key)) continue;
-    const optionId = unsupportedAliases[key] ?? key;
-    throw new SessionRunOptionError("unsupported_option", optionId, {
-      type: declaration.backendType, command: declaration.command,
-    }, { requestKey: key, requestedValue: record[key] as SessionRunOptionValue });
-  }
-  const canonical = record.runOptions === undefined ? {} : record.runOptions;
-  if (!canonical || typeof canonical !== "object" || Array.isArray(canonical)) {
-    return { ok: false, error: "invalid_run_options" };
-  }
-  let patch;
-  try {
-    patch = normalizeLegacyRunOptions(
-      declaration,
-      canonical as Record<string, SessionRunOptionValue>,
-      record,
-    );
-  } catch (error) {
-    return { ok: false, error: String(error).includes("conflicting_session_option")
-      ? "conflicting_session_option" : "invalid_run_options" };
-  }
-  validateRunOptionsPatch(declaration, declaredRunOptionsSnapshot(declaration), patch);
-
-  const allowedTools = parseStringArray(record.allowedTools);
-  if (allowedTools !== undefined && !allowedTools.ok) {
-    return { ok: false, error: "invalid_allowed_tools" };
-  }
-  return { ok: true, options: {
-    runOptions: patch.values,
-    ...(allowedTools?.ok ? { allowedTools: allowedTools.value } : {}),
-  } };
-}
-
-function sendRunOptionError(res: ResponseLike, error: SessionRunOptionError): void {
-  const status = error.code === "unsupported_option" ? 400 : error.code === "unavailable_value" ? 422
-    : error.code === "provider_timeout" ? 504 : 502;
-  const names = {
-    unsupported_option: "unsupported_session_option",
-    unavailable_value: "unavailable_session_option_value",
-    provider_rejected: "session_option_provider_rejected",
-    provider_timeout: "session_option_provider_timeout",
-    provider_disagreement: "session_option_provider_disagreement",
-    state_indeterminate: "session_option_state_indeterminate",
-  } as const;
-  const payload: Record<string, unknown> = {
-    error: names[error.code], code: error.code, option: error.optionId,
-    ...(error.details.requestKey ? { requestKey: error.details.requestKey } : {}),
-    backend: error.backend, message: error.message,
-    ...(error.details.currentValue !== undefined ? { currentValue: error.details.currentValue } : {}),
-    ...(error.details.allowedValues ? { allowedValues: error.details.allowedValues } : {}),
-    ...(error.details.applied ? { applied: error.details.applied } : {}),
-    ...(error.details.snapshot ? { runOptions: error.details.snapshot } : {}),
-  };
-  const declaration = error.details.snapshot?.options.find((option) => option.id === error.optionId);
-  if (error.details.requestedValue !== undefined && declaration?.kind !== "text" && declaration?.kind !== "multi_select") {
-    payload.requestedValue = error.details.requestedValue;
-  }
-  sendJson(res, status, payload);
-}
-
-function resolveDeclaration(
-  manager: SessionManager,
-  backendType: BackendType,
-  command: string,
-): BackendRunOptionDeclaration {
-  const method = (manager as SessionManager & {
-    describeRunOptionDeclaration?: (type: BackendType, command: string) => BackendRunOptionDeclaration;
-  }).describeRunOptionDeclaration;
-  if (typeof method === "function") return method.call(manager, backendType, command);
-  if (backendType === "sdk") return getSdkRunOptionDeclaration(command);
-  if (backendType === "acp") return getAcpRunOptionDeclaration(command);
-  return { backendType, command, options: [] };
-}
 
 // Bug: 81c9d85 — enrich ConsoleSession with is_processing from SDKBackend state
+function requireTerminalMutation(res: ResponseLike, session: { meta: ConsoleSession }): boolean {
+  if (session.meta.backend_type === "pty" && !session.meta.channel_enabled) return true;
+  sendJson(res, 410, { error: "conversation_control_required", provider_session_id: session.meta.provider_session_id, message: "Use this conversation in Chats for managed operations." });
+  return false;
+}
+
 function enrichWithProcessing(backend: { meta: ConsoleSession }): ConsoleSession {
-  const meta = backend.meta;
-  if (backend instanceof SDKBackend) {
-    return { ...meta, is_processing: backend.isProcessing };
-  }
-  if (backend instanceof AcpBackend) {
-    return { ...meta, is_processing: backend.isProcessing };
-  }
-  return { ...meta, is_processing: false };
+  return { ...backend.meta, is_processing: false };
 }
 
 function requireManagedSessionAccess(
@@ -290,7 +163,7 @@ export function registerConsoleRoutes(
         : null,
     }));
     res.status(200).json({ sessions });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/lane-policy — which Claude lanes this install ships
@@ -301,30 +174,36 @@ export function registerConsoleRoutes(
   // ------------------------------------------------------------------
   server.get("/api/console/lane-policy", (_req, res) => {
     sendJson(res, 200, {
-      claude_default_backend_type: DEFAULT_CLAUDE_BACKEND_TYPE,
-      claude_pty_lane_enabled: isClaudePtyLaneEnabled(),
+      terminal_backend_type: "pty",
+      managed_providers: ["claude_code", "codex"],
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/lane-policy", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/console/run-options", (req, res) => {
     const backendType = req.query.backend_type;
     const command = req.query.command;
-    if (!(["pty", "sdk", "spawn", "acp"] as unknown[]).includes(backendType) || typeof command !== "string" || !command) {
+    if (backendType !== "pty" || typeof command !== "string" || !command) {
       sendJson(res, 400, { error: "invalid_run_options_query" });
       return;
     }
-    sendJson(res, 200, { runOptions: manager.describeRunOptions(backendType as BackendType, command) });
-  }, { fileRpc: "deny" });
+    sendJson(res, 200, { runOptions: manager.describeRunOptions("pty", command) });
+  }, { operation: { id: "get:/api/console/run-options", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
-  // POST /api/console/sessions — retired; creation has one Mandible authority
+  // POST /api/console/sessions — create a real terminal
   // ------------------------------------------------------------------
   server.post("/api/console/sessions", globalCapabilityRoute("spawn_console", async (_req, res) => {
-    sendJson(res, 410, {
-      error: "conversation_spawn_authority_required",
-      message: "Create conversations through POST /api/conversation-spawns with the versioned Mandible request contract.",
-    });
-  }, { authenticated: true }), { fileRpc: "deny" });
+    const body = (_req.body ?? {}) as Record<string, unknown>;
+    if (body.backend_type && body.backend_type !== "pty" || body.provider_session_id || body.channel_enabled || body.transport_lane && body.transport_lane !== "pty") {
+      return sendJson(res, 422, { error: "managed_conversation_required", message: "Create Claude and Codex Chats through conversation-spawns." });
+    }
+    if (typeof body.command !== "string" || !body.command.trim() || body.args !== undefined && (!Array.isArray(body.args) || !body.args.every((value) => typeof value === "string"))) {
+      return sendJson(res, 400, { error: "invalid_terminal_request" });
+    }
+    const session = manager.create({ label: typeof body.label === "string" ? body.label : "Terminal", command: body.command,
+      args: body.args as string[] | undefined, cwd: typeof body.cwd === "string" ? body.cwd : undefined, backend_type: "pty", transport_lane: "pty" });
+    sendJson(res, 201, { session });
+  }, { authenticated: true }), { operation: { id: "post:/api/console/sessions", effects: ["ledger:write", "process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
 
   // ------------------------------------------------------------------
@@ -338,7 +217,7 @@ export function registerConsoleRoutes(
     }
     if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
     res.status(200).json({ session: enrichWithProcessing(ptySession) });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.patch("/api/console/sessions/:id", async (req, res) => {
     const id = req.params.id;
@@ -348,40 +227,18 @@ export function registerConsoleRoutes(
       return;
     }
     if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
+    if (!requireTerminalMutation(res, ptySession)) return;
 
     const body = (req.body ?? {}) as { model?: unknown; label?: unknown };
     const patch: Partial<Pick<ConsoleSession, "label" | "args">> = {};
     if (typeof body.label === "string" && body.label.trim()) {
       patch.label = body.label.trim();
     }
-    const modelOption = resolveDeclaration(
-      manager,
-      ptySession.meta.backend_type,
-      ptySession.meta.command,
-    ).options.find((option) => option.id === "model");
-    if (typeof body.model === "string" && modelOption?.support.status === "supported") {
-      try {
-        const result = await manager.updateOptions(id, { runOptions: { model: body.model } });
-        if (patch.label !== undefined) manager.updateConfig(id, { label: patch.label });
-        res.status(200).json({ ...result, session: manager.get(id)?.meta ?? result.session });
-      } catch (error) {
-        if (error instanceof SessionRunOptionError) { sendRunOptionError(res, error); return; }
-        throw error;
-      }
-      return;
-    }
-    if (typeof body.model === "string") {
-      const nextArgs = stripModelArgs(ptySession.meta.args);
-      const model = body.model.trim();
-      if (model) {
-        nextArgs.push("--model", model);
-      }
-      patch.args = nextArgs;
-    }
+    if (body.model !== undefined) return sendJson(res, 422, { error: "terminal_has_no_managed_model", message: "Set provider options on the conversation in Chats." });
 
     const session = manager.updateConfig(id, patch);
     res.status(200).json({ session });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "patch:/api/console/sessions/:id", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   server.get("/api/console/sessions/:id/options", (req, res) => {
     const session = manager.get(req.params.id);
@@ -391,7 +248,7 @@ export function registerConsoleRoutes(
       runOptions: manager.getRunOptions(req.params.id),
       mandibleControls: manager.getSessionOptionsControls(req.params.id),
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/options", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.patch("/api/console/sessions/:id/options", async (req, res) => {
     const id = req.params.id;
@@ -401,23 +258,10 @@ export function registerConsoleRoutes(
       return;
     }
     if (!requireManagedSessionAccess(req, res, manager, session)) return;
+    if (!requireTerminalMutation(res, session)) return;
 
-    try {
-      const declaration = resolveDeclaration(manager, session.meta.backend_type, session.meta.command);
-      const parsed = parseSessionOptionsBody(declaration, req.body ?? {});
-      if (!parsed.ok) { sendJson(res, 400, { error: parsed.error }); return; }
-      const source = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
-      const legacyKeys = ["model", "thinkingEffort", "permissionMode", "maxTurns", "maxCostUsd", "systemPrompt", "settingSourcesOverride"];
-      const legacy = Object.fromEntries(legacyKeys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
-      const result = await manager.updateOptions(id, Object.keys(source.runOptions as object ?? {}).length > 0
-        ? parsed.options
-        : { ...legacy, allowedTools: parsed.options.allowedTools });
-      res.status(200).json(result && typeof result === "object" && "session" in result ? result : { session: result });
-    } catch (error) {
-      if (error instanceof SessionRunOptionError) { sendRunOptionError(res, error); return; }
-      throw error;
-    }
-  }, { fileRpc: "deny" });
+    sendJson(res, 422, { error: "terminal_has_no_managed_options", message: "Set provider options on the conversation in Chats." });
+  }, { operation: { id: "patch:/api/console/sessions/:id/options", effects: ["ledger:read"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // DELETE /api/console/sessions/:id — stop and delete
@@ -434,9 +278,10 @@ export function registerConsoleRoutes(
       sendJson(res, 403, { error: "cannot_delete_operator" });
       return;
     }
+    if (!requireTerminalMutation(res, ptySession)) return;
     manager.delete(id);
     res.status(200).json({ ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "delete:/api/console/sessions/:id", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/start — start a stopped session
@@ -449,23 +294,14 @@ export function registerConsoleRoutes(
       return;
     }
     if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
+    if (!requireTerminalMutation(res, ptySession)) return;
     if (ptySession.meta.status === "running") {
       sendJson(res, 400, { error: "already_running" });
       return;
     }
-    try {
-      manager.start(id);
-    } catch (error) {
-      // Issue 8aadf70 — a Claude PTY session recorded while the local-only lane
-      // was enabled must not restart after the lane is turned off.
-      if (error instanceof ClaudeLaneDisabledError) {
-        sendJson(res, error.status, { error: error.code, message: error.message });
-        return;
-      }
-      throw error;
-    }
+    manager.start(id);
     res.status(200).json({ session: ptySession.meta });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/start", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/stop — stop a running session
@@ -478,6 +314,7 @@ export function registerConsoleRoutes(
       return;
     }
     if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
+    if (!requireTerminalMutation(res, ptySession)) return;
     if (ptySession.meta.status !== "running") {
       sendJson(res, 400, { error: "not_running" });
       return;
@@ -485,12 +322,12 @@ export function registerConsoleRoutes(
     const body = (req.body ?? {}) as { signal?: string };
     manager.stop(id, typeof body.signal === "string" ? body.signal : undefined);
     res.status(200).json({ session: ptySession.meta });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/stop", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/restart — stop + start
   // ------------------------------------------------------------------
-  server.post("/api/console/sessions/:id/restart", (req, res) => {
+  server.post("/api/console/sessions/:id/restart", async (req, res) => {
     const id = req.params.id;
     const ptySession = manager.get(id);
     if (!ptySession) {
@@ -498,6 +335,7 @@ export function registerConsoleRoutes(
       return;
     }
     if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
+    if (!requireTerminalMutation(res, ptySession)) return;
     if (ptySession.meta.status === "running") {
       manager.stop(id, "SIGHUP");
     }
@@ -505,7 +343,7 @@ export function registerConsoleRoutes(
     ptySession.clear();
     manager.start(id);
     res.status(200).json({ session: ptySession.meta });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/restart", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id/events — historical stream events
@@ -526,7 +364,7 @@ export function registerConsoleRoutes(
     res.status(200).json({
       events: sliced,
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/events", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id/params — per-message parameter snapshot
@@ -565,7 +403,7 @@ export function registerConsoleRoutes(
       ).all(id);
       res.status(200).json({ params: rows });
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/params", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/console/sessions/:id/permissions", (req, res) => {
     const id = req.params.id;
@@ -575,8 +413,8 @@ export function registerConsoleRoutes(
       return;
     }
     if (!requireManagedSessionAccess(req, res, manager, session)) return;
-    res.status(200).json({ requests: manager.getPermissions(id) });
-  }, { fileRpc: "deny" });
+    res.status(200).json({ requests: [] });
+  }, { operation: { id: "get:/api/console/sessions/:id/permissions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.post("/api/console/sessions/:id/permission/:requestId", (req, res) => {
     const id = req.params.id;
@@ -586,24 +424,10 @@ export function registerConsoleRoutes(
       return;
     }
     if (!requireManagedSessionAccess(req, res, manager, session)) return;
+    if (!requireTerminalMutation(res, session)) return;
 
-    const decision = (req.body ?? {}) as { decision?: unknown };
-    if (!isPermissionDecision(decision.decision)) {
-      sendJson(res, 400, { error: "invalid_decision" });
-      return;
-    }
-
-    const resolved = manager.resolvePermission(
-      id,
-      req.params.requestId,
-      decision.decision as PermissionDecision,
-    );
-    if (!resolved) {
-      sendJson(res, 404, { error: "not_found" });
-      return;
-    }
-    res.status(200).json({ ok: true });
-  }, { fileRpc: "deny" });
+    sendJson(res, 422, { error: "terminal_has_no_permission_protocol" });
+  }, { operation: { id: "post:/api/console/sessions/:id/permission/:requestId", effects: ["ledger:read"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   server.get("/api/console/sessions/:id/usage", (req, res) => {
     const id = req.params.id;
@@ -614,7 +438,7 @@ export function registerConsoleRoutes(
     }
     if (!requireManagedSessionAccess(req, res, manager, session)) return;
     res.status(200).json({ usage: manager.getUsage(id) });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/usage", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/resize — resize PTY
@@ -627,6 +451,7 @@ export function registerConsoleRoutes(
       return;
     }
     if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
+    if (!requireTerminalMutation(res, ptySession)) return;
     const body = (req.body ?? {}) as { cols?: unknown; rows?: unknown };
     const cols = typeof body.cols === "number" ? body.cols : NaN;
     const rows = typeof body.rows === "number" ? body.rows : NaN;
@@ -636,7 +461,7 @@ export function registerConsoleRoutes(
     }
     manager.resize(id, cols, rows);
     res.status(200).json({ ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/resize", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id/buffer — ring buffer snapshot
@@ -654,7 +479,7 @@ export function registerConsoleRoutes(
       data: buf.toString("base64"),
       bytes: buf.length,
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/buffer", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   server.post("/api/console/sessions/:id/prompt", (req, res) => {
@@ -665,6 +490,7 @@ export function registerConsoleRoutes(
       return;
     }
     if (!requireManagedSessionAccess(req, res, manager, session)) return;
+    if (!requireTerminalMutation(res, session)) return;
 
     const body = (req.body ?? {}) as { prompt?: unknown };
     if (typeof body.prompt !== "string" || !body.prompt.trim()) {
@@ -674,7 +500,7 @@ export function registerConsoleRoutes(
 
     const prompt = body.prompt.trim();
     try {
-      manager.sendPrompt(id, prompt);
+      manager.write(id, `${prompt}\r`);
     } catch (error) {
       if (String(error).includes("unsupported_prompt_backend")) {
         sendJson(res, 400, { error: "unsupported_prompt_backend" });
@@ -688,7 +514,7 @@ export function registerConsoleRoutes(
     }
 
     res.status(202).json({ ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/prompt", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   server.post("/api/console/sessions/:id/cancel", (req, res) => {
     const id = req.params.id;
@@ -698,15 +524,10 @@ export function registerConsoleRoutes(
       return;
     }
     if (!requireManagedSessionAccess(req, res, manager, session)) return;
+    if (!requireTerminalMutation(res, session)) return;
 
-    const cancelled = manager.cancelPrompt(id);
-    if (!cancelled) {
-      sendJson(res, 409, { error: "cancel_not_supported_or_idle" });
-      return;
-    }
-
-    res.status(202).json({ ok: true });
-  }, { fileRpc: "deny" });
+    sendJson(res, 422, { error: "terminal_has_no_managed_turn", message: "Use terminal input to interrupt a shell process." });
+  }, { operation: { id: "post:/api/console/sessions/:id/cancel", effects: ["ledger:read"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/pinned — ordered list of pinned session IDs
@@ -724,12 +545,12 @@ export function registerConsoleRoutes(
     }
     const operatorId = db.prepare(
       "SELECT value FROM settings WHERE key = 'console_operator_session_id'",
-    ).pluck().get() as string | undefined;
+    ).get()?.value as string | undefined;
     if (operatorId && !isOperatorRequest(req)) {
       ids = ids.filter((id) => id !== operatorId);
     }
     res.status(200).json({ ids });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/pinned", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // PUT /api/console/pinned — replace pinned session list
@@ -744,7 +565,7 @@ export function registerConsoleRoutes(
     const db = getDb();
     const operatorId = db.prepare(
       "SELECT value FROM settings WHERE key = 'console_operator_session_id'",
-    ).pluck().get() as string | undefined;
+    ).get()?.value as string | undefined;
     let responseIds = requestedIds;
     let persistedIds = requestedIds;
     if (operatorId && !isOperatorRequest(req)) {
@@ -769,42 +590,28 @@ export function registerConsoleRoutes(
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     ).run("console_pinned_sessions", JSON.stringify(persistedIds), Date.now());
     res.status(200).json({ ids: responseIds });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "put:/api/console/pinned", effects: ["ledger:write"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/operator — operator session details
   // ------------------------------------------------------------------
   server.get("/api/console/operator", (req, res) => {
     if (!requireOperatorRoute(req, res)) return;
-    const operatorSession = manager.getAll().find((s) => s.meta.is_operator);
+    const operatorSession = manager.operator();
     res.status(200).json({ session: operatorSession?.meta ?? null });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/operator", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/operator/restart — kill and restart operator
   // ------------------------------------------------------------------
-  server.post("/api/console/operator/restart", (req, res) => {
+  server.post("/api/console/operator/restart", async (req, res) => {
     if (!requireOperatorRoute(req, res)) return;
-    const operatorSession = manager.getAll().find((s) => s.meta.is_operator);
+    const operatorSession = manager.operator();
     if (!operatorSession) {
       sendJson(res, 404, { error: "not_found" });
       return;
     }
-    if (operatorSession.meta.status === "running") {
-      manager.stop(operatorSession.id, "SIGHUP");
-    }
-    manager.start(operatorSession.id);
+    await manager.restart(operatorSession.id);
     res.status(200).json({ session: operatorSession.meta });
-  }, { fileRpc: "deny" });
-}
-
-function isPermissionDecision(value: unknown): value is PermissionDecision {
-  return (
-    value === "deny" ||
-    value === "allow" ||
-    value === "allow_always" ||
-    value === "reject_once" ||
-    value === "reject_always" ||
-    (typeof value === "string" && /^option:[0-9A-Za-z_-]+$/.test(value))
-  );
+  }, { operation: { id: "post:/api/console/operator/restart", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 }

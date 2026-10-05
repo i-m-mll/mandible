@@ -46,8 +46,8 @@ beforeEach(async () => {
   router = new Router({ clientAuth: auth, instance: instance() });
   registerUserRoutes(router);
   router.get('/api/read', (req, res) => res.json({ identity: req.client_identity, ambient: req.ambient_identity,
-    localManaged: req.local_managed_identity, managed: req.managed_client }), { fileRpc: 'allow' });
-  router.post('/api/write', (req, res) => res.json({ identity: req.client_identity }), { fileRpc: 'allow' });
+    localManaged: req.local_managed_identity, managed: req.managed_client }), { fileRpc: 'allow', operation: { id: 'socket.read', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
+  router.post('/api/write', (req, res) => res.json({ identity: req.client_identity }), { fileRpc: 'allow', operation: { id: 'socket.write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
   const serverOptions: Parameters<typeof createServer>[0] = { db, sse: new SseManager(), logger: () => undefined, version: 'test', router,
     getStartupInfo: () => null, instance: instance(), clientAuth: auth };
   tcpServer = createServer(serverOptions);

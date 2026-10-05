@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { MANAGED_REMINDER_SCHEMA } from "../../src/contracts.js";
 import { migrate, type Db } from "../../src/db.js";
@@ -36,7 +36,7 @@ function request(
 }
 
 beforeEach(() => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   userId = createUser(db, { slug: "reminder-agent", kind: "agent", display_name: "Reminder Agent" }, NOW).id;
   projectId = resolveProjectForCheckout(db, {
@@ -144,7 +144,7 @@ describe("managed reminder service", () => {
       `INSERT INTO ledger_issues (
          id, short_id, project_id, title, body, status, kind, priority,
          author_actor_type, author_display, source, created_at, updated_at, worker_status
-       ) VALUES (?, ?, ?, 'Close me', '', 'open', 'task', 'normal',
+       ) VALUES (?, ?, ?, 'Close me', '', 'open', 'feature', 'normal',
                  'mandible_user', 'Agent', 'mandible', ?, ?, 'none')`,
     ).run("issue-canonical", "closeme", projectId, NOW, NOW);
     const issueReminder = createManagedReminder(
@@ -154,7 +154,7 @@ describe("managed reminder service", () => {
       { now: NOW, projectId },
     );
     expect(issueReminder.reminder.lifecycle).toBe("armed");
-    db.prepare("UPDATE ledger_issues SET status = 'closed', closed_at = ? WHERE id = ?")
+    db.prepare("UPDATE ledger_issues SET status = 'closed', resolution = 'delivered', closed_at = ? WHERE id = ?")
       .run(NOW + 10, "issue-canonical");
     expect(reconcileManagedReminders(db, NOW + 20)).toMatchObject({ fired: 1 });
 

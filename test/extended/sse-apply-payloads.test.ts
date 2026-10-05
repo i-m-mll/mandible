@@ -4,7 +4,7 @@ import {
   shouldSkipFallbackPoll,
   __resetSharedSseForTests,
 } from '../../ui/src/sse-shared';
-import { __resetBrowserSessionForTests, initializeBrowserSession } from '../../ui/src/client-auth-token';
+import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
 import {
   applyConversationAppendPayload,
   mergeConversationSummaryIntoList,
@@ -116,8 +116,7 @@ function block(id: string, position: number): ConversationBlock {
 describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)', () => {
   beforeEach(async () => {
     __resetBrowserSessionForTests();
-    await initializeBrowserSession(async () => new Response(JSON.stringify({ authenticated: true, session: {
-      family_id: 'family-sse', audience: 'production', csrf_token: 'csrf-sse', effect_ceiling: ['ledger:read'],
+    await ensureClientAccess(async () => new Response(JSON.stringify({ authenticated: true, session: { csrf_token: 'csrf-sse',
     } }), { status: 200, headers: { 'content-type': 'application/json' } }));
     reset();
   });
@@ -148,6 +147,7 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       current = next;
     });
     handle.connect();
+    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
     const es = FakeEventSource.instances[0];
     es.open();
 
@@ -184,6 +184,7 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       current = next;
     });
     handle.connect();
+    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
     const es = FakeEventSource.instances[0];
     es.open();
 
@@ -212,6 +213,7 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
     const handle = acquireSharedSse();
     handle.on('conversation:new', () => scheduleListRefetch());
     handle.connect();
+    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
     const es = FakeEventSource.instances[0];
     es.open();
 
@@ -241,6 +243,7 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       else if (result.refetch) refetches += 1;
     });
     handle.connect();
+    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
     const es = FakeEventSource.instances[0];
     es.open();
 
@@ -265,6 +268,7 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       dispatches += 1;
     });
     handle.connect();
+    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
     const es = FakeEventSource.instances[0];
     es.open();
 
@@ -282,12 +286,14 @@ describe('SSE payload application (patch, gap, debounce, heartbeat, reconnect)',
       if (reconnected) resyncs += 1;
     });
     handle.connect();
+    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
     const es1 = FakeEventSource.instances[0];
     es1.open(); // first open: not a reconnect
     expect(resyncs).toBe(0);
 
     es1.error();
     await vi.advanceTimersByTimeAsync(500);
+    await vi.waitFor(() => expect(FakeEventSource.instances.length).toBe(2));
     FakeEventSource.instances[1].open(); // reopen: reconnect
     await vi.waitFor(() => expect(resyncs).toBe(1));
   });

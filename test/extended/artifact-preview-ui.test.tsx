@@ -1,6 +1,7 @@
+import { establishTestClientAccess } from '../helpers/local-client-access';
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/preact';
 import { render } from './notice-test-render';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   ArtifactContentResult,
@@ -15,6 +16,8 @@ import {
   artifactPreview,
   highlightArtifactCode,
 } from '../../ui/src/views/artifacts';
+
+beforeEach(establishTestClientAccess);
 
 afterEach(() => {
   cleanup();

@@ -1,4 +1,5 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
+import { parseCommand, stringOption, numberOption, flagOption } from "./grammar.js";
 
 import {
   copyForwardLegacyDaemonLogs,
@@ -25,48 +26,13 @@ type Options = {
   limit?: number;
 };
 
-function usage(): never {
-  process.stderr.write(`Usage:
-  mandible logs daemon copy [--batch-size N] [--max-batches N] [--canonical-db PATH] [--log-db PATH]
-  mandible logs daemon reconcile [--batch-size N] [--max-batches N] [--canonical-db PATH] [--log-db PATH]
-  mandible logs daemon verify [--no-record] [--canonical-db PATH] [--log-db PATH]
-  mandible logs daemon reclaim-plan [--canonical-db PATH] [--log-db PATH]
-  mandible logs daemon export [--level LEVEL] [--event EVENT] [--subsystem NAME] [--since MS] [--until MS] [--limit N]
-
-Copy is bounded and resumable. Verify records its pass only in the operational-log
-database. Reclaim-plan is read-only and never drops rows, indexes, or tables.
-`);
-  process.exit(2);
-}
 
 function parseArgs(argv: string[]): Options {
-  const command = argv.shift();
-  if (!command || !["copy", "reconcile", "verify", "reclaim-plan", "export"].includes(command)) usage();
-  const options: Options = {
-    command,
-    canonicalDbPath: getDbPath(),
-    record: true,
-  };
-  while (argv.length > 0) {
-    const arg = argv.shift();
-    switch (arg) {
-      case "--canonical-db": options.canonicalDbPath = requireValue(argv, arg); break;
-      case "--log-db": options.logDbPath = requireValue(argv, arg); break;
-      case "--batch-size": options.batchSize = positiveInteger(requireValue(argv, arg), arg); break;
-      case "--max-batches": options.maxBatches = positiveInteger(requireValue(argv, arg), arg); break;
-      case "--no-record": options.record = false; break;
-      case "--level": options.level = requireValue(argv, arg); break;
-      case "--event": options.event = requireValue(argv, arg); break;
-      case "--subsystem": options.subsystem = requireValue(argv, arg); break;
-      case "--since": options.since = finiteNumber(requireValue(argv, arg), arg); break;
-      case "--until": options.until = finiteNumber(requireValue(argv, arg), arg); break;
-      case "--limit": options.limit = positiveInteger(requireValue(argv, arg), arg); break;
-      case "-h":
-      case "--help": usage();
-      default: throw new Error(`unknown option: ${arg ?? ""}`);
-    }
-  }
-  return options;
+  const parsed = parseCommand(["logs", "daemon"], argv);
+  return { command: parsed.command.split(".").at(-1)!, canonicalDbPath: stringOption(parsed, "canonical-db") ?? getDbPath(),
+    logDbPath: stringOption(parsed, "log-db"), batchSize: numberOption(parsed, "batch-size"), maxBatches: numberOption(parsed, "max-batches"),
+    record: !flagOption(parsed, "no-record"), level: stringOption(parsed, "level"), event: stringOption(parsed, "event"),
+    subsystem: stringOption(parsed, "subsystem"), since: numberOption(parsed, "since"), until: numberOption(parsed, "until"), limit: numberOption(parsed, "limit") };
 }
 
 function main(): void {
@@ -126,23 +92,11 @@ function exportRows(db: import("../db.js").Db, options: Options): void {
   for (const row of rows) process.stdout.write(`${JSON.stringify(row)}\n`);
 }
 
-function requireValue(argv: string[], option: string): string {
-  const value = argv.shift();
-  if (!value) throw new Error(`${option} requires a value`);
-  return value;
-}
 
-function positiveInteger(value: string, option: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${option} requires a positive integer`);
-  return parsed;
-}
 
-function finiteNumber(value: string, option: string): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`${option} requires a finite number`);
-  return parsed;
-}
+
+
+
 
 function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);

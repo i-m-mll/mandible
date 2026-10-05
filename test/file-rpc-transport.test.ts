@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { FileRpcTransport, defaultFileRpcDirForInstance } from "../src/file-rpc-transport.js";
@@ -125,13 +125,13 @@ function buildPolicyRouter(): Router {
     router[method.toLowerCase() as "get" | "post" | "patch" | "put" | "delete"](
       routePath,
       noop,
-      { fileRpc: "allow" },
+      { operation: { id: `fixture:${method}:${routePath}`, effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" },
     );
   }
   router.post(
     "/api/issues/:repoId",
     noop,
-    { fileRpc: "allow" },
+    { operation: { id: "fixture:post:/api/issues/:repoId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" },
   );
   return router;
 }
@@ -207,7 +207,7 @@ describe("file RPC transport", () => {
         issue_id: req.params.issueId,
         include: req.query.include,
       });
-    }, { fileRpc: "allow" });
+    }, { operation: { id: "fixture:get:/api/ledger/issues/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -238,10 +238,10 @@ describe("file RPC transport", () => {
     const router = new Router();
     router.post("/api/work-units/claim", (req, res) => {
       res.json({ ambient_identity: req.ambient_identity });
-    }, { fileRpc: "allow" });
+    }, { operation: { id: "fixture:post:/api/work-units/claim", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
     router.post("/api/work-units/release", (req, res) => {
       res.json({ ambient_identity: req.ambient_identity, body: req.body });
-    }, { fileRpc: "allow" });
+    }, { operation: { id: "fixture:post:/api/work-units/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -291,7 +291,7 @@ describe("file RPC transport", () => {
       const contentPath = (req.body as Record<string, unknown>).content_path as string;
       attachmentBytes = fs.readFileSync(contentPath, "utf8");
       res.json({ artifact: { id: "artifact:abc123def456", availability: "present", custody_mode: "copy" } });
-    }, { fileRpc: "allow" });
+    }, { operation: { id: "fixture:post:/api/artifacts/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(path.join(tempDir, "req-art.attach-content_path"), "PK big zip bytes", "utf8");
@@ -327,7 +327,7 @@ describe("file RPC transport", () => {
     router.post("/api/artifacts/ingest", (req, res) => {
       seenBody = req.body as Record<string, unknown>;
       res.json({ ok: true });
-    }, { fileRpc: "allow" });
+    }, { operation: { id: "fixture:post:/api/artifacts/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -350,7 +350,7 @@ describe("file RPC transport", () => {
 
   it("rejects attachment names that escape the spool dir or target non-allowlisted fields (issue 833e972)", async () => {
     const router = new Router();
-    router.post("/api/artifacts/ingest", (_req, res) => res.json({ ok: true }), { fileRpc: "allow" });
+    router.post("/api/artifacts/ingest", (_req, res) => res.json({ ok: true }), { operation: { id: "fixture:post:/api/artifacts/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -391,7 +391,7 @@ describe("file RPC transport", () => {
     const router = new Router();
     router.post("/api/auth/request/:id/approve", (_req, res) => {
       res.json({ ok: true });
-    }, { fileRpc: "deny" });
+    }, { operation: { id: "fixture:post:/api/auth/request/:id/approve", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -412,7 +412,7 @@ describe("file RPC transport", () => {
   });
 
   it("serves the real mandible CLI through file RPC and registered project routes", async () => {
-    const db: Db = new Database(":memory:");
+    const db: Db = new SqliteDatabase(":memory:");
     try {
       migrate(db);
       setDb(db);
@@ -574,7 +574,7 @@ describe("file RPC transport", () => {
     const router = new Router();
     router.put("/api/knowledge-backrefs", (_req, res) => {
       res.json({ ok: true });
-    }, { fileRpc: "deny" });
+    }, { operation: { id: "fixture:put:/api/knowledge-backrefs", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
     fs.writeFileSync(
       path.join(tempDir, "req-kb.request.json"),
@@ -593,7 +593,7 @@ describe("file RPC per-route allowlist convention", () => {
     // A space route that nobody has enumerated must be rejected — proves there
     // is no catch-all prefix match.
     const router = new Router();
-    router.get("/api/spaces/:id", noop, { fileRpc: "allow" });
+    router.get("/api/spaces/:id", noop, { operation: { id: "fixture:get:/api/spaces/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
     expect(router.resolveFileRpcPolicy("GET", "/api/spaces/spc-1")).toBe(true);
     expect(router.resolveFileRpcPolicy("GET", "/api/spaces/spc-1/not-a-real-route")).toBe(false);
     expect(router.resolveFileRpcPolicy("POST", "/api/spaces/spc-1/unknown")).toBe(false);
@@ -602,9 +602,9 @@ describe("file RPC per-route allowlist convention", () => {
 
   it("exposes per-route policy metadata from the router", () => {
     const router = new Router();
-    router.get("/api/spaces/:id", noop, { fileRpc: "allow" });
-    router.get("/api/spaces/:id/items", noop, { fileRpc: "deny" });
-    expect(router.listRoutePolicies()).toEqual([
+    router.get("/api/spaces/:id", noop, { operation: { id: "fixture:get:/api/spaces/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+    router.get("/api/spaces/:id/items", noop, { operation: { id: "fixture:get:/api/spaces/:id/items", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+    expect(router.listRoutePolicies()).toMatchObject([
       { method: "GET", path: "/api/spaces/:id", fileRpc: "allow" },
       { method: "GET", path: "/api/spaces/:id/items", fileRpc: "deny" },
     ]);

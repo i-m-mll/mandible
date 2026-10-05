@@ -1,4 +1,5 @@
-import { execFile, spawnSync } from "child_process";
+import { DOMAIN_EVENTS } from "./contracts.js";
+import { execFile } from "child_process";
 import { randomUUID } from "node:crypto";
 import fs from "fs";
 import os from "os";
@@ -11,6 +12,10 @@ import { ensureMandibleConfigFile } from "./platform-paths.js";
 import { broadcast, type SseEvent } from "./sse.js";
 import { canonicalizeCheckoutWorkRepoId } from "./ledger/projects.js";
 import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
+
+function localBranchRef(branch: string): string {
+  return `refs/heads/${branch}`;
+}
 
 export interface LastCommit {
   hash: string;
@@ -152,13 +157,7 @@ export interface RepoInfo {
   last_scanned_at: string | null;
 }
 
-export interface ScanSummary {
-  scanned_repos: number;
-  branches_updated: number;
-  branches_removed: number;
-  missing_repos: string[];
-  duration_ms: number;
-}
+export type ScanSummary = import("./contracts.js").WorkScanSummary;
 
 export interface WorkScannerOptions {
   db?: SqliteDatabase;
@@ -283,24 +282,28 @@ function normalizeRoots(roots: string[]): string[] {
 // directory to the same nesting. See `defaultScanRoots` below for how depth is
 // chosen when nothing is configured.
 // Only adds entries where .git is a directory (not a worktree gitfile).
+function isAbsentPath(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function pathExists(candidate: string): boolean {
+  try { fs.statSync(candidate); return true; }
+  catch (error) { if (isAbsentPath(error)) return false; throw error; }
+}
+
 function isGitDirectory(candidate: string): boolean {
-  const gitPath = path.join(candidate, ".git");
-  try {
-    return fs.statSync(gitPath).isDirectory();
-  } catch {
-    return false;
-  }
+  try { return fs.statSync(path.join(candidate, ".git")).isDirectory(); }
+  catch (error) { if (isAbsentPath(error)) return false; throw error; }
 }
 
 function scanDirForRepos(dir: string, depth: number, roots: string[]): void {
-  if (!fs.existsSync(dir)) {
-    return;
-  }
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
+  } catch (error) {
+    if (isAbsentPath(error)) return;
+    throw error;
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) {
@@ -335,12 +338,13 @@ function readReposToml(monorepoRoot: string): string[] {
     }
     return roots;
   } catch (err) {
+    if (isAbsentPath(err)) return [];
     workScannerLog("warn", "work_scanner_repos_toml_read_failed", {
       subsystem: "work-scanner",
       path: tomlPath,
       error: String(err),
     });
-    return [];
+    throw err;
   }
 }
 
@@ -437,14 +441,15 @@ function discoverMonorepoRoots(home: string): string[] {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(home, { withFileTypes: true });
-  } catch {
-    return [];
+  } catch (error) {
+    if (isAbsentPath(error)) return [];
+    throw error;
   }
   const roots: string[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     const candidate = path.join(home, entry.name);
-    if (fs.existsSync(path.join(candidate, MONOREPO_MANIFEST_RELATIVE_PATH))) {
+    if (pathExists(path.join(candidate, MONOREPO_MANIFEST_RELATIVE_PATH))) {
       roots.push(candidate);
     }
   }
@@ -522,7 +527,7 @@ function discoverRepos(defaultRepoRoot?: string): string[] {
   // Supplement the directory scan with repos registered in a `.projects/repos.toml`
   // manifest, which captures repos nested deeper than the configured depth.
   for (const root of scanRoots) {
-    if (!fs.existsSync(path.join(root.path, MONOREPO_MANIFEST_RELATIVE_PATH))) continue;
+    if (!pathExists(path.join(root.path, MONOREPO_MANIFEST_RELATIVE_PATH))) continue;
     for (const repo of readReposToml(root.path)) {
       if (!roots.includes(repo)) roots.push(repo);
     }
@@ -571,56 +576,30 @@ export function computeRepoId(root: string, existingIds: string[]): string {
   return `${baseId}-${i}`;
 }
 
-function runGit(
-  args: string[],
-  options: { cwd: string; allow_failure?: boolean } = { cwd: process.cwd() },
-): string | null {
-  const result = spawnSync("git", args, {
-    cwd: options.cwd,
-    encoding: "utf8",
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  });
-  if (result.status !== 0) {
-    if (options.allow_failure) {
-      return null;
-    }
-    const stderr = result.stderr ? String(result.stderr) : "";
-    const message = `git ${args.join(" ")} failed: ${stderr}`.trim();
-    throw new Error(message);
-  }
-  return result.stdout.trimEnd();
-}
-
 const execFileAsync = promisify(execFile);
 
-// Async counterpart to runGit for event-loop-safe repo probing. Only the
-// allow_failure semantics are needed by the async callers (repo discovery
-// prefix and audit refresh), so a rejected spawn returns null rather than
-// throwing.
-async function runGitAsync(
+// Expected absent refs may return null; process failures must never become
+// fabricated empty inventories or fresh branch state.
+async function runGit(
   args: string[],
-  options: { cwd: string },
+  options: { cwd: string; absent_exit_codes?: readonly number[]; signal?: AbortSignal },
 ): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync("git", args, {
       cwd: options.cwd,
+      signal: options.signal,
+      timeout: 5000,
+      killSignal: "SIGKILL",
       encoding: "utf8",
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
       maxBuffer: 64 * 1024 * 1024,
     });
     return stdout.trimEnd();
-  } catch {
-    return null;
+  } catch (error) {
+    const failure = error as { code?: string | number; killed?: boolean; signal?: string };
+    if (typeof failure.code === "number" && options.absent_exit_codes?.includes(failure.code) && !failure.killed && !failure.signal) return null;
+    throw new Error(`git ${args.join(" ")} failed in ${options.cwd}: ${String(error)}`, { cause: error });
   }
-}
-
-function runGitStatus(args: string[], cwd: string): number | null {
-  const result = spawnSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  });
-  return typeof result.status === "number" ? result.status : null;
 }
 
 function parseCommitRecord(
@@ -738,6 +717,12 @@ export class WorkScanner {
   private readonly emit: (event: SseEvent) => void;
   private readonly scanSkipWindowMs: number;
   private repoInfos: RepoInfo[] = [];
+  private stopped = false;
+  private readonly scanAbort = new AbortController();
+  private readonly repoRefreshes = new Set<Promise<RepoInfo>>();
+  private repoDiscoveryStatus: "pending" | "ready" | "failed" = "pending";
+  private repoInfoRefresh: Promise<void> | null = null;
+  private readonly repoScans = new Map<string, Promise<{ updated: number; removed: number }>>();
   private activeScan: { promise: Promise<ScanSummary>; skipsRecent: boolean } | null = null;
 
   constructor(options: WorkScannerOptions = {}) {
@@ -765,11 +750,19 @@ export class WorkScanner {
     }
     const cachedRepos = this.getCachedRepos();
     if (cachedRepos.length > 0) return cachedRepos;
-    // Explicit scan/startup callers retain full discovery behavior. Request
-    // handlers that need a projection use getCachedRepos() and never fall
-    // through to host filesystem or Git discovery.
-    this.refreshRepoInfos();
+    return cachedRepos;
+  }
+
+  async getReposAsync(): Promise<RepoInfo[]> {
+    if (this.stopped) throw new Error("Work scanner is stopped");
+    const cached = this.getRepos();
+    if (cached.length > 0) return cached;
+    await this.refreshRepoInfos();
     return this.repoInfos;
+  }
+
+  getRepoDiscoveryStatus(): "pending" | "ready" | "failed" {
+    return this.repoDiscoveryStatus;
   }
 
   getCachedRepos(): RepoInfo[] {
@@ -940,8 +933,8 @@ export class WorkScanner {
       }));
   }
 
-  getWorktreeInventory(repoRoot: string): WorktreeInventory {
-    const inventory = this.listWorktrees(repoRoot);
+  async getWorktreeInventory(repoRoot: string, options: { signal?: AbortSignal } = {}): Promise<WorktreeInventory> {
+    const inventory = await this.listWorktrees(repoRoot, options.signal);
     return {
       known: inventory.known,
       worktrees: inventory.worktrees.map((worktree) => ({
@@ -952,18 +945,18 @@ export class WorkScanner {
     };
   }
 
-  getCommits(
+  async getCommits(
     repoRoot: string,
     branch: string,
     options: { limit?: number; offset?: number } = {},
-  ): WorkCommitPage {
+  ): Promise<WorkCommitPage> {
     const limit = Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 200);
     const offset = Math.max(Math.trunc(options.offset ?? 0), 0);
-    const defaultBranch = this.detectDefaultBranch(repoRoot);
+    const defaultBranch = await this.detectDefaultBranch(repoRoot);
     const mergeBase = defaultBranch && defaultBranch !== branch
-      ? runGit(["merge-base", defaultBranch, branch], { cwd: repoRoot, allow_failure: true })
+      ? await runGit(["merge-base", localBranchRef(defaultBranch), localBranchRef(branch)], { cwd: repoRoot, absent_exit_codes: [1], signal: this.scanAbort.signal })
       : null;
-    const cherryStatus = this.getCherryStatus(repoRoot, defaultBranch, branch);
+    const cherryStatus = await this.getCherryStatus(repoRoot, defaultBranch, branch);
     const format = [
       "%H",
       "%h",
@@ -972,29 +965,30 @@ export class WorkScanner {
       "%P",
       "%s",
     ].join("%x1f");
-    const output = runGit([
+    const output = await runGit([
       "log",
       `--max-count=${limit}`,
       `--skip=${offset}`,
       `--pretty=format:${format}%x1e`,
-      branch,
+      localBranchRef(branch),
     ], {
       cwd: repoRoot,
-      allow_failure: true,
+      signal: this.scanAbort.signal,
+
     }) ?? "";
-    const totalRaw = runGit(["rev-list", "--count", branch], {
+    const totalRaw = await runGit(["rev-list", "--count", localBranchRef(branch)], {
       cwd: repoRoot,
-      allow_failure: true,
+      signal: this.scanAbort.signal,
+
     });
     const total = Number.parseInt(totalRaw ?? "0", 10);
-    const commits = output
-      .split("\u001e")
-      .map((record) => record.trim())
-      .filter(Boolean)
-      .map((record) => parseCommitRecord(record, (hash) =>
-        this.classifyCommit(repoRoot, hash, mergeBase, cherryStatus),
-      ))
-      .filter((commit): commit is WorkCommit => commit !== null);
+    const commits: WorkCommit[] = [];
+    for (const record of output.split("\u001e").map(value => value.trim()).filter(Boolean)) {
+      const commit = parseCommitRecord(record, () => "unique");
+      if (!commit) continue;
+      const classification = await this.classifyCommit(repoRoot, commit.hash, mergeBase, cherryStatus);
+      commits.push({ ...commit, classification, is_pre_branch_point: classification === "pre-branch-point", is_merged_elsewhere: classification === "merged-elsewhere" });
+    }
 
     return {
       repo_root: repoRoot,
@@ -1008,21 +1002,23 @@ export class WorkScanner {
     };
   }
 
-  compareRefs(
+  async compareRefs(
     repoRoot: string,
     from: string,
     to: string,
     mode: WorkCompareMode = "merge-base",
-  ): WorkCompareResult {
+  ): Promise<WorkCompareResult> {
     const normalizedMode: WorkCompareMode = mode === "range" ? "range" : "merge-base";
     const range = normalizedMode === "range" ? `${from}..${to}` : `${from}...${to}`;
-    const raw = runGit(["diff", range], {
+    const raw = await runGit(["diff", range], {
       cwd: repoRoot,
-      allow_failure: true,
+      signal: this.scanAbort.signal,
+
     }) ?? "";
-    const stat = runGit(["diff", "--stat", range], {
+    const stat = await runGit(["diff", "--stat", range], {
       cwd: repoRoot,
-      allow_failure: true,
+      signal: this.scanAbort.signal,
+
     }) ?? "";
     return {
       repo_root: repoRoot,
@@ -1035,77 +1031,23 @@ export class WorkScanner {
     };
   }
 
-  // Explicit synchronous callers retain the original full-refresh semantics.
-  // Request/startup callers use scanAllAsync(), which yields after every branch.
-  scanAll(): ScanSummary {
-    const start = Date.now();
-    this.refreshRepoInfos();
-
-    this.emit({
-      event: "work:scan:started",
-      type: "work:scan:started",
-      data: { started_at: new Date(start).toISOString() },
-    });
-
-    let branchesUpdated = 0;
-    let branchesRemoved = 0;
-    const missingRepos: string[] = [];
-    let scannedRepos = 0;
-
-    for (const repo of this.repoInfos) {
-      if (!repo.exists || !this.isGitRepo(repo.root)) {
-        missingRepos.push(repo.root);
-        continue;
-      }
-      if (repo.excluded) {
-        // Skip scanning excluded repos but still track them in missingRepos check above
-        continue;
-      }
-      scannedRepos += 1;
-      try {
-        const scanResult = this.scanRepo(repo.root, repo.id);
-        branchesUpdated += scanResult.updated;
-        branchesRemoved += scanResult.removed;
-        // Update last_scanned_at after successful scan
-        const scanNow = new Date().toISOString();
-        this.db.prepare(
-          "UPDATE work_repos SET last_scanned_at = ?, updated_at = ? WHERE root = ?"
-        ).run(scanNow, scanNow, repo.root);
-        // Sync in-memory
-        const idx = this.repoInfos.findIndex((r) => r.root === repo.root);
-        if (idx >= 0) {
-          this.repoInfos[idx] = { ...this.repoInfos[idx], last_scanned_at: scanNow };
-        }
-      } catch (_error) {
-        // Log but continue scanning remaining repos
-        workScannerLog("error", "work_scanner_repo_scan_failed", {
-          subsystem: "work-scanner",
-          repo_id: repo.id,
-          path: repo.root,
-          error: String(_error),
-        });
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.scanAbort.abort();
+    const results = await Promise.allSettled([this.activeScan?.promise, this.repoInfoRefresh, ...this.repoRefreshes]);
+    for (const result of results) {
+      if (result.status === "rejected" && (result.reason?.cause?.code ?? result.reason?.code) !== "ABORT_ERR") {
+        workScannerLog("warn", "work_scanner_drain_failed", { error: String(result.reason) });
       }
     }
+  }
 
-    const durationMs = Date.now() - start;
-    const summary: ScanSummary = {
-      scanned_repos: scannedRepos,
-      branches_updated: branchesUpdated,
-      branches_removed: branchesRemoved,
-      missing_repos: missingRepos,
-      duration_ms: durationMs,
-    };
-
-    this.emit({
-      event: "work:scan:completed",
-      type: "work:scan:completed",
-      data: summary,
-    });
-
-    return summary;
+  private emptyScan(): ScanSummary {
+    return { scanned_repos: 0, branches_updated: 0, branches_removed: 0, missing_repos: [], duration_ms: 0 };
   }
 
   scanAllAsync(options: { skip_recent?: boolean } = {}): Promise<ScanSummary> {
+    if (this.stopped) return Promise.resolve(this.emptyScan());
     const skipsRecent = options.skip_recent === true;
     if (this.activeScan) {
       if (skipsRecent || !this.activeScan.skipsRecent) {
@@ -1119,6 +1061,7 @@ export class WorkScanner {
     }
 
     const scan = this.runAsyncScan(skipsRecent).catch((error) => {
+      if (this.stopped) return this.emptyScan();
       workScannerLog("error", "work_scanner_scan_failed", {
         subsystem: "work-scanner",
         error: String(error),
@@ -1138,7 +1081,7 @@ export class WorkScanner {
   private async runAsyncScan(skipRecent: boolean): Promise<ScanSummary> {
     const start = Date.now();
     const cachedRepos = this.getRepos();
-    if (skipRecent && !cachedRepos.some((repo) => this.repoNeedsScan(repo, start))) {
+    if (skipRecent && cachedRepos.length > 0 && !cachedRepos.some((repo) => this.repoNeedsScan(repo, start))) {
       const summary: ScanSummary = {
         scanned_repos: 0,
         branches_updated: 0,
@@ -1146,14 +1089,15 @@ export class WorkScanner {
         missing_repos: [],
         duration_ms: Date.now() - start,
       };
-      this.emit({ event: "work:scan:completed", type: "work:scan:completed", data: summary });
+      this.emit({ event: DOMAIN_EVENTS.WORK_SCAN_COMPLETED, type: DOMAIN_EVENTS.WORK_SCAN_COMPLETED, data: summary });
       return summary;
     }
 
-    await this.refreshRepoInfosAsync();
+    await this.refreshRepoInfos();
+    if (this.stopped) return this.emptyScan();
     this.emit({
-      event: "work:scan:started",
-      type: "work:scan:started",
+      event: DOMAIN_EVENTS.WORK_SCAN_STARTED,
+      type: DOMAIN_EVENTS.WORK_SCAN_STARTED,
       data: { started_at: new Date(start).toISOString() },
     });
 
@@ -1163,7 +1107,8 @@ export class WorkScanner {
     let scannedRepos = 0;
 
     for (const repo of this.repoInfos) {
-      if (!repo.exists || !this.isGitRepo(repo.root)) {
+      if (this.stopped) break;
+      if (!repo.exists || !(await this.isGitRepo(repo.root))) {
         missingRepos.push(repo.root);
         continue;
       }
@@ -1172,14 +1117,10 @@ export class WorkScanner {
       }
       scannedRepos += 1;
       try {
-        const steps = this.scanRepoSteps(repo.root, repo.id);
-        let step = steps.next();
-        while (!step.done) {
-          await yieldToEventLoop();
-          step = steps.next();
-        }
-        branchesUpdated += step.value.updated;
-        branchesRemoved += step.value.removed;
+        const result = await this.scanRepo(repo.root, repo.id);
+        if (this.stopped) return this.emptyScan();
+        branchesUpdated += result.updated;
+        branchesRemoved += result.removed;
         this.markRepoScanned(repo.root);
       } catch (_error) {
         workScannerLog("error", "work_scanner_repo_scan_failed", {
@@ -1199,7 +1140,7 @@ export class WorkScanner {
       missing_repos: missingRepos,
       duration_ms: Date.now() - start,
     };
-    this.emit({ event: "work:scan:completed", type: "work:scan:completed", data: summary });
+    this.emit({ event: DOMAIN_EVENTS.WORK_SCAN_COMPLETED, type: DOMAIN_EVENTS.WORK_SCAN_COMPLETED, data: summary });
     return summary;
   }
 
@@ -1220,46 +1161,26 @@ export class WorkScanner {
     }
   }
 
-  refreshRepo(idOrPath: string): RepoInfo {
-    const repo = this.getRepoById(idOrPath);
-    if (!repo) {
-      throw new Error("repo not found");
-    }
-    if (!fs.existsSync(repo.root) || !this.isGitRepo(repo.root)) {
-      throw new Error("repository is unavailable or is not a Git repository");
-    }
-
-    this.scanRepo(repo.root, repo.id);
-    const scanNow = new Date().toISOString();
-    this.db.prepare(
-      "UPDATE work_repos SET last_scanned_at = ?, updated_at = ? WHERE root = ?",
-    ).run(scanNow, scanNow, repo.root);
-    const refreshed = { ...repo, exists: true, last_scanned_at: scanNow };
-    const index = this.repoInfos.findIndex((candidate) => candidate.root === repo.root);
-    if (index >= 0) {
-      this.repoInfos[index] = refreshed;
-    }
-    return refreshed;
+  // Explicit refresh and startup share the same cancellable scan path.
+  refreshRepoAsync(idOrPath: string): Promise<RepoInfo> {
+    if (this.stopped) return Promise.reject(new Error("Work scanner is stopped"));
+    const refresh = this.runRepoRefresh(idOrPath);
+    this.repoRefreshes.add(refresh);
+    void refresh.then(() => this.repoRefreshes.delete(refresh), () => this.repoRefreshes.delete(refresh));
+    return refresh;
   }
 
-  // Issue 651e820 — audit-endpoint refresh that yields between branches instead
-  // of running the fully synchronous scanRepo, so the per-repo audit GET does
-  // not block the event loop for the whole scan.
-  async refreshRepoAsync(idOrPath: string): Promise<RepoInfo> {
+  private async runRepoRefresh(idOrPath: string): Promise<RepoInfo> {
     const repo = this.getRepoById(idOrPath);
     if (!repo) {
       throw new Error("repo not found");
     }
-    if (!fs.existsSync(repo.root) || !this.isGitRepo(repo.root)) {
+    if (!fs.existsSync(repo.root) || !(await this.isGitRepo(repo.root))) {
       throw new Error("repository is unavailable or is not a Git repository");
     }
 
-    const steps = this.scanRepoSteps(repo.root, repo.id);
-    let step = steps.next();
-    while (!step.done) {
-      await yieldToEventLoop();
-      step = steps.next();
-    }
+    await this.scanRepo(repo.root, repo.id);
+    if (this.stopped) return repo;
 
     const scanNow = new Date().toISOString();
     this.db.prepare(
@@ -1324,6 +1245,7 @@ export class WorkScanner {
 
   async addRepo(root: string, options?: { name?: string }): Promise<RepoInfo | null> {
     const resolved = path.resolve(resolveHome(root));
+    if (this.stopped) throw new Error("Work scanner is stopped");
     if (!this.isGitDirectory(resolved)) {
       throw new Error(`Not a git directory: ${resolved}`);
     }
@@ -1347,7 +1269,8 @@ export class WorkScanner {
     const derivedName = stripLeadingDot(baseName) || baseName;
     const name = options?.name?.trim() || derivedName;
     const userModified = options?.name?.trim() ? 1 : 0;
-    const defaultBranch = this.isGitRepo(resolved) ? this.detectDefaultBranch(resolved) : "";
+    const defaultBranch = await this.isGitRepo(resolved) ? await this.detectDefaultBranch(resolved) : "";
+    if (this.stopped) throw new Error("Work scanner is stopped");
     const now = new Date().toISOString();
 
     this.db.prepare(`
@@ -1391,27 +1314,12 @@ export class WorkScanner {
     };
     this.repoInfos.push(newRepo);
 
-    // Fire-and-forget scan
-    void (async () => {
-      try {
-        this.scanRepo(resolved, newId);
-        const scanNow = new Date().toISOString();
-        this.db.prepare(
-          "UPDATE work_repos SET last_scanned_at = ?, updated_at = ? WHERE root = ?"
-        ).run(scanNow, scanNow, resolved);
-        const idx = this.repoInfos.findIndex((r) => r.root === resolved);
-        if (idx >= 0) {
-          this.repoInfos[idx] = { ...this.repoInfos[idx], last_scanned_at: scanNow };
-        }
-      } catch (err) {
-        workScannerLog("error", "work_scanner_add_repo_background_scan_failed", {
-          subsystem: "work-scanner",
-          repo_id: newId,
-          path: resolved,
-          error: String(err),
-        });
-      }
-    })();
+    // Use the same tracked refresh and shutdown drain as explicit requests.
+    void this.refreshRepoAsync(newId).catch((error) => {
+      workScannerLog("error", "work_scanner_add_repo_background_scan_failed", {
+        subsystem: "work-scanner", repo_id: newId, path: resolved, error: String(error),
+      });
+    });
 
     return newRepo;
   }
@@ -1541,38 +1449,35 @@ export class WorkScanner {
     );
   }
 
-  // Synchronous discovery prefix retained for explicit sync callers
-  // (getRepos cold-start, scanAll, addRepo). Probes each root's git identity
-  // with blocking spawns.
-  private refreshRepoInfos(): void {
-    const sortedRoots = this.resolveSortedRoots();
-    const probes = new Map<string, { exists: boolean; defaultBranch: string }>();
-    for (const root of sortedRoots) {
-      const exists = fs.existsSync(root);
-      const defaultBranch = exists && this.isGitRepo(root)
-        ? this.detectDefaultBranch(root)
-        : "";
-      probes.set(root, { exists, defaultBranch });
-    }
-    this.applyRepoInfos(sortedRoots, probes);
+  // Cold discovery uses the same bounded Git probes as branch refresh.
+  private refreshRepoInfos(): Promise<void> {
+    if (this.repoInfoRefresh) return this.repoInfoRefresh;
+    const refresh = this.runRepoInfoRefresh().catch(error => {
+      if (!this.stopped) this.repoDiscoveryStatus = "failed";
+      throw error;
+    });
+    this.repoInfoRefresh = refresh;
+    const clear = () => { if (this.repoInfoRefresh === refresh) this.repoInfoRefresh = null; };
+    void refresh.then(clear, clear);
+    return refresh;
   }
 
-  // Issue 651e820 — async discovery prefix for the yielding scan path. The
-  // per-repo `git rev-parse` identity probes run via execFile and the loop
-  // yields to the event loop between repos, so a cold-cache post-restart scan
-  // no longer blocks for tens of seconds before its first yield.
-  private async refreshRepoInfosAsync(): Promise<void> {
+  private async runRepoInfoRefresh(): Promise<void> {
     const sortedRoots = this.resolveSortedRoots();
     const probes = new Map<string, { exists: boolean; defaultBranch: string }>();
     for (const root of sortedRoots) {
-      const exists = fs.existsSync(root);
-      const defaultBranch = exists && (await this.isGitRepoAsync(root))
-        ? await this.detectDefaultBranchAsync(root)
+      if (this.stopped) return;
+      const exists = pathExists(root);
+      const defaultBranch = exists && (await this.isGitRepo(root))
+        ? await this.detectDefaultBranch(root)
         : "";
       probes.set(root, { exists, defaultBranch });
       await yieldToEventLoop();
     }
-    this.applyRepoInfos(sortedRoots, probes);
+    if (!this.stopped) {
+      this.applyRepoInfos(sortedRoots, probes);
+      this.repoDiscoveryStatus = "ready";
+    }
   }
 
   private applyRepoInfos(
@@ -1645,6 +1550,7 @@ export class WorkScanner {
         name = CASE WHEN user_modified = 0 THEN excluded.name ELSE name END
     `);
     for (const repo of this.repoInfos) {
+      if (this.stopped) break;
       upsertStmt.run({
         id: repo.id,
         root: repo.root,
@@ -1739,16 +1645,8 @@ export class WorkScanner {
     return normalizeRoots(discoverRepos(this.defaultRepoRoot));
   }
 
-  private isGitRepo(repoRoot: string): boolean {
-    const output = runGit(["rev-parse", "--show-toplevel"], {
-      cwd: repoRoot,
-      allow_failure: true,
-    });
-    return this.matchesToplevel(repoRoot, output);
-  }
-
-  private async isGitRepoAsync(repoRoot: string): Promise<boolean> {
-    const output = await runGitAsync(["rev-parse", "--show-toplevel"], { cwd: repoRoot });
+  private async isGitRepo(repoRoot: string): Promise<boolean> {
+    const output = await runGit(["rev-parse", "--show-toplevel"], { cwd: repoRoot, signal: this.scanAbort.signal, absent_exit_codes: pathExists(path.join(repoRoot, ".git")) ? [] : [128] });
     return this.matchesToplevel(repoRoot, output);
   }
 
@@ -1765,20 +1663,21 @@ export class WorkScanner {
     }
   }
 
-  private scanRepo(repoRoot: string, repoId: string): { updated: number; removed: number } {
-    const steps = this.scanRepoSteps(repoRoot, repoId);
-    let step = steps.next();
-    while (!step.done) {
-      step = steps.next();
-    }
-    return step.value;
+  private scanRepo(repoRoot: string, repoId: string): Promise<{ updated: number; removed: number }> {
+    const active = this.repoScans.get(repoRoot);
+    if (active) return active;
+    const scanning = this.runRepoScan(repoRoot, repoId);
+    this.repoScans.set(repoRoot, scanning);
+    const clear = () => { if (this.repoScans.get(repoRoot) === scanning) this.repoScans.delete(repoRoot); };
+    void scanning.then(clear, clear);
+    return scanning;
   }
 
-  private *scanRepoSteps(
+  private async runRepoScan(
     repoRoot: string,
     repoId: string,
-  ): Generator<void, { updated: number; removed: number }, void> {
-    const worktreeInventory = this.listWorktrees(repoRoot);
+  ): Promise<{ updated: number; removed: number }> {
+    const worktreeInventory = await this.listWorktrees(repoRoot);
     const worktrees = worktreeInventory.worktrees;
     const worktreeByBranch = new Map<string, string>();
     let currentBranch: string | null = null;
@@ -1792,26 +1691,26 @@ export class WorkScanner {
       }
     }
 
-    const branches = this.listBranches(repoRoot);
+    const branches = await this.listBranches(repoRoot);
     const canonicalDefaultBranch = this.getCanonicalCheckoutDefaultBranch(repoRoot);
-    const defaultBranch = canonicalDefaultBranch.branch || this.detectDefaultBranch(repoRoot);
-    const defaultBranchKnown = canonicalDefaultBranch.known && Boolean(runGit(
-      ["rev-parse", "--verify", `refs/heads/${defaultBranch}^{commit}`],
-      { cwd: repoRoot, allow_failure: true },
+    const defaultBranch = canonicalDefaultBranch.branch || await this.detectDefaultBranch(repoRoot);
+    const defaultBranchKnown = canonicalDefaultBranch.known && Boolean(await runGit(
+      ["rev-parse", "--verify", "--quiet", `refs/heads/${defaultBranch}^{commit}`],
+      { cwd: repoRoot, absent_exit_codes: [1], signal: this.scanAbort.signal },
     ));
     const now = new Date().toISOString();
 
-    let updated = 0;
+    const pending: Array<() => boolean> = [];
     for (const branch of branches) {
       const worktreePath = worktreeByBranch.get(branch) ?? null;
       const isWorktree = worktreePath !== null;
       const isCurrent = currentBranch === branch;
       const status = worktreePath
-        ? this.getWorktreeStatus(worktreePath)
+        ? await this.getWorktreeStatus(worktreePath)
         : { is_dirty: false, diff_stat: null, known: worktreeInventory.known };
-      const lastCommit = this.getLastCommit(repoRoot, branch);
-      const aheadBehind = this.getAheadBehind(repoRoot, branch);
-      const aheadBehindDefault = this.getAheadBehindDefault(
+      const lastCommit = await this.getLastCommit(repoRoot, branch);
+      const aheadBehind = await this.getAheadBehind(repoRoot, branch);
+      const aheadBehindDefault = await this.getAheadBehindDefault(
         repoRoot,
         branch,
         defaultBranch,
@@ -1843,144 +1742,154 @@ export class WorkScanner {
         updated_at: now,
       };
 
-      const existing = this.db
-        .prepare(
-          `
-          SELECT
-            repo_root,
-            branch,
-            is_current,
-            is_worktree,
-            worktree_path,
-            is_dirty,
-            ahead,
-            behind,
-            ahead_default,
-            behind_default,
-            default_branch,
-            worktree_inventory_known,
-            worktree_status_known,
-            default_comparison_known,
-            has_upstream,
-            upstream,
-            last_commit_hash,
-            last_commit_message,
-            last_commit_author,
-            last_commit_date,
-            diff_stat
-          FROM branches
-          WHERE repo_root = ? AND branch = ?
-          `,
-        )
-        .get(repoRoot, branch) as Record<string, unknown> | undefined;
-
-      const changed = !existing || rowChanged(existing, row);
-      this.db
-        .prepare(
-          `
-          INSERT INTO branches (
-            repo_root,
-            branch,
-            is_current,
-            is_worktree,
-            worktree_path,
-            is_dirty,
-            ahead,
-            behind,
-            ahead_default,
-            behind_default,
-            default_branch,
-            worktree_inventory_known,
-            worktree_status_known,
-            default_comparison_known,
-            has_upstream,
-            upstream,
-            last_commit_hash,
-            last_commit_message,
-            last_commit_author,
-            last_commit_date,
-            diff_stat,
-            updated_at
-          ) VALUES (
-            @repo_root,
-            @branch,
-            @is_current,
-            @is_worktree,
-            @worktree_path,
-            @is_dirty,
-            @ahead,
-            @behind,
-            @ahead_default,
-            @behind_default,
-            @default_branch,
-            @worktree_inventory_known,
-            @worktree_status_known,
-            @default_comparison_known,
-            @has_upstream,
-            @upstream,
-            @last_commit_hash,
-            @last_commit_message,
-            @last_commit_author,
-            @last_commit_date,
-            @diff_stat,
-            @updated_at
+      pending.push(() => {
+        const existing = this.db
+          .prepare(
+            `
+            SELECT
+              repo_root,
+              branch,
+              is_current,
+              is_worktree,
+              worktree_path,
+              is_dirty,
+              ahead,
+              behind,
+              ahead_default,
+              behind_default,
+              default_branch,
+              worktree_inventory_known,
+              worktree_status_known,
+              default_comparison_known,
+              has_upstream,
+              upstream,
+              last_commit_hash,
+              last_commit_message,
+              last_commit_author,
+              last_commit_date,
+              diff_stat
+            FROM branches
+            WHERE repo_root = ? AND branch = ?
+            `,
           )
-          ON CONFLICT(repo_root, branch) DO UPDATE SET
-            is_current = excluded.is_current,
-            is_worktree = excluded.is_worktree,
-            worktree_path = excluded.worktree_path,
-            is_dirty = excluded.is_dirty,
-            ahead = excluded.ahead,
-            behind = excluded.behind,
-            ahead_default = excluded.ahead_default,
-            behind_default = excluded.behind_default,
-            default_branch = excluded.default_branch,
-            worktree_inventory_known = excluded.worktree_inventory_known,
-            worktree_status_known = excluded.worktree_status_known,
-            default_comparison_known = excluded.default_comparison_known,
-            has_upstream = excluded.has_upstream,
-            upstream = excluded.upstream,
-            last_commit_hash = excluded.last_commit_hash,
-            last_commit_message = excluded.last_commit_message,
-            last_commit_author = excluded.last_commit_author,
-            last_commit_date = excluded.last_commit_date,
-            diff_stat = excluded.diff_stat,
-            updated_at = excluded.updated_at
-          `,
-        )
-        .run(row);
+          .get(repoRoot, branch) as Record<string, unknown> | undefined;
 
-      if (changed) {
-        updated += 1;
-        const branchData: BranchData = {
-          repo_root: repoRoot,
-          branch,
-          is_current: isCurrent,
-          is_worktree: isWorktree,
-          worktree_path: worktreePath,
-          is_dirty: status.is_dirty,
-          ahead: aheadBehind.ahead,
-          behind: aheadBehind.behind,
-          has_upstream: aheadBehind.has_upstream,
-          upstream: aheadBehind.upstream,
-          ahead_default: aheadBehindDefault.ahead_default,
-          behind_default: aheadBehindDefault.behind_default,
-          default_branch: aheadBehindDefault.default_branch,
-          worktree_inventory_known: worktreeInventory.known,
-          worktree_status_known: status.known,
-          default_comparison_known: aheadBehindDefault.known,
-          last_commit: lastCommit,
-          last_commit_date: lastCommit?.date ?? null,
-          diff_stat: status.diff_stat,
-        };
-        this.emit({
-          event: "work:branch:updated",
-          type: "work:branch:updated",
-          data: { ...branchData, repo_id: repoId },
-        });
+        const changed = !existing || rowChanged(existing, row);
+        this.db
+          .prepare(
+            `
+            INSERT INTO branches (
+              repo_root,
+              branch,
+              is_current,
+              is_worktree,
+              worktree_path,
+              is_dirty,
+              ahead,
+              behind,
+              ahead_default,
+              behind_default,
+              default_branch,
+              worktree_inventory_known,
+              worktree_status_known,
+              default_comparison_known,
+              has_upstream,
+              upstream,
+              last_commit_hash,
+              last_commit_message,
+              last_commit_author,
+              last_commit_date,
+              diff_stat,
+              updated_at
+            ) VALUES (
+              @repo_root,
+              @branch,
+              @is_current,
+              @is_worktree,
+              @worktree_path,
+              @is_dirty,
+              @ahead,
+              @behind,
+              @ahead_default,
+              @behind_default,
+              @default_branch,
+              @worktree_inventory_known,
+              @worktree_status_known,
+              @default_comparison_known,
+              @has_upstream,
+              @upstream,
+              @last_commit_hash,
+              @last_commit_message,
+              @last_commit_author,
+              @last_commit_date,
+              @diff_stat,
+              @updated_at
+            )
+            ON CONFLICT(repo_root, branch) DO UPDATE SET
+              is_current = excluded.is_current,
+              is_worktree = excluded.is_worktree,
+              worktree_path = excluded.worktree_path,
+              is_dirty = excluded.is_dirty,
+              ahead = excluded.ahead,
+              behind = excluded.behind,
+              ahead_default = excluded.ahead_default,
+              behind_default = excluded.behind_default,
+              default_branch = excluded.default_branch,
+              worktree_inventory_known = excluded.worktree_inventory_known,
+              worktree_status_known = excluded.worktree_status_known,
+              default_comparison_known = excluded.default_comparison_known,
+              has_upstream = excluded.has_upstream,
+              upstream = excluded.upstream,
+              last_commit_hash = excluded.last_commit_hash,
+              last_commit_message = excluded.last_commit_message,
+              last_commit_author = excluded.last_commit_author,
+              last_commit_date = excluded.last_commit_date,
+              diff_stat = excluded.diff_stat,
+              updated_at = excluded.updated_at
+            `,
+          )
+          .run(row);
+
+        if (changed) {
+          const branchData: BranchData = {
+            repo_root: repoRoot,
+            branch,
+            is_current: isCurrent,
+            is_worktree: isWorktree,
+            worktree_path: worktreePath,
+            is_dirty: status.is_dirty,
+            ahead: aheadBehind.ahead,
+            behind: aheadBehind.behind,
+            has_upstream: aheadBehind.has_upstream,
+            upstream: aheadBehind.upstream,
+            ahead_default: aheadBehindDefault.ahead_default,
+            behind_default: aheadBehindDefault.behind_default,
+            default_branch: aheadBehindDefault.default_branch,
+            worktree_inventory_known: worktreeInventory.known,
+            worktree_status_known: status.known,
+            default_comparison_known: aheadBehindDefault.known,
+            last_commit: lastCommit,
+            last_commit_date: lastCommit?.date ?? null,
+            diff_stat: status.diff_stat,
+          };
+          this.emit({
+            event: DOMAIN_EVENTS.WORK_BRANCH_UPDATED,
+            type: DOMAIN_EVENTS.WORK_BRANCH_UPDATED,
+            data: { ...branchData, repo_id: repoId },
+
+      });
       }
-      yield;
+      return changed;
+      });
     }
+    if (this.stopped) return { updated: 0, removed: 0 };
+    let updated = 0;
+    for (const apply of pending) {
+      if (this.stopped) return { updated, removed: 0 };
+      if (apply()) updated += 1;
+      await yieldToEventLoop();
+    }
+    if (this.stopped) return { updated, removed: 0 };
 
     let removed = 0;
     if (branches.length === 0) {
@@ -2000,25 +1909,26 @@ export class WorkScanner {
     return { updated, removed };
   }
 
-  private listBranches(repoRoot: string): string[] {
-    const output = runGit(["branch", "-a", "--format=%(refname:short)"], {
+  private async listBranches(repoRoot: string): Promise<string[]> {
+    const output = await runGit(["for-each-ref", "--format=%(refname)", "refs/heads"], {
       cwd: repoRoot,
-      allow_failure: true,
+      signal: this.scanAbort.signal,
+
     });
     if (!output) {
       return [];
     }
     return output
       .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .filter((line) => !line.startsWith("remotes/"));
+      .filter((line) => line.startsWith("refs/heads/"))
+      .map((line) => line.slice("refs/heads/".length));
   }
 
-  private listWorktrees(repoRoot: string): { worktrees: WorktreeInfo[]; known: boolean } {
-    const output = runGit(["worktree", "list", "--porcelain"], {
+  private async listWorktrees(repoRoot: string, signal?: AbortSignal): Promise<{ worktrees: WorktreeInfo[]; known: boolean }> {
+    const output = await runGit(["worktree", "list", "--porcelain"], {
       cwd: repoRoot,
-      allow_failure: true,
+      signal: signal ? AbortSignal.any([signal, this.scanAbort.signal]) : this.scanAbort.signal,
+
     });
     if (output === null) {
       return { worktrees: [], known: false };
@@ -2026,14 +1936,15 @@ export class WorkScanner {
     return { worktrees: parseWorktreeList(output), known: true };
   }
 
-  private getWorktreeStatus(
+  private async getWorktreeStatus(
     worktreePath: string,
-  ): { is_dirty: boolean; diff_stat: string | null; known: boolean } {
-    const output = runGit([
+  ): Promise<{ is_dirty: boolean; diff_stat: string | null; known: boolean }> {
+    const output = await runGit([
       "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none",
     ], {
       cwd: worktreePath,
-      allow_failure: true,
+      signal: this.scanAbort.signal,
+
     });
     if (output === null) {
       return { is_dirty: true, diff_stat: null, known: false };
@@ -2042,9 +1953,10 @@ export class WorkScanner {
     if (!isDirty) {
       return { is_dirty: false, diff_stat: null, known: true };
     }
-    const diffStat = runGit(["diff", "--stat"], {
+    const diffStat = await runGit(["diff", "--stat"], {
       cwd: worktreePath,
-      allow_failure: true,
+      signal: this.scanAbort.signal,
+
     });
     return {
       is_dirty: true,
@@ -2072,26 +1984,27 @@ export class WorkScanner {
     return { branch: "", known: false };
   }
 
-  private getLastCommit(repoRoot: string, branch: string): LastCommit | null {
-    const output = runGit(
-      ["log", "-1", "--format=%H%x1f%s%x1f%an%x1f%aI", branch],
-      { cwd: repoRoot, allow_failure: true },
+  private async getLastCommit(repoRoot: string, branch: string): Promise<LastCommit | null> {
+    const output = await runGit(
+      ["log", "-1", "--format=%H%x1f%s%x1f%an%x1f%aI", localBranchRef(branch)],
+      { cwd: repoRoot,  signal: this.scanAbort.signal },
     );
     return parseLastCommit(output);
   }
 
-  private getCherryStatus(
+  private async getCherryStatus(
     repoRoot: string,
     defaultBranch: string,
     branch: string,
-  ): Map<string, WorkCommitClassification> {
+  ): Promise<Map<string, WorkCommitClassification>> {
     const statusByHash = new Map<string, WorkCommitClassification>();
     if (!defaultBranch || defaultBranch === branch) {
       return statusByHash;
     }
-    const output = runGit(["cherry", defaultBranch, branch], {
+    const output = await runGit(["cherry", localBranchRef(defaultBranch), localBranchRef(branch)], {
       cwd: repoRoot,
-      allow_failure: true,
+      signal: this.scanAbort.signal,
+
     });
     if (!output) {
       return statusByHash;
@@ -2110,32 +2023,33 @@ export class WorkScanner {
     return statusByHash;
   }
 
-  private classifyCommit(
+  private async classifyCommit(
     repoRoot: string,
     hash: string,
     mergeBase: string | null,
     cherryStatus: Map<string, WorkCommitClassification>,
-  ): WorkCommitClassification {
+  ): Promise<WorkCommitClassification> {
     const cherryClassification = cherryStatus.get(hash);
     if (cherryClassification === "merged-elsewhere") {
       return cherryClassification;
     }
     if (mergeBase) {
-      const ancestorStatus = runGitStatus(["merge-base", "--is-ancestor", hash, mergeBase], repoRoot);
-      if (ancestorStatus === 0) {
+      const ancestor = await runGit(["merge-base", "--is-ancestor", hash, mergeBase], { cwd: repoRoot, absent_exit_codes: [1], signal: this.scanAbort.signal });
+      if (ancestor !== null) {
         return "pre-branch-point";
       }
     }
     return "unique";
   }
 
-  private getUpstreamInfo(
+  private async getUpstreamInfo(
     repoRoot: string,
     branch: string,
-  ): { has_upstream: boolean; upstream: string | null } {
-    const upstream = runGit(["rev-parse", "--abbrev-ref", `${branch}@{upstream}`], {
+  ): Promise<{ has_upstream: boolean; upstream: string | null }> {
+    const upstream = await runGit(["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`], {
       cwd: repoRoot,
-      allow_failure: true,
+      signal: this.scanAbort.signal,
+
     });
     if (!upstream) {
       return { has_upstream: false, upstream: null };
@@ -2143,13 +2057,11 @@ export class WorkScanner {
     return { has_upstream: true, upstream };
   }
 
-  private detectDefaultBranch(repoRoot: string): string {
+  private async detectDefaultBranch(repoRoot: string): Promise<string> {
     const candidates = ["main", "develop"];
     for (const candidate of candidates) {
-      const result = runGit(["rev-parse", "--verify", candidate], {
-        cwd: repoRoot,
-        allow_failure: true,
-      });
+      if (this.stopped) return "";
+      const result = await runGit(["rev-parse", "--verify", "--quiet", `refs/heads/${candidate}^{commit}`], { cwd: repoRoot, signal: this.scanAbort.signal, absent_exit_codes: [1] });
       if (result !== null) {
         return candidate;
       }
@@ -2157,23 +2069,12 @@ export class WorkScanner {
     return "";
   }
 
-  private async detectDefaultBranchAsync(repoRoot: string): Promise<string> {
-    const candidates = ["main", "develop"];
-    for (const candidate of candidates) {
-      const result = await runGitAsync(["rev-parse", "--verify", candidate], { cwd: repoRoot });
-      if (result !== null) {
-        return candidate;
-      }
-    }
-    return "";
-  }
-
-  private getAheadBehindDefault(
+  private async getAheadBehindDefault(
     repoRoot: string,
     branch: string,
     defaultBranch: string,
     defaultBranchKnown = true,
-  ): { ahead_default: number; behind_default: number; default_branch: string; known: boolean } {
+  ): Promise<{ ahead_default: number; behind_default: number; default_branch: string; known: boolean }> {
     if (!defaultBranchKnown || !defaultBranch) {
       return {
         ahead_default: 0,
@@ -2185,9 +2086,9 @@ export class WorkScanner {
     if (branch === defaultBranch) {
       return { ahead_default: 0, behind_default: 0, default_branch: defaultBranch, known: true };
     }
-    const output = runGit(
-      ["rev-list", "--left-right", "--count", `${defaultBranch}...${branch}`],
-      { cwd: repoRoot, allow_failure: true },
+    const output = await runGit(
+      ["rev-list", "--left-right", "--count", `${localBranchRef(defaultBranch)}...${localBranchRef(branch)}`],
+      { cwd: repoRoot,  signal: this.scanAbort.signal },
     );
     if (!output) {
       return { ahead_default: 0, behind_default: 0, default_branch: defaultBranch, known: false };
@@ -2203,19 +2104,20 @@ export class WorkScanner {
     };
   }
 
-  private getAheadBehind(
+  private async getAheadBehind(
     repoRoot: string,
     branch: string,
-  ): { ahead: number; behind: number; has_upstream: boolean; upstream: string | null } {
-    const upstreamInfo = this.getUpstreamInfo(repoRoot, branch);
+  ): Promise<{ ahead: number; behind: number; has_upstream: boolean; upstream: string | null }> {
+    const upstreamInfo = await this.getUpstreamInfo(repoRoot, branch);
     if (!upstreamInfo.has_upstream || !upstreamInfo.upstream) {
       return { ahead: 0, behind: 0, has_upstream: false, upstream: null };
     }
-    const output = runGit(
-      ["rev-list", "--left-right", "--count", `${upstreamInfo.upstream}...${branch}`],
+    const output = await runGit(
+      ["rev-list", "--left-right", "--count", `${upstreamInfo.upstream}...${localBranchRef(branch)}`],
       {
       cwd: repoRoot,
-      allow_failure: true,
+      signal: this.scanAbort.signal,
+
       },
     );
     if (!output) {

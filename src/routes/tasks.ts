@@ -92,7 +92,7 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/tasks/inventory", effects: ["process:external"], requestSchema: null, reportingCategory: "tasks" }, fileRpc: "allow" });
 
   // The whole read surface: latest generation per executor, projected.
   server.get("/api/tasks", (_req, res) => {
@@ -110,7 +110,7 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/tasks", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Operator command read/create/cancel surface. Disable is the only verb in
   // v1; cancellation is legal only before an executor accepts the request.
@@ -133,7 +133,7 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/tasks/commands", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.post("/api/tasks/commands", (req, res) => {
     try {
@@ -161,7 +161,7 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/tasks/commands", effects: ["process:external"], requestSchema: null, reportingCategory: "tasks" }, fileRpc: "deny" });
 
   server.post("/api/tasks/commands/:id/cancel", (req, res) => {
     try {
@@ -172,7 +172,7 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/tasks/commands/:id/cancel", effects: ["process:external"], requestSchema: null, reportingCategory: "tasks" }, fileRpc: "deny" });
 
   // Executor polling is tick-aligned. Accepted commands remain pending until a
   // terminal receipt so an executor can retry a transient local apply failure.
@@ -191,7 +191,7 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/tasks/commands/pending", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Operator-only point read for the active command modal. SSE is the primary
   // wake-up signal; the UI polls this route every two seconds while nonterminal.
@@ -202,7 +202,7 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/tasks/commands/:id", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.post("/api/tasks/commands/:id/events", (req, res) => {
     try {
@@ -222,5 +222,5 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/tasks/commands/:id/events", effects: ["process:external"], requestSchema: null, reportingCategory: "tasks" }, fileRpc: "allow" });
 }

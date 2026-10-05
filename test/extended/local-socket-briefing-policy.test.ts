@@ -1,13 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { setSetting } from "../../src/client-auth/settings-kv.js";
 import { migrate, type Db } from "../../src/db.js";
 import { addProject } from "../../src/ledger/project-registry.js";
 import { addGrant } from "../../src/permissions/store.js";
-import { recordArtifactVersion } from "../../src/provider-artifacts.js";
+import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
 import { registerBriefingRoutes } from "../../src/routes/briefing.js";
 import type { RequestLike, ResolvedClientIdentity, ResponseLike, RouteHandler, RouteRegistrar } from "../../src/server.js";
 import { createUser, setupOperator } from "../../src/users/store.js";
@@ -18,7 +18,7 @@ const routes = new Map<string, RouteHandler>();
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-socket-briefing-"));
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setSetting(db, "artifact_root", root);
   routes.clear();

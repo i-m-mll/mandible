@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS, parseDomainEvent, type MandibleEventType, type EventPayload } from "./contracts.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SSEEvent, SseEvent, StartupCommitInfo } from "./types.js";
 import type { ResolvedClientIdentity } from "./server.js";
@@ -34,7 +35,7 @@ export class SseManager {
       // filtered clients are naturally excluded by matchesTopic and keep the
       // `: heartbeat` comment above as their keep-alive.
       this.broadcast({
-        type: "heartbeat",
+        type: DOMAIN_EVENTS.HEARTBEAT,
         data: { timestamp: Date.now() },
         timestamp: new Date().toISOString(),
       });
@@ -79,6 +80,8 @@ export class SseManager {
   }
 
   broadcast(event: SSEEvent): void {
+    const parsed = parseDomainEvent(event);
+    if (!parsed.ok) throw new Error(parsed.error);
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const client of this.clients) {
       if (client.topics.length > 0 && !matchesTopic(event.type, client.topics)) {
@@ -147,7 +150,7 @@ export class SseManager {
     }
 
     const event: SSEEvent = {
-      type: "daemon:reloaded",
+      type: DOMAIN_EVENTS.DAEMON_RELOADED,
       data: {
         commit_hash: this.startupCommit.hash,
         commit_summary: this.startupCommit.summary,
@@ -208,14 +211,16 @@ function matchesTopic(type: string, topics: string[]): boolean {
 
 let _instance: SseManager | null = null;
 
-export function setSseManager(manager: SseManager): void {
+export function setSseManager(manager: SseManager | null): void {
   _instance = manager;
 }
 
-export function broadcast(eventOrType: string | SseEvent, data?: unknown): void {
+export function broadcast<E extends MandibleEventType>(event: E, data: EventPayload<E>): void;
+export function broadcast(event: SseEvent): void;
+export function broadcast(eventOrType: MandibleEventType | SseEvent, data?: unknown): void {
   if (!_instance) return;
 
-  let type: string;
+  let type: MandibleEventType;
   let eventData: unknown;
 
   if (typeof eventOrType === "string") {
@@ -226,15 +231,13 @@ export function broadcast(eventOrType: string | SseEvent, data?: unknown): void 
     eventData = eventOrType.data;
   }
 
-  _instance.broadcast({
-    type,
-    data: eventData,
-    timestamp: new Date().toISOString()
-  });
+  const parsed = parseDomainEvent({ type, data: eventData, timestamp: new Date().toISOString() });
+  if (!parsed.ok) throw new Error(parsed.error);
+  _instance.broadcast(parsed.value as SSEEvent);
 }
 
 export function broadcastConsoleTelemetry(data: unknown): void {
-  broadcast("console:telemetry", data);
+  broadcast(DOMAIN_EVENTS.CONSOLE_TELEMETRY, data);
 }
 
 /**
@@ -250,8 +253,8 @@ export function broadcastConsoleTelemetry(data: unknown): void {
  * topic filter in {@link SseManager.broadcast}; there is no new SSE transport.
  */
 export function broadcastSpaceEvent(event: SpaceEvent, data?: unknown): void {
-  if (!isSpaceEvent(event)) return;
-  broadcast(event, data);
+  if (!isSpaceEvent(event)) throw new Error(`Unknown Space event: ${event}`);
+  broadcast({ event, data } as SseEvent);
 }
 
 export type { SseEvent };

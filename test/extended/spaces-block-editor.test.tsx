@@ -1,3 +1,6 @@
+import { invalidateApiGetCache } from '../../ui/src/api';
+import { bindSpacesOperationCatalog } from '../helpers/spaces-operation-catalog';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 // Spaces document block editor tests (umbrella de56ffa, C14c / issue cef3eac).
 //
 // Covers the acceptance criteria:
@@ -5,9 +8,7 @@
 //     live tree through the C14b renderer. Authoring controls must stay
 //     transparent: typed document commands and transient overlays, not persistent
 //     block chrome.
-//   - Custody-aware gating (C13d): a repo-authoritative + drifted document is
-//     read-only/stale with re-import / fork affordances; Mandible-custody and
-//     clean repo documents are freely editable.
+//   - Managed authoring stays editable independently of historical publication state.
 //   - Embed-on-delete is a user-prompted decision point, NOT hardcoded: deleting
 //     an embedded item raises an explicit choice and takes no destructive action
 //     until the user resolves it.
@@ -22,6 +23,8 @@ import { act } from 'preact/test-utils';
 import { undo } from '@codemirror/commands';
 import { EditorSelection } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
+import { AppShellProvider } from '../../ui/src/app-shell';
+import { queryClient } from '../../ui/src/query/client';
 import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
 
 import {
@@ -37,11 +40,9 @@ import {
   prependSortKey,
   placementForIndex,
   siblingIndexOf,
-  deriveDocumentCustody,
 } from '../../ui/src/views/spaces/blockEditorModel';
 import {
   blockEditorStorageKey,
-  reconcileBlockEditorViewState,
   normalizeBlockEditorViewState,
 } from '../../ui/src/views/spaces/blockEditorViewState';
 import {
@@ -50,7 +51,7 @@ import {
   updateSpaceBlock,
   deleteSpaceBlock,
   detachItemFromBlocks,
-} from '../../ui/src/views/spaces/spaceBlocksClient';
+} from '../../ui/src/api';
 import type { InstanceInfo, LedgerIssueDetailProjection, SpaceBlock, SpaceExport, SpaceItem } from '../../ui/src/api';
 import { __resetResourceRefRecognizers } from '../../ui/src/resource-refs';
 
@@ -198,6 +199,9 @@ function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = [], items: 
     if (url === '/api/client-auth/whoami') {
       return json({ authenticated: true, session: { csrf_token: 'test-csrf' } });
     }
+    if (method !== 'GET') {
+      if (new Headers(init?.headers).get('X-Mandible-CSRF') !== 'test-csrf') return json({ error: 'csrf_required' }, 403);
+    }
     calls.push({ method, url, body });
 
     const blockColl = url.match(/\/api\/spaces\/sp1\/blocks(?:\?.*)?$/);
@@ -325,9 +329,15 @@ function json(payload: unknown, status = 200): Response {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  invalidateApiGetCache();
   stubLocalStorage();
-  __resetBrowserSessionForTests();
+  bindSpacesOperationCatalog(mainInstance);
+  const notices = document.createElement('div');
+  notices.id = 'editor-notices';
+  document.body.append(notices);
+  queryClient.clear();
+  await establishTestClientAccess();
   MockEventSource.instances = [];
   vi.stubGlobal('EventSource', MockEventSource);
   __resetSharedSseForTests();
@@ -360,7 +370,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  invalidateApiGetCache();
   cleanup();
+  document.getElementById('editor-notices')?.remove();
+  queryClient.clear();
   __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -427,37 +440,6 @@ describe('blockEditorModel sort keys', () => {
   });
 });
 
-// --- pure model: custody derivation (C13a exports -> C13d custody) -----------
-
-describe('deriveDocumentCustody', () => {
-  it('returns null (Mandible custody) when there is no tracked export row', () => {
-    expect(deriveDocumentCustody([])).toBeNull();
-  });
-
-  it('returns the repo-authority row as the binding custody', () => {
-    const custody = deriveDocumentCustody([
-      makeExport({ id: 'm', authority: 'mandible', status: 'clean' }),
-      makeExport({ id: 'r', authority: 'repo', status: 'repo_changed' }),
-    ]);
-    expect(custody).toEqual({ authority: 'repo', status: 'repo_changed' });
-  });
-
-  it('prefers the most-recently-updated repo row when several exist', () => {
-    const custody = deriveDocumentCustody([
-      makeExport({ id: 'r1', authority: 'repo', status: 'clean', updated_at: NOW }),
-      makeExport({ id: 'r2', authority: 'repo', status: 'conflict', updated_at: NOW + 5 }),
-    ]);
-    expect(custody).toEqual({ authority: 'repo', status: 'conflict' });
-  });
-
-  it('treats mandible-only rows as Mandible custody', () => {
-    const custody = deriveDocumentCustody([
-      makeExport({ authority: 'mandible', status: 'stale' }),
-    ]);
-    expect(custody).toEqual({ authority: 'mandible', status: 'stale' });
-  });
-});
-
 // --- view-state persistence + reconciliation (standing AC #2) ----------------
 
 describe('blockEditorViewState', () => {
@@ -473,18 +455,12 @@ describe('blockEditorViewState', () => {
     });
   });
 
-  it('drops drafts for blocks that no longer exist but preserves live ones', () => {
-    const reconciled = reconcileBlockEditorViewState(
-      { editingId: 'gone', drafts: { gone: 'x', here: 'keep' } },
-      ['here'],
-    );
-    expect(reconciled).toEqual({ editingId: null, drafts: { here: 'keep' } });
-  });
+
 });
 
 // --- client: routes hit the C11 surface --------------------------------------
 
-describe('spaceBlocksClient', () => {
+describe('Spaces block API transport', () => {
   it('lists, creates, updates, deletes, and detaches against the C11 routes', async () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'hi' })]);
     const f = backend.fetchImpl;
@@ -513,7 +489,7 @@ describe('spaceBlocksClient', () => {
   });
 
   it('surfaces a server error message on a failed write', async () => {
-    const f = vi.fn(async () => json({ error: 'boom' }, 400));
+    const f = vi.fn(async (input) => String(input) === '/api/client-auth/whoami' ? json({ authenticated: true, session: { csrf_token: 'test-csrf' } }) : json({ error: 'boom' }, 400));
     await expect(createSpaceBlock('sp1', { block_type: 'paragraph' }, f)).rejects.toThrow('boom');
   });
 });
@@ -525,7 +501,9 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
 }) {
   const { backend, instance = mainInstance, ...rest } = props;
   vi.stubGlobal('fetch', backend.fetchImpl);
+  if (instance) bindSpacesOperationCatalog(instance);
   render(
+    <AppShellProvider value={{ active: true, noticeHost: document.getElementById('editor-notices'), rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}>
     <DocumentBlockEditor
       projectId="prj1"
       spaceId="sp1"
@@ -533,7 +511,7 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
       fetchImpl={backend.fetchImpl}
       instance={instance}
       {...rest}
-    />,
+    /></AppShellProvider>,
   );
   await waitFor(() => expect(screen.getByTestId('spaces-block-editor-list')).toBeTruthy());
 }
@@ -672,7 +650,6 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(screen.queryByTestId('spaces-block-editor-delete')).toBeNull();
     const editor = screen.getByTestId('spaces-block-editor');
     expect(editor.getAttribute('data-editable')).toBe('true');
-    expect(editor.getAttribute('data-stale')).toBe('false');
   });
 
   it('renders the document without waiting for the space fact packet', async () => {
@@ -1317,9 +1294,10 @@ describe('DocumentBlockEditor (editable)', () => {
     setSourceText(0, nextValue, nextValue.length);
     blurSource();
 
+    await waitFor(() => expect(blockGetCount).toBe(2));
     await waitFor(() => expect(normalizeBlockEditorViewState(JSON.parse(
       window.localStorage.getItem(blockEditorStorageKey('prj1', 'sp1'))!,
-    )).drafts.b1).toBeUndefined());
+    )).drafts.b1).toBe(nextValue));
     expect(sourceText()).toBe(nextValue);
     expect(sourceView().state.selection.main.from).toBe(nextValue.length);
   });
@@ -1366,45 +1344,17 @@ describe('DocumentBlockEditor (editable)', () => {
   });
 });
 
-// --- component: custody gating (C13d) ----------------------------------------
+// --- component: independent managed authoring ----------------------------------------
 
-describe('DocumentBlockEditor (custody gating)', () => {
-  it('renders read-only/stale with re-import + fork affordances for a drifted repo doc', async () => {
+describe('DocumentBlockEditor (managed authoring)', () => {
+  it('keeps the managed document editable without reading legacy export authority', async () => {
     const backend = makeBackend(
-      [makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Repo body.' })],
+      [makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Managed body.' })],
       [makeExport({ authority: 'repo', status: 'repo_changed' })],
     );
-    vi.stubGlobal('fetch', backend.fetchImpl);
-    const onReimport = vi.fn();
-    const onFork = vi.fn();
-    render(
-      <DocumentBlockEditor
-        projectId="prj1"
-        spaceId="sp1"
-        renderer="document"
-        fetchImpl={backend.fetchImpl}
-        instance={mainInstance}
-        onReimport={onReimport}
-        onFork={onFork}
-      />,
-    );
-
-    await waitFor(() => expect(screen.getByTestId('spaces-block-editor-stale-banner')).toBeTruthy());
-    const editor = screen.getByTestId('spaces-block-editor');
-    expect(editor.getAttribute('data-editable')).toBe('false');
-    expect(editor.getAttribute('data-stale')).toBe('true');
-
-    // Read path still renders the document.
-    expect(screen.getByText('Repo body.')).toBeTruthy();
-    // No editing affordances.
-    expect(screen.queryByTestId('spaces-block-editor-toolbar')).toBeNull();
-    expect(screen.queryByTestId('spaces-block-editor-list')).toBeNull();
-
-    // Explicit reconciliation affordances fire their callbacks.
-    fireEvent.click(screen.getByTestId('spaces-block-editor-affordance-reimport'));
-    fireEvent.click(screen.getByTestId('spaces-block-editor-affordance-fork'));
-    expect(onReimport).toHaveBeenCalledOnce();
-    expect(onFork).toHaveBeenCalledOnce();
+    await renderEditor({ backend });
+    expect(screen.getByTestId('spaces-block-editor').getAttribute('data-editable')).toBe('true');
+    expect(backend.calls.some(call=>call.url.includes('/exports'))).toBe(false);
   });
 
   it('stays editable for a clean repo-authoritative document', async () => {
@@ -1491,12 +1441,69 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
 
     // A `space:*` SSE event triggers a reconciliation refetch.
     expect(MockEventSource.instances.length).toBeGreaterThan(0);
-    MockEventSource.instances[0].emit({ type: 'space:block:changed', space_id: 'sp1' });
+    MockEventSource.instances[0].emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
 
     // The draft survives the refetch (Dataful-UX: reconcile never resets intent).
     await waitFor(() => {
       expect(sourceText()).toBe('work in progress');
     });
     expect(blockEditorStorageKey('prj1', 'sp1')).toBe('mandible.spaces.blockEditor:prj1:sp1');
+  });
+});
+
+
+describe('document refresh reliability', () => {
+  it('rejects an older same-Space read and ignores unrelated Space events', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', markdown: 'initial' })]);
+    await renderEditor({ backend });
+    let resolveOlder!: (response: Response) => void;
+    let blockReads = 0;
+    backend.fetchImpl.mockImplementation((input, init) => {
+      if (String(input).endsWith('/blocks') && (init?.method ?? 'GET') === 'GET') {
+        blockReads += 1;
+        if (blockReads === 1) return new Promise<Response>((resolve) => { resolveOlder = resolve; });
+        return Promise.resolve(json({ blocks: [makeBlock({ id: 'b1', markdown: 'newer' })] }));
+      }
+      return Promise.resolve(json(String(input).endsWith('/exports') ? { exports: [] } : { items: [] }));
+    });
+    const stream = MockEventSource.instances[0];
+    stream.emit({ type: 'space:block:changed', data: { space_id: 'other' } });
+    await flushEffects();
+    expect(blockReads).toBe(0);
+    stream.emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    await waitFor(() => expect(blockReads).toBe(1));
+    stream.emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    await waitFor(() => expect(sourceText()).toBe('newer'));
+    resolveOlder(json({ blocks: [makeBlock({ id: 'b1', markdown: 'older' })] }));
+    await flushEffects();
+    expect(sourceText()).toBe('newer');
+  });
+
+  it('retains last-good content and a rejected draft, and recovers a server-deleted block', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', markdown: 'saved' })]);
+    await renderEditor({ backend });
+    const original = backend.fetchImpl.getMockImplementation()!;
+    let failReads = false;
+    backend.fetchImpl.mockImplementation((input, init) => {
+      if (init?.method === 'PATCH') return Promise.resolve(json({ error: 'write_rejected' }, 403));
+      if (failReads && String(input).endsWith('/blocks')) return Promise.resolve(json({ blocks: null }));
+      return original(input, init);
+    });
+    setSourceText(0, 'my retained draft');
+    blurSource();
+    await screen.findByText('Autosave failed: write_rejected');
+    expect(sourceText()).toBe('my retained draft');
+    failReads = true;
+    MockEventSource.instances[0].emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    await screen.findByTestId('spaces-block-editor-error');
+    expect(screen.getByText('my retained draft')).toBeTruthy();
+    failReads = false;
+    backend.blocks.delete('b1');
+    MockEventSource.instances[0].emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    await screen.findByRole('textbox', { name: 'Retained block draft' });
+    expect((screen.getByRole('textbox', { name: 'Retained block draft' }) as HTMLTextAreaElement).value).toBe('my retained draft');
+    fireEvent.click(screen.getByRole('button', { name: 'Restore as a new block' }));
+    await waitFor(() => expect([...backend.blocks.values()].some((block) => block.markdown === 'my retained draft')).toBe(true));
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Retained block draft' })).toBeNull());
   });
 });

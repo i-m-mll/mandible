@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, setDb, type Db } from "../../src/db.js";
 import { getArtifactContent } from "../../src/artifact-content.js";
@@ -62,7 +63,8 @@ describe("artifact ingest worker pool", () => {
     expect(first.size).toBe(bytes.length);
     expect(first.wrote).toBe(true);
     expect(fs.existsSync(casPath(root, first.hash))).toBe(true);
-    expect(fs.readFileSync(casPath(root, first.hash))).toEqual(bytes);
+    // Buffer.equals checks identical bytes without expanding a multi-megabyte typed array in the assertion engine.
+    expect(fs.readFileSync(casPath(root, first.hash)).equals(bytes)).toBe(true);
 
     // A second materialization of identical bytes leaves the existing blob alone.
     const second = await materializeArtifactFileIntoCas(src, root);
@@ -112,13 +114,13 @@ describe("off-thread artifact ingest routes", () => {
 
     const registration = await registerLocalArtifactPathAsync(db, {
       path: src,
-      custody_mode: "copy",
+      custody_mode: "managed",
       filename: "local-copy.bin",
     }, 1000);
 
     expect(registration.artifact).toMatchObject({
-      id: `artifact:sha256:${sha256(bytes)}`,
-      custody_mode: "copy",
+      id: `artifact-blob:${sha256(bytes)}`,
+      custody_mode: "managed",
       availability: "present",
       size_bytes: bytes.length,
     });
@@ -136,8 +138,8 @@ describe("off-thread artifact ingest routes", () => {
     const src = path.join(tempDir, "parity.txt");
     fs.writeFileSync(src, bytes);
 
-    const asyncReg = await registerLocalArtifactPathAsync(db, { path: src, custody_mode: "copy" }, 2000);
-    const syncReg = registerLocalArtifactPath(db, { path: src, custody_mode: "copy" }, 2000);
+    const asyncReg = await registerLocalArtifactPathAsync(db, { path: src, custody_mode: "managed" }, 2000);
+    const syncReg = registerLocalArtifactPath(db, { path: src, custody_mode: "managed" }, 2000);
 
     expect(asyncReg.artifact.id).toBe(syncReg.artifact.id);
     expect(asyncReg.artifact.custody_mode).toBe(syncReg.artifact.custody_mode);
@@ -170,15 +172,15 @@ describe("off-thread artifact ingest routes", () => {
 
     const artifact = await snapshotArtifactBytesAsync(db, {
       path: src,
-      custody_mode: "copy",
+      custody_mode: "managed",
       media_type: "application/octet-stream",
     }, 3000);
 
-    expect(artifact.id).toBe(`artifact:sha256:${sha256(bytes)}`);
-    expect(artifact.custody_mode).toBe("copy");
+    expect(artifact.id).toBe(`artifact-blob:${sha256(bytes)}`);
+    expect(artifact.custody_mode).toBe("managed");
     expect(artifact.availability).toBe("present");
     expect(fs.existsSync(casPath(root, artifact.content_hash))).toBe(true);
-    expect(artifact.metadata.recoverability).toBe("mandible_cas");
+    expect(artifact.uri).toBe(pathToFileURL(casPath(root, artifact.content_hash)).href);
   });
 
   it("ingestArtifactAsync reads a content_path off-thread into managed custody", async () => {
@@ -193,7 +195,7 @@ describe("off-thread artifact ingest routes", () => {
       filename: "content-path.bin",
     }, 4000);
 
-    expect(artifact.id).toBe(`artifact:sha256:${sha256(bytes)}`);
+    expect(artifact.id).toBe(`artifact-blob:${sha256(bytes)}`);
     expect(artifact.custody_mode).toBe("managed");
     expect(artifact.availability).toBe("present");
     expect(artifact.size_bytes).toBe(bytes.length);
@@ -224,8 +226,8 @@ describe("off-thread artifact ingest routes", () => {
       name: "run packet",
       role: "artifact_bundle",
       members: [
-        { path: runPath, role: "run_record", custody_mode: "copy" },
-        { path: checkpointPath, role: "model_checkpoint", custody_mode: "copy" },
+        { path: runPath, role: "run_record", custody_mode: "managed" },
+        { path: checkpointPath, role: "model_checkpoint", custody_mode: "managed" },
       ],
     }, 6000);
 

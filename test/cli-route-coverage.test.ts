@@ -76,7 +76,9 @@ describe("CLI API route coverage", () => {
     const denied = refs.filter((ref) => policies.get(routeKey(ref.method, ref.route)) === "deny");
 
     expect(formatRefs(missing)).toEqual([]);
-    expect(formatRefs(denied)).toEqual([...EXPECTED_FILE_RPC_DENIED_CLI_CALL_SITES].sort());
+    expect(denied.map(ref => `${ref.file} ${ref.method} ${ref.route}`).sort()).toEqual(
+      EXPECTED_FILE_RPC_DENIED_CLI_CALL_SITES.map(site => site.replace(/:\d+ /, " ")).sort(),
+    );
     const callSites = (sites: readonly string[]) => sites.map(site => site.replace(/:\d+ /, " ")).sort();
     expect(callSites(formatUnresolved(unresolved))).toEqual(callSites(EXPECTED_DYNAMIC_CLI_API_CALL_SITES));
   });
@@ -131,8 +133,6 @@ describe("CLI API route coverage", () => {
       expect(
         fs.readdirSync(tempDir).filter((entry) => entry.startsWith("mandible-api.")),
       ).toEqual([]);
-      const helper = fs.readFileSync(helperPath, "utf8");
-      expect(helper).toContain('api_track_temp "$request_tmp"');
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

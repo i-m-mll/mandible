@@ -7,10 +7,6 @@
 // SSE reconciliation, tab switch, or remount does not silently drop a draft the
 // user is mid-edit on.
 //
-// This mirrors the C14b `./documentViewState` collapse-state pattern, scoped to
-// the editor's own edit-session concern. Drafts are reconciled against live
-// block ids on refetch: a draft for a block that no longer exists is dropped,
-// but a draft for a still-present block is preserved (never reset by a reconcile).
 
 export type BlockEditorViewState = {
   /** The block id currently open in the inline editor, or null when none. */
@@ -45,24 +41,5 @@ export function normalizeBlockEditorViewState(raw: unknown): BlockEditorViewStat
     }
   }
   const editingId = typeof raw.editingId === 'string' ? raw.editingId : null;
-  return { editingId, drafts };
-}
-
-/**
- * Reconcile editor view state against the live block-id set after a refetch.
- * Drafts (and an active edit) for blocks that no longer exist are dropped, but
- * drafts for still-present blocks are PRESERVED — a refetch/SSE reconcile never
- * discards a draft the user is still mid-edit on (Dataful-UX contract).
- */
-export function reconcileBlockEditorViewState(
-  prior: BlockEditorViewState,
-  liveIds: readonly string[],
-): BlockEditorViewState {
-  const live = new Set(liveIds);
-  const drafts: Record<string, string> = {};
-  for (const [id, value] of Object.entries(prior.drafts)) {
-    if (live.has(id)) drafts[id] = value;
-  }
-  const editingId = prior.editingId && live.has(prior.editingId) ? prior.editingId : null;
   return { editingId, drafts };
 }

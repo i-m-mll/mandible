@@ -5,6 +5,7 @@ import type {
   GetAccountParams,
   InitializeParams,
   ThreadReadParams,
+  ThreadUnarchiveParams,
   ThreadResumeParams,
   ThreadStartParams,
   TurnInterruptParams,
@@ -19,6 +20,7 @@ type CodexRequestParams = {
   "thread/start": ThreadStartParams;
   "thread/resume": ThreadResumeParams;
   "thread/read": ThreadReadParams;
+  "thread/unarchive": ThreadUnarchiveParams;
   "turn/start": TurnStartParams;
   "turn/steer": TurnSteerParams;
   "turn/interrupt": TurnInterruptParams;
@@ -45,7 +47,7 @@ export function codexAppServerExecutable(options: {
   const override = options.override ?? process.env.MANDIBLE_CODEX_APP_SERVER_BIN;
   // Desktop owns the paginated thread format; its bundled CLI tracks that protocol.
   const command = override || ((options.platform ?? platform()) === "darwin"
-    ? "/Applications/ChatGPT.app/Contents/Resources/codex"
+    ? "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
     : "codex");
   if (command !== "codex") {
     try {
@@ -133,6 +135,10 @@ export class CodexAppServerClient {
 
   onExit(listener: (exit: StructuredProcessExit) => void): void {
     this.exitListener = listener;
+  }
+
+  respond(id: string | number, result: unknown): void {
+    this.processOwner.write({ id, result });
   }
 
   close(): Promise<StructuredProcessExit> {

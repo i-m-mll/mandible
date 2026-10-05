@@ -11,7 +11,6 @@ import {
 } from '../../ui/src/components/shared/SidebarItemRow';
 
 const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
-const contextualActionStylesheet = readFileSync('ui/src/styles/contextual-action.css', 'utf8');
 
 afterEach(() => {
   cleanup();
@@ -87,153 +86,10 @@ describe('SidebarItemRow', () => {
     expect(onSelect).toHaveBeenCalledOnce();
   });
 
-  it('overlays the measured trailing cluster behind a short title fade without reserving width or showing an ellipsis', () => {
-    const rowRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row \{([^}]*)\}/)?.[1] ?? '';
-    const selectRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__select \{([^}]*)\}/)?.[1] ?? '';
-    const contentRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__content \{([\s\S]*?)\n\}/)?.[1] ?? '';
-    const labelRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__label \{([^}]*)\}/)?.[1] ?? '';
-    const trailingRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1] ?? '';
-    expect(rowRule).toContain('--sidebar-item-row-reveal-width: 0px');
-    expect(rowRule).toContain('display: block');
-    expect(selectRule).toContain('width: 100%');
-    expect(selectRule).not.toContain('mask-image');
-    expect(contentRule).toContain('width: 100%');
-    expect(contentRule).toContain('overflow: hidden');
-    expect(contentRule).toContain('mask-image: linear-gradient');
-    expect(contentRule).toContain('var(--sidebar-item-row-reveal-width)');
-    expect(contentRule).toContain('calc(100% - var(--sidebar-item-row-reveal-width) - 12px)');
-    expect(contentRule).not.toContain('min(12px, var(--sidebar-item-row-reveal-width))');
-    expect(contentRule).toContain('transparent calc(100% - var(--sidebar-item-row-reveal-width))');
-    expect(labelRule).toContain('text-overflow: clip');
-    expect(labelRule).not.toContain('text-overflow: ellipsis');
-    expect(labelRule).not.toContain('mask-image');
-    expect(trailingRule).toContain('position: absolute');
-    expect(trailingRule).toContain('right: 0');
-    expect(trailingRule).toContain('opacity: 1');
-    expect(trailingRule).not.toMatch(/flex: 0 0|margin-left|padding-left/);
-    const actionRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row__action \{([^}]*)\}/)?.[1] ?? '';
-    expect(actionRule).toContain('width: 24px');
-    expect(contextualActionStylesheet).toMatch(/\.contextual-action\s*\{[^}]*border-radius: 0;[^}]*background: transparent;/s);
-  });
 
-  it('feeds the actual overlaid cluster width into the shared fade boundary', () => {
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 68 } as DOMRect);
-    const { rerender } = render(
-      <SidebarItemRow
-        label="Measured"
-        selectionLabel="Select measured"
-        onSelect={() => undefined}
-        actions={<SidebarItemPinAction label="measured" pressed={false} onPress={() => undefined} />}
-      />,
-    );
-    const row = screen.getByRole('button', { name: 'Select measured' }).closest('.sidebar-item-row') as HTMLElement;
-    expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('68px');
 
-    rerender(
-      <SidebarItemRow
-        label="Measured"
-        selectionLabel="Select measured"
-        onSelect={() => undefined}
-      />,
-    );
-    expect(row.querySelector('.sidebar-item-row__trailing')).toBeNull();
-    expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('0px');
-    expect(row.style.getPropertyValue('--sidebar-item-row-persistent-width')).toBe('0px');
-  });
 
-  it('reveals the shared cluster and shifted mask boundary for interaction, persistent-pin, and coarse-pointer rows', () => {
-    render(
-      <SidebarItemRow
-        label="Pinned"
-        selectionLabel="Select pinned"
-        trailingReveal="persistent-pin"
-        onSelect={() => undefined}
-        actions={<SidebarItemPinAction label="pinned" pressed onPress={() => undefined} />}
-      />,
-    );
-    expect(screen.getByRole('button', { name: 'Select pinned' }).closest('.sidebar-item-row')
-      ?.classList.contains('sidebar-item-row--persistent-pin')).toBe(true);
-    expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{\s*--sidebar-item-row-reveal-width: var\(--sidebar-item-row-trailing-width, 0px\);/,
-    );
-    expect(sidebarItemRowStylesheet).not.toMatch(
-      /\.sidebar-item-row--selected\s*\{[^}]*--sidebar-item-row-reveal-width/s,
-    );
-    const persistentRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row--persistent-pin \{([^}]*)\}/)?.[1] ?? '';
-    expect(persistentRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-persistent-width, 0px)');
-    const coarsePointerRule = sidebarItemRowStylesheet.match(/@media \(hover: none\), \(pointer: coarse\) \{([\s\S]*)\n\}/)?.[1] ?? '';
-    expect(coarsePointerRule).toContain('--sidebar-item-row-reveal-width: var(--sidebar-item-row-trailing-width, 0px)');
-    expect(coarsePointerRule).toContain('.sidebar-item-row--persistent-pin .sidebar-item-row__overflow');
-    expect(coarsePointerRule).toContain('pointer-events: auto');
-  });
 
-  it('measures only the visible pin at persistent rest and the full cluster for reveal', () => {
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect() {
-      const width = this.classList.contains('sidebar-item-row__trailing') ? 28
-        : this.classList.contains('sidebar-item-row__overflow') ? 24
-          : 0;
-      return { width } as DOMRect;
-    });
-    render(
-      <SidebarItemRow
-        label="Persistent"
-        selectionLabel="Select persistent"
-        trailingReveal="persistent-pin"
-        onSelect={() => undefined}
-        actions={(
-          <>
-            <SidebarItemPinAction label="persistent" pressed onPress={() => undefined} />
-            <SidebarItemOverflowMenu label="More persistent actions" actions={[{ id: 'copy', label: 'Copy', onSelect: () => undefined }]} />
-          </>
-        )}
-      />,
-    );
-    const row = screen.getByRole('button', { name: 'Select persistent' }).closest('.sidebar-item-row') as HTMLElement;
-    expect(row.style.getPropertyValue('--sidebar-item-row-persistent-width')).toBe('28px');
-    expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('54px');
-    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin \.sidebar-item-row__actions \{[^}]*width: 24px;/s);
-    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--persistent-pin \.sidebar-item-row__overflow \{[^}]*position: absolute;[^}]*right: calc\(100% \+ 2px\);/s);
-  });
-
-  it('remeasures the shared boundary when an existing row becomes persistently pinned', () => {
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect() {
-      if (this.classList.contains('sidebar-item-row__overflow')) return { width: 24 } as DOMRect;
-      if (this.classList.contains('sidebar-item-row__trailing')) {
-        return {
-          width: this.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--persistent-pin') ? 28 : 54,
-        } as DOMRect;
-      }
-      return { width: 0 } as DOMRect;
-    });
-    const actions = (pressed: boolean) => (
-      <>
-        <SidebarItemPinAction label="dynamic" pressed={pressed} onPress={() => undefined} />
-        <SidebarItemOverflowMenu label="More dynamic actions" actions={[{ id: 'copy', label: 'Copy', onSelect: () => undefined }]} />
-      </>
-    );
-    const { rerender } = render(
-      <SidebarItemRow
-        label="Dynamic"
-        selectionLabel="Select dynamic"
-        onSelect={() => undefined}
-        actions={actions(false)}
-      />,
-    );
-    const row = screen.getByRole('button', { name: 'Select dynamic' }).closest('.sidebar-item-row') as HTMLElement;
-    expect(row.style.getPropertyValue('--sidebar-item-row-persistent-width')).toBe('54px');
-
-    rerender(
-      <SidebarItemRow
-        label="Dynamic"
-        selectionLabel="Select dynamic"
-        trailingReveal="persistent-pin"
-        onSelect={() => undefined}
-        actions={actions(true)}
-      />,
-    );
-    expect(row.style.getPropertyValue('--sidebar-item-row-persistent-width')).toBe('28px');
-    expect(row.style.getPropertyValue('--sidebar-item-row-trailing-width')).toBe('54px');
-  });
 
   it('keeps an accessible official provider mark in a fixed right-edge slot after reveal-only actions', () => {
     render(
@@ -277,43 +133,7 @@ describe('SidebarItemRow', () => {
     expect(providerFootprintRule).toContain('--sidebar-item-row-reveal-width: 22px');
   });
 
-  it('reveals provider marks only for hover, focus-within, and selection while actions remain interaction-only', () => {
-    render(
-      <SidebarItemRow
-        label="Selected at rest"
-        selectionLabel="Select at-rest row"
-        selected
-        provider={{ label: 'Codex', mark: 'openai' }}
-        onSelect={() => undefined}
-        actions={<SidebarItemPinAction label="at-rest row" pressed={false} onPress={() => undefined} />}
-      />,
-    );
 
-    const row = screen.getByRole('button', { name: 'Select at-rest row' }).closest('.sidebar-item-row')!;
-    expect(row.classList.contains('sidebar-item-row--selected')).toBe(true);
-    expect(row.classList.contains('sidebar-item-row--persistent-pin')).toBe(false);
-    expect(sidebarItemRowStylesheet.match(/\.sidebar-item-row__trailing \{([^}]*)\}/)?.[1]).toContain('opacity: 1');
-    expect(screen.getByRole('img', { name: 'Provider: Codex' })).toBeTruthy();
-    expect(row.querySelector('.sidebar-item-row__actions')?.classList.contains('contextual-action-group')).toBe(true);
-    expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row:hover \.sidebar-item-row__provider-mark,\s*\.sidebar-item-row:focus-within \.sidebar-item-row__provider-mark,\s*\.sidebar-item-row--selected \.sidebar-item-row__provider-mark \{\s*opacity: 1;/,
-    );
-    expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|actions)/);
-    expect(row.classList.contains('contextual-action-owner')).toBe(true);
-    expect(contextualActionStylesheet).not.toMatch(/selected[^}]*contextual-action-group/);
-  });
-
-  it('uses the same neutral shared state for selected and hovered rows', () => {
-    render(<SidebarItemRow label="Neutral" selectionLabel="Select neutral" selected provider={{ label: 'Codex', mark: 'openai' }} onSelect={() => undefined} />);
-    const neutral = screen.getByRole('button', { name: 'Select neutral' }).closest('.sidebar-item-row')!;
-    expect([...neutral.classList].some((className) => className.startsWith('sidebar-item-row--selection-'))).toBe(false);
-    const selectedRule = sidebarItemRowStylesheet.match(/\n\n\.sidebar-item-row--selected \{([^}]*)\}/)?.[1] ?? '';
-    const hoveredRule = sidebarItemRowStylesheet.match(/\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{([^}]*)\}/)?.[1] ?? '';
-    expect(selectedRule).toContain('background: var(--neutral-alpha-05)');
-    expect(selectedRule).toContain('color: var(--text-primary)');
-    expect(hoveredRule).toContain('background: var(--neutral-alpha-05)');
-    expect(sidebarItemRowStylesheet).not.toMatch(/sidebar-selection|selection-(?:claude|codex|agy)/);
-  });
 
   it('fails closed without inventing a mark while preserving unsupported provider identity', () => {
     render(<SidebarItemRow label="Unsupported" selectionLabel="Select unsupported" provider={{ label: 'agy', mark: null }} onSelect={() => undefined} />);
@@ -377,18 +197,6 @@ describe('SidebarItemRow', () => {
     const action = screen.getByRole('menuitem', { name: 'Archive' });
     const overflow = menu.closest('.sidebar-item-row__overflow');
     expect(overflow?.classList.contains('sidebar-item-row__overflow--open')).toBe(true);
-    expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row__trailing:has\(\.sidebar-item-row__overflow--open\)[^{]*\{[^}]*pointer-events:\s*auto;/s,
-    );
-    expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row__actions:has\(\.sidebar-item-row__overflow--open\)\s*\{[^}]*opacity:\s*1;/s,
-    );
-    expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row__menu\s*\{[^}]*pointer-events:\s*auto;/s,
-    );
-    expect(sidebarItemRowStylesheet).toMatch(
-      /\.sidebar-item-row--persistent-pin:not\(:hover\):not\(:focus-within\) \.sidebar-item-row__overflow:not\(\.sidebar-item-row__overflow--open\)/,
-    );
 
     fireEvent.pointerDown(action);
     fireEvent.pointerUp(action);

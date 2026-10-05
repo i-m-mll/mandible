@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import fs from "node:fs";
 import os from "node:os";
@@ -7,11 +7,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 
 const require = createRequire(import.meta.url);
 const {
   PRODUCTION_DB_PATHS,
+  canonicalizePath: canonicalFuturePath,
   resolvesToAnyProductionDbPath,
 } = require("../cli/production-db-guard.cjs");
 
@@ -65,18 +66,6 @@ function canonicalPath(target) {
   } catch {
     return path.resolve(target);
   }
-}
-
-function canonicalFuturePath(target) {
-  let probe = path.resolve(target);
-  const suffix = [];
-  while (!fs.existsSync(probe)) {
-    const parent = path.dirname(probe);
-    if (parent === probe) break;
-    suffix.unshift(path.basename(probe));
-    probe = parent;
-  }
-  return path.join(canonicalPath(probe), ...suffix);
 }
 
 function sameFile(left, right) {
@@ -230,7 +219,7 @@ function bindingMatches(actual, expected) {
 
 export function inspectSourceBinding(source) {
   const sourcePath = path.resolve(source);
-  const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  const db = new SqliteDatabase(sourcePath, { readonly: true, fileMustExist: true });
   try {
     return sourceDatabaseBinding(db, sourcePath);
   } finally {
@@ -291,7 +280,7 @@ function assertSafeDestination(sourcePath, destinationPath) {
   }
   const futureDestination = canonicalFuturePath(destinationPath);
   const productionMatch = resolvesToAnyProductionDbPath(destinationPath, PRODUCTION_DB_PATHS)
-    ?? PRODUCTION_DB_PATHS.find((candidate) => canonicalPath(candidate) === futureDestination);
+    ?? PRODUCTION_DB_PATHS.find((candidate) => canonicalFuturePath(candidate) === futureDestination);
   if (productionMatch) {
     throw new Error(`Refusing production database alias as rebuild destination: ${canonicalPath(productionMatch)}`);
   }
@@ -335,7 +324,7 @@ export function buildCompactDestination(options) {
   let db;
   let committed = false;
   try {
-    db = new Database(partialPath);
+    db = new SqliteDatabase(partialPath);
     db.pragma("journal_mode = DELETE");
     db.pragma("synchronous = FULL");
     db.pragma("foreign_keys = OFF");
@@ -536,7 +525,7 @@ export function buildSparseConversationStructureCache(options) {
   fsyncFile(markerPath);
   let db;
   try {
-    db = new Database(partialPath);
+    db = new SqliteDatabase(partialPath);
     db.pragma("journal_mode = DELETE");
     db.pragma("synchronous = FULL");
     db.pragma("foreign_keys = ON");
@@ -648,7 +637,7 @@ export function buildSparseConversationStructureCache(options) {
     const cacheIds = new Map(db.prepare(
       "SELECT conversation_id, cache_id FROM cache_conversations",
     ).all().map((row) => [row.conversation_id, row.cache_id]));
-    const sourceReader = new Database(sourcePath, { readonly: true, fileMustExist: true });
+    const sourceReader = new SqliteDatabase(sourcePath, { readonly: true, fileMustExist: true });
     const insertToolLinks = db.transaction(() => {
       for (const row of sourceReader.prepare(`
         SELECT block.conversation_id, block.provider_key, block.position
@@ -728,7 +717,7 @@ function defaultOperationalLogPath(sourcePath) {
 export function inspectLegacyReclaimReadiness(options) {
   const sourcePath = path.resolve(options.source);
   const logDbPath = path.resolve(options.logDb ?? defaultOperationalLogPath(sourcePath));
-  const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  const db = new SqliteDatabase(sourcePath, { readonly: true, fileMustExist: true });
   try {
     const blockColumns = visibleColumns(db, "main", "conversation_blocks").map((column) => column.name);
     if (!blockColumns.includes("payload_state")) {
@@ -778,7 +767,7 @@ export function inspectLegacyReclaimReadiness(options) {
 
     let logState = null;
     if (fs.existsSync(logDbPath)) {
-      const logDb = new Database(logDbPath, { readonly: true, fileMustExist: true });
+      const logDb = new SqliteDatabase(logDbPath, { readonly: true, fileMustExist: true });
       try {
         logState = logDb.prepare(`
           SELECT * FROM operational_log_copy_state
@@ -1014,7 +1003,7 @@ function assessRollbackGate(packet, evidenceBound) {
 export function auditCutover(options) {
   const sourcePath = path.resolve(options.source);
   const packet = options.evidence ?? {};
-  const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  const db = new SqliteDatabase(sourcePath, { readonly: true, fileMustExist: true });
   try {
     const binding = sourceDatabaseBinding(db, sourcePath);
     const evidenceBound = bindingMatches(packet.binding, binding);
@@ -1224,7 +1213,7 @@ export function runRestoreDrill(options) {
   const metadataPath = path.join(destinationRoot, "metadata.sqlite");
   const restoredCustody = path.join(destinationRoot, "custody");
   try {
-    const db = new Database(metadataPath);
+    const db = new SqliteDatabase(metadataPath);
     try {
       db.exec(fs.readFileSync(metadataSql, "utf8"));
       const integrity = db.pragma("integrity_check", { simple: true });
@@ -1264,50 +1253,15 @@ function readJson(target) {
   return JSON.parse(fs.readFileSync(path.resolve(target), "utf8"));
 }
 
-function requiredValue(argv, index, flag) {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
-}
-
 function parseArgs(argv) {
-  const command = argv[0];
-  const options = { command, excludeTables: [], restoreReports: [] };
-  for (let index = 1; index < argv.length; index += 1) {
-    const arg = argv[index];
-    switch (arg) {
-      case "--source": options.source = requiredValue(argv, ++index, arg); break;
-      case "--destination": options.destination = requiredValue(argv, ++index, arg); break;
-      case "--exclude-table": options.excludeTables.push(requiredValue(argv, ++index, arg)); break;
-      case "--evidence": options.evidence = requiredValue(argv, ++index, arg); break;
-      case "--log-db": options.logDb = requiredValue(argv, ++index, arg); break;
-      case "--structure-cache": options.structureCache = requiredValue(argv, ++index, arg); break;
-      case "--rebuild-report": options.rebuildReport = requiredValue(argv, ++index, arg); break;
-      case "--restore-report": options.restoreReports.push(requiredValue(argv, ++index, arg)); break;
-      case "--metadata-sql": options.metadataSql = requiredValue(argv, ++index, arg); break;
-      case "--custody-root": options.custodyRoot = requiredValue(argv, ++index, arg); break;
-      case "--destination-root": options.destinationRoot = requiredValue(argv, ++index, arg); break;
-      case "--json": options.json = true; break;
-      case "--help": case "-h": options.help = true; break;
-      default: throw new Error(`Unknown argument: ${arg}`);
-    }
-  }
+  const parsed = require("../cli/command-syntax.cjs").parse(["conversation-cutover", ...argv]);
+  const repeated = key => Array.isArray(parsed.options[key]) ? parsed.options[key] : parsed.options[key] ? [parsed.options[key]] : [];
+  const options = { command: parsed.command.split(".").at(-1), excludeTables: repeated("exclude-table"), restoreReports: repeated("restore-report"), json: parsed.options.json === true };
+  for (const [key, target] of Object.entries({source:"source", destination:"destination", evidence:"evidence", "log-db":"logDb", "structure-cache":"structureCache", "rebuild-report":"rebuildReport", "metadata-sql":"metadataSql", "custody-root":"custodyRoot", "destination-root":"destinationRoot"})) options[target] = parsed.options[key];
   return options;
 }
-
 function usage() {
-  console.log(`Usage: node scripts/conversation-cutover-proof.mjs <command> [options]
-
-Commands:
-  binding --source DB [--json]
-  rebuild --source DB --destination DB [--exclude-table NAME...] [--json]
-  reclaim --source DB --destination DB [--log-db DB] [--structure-cache DB] [--json]
-  restore-drill --source DB --metadata-sql FILE --custody-root DIR --destination-root DIR [--json]
-  audit --source DB --evidence FILE [--rebuild-report FILE] [--restore-report FILE...] [--json]
-
-The audit command emits a source-bound evidence checklist. It can only return
-NO-GO; caller-authored evidence is not an automated cutover authority.
-`);
+  console.log(require("../cli/command-syntax.cjs").help(["conversation-cutover"]));
 }
 
 async function main(argv) {
@@ -1315,6 +1269,7 @@ async function main(argv) {
     usage();
     return 0;
   }
+  if (argv.some(arg => arg === "--help" || arg === "-h")) { usage(); return 0; }
   const options = parseArgs(argv);
   if (options.help || !options.command) { usage(); return options.command ? 0 : 2; }
   let report;

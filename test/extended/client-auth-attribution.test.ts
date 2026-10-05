@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { configureSigningCredential, git } from "../helpers/auth-queue-fixtures.js";
 import { openDb, setDb, type Db } from "../../src/db.js";
 import { AuthAutoApproveManager } from "../../src/auth-auto-approve.js";
 import { AuthQueue } from "../../src/auth-queue.js";
@@ -29,7 +30,7 @@ describe("client-auth durable attribution", () => {
   let projectId: string;
   let operatorId: string;
   let operatorToken: string;
-  let sessionCreate: ReturnType<typeof vi.fn>;
+  let controllerSnapshot: ReturnType<typeof vi.fn>;
   let authEvents: SseEvent[];
   let authQueue: AuthQueue;
 
@@ -51,9 +52,9 @@ describe("client-auth durable attribution", () => {
       secretsDir: path.join(tempDir, "client-auth"),
     });
     operatorToken = authenticator.mintApiToken(operator.id).token;
-    sessionCreate = vi.fn(() => ({ id: "managed-issue-session" }));
+    controllerSnapshot = vi.fn();
     authEvents = [];
-    authQueue = new AuthQueue({ db, broadcast: (event) => authEvents.push(event) });
+    authQueue = new AuthQueue({ db, broadcast: (event) => authEvents.push(event), backgroundMaintenance: false });
     router = new Router({ clientAuth: authenticator });
     registerAuthRoutes(router, authQueue, new AuthAutoApproveManager({ db }));
     registerIssueRoutes(router, {
@@ -61,11 +62,12 @@ describe("client-auth durable attribution", () => {
       getRepoById: () => undefined,
       getBranches: () => [],
     } as never, {
-      sessionManager: { create: sessionCreate } as never,
+      conversationControl: { getSnapshot: controllerSnapshot } as never,
     });
   });
 
   afterEach(() => {
+    authQueue.dispose();
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
@@ -142,7 +144,7 @@ describe("client-auth durable attribution", () => {
       .toBeUndefined();
   });
 
-  it("admits only the operator before issue spawn can construct a managed backend", async () => {
+  it("admits only the operator before validating exact issue continuation custody", async () => {
     const createIssue = await router.invoke({
       method: "POST",
       url: "/api/issues/mandible",
@@ -176,12 +178,11 @@ describe("client-auth durable attribution", () => {
     const ordinary = await request(agentToken);
     expect(ordinary.status).toBe(403);
     expect(ordinary.body).not.toHaveProperty("console_session_id");
-    expect(sessionCreate).not.toHaveBeenCalled();
+    expect(controllerSnapshot).not.toHaveBeenCalled();
 
     const allowed = await request(operatorToken);
-    expect(allowed.status).toBe(200);
-    expect(allowed.body).toMatchObject({ console_session_id: "managed-issue-session" });
-    expect(sessionCreate).toHaveBeenCalledTimes(1);
+    expect(allowed).toMatchObject({ status: 400, body: { error: "exact_work_unit_required" } });
+    expect(controllerSnapshot).not.toHaveBeenCalled();
   });
 
   it("rejects an auth requester that supplies only ambient provider identity", async () => {
@@ -233,6 +234,7 @@ describe("client-auth durable attribution", () => {
         title: "Attributed auth request",
         session_id: "auth-request-agent-session",
         execution_mode: "remote",
+        cwd: tempDir,
       },
       credential: agentToken,
       transport: "http",
@@ -280,6 +282,8 @@ describe("client-auth durable attribution", () => {
     });
     expect(denied.status).toBe(403);
 
+    git(tempDir, ["init", "--initial-branch=main"]);
+    configureSigningCredential(db, tempDir, "ssh_key");
     const approved = await router.invoke({
       method: "POST",
       url: `/api/auth/request/${requestId}/approve`,

@@ -15,21 +15,10 @@ END_MARKER="<!-- END MANDIBLE MANAGED INSTRUCTIONS -->"
 CLI_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 MANDIBLE_ROOT="$(cd "$CLI_DIR/.." && pwd -P)"
 CONTRACT_PATH="$CLI_DIR/instructions-contract.md"
-NODE_BIN="${NODE_BIN:-node}"
+BUN_RUNTIME="$(mandible_bun_runtime)"
 
 usage() {
-  cat <<'EOF' | mandible_render_commands
-Usage:
-  mandible instructions diff [--target <file>]
-  {{command instructions.install}}
-  mandible instructions cleanup --target <file> --mode managed-block|standalone [--force]
-  mandible instructions targets list
-  mandible instructions targets add <path> [--mode managed-block|standalone]
-  mandible instructions targets rm <path>
-  mandible instructions post-export get
-  mandible instructions post-export set <command>
-  mandible instructions post-export clear
-EOF
+  mandible_command_help instructions
 }
 
 default_target() {
@@ -37,7 +26,7 @@ default_target() {
 }
 
 render_fragment() {
-  "$NODE_BIN" "$CLI_DIR/command-syntax.cjs" render "$CONTRACT_PATH"
+  "$BUN_RUNTIME" --no-install "$CLI_DIR/command-syntax.cjs" render "$CONTRACT_PATH"
 }
 
 render_block() {
@@ -47,29 +36,13 @@ render_block() {
 }
 
 settings_helper() {
-  "$NODE_BIN" - "$MANDIBLE_ROOT" "$@" <<'NODE'
+  "$BUN_RUNTIME" --no-install - "$MANDIBLE_ROOT" "$@" <<'NODE'
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
 const [root, op, ...args] = process.argv.slice(2);
-let Database;
-try {
-  Database = require("better-sqlite3");
-} catch {
-  const searchPaths = [path.join(root, "node_modules")];
-  for (const entry of String(process.env.NODE_PATH || "").split(path.delimiter).filter(Boolean)) {
-    searchPaths.push(entry);
-    let current = path.basename(entry) === "node_modules" ? path.dirname(entry) : entry;
-    for (let depth = 0; depth < 6; depth += 1) {
-      searchPaths.push(path.join(current, "node_modules"));
-      const next = path.dirname(current);
-      if (next === current) break;
-      current = next;
-    }
-  }
-  Database = require(require.resolve("better-sqlite3", { paths: searchPaths }));
-}
+const SqliteDatabase = require(path.join(root, "dist", "sqlite.js")).default;
 
 // Issue 24f0316 — the ledger database lives under the durable root, but this
 // helper must never create one: an empty file there would be adopted by the
@@ -81,7 +54,7 @@ const dbPath = process.env.MANDIBLE_DB
 // an instructions-CLI test invoked under vitest cannot mutate live settings.
 require(path.join(root, "cli", "production-db-guard.cjs")).assertNotProductionDbUnderTest(dbPath);
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-const db = new Database(dbPath);
+const db = new SqliteDatabase(dbPath);
 db.pragma("journal_mode = WAL");
 db.prepare(`
   CREATE TABLE IF NOT EXISTS settings (
@@ -198,7 +171,7 @@ NODE
 }
 
 absolute_path() {
-  "$NODE_BIN" - "$1" <<'NODE'
+  "$BUN_RUNTIME" --no-install - "$1" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const target = path.resolve(process.argv[2]);
@@ -212,7 +185,7 @@ NODE
 }
 
 write_target_path() {
-  "$NODE_BIN" - "$1" <<'NODE'
+  "$BUN_RUNTIME" --no-install - "$1" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -275,7 +248,7 @@ git_root_for_path() {
 repo_relative_path() {
   local root="$1"
   local target="$2"
-  "$NODE_BIN" - "$root" "$target" <<'NODE'
+  "$BUN_RUNTIME" --no-install - "$root" "$target" <<'NODE'
 const path = require("node:path");
 const root = path.resolve(process.argv[2]);
 const target = path.resolve(process.argv[3]);
@@ -352,7 +325,7 @@ write_desired_file() {
   render_block > "$block_file"
 
   BEGIN_MARKER="$BEGIN_MARKER" END_MARKER="$END_MARKER" \
-    "$NODE_BIN" - "$target" "$block_file" <<'NODE' > "$output"
+    "$BUN_RUNTIME" --no-install - "$target" "$block_file" <<'NODE' > "$output"
 const fs = require("node:fs");
 const target = process.argv[2];
 const blockFile = process.argv[3];
@@ -418,7 +391,7 @@ cleanup_block() {
   write_target="$(write_target_path "$target")"
   tmp="$(temp_for_target "$write_target")"
   BEGIN_MARKER="$BEGIN_MARKER" END_MARKER="$END_MARKER" \
-    "$NODE_BIN" - "$target" <<'NODE' > "$tmp"
+    "$BUN_RUNTIME" --no-install - "$target" <<'NODE' > "$tmp"
 const fs = require("node:fs");
 const target = process.argv[2];
 const current = fs.readFileSync(target, "utf8");
@@ -589,31 +562,8 @@ case "$subcommand" in
   cleanup)
     cleanup_mode="managed-block"
     cleanup_target_path=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --target)
-          cleanup_target_path="${2:?--target requires a value}"
-          shift 2
-          ;;
-        --mode)
-          cleanup_mode="${2:?--mode requires a value}"
-          shift 2
-          ;;
-        --force)
-          force=1
-          shift
-          ;;
-        -h|--help)
-          usage
-          exit 0
-          ;;
-        *)
-          printf 'Unexpected argument: %s\n' "$1" >&2
-          usage >&2
-          exit 2
-          ;;
-      esac
-    done
+    binding=$(mandible_bind_main_arguments "instructions.cleanup" '{"cleanup_target_path":{"option":"target"},"cleanup_mode":{"option":"mode"},"force":{"option":"force","constant":"1"}}' "$@") || exit $?
+    eval "$binding"
     if [[ -z "$cleanup_target_path" ]]; then
       printf 'cleanup requires --target <file>\n' >&2
       usage >&2
@@ -627,29 +577,23 @@ case "$subcommand" in
     shift || true
     case "$action" in
       list)
+        binding=$(mandible_bind_main_arguments "instructions.targets.list" '{}' "$@") || exit $?
+        eval "$binding"
         settings_helper targets-list
         ;;
       add)
         target_arg="${1:?targets add requires a path}"
         shift
         mode="managed-block"
-        while [[ $# -gt 0 ]]; do
-          case "$1" in
-            --mode)
-              mode="${2:?--mode requires a value}"
-              shift 2
-              ;;
-            *)
-              printf 'Unexpected argument: %s\n' "$1" >&2
-              usage >&2
-              exit 2
-              ;;
-          esac
-        done
+        binding=$(mandible_bind_main_arguments "instructions.targets.add" '{"mode":{"option":"mode"}}' "$target_arg" "$@") || exit $?
+        eval "$binding"
         settings_helper targets-add "$target_arg" "$mode"
         ;;
       rm|remove)
-        settings_helper targets-rm "${1:?targets rm requires a path}"
+        target_arg=""
+        binding=$(mandible_bind_main_arguments "instructions.targets.rm" '{"target_arg":{"position":0}}' "$@") || exit $?
+        eval "$binding"
+        settings_helper targets-rm "$target_arg"
         ;;
       -h|--help|help)
         usage
@@ -667,12 +611,18 @@ case "$subcommand" in
     shift || true
     case "$action" in
       get)
+        binding=$(mandible_bind_main_arguments "instructions.post-export.get" '{}' "$@") || exit $?
+        eval "$binding"
         settings_helper post-export-get
         ;;
       set)
-        settings_helper post-export-set "$@"
+        binding=$(mandible_bind_main_arguments "instructions.post-export.set" '{"command_parts":{"rest":0}}' "$@") || exit $?
+        eval "$binding"
+        settings_helper post-export-set "${command_parts[@]}"
         ;;
       clear|rm|remove)
+        binding=$(mandible_bind_main_arguments "instructions.post-export.clear" '{}' "$@") || exit $?
+        eval "$binding"
         settings_helper post-export-clear
         ;;
       -h|--help|help)
@@ -688,32 +638,8 @@ case "$subcommand" in
     ;;
 esac
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --target)
-      target="${2:?--target requires a value}"
-      explicit_target=1
-      shift 2
-      ;;
-    --worktree)
-      worktree="${2:?--worktree requires a value}"
-      shift 2
-      ;;
-    --force)
-      force=1
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      printf 'Unexpected argument: %s\n' "$1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-done
+binding=$(mandible_bind_main_arguments "@instructions ${subcommand}" '{"target":{"option":"target"},"explicit_target":{"option":"target","constant":"1"},"worktree":{"option":"worktree"},"force":{"option":"force","constant":"1"}}' "$@") || exit $?
+eval "$binding"
 
 if [[ -n "$worktree" ]]; then
   target="$(map_target_to_worktree "$target" "$worktree")"

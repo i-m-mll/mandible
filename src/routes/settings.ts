@@ -303,7 +303,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       result[row.key] = row.value;
     }
     sendJson(res, 200, result);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/settings", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/settings/instructions-delivery", (_req, res) => {
     sendJson(res, 200, instanceRole === "preview"
@@ -313,7 +313,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
         stderr: "Instruction export is not run by a preview instance.",
       }, true)
       : instructionDeliverySnapshot());
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/settings/instructions-delivery", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.put("/api/settings/instructions-delivery", globalCapabilityRoute("change_settings", (req, res) => {
     const body = readBody<{
@@ -391,7 +391,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       return;
     }
     sendJson(res, 200, snapshot);
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "put:/api/settings/instructions-delivery", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["ledger:write","files:production","process:external"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
 
   // GET /api/settings/:key — returns single setting value
   server.get("/api/settings/:key", (req, res) => {
@@ -412,7 +412,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       return;
     }
     sendJson(res, 200, { key, value: row.value });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/settings/:key", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // PUT /api/settings/:key — update a setting
   server.put("/api/settings/:key", globalCapabilityRoute("change_settings", (req, res) => {
@@ -452,5 +452,5 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       value: body.value,
       deprecated: DEPRECATED_REAPER_SETTINGS.has(key) || undefined,
     });
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "put:/api/settings/:key", effects: ["ledger:write"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
 }

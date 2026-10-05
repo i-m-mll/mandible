@@ -19,41 +19,11 @@ status_filter=""
 type_filter=""
 
 usage() {
-  cat <<'EOF' | mandible_render_commands
-Usage: {{command auth.list}}
-
-List active auth requests from the Mandible daemon. The active queue includes
-pending, approved, executing, expired, failed, and recently resolved requests.
-
-Options:
-  --json              Print the raw queue JSON.
-  --repo <name>       Filter by repository name.
-  --head <branch>     Filter by head/source branch.
-  --base <branch>     Filter by base/target branch.
-  --status <status>   Filter by request status.
-  --type <type>       Filter by auth request type.
-  -h, --help          Show this help.
-
-Examples:
-  mandible auth list
-  mandible auth list --repo mandible --head feature/example
-  mandible auth list --status pending --json
-EOF
+  mandible_command_help auth list
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --json) json=1; shift ;;
-    --repo) repo_filter="${2:?--repo requires a value}"; shift 2 ;;
-    --head) head_filter="${2:?--head requires a value}"; shift 2 ;;
-    --base) base_filter="${2:?--base requires a value}"; shift 2 ;;
-    --status) status_filter="${2:?--status requires a value}"; shift 2 ;;
-    --type) type_filter="${2:?--type requires a value}"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    -*) printf '%s\n' "Unknown option: $1" >&2; usage >&2; exit 1 ;;
-    *) printf '%s\n' "Unexpected argument: $1" >&2; exit 1 ;;
-  esac
-done
+binding=$(mandible_bind_main_arguments "auth.list" '{"json":{"option":"json","constant":"1"},"repo_filter":{"option":"repo"},"head_filter":{"option":"head"},"base_filter":{"option":"base"},"status_filter":{"option":"status"},"type_filter":{"option":"type"}}' "$@") || exit $?
+eval "$binding"
 
 if ! command -v jq >/dev/null 2>&1; then
   printf '%s\n' "Error: jq is required for mandible auth list." >&2

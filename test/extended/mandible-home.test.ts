@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -277,13 +277,12 @@ describe("durable-state root (issue 24f0316)", () => {
 
         const mainOnly = path.join(tempHome, "main-file-only.db");
         fs.copyFileSync(legacy, mainOnly);
-        const mainOnlyDb = new Database(mainOnly, { fileMustExist: true });
+        const mainOnlyDb = new SqliteDatabase(mainOnly, { fileMustExist: true });
         try {
           expect(
             mainOnlyDb
               .prepare("SELECT value FROM settings WHERE key = ?")
-              .pluck()
-              .get("copy_forward_marker"),
+              .get("copy_forward_marker")?.value,
           ).toBe("main-file-value");
         } finally {
           mainOnlyDb.close();
@@ -563,8 +562,7 @@ describe("durable-state root (issue 24f0316)", () => {
       try {
         expect(
           db.prepare("SELECT value FROM settings WHERE key = ?")
-            .pluck()
-            .get("copy_forward_marker"),
+            .get("copy_forward_marker")?.value,
         ).toBe("not-stranded");
       } finally {
         db.close();

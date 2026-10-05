@@ -1,19 +1,6 @@
 "use strict";
 
-// Issue 07edc0d — production-database isolation guard, dependency-free CommonJS
-// twin of the TypeScript guard in src/db.ts
-// (assertNotProductionDbUnderTest / resolvesToProductionDbPath). Keep the two
-// implementations in sync.
-//
-// The TypeScript guard only covers opens that funnel through openDb(). Several
-// entry points open the production database directly, bypassing openDb()
-// entirely: the bash-embedded node settings helper in cli/instructions.sh
-// (which writes to the settings table) and the standalone .mjs maintenance
-// scripts under scripts/. Those live outside the TypeScript build, so they
-// require this shared, plain-node module rather than importing src/db.ts. Each
-// direct-open entry point calls assertNotProductionDbUnderTest(dbPath) before
-// constructing its Database handle, so no test can migrate or write the live
-// database regardless of which helper resolved the path.
+/** Shared production database refusal used by all SQLite connections and CLI tools. */
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -69,19 +56,34 @@ function isUnderTestRunner() {
 
 // Canonicalize to the real on-disk path so a symlink, relative segment, or
 // case-insensitive alias cannot smuggle the production path past a string
-// compare. Falls back to a resolved (non-real) path when the file is absent.
-function canonicalizePath(target) {
+// compare. Missing leaves retain the canonical identity of their existing
+// ancestor; dangling parent links are resolved before allocation too.
+function canonicalizePath(target, seenLinks = new Set()) {
   const expanded =
     target === "~"
       ? realSystemHomeDir()
       : target.startsWith("~/") || target.startsWith("~\\")
         ? path.join(realSystemHomeDir(), target.slice(2))
         : target;
-  try {
-    return fs.realpathSync.native(expanded);
-  } catch {
-    return path.resolve(expanded);
+  let probe = path.resolve(expanded);
+  const suffix = [];
+  while (!fs.existsSync(probe)) {
+    let entry;
+    try { entry = fs.lstatSync(probe); } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+    }
+    if (entry?.isSymbolicLink()) {
+      if (seenLinks.has(probe) || seenLinks.size >= 40) throw new Error("Database path symlink cycle");
+      seenLinks.add(probe);
+      const linked = path.resolve(path.dirname(probe), fs.readlinkSync(probe));
+      return path.join(canonicalizePath(linked, seenLinks), ...suffix);
+    }
+    const parent = path.dirname(probe);
+    if (parent === probe) break;
+    suffix.unshift(path.basename(probe));
+    probe = parent;
   }
+  return path.join(fs.realpathSync.native(probe), ...suffix);
 }
 
 // Same-file check by device+inode, catching hard links and case-alias entries
@@ -127,6 +129,7 @@ function assertNotProductionDbUnderTest(dbPath, productionPaths = PRODUCTION_DB_
 }
 
 module.exports = {
+  canonicalizePath,
   PRODUCTION_DB_PATH,
   LEGACY_PRODUCTION_DB_PATH,
   PRODUCTION_OPERATIONAL_LOG_DB_PATH,

@@ -1,3 +1,5 @@
+import { DOMAIN_EVENTS, type MandibleEventType } from "./contracts.js";
+import { isSqliteBusy } from "./sqlite.js";
 // Ingestion service: watches filesystem for conversation files and maintains
 // the conversations/conversation_blocks tables in sync.
 
@@ -8,7 +10,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
-import Database from "better-sqlite3";
+import SqliteDatabase from "./sqlite.js";
 import { getDb, type Db } from "./db.js";
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
@@ -683,7 +685,7 @@ let conversationWatch: ConversationWatchHandle | null = null;
 let lastUnnamedEventReconcileAt = 0;
 let reconcileTimer: ReturnType<typeof setInterval> | null = null;
 let logger: Logger = () => {};
-let eventPublisher: (event: string, data: unknown) => void = broadcast;
+let eventPublisher: (event: MandibleEventType, data: unknown) => void = broadcast;
 let ingestionActive = false;
 let ingestionRunToken = 0;
 let backgroundIngestionEnabled = true;
@@ -1156,7 +1158,7 @@ export async function ingestExactSelectedPath(
 function notifySelectedReparseFailure(conversationId: string): void {
   const row = getDb().prepare(`SELECT block_count FROM conversations WHERE id = ?`)
     .get(conversationId) as { block_count: number } | undefined;
-  eventPublisher("conversation:updated", { id: conversationId, block_count: row?.block_count ?? 0 });
+  eventPublisher(DOMAIN_EVENTS.CONVERSATION_UPDATED, { id: conversationId, block_count: row?.block_count ?? 0 });
 }
 
 /** Queue one selected provider source without parsing on the HTTP request thread. */
@@ -1254,9 +1256,9 @@ async function findTranscriptPathForSession(sessionRef: string | null): Promise<
     }
     if (row?.source === "codex") {
       const codexRoot = path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"));
-      let stateDb: Database.Database | null = null;
+      let stateDb: SqliteDatabase | null = null;
       try {
-        stateDb = new Database(path.join(codexRoot, "state_5.sqlite"), { readonly: true, fileMustExist: true });
+        stateDb = new SqliteDatabase(path.join(codexRoot, "state_5.sqlite"), { readonly: true, fileMustExist: true });
         const exact = stateDb.prepare("SELECT id, rollout_path FROM threads WHERE id = ?").get(sessionRef) as
           | { id: string; rollout_path: string }
           | undefined;
@@ -1559,7 +1561,7 @@ export async function convergeProjectedConversationTitlesForWorker(
 
 export function configureIngestionWorker(
   log: Logger,
-  publish: (event: string, data: unknown) => void,
+  publish: (event: MandibleEventType, data: unknown) => void,
 ): void {
   logger = log;
   eventPublisher = publish;
@@ -2381,7 +2383,7 @@ export function persistExactCodexTitle(
 
   db.prepare("UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?")
     .run(title, input.conversationId);
-  eventPublisher("conversation:updated", {
+  eventPublisher(DOMAIN_EVENTS.CONVERSATION_UPDATED, {
     id: input.conversationId,
     source: "codex",
     title,
@@ -2476,7 +2478,7 @@ async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb
         updated_at = datetime('now')
       WHERE id = ?
     `).run(identity.projectPath, identity.cwd, row.id);
-    eventPublisher("conversation:updated", {
+    eventPublisher(DOMAIN_EVENTS.CONVERSATION_UPDATED, {
       id: row.id,
       source: "gemini",
       title: row.title,
@@ -3119,7 +3121,7 @@ async function ingestFilePass(
     // window. Publish only after the locator map and disposable cache have
     // converged; publishing before recordDurableConversationSource let the
     // refetch race the re-index and remain pending with no later event.
-    eventPublisher("conversation:updated", {
+    eventPublisher(DOMAIN_EVENTS.CONVERSATION_UPDATED, {
       id: existing.id,
       source: result.conversation.source,
       title: result.conversation.title,
@@ -3227,7 +3229,7 @@ async function ingestFilePass(
       );
     }
     if (isProviderTitleOnlyAppend) {
-      eventPublisher("conversation:updated", {
+      eventPublisher(DOMAIN_EVENTS.CONVERSATION_UPDATED, {
         id: conversationId,
         source: result.conversation.source,
         title: result.conversation.title,
@@ -3913,11 +3915,7 @@ function foreignBlockIdHolders(
   return found;
 }
 
-function isSqliteBusy(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null)?.code;
-  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED"
-    || /SQLITE_(?:BUSY|LOCKED)|database is locked/i.test(String(error));
-}
+
 
 async function ingestWorkflowArtifact(
   filePath: string,
@@ -3950,7 +3948,7 @@ async function ingestWorkflowArtifact(
       summary_path: summaryPath,
       workflow_id: workflow.id,
     });
-    eventPublisher("workflow:updated", {
+    eventPublisher(DOMAIN_EVENTS.WORKFLOW_UPDATED, {
       id: workflow.id,
       session_id: workflow.session_id,
       provider_run_id: workflow.provider_run_id,

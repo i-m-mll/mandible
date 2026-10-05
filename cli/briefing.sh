@@ -13,68 +13,15 @@ die() {
 }
 
 usage() {
-  cat <<'EOF' | mandible_render_commands
-Usage:
-  {{command briefing.create}}
-  {{command briefing.rename}}
-  {{command briefing.describe}}
-  {{command briefing.archive}}
-  {{command briefing.restore}}
-  {{command briefing.bundle.create}}
-  {{command briefing.bundle.add}}
-  {{command briefing.bundle.replace}}
-  {{command briefing.bundle.rename}}
-  {{command briefing.bundle.delete}}
-  {{command briefing.bundle.show}}
-  {{command briefing.group.create}}
-  {{command briefing.group.add}}
-  {{command briefing.group.configure}}
-  {{command briefing.group.archive}}
-  {{command briefing.group.restore}}
-  {{command briefing.group.promote}}
-  {{command briefing.group.review}}
-  {{command briefing.group.accept}}
-  {{command briefing.group.reject}}
-  {{command briefing.group.destination.bind}}
-  {{command briefing.group.destination.place}}
-  {{command briefing.report.update}}
-  {{command briefing.group.rename}}
-  {{command briefing.group.show}}
-  {{command briefing.route.inspect}}
-  {{command briefing.route.plan}}
-  {{command briefing.route.apply}}
-
-Creates a Briefing whose round is bound to exactly the named artifact version.
-If an active Briefing already owns that logical Artifact, the command reports
-every candidate with reuse/add-round guidance. Use --briefing to target one
-candidate, or --reason to create a separate identity with an
-authenticated durable receipt. Archived candidates are advisory. This command
-never resolves a logical artifact or series to latest.
-
-A Briefing bundle is only a named, manually ordered association. Creating or
-adding to one does not change member Briefings, rounds, artifacts, or review data.
-
-A destination-route manifest uses schema mandible-briefing-destination-routes@3.
-Each route declares `publication_mode`: reviewed-document creates a Base-relative
-proposal for configured-human disposition; published-report appends an immutable
-round to the already-placed Briefing and advances Current without changing group Base.
-Plan resolves each logical Artifact through its active destination owner without writing.
-Apply atomically creates or upgrades the declared routes. Exact replay is
-unchanged; ownership, identity, template downgrade, and same-version template
-drift fail closed. Updates require expected_revision from route plan.
-EOF
+  mandible_command_help briefing
 }
 
 cmd_archive_state() {
   local action="$1" briefing_ref="" json=0 response encoded
   shift
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$briefing_ref" ]] || die "Unexpected argument: $1" 2; briefing_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.${action}" '{"json":{"option":"json","constant":"1"},"briefing_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$briefing_ref" ]] || die "Usage: mandible briefing $action <briefing-ref> [--json]" 2
   encoded="$(urlencode "$briefing_ref")"
   case "$action" in
@@ -92,14 +39,9 @@ cmd_archive_state() {
 
 cmd_rename() {
   local briefing_ref="" title="" json=0 response payload
-  while (( $# > 0 )); do
-    case "$1" in
-      --title) [[ $# -ge 2 ]] || die "--title requires a value" 2; title="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$briefing_ref" ]] || die "Unexpected argument: $1" 2; briefing_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.rename" '{"title":{"option":"title"},"json":{"option":"json","constant":"1"},"briefing_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$briefing_ref" && -n "${title//[[:space:]]/}" ]] \
     || die "Usage: $(mandible_command_syntax briefing.rename)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
@@ -116,15 +58,9 @@ cmd_rename() {
 
 cmd_describe() {
   local briefing_ref="" description="" has_description=0 clear=0 json=0 response payload
-  while (( $# > 0 )); do
-    case "$1" in
-      --description) [[ $# -ge 2 ]] || die "--description requires a value" 2; description="$2"; has_description=1; shift 2 ;;
-      --clear) clear=1; shift ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$briefing_ref" ]] || die "Unexpected argument: $1" 2; briefing_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.describe" '{"description":{"option":"description"},"has_description":{"option":"description","constant":"1"},"clear":{"option":"clear","constant":"1"},"json":{"option":"json","constant":"1"},"briefing_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$briefing_ref" && $((has_description + clear)) -eq 1 ]] \
     || die "Usage: $(mandible_command_syntax briefing.describe)" 2
   [[ $clear -eq 1 || -n "${description//[[:space:]]/}" ]] \
@@ -166,18 +102,9 @@ emit_bundle() {
 
 cmd_create() {
   local artifact_version_ref="" comparison_base="" target_briefing="" distinct_reason="" title="" description="" has_description=0 has_target_briefing=0 has_distinct_reason=0 json=0 response payload
-  while (( $# > 0 )); do
-    case "$1" in
-      --title) [[ $# -ge 2 ]] || die "--title requires a value" 2; title="$2"; shift 2 ;;
-      --description) [[ $# -ge 2 ]] || die "--description requires a value" 2; description="$2"; has_description=1; shift 2 ;;
-      --comparison-base) [[ $# -ge 2 ]] || die "--comparison-base requires a value" 2; comparison_base="$2"; shift 2 ;;
-      --briefing) [[ $# -ge 2 ]] || die "--briefing requires a value" 2; target_briefing="$2"; has_target_briefing=1; shift 2 ;;
-      --reason) [[ $# -ge 2 ]] || die "--reason requires a value" 2; distinct_reason="$2"; has_distinct_reason=1; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$artifact_version_ref" ]] || die "Unexpected argument: $1" 2; artifact_version_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.create" '{"title":{"option":"title"},"description":{"option":"description"},"has_description":{"option":"description","constant":"1"},"comparison_base":{"option":"comparison-base"},"target_briefing":{"option":"briefing"},"has_target_briefing":{"option":"briefing","constant":"1"},"distinct_reason":{"option":"reason"},"has_distinct_reason":{"option":"reason","constant":"1"},"json":{"option":"json","constant":"1"},"artifact_version_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ "$artifact_version_ref" == artifact-version:* ]] \
     || die "create requires one exact artifact-version:<id> ref" 2
   [[ -z "$comparison_base" || "$comparison_base" == artifact-version:* ]] \
@@ -208,15 +135,9 @@ cmd_bundle_create() {
   local name="" sharing_reason="" json=0 response payload
   local -a briefing_refs
   briefing_refs=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --name) [[ $# -ge 2 ]] || die "--name requires a value" 2; name="$2"; shift 2 ;;
-      --sharing-reason) [[ $# -ge 2 ]] || die "--sharing-reason requires a value" 2; sharing_reason="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) briefing_refs+=("$1"); shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.bundle.create" '{"name":{"option":"name"},"sharing_reason":{"option":"sharing-reason"},"json":{"option":"json","constant":"1"},"briefing_refs":{"rest":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "${name//[[:space:]]/}" ]] || die "bundle create requires --name <name>" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg name "$name" --arg reason "$sharing_reason" --args \
@@ -227,19 +148,9 @@ cmd_bundle_create() {
 
 cmd_bundle_add() {
   local bundle_ref="" briefing_ref="" sharing_reason="" json=0 response payload
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      --sharing-reason) [[ $# -ge 2 ]] || die "--sharing-reason requires a value" 2; sharing_reason="$2"; shift 2 ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$bundle_ref" ]]; then bundle_ref="$1"
-        elif [[ -z "$briefing_ref" ]]; then briefing_ref="$1"
-        else die "Unexpected argument: $1" 2
-        fi
-        shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.bundle.add" '{"json":{"option":"json","constant":"1"},"sharing_reason":{"option":"sharing-reason"},"bundle_ref":{"position":0},"briefing_ref":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$bundle_ref" && -n "$briefing_ref" ]] \
     || die "Usage: $(mandible_command_syntax briefing.bundle.add)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
@@ -254,19 +165,9 @@ cmd_bundle_replace() {
   local bundle_ref="" layout="" sharing_reason="" json=0 response payload
   local -a briefing_refs
   briefing_refs=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      --layout) [[ $# -ge 2 ]] || die "--layout requires a JSON value" 2; layout="$2"; shift 2 ;;
-      --sharing-reason) [[ $# -ge 2 ]] || die "--sharing-reason requires a value" 2; sharing_reason="$2"; shift 2 ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *)
-        if [[ -z "$bundle_ref" ]]; then bundle_ref="$1"
-        else briefing_refs+=("$1")
-        fi
-        shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.bundle.replace" '{"json":{"option":"json","constant":"1"},"layout":{"option":"layout"},"sharing_reason":{"option":"sharing-reason"},"bundle_ref":{"position":0},"briefing_refs":{"rest":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$bundle_ref" ]] \
     || die "Usage: $(mandible_command_syntax briefing.bundle.replace)" 2
   [[ -z "$layout" || ${#briefing_refs[@]} -eq 0 ]] \
@@ -299,17 +200,9 @@ emit_group() {
 cmd_group_create() {
   local key="" name="" current_bundle_ref="" sharing_reason="" json=0 response payload
   local -a bundle_refs=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --key) [[ $# -ge 2 ]] || die "--key requires a value" 2; key="$2"; shift 2 ;;
-      --name) [[ $# -ge 2 ]] || die "--name requires a value" 2; name="$2"; shift 2 ;;
-      --current) [[ $# -ge 2 ]] || die "--current requires a value" 2; current_bundle_ref="$2"; shift 2 ;;
-      --sharing-reason) [[ $# -ge 2 ]] || die "--sharing-reason requires a value" 2; sharing_reason="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) bundle_refs+=("$1"); shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.create" '{"key":{"option":"key"},"name":{"option":"name"},"current_bundle_ref":{"option":"current"},"sharing_reason":{"option":"sharing-reason"},"json":{"option":"json","constant":"1"},"bundle_refs":{"rest":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$key" && -n "${name//[[:space:]]/}" ]] || die "group create requires --key <key> --name <name>" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg key "$key" --arg name "$name" --arg current "$current_bundle_ref" --arg reason "$sharing_reason" --args \
@@ -324,16 +217,9 @@ cmd_group_create() {
 cmd_group_configure() {
   local group_ref="" current_bundle_ref="" sharing_reason="" current_set=0 json=0 response payload
   local -a bundle_refs=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --current) [[ $# -ge 2 ]] || die "--current requires a value" 2
-        current_bundle_ref="$2"; current_set=1; shift 2 ;;
-      --sharing-reason) [[ $# -ge 2 ]] || die "--sharing-reason requires a value" 2; sharing_reason="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) if [[ -z "$group_ref" ]]; then group_ref="$1"; else bundle_refs+=("$1"); fi; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.configure" '{"current_bundle_ref":{"option":"current"},"current_set":{"option":"current","constant":"1"},"sharing_reason":{"option":"sharing-reason"},"json":{"option":"json","constant":"1"},"group_ref":{"position":0},"bundle_refs":{"rest":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$group_ref" && $current_set -eq 1 ]] \
     || die "Usage: $(mandible_command_syntax briefing.group.configure)" 2
   [[ -n "${current_bundle_ref//[[:space:]]/}" ]] || die "--current requires a nonblank bundle ref or none" 2
@@ -349,15 +235,9 @@ cmd_group_configure() {
 
 cmd_group_add() {
   local group_ref="" bundle_ref="" sharing_reason="" json=0 response payload
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      --sharing-reason) [[ $# -ge 2 ]] || die "--sharing-reason requires a value" 2; sharing_reason="$2"; shift 2 ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) if [[ -z "$group_ref" ]]; then group_ref="$1"; elif [[ -z "$bundle_ref" ]]; then bundle_ref="$1";
-         else die "Unexpected argument: $1" 2; fi; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.add" '{"json":{"option":"json","constant":"1"},"sharing_reason":{"option":"sharing-reason"},"group_ref":{"position":0},"bundle_ref":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$group_ref" && -n "$bundle_ref" ]] || die "Usage: $(mandible_command_syntax briefing.group.add)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg bundle_ref "$bundle_ref" --arg reason "$sharing_reason" \
@@ -369,14 +249,9 @@ cmd_group_add() {
 
 cmd_group_rename() {
   local group_ref="" name="" json=0 response payload
-  while (( $# > 0 )); do
-    case "$1" in
-      --name) [[ $# -ge 2 ]] || die "--name requires a value" 2; name="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.rename" '{"name":{"option":"name"},"json":{"option":"json","constant":"1"},"group_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$group_ref" && -n "${name//[[:space:]]/}" ]] || die "Usage: $(mandible_command_syntax briefing.group.rename)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(jq -n --arg name "$name" '{name:$name}')"
@@ -387,17 +262,9 @@ cmd_group_rename() {
 
 cmd_group_promote() {
   local group_ref="" expected_base="" proposal="" auth_request="" merge_head="" json=0 response payload
-  while (( $# > 0 )); do
-    case "$1" in
-      --expected-base) [[ $# -ge 2 ]] || die "--expected-base requires a value" 2; expected_base="$2"; shift 2 ;;
-      --proposal) [[ $# -ge 2 ]] || die "--proposal requires a value" 2; proposal="$2"; shift 2 ;;
-      --auth-request) [[ $# -ge 2 ]] || die "--auth-request requires a value" 2; auth_request="$2"; shift 2 ;;
-      --merge-head) [[ $# -ge 2 ]] || die "--merge-head requires a value" 2; merge_head="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.promote" '{"expected_base":{"option":"expected-base"},"proposal":{"option":"proposal"},"auth_request":{"option":"auth-request"},"merge_head":{"option":"merge-head"},"json":{"option":"json","constant":"1"},"group_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$group_ref" && -n "$expected_base" && -n "$proposal" && -n "$auth_request" ]] \
     || die "Usage: $(mandible_command_syntax briefing.group.promote)" 2
   [[ "$merge_head" =~ '^[0-9a-fA-F]{40}$' ]] \
@@ -419,18 +286,9 @@ cmd_group_promote() {
 cmd_group_review_disposition() {
   local action="$1" group_ref="" expected_base="" proposal="" binding_digest="" destination_changes='[]' json=0 response payload decision
   shift
-  while (( $# > 0 )); do
-    case "$1" in
-      --expected-base) [[ $# -ge 2 ]] || die "--expected-base requires a value" 2; expected_base="$2"; shift 2 ;;
-      --proposal) [[ $# -ge 2 ]] || die "--proposal requires a value" 2; proposal="$2"; shift 2 ;;
-      --binding-digest) [[ $# -ge 2 ]] || die "--binding-digest requires a value" 2; binding_digest="$2"; shift 2 ;;
-      --destination-changes) [[ $# -ge 2 ]] || die "--destination-changes requires JSON" 2
-        destination_changes="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.${action}" '{"expected_base":{"option":"expected-base"},"proposal":{"option":"proposal"},"binding_digest":{"option":"binding-digest"},"destination_changes":{"option":"destination-changes"},"json":{"option":"json","constant":"1"},"group_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$group_ref" && -n "$expected_base" && -n "$proposal" ]] \
     || die "Usage: mandible briefing group $action <group-ref> --expected-base <bundle-ref> --proposal <bundle-ref> --binding-digest <sha256> [--json]" 2
   [[ "$binding_digest" =~ '^[0-9a-fA-F]{64}$' ]] \
@@ -455,17 +313,9 @@ cmd_group_review_disposition() {
 
 cmd_group_review() {
   local group_ref="" expected_base="" proposal="" destination_changes='[]' json=0 response payload
-  while (( $# > 0 )); do
-    case "$1" in
-      --expected-base) [[ $# -ge 2 ]] || die "--expected-base requires a value" 2; expected_base="$2"; shift 2 ;;
-      --proposal) [[ $# -ge 2 ]] || die "--proposal requires a value" 2; proposal="$2"; shift 2 ;;
-      --destination-changes) [[ $# -ge 2 ]] || die "--destination-changes requires JSON" 2
-        destination_changes="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.review" '{"expected_base":{"option":"expected-base"},"proposal":{"option":"proposal"},"destination_changes":{"option":"destination-changes"},"json":{"option":"json","constant":"1"},"group_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$group_ref" && -n "$expected_base" && -n "$proposal" ]] \
     || die "Usage: $(mandible_command_syntax briefing.group.review)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
@@ -486,14 +336,9 @@ cmd_group_destination() {
   shift || true
   if [[ "$action" == "place" ]]; then cmd_group_destination_place "$@"; return; fi
   [[ "$action" == "bind" ]] || die "Usage: mandible briefing group destination bind|place ..." 2
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) if [[ -z "$group_ref" ]]; then group_ref="$1"; elif [[ -z "$artifact_ref" ]]; then artifact_ref="$1";
-         else die "Unexpected argument: $1" 2; fi; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.destination.bind" '{"json":{"option":"json","constant":"1"},"group_ref":{"position":0},"artifact_ref":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$group_ref" && -n "$artifact_ref" ]] \
     || die "Usage: $(mandible_command_syntax briefing.group.destination.bind)" 2
   payload="$(jq -n --arg artifact "$artifact_ref" '{logical_artifact_ref:$artifact}')"
@@ -504,20 +349,9 @@ cmd_group_destination() {
 
 cmd_group_destination_place() {
   local group_ref="" artifact_ref="" briefing_ref="" operation_key="" expected_owner="" target_base="" source_base="none" route_file="" json=0 payload response route
-  while (( $# > 0 )); do
-    case "$1" in
-      --briefing) briefing_ref="$2"; shift 2 ;;
-      --operation-key) operation_key="$2"; shift 2 ;;
-      --expected-owner) expected_owner="$2"; shift 2 ;;
-      --expected-target-base) target_base="$2"; shift 2 ;;
-      --expected-source-base) source_base="$2"; shift 2 ;;
-      --route-file) route_file="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) if [[ -z "$group_ref" ]]; then group_ref="$1"; elif [[ -z "$artifact_ref" ]]; then artifact_ref="$1";
-         else die "Unexpected argument: $1" 2; fi; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.destination.place" '{"briefing_ref":{"option":"briefing"},"operation_key":{"option":"operation-key"},"expected_owner":{"option":"expected-owner"},"target_base":{"option":"expected-target-base"},"source_base":{"option":"expected-source-base"},"route_file":{"option":"route-file"},"json":{"option":"json","constant":"1"},"group_ref":{"position":0},"artifact_ref":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$group_ref" && -n "$artifact_ref" && -n "$briefing_ref" && -n "$operation_key" && -n "$expected_owner" && -n "$target_base" ]] \
     || die "place requires group, Artifact, --briefing, --operation-key, --expected-owner, and --expected-target-base" 2
   route='null'
@@ -542,17 +376,9 @@ cmd_group_destination_place() {
 
 cmd_report_update() {
   local briefing_ref="" version_ref="" operation_key="" expected_round="" expected_version="" json=0 payload response
-  while (( $# > 0 )); do
-    case "$1" in
-      --operation-key) operation_key="$2"; shift 2 ;;
-      --expected-round) expected_round="$2"; shift 2 ;;
-      --expected-version) expected_version="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) if [[ -z "$briefing_ref" ]]; then briefing_ref="$1"; elif [[ -z "$version_ref" ]]; then version_ref="$1";
-         else die "Unexpected argument: $1" 2; fi; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.report.update" '{"operation_key":{"option":"operation-key"},"expected_round":{"option":"expected-round"},"expected_version":{"option":"expected-version"},"json":{"option":"json","constant":"1"},"briefing_ref":{"position":0},"version_ref":{"position":1}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$briefing_ref" && "$version_ref" == artifact-version:* && -n "$operation_key" && -n "$expected_round" && "$expected_version" == artifact-version:* ]] \
     || die "report update requires a Briefing, exact version, operation key, expected round, and exact expected version" 2
   payload="$(jq -n --arg key "$operation_key" --arg version "$version_ref" --arg round "$expected_round" \
@@ -568,13 +394,9 @@ cmd_report_update() {
 
 cmd_group_show() {
   local group_ref="" json=0 response
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.show" '{"json":{"option":"json","constant":"1"},"group_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$group_ref" ]] || die "Usage: $(mandible_command_syntax briefing.group.show)" 2
   response="$(api_get "/api/briefing-groups/$(urlencode "$group_ref")")" || die "Failed to show Briefing group." 1
   emit_group "$response" "$json"
@@ -583,13 +405,9 @@ cmd_group_show() {
 cmd_group_archive_state() {
   local action="$1" group_ref="" json=0 response
   shift
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$group_ref" ]] || die "Unexpected argument: $1" 2; group_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.${action}" '{"json":{"option":"json","constant":"1"},"group_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$group_ref" ]] || die "Usage: mandible briefing group $action <group-ref> [--json]" 2
   case "$action" in
     archive) response="$(api_send POST "/api/briefing-groups/$(urlencode "$group_ref")/archive" '{}')" \
@@ -641,14 +459,9 @@ read_route_manifest() {
 cmd_route_manifest() {
   local action="$1" manifest_path="" json=0 response payload
   shift
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -) [[ -z "$manifest_path" ]] || die "Unexpected argument: $1" 2; manifest_path="$1"; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$manifest_path" ]] || die "Unexpected argument: $1" 2; manifest_path="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.route.${action}" '{"json":{"option":"json","constant":"1"},"manifest_path":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$manifest_path" ]] || die "Usage: mandible briefing route $action <manifest.json|-> [--json]" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   payload="$(read_route_manifest "$manifest_path")"
@@ -666,13 +479,9 @@ cmd_route_manifest() {
 
 cmd_route_inspect() {
   local route_key="" json=0 response
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$route_key" ]] || die "Unexpected argument: $1" 2; route_key="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.route.inspect" '{"json":{"option":"json","constant":"1"},"route_key":{"position":0}}' "$@") || return $?
+  eval "$binding"
   if [[ -z "$route_key" ]]; then
     response="$(api_get "/api/briefing-destination-routes")" \
       || die "Failed to inspect Briefing destination routes." 1
@@ -701,13 +510,9 @@ cmd_route() {
 
 cmd_bundle_show() {
   local bundle_ref="" json=0 response
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$bundle_ref" ]] || die "Unexpected argument: $1" 2; bundle_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.bundle.show" '{"json":{"option":"json","constant":"1"},"bundle_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$bundle_ref" ]] || die "Usage: $(mandible_command_syntax briefing.bundle.show)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
   response="$(api_get "/api/briefing-bundles/$(urlencode "$bundle_ref")")" \
@@ -717,14 +522,9 @@ cmd_bundle_show() {
 
 cmd_bundle_rename() {
   local bundle_ref="" name="" json=0 response payload
-  while (( $# > 0 )); do
-    case "$1" in
-      --name) [[ $# -ge 2 ]] || die "--name requires a value" 2; name="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$bundle_ref" ]] || die "Unexpected argument: $1" 2; bundle_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.bundle.rename" '{"name":{"option":"name"},"json":{"option":"json","constant":"1"},"bundle_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$bundle_ref" && -n "${name//[[:space:]]/}" ]] \
     || die "Usage: $(mandible_command_syntax briefing.bundle.rename)" 2
   command -v jq >/dev/null 2>&1 || die "jq not found" 1
@@ -736,13 +536,9 @@ cmd_bundle_rename() {
 
 cmd_bundle_delete() {
   local bundle_ref="" json=0 response
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$bundle_ref" ]] || die "Unexpected argument: $1" 2; bundle_ref="$1"; shift ;;
-    esac
-  done
+  local binding
+  binding=$(mandible_bind_arguments "briefing.bundle.delete" '{"json":{"option":"json","constant":"1"},"bundle_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
   [[ -n "$bundle_ref" ]] || die "Usage: $(mandible_command_syntax briefing.bundle.delete)" 2
   response="$(api_send DELETE "/api/briefing-bundles/$(urlencode "$bundle_ref")" '{}')" \
     || die "Failed to delete empty standalone Briefing bundle." 1

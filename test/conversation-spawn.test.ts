@@ -121,3 +121,13 @@ describe("provider-first conversation spawn authority", () => {
     });
   });
 });
+
+it('materializes initialized Claude without inventing a native session and preserves the local identity',()=>{
+ const service=new ConversationSpawnService(db,()=>clock++);
+ expect(service.reserve(request({provider:'claude_code'})).ok).toBe(true);
+ expect(service.begin(ID).ok).toBe(true);
+ expect(service.assignRuntime(ID,1,'controller').ok).toBe(true);
+ expect(service.materializeConversationShell(ID,1,'/work/project-a',null).ok).toBe(true);
+ expect(service.ready(ID,1,'controller',null,{kind:'controller-ready-awaiting-native-identity'})).toMatchObject({ok:true,value:{state:'ready',native_session_id:null,controller_instance_id:'controller'}});
+ expect(db.prepare('SELECT id,session_id FROM conversations WHERE id=?').get(ID)).toEqual({id:ID,session_id:''});
+});

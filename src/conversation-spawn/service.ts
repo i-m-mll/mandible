@@ -141,7 +141,7 @@ export class ConversationSpawnService {
     reservationId: string,
     generation: number,
     cwd: string,
-    providerSessionId: string,
+    providerSessionId: string | null,
   ): Result<ConversationSpawnReceipt> {
     const current = this.currentGeneration(reservationId, generation);
     if (!current.ok) return current;
@@ -166,7 +166,7 @@ export class ConversationSpawnService {
       row.updated_at,
       title,
       iso,
-      providerSessionId,
+      providerSessionId ?? "",
       cwd,
       cwd,
       row.created_at,
@@ -384,7 +384,8 @@ export class ConversationSpawnService {
       request: JSON.parse(row.request_json),
       state: row.state,
       attempt_count: row.attempt_count,
-      native_session_id: row.native_session_id,
+      native_session_id: row.schema_version === CONVERSATION_SPAWN_REQUEST_SCHEMA ? row.provider_session_id : row.native_session_id,
+      ...(row.schema_version === CONVERSATION_SPAWN_REQUEST_SCHEMA ? { controller_instance_id: row.native_session_id } : {}),
       provider_session_id: row.provider_session_id,
       provider_receipt: row.provider_receipt_json ? JSON.parse(row.provider_receipt_json) : null,
       ...(row.initial_message_state ? { initial_message_state: row.initial_message_state } : {}),

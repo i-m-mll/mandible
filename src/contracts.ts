@@ -1,3 +1,6 @@
+import * as z from "zod";
+import { LEDGER_EVENT_VALUES, type LedgerDomainEvent } from "./ledger/event-contract.js";
+import { SPACE_EVENTS, SPACE_EVENT_VALUES } from "./spaces/events.js";
 // Shared API/UI contracts. Keep this module dependency-light so daemon and
 // browser UI code can import its types without dragging in runtime services.
 
@@ -38,73 +41,114 @@ export type LegacyListEnvelope<T> = Partial<Record<ListEnvelopeKey, T[]>> &
 
 export type ApiList<T> = T[] | ApiListEnvelope<T> | LegacyListEnvelope<T>;
 
-export type MandibleEventType =
-  | "auth:new"
-  | "auth:updated"
-  | "auth:output"
-  | "auth:merged"
-  | "auth:resolved"
-  | "auth:lifecycle"
-  | "auth:finalized"
-  | "auth:completed"
-  | "auth:lifecycle"
-  | "auth:needs_rebase"
-  | "channel:session:connected"
-  | "channel:session:disconnected"
-  | "console:inbox:badge"
-  | "console:permission:cleared"
-  | "console:permission:request"
-  | "console:session:created"
-  | "console:session:updated"
-  | "console:session:started"
-  | "console:session:stopped"
-  | "console:session:ended"
-  | "console:session:exit"
-  | "console:session:deleted"
-  | "console:stream_event"
-  | "console:subagent:start"
-  | "console:subagent:stop"
-  | "conversation:new"
-  | "conversation-spawn:updated"
-  | "conversation:updated"
-  | "daemon:reloaded"
-  | "heartbeat"
-  | "mandible:rebuilding"
-  | "push:auth:pending"
-  | "push:auth:complete"
-  | "push:started"
-  | "push:error"
-  | "push:repo:progress"
-  | "push:repo:complete"
-  | "push:complete"
-  | "reaper:tick"
-  | "session:registered"
-  | "session:updated"
-  | "session:ended"
-  | "session:child:added"
-  | "session:child:ended"
-  | "session:discovery:completed"
-  | "session:metadata-warning"
-  | "webhook:received"
-  | "webhook:delivered"
-  | "webhook:dismissed"
-  | "work:branch:updated"
-  | "work:scan:started"
-  | "work:scan:completed"
-  | (string & {});
+export const DOMAIN_EVENTS = Object.freeze({
+  AUTH_AUTO_APPROVE: "auth:auto-approve",
+  AUTH_COMPLETED: "auth:completed",
+  AUTH_CONVERGENCE: "auth:convergence",
+  AUTH_FINALIZED: "auth:finalized",
+  AUTH_LIFECYCLE: "auth:lifecycle",
+  AUTH_MERGED: "auth:merged",
+  AUTH_NEEDS_REBASE: "auth:needs_rebase",
+  AUTH_NEW: "auth:new",
+  AUTH_OUTPUT: "auth:output",
+  AUTH_RESOLVED: "auth:resolved",
+  AUTH_UPDATED: "auth:updated",
+  CHANNEL_SESSION_CONNECTED: "channel:session:connected",
+  CHANNEL_SESSION_DISCONNECTED: "channel:session:disconnected",
+  CONSOLE_ATTENTION: "console:attention",
+  CONSOLE_STATUS: "console:status",
+  CONSOLE_INBOX_BADGE: "console:inbox:badge",
+  CONSOLE_PERMISSION_CLEARED: "console:permission:cleared",
+  CONSOLE_PERMISSION_REQUEST: "console:permission:request",
+  CONSOLE_SESSION_CREATED: "console:session:created",
+  CONSOLE_SESSION_DELETED: "console:session:deleted",
+  CONSOLE_SESSION_ENDED: "console:session:ended",
+  CONSOLE_SESSION_EXIT: "console:session:exit",
+  CONSOLE_SESSION_STARTED: "console:session:started",
+  CONSOLE_SESSION_STOPPED: "console:session:stopped",
+  CONSOLE_SESSION_UPDATED: "console:session:updated",
+  CONSOLE_STREAM_EVENT: "console:stream_event",
+  CONSOLE_SUBAGENT_START: "console:subagent:start",
+  CONSOLE_SUBAGENT_STOP: "console:subagent:stop",
+  CONSOLE_TELEMETRY: "console:telemetry",
+  CONVERSATION_SPAWN_UPDATED: "conversation-spawn:updated",
+  CONVERSATION_CONTROL_UPDATED: "conversation:control-updated",
+  CONVERSATION_NEW: "conversation:new",
+  CONVERSATION_PROVIDER_EVENT: "conversation:provider-event",
+  CONVERSATION_UPDATED: "conversation:updated",
+  DAEMON_RELOADED: "daemon:reloaded",
+  HEARTBEAT: "heartbeat",
+  MANDIBLE_REBUILDING: "mandible:rebuilding",
+  PUSH_AUTH_COMPLETE: "push:auth:complete",
+  PUSH_AUTH_PENDING: "push:auth:pending",
+  PUSH_COMPLETE: "push:complete",
+  PUSH_ERROR: "push:error",
+  PUSH_REPO_COMPLETE: "push:repo:complete",
+  PUSH_REPO_PROGRESS: "push:repo:progress",
+  PUSH_STARTED: "push:started",
+  REAPER_TICK: "reaper:tick",
+  SESSION_CHILD_ADDED: "session:child:added",
+  SESSION_CHILD_ENDED: "session:child:ended",
+  SESSION_DISCOVERY_COMPLETED: "session:discovery:completed",
+  SESSION_ENDED: "session:ended",
+  SESSION_METADATA_WARNING: "session:metadata-warning",
+  SESSION_REGISTERED: "session:registered",
+  SESSION_UPDATED: "session:updated",
+  WEBHOOK_DELIVERED: "webhook:delivered",
+  WEBHOOK_DISMISSED: "webhook:dismissed",
+  WEBHOOK_RECEIVED: "webhook:received",
+  WORK_BRANCH_UPDATED: "work:branch:updated",
+  WORK_SCAN_COMPLETED: "work:scan:completed",
+  WORK_SCAN_STARTED: "work:scan:started",
+  WORKFLOW_UPDATED: "workflow:updated",
+} as const);
 
-export type MandibleEvent<TData = unknown> = {
-  type: MandibleEventType;
-  event?: MandibleEventType;
-  data?: TData;
+export type MandibleEventType = (typeof DOMAIN_EVENTS)[keyof typeof DOMAIN_EVENTS]
+  | BriefingEvent | LedgerDomainEvent | import("./spaces/events.js").SpaceEvent
+  | (typeof USER_SETTING_EVENTS)[keyof typeof USER_SETTING_EVENTS]
+  | (typeof OPERATIONAL_INCIDENT_EVENTS)[keyof typeof OPERATIONAL_INCIDENT_EVENTS]
+  | (typeof TASK_INVENTORY_EVENTS)[keyof typeof TASK_INVENTORY_EVENTS]
+  | (typeof TASK_COMMAND_EVENTS)[keyof typeof TASK_COMMAND_EVENTS]
+  | (typeof MANAGED_REMINDER_EVENTS)[keyof typeof MANAGED_REMINDER_EVENTS];
+
+export const SESSION_DISCOVERY_PAYLOAD = z.object({ discovered: z.number(), dead_reaped: z.number(),
+  already_tracked: z.number(), processes_found: z.number(), duration_ms: z.number() });
+export type SessionDiscoveryResult = z.infer<typeof SESSION_DISCOVERY_PAYLOAD>;
+export const WORK_SCAN_PAYLOAD = z.object({ scanned_repos: z.number(), branches_updated: z.number(),
+  branches_removed: z.number(), missing_repos: z.array(z.string()), duration_ms: z.number() });
+export type WorkScanSummary = z.infer<typeof WORK_SCAN_PAYLOAD>;
+
+export type EventPayload<E extends MandibleEventType> =
+  E extends typeof DOMAIN_EVENTS.SESSION_REGISTERED | typeof DOMAIN_EVENTS.SESSION_UPDATED
+    | typeof DOMAIN_EVENTS.SESSION_ENDED ? import("./types.js").Session
+  : E extends typeof DOMAIN_EVENTS.SESSION_CHILD_ADDED | typeof DOMAIN_EVENTS.SESSION_CHILD_ENDED
+    ? { parent_id: string; child: import("./types.js").Session }
+  : E extends typeof DOMAIN_EVENTS.SESSION_DISCOVERY_COMPLETED ? SessionDiscoveryResult
+  : E extends typeof DOMAIN_EVENTS.WORK_SCAN_COMPLETED ? WorkScanSummary
+  : E extends `briefing:group-${string}` ? { group_id: string; [key: string]: unknown }
+  : E extends `briefing:bundle-${string}` ? { bundle_id: string; [key: string]: unknown }
+  : E extends BriefingEvent ? { briefing_id: string; round_id?: string | null; [key: string]: unknown }
+  : E extends typeof SPACE_EVENTS.SPACE_DOCUMENT_SETTINGS_UPDATED ? { scope: "repo" | "global"; repo_id: string | null }
+  : E extends import("./spaces/events.js").SpaceEvent ? { space_id: string; [key: string]: unknown }
+  : E extends typeof DOMAIN_EVENTS.CONVERSATION_UPDATED ? { id: string; [key: string]: unknown }
+  : E extends typeof DOMAIN_EVENTS.HEARTBEAT ? { timestamp: number }
+  : E extends typeof DOMAIN_EVENTS.CONSOLE_STATUS ? import("./agentic-backend.js").BackendStatusEvent & { console_session_id: string }
+  : E extends typeof DOMAIN_EVENTS.CONSOLE_TELEMETRY ? unknown
+  : Record<string, unknown>;
+
+export type MandibleEvent<E extends MandibleEventType = MandibleEventType> = E extends MandibleEventType ? {
+  type: E;
+  event?: E;
+  data: EventPayload<E>;
   timestamp?: string;
-} & Record<string, unknown>;
+} : never;
 
-export type SseEvent<TData = unknown> = {
-  event: MandibleEventType;
-  type?: MandibleEventType;
-  data: TData;
-};
+export type SSEEvent<E extends MandibleEventType = MandibleEventType> = MandibleEvent<E> & { timestamp: string };
+export type SseEvent<E extends MandibleEventType = MandibleEventType> = E extends MandibleEventType ? {
+  event: E;
+  type?: E;
+  data: EventPayload<E>;
+} : never;
 
 export const USER_SETTING_KEYS = Object.freeze({
   appRailOrder: "app_rail_order",
@@ -667,7 +711,9 @@ export type ArtifactAliasResolutionStatus = "resolved" | "unresolved" | "ambiguo
 
 export type ArtifactAliasRecord = {
   id: string;
-  artifact_id: string | null;
+  blob_id: string | null;
+  /** Historical HTTP projection; internal aliases carry blob_id. */
+  artifact_id?: string | null;
   scheme: string;
   alias: string;
   normalized_ref: string;
@@ -839,19 +885,68 @@ export type ArtifactVersionRecord = {
   created_at: number;
 };
 
-export type ArtifactResolveResult = {
-  status: ArtifactAliasResolutionStatus;
+export type CanonicalArtifactTargetType = "artifact" | "artifact_version" | "artifact_blob";
+export type ArtifactIdentityKind = "logical" | "pinned-version" | "blob";
+export type ArtifactRequestedKind = ArtifactIdentityKind | "alias" | "series" | "unknown";
+
+interface ArtifactIdentityBase {
   ref: string;
   scheme: string;
   normalized_ref: string;
-  target_type?: "artifact" | "artifact_version" | "artifact_blob";
-  target_id?: string | null;
-  artifact: ArtifactRecord | null;
+  warnings: string[];
   alias: ArtifactAliasRecord | null;
-  logical_artifact?: ArtifactIdentityRecord | null;
-  artifact_version?: CanonicalArtifactVersionRecord | null;
-  artifact_blob?: ArtifactBlobRecord | null;
-  warnings?: string[];
+}
+
+export type ResolvedArtifactIdentity = ArtifactIdentityBase & { status: "resolved" } & (
+  | { kind: "logical"; target_type: "artifact"; target_id: string;
+      logical_artifact: ArtifactIdentityRecord } & (
+      | { artifact_version: CanonicalArtifactVersionRecord; artifact_blob: ArtifactBlobRecord }
+      | { artifact_version: null; artifact_blob: null })
+  | { kind: "pinned-version"; target_type: "artifact_version"; target_id: string;
+      logical_artifact: ArtifactIdentityRecord; artifact_version: CanonicalArtifactVersionRecord;
+      artifact_blob: ArtifactBlobRecord }
+  | { kind: "blob"; target_type: "artifact_blob"; target_id: string;
+      logical_artifact: null; artifact_version: null; artifact_blob: ArtifactBlobRecord }
+);
+
+export interface FailedArtifactIdentity extends ArtifactIdentityBase {
+  status: "unresolved" | "ambiguous" | "unsupported";
+  kind: "unresolved" | "ambiguous" | "unsupported";
+  requested_kind: ArtifactRequestedKind;
+  target_type: CanonicalArtifactTargetType | null;
+  target_id: null;
+  logical_artifact: ArtifactIdentityRecord | null;
+  artifact_version: null;
+  artifact_blob: null;
+}
+
+export type ArtifactIdentityResolution = ResolvedArtifactIdentity | FailedArtifactIdentity;
+
+export type ArtifactCustody =
+  | { kind: "git"; project_id: string; commit: string; path: string; hash: string }
+  | { kind: "managed"; storage_uri: string; hash: string };
+
+export interface ArtifactMaterializationTarget {
+  id: string;
+  version_id: string | null;
+  blob: ArtifactBlobRecord;
+  custody: ArtifactCustody;
+  metadata: Record<string, unknown>;
+}
+
+export type ArtifactMaterializationError = {
+  code: "unknown_reference" | "unavailable_material" | "ambiguous_source" | "invalid_custody" | "hash_mismatch" | "size_limit";
+  message: string;
+};
+export type ArtifactMaterializationResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: ArtifactMaterializationError };
+
+/** Provider HTTP projection retained for historical and external consumers. */
+export type ArtifactResolveResult = ArtifactIdentityResolution & {
+  artifact: ArtifactRecord | null;
+  series: ArtifactSeriesRecord | null;
+  version: ArtifactVersionRecord | null;
 };
 
 export type ArtifactSeriesSummary = {
@@ -889,7 +984,12 @@ export type ArtifactDraftRecord = {
   updated_at: number;
 };
 
-export type ArtifactVersionRecordResult = {
+export type ArtifactVersionWriteResult = Extract<ResolvedArtifactIdentity, { kind: "pinned-version" }> & {
+  created: boolean;
+};
+export type ArtifactDraftWriteResult = { draft: ArtifactDraftRecord; result: ArtifactVersionWriteResult };
+
+export type ArtifactVersionRecordResult = ArtifactVersionWriteResult & {
   series: ArtifactSeriesRecord;
   version: ArtifactVersionRecord;
   artifact: ArtifactRecord;
@@ -2150,3 +2250,53 @@ export const MANAGED_REMINDER_EVENTS = Object.freeze({
   changed: 'managed-reminders.changed',
   occurred: 'managed-reminders.occurred',
 } as const);
+
+const eventNameValues = Object.freeze([
+  ...Object.values(DOMAIN_EVENTS), ...BRIEFING_EVENT_VALUES, ...SPACE_EVENT_VALUES,
+  ...Object.values(USER_SETTING_EVENTS), ...Object.values(OPERATIONAL_INCIDENT_EVENTS),
+  ...Object.values(TASK_INVENTORY_EVENTS), ...Object.values(TASK_COMMAND_EVENTS),
+  ...Object.values(MANAGED_REMINDER_EVENTS), ...LEDGER_EVENT_VALUES,
+]);
+const eventNames = new Set<string>(eventNameValues);
+export function isDomainEventType(value: unknown): value is MandibleEventType {
+  return typeof value === "string" && eventNames.has(value);
+}
+
+const scopedChange = (key: string) => z.object({ [key]: z.string().min(1) }).passthrough();
+const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
+  [DOMAIN_EVENTS.HEARTBEAT, z.object({ timestamp: z.number() })],
+  [DOMAIN_EVENTS.CONSOLE_STATUS, z.object({ console_session_id: z.string().min(1), kind: z.enum(["started", "stopped", "exit"]), status: z.enum(["running", "stopped", "crashed"]), exitCode: z.number().optional(), signal: z.union([z.string(), z.number()]).nullable().optional(), started_at: z.number().nullable().optional(), stopped_at: z.number().nullable().optional() })],
+  [DOMAIN_EVENTS.CONVERSATION_UPDATED, scopedChange("id")],
+  [DOMAIN_EVENTS.SESSION_DISCOVERY_COMPLETED, SESSION_DISCOVERY_PAYLOAD],
+  [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],
+  ...[DOMAIN_EVENTS.SESSION_REGISTERED, DOMAIN_EVENTS.SESSION_UPDATED, DOMAIN_EVENTS.SESSION_ENDED,
+    ].map((event): [MandibleEventType, z.ZodType] => [event, scopedChange("id")]),
+  ...[DOMAIN_EVENTS.SESSION_CHILD_ADDED, DOMAIN_EVENTS.SESSION_CHILD_ENDED].map((event): [MandibleEventType, z.ZodType] =>
+    [event, z.object({ parent_id: z.string().min(1), child: scopedChange("id") })]),
+  ...BRIEFING_EVENT_VALUES.map((event): [MandibleEventType, z.ZodType] => [event,
+    scopedChange(event.startsWith("briefing:group-") ? "group_id"
+      : event.startsWith("briefing:bundle-") ? "bundle_id" : "briefing_id")]),
+  ...SPACE_EVENT_VALUES.map((event): [MandibleEventType, z.ZodType] => [event,
+    event === SPACE_EVENTS.SPACE_DOCUMENT_SETTINGS_UPDATED
+      ? z.object({ scope: z.enum(["repo", "global"]), repo_id: z.string().nullable() })
+      : scopedChange("space_id")]),
+]);
+
+export function parseDomainEvent(value: unknown): { ok: true; value: MandibleEvent } | { ok: false; error: string } {
+  if (!value || typeof value !== "object" || !Object.hasOwn(value, "data")) {
+    return { ok: false, error: "Invalid domain event envelope" };
+  }
+  const envelope = z.object({ type: z.custom<MandibleEventType>(isDomainEventType),
+    event: z.custom<MandibleEventType>(isDomainEventType).optional(),
+    data: z.unknown(), timestamp: z.string().optional() }).safeParse(value);
+  if (!envelope.success) return { ok: false, error: "Invalid domain event envelope" };
+  if (envelope.data.event !== undefined && envelope.data.event !== envelope.data.type) {
+    return { ok: false, error: "Conflicting domain event names" };
+  }
+  const schema = eventPayloadSchemas.get(envelope.data.type)
+    ?? (envelope.data.type === DOMAIN_EVENTS.CONSOLE_TELEMETRY ? z.unknown() : z.object({}).passthrough());
+  if (!schema.safeParse(envelope.data.data).success) {
+    return { ok: false, error: `Invalid ${envelope.data.type} event payload` };
+  }
+  return { ok: true, value: envelope.data as MandibleEvent };
+}

@@ -13,6 +13,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::webview::PageLoadEvent;
 use tauri::{command, AppHandle, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
+mod acceptance;
 mod canonical_origin;
 use canonical_origin::PRODUCTION_ORIGIN;
 
@@ -221,8 +222,7 @@ fn run_ca_setup_command(
     command_name: &str,
 ) -> Result<SecureLocalConnectionsStatus, String> {
     let script = resolve_ca_setup_script(app)?;
-    let node = resolve_node_binary(app)?;
-    let output = Command::new(node)
+    let output = runtime_command(app)?
         .arg(script)
         .arg(command_name)
         .env("MANDIBLE_HOME", mandible_home())
@@ -525,9 +525,8 @@ fn run_local_runtime(
     config: &DesktopConfig,
 ) -> Result<DaemonStatus, String> {
     let script = resolve_local_runtime_script(app)?;
-    let node = resolve_node_binary(app)?;
     let working_directory = resolve_runtime_controller_working_directory(&script)?;
-    let mut child = Command::new(node)
+    let mut child = runtime_command(app)?
         .arg(script)
         .arg(operation)
         .arg(format!("--launch-mode={}", config.daemon_launch_mode))
@@ -633,19 +632,76 @@ fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("desktop.json"))
 }
 
-fn resolve_node_binary(app: &AppHandle) -> Result<PathBuf, String> {
-    let bundled = app.path().resource_dir().ok().map(|dir| dir.join("node"));
-    if let Some(path) = bundled {
-        if path.is_file() {
-            return Ok(path);
+fn resolve_runtime_binary(app: &AppHandle) -> Result<PathBuf, String> {
+    let bundled = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("scripts/bun-runtime.sh"));
+    let packaged = bundled.filter(|path| path.is_file());
+    let script = packaged.clone().unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/bun-runtime.sh")
+    });
+    let mut command = Command::new("/bin/sh");
+    command.arg(&script);
+    if packaged.is_some() {
+        let archive = script
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("packaged Bun selector has no resource root")?
+            .join("runtime/bun.zip");
+        if !archive.is_file() {
+            return Err(
+                "the verified offline Bun archive is missing from the desktop package".into(),
+            );
+        }
+        command.env_remove("MANDIBLE_RUNTIME");
+        command.env("MANDIBLE_RUNTIME_ARCHIVE", archive);
+        let sqlite_archive = script
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("packaged SQLite selector has no resource root")?
+            .join("runtime/sqlite.tar.gz");
+        if !sqlite_archive.is_file() {
+            return Err(
+                "the verified offline SQLite archive is missing from the desktop package".into(),
+            );
+        }
+        command.env_remove("MANDIBLE_SQLITE_LIBRARY");
+        command.env("MANDIBLE_SQLITE_LIBRARY_ARCHIVE", sqlite_archive);
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to select the pinned Bun runtime: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to select the pinned Bun runtime: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let runtime = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    if !runtime.is_absolute() || !runtime.is_file() {
+        return Err("Bun selector returned an invalid executable path".into());
+    }
+    Ok(runtime)
+}
+
+fn runtime_command(app: &AppHandle) -> Result<Command, String> {
+    let mut command = Command::new(resolve_runtime_binary(app)?);
+    if let Ok(resources) = app.path().resource_dir() {
+        if resources.join("scripts/bun-runtime.sh").is_file() {
+            let archive = resources.join("runtime/sqlite.tar.gz");
+            if !archive.is_file() {
+                return Err(
+                    "the verified offline SQLite archive is missing from the desktop package"
+                        .into(),
+                );
+            }
+            command.env_remove("MANDIBLE_SQLITE_LIBRARY");
+            command.env("MANDIBLE_SQLITE_LIBRARY_ARCHIVE", archive);
         }
     }
-    #[cfg(target_os = "macos")]
-    {
-        return resolve_installed_node_binary();
-    }
-    #[cfg(not(target_os = "macos"))]
-    Ok(PathBuf::from("node"))
+    Ok(command)
 }
 
 fn resolve_runtime_controller_working_directory(script: &Path) -> Result<PathBuf, String> {
@@ -663,176 +719,6 @@ fn resolve_runtime_controller_working_directory(script: &Path) -> Result<PathBuf
         })
 }
 
-#[cfg(target_os = "macos")]
-fn resolve_installed_node_binary() -> Result<PathBuf, String> {
-    const PLUTIL: &str = "/usr/bin/plutil";
-
-    let home = normalize_absolute_path(&mandible_home());
-    let default_home = normalize_absolute_path(&default_mandible_home());
-    let user_home = normalize_absolute_path(
-        default_mandible_home()
-            .parent()
-            .unwrap_or_else(|| Path::new(".")),
-    );
-    let install_suffix = if home == default_home {
-        String::new()
-    } else {
-        let digest = Sha256::digest(home.to_string_lossy().as_bytes());
-        format!(
-            ".{:02x}{:02x}{:02x}{:02x}",
-            digest[0], digest[1], digest[2], digest[3]
-        )
-    };
-    let label = format!("bio.mll.mandible.local-session-production{install_suffix}");
-    let runtime_directory = home.join("config").join("local-sessions");
-    let standard_plist = user_home
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{label}.plist"));
-    let private_plist = runtime_directory
-        .join("launch-agents")
-        .join(format!("{label}.plist"));
-    let installed_plists = [standard_plist, private_plist]
-        .into_iter()
-        .filter(|path| path.exists())
-        .collect::<Vec<_>>();
-
-    if installed_plists.len() > 1 {
-        return Err(format!(
-            "Multiple Mandible LaunchAgents use label {label}; preserving both and refusing to guess."
-        ));
-    }
-    let plist = installed_plists.first().ok_or_else(|| {
-        format!(
-            "Node is unavailable: no installed Mandible backend LaunchAgent was found for {label}. Reinstall the Mandible runtime."
-        )
-    })?;
-    if !user_home.is_dir() {
-        return Err(format!(
-            "Cannot read Mandible's installed runtime configuration because the home directory {} is unavailable.",
-            user_home.display()
-        ));
-    }
-    let output = Command::new(PLUTIL)
-        .args(["-convert", "json", "-o", "-"])
-        .arg(plist)
-        .current_dir(&user_home)
-        .output()
-        .map_err(|error| {
-            format!("failed to read Mandible's installed runtime configuration: {error}")
-        })?;
-    if !output.status.success() {
-        return Err(format!(
-            "failed to parse Mandible LaunchAgent {}: {}",
-            plist.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let record: RuntimeLaunchAgent = serde_json::from_slice(&output.stdout).map_err(|error| {
-        format!(
-            "failed to decode Mandible LaunchAgent {}: {error}",
-            plist.display()
-        )
-    })?;
-    if record.label != label {
-        return Err(format!(
-            "Mandible LaunchAgent {} has unexpected label {}; preserving it.",
-            plist.display(),
-            record.label
-        ));
-    }
-    if record.program_arguments.len() != 3 {
-        return Err(format!(
-            "Mandible LaunchAgent {} does not have the expected managed runner arguments; preserving it.",
-            plist.display()
-        ));
-    }
-    let expected_runner = runtime_directory.join("production-runner.mjs");
-    if PathBuf::from(&record.program_arguments[1]) != expected_runner
-        || record.program_arguments[2] != "run"
-    {
-        return Err(format!(
-            "Mandible LaunchAgent {} does not point to Mandible's managed runner; preserving it.",
-            plist.display()
-        ));
-    }
-    let node = PathBuf::from(&record.program_arguments[0]);
-    if !node.is_absolute() || !is_executable_file(&node) {
-        return Err(format!(
-            "Mandible LaunchAgent {} does not identify an existing absolute executable Node binary; reinstall the Mandible runtime.",
-            plist.display()
-        ));
-    }
-
-    let production_root = record.environment_variables.mandible_production_root;
-    if !production_root.is_absolute()
-        || !production_root.join("package.json").exists()
-        || !production_root.join("dist").join("index.js").exists()
-    {
-        return Err(format!(
-            "Mandible LaunchAgent {} does not identify a built Mandible checkout; preserving it.",
-            plist.display()
-        ));
-    }
-
-    Ok(node)
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Deserialize)]
-struct RuntimeLaunchAgent {
-    #[serde(rename = "Label")]
-    label: String,
-    #[serde(rename = "ProgramArguments")]
-    program_arguments: Vec<String>,
-    #[serde(rename = "EnvironmentVariables")]
-    environment_variables: RuntimeLaunchEnvironment,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Deserialize)]
-struct RuntimeLaunchEnvironment {
-    #[serde(rename = "MANDIBLE_PRODUCTION_ROOT")]
-    mandible_production_root: PathBuf,
-}
-
-#[cfg(target_os = "macos")]
-fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::metadata(path)
-        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(target_os = "macos")]
-fn normalize_absolute_path(path: &Path) -> PathBuf {
-    use std::path::Component;
-
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-    };
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if normalized.file_name().is_some() {
-                    normalized.pop();
-                }
-            }
-            Component::Normal(part) => normalized.push(part),
-        }
-    }
-    normalized
-}
-
 fn isolated_home_selected() -> bool {
     std::env::var("MANDIBLE_HOME")
         .is_ok_and(|value| !value.trim().is_empty() && mandible_home() != default_mandible_home())
@@ -848,8 +734,16 @@ fn validate_launch_mode(launch_mode: &str) -> Result<(), String> {
 
 pub fn run() {
     let mut context = tauri::generate_context!();
+    let acceptance =
+        acceptance::configuration().expect("invalid candidate acceptance configuration");
+    if let Some(config) = &acceptance {
+        for window in &mut context.config_mut().app.windows {
+            window.incognito = true;
+            window.url = tauri::WebviewUrl::External(tauri::Url::parse(&config.origin).unwrap());
+        }
+    }
     #[cfg(target_os = "macos")]
-    let isolated_store_identifier = isolated_home_selected().then(|| {
+    let isolated_store_identifier = (acceptance.is_none() && isolated_home_selected()).then(|| {
         assert!(
             macos_supports_custom_webkit_store(),
             "isolated Mandible desktop requires macOS 14 or newer for a separate WebKit store"
@@ -874,9 +768,13 @@ pub fn run() {
         .manage(NativeWindowCapabilityState::default())
         .on_page_load(|webview, payload| {
             note_dashboard_page_load(webview.label(), payload.url(), payload.event());
+            acceptance::page_loaded(webview, payload.url(), payload.event());
         })
         .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
+            if let Some(config) = &acceptance {
+                acceptance::install(app, config)?;
+            }
             if let Some(identifier) = isolated_store_identifier {
                 for window in app
                     .config()
@@ -952,7 +850,8 @@ pub fn run() {
             navigate_to_desktop_dashboard,
             secure_local_connections_status,
             secure_local_connections_setup,
-            native_window_capabilities
+            native_window_capabilities,
+            acceptance::candidate_acceptance_report
         ])
         .run(context)
         .expect("error while running Mandible app");

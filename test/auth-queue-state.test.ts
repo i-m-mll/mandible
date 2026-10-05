@@ -9,17 +9,17 @@
  * unchanged; the shared helpers live in `test/helpers/auth-queue-fixtures.ts`.
  */
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { SseEvent } from "../src/types.js";
-import { createMigratedDb, createQueue, git, waitForStatus } from "./helpers/auth-queue-fixtures.js";
+import { seedHistoricalAuthExecution, seedHistoricalAuthCompletion, approveFixtureRequest, createMigratedDb, createQueue, git, waitForStatus } from "./helpers/auth-queue-fixtures.js";
 import { addCredential, getOperator } from "../src/users/store.js";
 
 describe("auth queue", () => {
-  it("submits request and returns pending status", () => {
+  it("submits request and returns pending status", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({ command: "echo hello", title: "Test" });
+    const request = queue.submit({ type: "commit", command: "echo hello", title: "Test" });
     expect(request.id).toBeTruthy();
 
     const fetched = queue.getRequest(request.id);
@@ -29,12 +29,12 @@ describe("auth queue", () => {
   it("approves request, executes command, stores result", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "node -e \"console.log('ok')\"",
       title: "Run command"
     });
 
-    const approved = queue.approve(request.id);
+    const approved = await approveFixtureRequest(queue, request.id);
     expect(approved.status).toBe("executing");
 
     const resolved = await waitForStatus(queue, request.id, "completed");
@@ -42,10 +42,10 @@ describe("auth queue", () => {
     expect(String(resolved?.output)).toContain("ok");
   });
 
-  it("stores git context fields on submit", () => {
+  it("stores git context fields on submit", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo git",
       title: "Git",
       repo: "mandible",
@@ -69,11 +69,11 @@ describe("auth queue", () => {
     expect(fetched?.execution_mode).toBe("remote");
   });
 
-  it("appends output chunks only while the request is executing", () => {
+  it("appends output chunks only while the request is executing", async () => {
     const db = createMigratedDb();
     const queue = new AuthQueue({ db });
 
-    const request = queue.submit({ command: "echo output", title: "Output" });
+    const request = queue.submit({ type: "commit", command: "echo output", title: "Output" });
     // Issue 08a5f04 (review F1) — output is execution evidence: appends to a
     // request that is not executing are refused so a marker can never be
     // laundered into a pending or resolved row.
@@ -91,10 +91,11 @@ describe("auth queue", () => {
     expect(queue.getRequest(request.id)?.output).toBe("hello world");
   });
 
-  it("sets result and completes request", () => {
+  it("sets result and completes request", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({ command: "echo done", title: "Done" });
+    const request = queue.submit({ type: "commit", command: "echo done", title: "Done" });
+    await approveFixtureRequest(queue, request.id);
     queue.setResult(request.id, 0, "ok", undefined);
 
     const fetched = queue.getRequest(request.id);
@@ -119,19 +120,19 @@ describe("auth queue", () => {
     };
     const queue = createQueue({ executor });
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo remote",
       title: "Remote",
       execution_mode: "remote"
     });
 
-    const approved = queue.approve(request.id);
+    const approved = await approveFixtureRequest(queue, request.id);
     expect(approved.status).toBe("executing");
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(calls).toHaveLength(0);
   });
 
-  it("recovers stale executing requests with partial output on restart", () => {
+  it("recovers stale executing requests with partial output on restart", async () => {
     let now = 0;
     const db = createMigratedDb();
     const queue = new AuthQueue({ db, now: () => now });
@@ -142,7 +143,7 @@ describe("auth queue", () => {
       head_branch: "feature/partial",
       execution_mode: "remote"
     });
-    queue.approve(request.id);
+    seedHistoricalAuthExecution(queue, request.id);
     queue.appendOutput(request.id, "Executing merge command...\n");
     queue.dispose();
 
@@ -150,8 +151,8 @@ describe("auth queue", () => {
     const events: SseEvent[] = [];
     const restarted = new AuthQueue({ db, now: () => now, broadcast: (event) => events.push(event) });
     try {
+      await vi.waitFor(() => expect(restarted.getRequest(request.id)?.status).toBe("completed"));
       const recovered = restarted.getRequest(request.id);
-      expect(recovered?.status).toBe("completed");
       expect(recovered?.exit_code).toBe(1);
       expect(recovered?.error).toContain("missing repository, base branch, or head branch metadata");
       expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
@@ -161,7 +162,7 @@ describe("auth queue", () => {
     }
   });
 
-  it("leaves copied auth state unchanged when background maintenance is disabled", () => {
+  it("leaves copied auth state unchanged when background maintenance is disabled", async () => {
     const db = createMigratedDb();
     const initial = new AuthQueue({ db, now: () => 0 });
     const request = initial.submit({
@@ -187,10 +188,10 @@ describe("auth queue", () => {
     }
   });
 
-  it("rejects request", () => {
+  it("rejects request", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({ command: "echo nope", title: "Reject" });
+    const request = queue.submit({ type: "commit", command: "echo nope", title: "Reject" });
     const rejected = queue.reject(request.id, "No");
 
     expect(rejected.status).toBe("rejected");
@@ -203,8 +204,8 @@ describe("auth queue", () => {
     let time = 1;
     const queue = createQueue({ now: () => time++ });
 
-    const first = queue.submit({ command: "echo one", title: "One" });
-    const second = queue.submit({
+    const first = queue.submit({ type: "commit", command: "echo one", title: "One" });
+    const second = queue.submit({ type: "commit",
       command: "node -e \"console.log('two')\"",
       title: "Two"
     });
@@ -213,7 +214,7 @@ describe("auth queue", () => {
     const ids = pending.map((r) => r.id);
     expect(ids).toEqual([first.id, second.id]);
 
-    queue.approve(second.id);
+    await approveFixtureRequest(queue, second.id);
     const resolved = await waitForStatus(queue, second.id, "completed");
     expect(resolved?.exit_code).toBe(0);
 
@@ -221,27 +222,27 @@ describe("auth queue", () => {
     expect(stillPending?.status).toBe("pending");
   });
 
-  it("expires stale requests", () => {
+  it("expires stale requests", async () => {
     let now = 0;
     const queue = createQueue({ ttlMs: 10, now: () => now });
 
-    const request = queue.submit({ command: "echo old", title: "Old" });
+    const request = queue.submit({ type: "commit", command: "echo old", title: "Old" });
 
     now = 20;
     const fetched = queue.getRequest(request.id);
     expect(fetched?.status).toBe("expired");
   });
 
-  it("refuses to revise a failed terminal request", () => {
+  it("refuses to revise a failed terminal request", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo fail",
       title: "Fail",
       cwd: "/wrong/path"
     });
     // Simulate a failed execution
-    queue.setResult(request.id, 1, "error output", "command failed");
+    seedHistoricalAuthCompletion(queue, request.id, "error output", 1, "command failed");
 
     const failed = queue.getRequest(request.id);
     expect(failed?.status).toBe("completed");
@@ -251,7 +252,7 @@ describe("auth queue", () => {
     expect(queue.getRequest(request.id)?.cwd).toBe("/wrong/path");
   });
 
-  it("allows updating merge head sha on a pending request", () => {
+  it("allows updating merge head sha on a pending request", async () => {
     const queue = createQueue();
 
     const request = queue.submit({
@@ -270,7 +271,7 @@ describe("auth queue", () => {
     );
   });
 
-  it("requires retry before revising a failed request", () => {
+  it("requires retry before revising a failed request", async () => {
     const events: SseEvent[] = [];
     const queue = createQueue({
       broadcast: (event) => {
@@ -278,8 +279,7 @@ describe("auth queue", () => {
       }
     });
 
-    // No cwd at submit (merge preflight skips): the wrong path arrives with
-    // the failed remote execution and is corrected via PUT below.
+    // A retained failed remote request can be explicitly retried and edited.
     const request = queue.submit({
       command: "mandible auth merge feature/foo --into main",
       title: "Merge foo",
@@ -287,8 +287,7 @@ describe("auth queue", () => {
       head_branch: "feature/foo",
       execution_mode: "remote",
     });
-    queue.approve(request.id);
-    queue.setResult(request.id, 1, "Not a git repository", "cwd was wrong");
+    seedHistoricalAuthCompletion(queue, request.id, "Not a git repository", 1, "cwd was wrong");
 
     expect(() => queue.update(request.id, {
       cwd: "/correct/repo",
@@ -309,10 +308,11 @@ describe("auth queue", () => {
     expect(events.some((e) => e.event === "auth:new" && (e.data as { request: { id: string } }).request.id === updated.id)).toBe(true);
   });
 
-  it("retries a failed request through the explicit retry operation", () => {
+  it("retries a failed request through the explicit retry operation", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({ command: "echo retry", title: "Retry" });
+    const request = queue.submit({ type: "commit", command: "echo retry", title: "Retry" });
+    await approveFixtureRequest(queue, request.id);
     queue.setResult(request.id, 1, "failed", "oops");
 
     expect(() => queue.update(request.id, { status: "pending" })).toThrow("Only pending requests");
@@ -321,20 +321,21 @@ describe("auth queue", () => {
     expect(updated.exit_code).toBeNull();
   });
 
-  it("rejects updating a successfully completed request", () => {
+  it("rejects updating a successfully completed request", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({ command: "echo ok", title: "OK" });
+    const request = queue.submit({ type: "commit", command: "echo ok", title: "OK" });
+    await approveFixtureRequest(queue, request.id);
     queue.setResult(request.id, 0, "success");
 
     expect(() => queue.update(request.id, { title: "New title" })).toThrow();
   });
 
-  it("refuses to revise an expired terminal request", () => {
+  it("refuses to revise an expired terminal request", async () => {
     let now = 0;
     const queue = createQueue({ ttlMs: 10, now: () => now });
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo stale",
       title: "Stale",
       cwd: "/old/path"
@@ -349,15 +350,15 @@ describe("auth queue", () => {
     expect(queue.getRequest(request.id)?.cwd).toBe("/old/path");
   });
 
-  it("refuses to revise an approved request", () => {
+  it("refuses to revise an approved request", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo approved",
       title: "Approved",
       execution_mode: "remote" // remote so it doesn't auto-execute
     });
-    queue.approve(request.id);
+    await approveFixtureRequest(queue, request.id);
 
     expect(() => queue.update(request.id, { title: "Changed" })).toThrow("Only pending requests");
     expect(queue.getRequest(request.id)?.title).toBe("Approved");
@@ -371,24 +372,24 @@ describe("auth queue", () => {
       }
     });
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "node -e \"console.log('stream')\"",
       title: "Stream"
     });
 
     expect(events.some((event) => event.event === "auth:new")).toBe(true);
 
-    queue.approve(request.id);
+    await approveFixtureRequest(queue, request.id);
     await waitForStatus(queue, request.id, "completed");
 
     expect(events.some((event) => event.event === "auth:output")).toBe(true);
     expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
   });
 
-  it("stores issue references and closures separately", () => {
+  it("stores issue references and closures separately", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo merge",
       title: "Merge with typed issue links",
       issue_references: ["umbrella123"],
@@ -401,10 +402,10 @@ describe("auth queue", () => {
     expect(fetched?.issues).toBeNull();
   });
 
-  it("maps legacy issues to issue_closures for compatibility", () => {
+  it("maps legacy issues to issue_closures for compatibility", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo merge",
       title: "Merge with legacy closes",
       issues: ["legacy123"]
@@ -415,10 +416,10 @@ describe("auth queue", () => {
     expect(fetched?.issues).toEqual(["legacy123"]);
   });
 
-  it("stores issues on submit and retrieves them", () => {
+  it("stores issues on submit and retrieves them", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo merge",
       title: "Merge with closes",
       issues: ["abc123", "def456"]
@@ -428,10 +429,10 @@ describe("auth queue", () => {
     expect(fetched?.issues).toEqual(["abc123", "def456"]);
   });
 
-  it("stores null issues when not provided", () => {
+  it("stores null issues when not provided", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo merge",
       title: "Merge without closes"
     });
@@ -440,10 +441,10 @@ describe("auth queue", () => {
     expect(fetched?.issues).toBeNull();
   });
 
-  it("allows updating issues on a pending request", () => {
+  it("allows updating issues on a pending request", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo merge",
       title: "Update closes"
     });
@@ -455,10 +456,10 @@ describe("auth queue", () => {
     expect(updated.issues).toEqual(["umbrella123"]);
   });
 
-  it("allows setting issues to null via update", () => {
+  it("allows setting issues to null via update", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo merge",
       title: "Clear closes",
       issues: ["abc123"]
@@ -471,16 +472,17 @@ describe("auth queue", () => {
     expect(updated.issues).toBeNull();
   });
 
-  it("preserves issues through explicit retry", () => {
+  it("preserves issues through explicit retry", async () => {
     const queue = createQueue();
 
-    const request = queue.submit({
+    const request = queue.submit({ type: "commit",
       command: "echo retry",
       title: "Retry with closes",
       issues: ["umbrella789"]
     });
 
     // Simulate failed execution
+    await approveFixtureRequest(queue, request.id);
     queue.setResult(request.id, 1, "error", "failed");
 
     const updated = queue.retry(request.id);
@@ -489,12 +491,13 @@ describe("auth queue", () => {
   });
 
   describe("outcome field in resolved payload", () => {
-    it("resolvedPayload has outcome=succeeded when completed with exit_code=0", () => {
+    it("resolvedPayload has outcome=succeeded when completed with exit_code=0", async () => {
       const events: SseEvent[] = [];
       const db = createMigratedDb();
       const queue = new AuthQueue({ db, broadcast: (e) => events.push(e) });
 
-      const request = queue.submit({ command: "echo ok", title: "Success" });
+      const request = queue.submit({ type: "commit", command: "echo ok", title: "Success" });
+      await approveFixtureRequest(queue, request.id);
       queue.setResult(request.id, 0, "ok");
 
       const resolved = events.find((e) => e.event === "auth:resolved");
@@ -504,11 +507,12 @@ describe("auth queue", () => {
       expect(data.status).toBe("completed");
     });
 
-    it("resolvedPayload has outcome=failed when completed with exit_code=1", () => {
+    it("resolvedPayload has outcome=failed when completed with exit_code=1", async () => {
       const events: SseEvent[] = [];
       const queue = createQueue({ broadcast: (e) => events.push(e) });
 
-      const request = queue.submit({ command: "echo fail", title: "Failure" });
+      const request = queue.submit({ type: "commit", command: "echo fail", title: "Failure" });
+      await approveFixtureRequest(queue, request.id);
       queue.setResult(request.id, 1, "error output", "command failed");
 
       const resolved = events.find((e) => e.event === "auth:resolved");
@@ -518,11 +522,11 @@ describe("auth queue", () => {
       expect(data.status).toBe("completed");
     });
 
-    it("resolvedPayload has outcome=rejected when request is rejected", () => {
+    it("resolvedPayload has outcome=rejected when request is rejected", async () => {
       const events: SseEvent[] = [];
       const queue = createQueue({ broadcast: (e) => events.push(e) });
 
-      const request = queue.submit({ command: "echo nope", title: "Reject" });
+      const request = queue.submit({ type: "commit", command: "echo nope", title: "Reject" });
       queue.reject(request.id, "Not approved");
 
       const resolved = events.find((e) => e.event === "auth:resolved");
@@ -532,7 +536,7 @@ describe("auth queue", () => {
       expect(data.status).toBe("rejected");
     });
 
-    it("resolvedPayload has outcome=withdrawn when requester withdraws", () => {
+    it("resolvedPayload has outcome=withdrawn when requester withdraws", async () => {
       const events: SseEvent[] = [];
       const db = createMigratedDb();
       const queue = new AuthQueue({ db, broadcast: (e) => events.push(e) });
@@ -562,17 +566,17 @@ describe("auth queue", () => {
       expect(data.status).toBe("withdrawn");
     });
 
-    it("resolvedPayload has outcome=null when request is still pending (non-terminal state)", () => {
+    it("resolvedPayload has outcome=null when request is still pending (non-terminal state)", async () => {
       const events: SseEvent[] = [];
       const queue = createQueue({ broadcast: (e) => events.push(e) });
 
       // Use execution_mode=remote so it stays in executing without running
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: "echo pending",
         title: "Pending",
         execution_mode: "remote"
       });
-      queue.approve(request.id);
+      await approveFixtureRequest(queue, request.id);
 
       // auth:new fires but not auth:resolved yet — check the request directly
       const fetched = queue.getRequest(request.id);
@@ -582,7 +586,7 @@ describe("auth queue", () => {
       expect(resolved).toBeUndefined();
     });
 
-    it("resolvedPayload has outcome=expired when request expires", () => {
+    it("resolvedPayload has outcome=expired when request expires", async () => {
       let now = 0;
       const events: SseEvent[] = [];
       const queue = createQueue({
@@ -591,7 +595,7 @@ describe("auth queue", () => {
         broadcast: (e) => events.push(e)
       });
 
-      const request = queue.submit({ command: "echo stale", title: "Stale" });
+      const request = queue.submit({ type: "commit", command: "echo stale", title: "Stale" });
 
       now = 20; // trigger expiry
       queue.expireStale();
@@ -605,16 +609,17 @@ describe("auth queue", () => {
   });
 
   describe("error output in resolved events", () => {
-    it("includes error_output in resolved payload when exit_code is non-zero", () => {
+    it("includes error_output in resolved payload when exit_code is non-zero", async () => {
       const events: SseEvent[] = [];
       const queue = createQueue({ broadcast: (e) => events.push(e) });
 
-      const request = queue.submit({ command: "echo fail", title: "Failure" });
+      const request = queue.submit({ type: "commit", command: "echo fail", title: "Failure" });
       // Append some output as if the executor streamed it — this goes into the
       // DB output column. setResult with a non-empty output replaces it, so we
       // pass the same content through setResult to simulate what happens when
       // the executor finishes (output is the accumulated buffer).
       const output = "line 1\nline 2\nline 3\nerror: merge conflict\n";
+      await approveFixtureRequest(queue, request.id);
       queue.setResult(request.id, 1, output, "command failed");
 
       const resolved = events.find((e) => e.event === "auth:resolved");
@@ -624,11 +629,12 @@ describe("auth queue", () => {
       expect(String(data.error_output)).toContain("error: merge conflict");
     });
 
-    it("does not include error_output when exit_code is 0", () => {
+    it("does not include error_output when exit_code is 0", async () => {
       const events: SseEvent[] = [];
       const queue = createQueue({ broadcast: (e) => events.push(e) });
 
-      const request = queue.submit({ command: "echo ok", title: "Success" });
+      const request = queue.submit({ type: "commit", command: "echo ok", title: "Success" });
+      await approveFixtureRequest(queue, request.id);
       queue.setResult(request.id, 0, "Merge made by recursive.\nok");
 
       const resolved = events.find((e) => e.event === "auth:resolved");
@@ -652,11 +658,11 @@ describe("auth queue", () => {
         })
       });
 
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: "git merge --gpg-sign feature/x",
         title: "Merge feature/x"
       });
-      queue.approve(request.id);
+      await approveFixtureRequest(queue, request.id);
       await waitForStatus(queue, request.id, "completed");
 
       const completed = queue.getRequest(request.id);
@@ -675,11 +681,11 @@ describe("auth queue", () => {
         }
       });
 
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: "nonexistent-command",
         title: "Bad command"
       });
-      queue.approve(request.id);
+      await approveFixtureRequest(queue, request.id);
       await waitForStatus(queue, request.id, "completed");
 
       const completed = queue.getRequest(request.id);
@@ -688,13 +694,14 @@ describe("auth queue", () => {
       expect(completed?.error).toBe("Spawn failed: ENOENT");
     });
 
-    it("error_output is truncated to last 20 lines", () => {
+    it("error_output is truncated to last 20 lines", async () => {
       const events: SseEvent[] = [];
       const queue = createQueue({ broadcast: (e) => events.push(e) });
 
-      const request = queue.submit({ command: "echo fail", title: "Long output" });
+      const request = queue.submit({ type: "commit", command: "echo fail", title: "Long output" });
       // Generate 30 lines of output (no trailing newline so split gives exactly 30)
       const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n");
+      await approveFixtureRequest(queue, request.id);
       queue.setResult(request.id, 1, lines, "failed");
 
       const resolved = events.find((e) => e.event === "auth:resolved");
@@ -727,12 +734,11 @@ describe("auth queue", () => {
         execution_mode: "remote",
         ...overrides,
       });
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "verbose console output ".repeat(50));
+      seedHistoricalAuthCompletion(queue, request.id, "verbose console output ".repeat(50));
       return request.id;
     }
 
-    it("omits diff/spec/output body blobs but keeps commit_message", () => {
+    it("omits diff/spec/output body blobs but keeps commit_message", async () => {
       const queue = createQueue();
       submitCompleted(queue);
 
@@ -750,7 +756,7 @@ describe("auth queue", () => {
       expect(row.head_branch).toBe("feature/x");
     });
 
-    it("reports action_count per row from a batched query", () => {
+    it("reports action_count per row from a batched query", async () => {
       const queue = createQueue();
       const withActions = queue.submit({
         type: "merge",
@@ -765,8 +771,7 @@ describe("auth queue", () => {
           { kind: "label_add", target_issue_ref: "abc1234", payload: { label: "verified" } },
         ],
       });
-      queue.approve(withActions.id);
-      queue.setResult(withActions.id, 0, "ok");
+      seedHistoricalAuthCompletion(queue, withActions.id, "ok");
       submitCompleted(queue, { title: "No actions", head_branch: "feature/b" });
 
       const rows = queue.listHistorySummaries(50);
@@ -776,12 +781,12 @@ describe("auth queue", () => {
       expect(withoutRow?.action_count).toBe(0);
     });
 
-    it("only returns resolved rows, newest first, respecting the limit", () => {
+    it("only returns resolved rows, newest first, respecting the limit", async () => {
       let now = 1000;
       const db = createMigratedDb();
       const queue = new AuthQueue({ db, now: () => now });
       // A pending row must not appear in history.
-      queue.submit({ command: "echo pending", title: "Pending" });
+      queue.submit({ type: "commit", command: "echo pending", title: "Pending" });
       const first = submitCompleted(queue, { title: "First", head_branch: "feature/1" });
       now = 2000;
       const second = submitCompleted(queue, { title: "Second", head_branch: "feature/2" });

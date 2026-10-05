@@ -12,7 +12,7 @@ afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursiv
 
 async function runShell(command: string, env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("bash", ["-c", command], { env });
+    const child = spawn("bash", ["-u", "-c", command], { env });
     let stdout = ""; let stderr = "";
     child.stdout.on("data", (part) => { stdout += part; });
     child.stderr.on("data", (part) => { stderr += part; });

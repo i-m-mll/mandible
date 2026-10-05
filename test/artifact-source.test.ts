@@ -5,9 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import Database from 'better-sqlite3';
+import SqliteDatabase from "../src/sqlite.ts";
 import { openDb, type Db } from '../src/db.js';
-import { appendArtifactVersion, planArtifactVersionBatch, commitArtifactVersionBatch, planArtifactVersion, commitArtifactVersion, recordArtifactVersion, associateProjectArtifact, getCanonicalArtifactVersion } from '../src/provider-artifacts.js';
+import { planArtifactVersionBatch, planArtifactVersion, associateProjectArtifact, getCanonicalArtifactVersion } from "../src/provider-artifacts.js";
+import {
+  appendArtifactVersion,
+  commitArtifactVersionBatch,
+  commitArtifactVersion,
+  recordArtifactVersion,
+} from "./helpers/artifact-http-write-fixtures.js";
 import { getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove, type ArtifactLifecycleResult } from '../src/artifact-source.js';
 import { readArtifactBytesFull, checkArtifactMaterialization } from '../src/artifact-content.js';
 import { resolveArtifactProject, artifactAccessProjectIds } from '../src/permissions/resources.js';
@@ -84,12 +90,12 @@ it('retains source for managed snapshots and resolves uploaded bytes against the
 });
 
 it('backfills only consistent sources and preserves duplicate/ambiguous history for reconciliation',()=>{
-  const legacy=new Database(':memory:');
+  const legacy=new SqliteDatabase(':memory:');
   legacy.exec(`CREATE TABLE ledger_projects(id TEXT PRIMARY KEY,project_key TEXT,display_name TEXT);
     CREATE TABLE ledger_project_checkouts(project_id TEXT,work_repo_id TEXT,name TEXT);
     CREATE TABLE artifact(id TEXT PRIMARY KEY,identity_key TEXT,source_kind TEXT,source_project_id TEXT,source_repo_id TEXT,source_path TEXT,metadata_json TEXT DEFAULT '{}',updated_at INTEGER);
     CREATE INDEX idx_artifact_source_repo ON artifact(source_repo_id) WHERE source_repo_id IS NOT NULL;
-    CREATE TABLE artifact_version(id TEXT PRIMARY KEY,artifact_id TEXT,source_kind TEXT,source_project_id TEXT,source_repo_id TEXT,repo_path TEXT,observed_path TEXT,created_at INTEGER DEFAULT 1);
+    CREATE TABLE artifact_version(id TEXT PRIMARY KEY,artifact_id TEXT,blob_id TEXT,source_kind TEXT,source_project_id TEXT,source_repo_id TEXT,repo_path TEXT,observed_path TEXT,created_at INTEGER DEFAULT 1);
     CREATE TABLE project_artifact_associations(id TEXT PRIMARY KEY,project_id TEXT,target_type TEXT,target_id TEXT,association_kind TEXT,role TEXT,status TEXT,source TEXT,created_at INTEGER,updated_at INTEGER);
     INSERT INTO ledger_projects VALUES ('p','repo','repo');
     INSERT INTO artifact VALUES ('one','one','tracked_repo',NULL,'repo','a','{}',1),('two','two','tracked_repo',NULL,'repo','a','{}',1),('mixed','mixed','mixed',NULL,'repo','c','{}',1),('unknown','unknown','external',NULL,NULL,NULL,'{}',1),('managed','managed','managed',NULL,NULL,NULL,'{}',1);
@@ -270,4 +276,18 @@ it('refuses an unexpected existing Git retention target without overwriting it',
   const other=git(a.root,'rev-parse','HEAD');git(a.root,'update-ref',ref,other);
   expect(()=>retainArtifactCommit(db,{project:'guarded',commit:saved.version.commit_sha!,path:'report.md',sha256:saved.version.content_hash})).toThrow('unexpected commit');
   expect(git(a.root,'rev-parse',ref)).toBe(other);
+});
+
+it('preserves original input alias evidence and rejects conflicting project attribution', () => {
+  const target = path.join(dir, 'target'); fs.mkdirSync(target);
+  const file = path.join(target, 'report.md'); fs.writeFileSync(file, 'report');
+  const alias = path.join(dir, 'alias'); fs.symlinkSync(target, alias);
+  const project = insertRawLedgerProject(db, { name: 'alias-project' });
+  insertRawLedgerCheckout(db, { projectId: project, name: 'alias-project', root: alias, conflict: 'replace' });
+  const input = { source_kind: 'local_only' as const, path: path.join(alias, 'report.md'), custody_mode: 'managed' as const };
+  const plan = ok(planArtifactVersion(db, input));
+  expect(plan.required_project_ids).toContain(project);
+  const other = insertRawLedgerProject(db, { name: 'target-project' });
+  insertRawLedgerCheckout(db, { projectId: other, name: 'target-project', root: target, conflict: 'replace' });
+  expect(planArtifactVersion(db, input)).toMatchObject({ ok: false, error: { code: 'invalid_source' } });
 });

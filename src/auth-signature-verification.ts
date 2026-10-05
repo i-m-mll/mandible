@@ -10,6 +10,7 @@ interface SigningCredentialRow {
   user_id: string;
   fingerprint: string;
   public_material: string;
+  type: string;
 }
 
 export interface MergeSignatureVerification {
@@ -75,7 +76,8 @@ function activeSigningCredentials(db: Db): SigningCredentialRow[] {
        credential.id AS credential_id,
        credential.user_id,
        credential.fingerprint,
-       credential.public_material
+       credential.public_material,
+       credential.type
      FROM user_credentials AS credential
      JOIN users AS owner ON owner.id = credential.user_id
      WHERE credential.status = 'active'
@@ -104,6 +106,12 @@ export function authorizedMergeSignerLines(
       const line = allowedSignerLine(credential);
       return line ? [line] : [];
     });
+}
+
+export function authorizedOperatorSignerLines(db: Db, userId: string): string[] {
+  return activeSigningCredentials(db)
+    .filter((credential) => credential.user_id === userId && credential.type === "ssh_key")
+    .flatMap((credential) => { const line = allowedSignerLine(credential); return line ? [line] : []; });
 }
 
 function unverified(
@@ -257,4 +265,44 @@ export function verifySuccessfulMergeCommitSignature(
     return unverified(commitSha, "merge_commit_not_target_head");
   }
   return verifyMergeCommitSignature(db, cwd, commitSha);
+}
+
+type AtomicMarker = {
+  merge_sha: string;
+  base_sha?: string;
+  head_sha?: string;
+  tree_sha?: string;
+};
+
+export function extractAtomicMergeState(output: string): {
+  prepared: Required<AtomicMarker> | null;
+  applied: AtomicMarker | null;
+  invalid: boolean;
+} {
+  let prepared: Required<AtomicMarker> | null = null;
+  let applied: AtomicMarker | null = null;
+  let invalid = false;
+  for (const line of output.split(/\r?\n/)) {
+    for (const [prefix, kind] of [
+      ["MANDIBLE_MERGE_PREPARED ", "prepared"],
+      ["MANDIBLE_MERGE_APPLIED ", "applied"],
+    ] as const) {
+      const index = line.indexOf(prefix);
+      if (index < 0) continue;
+      try {
+        const value = JSON.parse(line.slice(index + prefix.length)) as AtomicMarker;
+        if (!COMMIT_SHA_PATTERN.test(value.merge_sha ?? "") || !COMMIT_SHA_PATTERN.test(value.base_sha ?? "")) { invalid = true; continue; }
+        if (kind === "prepared") {
+          if (!COMMIT_SHA_PATTERN.test(value.head_sha ?? "") || !COMMIT_SHA_PATTERN.test(value.tree_sha ?? "")) { invalid = true; continue; }
+          if (prepared && (prepared.merge_sha !== value.merge_sha || prepared.base_sha !== value.base_sha || prepared.head_sha !== value.head_sha || prepared.tree_sha !== value.tree_sha)) invalid = true;
+          prepared = value as Required<AtomicMarker>;
+        } else {
+          if (applied && (applied.merge_sha !== value.merge_sha || applied.base_sha !== value.base_sha)) invalid = true;
+          applied = value;
+        }
+      } catch { invalid = true; }
+    }
+  }
+  if (applied && prepared && (applied.merge_sha !== prepared.merge_sha || applied.base_sha !== prepared.base_sha)) invalid = true;
+  return { prepared, applied, invalid };
 }

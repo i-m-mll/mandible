@@ -25,7 +25,7 @@
  * `core.hooksPath`, `init.templateDir` or signing defaults reached the fixture
  * and could change what these tests were actually exercising.
  */
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -294,7 +294,7 @@ export function createMigratedDb(): Db {
   }
   // Deserialise from a copy: the template buffer is reused for every case and
   // must not observe a test's writes.
-  return new Database(Buffer.from(migratedDbTemplate)) as unknown as Db;
+  return SqliteDatabase.fromSnapshot(Buffer.from(migratedDbTemplate)) as unknown as Db;
 }
 
 export function createLedgerProject(db: Db, root: string) {
@@ -322,7 +322,7 @@ export function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] 
 }
 
 export function registerWorkRepo(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   repoRoot: string,
   defaultBranch = "main",
 ): void {
@@ -335,7 +335,7 @@ export function registerWorkRepo(
 // --- users, credentials, evidence -----------------------------------------
 
 export function registerTestDelegatedLease(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   id: string,
   now = Date.now(),
 ): string {
@@ -357,7 +357,7 @@ export function registerTestDelegatedLease(
 }
 
 export function executionEvidenceChain(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   executionEvidenceId: string,
 ): {
   signature: { evidence_method: string; credential_id: string | null; details_json: string };
@@ -383,16 +383,16 @@ export function executionEvidenceChain(
 
 /**
  * Generates a real keypair inside the repository, exactly as before. The key is
- * deliberately not memoised: it lives in the working tree, so `git add .` in
- * `commitOnBranch` commits it, and sharing one key across cases would change
- * what those commits contain. The measured cost is ~0.5s of a 101.5s file.
+ * deliberately not memoised across repositories. It lives in private Git
+ * metadata so branch switches and broad fixture staging cannot delete or
+ * commit its bytes.
  */
 export function configureSigningCredential(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   repo: string,
   type: "ssh_key" | "delegated_ssh_key",
 ): { credentialId: string; keyPath: string; operatorId: string } {
-  const keyPath = path.join(repo, ".mandible-test-signing-key");
+  const keyPath = path.join(git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "mandible-test-signing-key");
   execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath]);
   const publicMaterial = fs.readFileSync(`${keyPath}.pub`, "utf8").trim();
   const fingerprint = execFileSync("ssh-keygen", ["-lf", `${keyPath}.pub`, "-E", "sha256"], {
@@ -417,7 +417,7 @@ export function configureSigningCredential(
 // merge_head_sha), which is exactly what base-transition provenance
 // verification demands. Requires configureSigningCredential on the repo first.
 export function insertSiblingMergeRequest(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   repo: string,
   requestId: string,
   sourceBranch: string,
@@ -464,7 +464,7 @@ export function mergeResultOutput(mergeSha: string): string {
 // Authorized base advance recorded directly as a finalized completed request
 // (no live finalizer involvement) — for approve-time recompute tests.
 export function advanceMainViaAuthorizedMerge(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   repo: string,
   sourceBranch: string,
   requestId: string,
@@ -482,7 +482,8 @@ export function advanceMainViaAuthorizedMerge(
 
 export function createNoopHookManager(): AuthHookManager {
   return {
-    executeHooks: async () => []
+    executeHooks: async () => [],
+    reclaimAllInterruptedRuns: () => 0,
   } as unknown as AuthHookManager;
 }
 
@@ -499,7 +500,7 @@ export async function waitForStatus(queue: AuthQueue, id: string, status: string
 }
 
 export function insertMandibleSession(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   id: string,
   status: string,
 ): void {
@@ -509,7 +510,7 @@ export function insertMandibleSession(
 }
 
 export function insertConsoleSession(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   input: {
     id: string;
     providerSessionId: string;
@@ -537,7 +538,7 @@ export function insertConsoleSession(
 }
 
 export function insertWorkUnit(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   input: {
     id: string;
     issueShortId: string;
@@ -561,4 +562,79 @@ export function insertWorkUnit(
     Date.now(),
     input.authRequestId,
   );
+}
+
+/** Obtain genuine operator proof in a private fixture repository. */
+export async function approveFixtureRequest(queue: AuthQueue, id: string): Promise<ReturnType<AuthQueue['approve']>> {
+  const db = (queue as unknown as { db: Db }).db;
+  let request = queue.getRequest(id)!;
+  // Command-state tests need a real signing context even when their command
+  // has no repository semantics. Set it through the normal pending edit API.
+  if (!request.cwd && !request.command.includes('auth merge')) {
+    request = queue.update(id, { cwd: createAuthCheckRepo() });
+  }
+  if (request.cwd && fs.existsSync(path.join(request.cwd, '.git')) &&
+      !fs.existsSync(path.join(git(request.cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'mandible-test-signing-key'))) {
+    configureSigningCredential(db, request.cwd, 'ssh_key');
+  }
+  return queue.approveWithOperatorProof(id, getOperator(db)!.id);
+}
+
+/** Stored historical rows test projections/recovery, never execution authority. */
+export function seedHistoricalAuthCompletion(queue: AuthQueue, id: string, output = '', exitCode = 0, error: string | null = null): void {
+  const db = (queue as unknown as { db: Db }).db;
+  const request = queue.getRequest(id)!;
+  db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = ?, error = ?, output = ?, resolved_at = ?, updated_at = ? WHERE id = ?")
+    .run(exitCode, error, output, request.created_at, request.created_at, id);
+}
+
+/** A historical interrupted process, without invented signing evidence. */
+export function seedHistoricalAuthExecution(queue: AuthQueue, id: string): void {
+  const db = (queue as unknown as { db: Db }).db;
+  const request = queue.getRequest(id)!;
+  db.prepare("UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ? WHERE id = ?")
+    .run(request.created_at, request.created_at, id);
+}
+
+/** A real signed exact-candidate receipt from the delivery fixture. */
+export async function publishFixtureExecution(queue: AuthQueue, options: Parameters<NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']>>[0]) {
+  const { publishTestCandidate } = await import('./auth-delivery-fixtures.js');
+  const { output } = publishTestCandidate(options.cwd!, queue.getRequest(options.request_id)!);
+  options.onOutput?.({ request_id: options.request_id, stream: 'stderr', text: output, timestamp: Date.now() });
+  return { exit_code: 0, signal: null, stdout: '', stderr: output, output, started_at: Date.now(), finished_at: Date.now() };
+}
+
+
+const originalFixtureExecutors = new WeakMap<AuthQueue, NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']>>();
+const pausedFixtureExecutions = new WeakMap<AuthQueue, Map<string, (output: string) => void>>();
+
+/** Pause the real execution boundary after genuine proof, retaining the ordinary result path. */
+export async function approvePausedFixtureRequest(queue: AuthQueue, id: string): Promise<void> {
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  originalFixtureExecutors.set(queue, (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor);
+  const releases = pausedFixtureExecutions.get(queue) ?? new Map();
+  pausedFixtureExecutions.set(queue, releases);
+  (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = async options => {
+    const output = await new Promise<string>(resolve => {
+      releases.set(options.request_id, resolve); started();
+    });
+    options.onOutput?.({ request_id: options.request_id, stream: 'stderr', text: output, timestamp: Date.now() });
+    return { exit_code: 0, signal: null, stdout: '', stderr: output, output, started_at: Date.now(), finished_at: Date.now() };
+  };
+  await approveFixtureRequest(queue, id);
+  await ready;
+}
+
+/** Publish exact signed bytes, then release the ordinary executor completion path. */
+export async function completeFixturePublication(queue: AuthQueue, id: string): Promise<void> {
+  const request = queue.getRequest(id)!;
+  const output = request.type === 'merge'
+    ? (await import('./auth-delivery-fixtures.js')).publishTestCandidate(request.cwd!, request).output
+    : 'ok';
+  const release = pausedFixtureExecutions.get(queue)?.get(id);
+  if (!release) throw new Error('Fixture execution was not paused.');
+  release(output);
+  (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = originalFixtureExecutors.get(queue)!;
+  await waitForStatus(queue, id, 'completed');
 }

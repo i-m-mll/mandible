@@ -8,14 +8,14 @@ export type ProviderAdapterProfile = {
 
 export const CLAUDE_SDK_MANAGED_PROFILE: ProviderAdapterProfile = Object.freeze({
   provider: "claude_code",
-  adapter_id: "claude-stream-json-v1",
+  adapter_id: "claude-agent-sdk-v1",
   capabilities: Object.freeze({
     mode: "sdk-managed",
     resume_provider_session: true,
-    resume_message_anchor: false,
+    resume_message_anchor: true,
     send: true,
-    steer: true,
-    queue: false,
+    steer: false,
+    queue: true,
     stop: true,
     remove: false,
     structured_deltas: true,
@@ -24,32 +24,6 @@ export const CLAUDE_SDK_MANAGED_PROFILE: ProviderAdapterProfile = Object.freeze(
     terminal_attach: false,
     logs: false,
     initial_message_acceptance: "provider-protocol",
-  }),
-});
-
-/**
- * Native-background Claude is an attachment profile, not an SDK controller.
- * The spawn authority may select it explicitly, but must never project SDK
- * streaming, steering, or permission callbacks for this mode.
- */
-export const CLAUDE_NATIVE_BACKGROUND_PROFILE: ProviderAdapterProfile = Object.freeze({
-  provider: "claude_code",
-  adapter_id: "claude-native-background-v1",
-  capabilities: Object.freeze({
-    mode: "native-background",
-    resume_provider_session: false,
-    resume_message_anchor: false,
-    send: false,
-    steer: false,
-    queue: false,
-    stop: true,
-    remove: true,
-    structured_deltas: false,
-    lifecycle_callbacks: true,
-    permission_callbacks: false,
-    terminal_attach: true,
-    logs: true,
-    initial_message_acceptance: "unavailable",
   }),
 });
 
@@ -83,7 +57,6 @@ export function providerAdapterProfile(
   mode: ProviderAdapterMode = defaultProviderMode(provider),
 ): ProviderAdapterProfile | null {
   if (provider === "claude_code" && mode === "sdk-managed") return CLAUDE_SDK_MANAGED_PROFILE;
-  if (provider === "claude_code" && mode === "native-background") return CLAUDE_NATIVE_BACKGROUND_PROFILE;
   if (provider === "codex" && mode === "app-server-managed") return CODEX_APP_SERVER_PROFILE;
   return null;
 }

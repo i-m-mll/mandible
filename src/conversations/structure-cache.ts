@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../sqlite.js";
 
 import type { Db } from "../db.js";
 import type { BlockType, Role } from "../parsers/types.js";
@@ -163,14 +163,14 @@ function toolKey(toolId: string): Buffer {
  */
 export class ConversationStructureCache {
   readonly cachePath: string;
-  private readonly cache: Database.Database;
+  private readonly cache: SqliteDatabase;
 
   constructor(mainDb?: Db, options: ConversationStructureCacheOptions = {}) {
     this.cachePath = options.cachePath ?? defaultConversationStructureCachePath(mainDb);
     if (this.cachePath !== ":memory:") {
       fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
     }
-    this.cache = new Database(this.cachePath);
+    this.cache = new SqliteDatabase(this.cachePath);
     this.cache.pragma("journal_mode = WAL");
     this.cache.pragma("synchronous = NORMAL");
     this.cache.pragma("foreign_keys = ON");

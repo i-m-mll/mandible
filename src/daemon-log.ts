@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { SqliteStatement } from "./sqlite.js";
 import type { Db } from "./db.js";
 import type { Logger, LogLevel } from "./types.js";
 import { hasCurrentOperationalLogVerification } from "./operational-log-verification.js";
@@ -46,7 +46,7 @@ type LogInsertParams = [
   string | null,
 ];
 
-type InsertStatement = Database.Statement<LogInsertParams>;
+type InsertStatement = SqliteStatement<LogInsertParams>;
 
 export interface StderrRotationConfig {
   filePath?: string;
@@ -155,7 +155,7 @@ class DaemonLogger {
       filePath: daemonStderrLogPath(),
       ...readRotationSettings(config.settingsDb ?? db),
     };
-    rotateStderrLogSegments(this.stderrRotation);
+    this.rotateOwnedLogs();
     this.startTimers();
   }
 
@@ -219,10 +219,24 @@ class DaemonLogger {
       this.flushTimer.unref();
     }
     this.rotationTimer = setInterval(() => {
-      rotateStderrLogSegments(this.stderrRotation);
+      this.rotateOwnedLogs();
     }, this.rotationCheckMs);
     if (typeof this.rotationTimer === "object" && "unref" in this.rotationTimer) {
       this.rotationTimer.unref();
+    }
+  }
+
+  private rotateOwnedLogs(): void {
+    if (process.env.MANDIBLE_INSTANCE_ROLE === "preview") {
+      const root = process.env.MANDIBLE_PREVIEW_ROOT;
+      if (!root || path.dirname(path.resolve(this.stderrRotation.filePath)) !== path.resolve(root)) throw new Error("Preview stderr must belong to its exact preview root");
+    }
+    rotateStderrLogSegments(this.stderrRotation);
+    const stdout = process.env.MANDIBLE_STDOUT_LOG_PATH?.trim();
+    if (stdout && process.env.MANDIBLE_INSTANCE_ROLE === "preview") {
+      const root = process.env.MANDIBLE_PREVIEW_ROOT;
+      if (!root || path.dirname(path.resolve(stdout)) !== path.resolve(root)) throw new Error("Preview stdout must belong to its exact preview root");
+      rotateStderrLogSegments({ ...this.stderrRotation, filePath: path.resolve(stdout) });
     }
   }
 
@@ -313,9 +327,19 @@ export function rotateStderrLogSegments(config: StderrRotationConfig = {}): void
 
   let stat: fs.Stats;
   try {
-    stat = fs.statSync(filePath);
-  } catch {
-    return;
+    stat = fs.lstatSync(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Log rotation requires an owned regular file: ${filePath}`);
+  for (let index = 1; index <= keepSegments; index++) {
+    const segment = `${filePath}.${index}`;
+    try {
+      if (fs.lstatSync(segment).isSymbolicLink()) throw new Error(`Log segment is a symlink: ${segment}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
   if (stat.size < maxBytes) {
     return;
@@ -411,7 +435,7 @@ export function startDaemonLogRetention(
   db: Db,
   logger: Logger,
   options: DaemonLogRetentionSchedulerOptions = {},
-): { stop: () => void } {
+): { stop: () => Promise<void> } {
   const initialDelayMs = parseBoundedInteger(
     options.initialDelayMs,
     DEFAULT_RETENTION_INITIAL_DELAY_MS,
@@ -431,6 +455,7 @@ export function startDaemonLogRetention(
     7 * 24 * 60 * 60 * 1_000,
   );
   let stopped = false;
+  let inFlight: Promise<void> | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const schedule = (delayMs: number): void => {
@@ -438,7 +463,7 @@ export function startDaemonLogRetention(
       return;
     }
     timer = setTimeout(() => {
-      void run();
+      inFlight = run().finally(() => { inFlight = null; });
     }, delayMs);
     if (typeof timer === "object" && "unref" in timer) {
       timer.unref();
@@ -470,12 +495,13 @@ export function startDaemonLogRetention(
 
   schedule(initialDelayMs);
   return {
-    stop: () => {
+    stop: async () => {
       stopped = true;
       if (timer) {
         clearTimeout(timer);
         timer = null;
       }
+      await inFlight;
     },
   };
 }
@@ -540,9 +566,8 @@ function unverifiedLegacyRetentionProtection(db: Db): string {
     return verified
       ? ""
       : "AND id NOT IN (SELECT id FROM legacy_ledger.daemon_log)";
-  } catch {
-    // If the split schema is absent, retain the established standalone-table behavior.
-    return "";
+  } catch (error) {
+    throw new Error("Operational log legacy verification failed; retention is blocked", { cause: error });
   }
 }
 

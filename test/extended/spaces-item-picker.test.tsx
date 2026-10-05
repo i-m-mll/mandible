@@ -1,3 +1,6 @@
+import { invalidateApiGetCache } from '../../ui/src/api';
+import { queryClient } from '../../ui/src/query/client';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 // SpaceItemPicker tests (umbrella de56ffa, child e670176).
 //
 // Covers the search-and-add picker that adds issues/artifacts to the CURRENT
@@ -6,7 +9,7 @@
 // that materializes a placed canvas occurrence, and graceful already-present
 // handling.
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 import {
@@ -54,7 +57,12 @@ vi.mock('@xyflow/react', async () => {
   return { ReactFlow, Background, Controls, Handle, Position, MarkerType };
 });
 
+beforeEach(async () => {
+  invalidateApiGetCache(); queryClient.clear(); await establishTestClientAccess(); });
+
 afterEach(() => {
+  invalidateApiGetCache();
+  queryClient.clear();
   cleanup();
   vi.unstubAllGlobals();
 });

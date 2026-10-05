@@ -1,3 +1,4 @@
+import { DOMAIN_EVENTS } from "../contracts.js";
 import { exec } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -218,16 +219,16 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       exists: true,
       source: "stderr_file",
     });
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/system/logs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // POST /api/admin/rebuilding — broadcast a mandible:rebuilding SSE event to all
   // connected clients, then return 200. Called by the post-merge hook immediately
   // before initiating a daemon restart so the UI can show a full-page splash.
   // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
   server.post("/api/admin/rebuilding", (_req, res) => {
-    broadcast("mandible:rebuilding", {});
+    broadcast(DOMAIN_EVENTS.MANDIBLE_REBUILDING, {});
     sendJson(res, 200, { ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/admin/rebuilding", effects: ["auth:protected","maintenance:shared"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
 
   server.post("/api/system/open-path", globalCapabilityRoute("open_path", (req, res) => {
     const body = readBody<{ path?: string }>(req);
@@ -276,7 +277,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       }
       sendJson(res, 200, { ok: true });
     });
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "post:/api/system/open-path", effects: ["process:external"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
 }
 
 function queryDaemonLog(db: Db, filters: LogFilters): {

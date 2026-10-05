@@ -1,19 +1,20 @@
-import Database from "better-sqlite3";
+import { approvePausedFixtureRequest, completeFixturePublication, seedHistoricalAuthCompletion, createAuthCheckRepo, commitOnBranch, git, registerWorkRepo } from "./helpers/auth-queue-fixtures.js";
+
 import fs from "node:fs";
-import os from "node:os";
+
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import { normalizeAuthActionInput } from "../src/auth-actions.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { CURRENT_SCHEMA_VERSION, migrate, type Db } from "../src/db.js";
+import { CURRENT_SCHEMA_VERSION, type Db } from "../src/db.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
-import { addBinding } from "../src/users/store.js";
+import { addBinding, addCredential, getOperator } from "../src/users/store.js";
 import {
   SYSTEM_ACTOR,
   createLedgerIssue as createSharedLedgerIssue,
@@ -48,7 +49,9 @@ function tableColumns(db: Db, table: string): string[] {
 }
 
 function createLedgerIssue(db: Db, alias = "act123") {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-actions-repo-"));
+  const repoRoot = createAuthCheckRepo();
+  registerWorkRepo(db, repoRoot);
+  for (const branch of ["exec", "fail", "stale", "legacy"]) commitOnBranch(repoRoot, `feature/${branch}`, { [`${branch}.txt`]: `${branch}\n` });
   tempDirs.push(repoRoot);
   const project = createLedgerProject(db, repoRoot, { defaultBranch: "main", remoteUrl: "" });
   const issue = createSharedLedgerIssue(db, {
@@ -61,6 +64,12 @@ function createLedgerIssue(db: Db, alias = "act123") {
     alias,
   });
   return { repoRoot, issue };
+}
+
+function submitActionMerge(queue: AuthQueue, payload: Parameters<AuthQueue['submit']>[0]) {
+  const head = payload.command.match(/auth merge ([^ ]+)/)![1];
+  return queue.submit({ ...payload, execution_mode: 'daemon', base_branch: 'main', head_branch: head,
+    merge_head_sha: git(payload.cwd!, ['rev-parse', head]) });
 }
 
 describe("auth request action schema", () => {
@@ -125,13 +134,13 @@ describe("auth request action schema", () => {
 });
 
 describe("auth request action execution", () => {
-  it("applies staged actions once in ordinal order when a merge succeeds", () => {
+  it("applies staged actions once in ordinal order when a merge succeeds", async () => {
     const db = createMigratedDb();
     try {
       const { repoRoot, issue } = createLedgerIssue(db, "exec123");
       let now = 10_000;
       const queue = new AuthQueue({ db, now: () => now });
-      const request = queue.submit({
+      const request = submitActionMerge(queue, {
         type: "merge",
         command: "mandible auth merge feature/exec --into main",
         title: "Execute staged actions",
@@ -150,15 +159,9 @@ describe("auth request action execution", () => {
       // Issue 08a5f04 (review F2) — canonical-command verification needs the
       // structured branches; the fixture cwd is not a git repo, so they are
       // recorded directly instead of via submit-time preflight.
-      db.prepare("UPDATE auth_requests SET base_branch = 'main', head_branch = ? WHERE id = ?")
-        .run("feature/exec", request.id);
-      queue.approve(request.id);
+      await approvePausedFixtureRequest(queue, request.id);
       now = 11_000;
-      queue.setResult(
-        request.id,
-        0,
-        'MANDIBLE_MERGE_RESULT {"merge_sha":"abc123def456","declared_issues":["exec123"],"auto_close_issues":[]}',
-      );
+      await completeFixturePublication(queue, request.id);
 
       const finalized = queue.getRequest(request.id)!;
       expect(db.prepare(
@@ -181,13 +184,13 @@ describe("auth request action execution", () => {
       expect(JSON.parse(evidence.details_json)).toMatchObject({
         authorizer_user_id: finalized.approved_by_user_id,
         executor_user_id: systemAction().user_id,
-        verified: false,
-        authorization_evidence_method: "hardware_presence",
+        verified: true,
+        authorization_evidence_method: "credential_signature",
       });
       const authorizationEvidenceId = JSON.parse(evidence.details_json)
         .authorization_evidence_id as string;
       expect(db.prepare("SELECT evidence_method FROM attribution_evidence WHERE id = ?")
-        .get(authorizationEvidenceId)).toEqual({ evidence_method: "hardware_presence" });
+        .get(authorizationEvidenceId)).toEqual({ evidence_method: "credential_signature" });
 
       expect(queue.listActions(request.id).map((action) => action.state)).toEqual([
         "applied",
@@ -233,12 +236,12 @@ describe("auth request action execution", () => {
     }
   });
 
-  it("records failed actions and continues applying remaining staged actions", () => {
+  it("records failed actions and continues applying remaining staged actions", async () => {
     const db = createMigratedDb();
     try {
       const { repoRoot, issue } = createLedgerIssue(db, "fail123");
       const queue = new AuthQueue({ db, now: () => 20_000 });
-      const request = queue.submit({
+      const request = submitActionMerge(queue, {
         type: "merge",
         command: "mandible auth merge feature/fail --into main",
         title: "Failure isolation",
@@ -252,15 +255,17 @@ describe("auth request action execution", () => {
         ],
       });
       const actions = queue.listActions(request.id);
-      db.prepare("UPDATE auth_request_actions SET state = 'vetoed' WHERE id = ?").run(actions[2].id);
+      const operator = getOperator(db)!;
+      const credential = addCredential(db, operator.id, { type: "api_token", fingerprint: `action-fixture-${crypto.randomUUID()}` });
+      queue.setActionVeto(request.id, actions[2].id, true, {
+        user_id: operator.id, evidence_method: 'api_token', credential_id: credential.id, authority_path: 'operator_recovery',
+      }, 1, 0);
 
       // Issue 08a5f04 (review F2) — canonical-command verification needs the
       // structured branches; the fixture cwd is not a git repo, so they are
       // recorded directly instead of via submit-time preflight.
-      db.prepare("UPDATE auth_requests SET base_branch = 'main', head_branch = ? WHERE id = ?")
-        .run("feature/fail", request.id);
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "Merge made by recursive.\n");
+      await approvePausedFixtureRequest(queue, request.id);
+      await completeFixturePublication(queue, request.id);
 
       const after = queue.listActions(request.id);
       expect(after.map((action) => action.state)).toEqual(["failed", "applied", "vetoed"]);
@@ -277,7 +282,7 @@ describe("auth request action execution", () => {
     }
   });
 
-  it("honors issue_close on_stale skip while default stale actions apply with annotation", () => {
+  it("honors issue_close on_stale skip while default stale actions apply with annotation", async () => {
     const db = createMigratedDb();
     try {
       const first = createLedgerIssue(db, "stale1");
@@ -291,7 +296,7 @@ describe("auth request action execution", () => {
         aliases: [{ alias_kind: "git_bug_short", alias: "stale2" }],
       });
       const queue = new AuthQueue({ db, now: () => 30_000 });
-      const request = queue.submit({
+      const request = submitActionMerge(queue, {
         type: "merge",
         command: "mandible auth merge feature/stale --into main",
         title: "Stale action handling",
@@ -309,10 +314,8 @@ describe("auth request action execution", () => {
       // Issue 08a5f04 (review F2) — canonical-command verification needs the
       // structured branches; the fixture cwd is not a git repo, so they are
       // recorded directly instead of via submit-time preflight.
-      db.prepare("UPDATE auth_requests SET base_branch = 'main', head_branch = ? WHERE id = ?")
-        .run("feature/stale", request.id);
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "Merge made by recursive.\n");
+      await approvePausedFixtureRequest(queue, request.id);
+      await completeFixturePublication(queue, request.id);
 
       const actions = queue.listActions(request.id);
       expect(actions[0]).toMatchObject({ state: "skipped_stale", applied_at: null });
@@ -326,12 +329,12 @@ describe("auth request action execution", () => {
     }
   });
 
-  it("preserves legacy issue_closures through the unified close executor", () => {
+  it("preserves legacy issue_closures through the unified close executor", async () => {
     const db = createMigratedDb();
     try {
       const { repoRoot, issue } = createLedgerIssue(db, "legacy1");
       const queue = new AuthQueue({ db, now: () => 40_000 });
-      const request = queue.submit({
+      const request = submitActionMerge(queue, {
         type: "merge",
         command: "mandible auth merge feature/legacy --into main",
         title: "Legacy close",
@@ -344,10 +347,8 @@ describe("auth request action execution", () => {
       // Issue 08a5f04 (review F2) — canonical-command verification needs the
       // structured branches; the fixture cwd is not a git repo, so they are
       // recorded directly instead of via submit-time preflight.
-      db.prepare("UPDATE auth_requests SET base_branch = 'main', head_branch = ? WHERE id = ?")
-        .run("feature/legacy", request.id);
-      queue.approve(request.id);
-      queue.setResult(request.id, 0, "Merge made by recursive.\n");
+      await approvePausedFixtureRequest(queue, request.id);
+      await completeFixturePublication(queue, request.id);
 
       expect(queue.listActions(request.id)).toEqual([]);
       expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
@@ -364,7 +365,7 @@ describe("auth request action execution", () => {
     try {
       const { repoRoot, issue } = createLedgerIssue(db, "link123");
       const queue = new AuthQueue({ db, now: () => 50_000 });
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: "echo link",
         title: "Link staged close",
         cwd: repoRoot,
@@ -400,7 +401,7 @@ describe("auth request action queue persistence", () => {
       let now = 1000;
       const queue = new AuthQueue({ db, now: () => now });
 
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: "echo staged",
         title: "Staged actions",
         cwd: repoRoot,
@@ -450,12 +451,12 @@ describe("auth request action queue persistence", () => {
     const db = createMigratedDb();
     try {
       const queue = new AuthQueue({ db });
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: "echo done",
         title: "Done",
         actions: [{ kind: "issue_close", target_issue_ref: "abc123", payload: {} }],
       });
-      queue.setResult(request.id, 0, "ok");
+      seedHistoricalAuthCompletion(queue, request.id, "ok");
 
       expect(() => queue.addAction(request.id, {
         kind: "label_add",
@@ -647,7 +648,7 @@ describe("auth request action routes", () => {
       const router = new Router();
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
-      const request = queue.submit({
+      const request = queue.submit({ type: "commit",
         command: "echo route",
         title: "Route veto",
         actions: [{ kind: "comment_add", target_issue_ref: "abc123", payload: { body: "One" } }],
@@ -670,7 +671,7 @@ describe("auth request action routes", () => {
       expect(restore.status).toBe(200);
       expect((restore.body as { action: { state: string } }).action.state).toBe("staged");
 
-      queue.setResult(request.id, 0, "ok");
+      seedHistoricalAuthCompletion(queue, request.id, "ok");
       const denied = await router.invoke({
         method: "POST",
         url: `/api/auth/request/${request.id}/actions/${action.id}/veto`,

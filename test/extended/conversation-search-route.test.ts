@@ -2,13 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ClientAuthenticator } from "../../src/client-auth/authenticator.js";
 import { getConversationSearchCache } from "../../src/conversations/search-cache.js";
 import { ConversationSourceStore } from "../../src/conversations/source-store.js";
+import { sparseConversationBlockId } from "../../src/conversations/structure-cache.js";
+import { configureIngestionWorker, ingestBatchForWorker, stopIngestionGracefully } from "../../src/ingestion.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
 import { resetCredentialLeakScanCache } from "../../src/credential-leak-scan.js";
 import { migrate, openDb, setDb, type Db } from "../../src/db.js";
@@ -30,7 +32,7 @@ function upsertCodexThreadMetadata(input: {
 }): void {
   const codexRoot = input.sourcePath.slice(0, input.sourcePath.indexOf(`${path.sep}sessions${path.sep}`));
   const sourceMtimeMs = Math.ceil(fs.statSync(input.sourcePath).mtimeMs);
-  const state = new Database(path.join(codexRoot, "state_5.sqlite"));
+  const state = new SqliteDatabase(path.join(codexRoot, "state_5.sqlite"));
   try {
     state.exec(`
       CREATE TABLE IF NOT EXISTS threads (
@@ -121,7 +123,7 @@ async function insertSourceBackedConversation(
       parsed.conversation.source_hash,
       parsed.conversation.source_mtime,
       parsed.conversation.title,
-      `summary ${unverifiedCanary}`,
+      parsed.conversation.summary,
       parsed.conversation.started_at,
       parsed.conversation.session_id,
       parsed.blocks.length,
@@ -160,6 +162,9 @@ async function insertSourceBackedConversation(
       file_path, byte_offset, line_count, tail_hash, partial_line, updated_at
     ) VALUES (?, ?, ?, ?, '', ?)
   `).run(sourcePath, bytes.length, rows.length, createHash("sha256").update(tail).digest("hex"), Date.now());
+  configureIngestionWorker(() => {}, () => {});
+  await ingestBatchForWorker([sourcePath], true, true, true);
+  await stopIngestionGracefully();
   return parsed;
 }
 
@@ -204,9 +209,7 @@ describe("conversation full-text API parity", () => {
       { type: "session_meta", timestamp: "2026-08-17T00:00:00Z", payload: { id: "source-route", cwd: "/tmp/project" } },
       { type: "response_item", timestamp: "2026-08-17T00:00:01Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Durable Structural Needle" }] } },
     ]);
-    const structural = db.prepare(
-      "SELECT id FROM conversation_structural_blocks WHERE conversation_id = ? AND status = 'current'",
-    ).get("source-route") as { id: string };
+    const structural = { id: sparseConversationBlockId("source-route", 0) };
 
     const router = new Router();
     registerConversationRoutes(router);

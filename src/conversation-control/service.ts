@@ -1,4 +1,7 @@
+import { providerRuntimeSettingsError } from "./runtime-options.js";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import type { Db } from "../db.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
 import {
@@ -99,10 +102,22 @@ export class ConversationControlService {
       }
       return result;
     });
+    const unsubscribeRuntime = adapter.subscribeRuntimeEvents?.((event) => {
+      const owned = this.ownedAdapter(event.conversation_id, event.generation);
+      if (!owned.ok || owned.value !== adapter) return;
+      const snapshot = this.getSnapshot(event.conversation_id);
+      if (!snapshot.ok || snapshot.value.provider_session_id !== event.provider_session_id) return;
+      this.db.prepare(`INSERT INTO conversation_provider_usage (conversation_id, generation, provider_session_id, provider_record_id, snapshot_json, observed_at)
+        VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(conversation_id, generation) DO UPDATE SET provider_record_id = excluded.provider_record_id,
+        snapshot_json = excluded.snapshot_json, observed_at = excluded.observed_at WHERE excluded.observed_at >= conversation_provider_usage.observed_at`)
+        .run(event.conversation_id, event.generation, event.provider_session_id, event.provider_record_id, JSON.stringify(event.snapshot), event.observed_at);
+      this.notify(event.conversation_id);
+    });
     const unsubscribeProviderEvents = adapter.subscribeProviderEvents((event) => {
       if (this.projectProviderEvent(event)) this.onProviderEvent?.(event);
     });
     return () => {
+      unsubscribeRuntime?.();
       unsubscribeProviderEvents();
       unsubscribe();
       unregister();
@@ -114,6 +129,83 @@ export class ConversationControlService {
     if (!boundary.ok) return boundary;
     const adapter = this.adapters.forProvider(boundary.value.source);
     return this.store.snapshot(conversationId, adapter?.capabilities ?? null, adapter?.id ?? null);
+  }
+
+  private ownedAdapter(conversationId: string, generation: number): Result<ConversationControllerAdapter, ConversationControlError> {
+    const snapshot = this.getSnapshot(conversationId);
+    if (!snapshot.ok) return snapshot;
+    if (snapshot.value.ownership.kind !== "mandible" || snapshot.value.ownership.generation !== generation) {
+      return { ok: false, error: { kind: "stale-generation", expected_generation: generation, actual_generation: snapshot.value.ownership.generation } };
+    }
+    const adapter = this.adapters.byAdapterId(snapshot.value.ownership.adapter_id);
+    return adapter ? { ok: true, value: adapter } : { ok: false, error: { kind: "adapter-unavailable", adapter_id: snapshot.value.ownership.adapter_id, provider: snapshot.value.provider } };
+  }
+
+  async interrupt(conversationId: string, generation: number): Promise<Result<void, ConversationControlError>> {
+    const owned = this.ownedAdapter(conversationId, generation);
+    if (!owned.ok) return owned;
+    if (!owned.value.interrupt) return { ok: false, error: { kind: "invalid-request", field: "interrupt", message: "Provider does not support interrupt" } };
+    return trapAdapterCall(owned.value.id, () => owned.value.interrupt!({ conversation_id: conversationId, generation }));
+  }
+
+  permissions(conversationId: string): Result<import("./types.js").ManagedPermissionRequest[], ConversationControlError> {
+    const snapshot = this.getSnapshot(conversationId);
+    if (!snapshot.ok) return snapshot;
+    if (snapshot.value.ownership.kind !== "mandible") return { ok: true, value: [] };
+    const owned = this.ownedAdapter(conversationId, snapshot.value.ownership.generation);
+    if (!owned.ok) return owned;
+    return { ok: true, value: owned.value.permissions?.(conversationId) ?? [] };
+  }
+
+  async decidePermission(input: { conversation_id: string; generation: number; request_id: string; decision: "allow" | "deny" | "allow_always" }): Promise<Result<void, ConversationControlError>> {
+    const owned = this.ownedAdapter(input.conversation_id, input.generation);
+    if (!owned.ok) return owned;
+    if (!owned.value.decidePermission) return { ok: false, error: { kind: "invalid-request", field: "permission", message: "Provider does not support permission decisions" } };
+    return trapAdapterCall(owned.value.id, () => owned.value.decidePermission!(input));
+  }
+
+  private retainedRuntimeOptions(conversationId: string): import("./types.js").ConversationRuntimeOptions {
+    const conversation = this.db.prepare("SELECT session_id, model FROM conversations WHERE id = ?").get(conversationId) as { session_id: string; model: string | null } | undefined;
+    const legacy = conversation ? this.db.prepare("SELECT run_options_json, allowed_tools FROM console_sessions WHERE provider_session_id = ? ORDER BY updated_at DESC LIMIT 1").get(conversation.session_id) as { run_options_json: string; allowed_tools: string | null } | undefined : undefined;
+    const result: import("./types.js").ConversationRuntimeOptions = conversation?.model ? { model: conversation.model } : {};
+    if (legacy) {
+      const old = JSON.parse(legacy.run_options_json) as Record<string, unknown>;
+      const names = { model: "model", thinking_effort: "effort", permission_mode: "permission_mode", system_prompt: "system_prompt", max_turns: "max_turns", max_cost_usd: "max_cost_usd", setting_sources: "setting_sources" } as const;
+      for (const [oldName, name] of Object.entries(names)) if (old[oldName] !== null && old[oldName] !== undefined) Object.assign(result, { [name]: old[oldName] });
+      if (legacy.allowed_tools) result.allowed_tools = JSON.parse(legacy.allowed_tools);
+    }
+    const rows = this.db.prepare("SELECT runtime_options_json FROM conversation_control_outbox WHERE conversation_id = ? AND state = 'delivered' ORDER BY created_at, id").all(conversationId) as { runtime_options_json: string }[];
+    for (const row of rows) Object.assign(result, JSON.parse(row.runtime_options_json));
+    const saved = this.db.prepare("SELECT options_json FROM conversation_runtime_settings WHERE conversation_id = ?").get(conversationId) as { options_json: string } | undefined;
+    return saved ? JSON.parse(saved.options_json) : result;
+  }
+
+  getRuntimeSettings(conversationId: string) {
+    const snapshot = this.getSnapshot(conversationId);
+    if (!snapshot.ok) return snapshot;
+    const saved = this.db.prepare("SELECT revision FROM conversation_runtime_settings WHERE conversation_id = ?").get(conversationId) as { revision: number } | undefined;
+    const usage = this.db.prepare("SELECT generation, provider_session_id, snapshot_json, observed_at FROM conversation_provider_usage WHERE conversation_id = ? ORDER BY generation").all(conversationId) as { generation: number; provider_session_id: string; snapshot_json: string; observed_at: number }[];
+    return { ok: true as const, value: { revision: saved?.revision ?? 0, runtime_options: this.retainedRuntimeOptions(conversationId), usage: usage.map(({ snapshot_json, ...row }) => ({ ...row, snapshot: JSON.parse(snapshot_json) })) } };
+  }
+
+  saveRuntimeSettings(conversationId: string, expectedRevision: number, settings: import("./types.js").ConversationRuntimeOptions): Result<{ revision: number; runtime_options: import("./types.js").ConversationRuntimeOptions }, ConversationControlError> {
+    const snapshot = this.getSnapshot(conversationId);
+    if (!snapshot.ok) return snapshot;
+    const invalid = providerRuntimeSettingsError(snapshot.value.provider, settings);
+    if (invalid) return { ok: false, error: { kind: "invalid-request", field: "runtime_options", message: invalid } };
+    const current = this.getRuntimeSettings(conversationId);
+    if (!current.ok) return current;
+    if (current.value.revision !== expectedRevision) return { ok: false, error: { kind: "capability-drift", expected_revision: expectedRevision, actual_revision: current.value.revision } };
+    return this.db.transaction(() => {
+      const revision = expectedRevision + 1;
+      const changed = this.db.prepare(`INSERT INTO conversation_runtime_settings (conversation_id, revision, options_json, updated_at)
+        VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET revision = excluded.revision, options_json = excluded.options_json,
+        updated_at = excluded.updated_at WHERE conversation_runtime_settings.revision = ?`)
+        .run(conversationId, revision, JSON.stringify(settings), Date.now(), expectedRevision);
+      if (changed.changes !== 1) return { ok: false as const, error: { kind: "capability-drift" as const, expected_revision: expectedRevision, actual_revision: (this.db.prepare("SELECT revision FROM conversation_runtime_settings WHERE conversation_id = ?").get(conversationId) as { revision: number }).revision } };
+      this.notify(conversationId);
+      return { ok: true as const, value: { revision, runtime_options: settings } };
+    }).immediate();
   }
 
   async ownsController(conversationId: string, generation: number): Promise<boolean> {
@@ -133,6 +225,40 @@ export class ConversationControlService {
       && probed.value.kind === "owned"
       && probed.value.provider_session_id === ownership.provider_session_id
       && probed.value.controller_instance_id === ownership.controller_instance_id;
+  }
+
+  async resume(input: { conversation_id: string; expected_revision: number; expected_generation: number; cwd: string; signal?: AbortSignal }): Promise<Result<ConversationControlSnapshot, ConversationControlError>> {
+    const snapshot = this.getSnapshot(input.conversation_id);
+    if (!snapshot.ok) return snapshot;
+    const adapter = this.adapters.forProvider(snapshot.value.provider);
+    if (!adapter) return { ok: false, error: { kind: "adapter-unavailable", provider: snapshot.value.provider, adapter_id: null } };
+    const claimed = this.store.claimResume(input.conversation_id, input.expected_revision, input.expected_generation, adapter.capabilities, adapter.id);
+    if (!claimed.ok) return claimed;
+    this.notify(input.conversation_id);
+    const acquired = await trapAdapterCall(adapter.id, () => adapter.acquire({ kind: "resume-provider-session", conversation_id: input.conversation_id,
+      ...claimed.value, cwd: input.cwd, signal: input.signal, runtime_options: this.retainedRuntimeOptions(input.conversation_id) }));
+    if (!acquired.ok) {
+      const failed = this.store.publishLifecycle(input.conversation_id, claimed.value.generation, { kind: "controller-failed", at: Date.now(), error: acquired.error });
+      if (!failed.ok) return failed;
+      const released = this.store.release(input.conversation_id, claimed.value.generation);
+      if (!released.ok) return released;
+      this.notify(input.conversation_id);
+      return acquired;
+    }
+    if (input.signal?.aborted || acquired.value.provider_session_id !== claimed.value.provider_session_id || acquired.value.controller_instance_id !== claimed.value.controller_instance_id) {
+      const stopped = await trapAdapterCall(adapter.id, () => adapter.stop({ conversation_id: input.conversation_id, ...claimed.value }));
+      if (!stopped.ok) return stopped;
+      const released = this.store.release(input.conversation_id, claimed.value.generation);
+      if (!released.ok) return released;
+      return { ok: false, error: { kind: "adapter-contract-violation", adapter_id: adapter.id, message: "Resume did not establish the requested native identity" } };
+    }
+    const published = this.store.publishAcquired(input.conversation_id, claimed.value.generation, acquired.value.controller_instance_id, acquired.value.provider_session_id);
+    if (!published.ok) {
+      const stopped = await trapAdapterCall(adapter.id, () => adapter.stop({ conversation_id: input.conversation_id, ...claimed.value }));
+      return stopped.ok ? published : stopped;
+    }
+    this.notify(input.conversation_id);
+    return this.getSnapshot(input.conversation_id);
   }
 
   async acquireNew(
@@ -156,7 +282,8 @@ export class ConversationControlService {
     const acquired = await trapAdapterCall(adapter.id, () => adapter.acquire(acquisition));
     if (!acquired.ok) return acquired;
     if (acquired.value.controller_instance_id !== controllerInstanceId
-        || !acquired.value.provider_session_id.trim()) {
+        || acquired.value.provider_session_id === null && adapter.provider !== "claude_code"
+        || acquired.value.provider_session_id !== null && !acquired.value.provider_session_id.trim()) {
       await trapAdapterCall(adapter.id, () => adapter.stop({
         conversation_id: request.conversation_id,
         provider_session_id: acquired.value.provider_session_id,
@@ -226,8 +353,17 @@ export class ConversationControlService {
     if (!adapter) {
       return { ok: false, error: { kind: "adapter-unavailable", adapter_id: null, provider: boundary.value.source } };
     }
+    if (!boundary.value.session_id) {
+      const location = this.db.prepare("SELECT cwd FROM conversations WHERE id = ?").get(request.conversation_id) as { cwd: string | null };
+      if (!location.cwd || !isAbsolute(location.cwd) || !existsSync(location.cwd)) return { ok: false, error: { kind: "invalid-request", field: "cwd", message: "Restore this conversation's exact checkout before sending" } };
+    }
+    const effectiveOptions = request.operation === "queue" || request.operation === "steer" ? {} : { ...this.retainedRuntimeOptions(request.conversation_id), ...request.runtime_options };
+    const invalidOptions = providerRuntimeSettingsError(adapter.provider, effectiveOptions);
+    if (invalidOptions) return { ok: false, error: { kind: "invalid-request", field: "runtime_options", message: invalidOptions } };
     const prepared = this.store.prepareSubmission(request, adapter.capabilities, adapter.id);
     if (!prepared.ok) return prepared;
+    this.db.prepare("INSERT OR IGNORE INTO conversation_delivery_settings (delivery_id, options_json) VALUES (?, ?)")
+      .run(prepared.value.delivery_id, JSON.stringify(effectiveOptions));
     if (prepared.value.already_delivered) {
       return { ok: true, value: {
         kind: "accepted",
@@ -239,28 +375,35 @@ export class ConversationControlService {
     }
     this.notify(request.conversation_id);
     if (prepared.value.acquisition_required) {
-      const acquisition: ControllerAcquisitionRequest = request.operation === "resume-message-anchor"
+      const location = this.db.prepare("SELECT cwd FROM conversations WHERE id = ?").get(request.conversation_id) as { cwd: string | null };
+      const frozen = this.db.prepare("SELECT options_json FROM conversation_delivery_settings WHERE delivery_id = ?").get(prepared.value.delivery_id) as { options_json: string };
+      const settings = JSON.parse(frozen.options_json) as import("./types.js").ConversationRuntimeOptions;
+      const acquisition: ControllerAcquisitionRequest = !prepared.value.provider_session_id
+        ? { kind: "start", conversation_id: request.conversation_id, controller_instance_id: prepared.value.controller_instance_id, generation: prepared.value.snapshot.ownership.generation, cwd: location.cwd!, runtime_options: settings }
+        : request.operation === "resume-message-anchor"
         ? {
           kind: "resume-message-anchor",
           conversation_id: request.conversation_id,
           controller_instance_id: prepared.value.controller_instance_id,
-          provider_session_id: prepared.value.provider_session_id,
+          provider_session_id: prepared.value.provider_session_id!,
           generation: prepared.value.snapshot.ownership.generation,
           message_anchor: request.message_anchor!,
-          runtime_options: request.runtime_options,
+          runtime_options: settings,
+          cwd: location.cwd ?? undefined,
         }
         : {
           kind: "resume-provider-session",
           conversation_id: request.conversation_id,
           controller_instance_id: prepared.value.controller_instance_id,
-          provider_session_id: prepared.value.provider_session_id,
+          provider_session_id: prepared.value.provider_session_id!,
           generation: prepared.value.snapshot.ownership.generation,
-          runtime_options: request.runtime_options,
+          runtime_options: settings,
+          cwd: location.cwd ?? undefined,
         };
       const acquiredCall = await trapAdapterCall(adapter.id, () => adapter.acquire(acquisition));
       const acquired: typeof acquiredCall = acquiredCall.ok && (
         acquiredCall.value.controller_instance_id !== prepared.value.controller_instance_id
-        || acquiredCall.value.provider_session_id !== prepared.value.provider_session_id
+        || (prepared.value.provider_session_id !== null && acquiredCall.value.provider_session_id !== prepared.value.provider_session_id)
       )
         ? {
           ok: false,
@@ -337,7 +480,12 @@ export class ConversationControlService {
       this.store.markDeliveryUncertain(deliveryId, begun.value.generation);
       return { ok: false, error: { kind: "adapter-unavailable", adapter_id: snapshot.value.ownership.adapter_id, provider: snapshot.value.provider } };
     }
-    const delivered = await trapAdapterCall(adapter.id, () => adapter.deliver(begun.value));
+    const savedSettings = this.db.prepare("SELECT options_json FROM conversation_delivery_settings WHERE delivery_id = ?").get(deliveryId) as { options_json: string } | undefined;
+    const item = { ...begun.value, runtime_options: savedSettings ? JSON.parse(savedSettings.options_json) : begun.value.runtime_options };
+    const invalidSettings = providerRuntimeSettingsError(adapter.provider, item.runtime_options);
+    const delivered = invalidSettings
+      ? { ok: false as const, error: { kind: "invalid-request" as const, field: "runtime_options", message: invalidSettings } }
+      : await trapAdapterCall(adapter.id, () => adapter.deliver(item));
     if (!delivered.ok && delivered.error.kind === "delivery-uncertain") {
       const uncertain = this.store.markDeliveryUncertain(deliveryId, begun.value.generation);
       return uncertain.ok ? delivered : uncertain;
@@ -392,6 +540,11 @@ export class ConversationControlService {
       if (!probed.ok) {
         recordControl(claim.conversation_id, this.store.markUnknown(claim.conversation_id, claim.generation, "probe-ambiguous"));
         continue;
+      }
+      if (probed.value.kind === "unknown" && probed.value.reason === "probe-ambiguous") {
+        const unsent = this.store.recoverUnsentDraft(claim.conversation_id, claim.generation);
+        if (!unsent.ok) { record(unsent); continue; }
+        if (unsent.value) { this.notify(claim.conversation_id); continue; }
       }
       if (probed.value.kind === "unknown") {
         recordControl(claim.conversation_id, this.store.markUnknown(claim.conversation_id, claim.generation, probed.value.reason));

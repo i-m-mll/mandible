@@ -1,9 +1,12 @@
+import * as z from "zod";
+import { documentArtifactImportEffects, documentHistoryImportEffects } from "../security/document-import-effects.js";
 import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
   projectArtifactPublicValue,
-  resolveArtifactRefReadonlyFull,
-  resolveArtifactSurfaceRefReadonlyFull,
+  resolveArtifactIdentity,
+  resolvedArtifactRecord,
+  projectArtifactResolution,
 } from "../provider-artifacts.js";
 import {
   addSpaceItem,
@@ -53,22 +56,45 @@ import {
   type BlockType,
 } from "../ledger/space-blocks.js";
 import { SPACE_EVENTS, type SpaceEvent } from "../spaces/events.js";
-import {
-  exportAndTrack,
-  exportUntrackedCopy,
-  listSpaceExportsForSpace,
-  resolveCheckoutForSpace,
-  resolveDocsSettings,
-  setGlobalDocsDefault,
-  setRepoDocsOverride,
-  getSpaceExport,
-  ExportError,
-} from "../spaces/export.js";
-import { checkExportDrift, checkSpaceDrift } from "../spaces/drift.js";
+import { exportUntrackedCopy, serializeSpaceDocument, ExportError, resolveCheckoutForSpace, getProjectCheckout } from "../spaces/export.js";
+import { preparePublication, executePublication, getPublication, listPublications, importManagedDocument, importHistoryDocument, importGitDocument, type PublicationResult, publicationDestinations } from "../spaces/publication.js";
+import { documentHistoryEntry, listDocumentHistory } from "../spaces/history.js";
 import { broadcastSpaceEvent } from "../sse.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
 import { bodyRecord, sendJson } from "./http.js";
+import { requireProjectAccess, PermissionError, sendPermissionError, type ProjectRole } from "../permissions/store.js";
+import { artifactAccessProjectIds } from "../permissions/resources.js";
+import { resolveProjectRef } from "../ledger/project-registry.js";
+
+function documentProjectAccess(db: Db, req: RequestLike, project: string | null | undefined, role: ProjectRole): void {
+  if (project) requireProjectAccess(db, req, project, role);
+}
+function documentArtifactAccess(db: Db, req: RequestLike, ref: string): string {
+  const resolution = resolveArtifactIdentity(db, ref, "strict-read");
+  if (resolution.status !== "resolved") throw new HttpError(400, `Artifact reference is ${resolution.status}`);
+  const pinned = resolution.artifact_version?.id ?? resolution.artifact_blob?.id ?? resolution.logical_artifact?.id;
+  if (!pinned) throw new HttpError(400, "Artifact identity is unavailable");
+  const projects = new Set(artifactAccessProjectIds(db, pinned));
+  const version = resolution.artifact_version;
+  if (version?.custody_mode === "git" && version.source_project_id) projects.add(version.source_project_id);
+  for (const project of projects) requireProjectAccess(db, req, project, "read");
+  return pinned;
+}
+function documentCheckoutAccess(db: Db, req: RequestLike, id: string, role: ProjectRole): void {
+  const checkout = getProjectCheckout(db, id);
+  if (!checkout) throw new HttpError(404, "Destination checkout unavailable");
+  requireProjectAccess(db, req, checkout.project_id, role);
+}
+function documentHistoryAccess(db: Db, req: RequestLike, entry: Record<string, unknown>): void {
+  const provenance = JSON.parse(String(entry.provenance_json)) as { repo_id?: string };
+  if (provenance.repo_id) documentCheckoutAccess(db, req, provenance.repo_id, "read");
+  if (typeof entry.artifact_ref === "string") documentArtifactAccess(db, req, entry.artifact_ref);
+}
+function visibleDocument<T>(check: () => void, value: T): T[] {
+  try { check(); return [value]; }
+  catch (error) { if (error instanceof PermissionError) return []; throw error; }
+}
 function queryString(req: RequestLike, key: string): string | undefined {
   const value = req.query?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -81,6 +107,7 @@ class HttpError extends Error {
 }
 
 function handleError(res: ResponseLike, error: unknown): void {
+  if (error instanceof PermissionError) { sendPermissionError(res, error); return; }
   if (error instanceof HttpError) {
     sendJson(res, error.statusCode, { error: error.message });
     return;
@@ -257,13 +284,13 @@ function resolveUnifiedRef(db: Db, rawRef: string): ResolverResult {
   // repo:// refs are repo-relative artifact/file refs — defer to the artifact
   // resolver, which understands repo-relative custody refs.
   if (ref.startsWith("repo://")) {
-    const resolution = resolveArtifactSurfaceRefReadonlyFull(db, ref);
+    const resolution = resolveArtifactIdentity(db, ref, "surface");
     return {
       ref,
       kind: "repo",
-      resolved: resolution.artifact !== null,
-      entity: resolution.artifact as Record<string, unknown> | null,
-      detail: { resolution },
+      resolved: resolvedArtifactRecord(resolution) !== null,
+      entity: resolvedArtifactRecord(resolution) as Record<string, unknown> | null,
+      detail: { resolution: projectArtifactResolution(db, resolution) },
     };
   }
 
@@ -355,13 +382,13 @@ function resolveArtifactResult(
 ): ResolverResult {
   const trimmed = refValue.trim();
   const resolution = /^artifact:sha256:[0-9a-f]{64}$/i.test(trimmed)
-    ? resolveArtifactRefReadonlyFull(db, trimmed)
-    : resolveArtifactSurfaceRefReadonlyFull(db, trimmed);
-  const publicResolution = projectArtifactPublicValue(db, resolution) as typeof resolution;
+    ? resolveArtifactIdentity(db, trimmed, "strict-read")
+    : resolveArtifactIdentity(db, trimmed, "surface");
+  const publicResolution = projectArtifactPublicValue(db, projectArtifactResolution(db, resolution)) as ReturnType<typeof projectArtifactResolution>;
   return {
     ref: displayRef ?? refValue,
     kind,
-    resolved: resolution.artifact !== null,
+    resolved: resolvedArtifactRecord(resolution) !== null,
     entity: publicResolution.artifact as Record<string, unknown> | null,
     detail: { resolution: publicResolution },
   };
@@ -382,9 +409,9 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       handleError(res, error);
     }
   };
-  router.get("/api/spaces/resolve", resolveHandler, { fileRpc: "allow" });
+  router.get("/api/spaces/resolve", resolveHandler, { operation: { id: "get:/api/spaces/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  router.get("/api/refs/resolve", resolveHandler, { fileRpc: "allow" });
+  router.get("/api/refs/resolve", resolveHandler, { operation: { id: "get:/api/refs/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // --- spaces CRUD ---
   // List modes (issue 812df41):
@@ -411,7 +438,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/spaces", (req, res) => {
     try {
@@ -438,7 +465,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.get("/api/spaces/:id", (req, res) => {
     try {
@@ -458,7 +485,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id", (req, res) => {
     try {
@@ -478,7 +505,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id", (req, res) => {
     try {
@@ -490,7 +517,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- items ---
   router.post("/api/spaces/:id/items", (req, res) => {
@@ -518,7 +545,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/items", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/items/:item_id", (req, res) => {
     try {
@@ -541,7 +568,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id/items/:item_id", (req, res) => {
     try {
@@ -555,7 +582,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- occurrences ---
   router.post("/api/spaces/:id/occurrences", (req, res) => {
@@ -569,7 +596,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/occurrences", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.post("/api/spaces/:id/occurrences/batch", (req, res) => {
     try {
@@ -595,7 +622,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/occurrences/batch", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/occurrences/:occurrence_id", (req, res) => {
     try {
@@ -615,7 +642,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id/occurrences/:occurrence_id", (req, res) => {
     try {
@@ -629,7 +656,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- edges ---
   router.post("/api/spaces/:id/edges", (req, res) => {
@@ -653,7 +680,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/edges", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/edges/:edge_id", (req, res) => {
     try {
@@ -679,7 +706,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id/edges/:edge_id", (req, res) => {
     try {
@@ -693,7 +720,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- seed-from-filter ---
   router.post("/api/spaces/:id/seed", (req, res) => {
@@ -715,7 +742,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/seed", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- blocks (C11, issue d2a8e77) ---
   // The document/canvas block tree. Block identity (`id`/`parent`/`sort`/`type`/
@@ -731,7 +758,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id/blocks", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/spaces/:id/blocks", (req, res) => {
     try {
@@ -745,7 +772,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/blocks", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/blocks/:block_id", (req, res) => {
     try {
@@ -761,7 +788,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id/blocks/:block_id", (req, res) => {
     try {
@@ -775,7 +802,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // Detach/degrade: drop the item_id embed from every block in the Space that
   // embeds it (preserving item_snapshot_json as a placeholder) so the item can
@@ -793,154 +820,90 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/items/:item_id/detach-blocks", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
-  // --- export / custody (C13b, issue 8730bf9) ---
-  // The deterministic export-and-track op, untracked export-of-copy, the
-  // tracking-row read surface, and the docs-path settings surface. Writes are
-  // narrow, non-privileged (agent-key docs-branch commits — never the auth
-  // queue), so they stay within the file-transport write boundary (standing
-  // AC #1). All emit frozen `space:export:*` / `space:document:*` events.
-
-  // Read the current tracking rows + resolved export settings for a Space.
-  router.get("/api/spaces/:id/exports", (req, res) => {
-    try {
-      const db = getDb();
-      const space = loadSpaceOr404(db, req.params.id);
-      const checkout = resolveCheckoutForSpace(db, space, queryString(req, "repo_id") ?? null);
-      sendJson(res, 200, {
-        exports: listSpaceExportsForSpace(db, space.id),
-        repo_id: checkout.id,
-        settings: resolveDocsSettings(db, checkout.id, space.id),
+  router.get("/api/spaces/:id/publications", (req,res)=> {
+    try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
+      documentProjectAccess(db,req,space.project_id,"read");
+      sendJson(res,200,{
+        publications:listPublications(db,space.id).flatMap(value=>visibleDocument(()=>{
+          documentCheckoutAccess(db,req,value.repo_id,"read"); documentArtifactAccess(db,req,value.snapshot_ref);
+          if(value.version_ref) documentArtifactAccess(db,req,value.version_ref);
+        },value)),
+        history:listDocumentHistory(db,space.id).flatMap(value=>visibleDocument(()=>documentHistoryAccess(db,req,value),value)),
+        destinations:publicationDestinations(db,space.id).flatMap(value=>visibleDocument(()=>requireProjectAccess(db,req,value.project_id,"write"),value)),
       });
-    } catch (error) {
-      handleExportError(res, error);
-    }
-  }, { fileRpc: "allow" });
-
-  // Export-and-track: the explicit user commit that moves a document into repo
-  // custody (creates/refreshes a `space_exports` row + agent-key linked commit).
-  router.post("/api/spaces/:id/exports", async (req, res) => {
-    try {
-      const db = getDb();
-      const space = loadSpaceOr404(db, req.params.id);
-      const body = bodyRecord(req);
-      const result = await exportAndTrack(db, {
-        spaceId: space.id,
-        repoId: optionalString(body, "repo_id") ?? null,
-        path: optionalString(body, "path") ?? null,
-        branch: optionalString(body, "branch") ?? null,
-        issues: requireIssueRefs(body),
-        message: optionalString(body, "message") ?? null,
-      });
-      broadcastSpaceEvent(SPACE_EVENTS.SPACE_EXPORT_TRACKED, {
-        space_id: space.id,
-        export_id: result.export.id,
-        repo_id: result.export.repo_id,
-        branch: result.export.branch,
-        path: result.export.path,
-        commit: result.commit,
-      });
-      sendJson(res, 201, result);
-    } catch (error) {
-      handleExportError(res, error);
-    }
-  }, { fileRpc: "allow" });
-
-  // Untracked export-of-copy: a one-shot local file export with no custody.
-  router.post("/api/spaces/:id/exports/untracked", (req, res) => {
-    try {
-      const db = getDb();
-      const space = loadSpaceOr404(db, req.params.id);
-      const body = bodyRecord(req);
-      const result = exportUntrackedCopy(db, {
-        spaceId: space.id,
-        destPath: requireString(body, "dest_path"),
-        repoId: optionalString(body, "repo_id") ?? null,
-      });
-      broadcastSpaceEvent(SPACE_EVENTS.SPACE_EXPORT_COPIED, {
-        space_id: space.id,
-        path: result.path,
-        warning: result.warning,
-      });
-      sendJson(res, 200, result);
-    } catch (error) {
-      handleExportError(res, error);
-    }
-  }, { fileRpc: "allow" });
-
-  // Register/update the docs-path export settings (global default or per-repo
-  // override). This is the settings storage backing the export dialog (§5.1).
-  router.post("/api/spaces/exports/settings", (req, res) => {
-    try {
-      const db = getDb();
-      const body = bodyRecord(req);
-      const repoId = optionalString(body, "repo_id");
-      const path = optionalString(body, "path") ?? undefined;
-      const branch = optionalString(body, "branch") ?? undefined;
-      if (path === undefined && branch === undefined) {
-        throw new HttpError(400, "path or branch is required");
+    } catch(error) { handleExportError(res,error); }
+  }, { operation: { id: "get:/api/spaces/:id/publications", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  router.post("/api/spaces/:id/publications", (req,res)=> {
+    try { const db=getDb(), space=loadSpaceOr404(db,req.params.id), body=bodyRecord(req);
+      documentProjectAccess(db,req,space.project_id,"write");
+      const checkout=resolveCheckoutForSpace(db,space,optionalString(body,"repo_id"));
+      requireProjectAccess(db,req,checkout.project_id,"write");
+      const publication=publicationValue(preparePublication(db,{ spaceId:space.id,repoId:optionalString(body,"repo_id"),
+        path:requireString(body,"path"),issue:requireString(body,"issue"),message:optionalString(body,"message") ?? undefined }));
+      emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
+      sendJson(res,201,publication);
+    } catch(error) { handleExportError(res,error); }
+  }, { operation: { id: "post:/api/spaces/:id/publications", effects: ["ledger:write", "files:production"], requestSchema: z.object({ repo_id: z.string().trim().min(1).nullish(), path: z.string().trim().min(1), issue: z.string().trim().min(1), message: z.string().optional() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  router.post("/api/spaces/:id/publications/:publication_id/submit", async (req,res)=> {
+    try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
+      documentProjectAccess(db,req,space.project_id,"write");
+      const selected=getPublication(db,space.id,req.params.publication_id);
+      documentCheckoutAccess(db,req,selected.repo_id,"write");
+      documentArtifactAccess(db,req,selected.snapshot_ref);
+      if(selected.version_ref) documentArtifactAccess(db,req,selected.version_ref);
+      const publication=publicationValue(await executePublication(db,space.id,req.params.publication_id));
+      emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
+      sendJson(res,200,publication);
+    } catch(error) { handleExportError(res,error); }
+  }, { operation: { id: "post:/api/spaces/:id/publications/:publication_id/submit", effects: ["ledger:write", "files:production", "process:external", "auth:protected"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  router.post("/api/spaces/documents/import", (req,res)=> {
+    try { const db=getDb(),body=bodyRecord(req);
+      const destination=optionalString(body,"project_id");
+      documentProjectAccess(db,req,destination,"write");
+      let pinnedRef: string | undefined;
+      if (body.ref) pinnedRef=documentArtifactAccess(db,req,requireString(body,"ref"));
+      else {
+        const project=resolveProjectRef(db,requireString(body,"project"));
+        if(!project.ok || !project.project) throw new HttpError(400,"Source project is unavailable or ambiguous");
+        requireProjectAccess(db,req,project.project.id,"read");
       }
-      if (typeof repoId === "string" && repoId) {
-        setRepoDocsOverride(db, repoId, { path, branch });
-      } else {
-        setGlobalDocsDefault(db, { path, branch });
-      }
-      broadcastSpaceEvent(SPACE_EVENTS.SPACE_DOCUMENT_SETTINGS_UPDATED, {
-        scope: repoId ? "repo" : "global",
-        repo_id: repoId ?? null,
-      });
-      sendJson(res, 200, { ok: true, scope: repoId ? "repo" : "global", repo_id: repoId ?? null });
-    } catch (error) {
-      handleExportError(res, error);
-    }
-  }, { fileRpc: "allow" });
+      const space = publicationValue(body.ref ? importManagedDocument(db,{ ref:pinnedRef!,title:requireString(body,"title"),projectId:destination })
+        : importGitDocument(db,{project:requireString(body,"project"),commit:requireString(body,"commit"),path:requireString(body,"path"),title:requireString(body,"title"),projectId:optionalString(body,"project_id")}));
+      emit(SPACE_EVENTS.SPACE_CREATED,space.id);
+      sendJson(res,201,space);
+    } catch(error) { handleExportError(res,error); }
+  }, { operation: { id: "post:/api/spaces/documents/import", effects: ({ body }) => (body as { ref?: string }).ref ? documentArtifactImportEffects(getDb(), (body as { ref: string }).ref) : ["ledger:read", "ledger:write", "files:production"], requestSchema: z.union([z.object({ ref: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict(), z.object({ project: z.string().trim().min(1), commit: z.string().trim().min(1), path: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict()]), reportingCategory: "spaces" }, fileRpc: "allow" });
+  router.post("/api/spaces/:id/history/:history_id/import",(req,res)=> {
+    try {const db=getDb(),source=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
+      documentProjectAccess(db,req,source.project_id,"write");
+      const entry=documentHistoryEntry(db,source.id,req.params.history_id);
+      if(!entry) throw new HttpError(404,"Historical document not found");
+      documentHistoryAccess(db,req,entry);
+      const space=publicationValue(importHistoryDocument(db,source.id,req.params.history_id,requireString(body,"title")));
+      emit(SPACE_EVENTS.SPACE_CREATED,space.id);sendJson(res,201,space);
+    } catch(error){handleExportError(res,error);}
+  }, { operation: { id: "post:/api/spaces/:id/history/:history_id/import", effects: ({ params }) => documentHistoryImportEffects(getDb(), params.id, params.history_id), requestSchema: z.object({ title: z.string().trim().min(1) }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  router.get("/api/spaces/:id/document/download", (req,res)=> {
+    try { const db=getDb(),space=loadSpaceOr404(db,req.params.id);
+      documentProjectAccess(db,req,space.project_id,"read");
+      const result=serializeSpaceDocument(db,space.id);
+      res.header?.("Content-Type","text/markdown; charset=utf-8");
+      res.header?.("Content-Disposition",`attachment; filename="space-${space.id}.md"`);
+      if (!res.text) throw new HttpError(500,"Download response unavailable");
+      res.text(result,"text/markdown; charset=utf-8");
+    } catch(error) { handleExportError(res,error); }
+  }, { operation: { id: "get:/api/spaces/:id/document/download", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  router.post("/api/spaces/:id/document/export", (req,res)=> {
+    try { const db=getDb(),space=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
+      documentProjectAccess(db,req,space.project_id,"read");
+      const checkoutId=optionalString(body,"repo_id");
+      if(checkoutId) documentCheckoutAccess(db,req,checkoutId,"read");
+      sendJson(res,200,exportUntrackedCopy(db,{spaceId:space.id,destPath:requireString(body,"dest_path"),repoId:optionalString(body,"repo_id")}));
+    } catch(error) { handleExportError(res,error); }
+  }, { operation: { id: "post:/api/spaces/:id/document/export", effects: ["ledger:read", "files:production"], requestSchema: z.object({ dest_path: z.string().trim().min(1), repo_id: z.string().trim().min(1).nullish() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
 
-  // --- drift / status detection (C13c, issue 21f36cb) ---
-  // Read-only status reads that inspect the LIVE docs-branch worktree/HEAD/path
-  // (NOT pinned artifact bytes, custody-doc §6) and refresh each row's `status`
-  // + `last_seen_*` observation columns. These are GET reads with a tracking-row
-  // refresh side effect — they never mutate the repo, never touch the auth queue
-  // — so they stay within the file-transport read boundary (standing AC #1).
-
-  // Re-check drift for every tracked export of a Space.
-  router.get("/api/spaces/:id/exports/drift", (req, res) => {
-    try {
-      const db = getDb();
-      const space = loadSpaceOr404(db, req.params.id);
-      sendJson(res, 200, { space_id: space.id, drift: checkSpaceDrift(db, space.id) });
-    } catch (error) {
-      handleExportError(res, error);
-    }
-  }, { fileRpc: "allow" });
-
-  // Re-check drift for one tracked export row.
-  router.get("/api/spaces/:id/exports/:export_id/drift", (req, res) => {
-    try {
-      const db = getDb();
-      const space = loadSpaceOr404(db, req.params.id);
-      const row = getSpaceExport(db, req.params.export_id);
-      if (!row || row.space_id !== space.id) {
-        throw new HttpError(404, `space export not found: ${req.params.export_id}`);
-      }
-      sendJson(res, 200, checkExportDrift(db, row.id));
-    } catch (error) {
-      handleExportError(res, error);
-    }
-  }, { fileRpc: "allow" });
-}
-
-/** Parse a required non-empty `issues: string[]` (or single `issue`) field. */
-function requireIssueRefs(body: Record<string, unknown>): string[] {
-  const raw = body.issues ?? body.issue;
-  const list = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw];
-  const issues = list
-    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-    .map((v) => v.trim());
-  if (issues.length === 0) {
-    throw new HttpError(400, "issues (or issue) is required for a tracked export's linked commit");
-  }
-  return issues;
 }
 
 /** Map an {@link ExportError} machine code to a clean HTTP status. */
@@ -951,7 +914,7 @@ function handleExportError(res: ResponseLike, error: unknown): void {
         ? 404
         : error.code === "checkout_not_found"
           ? 404
-          : error.code === "worktree_dirty" || error.code === "locked"
+          : error.code === "worktree_dirty" || error.code === "locked" || error.code === "stale_destination"
             ? 409
             : error.code === "invalid_path"
               ? 400
@@ -1124,4 +1087,12 @@ function requireOccurrenceExists(db: Db, spaceId: string, occurrenceId: string, 
  */
 function emit(event: SpaceEvent, spaceId: string): void {
   broadcastSpaceEvent(event, { space_id: spaceId });
+}
+
+function publicationValue<T>(result:PublicationResult<T>):T {
+  if(result.ok)return result.value;
+  const status=result.error.code==='stale_destination'||result.error.code==='locked' ? 409
+    : result.error.code==='space_not_found'||result.error.code==='checkout_not_found' ? 404
+    : result.error.code==='git_failed'||result.error.code==='storage_failed' ? 500:400;
+  throw new HttpError(status,result.error.message);
 }

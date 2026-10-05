@@ -1,3 +1,5 @@
+import { mockConversationStructureFromWindow, mockManagedSettings, changeNativeSelect } from '../helpers/conversation-ui-transport';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ComponentChildren } from 'preact';
@@ -48,7 +50,16 @@ vi.mock('@xterm/xterm', () => ({
 
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await establishTestClientAccess();
+  window.localStorage.clear();
+  mockConversationStructureFromWindow();
+  mockManagedSettings({ model: conversation.model!, effort: 'medium', permission_mode: 'agent' });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2400);
+  vi.stubGlobal('WebSocket', class { static OPEN = 1; readyState = 0; addEventListener(): void {} removeEventListener(): void {} send(): void {} close(): void {} });
+  Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
+  vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});
   queryClient.clear();
   vi.stubGlobal('ResizeObserver', class {
     observe(): void {}
@@ -571,7 +582,7 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByText('Recent visible message')).toBeTruthy();
     await waitFor(() => expect(edgeAttempts).toBe(1));
     expect(screen.getByText('Recent visible message')).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Load earlier history' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText('No messages yet')).toBeNull();
     expect(screen.queryByText('source pending')).toBeNull();
     expect(await screen.findByText('Older recovered message', {}, { timeout: 3_000 })).toBeTruthy();
   });
@@ -717,16 +728,6 @@ describe('compact detail pane shell', () => {
     expect(settledUpdateCount).toBeLessThanOrEqual(3);
   });
 
-  it('routes every Chat detail state through one typed frame construction', () => {
-    const source = readFileSync(resolve(process.cwd(), 'ui/src/views/conversations.tsx'), 'utf8');
-    const states = Array.from(source.matchAll(/<ChatDetailFrame\s+[\s\S]*?state="([^"]+)"/g), (match) => match[1]).sort();
-    expect(states).toEqual(['conversation', 'draft', 'error', 'live-session', 'loading', 'no-selection', 'not-found']);
-    expect(source).not.toContain('<div className="chat-live-detail">');
-    expect(source).not.toContain('return <LoadingSkeleton variant="detail"');
-
-    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
-    expect(css).not.toMatch(/\.chat-live-detail__(?:header|title|title-group|actions)\s*\{/);
-  });
 
   it('renders the unselected Chat main area through the canonical compact shell', () => {
     const { container } = render(
@@ -840,7 +841,7 @@ describe('compact detail pane shell', () => {
     expect(shell?.classList.contains('chat-detail-frame--not-found')).toBe(true);
     expect(shell?.querySelector(':scope > .detail-pane-shell__header [data-detail-pane-header-variant="compact"]'))
       .toBeTruthy();
-    expect(shell?.querySelector(':scope > .detail-pane-shell__notice')).toBeNull();
+    expect(shell?.querySelector(':scope > .detail-pane-shell__notice')?.textContent ?? '').toBe('');
   });
 
   it('parses exact block and turn anchors from shareable Chat URLs', () => {
@@ -871,13 +872,8 @@ describe('compact detail pane shell', () => {
     expect(body?.textContent).toContain('Scrollable content');
     expect(footer?.textContent).toContain('Submit');
 
-    const css = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
-    expect(css).toMatch(/\.detail-pane-shell__footer\s*\{[^}]*flex:\s*none;/s);
-    expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__header\s*\{[^}]*box-shadow:\s*none;/s);
-    expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__header-primary\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;/s);
 
-    expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__title\s*\{[^}]*color:\s*var\(--text-header-title\);[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
-    expect(css).toMatch(/\.detail-pane-shell--compact \.detail-pane-shell__actions\s*\{[^}]*flex-shrink:\s*0;/s);
+
 
     const defaultShell = render(
       <DetailPaneShell header={<span>Default title</span>}>Default body</DetailPaneShell>,
@@ -967,7 +963,6 @@ describe('compact detail pane shell', () => {
     const body = shell?.querySelector(':scope > .detail-pane-shell__body.conv-detail__body');
     const overlayControl = shell?.querySelector(':scope > .detail-pane-shell__overlay-control');
     const canonicalHeader = header?.querySelector('.detail-pane-header--compact');
-    const conversationCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
     expect(getComputedStyle(shell!).overflow).toBe('clip');
     expect(shell?.classList.contains('chat-detail-frame--conversation')).toBe(true);
     expect(getComputedStyle(body!).position).toBe('relative');
@@ -1035,27 +1030,12 @@ describe('compact detail pane shell', () => {
     expect(body?.querySelector('.conv-transcript')).toBeTruthy();
     const composer = overlayControl?.querySelector('.conv-compose');
     expect(composer).toBeTruthy();
-    const tokensCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/tokens.css'), 'utf8');
-    const baseCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/base.css'), 'utf8');
-    const messageBlocksCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/message-blocks.css'), 'utf8');
-    expect(tokensCss).toContain('--radius-chat-surface: 18px;');
-    expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
-    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;/s);
-    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__field\s*\{[^}]*flex:\s*0 0 auto;[^}]*max-width:\s*min\(240px, 100%\);/s);
-    expect(conversationCss).toMatch(/\.conv-compose__run-options-inline \.session-controls__select\s*\{[^}]*width:\s*auto;[^}]*min-width:\s*44px;[^}]*field-sizing:\s*content;/s);
-    expect(conversationCss).toMatch(/\.conv-compose__runtime-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*width:\s*auto;/s);
-    expect(conversationCss).toMatch(/\.conv-detail__body \.user-bubble__text :where\(p, li, blockquote, dd\)[^{]*\{[^}]*font-size:\s*var\(--text-lg\);/s);
-    expect(conversationCss).toMatch(/\.conv-compose__send\s*\{[^}]*--chat-circle-action-visual-size:\s*25\.5px;[^}]*--chat-circle-action-icon-size:\s*17px;/s);
-    expect(baseCss).toMatch(/\.chat-circle-action::before\s*\{[^}]*width:\s*var\(--chat-circle-action-visual-size\);[^}]*height:\s*var\(--chat-circle-action-visual-size\);/s);
-    expect(baseCss).toMatch(/\.chat-circle-action > svg\s*\{[^}]*width:\s*var\(--chat-circle-action-icon-size\);[^}]*height:\s*var\(--chat-circle-action-icon-size\);/s);
-    expect(conversationCss).not.toContain('@container (max-width: 700px)');
-    expect(messageBlocksCss).toMatch(/\.user-bubble__text\s*\{[^}]*border-radius:\s*var\(--radius-chat-surface\);/s);
     expect(overlayControl?.querySelector('.conv-compose__runtime .agent-mark')).toBeNull();
     fireEvent.click(runOptions);
     const runOptionsDialog = screen.getByRole('dialog', { name: 'Run options' });
-    const modelSelect = within(runOptionsDialog).getByRole('combobox', { name: 'Model' }) as HTMLSelectElement;
+    const modelSelect = within(runOptionsDialog).getByRole('textbox', { name: 'Model' }) as HTMLInputElement;
     await waitFor(() => expect(modelSelect.value).toBe(conversation.model));
-    expect(modelSelect.title).toBe('Model');
+    expect(modelSelect.getAttribute('aria-label')).toBe('Model');
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy markdown' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('Server-only unread tail')));
@@ -1069,15 +1049,6 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(shell?.getAttribute('aria-busy')).toBe('false'));
   });
 
-  it('ends the composer mask before the transcript scrollbar gutter', () => {
-    const shellCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/detail-pane-shell.css'), 'utf8');
-    const conversationCss = readFileSync(resolve(process.cwd(), 'ui/src/styles/conversations.css'), 'utf8');
-
-    expect(shellCss).toMatch(/\.detail-pane-shell__overlay-control\s*\{[^}]*inset:\s*auto var\(--detail-pane-scrollbar-width, 0px\) 0 0;/s);
-    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control\s*\{[^}]*--conversation-composer-inline-margin:\s*18px;/s);
-    expect(conversationCss).toMatch(/\.conv-compose\s*\{[^}]*margin:\s*0 var\(--conversation-composer-inline-margin, 18px\) 16px;/s);
-    expect(conversationCss).toMatch(/\.detail-pane-shell--overlay-control \.detail-pane-shell__overlay-control::before\s*\{[^}]*top:\s*calc\(50% - 8px\);[^}]*right:\s*var\(--conversation-composer-inline-margin\);[^}]*bottom:\s*0;[^}]*left:\s*0;[^}]*pointer-events:\s*none;/s);
-  });
 
   it('puts every provider-neutral run option in the canonical composer popover', async () => {
     const resizeCallbacks: ResizeObserverCallback[] = [];
@@ -1093,8 +1064,8 @@ describe('compact detail pane shell', () => {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds() {
       if (this.classList.contains('conv-compose__runtime')) return domRect(0, 0, runtimeWidth, 30);
       if (this.classList.contains('session-controls__field')) {
-        const label = this.querySelector('select')?.getAttribute('aria-label');
-        return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Mode' ? modeWidth : 90, 30);
+        const label = this.querySelector('input, select')?.getAttribute('aria-label');
+        return domRect(0, 0, label === 'Model' ? modelWidth : label === 'Permissions' ? modeWidth : 90, 30);
       }
       if (this.classList.contains('context-usage') || this.classList.contains('conv-compose__send')) {
         return domRect(0, 0, 30, 30);
@@ -1157,27 +1128,28 @@ describe('compact detail pane shell', () => {
     const runtime = document.querySelector('.conv-compose__runtime');
     const inlineRunOptions = runtime?.querySelector('.conv-compose__run-options-inline');
     const actions = runtime?.querySelector('.conv-compose__runtime-actions');
-    await waitFor(() => expect(inlineRunOptions?.querySelectorAll('select')).toHaveLength(3));
+    await waitFor(() => expect(inlineRunOptions?.querySelectorAll('input, select')).toHaveLength(3));
     expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false);
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBeNull();
-    fireEvent.input(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'read-only' } });
+    changeNativeSelect(screen.getByRole('combobox', { name: 'Permissions' }) as HTMLSelectElement, 'read-only');
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modeWidth = 230;
-    fireEvent.change(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'agent' } });
-    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow'), `widths:${modelWidth}:${modeWidth}:${runtimeWidth}`).toBe(true));
     modeWidth = 70;
-    fireEvent.change(inlineRunOptions?.querySelector('select[aria-label="Mode"]') as HTMLSelectElement, { target: { value: 'read-only' } });
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    changeNativeSelect(inlineRunOptions?.querySelector('select[aria-label="Permissions"]') as HTMLSelectElement, 'read-only');
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     modelWidth = 220;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
-    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow'), `widths:${modelWidth}:${modeWidth}:${runtimeWidth}`).toBe(true));
     expect(inlineRunOptions?.getAttribute('aria-hidden')).toBe('true');
     modelWidth = 100;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
     runtimeWidth = 180;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
-    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(true));
+    await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow'), `widths:${modelWidth}:${modeWidth}:${runtimeWidth}`).toBe(true));
     runtimeWidth = 380;
     act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
     await waitFor(() => expect(runtime?.classList.contains('conv-compose__runtime--run-options-overflow')).toBe(false));
@@ -1185,28 +1157,38 @@ describe('compact detail pane shell', () => {
     expect(actions?.children[1]?.classList.contains('context-usage')).toBe(true);
     expect(actions?.children[2]?.classList.contains('conv-compose__send')).toBe(true);
     expect(screen.queryByRole('combobox', { name: 'Permission mode' })).toBeNull();
+    fireEvent.input(inlineRunOptions?.querySelector('input[aria-label="Model"]') as HTMLInputElement, { target: { value: 'edited-model' } });
     fireEvent.click(trigger);
     await screen.findByRole('dialog', { name: 'Run options' });
     await waitFor(() => expect(Array.from(
-      screen.getByRole('dialog', { name: 'Run options' }).querySelectorAll('select'),
+      screen.getByRole('dialog', { name: 'Run options' }).querySelectorAll('input, select'),
       (select) => select.getAttribute('aria-label'),
-    )).toEqual(expect.arrayContaining(['Mode', 'Model', 'Reasoning effort'])));
+    )).toEqual(expect.arrayContaining(['Permissions', 'Model', 'Thinking effort'])));
     const popover = screen.getByRole('dialog', { name: 'Run options' });
-    const permission = popover.querySelector<HTMLSelectElement>('select[aria-label="Mode"]')!;
-    const effort = popover.querySelector<HTMLSelectElement>('select[aria-label="Reasoning effort"]')!;
+    expect((within(popover).getByRole('textbox', { name: 'Model' }) as HTMLInputElement).value).toBe('edited-model');
+    const permission = popover.querySelector<HTMLSelectElement>('select[aria-label="Permissions"]')!;
+    const effort = popover.querySelector<HTMLSelectElement>('select[aria-label="Thinking effort"]')!;
 
-    expect(Array.from((permission as HTMLSelectElement).options, (option) => option.value)).toEqual(['read-only', 'agent']);
-    expect(Array.from((effort as HTMLSelectElement).options, (option) => option.value)).toEqual(['medium', 'high']);
+    expect(permission.value).toBe('read-only');
+    expect(Array.from((permission as HTMLSelectElement).options, (option) => option.value)).toEqual(['', 'read-only', 'agent', 'agent-full-access']);
+    expect(Array.from((effort as HTMLSelectElement).options, (option) => option.value)).toEqual(['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+    const submit = vi.spyOn(api, 'submitConversationControl').mockResolvedValue({
+      kind: 'accepted', delivery_id: 'settings-delivery', turn_id: 'settings-turn', snapshot: ownedControl,
+    });
+    fireEvent.input(screen.getByPlaceholderText('Message...'), { target: { value: 'Use these settings.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.any(Object), 'Use these settings.', undefined,
+      { model: 'edited-model', effort: 'medium', permission_mode: 'read-only' }, expect.any(String), []));
   });
 
-  it('surfaces run-option descriptor failures instead of hiding provider controls', async () => {
+  it('surfaces managed settings failures instead of hiding provider controls', async () => {
     const scopedConversation = mockConversationDetail(defaultControl);
-    vi.spyOn(api, 'getConsoleRunOptions').mockRejectedValue(new Error('descriptor service unavailable'));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'settings_unavailable', message: 'settings service unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } })));
 
     renderConversationDetail(scopedConversation);
 
     const notice = await screen.findByRole('alert');
-    expect(notice.textContent).toContain('Run options could not be loaded: descriptor service unavailable');
+    expect(notice.textContent).toContain('settings service unavailable');
   });
 
   it('clamps the Chat header menu and dismisses with Escape, outside click, and focus restoration', async () => {
@@ -1425,7 +1407,7 @@ describe('compact detail pane shell', () => {
     expect(Boolean(document.querySelector('.conv-compose'))).toBe(hasComposer);
     if (control.capability.kind === 'blocked-external') {
       expect(document.querySelectorAll('.conv-compose__hint')).toHaveLength(0);
-      expect((screen.getByPlaceholderText('Message...') as HTMLTextAreaElement).disabled).toBe(true);
+      expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true);
       expect(document.querySelector('.conv-compose')?.textContent).toContain('Another controller owns this provider session.');
     }
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));

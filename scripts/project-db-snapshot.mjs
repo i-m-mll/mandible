@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import fs from "node:fs";
 import os from "node:os";
@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 
 // Issue 24f0316 — the ledger database lives under the durable root.
 const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs");
@@ -25,8 +25,10 @@ export function projectDatabaseSnapshot(options) {
   const sourcePath = path.resolve(expandHome(options.source ?? DEFAULT_SOURCE));
   const outputPath = path.resolve(expandHome(options.output));
   const manifestPath = path.resolve(expandHome(options.manifest ?? `${outputPath}.manifest.json`));
-  const partialPath = `${outputPath}.partial-${process.pid}`;
-  const partialManifestPath = `${manifestPath}.partial-${process.pid}`;
+  const stagingDir = options.stagingDir ? path.resolve(options.stagingDir) : path.dirname(outputPath);
+  if (options.stagingDir) fs.mkdirSync(stagingDir, { recursive: true });
+  const partialPath = path.join(stagingDir, `${path.basename(outputPath)}.partial-${process.pid}`);
+  const partialManifestPath = path.join(stagingDir, `${path.basename(manifestPath)}.partial-${process.pid}`);
   const partialStructureCachePath = `${partialPath}.conversation-structure.db`;
 
   if (!fs.existsSync(sourcePath)) throw new Error(`Source database does not exist: ${sourcePath}`);
@@ -43,7 +45,7 @@ export function projectDatabaseSnapshot(options) {
   let db = null;
   const startedAt = Date.now();
   try {
-    db = new Database(partialPath);
+    db = new SqliteDatabase(partialPath);
     db.pragma("journal_mode = OFF");
     db.pragma("synchronous = OFF");
     db.pragma("temp_store = MEMORY");
@@ -75,7 +77,7 @@ export function projectDatabaseSnapshot(options) {
     for (const table of schema.tables) db.exec(table.sql);
     selectConversationProjection(db, windows);
 
-    const space = estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog);
+    const space = estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog, options);
     const copied = {};
     for (const table of schema.tables) {
       copied[table.name] = copyTable(db, table.name, windows);
@@ -95,7 +97,7 @@ export function projectDatabaseSnapshot(options) {
     // A projected database does not own that cache, so never publish it with
     // the snapshot or leave it behind when a candidate succeeds.
     removeDatabaseArtifacts(partialStructureCachePath);
-    db = new Database(partialPath);
+    db = new SqliteDatabase(partialPath);
     db.pragma("foreign_keys = ON");
 
     const quickCheck = db.pragma("quick_check", { simple: true });
@@ -347,7 +349,7 @@ function conversationForeignKeyReferences(db) {
   return references.filter((reference) => reference.table !== "conversation_blocks");
 }
 
-function estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog) {
+function estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog, options = {}) {
   let canonicalPhysicalBytes;
   try {
     canonicalPhysicalBytes = Number(db.prepare(
@@ -386,9 +388,11 @@ function estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog) {
   );
   const statfs = fs.statfsSync(path.dirname(outputPath));
   const availableBytes = Number(statfs.bavail) * Number(statfs.bsize);
-  if (availableBytes < estimatedRequiredBytes) {
+  const reserveBytes = options.reserveBytes ?? 0;
+  const maxOutputBytes = options.maxOutputBytes ?? Number.MAX_SAFE_INTEGER;
+  if (estimatedRequiredBytes > maxOutputBytes || availableBytes - reserveBytes < estimatedRequiredBytes) {
     throw new Error(
-      `Insufficient free space for projected snapshot: available=${availableBytes}, estimated_required=${estimatedRequiredBytes}`,
+      `Insufficient free space for projected snapshot: available=${availableBytes}, estimated_required=${estimatedRequiredBytes}, reserve=${reserveBytes}, output_budget=${maxOutputBytes}`,
     );
   }
   return {
@@ -528,6 +532,14 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     switch (arg) {
+      case "--reserve-bytes":
+      case "--max-output-bytes": {
+        const field = arg === "--reserve-bytes" ? "reserveBytes" : "maxOutputBytes";
+        options[field] = Number(requireValue(argv, ++index, arg));
+        if (!Number.isSafeInteger(options[field]) || options[field] < 0) throw new Error(`Invalid ${arg} value`);
+        break;
+      }
+      case "--staging-dir": options.stagingDir = requireValue(argv, ++index, arg); break;
       case "--source":
         options.source = requireValue(argv, ++index, arg);
         break;
@@ -568,7 +580,7 @@ function requireValue(argv, index, flag) {
 }
 
 function printUsage() {
-  console.log(`Usage: node scripts/project-db-snapshot.mjs --output PATH [options]
+  console.log(`Usage: bun scripts/project-db-snapshot.mjs --output PATH [options]
 
 Create a deterministic compact Mandible database projection.
 

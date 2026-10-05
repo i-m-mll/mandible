@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const SOURCE_PATHS = ["package.json", "package-lock.json", "tsconfig.json", "src", "channel-server", "ui"];
+const SOURCE_PATHS = ["package.json", ".bun-version", "bun.lock", "bunfig.toml", "tsconfig.json", "src", "channel-server", "ui", "scripts", "bin", "cli", "config", "src-tauri"];
 
 function git(root, ...args) {
   const result = spawnSync("git", args, {
@@ -34,6 +34,33 @@ function trackedSourceDigest(root) {
   }
   return hash.digest("hex");
 }
+
+/** Freeze every executable dependency by relative name, link target and bytes. */
+function executableDirectoryDigest(directory, allowLinks) {
+  const hash = createHash("sha256");
+  const visit = (file, relative, ancestors) => {
+    const stat = fs.lstatSync(file);
+    if (stat.isSymbolicLink()) {
+      if (!allowLinks) throw new Error(`Built daemon output is not a regular file: ${relative}`);
+      hash.update(`link:${relative}\0${fs.readlinkSync(file)}\0`);
+      const target = fs.realpathSync(file);
+      if (ancestors.has(target)) throw new Error(`Executable dependency link forms a cycle: ${relative}`);
+      visit(target, relative, ancestors);
+    } else if (stat.isDirectory()) {
+      const real = fs.realpathSync(file);
+      if (ancestors.has(real)) throw new Error(`Executable dependency directory forms a cycle: ${relative}`);
+      const next = new Set([...ancestors, real]);
+      for (const name of fs.readdirSync(file).sort()) visit(path.join(file, name), relative ? `${relative}/${name}` : name, next);
+    } else if (stat.isFile()) {
+      hash.update(relative); hash.update("\0"); hash.update(fs.readFileSync(file)); hash.update("\0");
+    } else throw new Error(`Executable dependency is not a regular file: ${relative}`);
+  };
+  visit(directory, "", new Set());
+  return hash.digest("hex");
+}
+
+export function compiledBuildDigest(root) { return executableDirectoryDigest(path.join(root, "dist"), false); }
+export function runtimeDependenciesDigest(root) { return executableDirectoryDigest(path.join(root, "node_modules"), true); }
 
 export function writeBuildRevision(root) {
   const head = git(root, "rev-parse", "HEAD");

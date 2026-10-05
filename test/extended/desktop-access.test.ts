@@ -12,13 +12,19 @@ describe("desktop native origin boundary", () => {
       path.join(process.cwd(), "src-tauri", "capabilities", "default.json"), "utf8",
     )) as { remote?: { urls?: string[] }; permissions?: string[] };
     const registered = rust.match(/generate_handler!\[([\s\S]*?)\]\)/)?.[1]
-      .split(",").map((command) => command.trim()).filter(Boolean);
+      .split(",").map((command) => command.trim().split('::').at(-1)!).filter(Boolean);
     const permitted = permission.match(/commands\.allow = \[([\s\S]*?)\]/)?.[1]
       .match(/"([^"]+)"/g)?.map((command) => command.slice(1, -1));
-    expect(permitted).toEqual(registered);
+    const acceptancePermission = fs.readFileSync(path.join(process.cwd(), 'src-tauri/permissions/acceptance.toml'), 'utf8');
+    const acceptanceCommands = acceptancePermission.match(/commands\.allow = \[([\s\S]*?)\]/)?.[1]
+      .match(/"([^"]+)"/g)?.map(command => command.slice(1, -1));
+    expect([...permitted!, ...acceptanceCommands!].sort()).toEqual(registered?.sort());
+    expect(permitted).not.toContain('candidate_acceptance_report');
+    expect(acceptanceCommands).toEqual(['candidate_acceptance_report']);
     expect(capability.remote?.urls).toEqual([PRODUCTION_ORIGIN]);
     expect(rust).toContain("origin == PRODUCTION_ORIGIN");
     expect(capability.permissions).toContain("allow-desktop-commands");
+    expect(capability.permissions).not.toContain('allow-candidate-acceptance');
   });
 
   it("keeps native connection setup and daemon control without enrollment commands", () => {

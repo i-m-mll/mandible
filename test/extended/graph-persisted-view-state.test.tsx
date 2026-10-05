@@ -1,3 +1,4 @@
+import { establishTestClientAccess } from '../helpers/local-client-access';
 import { act, cleanup, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,6 +7,7 @@ import {
   type AppRightSidebarDescriptor,
   type AppShellContextValue,
 } from '../../ui/src/app-shell';
+import { invalidateApiGetCache } from '../../ui/src/api';
 import { GraphView } from '../../ui/src/views/graph';
 
 vi.mock('@xyflow/react', () => ({
@@ -81,8 +83,10 @@ function renderGraph(refreshToken = 0) {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   installMemoryLocalStorage();
+  invalidateApiGetCache();
+  await establishTestClientAccess();
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(graphResponse())));
 });
 
@@ -116,6 +120,7 @@ describe('GraphView persisted detail panel state', () => {
     });
 
     const fetchCountBeforeRefetch = vi.mocked(fetch).mock.calls.length;
+    invalidateApiGetCache('/api/graph');
     view.rerenderGraph(1);
     await waitFor(() => expect(
       vi.mocked(fetch).mock.calls.length,

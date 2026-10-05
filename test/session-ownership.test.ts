@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
@@ -8,6 +8,7 @@ import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { registerUserRoutes } from "../src/routes/users.js";
 import { Router } from "../src/server.js";
+import { PTYBackend } from "../src/backends/pty-backend.js";
 import { SessionManager } from "../src/session-manager.js";
 import {
   addBinding,
@@ -23,7 +24,7 @@ describe("session and work-unit ownership", () => {
   let db: Db;
 
   beforeEach(() => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
   });
@@ -132,24 +133,28 @@ describe("session and work-unit ownership", () => {
     ]));
   });
 
-  it("pins console ownership at creation and assigns operator consoles to the operator", () => {
+  it("keeps terminal command names separate from agent identity and pins operator ownership", () => {
     setupAgentUsers(db);
     const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
-    const codex = getUserBySlug(db, "codex")!;
+    const start = vi.spyOn(PTYBackend.prototype, "start").mockImplementation(() => undefined);
     const manager = new SessionManager(db, () => undefined);
     try {
       const consoleSession = manager.create({
         label: "Codex",
         command: "codex",
-        backend_type: "spawn",
+        backend_type: "pty",
       });
       manager.startOperator();
       const operatorSession = manager.getAll().find((backend) => backend.meta.is_operator)!.meta;
 
-      expect(owner("console_sessions", consoleSession.id)).toBe(codex.id);
+      expect(owner("console_sessions", consoleSession.id)).toBeNull();
+      db.prepare("UPDATE console_sessions SET command = 'codex' WHERE id = ?").run(operatorSession.id);
+      manager.startOperator();
+      expect(manager.operator()!.meta.id).toBe(operatorSession.id);
       expect(owner("console_sessions", operatorSession.id)).toBe(operator.id);
     } finally {
       manager.close();
+      start.mockRestore();
     }
   });
 

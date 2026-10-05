@@ -1,12 +1,13 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
-import Database from "better-sqlite3";
+import { parseCommand, stringOption, flagOption } from "./grammar.js";
+import SqliteDatabase from "../sqlite.js";
 import { pathToFileURL } from "node:url";
 import { configureIngestionWorker, convergeProjectedConversationTitlesForWorker } from "../ingestion.js";
 import { setDb, type Db } from "../db.js";
 
 export async function convergeProjectedConversationCopy(dbPath: string) {
-  const db = new Database(dbPath) as Db;
+  const db = new SqliteDatabase(dbPath) as Db;
   try {
     db.pragma("journal_mode = DELETE");
     db.pragma("foreign_keys = ON");
@@ -19,13 +20,10 @@ export async function convergeProjectedConversationCopy(dbPath: string) {
 }
 
 async function main(): Promise<void> {
-  const dbIndex = process.argv.indexOf("--db");
-  const dbPath = dbIndex >= 0 ? process.argv[dbIndex + 1] : undefined;
-  if (!dbPath || dbPath.startsWith("--")) {
-    throw new Error("Usage: projected-conversation-convergence --db PATH [--json]");
-  }
+  const parsed = parseCommand(["projected-conversation-convergence"], process.argv.slice(2));
+  const dbPath = stringOption(parsed, "db")!;
   const result = await convergeProjectedConversationCopy(dbPath);
-  if (process.argv.includes("--json")) {
+  if (flagOption(parsed, "json")) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else {
     process.stdout.write(`Converged ${result.updated} projected conversation title(s).\n`);

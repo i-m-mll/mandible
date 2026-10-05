@@ -1,12 +1,20 @@
 import { hashFileSha256OffThread } from "./artifact-content-worker.js";
 import os from "node:os";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "./db.js";
-import { readCommittedArtifactFiles } from "./artifact-repo-resolution.js";
-import { getArtifact, resolveArtifactRefReadonly } from "./provider-artifacts.js";
+import {
+  resolveArtifactIdentity,
+  resolvedArtifactRecord,
+} from "./provider-artifacts.js";
+import {
+  artifactMaterializationTarget
+} from "./artifact-identity.js";
+import {
+  readArtifactMaterial
+} from "./artifact-materialization.js";
+import type { ArtifactMaterializationTarget, ArtifactMaterializationResult } from "./contracts.js";
 import type { ArtifactMaterializationCheck, ArtifactRecord } from "./types.js";
 
 const DEFAULT_PREVIEW_BYTES = 128 * 1024;
@@ -57,63 +65,65 @@ export type ArtifactOpenFileResult =
   | { ok: true; artifact_id: string; path: string; source_kind: ArtifactContentSourceKind }
   | { ok: false; reason: string };
 
-/** One read path: a version's custody is never changed by blob dedup or source relocation. */
-export function readArtifactBytesFull(db: Db, id: string, maxBytes = MAX_DIFF_BYTES):
-  {ok:true;bytes:Buffer;source:string} | {ok:false;reason:string} {
-  const artifact = getArtifact(db,id);
-  if (!artifact) return {ok:false,reason:'artifact not found'};
-  if (artifact.custody_mode === null) return {ok:false,reason:'Select a saved version to read its Git authority; this blob has no stored bytes'};
-  try {
-    let bytes: Buffer;
-    let source: string;
-    if (artifact.custody_mode === 'git') {
-      const locator = artifact.repo_locator;
-      if (!artifact.home_repo_id || typeof locator.commit !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(locator.commit) || typeof locator.path !== 'string') {
-        return {ok:false,reason:'invalid Git custody'};
-      }
-      const file = readCommittedArtifactFiles(db,{project:artifact.home_repo_id,commit:locator.commit,paths:[locator.path]})[0];
-      bytes = file.bytes; source = artifact.uri;
-    } else {
-      if (!artifact.uri.startsWith('file://')) return {ok:false,reason:'stored artifact bytes are unavailable'};
-      const filename = fileURLToPath(artifact.uri);
-      const stat = fs.statSync(filename);
-      if (!stat.isFile()) return {ok:false,reason:'stored artifact is not a regular file'};
-      if (stat.size > maxBytes) return {ok:false,reason:'artifact exceeds size limit'};
-      bytes = fs.readFileSync(filename); source = artifact.uri;
-    }
-    if (bytes.length > maxBytes) return {ok:false,reason:'artifact exceeds size limit'};
-    if (crypto.createHash('sha256').update(bytes).digest('hex') !== artifact.content_hash) return {ok:false,reason:'artifact bytes do not match registered sha256'};
-    return {ok:true,bytes,source};
-  } catch(error) { return {ok:false,reason:String(error)}; }
+export type ArtifactByteRead =
+  | { ok: true; bytes: Buffer; source: string }
+  | { ok: false; reason: string; code: import("./contracts.js").ArtifactMaterializationError["code"] };
+
+export function resolveArtifactMaterial(db: Db, ref: string): ArtifactMaterializationResult<ArtifactMaterializationTarget> {
+  return artifactMaterializationTarget(resolveArtifactIdentity(db, ref, "surface"));
 }
 
-export function checkArtifactMaterialization(db: Db,id:string,options:{ref?:string}={}): ArtifactMaterializationCheck | null {
-  const artifact = getArtifact(db,id);
+export function readArtifactBytesFull(db: Db, target: ArtifactMaterializationTarget | string, maxBytes = MAX_DIFF_BYTES): ArtifactByteRead {
+  const pinned = typeof target === "string" ? resolveArtifactMaterial(db, target) : { ok: true as const, value: target };
+  if (!pinned.ok) return { ok: false, code: pinned.error.code, reason: pinned.error.message };
+  const read = readArtifactMaterial(db, pinned.value, maxBytes);
+  return read.ok ? { ok: true, ...read.value } : { ok: false, code: read.error.code, reason: read.error.message };
+}
+
+type ArtifactPresentation = Pick<ArtifactRecord, "id" | "media_type" | "size_bytes" | "metadata" | "repo_locator" | "content_hash" | "algorithm">;
+
+function materialDescriptor(target: ArtifactMaterializationTarget): ArtifactPresentation {
+  return { ...target.blob, id: target.id, metadata: target.metadata,
+    repo_locator: target.custody.kind === "git" ? { path: target.custody.path } : {} };
+}
+
+function contentInput(db: Db, input: string | ArtifactMaterializationTarget) {
+  if (typeof input !== "string") return { pinned: { ok: true as const, value: input }, artifact: materialDescriptor(input) };
+  const resolution = resolveArtifactIdentity(db,input,"surface");
+  const pinned = artifactMaterializationTarget(resolution);
+  return { pinned, artifact: pinned.ok ? materialDescriptor(pinned.value) : resolvedArtifactRecord(resolution) };
+}
+
+export function checkArtifactMaterialization(db: Db,id:string | ArtifactMaterializationTarget,options:{ref?:string}={}): ArtifactMaterializationCheck | null {
+  const { pinned, artifact } = contentInput(db,id);
   if (!artifact) return null;
-  const read = readArtifactBytesFull(db,id,Number.MAX_SAFE_INTEGER);
+  const read = pinned.ok ? readArtifactBytesFull(db,pinned.value,Number.MAX_SAFE_INTEGER) : {ok:false as const,code:pinned.error.code,reason:pinned.error.message};
   return {artifact_id:artifact.id,ref:options.ref,materializable:read.ok,
-    hash_matches:read.ok ? true : read.reason.includes("do not match registered sha256") ? false : null,expected_sha256:artifact.content_hash,
+    hash_matches:read.ok ? true : read.code === "hash_mismatch" ? false : null,expected_sha256:pinned.ok ? pinned.value.custody.hash : artifact.content_hash,
     actual_sha256:read.ok ? artifact.content_hash : null,source:read.ok ? read.source : null,
-    recoverability:artifact.custody_mode === 'git' ? 'repo_commit' : artifact.custody_mode === 'managed' ? 'mandible_cas' : null,
+    recoverability:pinned.ok && pinned.value.custody.kind === 'git' ? 'repo_commit' : pinned.ok && pinned.value.custody.kind === 'managed' ? 'mandible_cas' : null,
     reasons:read.ok ? [] : [read.reason],warnings:[]};
 }
 
-export function getArtifactContent(db:Db,id:string,options:{previewBytes?:number}={}):ArtifactContentResult|null {
-  const artifact=getArtifact(db,id);
+export function getArtifactContent(db:Db,id:string | ArtifactMaterializationTarget,options:{previewBytes?:number}={}):ArtifactContentResult|null {
+  const { pinned, artifact } = contentInput(db,id);
   if (!artifact) return null;
-  const read=readArtifactBytesFull(db,id,Number.MAX_SAFE_INTEGER);
-  if (read.ok) return artifactContentFromBytes(artifact,read.bytes,{kind:artifact.custody_mode === 'git' ? 'repo_locator' : 'managed_file',locator:read.source},options.previewBytes ?? DEFAULT_PREVIEW_BYTES);
-  const media=artifact.media_type ?? inferMediaType(artifact);
-  return {artifact_id:artifact.id,status:'unavailable',kind:'unavailable',media_type:media,size_bytes:artifact.size_bytes,
-    source:null,preview:null,reason:read.reason,download:{available:false,media_type:media,size_bytes:artifact.size_bytes,filename:artifactFilename(artifact),reason:read.reason}};
+  const read = pinned.ok ? readArtifactBytesFull(db,pinned.value,Number.MAX_SAFE_INTEGER) : {ok:false as const,code:pinned.error.code,reason:pinned.error.message};
+  if (read.ok) return artifactContentFromBytes(artifact,read.bytes,{kind:pinned.ok && pinned.value.custody.kind === 'git' ? 'repo_locator' : 'managed_file',locator:read.source},options.previewBytes ?? DEFAULT_PREVIEW_BYTES);
+  return unavailableArtifactContent(artifact,read.reason);
 }
 
-export async function getArtifactContentAsync(db:Db,id:string,options:{previewBytes?:number}={}):Promise<ArtifactContentResult|null> {
-  const artifact = getArtifact(db,id);
-  if (!artifact || artifact.custody_mode === 'git') return getArtifactContent(db,id,options);
+export async function getArtifactContentAsync(db:Db,id:string | ArtifactMaterializationTarget,options:{previewBytes?:number}={}):Promise<ArtifactContentResult|null> {
+  const { pinned, artifact } = contentInput(db,id);
+  if (!artifact) return null;
+  if (!pinned.ok) return unavailableArtifactContent(artifact,pinned.error.message);
+  if (pinned.value.custody.kind === 'git') {
+    const read = readArtifactBytesFull(db,pinned.value,Number.MAX_SAFE_INTEGER);
+    return read.ok ? artifactContentFromBytes(artifact,read.bytes,{kind:'repo_locator',locator:read.source},options.previewBytes ?? DEFAULT_PREVIEW_BYTES) : unavailableArtifactContent(artifact,read.reason);
+  }
   try {
-    if (!artifact.uri.startsWith('file://')) return getArtifactContent(db,id,options);
-    const filename = fileURLToPath(artifact.uri);
+    const storedUri = pinned.value.custody.storage_uri;
+    const filename = fileURLToPath(storedUri);
     const before = await fs.promises.stat(filename);
     if (!before.isFile() || await hashFileSha256OffThread(filename) !== artifact.content_hash) throw new Error('stored artifact bytes do not match registered sha256');
     const limit = Math.max(options.previewBytes ?? DEFAULT_PREVIEW_BYTES, HTML_PREVIEW_BYTES);
@@ -126,20 +136,18 @@ export async function getArtifactContentAsync(db:Db,id:string,options:{previewBy
       const after = await file.stat();
       if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ino !== after.ino) throw new Error('stored artifact changed during preview');
     } finally { await file.close(); }
-    return artifactContentFromBytes(artifact,bytes,{kind:'managed_file',locator:artifact.uri},options.previewBytes ?? DEFAULT_PREVIEW_BYTES,before.size);
+    return artifactContentFromBytes(artifact,bytes,{kind:'managed_file',locator:storedUri},options.previewBytes ?? DEFAULT_PREVIEW_BYTES,before.size);
   } catch(error) {
-    const media = artifact.media_type ?? inferMediaType(artifact), reason = String(error);
-    return {artifact_id:artifact.id,status:'unavailable',kind:'unavailable',media_type:media,size_bytes:artifact.size_bytes,source:null,preview:null,reason,
-      download:{available:false,media_type:media,size_bytes:artifact.size_bytes,filename:artifactFilename(artifact),reason}};
+    return unavailableArtifactContent(artifact,String(error));
   }
 }
 
-export async function resolveArtifactOpenFile(db:Db,id:string):Promise<ArtifactOpenFileResult|null> {
-  const artifact=getArtifact(db,id);
+export async function resolveArtifactOpenFile(db:Db,id:string | ArtifactMaterializationTarget):Promise<ArtifactOpenFileResult|null> {
+  const { pinned, artifact } = contentInput(db,id);
   if (!artifact) return null;
-  const read=readArtifactBytesFull(db,id,Number.MAX_SAFE_INTEGER);
+  const read = pinned.ok ? readArtifactBytesFull(db,pinned.value,Number.MAX_SAFE_INTEGER) : {ok:false as const,code:pinned.error.code,reason:pinned.error.message};
   if (!read.ok) return read;
-  if (artifact.custody_mode === 'managed') return {ok:true,artifact_id:artifact.id,path:fileURLToPath(artifact.uri),source_kind:'managed_file'};
+  if (pinned.ok && pinned.value.custody.kind === 'managed') return {ok:true,artifact_id:artifact.id,path:fileURLToPath(pinned.value.custody.storage_uri),source_kind:'managed_file'};
   // Metadata may suggest a filename, but cannot choose a directory or existing file.
   const suggested=path.win32.basename(path.basename(artifactFilename(artifact) ?? 'artifact')).replace(/\0/g,'');
   const basename=!suggested || suggested === '.' || suggested === '..' ? 'artifact' : suggested;
@@ -156,8 +164,14 @@ export async function resolveArtifactOpenFile(db:Db,id:string):Promise<ArtifactO
   }
 }
 
+function unavailableArtifactContent(artifact: ArtifactPresentation, reason: string): ArtifactContentResult {
+  const media = artifact.media_type ?? inferMediaType(artifact);
+  return { artifact_id: artifact.id, status: "unavailable", kind: "unavailable", media_type: media, size_bytes: artifact.size_bytes,
+    source: null, preview: null, reason, download: { available: false, media_type: media, size_bytes: artifact.size_bytes, filename: artifactFilename(artifact), reason } };
+}
+
 function artifactContentFromBytes(
-  artifact: ArtifactRecord,
+  artifact: ArtifactPresentation,
   bytes: Buffer,
   source: NonNullable<ArtifactContentResult["source"]>,
   previewBytes: number,
@@ -251,7 +265,7 @@ function prettyJson(text: string): string | null {
   }
 }
 
-function inferMediaType(artifact: ArtifactRecord): string {
+function inferMediaType(artifact: ArtifactPresentation): string {
   const filename = artifactFilename(artifact);
   const lowerName = (filename ?? "").toLowerCase();
   if (lowerName.endsWith(".json")) return "application/json";
@@ -328,7 +342,7 @@ function decodeUtf8Preview(bytes: Buffer, allowTrim = false): string | null {
   return null;
 }
 
-function artifactFilename(artifact: ArtifactRecord): string | null {
+function artifactFilename(artifact: ArtifactPresentation): string | null {
   return stringValue(artifact.metadata.filename)
     ?? stringValue(artifact.metadata.logical_name)
     ?? stringValue(artifact.repo_locator.path)?.split(/[\\/]/).pop()
@@ -371,7 +385,7 @@ export interface ArtifactDiffResult {
   reason?: string;
 }
 
-function diffSideMeta(artifact: ArtifactRecord | null, ref: string): ArtifactDiffSide {
+function diffSideMeta(artifact: ArtifactPresentation | null, ref: string): ArtifactDiffSide {
   if (!artifact) {
     return { ref, artifact_id: null, content_hash: null, media_type: "application/octet-stream", size_bytes: null, available: false, reason: "artifact ref did not resolve" };
   }
@@ -389,13 +403,16 @@ function diffSideMeta(artifact: ArtifactRecord | null, ref: string): ArtifactDif
 // (these GET endpoints must not materialize artifact rows/aliases/graph
 // entities). Accepts canonical logical artifact, artifact-version,
 // artifact-blob, and URI-style refs already known to the registry.
-function resolveDiffArtifact(db: Db, ref: string): ArtifactRecord | null {
-  return resolveArtifactRefReadonly(db, ref);
+function resolveDiffArtifact(db: Db, ref: string) {
+  const target = resolveArtifactMaterial(db, ref);
+  return target.ok ? { target: target.value, artifact: materialDescriptor(target.value) } : null;
 }
 
 export function diffArtifacts(db: Db, refA: string, refB: string): ArtifactDiffResult {
-  const artifactA = resolveDiffArtifact(db, refA);
-  const artifactB = resolveDiffArtifact(db, refB);
+  const resolvedA = resolveDiffArtifact(db, refA);
+  const artifactA = resolvedA?.artifact ?? null;
+  const resolvedB = resolveDiffArtifact(db, refB);
+  const artifactB = resolvedB?.artifact ?? null;
   const sideA = diffSideMeta(artifactA, refA);
   const sideB = diffSideMeta(artifactB, refB);
 
@@ -417,13 +434,13 @@ export function diffArtifacts(db: Db, refA: string, refB: string): ArtifactDiffR
     && artifactB.algorithm === "sha256"
     && artifactA.content_hash.toLowerCase() === artifactB.content_hash.toLowerCase();
 
-  const bytesA = readArtifactBytesFull(db, stringValue(artifactA.reference.canonical_version_id) ?? artifactA.id);
+  const bytesA = readArtifactBytesFull(db, resolvedA!.target);
   if (!bytesA.ok) {
     sideA.available = false;
     sideA.reason = bytesA.reason;
     return fail(`left artifact bytes unavailable: ${bytesA.reason}`);
   }
-  const bytesB = readArtifactBytesFull(db, stringValue(artifactB.reference.canonical_version_id) ?? artifactB.id);
+  const bytesB = readArtifactBytesFull(db, resolvedB!.target);
   if (!bytesB.ok) {
     sideB.available = false;
     sideB.reason = bytesB.reason;

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalSessionAuthority } from "../src/client-auth/session-authority.js";
 import { localCaPaths } from "../scripts/local-ca-trust.mjs";
@@ -136,7 +136,7 @@ describe("local HTTPS front door", () => {
 
     // Exercise default URL ports through the stored-data boundary. Registration
     // requires explicit ports, but the gateway must still reject corrupted rows.
-    const db = new Database(path.join(home, "config", "local-sessions", "sessions.db"));
+    const db = new SqliteDatabase(path.join(home, "config", "local-sessions", "sessions.db"));
     try {
       const update = db.prepare("UPDATE instance_registrations SET public_origin = ?, backend_origin = ? WHERE instance_id = 'production'");
       update.run("https://app.mandible.localhost", "http://127.0.0.1:443");

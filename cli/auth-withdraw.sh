@@ -9,23 +9,8 @@ reason=""
 expected_revision=""
 expected_custody_generation=""
 json=0
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --reason) reason="${2:-}"; shift 2 ;;
-    --expected-revision) expected_revision="${2:-}"; shift 2 ;;
-    --expected-custody-generation) expected_custody_generation="${2:-}"; shift 2 ;;
-    --json) json=1; shift ;;
-    -h|--help)
-      printf '%s\n' 'Usage: mandible auth withdraw <request> --reason <text> --expected-revision <n> --expected-custody-generation <n> [--json]'
-      exit 0
-      ;;
-    -*) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
-    *)
-      [[ -z "$request_id" ]] || { printf 'Unexpected argument: %s\n' "$1" >&2; exit 2; }
-      request_id="$1"; shift
-      ;;
-  esac
-done
+binding=$(mandible_bind_main_arguments "auth.withdraw" '{"request_id":{"position":0},"reason":{"option":"reason"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"json":{"option":"json","constant":"1"}}' "$@") || exit $?
+eval "$binding"
 [[ -n "$request_id" && -n "${reason//[[:space:]]/}" && "$expected_revision" =~ ^[0-9]+$ && "$expected_custody_generation" =~ ^[0-9]+$ ]] || {
   printf '%s\n' 'Usage: mandible auth withdraw <request> --reason <text> --expected-revision <n> --expected-custody-generation <n> [--json]' >&2
   exit 2

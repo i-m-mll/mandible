@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import {
@@ -16,6 +16,8 @@ import {
 } from "../src/ledger/operational-links.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
+import { LEDGER_EVENT_CREATED, ledgerSseTypeForEvent } from "../src/ledger/event-contract.js";
+import { SseManager, setSseManager } from "../src/sse.js";
 
 let tempDir = "";
 let db: Db;
@@ -456,4 +458,29 @@ describe("ledger operational links", () => {
       .filter((event) => event.event_type === "issue.closed");
     expect(closeEvents).toHaveLength(1);
   });
+});
+
+// A committed ledger mutation must also survive the daemon's real SSE validator.
+it("publishes a committed work-unit link through the actual SseManager", () => {
+  const project = createProject("sse-link-project");
+  const issue = createIssue(project.project.id, "sse-link-issue");
+  insertWorkUnit("sse-linked-work", issue.id, project.project.id);
+  const manager = new SseManager();
+  const published = vi.spyOn(manager, "broadcast"); // Call through to validation.
+  setSseManager(manager);
+  try {
+    expect(linkWorkUnitToLedgerIssue(db, {
+      work_unit_id: "sse-linked-work", issue_ref: issue.id, repo_ref: project.project.id,
+    })).toMatchObject({ ok: true, issue_id: issue.id });
+    expect(db.prepare("SELECT ledger_issue_id FROM work_units WHERE id = ?").get("sse-linked-work"))
+      .toEqual({ ledger_issue_id: issue.id });
+    const events = new LedgerStore(db).listEvents({ entity_type: "work_unit", entity_id: "sse-linked-work" });
+    expect(events).toHaveLength(1);
+    expect(published.mock.calls.map(([event]) => event.type)).toEqual([
+      ledgerSseTypeForEvent("work_unit.issue_linked"), LEDGER_EVENT_CREATED,
+    ]);
+    expect(published.mock.calls[1][0].data).toMatchObject({ id: events[0].id, entity_id: "sse-linked-work" });
+    expect(() => manager.broadcast({ type: "ledger:unregistered", data: {} } as never))
+      .toThrow("Invalid domain event envelope");
+  } finally { published.mockRestore(); manager.closeAll(); setSseManager(null); }
 });

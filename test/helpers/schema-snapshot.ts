@@ -60,7 +60,9 @@ export function normalizeSql(sql: string | null): string | null {
     else if (char === "[") quote = "]";
   }
 
-  return result.trim();
+  // SQLite quotes a simple table name after ALTER TABLE RENAME. The table
+  // identity is also checked independently; this spelling has no DDL meaning.
+  return result.trim().replace(/^(CREATE TABLE(?: IF NOT EXISTS)? )"([A-Za-z_][A-Za-z0-9_]*)"/, "$1$2");
 }
 
 export function sqliteMaster(db: Db): SqliteMasterRow[] {

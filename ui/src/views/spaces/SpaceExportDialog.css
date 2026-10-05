@@ -1,124 +1,15 @@
-/*
- * Owned styles for the Space export dialog (child f7be021). Scoped under
- * `.space-export-dialog`; uses shared theme tokens rather than hardcoded colors,
- * per `ui/src/views/spaces/README.md`. Never edits the global stylesheet.
- */
-
 .space-export-dialog {
-  display: grid;
-  gap: 12px;
-  width: min(520px, 92vw);
-  padding: 16px;
-  border: 1px solid var(--border, var(--neutral-alpha-12, rgba(255, 255, 255, 0.12)));
+  position: fixed;
+  inset: 8vh max(4vw, calc((100vw - 780px) / 2));
+  z-index: 60;
+  display: flex;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--surface, rgba(10, 16, 24, 0.98));
+  background: var(--surface);
   color: var(--text-primary);
+  box-shadow: 0 12px 40px var(--neutral-alpha-20);
 }
-
-.space-export-dialog__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.space-export-dialog__title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.space-export-dialog__close {
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.space-export-dialog__body {
-  display: grid;
-  gap: 8px;
-}
-
-.space-export-dialog__field {
-  display: grid;
-  gap: 4px;
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.space-export-dialog__field input {
-  height: 30px;
-  border: 1px solid var(--neutral-alpha-12, rgba(255, 255, 255, 0.12));
-  border-radius: 6px;
-  padding: 0 8px;
-  background: var(--neutral-alpha-04, rgba(0, 0, 0, 0.2));
-  color: var(--text-primary);
-  font: inherit;
-}
-
-.space-export-dialog__hint {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.space-export-dialog__hint code {
-  font-size: 11px;
-}
-
-.space-export-dialog__hint--idempotent {
-  color: var(--warning, #e0b34d);
-}
-
-.space-export-dialog__badge {
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--accent-soft, rgba(77, 163, 255, 0.16));
-  color: var(--accent, rgba(77, 163, 255, 0.9));
-  font-size: 10px;
-}
-
-.space-export-dialog__option {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.space-export-dialog__error {
-  margin: 0;
-  color: var(--danger, #ff7676);
-  font-size: 12px;
-}
-
-.space-export-dialog__actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.space-export-dialog__actions button {
-  min-height: 30px;
-  border: 1px solid var(--neutral-alpha-10, rgba(255, 255, 255, 0.1));
-  border-radius: 6px;
-  padding: 0 12px;
-  background: var(--neutral-alpha-06, rgba(255, 255, 255, 0.06));
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.space-export-dialog__submit {
-  border-color: var(--accent, rgba(77, 163, 255, 0.6)) !important;
-  background: var(--accent-soft, rgba(77, 163, 255, 0.16)) !important;
-}
-
-.space-export-dialog__actions button:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
+.space-export-dialog > .detail-pane-shell { width: 100%; }
+.space-export-dialog__field { display: grid; gap: 6px; margin: 12px 0; }
+.space-export-dialog__field input { padding: 8px; color: var(--text-primary); background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; }
+.space-export-dialog pre { overflow-wrap: anywhere; font-size: var(--detail-font-size); }

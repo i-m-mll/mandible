@@ -5,6 +5,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { MAIN_CLI_INSTANCE_RESPONSE } from "../helpers/cli-instance-response.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let server: http.Server | null = null;
@@ -45,7 +47,12 @@ function listenWithAuthCheck(): Promise<{ port: number; bodies: Array<Record<str
   const bodies: Array<Record<string, unknown>> = [];
   return new Promise((resolve) => {
     server = http.createServer((req, res) => {
-      if (req.method !== "POST" || req.url !== "/api/auth/check") {
+      if (req.method === "GET" && req.url === "/api/instance") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
+      return;
+    }
+    if (req.method !== "POST" || req.url !== "/api/auth/check") {
         res.statusCode = 404;
         res.end("not found");
         return;
@@ -123,7 +130,12 @@ describe("auth check CLI", () => {
     try {
       const port = await new Promise<number>((resolve) => {
         server = http.createServer((req, res) => {
-          if (req.method !== "POST" || req.url !== "/api/auth/check") {
+          if (req.method === "GET" && req.url === "/api/instance") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
+      return;
+    }
+    if (req.method !== "POST" || req.url !== "/api/auth/check") {
             res.statusCode = 404;
             res.end("not found");
             return;

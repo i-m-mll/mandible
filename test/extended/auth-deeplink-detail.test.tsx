@@ -1,3 +1,4 @@
+import { establishTestClientAccess } from '../helpers/local-client-access';
 // Bug: 2cddba2 — a deep-link (`#/auth?request=<id>`) to a resolved/archived
 // request outside the loaded queue/history lists must fetch the request from
 // the by-id detail route and render the detail pane from that record, with an
@@ -6,6 +7,9 @@
 // reconciliation effect steal the selection).
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { __resetBrowserSessionForTests } from '../../ui/src/client-auth-token';
+import { authMainInstance, bindAuthUiOperations } from '../helpers/auth-ui-fixture';
 
 import { AuthQueueView, type AuthRequest } from '../../ui/src/views/auth';
 
@@ -90,6 +94,7 @@ function stubFetchWithDetailRoute(handler: (id: string) => Response | null): Ret
 function renderDeepLinkedView(queue: AuthRequest[], initialRequestId: string) {
   return render(
     <AuthQueueView
+      instance={authMainInstance}
       queue={queue}
       historyQueue={[]}
       outputs={{}}
@@ -103,12 +108,15 @@ function renderDeepLinkedView(queue: AuthRequest[], initialRequestId: string) {
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await establishTestClientAccess();
+  bindAuthUiOperations();
   installMemoryLocalStorage();
   Element.prototype.scrollIntoView = vi.fn();
 });
 
 afterEach(() => {
+  __resetBrowserSessionForTests();
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -163,7 +171,7 @@ describe('AuthQueueView deep-linked request outside loaded lists', () => {
 
     renderDeepLinkedView([], 'req-nonexistent');
 
-    expect(await screen.findByText(/Auth request req-none was not found/)).toBeTruthy();
+    expect(await screen.findByText(/Approval request req-none was not found/)).toBeTruthy();
     expect(screen.queryByText('No requests in this view')).toBeNull();
   });
 });
@@ -269,7 +277,7 @@ describe('AuthQueueView short-form request params', () => {
 
     renderDeepLinkedView([], REMOTE_ID);
 
-    expect(await screen.findByText(/Failed to load auth request/)).toBeTruthy();
+    expect(await screen.findByText(/Failed to load approval request/)).toBeTruthy();
     expect(screen.queryByText('Loading request…')).toBeNull();
 
     failing = false;

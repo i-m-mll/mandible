@@ -1,3 +1,4 @@
+import { establishTestClientAccess } from '../helpers/local-client-access';
 import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,7 +19,8 @@ vi.mock("@xterm/xterm", () => ({
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await establishTestClientAccess();
   vi.spyOn(api, "listCanonicalProjects").mockResolvedValue([]);
   vi.spyOn(api, "getChatShownProjectsPreference").mockResolvedValue({
     version: 1, key: "chat_shown_projects", value: [], revision: 0,

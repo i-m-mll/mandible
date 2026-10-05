@@ -7,27 +7,7 @@ API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
 
 usage() {
-  cat <<'EOF'
-Usage: mandible auth action <subcommand> [args...]
-
-Subcommands:
-  list <request-id> [--json]
-  add <request-id> --kind <kind> --issue <issue-ref> [payload options]
-  edit <request-id> <action-id> --kind <kind> --issue <issue-ref> [payload options]
-  rm <request-id> <action-id>
-
-Payload options:
-  --payload-json <json>          Raw payload object
-  --body <markdown>              comment_add body
-  --reason-comment <markdown>    issue_close reason_comment
-  --status <value>               worker_status_set value
-  --label <label>                label_add / label_rm label
-  --checkpoint-kind <kind>       checkpoint_add kind
-  --checkpoint-payload-json <j>  checkpoint_add payload
-  --target <issue-ref>           link_add target
-  --type <type>                  link_add type
-  --note <markdown>              link_add note
-EOF
+  mandible_command_help auth action
 }
 
 json_payload_from_options() {
@@ -114,24 +94,11 @@ parse_action_options() {
   link_type=""
   note=""
 
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --kind) kind="$2"; shift 2 ;;
-      --issue|--target-issue) issue="$2"; shift 2 ;;
-      --payload-json) payload_json="$2"; shift 2 ;;
-      --body) body="$2"; shift 2 ;;
-      --reason-comment) reason_comment="$2"; shift 2 ;;
-      --status) status_value="$2"; shift 2 ;;
-      --label) label="$2"; shift 2 ;;
-      --checkpoint-kind) checkpoint_kind="$2"; shift 2 ;;
-      --checkpoint-payload-json) checkpoint_payload_json="$2"; shift 2 ;;
-      --target) target="$2"; shift 2 ;;
-      --type) link_type="$2"; shift 2 ;;
-      --note) note="$2"; shift 2 ;;
-      -h|--help) usage; exit 0 ;;
-      *) echo "Unknown option: $1" >&2; exit 2 ;;
-    esac
-  done
+  local binding
+  local -a selector=("$request_id")
+  [[ "$subcommand" != "edit" ]] || selector+=("$action_id")
+  binding=$(mandible_bind_arguments "auth.action.${subcommand}" '{"kind":{"option":"kind"},"issue":{"option":["issue","target-issue"]},"payload_json":{"option":"payload-json"},"body":{"option":"body"},"reason_comment":{"option":"reason-comment"},"status_value":{"option":"status"},"label":{"option":"label"},"checkpoint_kind":{"option":"checkpoint-kind"},"checkpoint_payload_json":{"option":"checkpoint-payload-json"},"target":{"option":"target"},"link_type":{"option":"type"},"note":{"option":"note"}}' "${selector[@]}" "$@") || return $?
+  eval "$binding"
 }
 
 print_action_human() {
@@ -147,16 +114,11 @@ shift || true
 case "$subcommand" in
   list)
     request_id="${1:-}"
-    [[ -n "$request_id" ]] || { echo "Usage: mandible auth action list <request-id> [--json]" >&2; exit 2; }
+    [[ -n "$request_id" ]] || { echo "Usage: $(mandible_command_syntax auth.action.list)" >&2; exit 2; }
     shift
     json=0
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --json) json=1; shift ;;
-        -h|--help) usage; exit 0 ;;
-        *) echo "Unknown option: $1" >&2; exit 2 ;;
-      esac
-    done
+    binding=$(mandible_bind_main_arguments "auth.action.list" '{"json":{"option":"json","constant":"1"}}' "$request_id" "$@") || exit $?
+    eval "$binding"
     tmp=$(mktemp)
     trap 'rm -f "$tmp"' EXIT
     status=$(api_send_capture GET "/api/auth/request/${request_id}/actions" "" "$tmp") || status=""
@@ -173,7 +135,7 @@ case "$subcommand" in
     ;;
   add)
     request_id="${1:-}"
-    [[ -n "$request_id" ]] || { echo "Usage: mandible auth action add <request-id> --kind <kind> --issue <issue-ref>" >&2; exit 2; }
+    [[ -n "$request_id" ]] || { echo "Usage: $(mandible_command_syntax auth.action.add)" >&2; exit 2; }
     shift
     parse_action_options "$@"
     payload=$(json_payload_from_options "$kind" "$payload_json" "$body" "$reason_comment" "$status_value" "$label" "$checkpoint_kind" "$checkpoint_payload_json" "$target" "$link_type" "$note")
@@ -183,7 +145,7 @@ case "$subcommand" in
   edit)
     request_id="${1:-}"
     action_id="${2:-}"
-    [[ -n "$request_id" && -n "$action_id" ]] || { echo "Usage: mandible auth action edit <request-id> <action-id> --kind <kind> --issue <issue-ref>" >&2; exit 2; }
+    [[ -n "$request_id" && -n "$action_id" ]] || { echo "Usage: $(mandible_command_syntax auth.action.edit)" >&2; exit 2; }
     shift 2
     parse_action_options "$@"
     payload=$(json_payload_from_options "$kind" "$payload_json" "$body" "$reason_comment" "$status_value" "$label" "$checkpoint_kind" "$checkpoint_payload_json" "$target" "$link_type" "$note")
@@ -191,9 +153,8 @@ case "$subcommand" in
     api_send PUT "/api/auth/request/${request_id}/actions/${action_id}" "$body_json"
     ;;
   rm|delete|remove)
-    request_id="${1:-}"
-    action_id="${2:-}"
-    [[ -n "$request_id" && -n "$action_id" ]] || { echo "Usage: mandible auth action rm <request-id> <action-id>" >&2; exit 2; }
+    binding=$(mandible_bind_main_arguments "auth.action.rm" '{"request_id":{"position":0},"action_id":{"position":1}}' "$@") || exit $?
+    eval "$binding"
     api_send DELETE "/api/auth/request/${request_id}/actions/${action_id}" "{}"
     ;;
   ""|-h|--help|help)

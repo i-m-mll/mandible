@@ -11,8 +11,9 @@ export class AdapterLifecycle {
     return () => this.listeners.delete(listener);
   }
 
-  emit(event: AdapterLifecycleEvent): void {
-    for (const listener of this.listeners) listener(event);
+  emit(event: AdapterLifecycleEvent): Result<void, ConversationControlError> {
+    for (const listener of this.listeners) { const result = listener(event); if (!result.ok) return result; }
+    return { ok: true, value: undefined };
   }
 }
 

@@ -1,4 +1,5 @@
-import Database from "better-sqlite3";
+import { seedHistoricalAuthCompletion } from "../helpers/auth-queue-fixtures.js";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../../src/auth-queue.js";
@@ -24,8 +25,8 @@ import {
 // `approved_by_user_id`, and `execution_evidence_id`, so `GET /api/auth/history`
 // resolved requester/approver/verified-signature from fabricated nulls.
 
-function createQueue(): { db: InstanceType<typeof Database>; queue: AuthQueue } {
-  const db = new Database(":memory:");
+function createQueue(): { db: InstanceType<typeof SqliteDatabase>; queue: AuthQueue } {
+  const db = new SqliteDatabase(":memory:");
   migrate(db);
   setupOperator(db, { slug: "history-summary-operator", display_name: "History Summary" }, 1);
   return { db, queue: new AuthQueue({ db }) };
@@ -44,8 +45,7 @@ function submitCompleted(queue: AuthQueue): string {
     commit_message: "feat: land it",
     execution_mode: "remote",
   });
-  queue.approve(request.id);
-  queue.setResult(request.id, 0, "console output");
+  seedHistoricalAuthCompletion(queue, request.id, "console output");
   return request.id;
 }
 
@@ -56,7 +56,7 @@ function submitCompleted(queue: AuthQueue): string {
  * in-memory harness does not run.
  */
 function attributeRequest(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   id: string,
 ): { approverId: string; evidenceId: string; credentialId: string } {
   const approver = createUser(db, {
@@ -197,10 +197,10 @@ describe("auth history summaries", () => {
 
     // The only fields the list projection deliberately drops: the unbounded
     // body blobs the summary exists to avoid serializing. Everything else in
-    // AuthRequestSummary (= Omit<AuthRequest, those three>) must be projected,
+    // AuthRequestSummary (= Omit<AuthRequest, those four>) must be projected,
     // so a future column added to the row but not to
     // AUTH_HISTORY_SUMMARY_COLUMNS trips this test (issues 98d25f3, 84d940f).
-    const bodyBlobs = new Set(["diff_summary", "spec_content", "output"]);
+    const bodyBlobs = new Set(["diff_summary", "spec_content", "output", "change_report"]);
 
     const [summary] = queue.listHistorySummaries(50);
     const detail = queue.getRequest(id)! as unknown as Record<string, unknown>;

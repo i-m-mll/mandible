@@ -1,3 +1,4 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -48,9 +49,7 @@ function listen(options: {
       requests.push({ method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null });
       res.setHeader("Content-Type", "application/json");
       if (req.method === "GET" && req.url === "/api/instance") {
-        res.end(JSON.stringify({
-          instance: { role: "main", operational_mutations: "allow", db_path: "/tmp/test.db" },
-        }));
+        res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
       } else if (req.method === "GET" && req.url === "/api/v1/trash?project=mandible&state=active") {
         res.end(JSON.stringify({ entries: [{ id: "trash-1", state: "active" }] }));
       } else if (req.method === "POST" && req.url === "/api/v1/trash") {

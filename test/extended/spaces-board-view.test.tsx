@@ -1,3 +1,6 @@
+import { invalidateApiGetCache, invalidateDashboardApiCacheForEvent } from '../../ui/src/api';
+import { queryClient } from '../../ui/src/query/client';
+import { establishTestClientAccess } from '../helpers/local-client-access';
 // Board renderer component tests (umbrella de56ffa, child 4d4d364 / C17).
 //
 // Drives the rendered board with a mocked fetch (the `GET /api/spaces/:id` fact
@@ -268,7 +271,10 @@ function createDeferred<T>(): {
   return { promise, resolve, reject };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  invalidateApiGetCache();
+  queryClient.clear();
+  await establishTestClientAccess();
   stubLocalStorage();
   MockEventSource.instances = [];
   vi.stubGlobal('EventSource', MockEventSource);
@@ -276,6 +282,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  invalidateApiGetCache();
+  queryClient.clear();
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -556,7 +564,12 @@ describe('SpaceBoardRenderer', () => {
     await waitFor(() => expect(card.getAttribute('data-selected')).toBe('true'));
 
     // Fire an SSE space:* event → triggers a reconciliation refetch.
-    MockEventSource.instances.forEach((es) => es.emit({ type: 'space:occurrence.updated', space_id: 'sp1' }));
+    state.packet.items.push(makeItem('iss2', { title:'New arrival' }));
+    state.packet.occurrences.push(makeOcc('o2', { item_id:'iss2' }));
+    // Supply the root app's cache invalidation alongside this isolated renderer.
+    invalidateDashboardApiCacheForEvent('space:occurrence:updated');
+    MockEventSource.instances.forEach((es) => es.emit({ type:'space:occurrence:updated', data:{space_id:'sp1'} }));
+    await screen.findByText('New arrival');
 
     await waitFor(() => {
       const reselected = (screen.getByText('Pinned').closest('.space-board__card') as HTMLElement);

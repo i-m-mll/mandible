@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
@@ -12,7 +12,8 @@ import { systemAction } from "../src/identity/resolver.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
-import { associateProjectArtifact, ingestArtifact, recordArtifactVersion } from "../src/provider-artifacts.js";
+import { associateProjectArtifact, ingestArtifact } from "../src/provider-artifacts.js";
+import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { registerConsoleRoutes } from "../src/routes/console.js";
 import { registerConversationSpawnRoutes } from "../src/routes/conversation-spawn.js";
 import { registerConversationControlRoutes } from "../src/routes/conversation-control.js";
@@ -40,7 +41,7 @@ describe("restricted project route enforcement", () => {
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-permission-routes-"));
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
     setupOperator(db, { slug: "operator", display_name: "Operator" });
@@ -173,7 +174,7 @@ describe("restricted project route enforcement", () => {
     expect(allowed.status).toBe(202);
     expect(allowed.body).toMatchObject({
       conversation_id: "10000000-0000-4000-8000-000000000001",
-      spawn: { state: "ready", native_session_id: expect.stringMatching(/^controller-/) },
+      spawn: { state: "ready", native_session_id: "provider-10000000-0000-4000-8000-000000000001" },
     });
     expect(control.acquireNew).toHaveBeenCalledWith(expect.objectContaining({
       conversation_id: "10000000-0000-4000-8000-000000000001",
@@ -462,6 +463,8 @@ describe("restricted project route enforcement", () => {
     expect((await resolve(logicalId)).status).toBe(403);
     expect((await resolve(recorded.series.id)).status).toBe(403);
     expect((await resolve(recorded.version.id)).status).toBe(403);
+    expect((await resolve(`artifact-blob:${recorded.artifact.content_hash}`)).status).toBe(403);
+    expect((await resolve(`artifact:sha256:${recorded.artifact.content_hash}`)).status).toBe(403);
 
     addGrant(db, {
       subject_type: "user", subject: agent.id, resource_type: "project",
@@ -472,6 +475,9 @@ describe("restricted project route enforcement", () => {
     const { resolution } = (granted.body as { resolution: ArtifactResolveResult });
     expect(resolution.logical_artifact?.id).toBe(logicalId);
     expect(resolution.artifact_version?.id).toBe(recorded.version.id);
+    expect(resolution.series?.id).toBe(recorded.series.id);
+    expect(resolution.version?.id).toBe(recorded.version.id);
+    expect((await resolve(`artifact-blob:${recorded.artifact.content_hash}`)).status).toBe(200);
   });
 });
 

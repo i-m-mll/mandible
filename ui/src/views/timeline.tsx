@@ -920,6 +920,10 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     () => detailRequestKey('timeline', timelineRequest),
     [timelineRequest],
   );
+  // Responses may rebuild the request object without changing its meaning.
+  // The fetch lifecycle follows the canonical key, using the latest payload.
+  const timelineRequestRef = useRef(timelineRequest);
+  timelineRequestRef.current = timelineRequest;
 
   useEffect(() => {
     const nextProjectRef = defaultProjectRef(repos, urlState.projectRef);
@@ -974,10 +978,11 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   useEffect(() => {
     const generation = requestGeneration.current;
     const controller = new AbortController();
-    const initialLoad = getProjectTimeline(timelineRequest, controller.signal)
+    const initialLoad = getProjectTimeline(timelineRequestRef.current, controller.signal)
       .then((next) => {
         if (
-          requestGeneration.current !== generation
+          controller.signal.aborted
+          || requestGeneration.current !== generation
           || activeProjectionRequestKeyRef.current !== timelineRequestKey
         ) return;
         writePersistedDetail('timeline', timelineRequestKey, next);
@@ -999,7 +1004,6 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     return () => controller.abort();
   }, [
     registerInitialRouteLoad,
-    timelineRequest,
     timelineRequestKey,
   ]);
 

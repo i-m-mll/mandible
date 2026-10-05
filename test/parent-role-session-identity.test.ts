@@ -11,7 +11,7 @@
  * identities — plus the invariant that must NOT change: the Codex archive path
  * still refuses to archive a live thread.
  */
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { listCompletedWorkerThreadArchiveCandidates } from "../src/codex-thread-archive.js";
@@ -109,7 +109,7 @@ function holderPayload(body: unknown): Record<string, unknown> {
 }
 
 beforeEach(async () => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setupOperator(db, { display_name: "Parent role identity operator" });
   const coordinator = createUser(db, {
@@ -396,8 +396,8 @@ describe("canonical session liveness", () => {
  * point rather than through the helper.
  */
 describe("Codex archive candidates still exclude live threads", () => {
-  function archiveDb(): InstanceType<typeof Database> {
-    const archive = new Database(":memory:");
+  function archiveDb(): InstanceType<typeof SqliteDatabase> {
+    const archive = new SqliteDatabase(":memory:");
     archive.exec(`
       CREATE TABLE work_units (
         id TEXT PRIMARY KEY,

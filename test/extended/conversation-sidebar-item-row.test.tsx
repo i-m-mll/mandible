@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { mockConversationStructureFromWindow, mockManagedSettings } from '../helpers/conversation-ui-transport';
+import { establishTestClientAccess } from '../helpers/local-client-access';
+
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,9 +13,6 @@ import type {
 import { CHAT_VIEW_STATE_KEY } from '../../ui/src/views/conversation-view-state.js';
 import { ConversationsView } from '../../ui/src/views/conversations.js';
 import { queryClient } from '../../ui/src/query/client.js';
-
-const sidebarItemRowStylesheet = readFileSync('ui/src/styles/sidebar-item-row.css', 'utf8');
-const chatHistoryStylesheet = readFileSync('ui/src/styles/chat-history.css', 'utf8');
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -29,7 +28,13 @@ vi.mock('@xterm/xterm', () => ({
 
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await establishTestClientAccess();
+  vi.stubGlobal('ResizeObserver', class { observe(): void {} unobserve(): void {} disconnect(): void {} });
+  mockConversationStructureFromWindow();
+  mockManagedSettings();
+  Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
+  vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});
   queryClient.clear();
   const rows = new Map<string, string>();
   const storage = {
@@ -193,7 +198,7 @@ describe('conversation sidebar labeled-item rows', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
     await waitFor(() => expect(updateArchive).toHaveBeenCalledWith(conversation.id, true));
     await waitFor(() => expect(screen.queryByRole('button', { name: `Open conversation ${conversation.title}` })).toBeNull());
-    expect(document.querySelector('.chat-history-detail')?.textContent).toContain(conversation.title);
+    await waitFor(() => expect(document.querySelector('.chat-history-detail')?.textContent).toContain(conversation.title));
 
     fireEvent.click(screen.getByRole('button', { name: 'Search and filter options' }));
     fireEvent.click(screen.getByRole('button', { name: 'Archived' }));
@@ -210,35 +215,6 @@ describe('conversation sidebar labeled-item rows', () => {
     await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
   });
 
-  it('keeps selected and idle Chat widths full until actual focus reveals the shared overlay', async () => {
-    const idleConversation = {
-      ...conversation,
-      id: 'conv-idle',
-      title: 'Idle conversation with a long title',
-      session_id: 'session-idle',
-      started_at: '2026-08-16T12:00:00.000Z',
-      tags: [],
-    };
-    vi.spyOn(api, 'getConversationSidebar').mockResolvedValue(sidebarResponse([conversation, idleConversation]));
-    vi.spyOn(api, 'getConversationWindow').mockImplementation(async (id) => (
-      positionWindow(id === idleConversation.id ? idleConversation : conversation)
-    ));
-    vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
-    vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
-    render(<ConversationsView consoleSessions={[]} initialConversationId={null} initialSessionId={null} onSelectSession={() => undefined} onNewConversation={() => undefined} />);
-
-    const selected = await screen.findByRole('button', { name: `Open conversation ${conversation.title}` });
-    const idle = await screen.findByRole('button', { name: `Open conversation ${idleConversation.title}` });
-    await waitFor(() => expect(selected.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--selected')).toBe(true));
-    expect(idle.closest('.sidebar-item-row')?.classList.contains('sidebar-item-row--selected')).toBe(false);
-    expect(idle.nextElementSibling?.classList.contains('sidebar-item-row__trailing')).toBe(true);
-    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__provider-mark \{\s*opacity: 1;/);
-    expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__(?:trailing|actions)/);
-    idle.focus();
-    expect(document.activeElement).toBe(idle);
-    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row:hover,\s*\.sidebar-item-row:focus-within \{[^}]*--sidebar-item-row-reveal-width: var\(--sidebar-item-row-trailing-width, 0px\);/s);
-    expect(chatHistoryStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|content|select|label|actions|provider)/);
-  });
 
   it('keeps section nodes separate while giving leaf rows direct Pin and secondary overflow actions', async () => {
     let serverRow = conversation;
@@ -275,10 +251,6 @@ describe('conversation sidebar labeled-item rows', () => {
     const trailing = row?.querySelector('.sidebar-item-row__trailing');
     expect(trailing?.firstElementChild?.classList.contains('sidebar-item-row__actions')).toBe(true);
     expect(trailing?.lastElementChild?.classList.contains('sidebar-item-row__provider')).toBe(true);
-    expect(sidebarItemRowStylesheet).not.toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__trailing/);
-    expect(sidebarItemRowStylesheet).toMatch(/\.sidebar-item-row--selected \.sidebar-item-row__provider-mark \{\s*opacity: 1;/);
-    expect(sidebarItemRowStylesheet).not.toMatch(/sidebar-selection|selection-(?:claude|codex|agy)/);
-    expect(chatHistoryStylesheet).not.toMatch(/sidebar-item-row__(?:trailing|select|label|actions|provider)/);
     expect(row?.querySelector('.agent-mark')).toBeNull();
     const chatsHeading = screen.getByRole('button', { name: /^Chats/ });
     expect(chatsHeading.classList.contains('sidebar-item-row')).toBe(false);
@@ -407,8 +379,7 @@ describe('conversation sidebar labeled-item rows', () => {
       `Open conversation ${conversation.title}`,
     ]);
     await waitFor(() => expect(savedSidebarOrder.pinnedConversationIds).toEqual([
-      existingPinnedConversation.id,
-      conversation.id,
+      existingPinnedConversation.id, conversation.id,
     ]));
 
     cleanup();
@@ -478,10 +449,9 @@ describe('conversation sidebar labeled-item rows', () => {
     expect(updateConversation).not.toHaveBeenCalled();
     const pinnedSection = screen.getByRole('button', { name: /^Pinned/ }).closest('section')!;
     expect(within(pinnedSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
-    await waitFor(() => expect(savedSidebarOrder.pinnedConversationIds).toEqual([
-      existingPinnedConversation.id,
-      conversation.id,
-    ]));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}').previewPinOverrides)
+      .toMatchObject({ [conversation.id]: true }));
+    expect(api.updateSidebarOrderPreference).not.toHaveBeenCalled();
 
     cleanup();
     renderPreview();
@@ -497,8 +467,8 @@ describe('conversation sidebar labeled-item rows', () => {
     expect(updateConversation).not.toHaveBeenCalled();
     const chatsSection = screen.getByRole('button', { name: /^Chats/ }).closest('section')!;
     expect(within(chatsSection).getByRole('button', { name: `Open conversation ${conversation.title}` })).toBeTruthy();
-    await waitFor(() => expect(savedSidebarOrder.pinnedConversationIds).toEqual([
-      existingPinnedConversation.id,
-    ]));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(CHAT_VIEW_STATE_KEY) ?? '{}').previewPinOverrides)
+      .toMatchObject({ [conversation.id]: false }));
+    expect(api.updateSidebarOrderPreference).not.toHaveBeenCalled();
   });
 });

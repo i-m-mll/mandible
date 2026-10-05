@@ -1,3 +1,4 @@
+import { resolvedArtifactRecord } from "../../../src/artifact-identity.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
@@ -42,6 +43,7 @@ import {
   type ArtifactContentResult,
   type ArtifactDiffResult,
   type ArtifactDraftRecord,
+  type ArtifactDraftPublishResult,
   type ArtifactLinkRecord,
   type ArtifactRecord,
   type ArtifactQueryParams,
@@ -344,26 +346,26 @@ export function ArtifactsView({
     const latestTracking = next.warnings?.includes('series_latest_not_pinned') && !options?.forcePinned;
     setSelectedSeriesRef(nextSeriesRef);
     setSelectedVersionNo(next.artifact_version && !latestTracking ? next.artifact_version.version_no : null);
-    setSelectedArtifactId(next.artifact?.id ?? next.artifact_version?.id ?? null);
-    setSelectedArtifact(next.artifact);
+    setSelectedArtifactId(resolvedArtifactRecord(next)?.id ?? next.artifact_version?.id ?? null);
+    setSelectedArtifact(resolvedArtifactRecord(next));
   }, []);
 
   const applyArtifactDeepLinkSelection = useCallback(async (
     next: ArtifactResolveResult,
     isCancelled: () => boolean,
   ) => {
-    if (next.artifact && !next.logical_artifact && !next.artifact_version) {
+    if (resolvedArtifactRecord(next) && !next.logical_artifact && !next.artifact_version) {
       try {
-        const history = sortedVersionHistory(await getArtifactVersions(next.artifact.id));
+        const history = sortedVersionHistory(await getArtifactVersions(resolvedArtifactRecord(next)!.id));
         if (isCancelled()) return;
-        const pinnedVersion = history.versions.find((version) => version.artifact_id === next.artifact?.id) ?? null;
+        const pinnedVersion = history.versions.find((version) => version.artifact_id === resolvedArtifactRecord(next)?.id) ?? null;
         if (pinnedVersion) {
           setResolution(next);
           setVersionHistory(history);
           setSelectedSeriesRef(seriesRecordRef(history.series));
           setSelectedVersionNo(pinnedVersion.version_no);
-          setSelectedArtifactId(next.artifact.id);
-          setSelectedArtifact(next.artifact);
+          setSelectedArtifactId(resolvedArtifactRecord(next)!.id);
+          setSelectedArtifact(resolvedArtifactRecord(next));
           return;
         }
       } catch (err) {
@@ -545,7 +547,7 @@ export function ArtifactsView({
       const cachedSelection = selectedVersionNo === null
         ? newestFirst.versions[0] ?? null
         : newestFirst.versions.find((version) => version.version_no === selectedVersionNo) ?? null;
-      setSelectedArtifactId(cachedSelection?.artifact_id ?? null);
+      if (cachedSelection) setSelectedArtifactId(cachedSelection.artifact_id);
     }
     setDetailLoading(true);
     setError(null);
@@ -586,7 +588,8 @@ export function ArtifactsView({
 
   useLayoutEffect(() => {
     if (!selectedArtifactId) return;
-    if (selectedArtifact?.id === selectedArtifactId && resolution?.artifact?.id === selectedArtifactId) return;
+    if (selectedArtifact?.id === selectedArtifactId && resolvedArtifactRecord(resolution)?.id === selectedArtifactId
+      && selectedArtifact.links && selectedArtifact.aliases) return;
     const requestId = artifactRequestIdRef.current + 1;
     artifactRequestIdRef.current = requestId;
     const controller = new AbortController();
@@ -611,7 +614,7 @@ export function ArtifactsView({
     return () => {
       controller.abort();
     };
-  }, [resolution?.artifact?.id, selectedArtifact?.id, selectedArtifactId]);
+  }, [resolvedArtifactRecord(resolution)?.id, selectedArtifact?.id, selectedArtifactId]);
 
   useLayoutEffect(() => {
     if (!selectedArtifactId) {
@@ -755,34 +758,15 @@ export function ArtifactsView({
     writeArtifactHash(selectedSeriesRef, versionNo, lastWrittenHashRef);
   };
 
-  const handleVersionPublished = useCallback((published: { result: { series: ArtifactSeriesRecord; version: ArtifactVersionRecord; artifact: ArtifactRecord } }) => {
-    const nextSeriesRef = seriesRecordRef(published.result.series);
-    setVersionHistory((current) => {
-      const nextVersion = published.result.version;
-      if (!current || current.series.id !== published.result.series.id) {
-        return {
-          series: published.result.series,
-          versions: [nextVersion],
-          links: [],
-        };
-      }
-      const versions = [
-        nextVersion,
-        ...current.versions.filter((version) => version.id !== nextVersion.id),
-      ].sort((a, b) => b.version_no - a.version_no);
-      return {
-        ...current,
-        series: published.result.series,
-        versions,
-      };
-    });
+  const handleVersionPublished = useCallback((published: ArtifactDraftPublishResult) => {
+    const nextSeriesRef = canonicalArtifactSeriesRef(published.result.logical_artifact.id);
     setSelectedSeriesRef(nextSeriesRef);
-    setSelectedVersionNo(published.result.version.version_no);
-    setSelectedArtifactId(published.result.artifact.id);
-    setSelectedArtifact(published.result.artifact);
+    setSelectedVersionNo(published.result.artifact_version.version_no);
+    setSelectedArtifactId(published.result.artifact_version.id);
+    setSelectedArtifact(resolvedArtifactRecord(published.result));
     setArtifactContent(null);
-    setResolution(null);
-    writeArtifactHash(nextSeriesRef, published.result.version.version_no, lastWrittenHashRef);
+    setResolution(published.result);
+    writeArtifactHash(nextSeriesRef, published.result.artifact_version.version_no, lastWrittenHashRef);
     void loadSeries();
   }, [loadSeries]);
 
@@ -903,7 +887,7 @@ export function ArtifactsView({
         {!detailLoading && !detailPending && resolution?.target_type === 'artifact_blob' && (
           <UnsupportedArtifactBlob resolution={resolution} />
         )}
-        {!detailLoading && !detailPending && resolution && resolution.target_type !== 'artifact_blob' && !resolution.artifact && (
+        {!detailLoading && !detailPending && resolution && resolution.target_type !== 'artifact_blob' && !resolvedArtifactRecord(resolution) && (
           <UnresolvedArtifact resolution={resolution} />
         )}
         {coherentSelectedArtifact && (
@@ -988,7 +972,7 @@ export type ArtifactDetailProps = {
   onVersionChange: (versionNo: number | null) => void;
   onToggleVersionHistory: () => void;
   onCloseVersionHistory: () => void;
-  onVersionPublished?: (published: { result: { series: ArtifactSeriesRecord; version: ArtifactVersionRecord; artifact: ArtifactRecord } }) => void;
+  onVersionPublished?: (published: ArtifactDraftPublishResult) => void;
   onMetadataOpenChange?: (open: boolean) => void;
   content: ArtifactContentResult | null;
   contentLoading: boolean;
@@ -1350,7 +1334,7 @@ export function ArtifactDetail({
       setDraft(null);
       setDraftValue('');
       setEditMode(false);
-      setDraftStatus(`Published v${published.result.version.version_no}`);
+      setDraftStatus(`Published v${published.result.artifact_version.version_no}`);
       setDraftError(null);
       onVersionPublished?.(published);
     } catch (err) {
@@ -2725,7 +2709,7 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
   if (selection.artifactId || selection.ref) {
     const resolution = await resolveArtifact(selection.artifactId ?? selection.ref ?? '');
     if (resolution.target_type === 'artifact_blob') return;
-    resolvedArtifact = resolution.artifact;
+    resolvedArtifact = resolvedArtifactRecord(resolution);
     selectedSeriesRef = resolution.logical_artifact
       ? canonicalArtifactSeriesRef(resolution.logical_artifact.id)
       : null;
@@ -2734,21 +2718,21 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     selectedVersionNo = resolution.artifact_version && !latestTracking
       ? resolution.artifact_version.version_no
       : null;
-    selectedArtifactId = resolution.artifact?.id ?? resolution.artifact_version?.id ?? null;
+    selectedArtifactId = resolvedArtifactRecord(resolution)?.id ?? resolution.artifact_version?.id ?? null;
 
-    if (selection.artifactId && resolution.artifact && !resolution.logical_artifact && !resolution.artifact_version) {
+    if (selection.artifactId && resolvedArtifactRecord(resolution) && !resolution.logical_artifact && !resolution.artifact_version) {
       try {
-        loadedHistory = sortedVersionHistory(await getArtifactVersions(resolution.artifact.id));
+        loadedHistory = sortedVersionHistory(await getArtifactVersions(resolvedArtifactRecord(resolution)!.id));
         writePersistedDetail(
           'artifact-versions',
-          detailRequestKey('artifact-versions', { ref: resolution.artifact.id }),
+          detailRequestKey('artifact-versions', { ref: resolvedArtifactRecord(resolution)!.id }),
           loadedHistory,
         );
-        const pinnedVersion = loadedHistory.versions.find((version) => version.artifact_id === resolution.artifact?.id) ?? null;
+        const pinnedVersion = loadedHistory.versions.find((version) => version.artifact_id === resolvedArtifactRecord(resolution)?.id) ?? null;
         if (pinnedVersion) {
           selectedSeriesRef = seriesRecordRef(loadedHistory.series);
           selectedVersionNo = pinnedVersion.version_no;
-          selectedArtifactId = resolution.artifact.id;
+          selectedArtifactId = resolvedArtifactRecord(resolution)!.id;
         }
       } catch (error) {
         if (!isApiErrorStatus(error, 404)) throw error;

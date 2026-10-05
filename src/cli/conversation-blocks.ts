@@ -1,5 +1,6 @@
-#!/usr/bin/env node
-import Database from "better-sqlite3";
+#!/usr/bin/env bun
+import { parseCommand, commandHelp, stringOption, numberOption, flagOption } from "./grammar.js";
+import SqliteDatabase from "../sqlite.js";
 import { getParserForFile } from "../parsers/index.js";
 import { getParserCapability, PARSER_CAPABILITIES } from "../parsers/capabilities.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
@@ -28,33 +29,14 @@ interface CliArgs {
   json: boolean;
 }
 
-function usage(): void {
-  console.error(`Usage:
-  conversation-blocks logs <path> [--role ROLE] [--type TYPE[,TYPE...]] [--tool NAME] [--tool-kind KIND] [--since TIME] [--until TIME] [--content TEXT] [--limit N] [--json]
-  conversation-blocks conversations <db> <id|session-id> [--role ROLE] [--type TYPE[,TYPE...]] [--tool NAME] [--tool-kind KIND] [--since TIME] [--until TIME] [--content TEXT] [--limit N] [--json]
-  conversation-blocks capabilities [--provider codex|claude_code|gemini] [--json]`);
-}
+function usage(): void { console.error(commandHelp(["conversation-blocks"])); }
 
-function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { positional: [], limit: 50, json: false };
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    switch (arg) {
-      case "--json": args.json = true; break;
-      case "--role": args.role = argv[++i]; break;
-      case "--type": args.type = argv[++i]; break;
-      case "--tool": args.tool = argv[++i]; break;
-      case "--tool-kind": args.toolKind = argv[++i]; break;
-      case "--since": args.since = argv[++i]; break;
-      case "--until": args.until = argv[++i]; break;
-      case "--content":
-      case "--contains": args.content = argv[++i]; break;
-      case "--limit": args.limit = Number(argv[++i]); break;
-      default: args.positional.push(arg);
-    }
-  }
-  if (!Number.isFinite(args.limit) || args.limit < 1) args.limit = 50;
-  return args;
+function parseArgs(argv: string[], mode: string): CliArgs {
+  const parsed = parseCommand(["conversation-blocks", mode], argv);
+  return { positional: parsed.positionals.length ? parsed.positionals : [stringOption(parsed, "provider")!].filter(Boolean),
+    role: stringOption(parsed, "role"), type: stringOption(parsed, "type"), tool: stringOption(parsed, "tool"),
+    toolKind: stringOption(parsed, "tool-kind"), since: stringOption(parsed, "since"), until: stringOption(parsed, "until"),
+    content: stringOption(parsed, "content", "contains"), limit: numberOption(parsed, "limit") ?? 50, json: flagOption(parsed, "json") };
 }
 
 function filterOptions(args: CliArgs): BlockFilterOptions {
@@ -107,7 +89,7 @@ async function runConversations(args: CliArgs): Promise<void> {
   const dbPath = args.positional[0];
   const ident = args.positional[1];
   if (!dbPath || !ident) throw new Error("missing database path or conversation id");
-  const db = new Database(dbPath, { readonly: true });
+  const db = new SqliteDatabase(dbPath, { readonly: true });
   db.pragma("busy_timeout = 5000");
   db.pragma("query_only = ON");
   try {
@@ -140,7 +122,7 @@ async function runConversations(args: CliArgs): Promise<void> {
 
 async function main(): Promise<void> {
   const mode = process.argv[2];
-  const args = parseArgs(process.argv.slice(3));
+  const args = parseArgs(process.argv.slice(3), mode);
   if (mode === "logs") {
     await runLogs(args);
   } else if (mode === "conversations") {

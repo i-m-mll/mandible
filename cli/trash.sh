@@ -7,19 +7,7 @@ CLIENT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/ledger-client
 source "$CLIENT_HELPER"
 
 usage() {
-  cat <<'USAGE'
-Usage:
-  mandible trash list [--project <ref>] [--state <state>]
-  mandible trash create --project <ref> --branch <branch> --reason <reason> [--actor <actor>] [--issue <ref>...] [--checkout-root <path>] [--retention-days <days>]
-  mandible trash restore <id> [--worktree-path <path>] [--actor <actor>]
-  mandible trash gc [--now <timestamp>] [--limit <count>] [--actor <actor>]
-
-Create resolves --project through Mandible's canonical project registry; a
-registered checkout root is a valid reference. Successful create removes the
-normal worktree and branch after preserving them in reversible trash custody.
-Restore accepts entries in active, remove_failed, or restore_failed state.
-The gc_pending state is durable cleanup progress and may be listed or replayed.
-USAGE
+  mandible_command_help trash
 }
 
 action="${1:-}"
@@ -44,11 +32,8 @@ case "$action" in
     ;;
   create)
     requested_branch=""
-    previous=""
-    for argument in "$@"; do
-      if [[ "$previous" == "--branch" ]]; then requested_branch="$argument"; fi
-      previous="$argument"
-    done
+    binding=$(mandible_bind_main_arguments "trash.create" '{"requested_branch":{"option":"branch"}}' "$@") || exit $?
+    eval "$binding"
     error_file=$(mktemp) || exit 1
     response=$(MANDIBLE_LEDGER_ERROR_BODY_FILE="$error_file" mandible_trash_create "$@")
     status=$?

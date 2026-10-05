@@ -54,5 +54,5 @@ export function registerDashboardRoutes(
 ): void {
   server.get("/api/dashboard/badges", (_req, res) => {
     sendJson(res, 200, readDashboardBadgeCounts(authQueue, db));
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/dashboard/badges", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 }
