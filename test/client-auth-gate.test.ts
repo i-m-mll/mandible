@@ -15,8 +15,8 @@ beforeEach(() => {
   db = openDb(path.join(root, "mandible.db")); setDb(db);
   auth = new ClientAuthenticator(db, { secretsDir: path.join(root, "auth") });
   router = new Router({ clientAuth: auth });
-  router.post("/api/issues/test-write", (req, res) => res.json({ identity: req.client_identity ?? null }), { fileRpc: "allow" });
-  router.get("/api/read", (req, res) => res.json({ identity: req.client_identity ?? null }), { fileRpc: "allow" });
+  router.post("/api/issues/test-write", (req, res) => res.json({ identity: req.client_identity ?? null }), { operation: { id: "fixture:post:/api/issues/test-write", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
+  router.get("/api/read", (req, res) => res.json({ identity: req.client_identity ?? null }), { operation: { id: "fixture:get:/api/read", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 });
 afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
 

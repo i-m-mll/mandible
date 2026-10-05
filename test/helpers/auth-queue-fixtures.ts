@@ -605,22 +605,36 @@ export async function publishFixtureExecution(queue: AuthQueue, options: Paramet
 }
 
 
-/** Pause the actual executor after genuine proof so completion boundaries can be driven explicitly. */
+const originalFixtureExecutors = new WeakMap<AuthQueue, NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']>>();
+const pausedFixtureExecutions = new WeakMap<AuthQueue, Map<string, (output: string) => void>>();
+
+/** Pause the real execution boundary after genuine proof, retaining the ordinary result path. */
 export async function approvePausedFixtureRequest(queue: AuthQueue, id: string): Promise<void> {
   let started!: () => void;
   const ready = new Promise<void>(resolve => { started = resolve; });
-  (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = async () => {
-    started(); return new Promise<never>(() => {});
+  originalFixtureExecutors.set(queue, (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor);
+  const releases = pausedFixtureExecutions.get(queue) ?? new Map();
+  pausedFixtureExecutions.set(queue, releases);
+  (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = async options => {
+    const output = await new Promise<string>(resolve => {
+      releases.set(options.request_id, resolve); started();
+    });
+    options.onOutput?.({ request_id: options.request_id, stream: 'stderr', text: output, timestamp: Date.now() });
+    return { exit_code: 0, signal: null, stdout: '', stderr: output, output, started_at: Date.now(), finished_at: Date.now() };
   };
   await approveFixtureRequest(queue, id);
   await ready;
 }
 
-/** Record a real signed publication at an explicitly paused completion boundary. */
+/** Publish exact signed bytes, then release the ordinary executor completion path. */
 export async function completeFixturePublication(queue: AuthQueue, id: string): Promise<void> {
   const request = queue.getRequest(id)!;
   const output = request.type === 'merge'
     ? (await import('./auth-delivery-fixtures.js')).publishTestCandidate(request.cwd!, request).output
     : 'ok';
-  queue.setResult(id, 0, output);
+  const release = pausedFixtureExecutions.get(queue)?.get(id);
+  if (!release) throw new Error('Fixture execution was not paused.');
+  release(output);
+  (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = originalFixtureExecutors.get(queue)!;
+  await waitForStatus(queue, id, 'completed');
 }
