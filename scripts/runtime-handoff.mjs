@@ -342,7 +342,9 @@ export async function verifyRuntimeHandoffReceipt(journal, { probe = true } = {}
   const b = journal.binding;
   if (run('git', ['rev-parse', 'HEAD'], { cwd: b.root }) !== b.mergeCommit) throw new Error('Production checkout moved beyond the handoff candidate.');
   for (const [file, expected] of Object.entries(journal.receipt.files)) if (fileHash(file) !== expected) throw new Error(`Converged file changed: ${file}`);
-  const evidence = probe ? JSON.parse(await controller(journal, 'handoff-verify')) : journal.receipt.evidence;
+  // Recovery receipts were observed by this qualified verifier; old staged or
+  // installed controllers may predate their process identity evidence.
+  const evidence = probe ? JSON.parse(await controller(journal, 'handoff-verify', !!journal.recovery)) : journal.receipt.evidence;
   if (journal.receipt.evidence?.process && JSON.stringify(evidence.process) !== JSON.stringify(journal.receipt.evidence.process)) throw new Error('Converged daemon process changed after observation.');
   return { bindingDigest: journal.bindingDigest, evidence };
 }

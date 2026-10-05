@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it } from 'vitest';
@@ -109,4 +110,37 @@ it('runs the staged bundled helper without activating imported command-line entr
   // A terminal journal must exit without admission, rebuild or service changes.
   expect(execFileSync(runtime, [helper, 'worker', path.join(dir, 'journal.json')], { encoding: 'utf8', timeout: 5000 })).toBe('');
   expect(readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId)?.phase).toBe('failed');
+});
+
+
+it('replays accepted recovery with the qualified controller and still rejects a changed process', async () => {
+  const { home, dir, binding, journal } = fixture();
+  const repo = createAuthCheckRepo(); roots.push(repo);
+  const qualified = path.join(home, 'qualified'); fs.mkdirSync(qualified);
+  for (const name of ['runtime-handoff.mjs', 'process-group-supervisor.mjs', 'runtime-log-assessment.mjs', 'runtime-environment.mjs']) {
+    fs.copyFileSync(path.join(process.cwd(), 'scripts', name), path.join(qualified, name));
+  }
+  const legacyMarker = path.join(home, 'legacy-controller-used');
+  const legacy = `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(legacyMarker)}, 'used'); console.log(JSON.stringify({ health: { ready: true } }));`;
+  fs.writeFileSync(path.join(dir, 'controller.mjs'), legacy);
+  fs.mkdirSync(path.join(repo, 'scripts'));
+  fs.writeFileSync(path.join(repo, 'scripts/local-runtime.mjs'), legacy);
+  const identity = { pid: 123, startedAt: 'retained exact start', startupEpoch: 'retained epoch' };
+  const current = path.join(qualified, 'local-runtime.mjs');
+  fs.writeFileSync(current, `console.log(${JSON.stringify(JSON.stringify({ process: identity }))});`);
+  const completedBinding = { ...binding, root: repo, mergeCommit: git(repo, ['rev-parse', 'HEAD']) };
+  const completed = { ...journal, binding: completedBinding, bindingDigest: bindingDigest(completedBinding), environment: {},
+    phase: 'complete', recovery: { digest: 'accepted-recovery' },
+    receipt: { bindingDigest: bindingDigest(completedBinding), evidence: { process: identity }, files: {} } };
+  const runtime = await import(pathToFileURL(path.join(qualified, 'runtime-handoff.mjs')).href);
+  await expect(runtime.verifyRuntimeHandoffReceipt(completed)).resolves.toMatchObject({ evidence: { process: identity } });
+  fs.unlinkSync(path.join(dir, 'controller.mjs')); // acknowledgment already retired staged material
+  const acknowledged = { ...completed, phase: 'acknowledged' };
+  fs.writeFileSync(path.join(dir, 'journal.json'), JSON.stringify(acknowledged));
+  await expect(runtime.acknowledgeRuntimeHandoff(completedBinding)).resolves.toBeUndefined();
+  expect(fs.existsSync(legacyMarker)).toBe(false);
+  const before = fs.readFileSync(path.join(dir, 'journal.json'), 'utf8');
+  fs.writeFileSync(current, `console.log(${JSON.stringify(JSON.stringify({ process: { ...identity, pid: 456 } }))});`);
+  await expect(runtime.acknowledgeRuntimeHandoff(completedBinding)).rejects.toThrow('process changed');
+  expect(fs.readFileSync(path.join(dir, 'journal.json'), 'utf8')).toBe(before);
 });
