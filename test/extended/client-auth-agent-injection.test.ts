@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ClientAuthenticator } from "../../src/client-auth/authenticator.js";
@@ -12,10 +12,10 @@ import {
 } from "../../src/users/store.js";
 
 describe("agent client-auth provisioning", () => {
-  let db: InstanceType<typeof Database>;
+  let db: InstanceType<typeof SqliteDatabase>;
 
   beforeEach(() => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
   });

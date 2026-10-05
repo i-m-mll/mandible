@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import type http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import Database from 'better-sqlite3';
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
@@ -62,7 +62,7 @@ type BrowserSnapshot = {
 };
 
 let directory = '';
-let db: Database.Database;
+let db: SqliteDatabase;
 let server: http.Server;
 let origin = '';
 let expectedBlockIds: string[] = [];
@@ -243,7 +243,7 @@ async function listen(): Promise<void> {
 beforeAll(async () => {
   if (!chrome) throw new Error('Chromium is required for the source-backed Chat history gate.');
   directory = mkdtempSync(join(tmpdir(), 'mandible-source-backed-history-'));
-  db = new Database(join(directory, 'mandible.db'));
+  db = new SqliteDatabase(join(directory, 'mandible.db'));
   migrate(db);
   setDb(db);
   await seedSourceBackedConversation();

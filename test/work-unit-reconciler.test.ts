@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setDb, type Db } from "../src/db.js";
@@ -10,7 +10,7 @@ let db: Db;
 let logs: Array<{ level: string; event: string; data: Record<string, unknown> | undefined }>;
 
 beforeEach(() => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   db.exec(`
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,

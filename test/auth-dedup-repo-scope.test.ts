@@ -6,7 +6,7 @@
 // (head_branch, base_branch) alone refused the second repo's request as a
 // duplicate of the first repo's, and the refusal echoed the caller's own title
 // back with a success exit, so the missing delivery was invisible.
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -137,7 +137,7 @@ function registerWorkRepo(root: string): void {
 }
 
 function createQueue(): AuthQueue {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   testRequesterUserId = setupOperator(db, {
     slug: "auth-dedup-test",

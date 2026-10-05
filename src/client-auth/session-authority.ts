@@ -4,7 +4,7 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../sqlite.js";
 import { SignJWT, importPKCS8, importSPKI, jwtVerify } from "jose";
 import type { Effect } from "../security/effect-policy.js";
 
@@ -31,7 +31,7 @@ export type PreviewContext = {
 };
 
 export class LocalSessionAuthority {
-  private readonly db: Database.Database;
+  private readonly db: SqliteDatabase;
   private readonly now: () => number;
   private readonly privateKeyPath: string;
   private readonly publicKeyPath: string;
@@ -51,7 +51,7 @@ export class LocalSessionAuthority {
     if (!fs.existsSync(databasePath) && !options.initialize) {
       throw new Error(`Installation authority database is missing: ${databasePath}`);
     }
-    this.db = new Database(databasePath);
+    this.db = new SqliteDatabase(databasePath);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS authority_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

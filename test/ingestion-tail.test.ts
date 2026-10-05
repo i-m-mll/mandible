@@ -4,7 +4,7 @@ import fsp from "node:fs/promises";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
 import { triggerExactPathIngest, triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
@@ -113,7 +113,7 @@ describe("incremental tail ingestion", () => {
     await fsp.mkdir(sessionDir, { recursive: true });
     await writeWithMtime(sessionPath, initialCodexRows(sessionId), 1);
     process.env.CODEX_HOME = codexRoot;
-    const state = new Database(path.join(codexRoot, "state_5.sqlite"));
+    const state = new SqliteDatabase(path.join(codexRoot, "state_5.sqlite"));
     state.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, rollout_path TEXT, updated_at INTEGER, updated_at_ms INTEGER)");
     state.prepare("INSERT INTO threads VALUES (?, ?, ?, ?, ?)").run(
       sessionId,

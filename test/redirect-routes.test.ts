@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 import {
   registerRedirectRoutes,
@@ -159,7 +159,7 @@ describe("redirect routes", () => {
   });
 
   it("resolves issue refs through the ledger before building issue links", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     try {
       db.exec(`
         CREATE TABLE ledger_projects (

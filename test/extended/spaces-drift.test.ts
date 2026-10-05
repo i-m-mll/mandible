@@ -8,7 +8,7 @@
 //   - `last_seen_commit` / `last_seen_content_sha256` recorded on EVERY check;
 //   - the drift read routes are registered + self-allowlisted on the file
 //     transport (read-only, no blanket allow).
-import Database from 'better-sqlite3';
+import SqliteDatabase from "../../src/sqlite.ts";
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -131,7 +131,7 @@ function stubRunner(obs: {
 }
 
 beforeEach(() => {
-  db = new Database(':memory:');
+  db = new SqliteDatabase(':memory:');
   migrate(db);
   setDb(db);
   router = new Router();

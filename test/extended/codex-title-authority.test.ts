@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -15,7 +15,7 @@ function fixture(): { codexRoot: string; sourcePath: string; sessionId: string }
   const sourcePath = path.join(codexRoot, "sessions", "2026", "08", "17", `rollout-2026-08-17T12-13-07-${sessionId}.jsonl`);
   fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
   fs.writeFileSync(sourcePath, "{}\n");
-  const db = new Database(path.join(codexRoot, "state_5.sqlite"));
+  const db = new SqliteDatabase(path.join(codexRoot, "state_5.sqlite"));
   db.exec(`
     CREATE TABLE threads (
       id TEXT PRIMARY KEY,
@@ -54,8 +54,6 @@ describe("exact Codex title authority", () => {
     });
     const threadReads = statements.filter((sql) => /\bFROM threads\b/i.test(sql));
     expect(threadReads).toHaveLength(1);
-    // better-sqlite3 truncates long bound strings in verbose output, but the
-    // trace still proves the sole provider read carries an exact id predicate.
     expect(threadReads[0]).toMatch(new RegExp(`WHERE id = '${sessionId.slice(0, 32)}`));
     expect(threadReads[0]).not.toContain("unrelated");
   });

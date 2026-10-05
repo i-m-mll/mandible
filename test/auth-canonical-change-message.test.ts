@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -643,8 +643,8 @@ describe("auth request CLI change message composition", () => {
 });
 
 describe("auth queue canonical message storage", () => {
-  function newQueue(): { db: InstanceType<typeof Database>; queue: AuthQueue } {
-    const db = new Database(":memory:");
+  function newQueue(): { db: InstanceType<typeof SqliteDatabase>; queue: AuthQueue } {
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     setupOperator(db, { slug: "canonical-test", display_name: "Canonical Test" });
     return { db, queue: new AuthQueue({ db, backgroundMaintenance: false }) };

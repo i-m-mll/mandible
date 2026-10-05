@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuthClearanceManager } from "../src/auth-clearance.js";
@@ -276,7 +276,7 @@ describe("scoped protected-merge clearance", () => {
       expect(f.manager.uses(clearance.id)).toEqual([
         expect.objectContaining({ auth_request_id: request.id, request_snapshot_digest: consumed.use.request_snapshot_digest }),
       ]);
-      const restored = new Database(":memory:");
+      const restored = new SqliteDatabase(":memory:");
       try {
         restored.exec(buildMetadataBackupSql(f.db));
         expect(restored.prepare(

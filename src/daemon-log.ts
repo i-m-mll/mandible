@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { SqliteStatement } from "./sqlite.js";
 import type { Db } from "./db.js";
 import type { Logger, LogLevel } from "./types.js";
 import { hasCurrentOperationalLogVerification } from "./operational-log-verification.js";
@@ -46,7 +46,7 @@ type LogInsertParams = [
   string | null,
 ];
 
-type InsertStatement = Database.Statement<LogInsertParams>;
+type InsertStatement = SqliteStatement<LogInsertParams>;
 
 export interface StderrRotationConfig {
   filePath?: string;

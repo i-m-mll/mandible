@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -75,7 +75,7 @@ export function parseArguments(argv) {
 }
 
 function usage() {
-  return "Usage: npm run demo:briefing -- --db <absolute-fresh-path> [--json]";
+  return "Usage: bun run demo:briefing -- --db <absolute-fresh-path> [--json]";
 }
 
 function buildServer() {

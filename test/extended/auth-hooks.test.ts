@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import { AuthHookManager, authHookTimeoutMs } from "../../src/auth-hooks.js";
@@ -7,8 +7,8 @@ import { migrate } from "../../src/db.js";
 import type { AuthRequest } from "../../src/types.js";
 import { setupOperator } from "../../src/users/store.js";
 
-function createDbWithHooks(): InstanceType<typeof Database> {
-  const db = new Database(":memory:");
+function createDbWithHooks(): InstanceType<typeof SqliteDatabase> {
+  const db = new SqliteDatabase(":memory:");
   migrate(db);
   setupOperator(db, { slug: "auth-hooks-test", display_name: "Auth Hooks Test" }, 1);
   return db;

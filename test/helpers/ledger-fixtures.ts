@@ -16,7 +16,7 @@
  *   write rows directly, for tests that need exact ids and timestamps or run
  *   against a hand-built subset schema rather than a full migration.
  */
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -51,7 +51,7 @@ export interface AgentSeed {
 }
 
 export interface CreateMigratedDbOptions {
-  /** Database file to open. Defaults to a private in-memory database. */
+  /** SqliteDatabase file to open. Defaults to a private in-memory database. */
   path?: string;
   /** Seed a local human operator. Auth tests need one to attribute and approve. */
   operator?: OperatorSeed;
@@ -120,7 +120,7 @@ export function createMigratedDb(options: CreateMigratedDbOptions = {}): Db {
 export function createMigratedDbWithSeeds(
   options: CreateMigratedDbOptions = {},
 ): { db: Db; seeds: MigratedDbSeeds } {
-  const db = new Database(options.path ?? ":memory:");
+  const db = new SqliteDatabase(options.path ?? ":memory:");
   for (const pragma of options.pragmas ?? []) {
     db.pragma(pragma);
   }

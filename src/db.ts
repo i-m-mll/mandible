@@ -1,6 +1,6 @@
-import Database from "better-sqlite3";
+import { assertNotProductionDbUnderTest } from "../cli/production-db-guard.cjs";
+import SqliteDatabase from "./sqlite.js";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {
   assertMigrationSequence,
@@ -12,7 +12,7 @@ import {
 import type { Migration } from "./db-migrations.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 
-export type Db = Database.Database;
+export type Db = SqliteDatabase;
 export {
   assertMigrationSequence,
   CURRENT_SCHEMA_VERSION,
@@ -23,7 +23,6 @@ export {
 export type { Migration };
 
 export const SQLITE_COLD_START_TUNING = Object.freeze({
-  // better-sqlite3's bundled SQLite caps mmap just below 2 GiB.
   mmapSizeBytes: (2 * 1024 * 1024 * 1024) - (64 * 1024),
   cacheSizeKib: 256 * 1024,
   tempStore: "MEMORY",
@@ -58,153 +57,15 @@ export function getDbPath(): string {
   return process.env.MANDIBLE_DB ?? getDefaultDbPath();
 }
 
-// The guard anchors the production paths on the REAL system home
-// (os.userInfo().homedir, read from the password database) rather than
-// os.homedir(), which honors a $HOME override. Tests routinely isolate by
-// pointing HOME (and MANDIBLE_DB) at a throwaway temp home; that temp DB is not
-// production and must be allowed, while the real user's database stays guarded
-// regardless of $HOME. Falls back to os.homedir() only if userInfo is
-// unavailable.
-function realSystemHomeDir(): string {
-  try {
-    const info = os.userInfo();
-    if (info && typeof info.homedir === "string" && info.homedir.length > 0) {
-      return info.homedir;
-    }
-  } catch {
-    // userInfo can throw on exotic platforms; fall back below.
-  }
-  return os.homedir();
-}
-
-/** The durable production database path (issue 24f0316). */
-export const PRODUCTION_DB_PATH = path.join(
-  realSystemHomeDir(),
-  ".mandible",
-  "mandible.db",
-);
-
-/**
- * The pre-split production database path. It stays guarded for as long as the
- * file can exist: the copy-forward shim deliberately never deletes it, so a
- * test that resolved the old literal would still be pointing at live bytes. A
- * guard that only knew the new path would silently protect nothing on any
- * machine that has not restarted into the new layout yet.
- */
-export const LEGACY_PRODUCTION_DB_PATH = path.join(
-  realSystemHomeDir(),
-  ".cache",
-  "mandible",
-  "mandible.db",
-);
-
-/** Dedicated retained operational telemetry database (issue cb49400). */
-export const PRODUCTION_OPERATIONAL_LOG_DB_PATH = path.join(
-  realSystemHomeDir(),
-  ".mandible",
-  "operational-logs.db",
-);
-
-/** Every path that must never be opened under the test runner. */
-export const PRODUCTION_DB_PATHS: readonly string[] = Object.freeze([
+export {
   PRODUCTION_DB_PATH,
   LEGACY_PRODUCTION_DB_PATH,
   PRODUCTION_OPERATIONAL_LOG_DB_PATH,
-]);
-
-// Issue 07edc0d — structural isolation guard. On 2026-07-23 an unmerged
-// feature branch's schema migration executed against the live production
-// database because a test-invoked code path opened the default DB path
-// (inheriting the real HOME) instead of a fixture/temp path. This guard sits
-// at the single DB-open chokepoint so no future test can repeat the leak
-// regardless of which helper resolves the path: under the vitest test runner,
-// opening the real production database path is refused. The daemon and normal
-// CLI never run under vitest, so they are unaffected. The MANDIBLE_ALLOW_REAL_DB
-// opt-out exists only as a deliberate escape hatch; no test sets it.
-// This TypeScript guard is mirrored by a dependency-free CommonJS twin at
-// cli/production-db-guard.cjs, which the bash-embedded node helper in
-// cli/instructions.sh and the standalone .mjs maintenance scripts share so
-// that every direct production-DB open bypassing openDb() applies the same
-// refusal. Keep the two implementations in sync.
-function isUnderTestRunner(): boolean {
-  return (
-    process.env.VITEST === "true" ||
-    process.env.VITEST_WORKER_ID !== undefined ||
-    process.env.NODE_ENV === "test"
-  );
-}
-
-// Canonicalize to the real on-disk path so a symlink, relative segment, or
-// case-insensitive alias cannot smuggle the production path past a string
-// compare. Falls back to a resolved (non-real) path when the file does not
-// exist yet.
-function canonicalizePath(target: string): string {
-  const expanded =
-    target === "~"
-      ? realSystemHomeDir()
-      : target.startsWith("~/") || target.startsWith("~\\")
-        ? path.join(realSystemHomeDir(), target.slice(2))
-        : target;
-  try {
-    return fs.realpathSync.native(expanded);
-  } catch {
-    return path.resolve(expanded);
-  }
-}
-
-// Same-file check by device+inode, which catches hard links and case-alias
-// entries that resolve to the production bytes even when their canonical path
-// strings differ. Returns false when either side is absent.
-function sameFile(a: string, b: string): boolean {
-  try {
-    const sa = fs.statSync(canonicalizePath(a));
-    const sb = fs.statSync(canonicalizePath(b));
-    return sa.dev === sb.dev && sa.ino === sb.ino;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * True when `dbPath` refers to the production database file, whether by
- * canonical path equality or by pointing at the same on-disk bytes (symlink,
- * hard link, or case-insensitive alias). Exported for regression testing.
- */
-export function resolvesToProductionDbPath(
-  dbPath: string,
-  productionPath: string = PRODUCTION_DB_PATH,
-): boolean {
-  if (canonicalizePath(dbPath) === canonicalizePath(productionPath)) return true;
-  return sameFile(dbPath, productionPath);
-}
-
-/**
- * The production path `dbPath` resolves to, or null when it resolves to none of
- * them. Both the durable path and the retained pre-split path count.
- */
-export function resolvesToAnyProductionDbPath(
-  dbPath: string,
-  productionPaths: readonly string[] = PRODUCTION_DB_PATHS,
-): string | null {
-  for (const productionPath of productionPaths) {
-    if (resolvesToProductionDbPath(dbPath, productionPath)) return productionPath;
-  }
-  return null;
-}
-
-export function assertNotProductionDbUnderTest(dbPath: string): void {
-  if (process.env.MANDIBLE_ALLOW_REAL_DB === "1") return;
-  if (!isUnderTestRunner()) return;
-  const matched = resolvesToAnyProductionDbPath(dbPath);
-  if (matched) {
-    throw new Error(
-      `Refusing to open the production Mandible database under the test runner: ${canonicalizePath(matched)}. ` +
-        `Tests must open an explicit temp/fixture path or an in-memory database, never the real DB. ` +
-        `This guard prevents a test or test-invoked tool from executing schema migrations or writes ` +
-        `against live data (issue 07edc0d). To deliberately override, set MANDIBLE_ALLOW_REAL_DB=1.`,
-    );
-  }
-}
+  PRODUCTION_DB_PATHS,
+  resolvesToProductionDbPath,
+  resolvesToAnyProductionDbPath,
+  assertNotProductionDbUnderTest,
+} from "../cli/production-db-guard.cjs";
 
 // --- Startup copy-forward: ~/.cache/mandible → ~/.mandible (issue 24f0316) ---
 
@@ -281,7 +142,7 @@ function availableBytes(dir: string): number | null {
 
 /** Open the copy the way the daemon will and read its schema catalog. */
 function assertDbOpenable(dbPath: string): number {
-  const probe = new Database(dbPath, { fileMustExist: true });
+  const probe = new SqliteDatabase(dbPath, { fileMustExist: true });
   try {
     const row = probe.prepare("SELECT count(*) AS n FROM sqlite_master").get() as { n: number };
     return row.n;
@@ -494,7 +355,7 @@ export function openDb(dbPath: string = getDbPath(), options: OpenDbOptions = {}
   }
 
   ensureDir(path.dirname(effectivePath));
-  const db = new Database(effectivePath);
+  const db = new SqliteDatabase(effectivePath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.pragma(`busy_timeout = ${options.busyTimeoutMs ?? 5000}`);

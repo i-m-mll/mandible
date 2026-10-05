@@ -4,7 +4,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { accessSync, constants as fsConstants, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import Database from "better-sqlite3";
+import SqliteDatabase from "./sqlite.js";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
 import {
@@ -396,7 +396,7 @@ export interface CodexArchiveReplayResult {
 }
 
 export interface AuthQueueOptions {
-  db?: InstanceType<typeof Database>;
+  db?: InstanceType<typeof SqliteDatabase>;
   now?: () => number;
   ttlMs?: number;
   broadcast?: (event: SseEvent) => void;
@@ -567,7 +567,7 @@ class AncestryBatch {
 }
 
 export class AuthQueue {
-  private readonly db: InstanceType<typeof Database>;
+  private readonly db: InstanceType<typeof SqliteDatabase>;
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly backgroundMaintenance: boolean;
@@ -7532,7 +7532,7 @@ export class AuthQueue {
 }
 
 function projectAuthAttributionEvent(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   event: SseEvent,
 ): SseEvent {
   if (event.event !== "auth:new" && event.event !== "auth:updated") return event;
