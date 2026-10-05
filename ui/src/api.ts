@@ -2164,17 +2164,12 @@ export async function updateAppThemePreference(
  * dialog asks the daemon instead of reading the setting directly.
  */
 export type ConsoleLanePolicy = {
-  claude_default_backend_type: ConsoleBackendType;
-  claude_pty_lane_enabled: boolean;
+  terminal_backend_type: 'pty';
+  managed_providers: ('claude_code' | 'codex')[];
 };
 
 export async function getConsoleLanePolicy(): Promise<ConsoleLanePolicy> {
-  const payload = await cachedApiGetJson<unknown>('/api/console/lane-policy');
-  const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
-  return {
-    claude_default_backend_type: (record.claude_default_backend_type as ConsoleBackendType) ?? 'sdk',
-    claude_pty_lane_enabled: record.claude_pty_lane_enabled === true,
-  };
+  return cachedApiGetJson<ConsoleLanePolicy>('/api/console/lane-policy');
 }
 
 export async function updateSetting(key: string, value: string): Promise<void> {

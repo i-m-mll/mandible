@@ -615,4 +615,3 @@ export function registerConsoleRoutes(
     res.status(200).json({ session: operatorSession.meta });
   }, { operation: { id: "post:/api/console/operator/restart", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 }
-
