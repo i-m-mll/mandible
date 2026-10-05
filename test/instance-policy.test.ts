@@ -6,9 +6,19 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostUserPreferencesStore } from "../src/host-user-preferences.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
-import { authorizeEffects, operationForRequest, STANDARD_PREVIEW_EFFECTS, validatePreviewWritableRoots } from "../src/security/effect-policy.js";
+import { authorizeEffects, STANDARD_PREVIEW_EFFECTS, validatePreviewWritableRoots } from "../src/security/effect-policy.js";
 import { openDb } from "../src/db.js";
 import { readUserSetting, writeUserSetting } from "../src/user-settings.js";
+
+import { registeredOperationRouter } from "./helpers/registered-operation-router.js";
+const policyRouters = new Map<string, ReturnType<typeof registeredOperationRouter>>();
+function operationForRequest(method: string, pathname: string, role: "main" | "preview" = "main", body?: unknown) {
+  if (!policyRouters.has(role)) {
+    const instance = resolveInstanceInfo({ env: {} });
+    policyRouters.set(role, registeredOperationRouter({ ...instance, role }));
+  }
+  return policyRouters.get(role)!.resolveRequestOperation(method, pathname, body);
+}
 
 const roots = new Set<string>();
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.clear(); });
@@ -193,6 +203,7 @@ describe("instance effect policy", () => {
     ).run("user-one", "user-one", "human", "User One", Date.now(), Date.now());
     writeUserSetting(sourceDbHandle, "user-one", "ui_font_face", "space-grotesk");
     writeUserSetting(sourceDbHandle, "user-one", "app_rail_order", '{"version":1,"groups":{"primary":["chat"],"secondary":[]}}');
+    sourceDbHandle.pragma("wal_checkpoint(TRUNCATE)");
     sourceDbHandle.close();
     fs.copyFileSync(sourceDb, previewDbPath);
     const previewDb = openDb(previewDbPath);
@@ -238,7 +249,7 @@ describe("instance effect policy", () => {
     previewDb.close();
 
     const unchanged = new SqliteDatabase(source, { readonly: true });
-    expect(unchanged.prepare("SELECT value FROM notes ORDER BY rowid").pluck().all()).toEqual(["production"]);
+    expect((unchanged.prepare("SELECT value FROM notes ORDER BY rowid").all() as {value:string}[]).map(row => row.value)).toEqual(["production"]);
     unchanged.close();
     expect(authorizeEffects(instance, { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("PUT", "/api/host-preferences/app-theme"))).toEqual({ allowed: true });
   });
@@ -247,11 +258,11 @@ describe("instance effect policy", () => {
     const instance = preview();
     const session = { effect_ceiling: ["ledger:read", "ledger:write", "files:preview", "auth:protected"] as const };
     expect(authorizeEffects(instance, session, operationForRequest("GET", "/api/issues"))).toEqual({ allowed: true });
-    expect(authorizeEffects(instance, session, operationForRequest("POST", "/api/issues"))).toEqual({ allowed: true });
+    expect(authorizeEffects(instance, session, operationForRequest("POST", "/api/issues/mandible"))).toEqual({ allowed: true });
     const runOptionsRead = operationForRequest("GET", "/api/console/run-options");
-    expect(runOptionsRead).toEqual({ id: "console.run_options.describe", effects: ["ledger:read"] });
+    expect(runOptionsRead).toEqual({ id: "get:/api/console/run-options", effects: ["ledger:read"] });
     expect(authorizeEffects(instance, session, runOptionsRead)).toEqual({ allowed: true });
-    expect(operationForRequest("POST", "/api/console/run-options")?.effects).toEqual(["process:external"]);
+    expect(operationForRequest("POST", "/api/console/run-options")).toBeNull();
     const sessionOptionsRead = operationForRequest("GET", "/api/console/sessions/session-id/options");
     expect(sessionOptionsRead?.effects).toEqual(["process:external"]);
     expect(authorizeEffects(instance, session, sessionOptionsRead)).toMatchObject({ allowed: false });

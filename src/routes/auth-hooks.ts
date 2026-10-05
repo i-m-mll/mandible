@@ -25,7 +25,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
   app.get("/api/auth/hooks", (_req, res) => {
     const hooks = hookManager.list();
     res.json({ hooks });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/auth/hooks", effects: ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Get a single hook
   app.get("/api/auth/hooks/:id", (req, res) => {
@@ -35,7 +35,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
       return;
     }
     res.json(hook);
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/auth/hooks/:id", effects: ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Create a new hook — capability-fenced (issue 27241e6).
   app.post("/api/auth/hooks", globalCapabilityRoute("change_settings", (req, res) => {
@@ -47,7 +47,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
     }
     const hook = hookManager.create(parsed.input);
     res.status(201).json(hook);
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "post:/api/auth/hooks", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   // Update an existing hook — capability-fenced (issue 27241e6). Update is as
   // powerful as create: it can rewrite the command bytes of an already-trusted
@@ -62,7 +62,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
       return;
     }
     res.json(updated);
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "put:/api/auth/hooks/:id", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   // Delete a hook (built-in hooks cannot be deleted) — capability-fenced.
   // Deleting a required hook removes a convergence guarantee, so it is a
@@ -82,7 +82,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
       }
       res.status(500).json({ error: "Unexpected error." });
     }
-  }), { fileRpc: "deny" });
+  }), { operation: { id: "delete:/api/auth/hooks/:id", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   return hookManager;
 }

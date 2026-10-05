@@ -290,7 +290,7 @@ export function registerConsoleRoutes(
         : null,
     }));
     res.status(200).json({ sessions });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/lane-policy — which Claude lanes this install ships
@@ -304,7 +304,7 @@ export function registerConsoleRoutes(
       claude_default_backend_type: DEFAULT_CLAUDE_BACKEND_TYPE,
       claude_pty_lane_enabled: isClaudePtyLaneEnabled(),
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/lane-policy", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/console/run-options", (req, res) => {
     const backendType = req.query.backend_type;
@@ -314,7 +314,7 @@ export function registerConsoleRoutes(
       return;
     }
     sendJson(res, 200, { runOptions: manager.describeRunOptions(backendType as BackendType, command) });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/run-options", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions — retired; creation has one Mandible authority
@@ -324,7 +324,7 @@ export function registerConsoleRoutes(
       error: "conversation_spawn_authority_required",
       message: "Create conversations through POST /api/conversation-spawns with the versioned Mandible request contract.",
     });
-  }, { authenticated: true }), { fileRpc: "deny" });
+  }, { authenticated: true }), { operation: { id: "post:/api/console/sessions", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
 
   // ------------------------------------------------------------------
@@ -338,7 +338,7 @@ export function registerConsoleRoutes(
     }
     if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
     res.status(200).json({ session: enrichWithProcessing(ptySession) });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.patch("/api/console/sessions/:id", async (req, res) => {
     const id = req.params.id;
@@ -381,7 +381,7 @@ export function registerConsoleRoutes(
 
     const session = manager.updateConfig(id, patch);
     res.status(200).json({ session });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "patch:/api/console/sessions/:id", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   server.get("/api/console/sessions/:id/options", (req, res) => {
     const session = manager.get(req.params.id);
@@ -391,7 +391,7 @@ export function registerConsoleRoutes(
       runOptions: manager.getRunOptions(req.params.id),
       mandibleControls: manager.getSessionOptionsControls(req.params.id),
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/options", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.patch("/api/console/sessions/:id/options", async (req, res) => {
     const id = req.params.id;
@@ -417,7 +417,7 @@ export function registerConsoleRoutes(
       if (error instanceof SessionRunOptionError) { sendRunOptionError(res, error); return; }
       throw error;
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "patch:/api/console/sessions/:id/options", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // DELETE /api/console/sessions/:id — stop and delete
@@ -436,7 +436,7 @@ export function registerConsoleRoutes(
     }
     manager.delete(id);
     res.status(200).json({ ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "delete:/api/console/sessions/:id", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/start — start a stopped session
@@ -465,7 +465,7 @@ export function registerConsoleRoutes(
       throw error;
     }
     res.status(200).json({ session: ptySession.meta });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/start", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/stop — stop a running session
@@ -485,7 +485,7 @@ export function registerConsoleRoutes(
     const body = (req.body ?? {}) as { signal?: string };
     manager.stop(id, typeof body.signal === "string" ? body.signal : undefined);
     res.status(200).json({ session: ptySession.meta });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/stop", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/restart — stop + start
@@ -505,7 +505,7 @@ export function registerConsoleRoutes(
     ptySession.clear();
     manager.start(id);
     res.status(200).json({ session: ptySession.meta });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/restart", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id/events — historical stream events
@@ -526,7 +526,7 @@ export function registerConsoleRoutes(
     res.status(200).json({
       events: sliced,
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/events", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id/params — per-message parameter snapshot
@@ -565,7 +565,7 @@ export function registerConsoleRoutes(
       ).all(id);
       res.status(200).json({ params: rows });
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/params", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/console/sessions/:id/permissions", (req, res) => {
     const id = req.params.id;
@@ -576,7 +576,7 @@ export function registerConsoleRoutes(
     }
     if (!requireManagedSessionAccess(req, res, manager, session)) return;
     res.status(200).json({ requests: manager.getPermissions(id) });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/permissions", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.post("/api/console/sessions/:id/permission/:requestId", (req, res) => {
     const id = req.params.id;
@@ -603,7 +603,7 @@ export function registerConsoleRoutes(
       return;
     }
     res.status(200).json({ ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/permission/:requestId", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   server.get("/api/console/sessions/:id/usage", (req, res) => {
     const id = req.params.id;
@@ -614,7 +614,7 @@ export function registerConsoleRoutes(
     }
     if (!requireManagedSessionAccess(req, res, manager, session)) return;
     res.status(200).json({ usage: manager.getUsage(id) });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/usage", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/resize — resize PTY
@@ -636,7 +636,7 @@ export function registerConsoleRoutes(
     }
     manager.resize(id, cols, rows);
     res.status(200).json({ ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/resize", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id/buffer — ring buffer snapshot
@@ -654,7 +654,7 @@ export function registerConsoleRoutes(
       data: buf.toString("base64"),
       bytes: buf.length,
     });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/sessions/:id/buffer", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   server.post("/api/console/sessions/:id/prompt", (req, res) => {
@@ -688,7 +688,7 @@ export function registerConsoleRoutes(
     }
 
     res.status(202).json({ ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/prompt", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   server.post("/api/console/sessions/:id/cancel", (req, res) => {
     const id = req.params.id;
@@ -706,7 +706,7 @@ export function registerConsoleRoutes(
     }
 
     res.status(202).json({ ok: true });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/sessions/:id/cancel", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/pinned — ordered list of pinned session IDs
@@ -729,7 +729,7 @@ export function registerConsoleRoutes(
       ids = ids.filter((id) => id !== operatorId);
     }
     res.status(200).json({ ids });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/pinned", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // PUT /api/console/pinned — replace pinned session list
@@ -769,7 +769,7 @@ export function registerConsoleRoutes(
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     ).run("console_pinned_sessions", JSON.stringify(persistedIds), Date.now());
     res.status(200).json({ ids: responseIds });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "put:/api/console/pinned", effects: ["ledger:write"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/operator — operator session details
@@ -778,7 +778,7 @@ export function registerConsoleRoutes(
     if (!requireOperatorRoute(req, res)) return;
     const operatorSession = manager.getAll().find((s) => s.meta.is_operator);
     res.status(200).json({ session: operatorSession?.meta ?? null });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/console/operator", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/operator/restart — kill and restart operator
@@ -795,7 +795,7 @@ export function registerConsoleRoutes(
     }
     manager.start(operatorSession.id);
     res.status(200).json({ session: operatorSession.meta });
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/console/operator/restart", effects: ["process:external"], requestSchema: null, reportingCategory: "console" }, fileRpc: "deny" });
 }
 
 function isPermissionDecision(value: unknown): value is PermissionDecision {

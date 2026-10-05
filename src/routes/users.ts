@@ -100,7 +100,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/users/operator", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.get("/api/users/operator/signing-key", (req, res) => {
     try {
@@ -140,7 +140,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "get:/api/users/operator/signing-key", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   router.post("/api/users/operator/signing-key", (req, res) => {
     try {
@@ -186,7 +186,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/users/operator/signing-key", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
 
   router.post("/api/users/setup", (req, res) => {
     try {
@@ -210,7 +210,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/setup", effects: ({ instanceRole }) => instanceRole === "preview" ? ["auth:credentials"] : [], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.post("/api/users/credentials/:id/revoke", (req, res) => {
     try {
@@ -231,7 +231,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/credentials/:id/revoke", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   // Issue b3e4a09 — retroactive credential redaction.
   //
@@ -258,7 +258,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/credentials/:id/redact", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.delete("/api/users/bindings/:id", (req, res) => {
     try {
@@ -271,7 +271,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/users/bindings/:id", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.get("/api/users/groups", (_req, res) => {
     try {
@@ -279,7 +279,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/users/groups", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/users/groups", (req, res) => {
     try {
@@ -294,7 +294,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/groups", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.delete("/api/users/groups/:ref", (req, res) => {
     try {
@@ -305,7 +305,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/users/groups/:ref", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.get("/api/users/groups/:ref/members", (req, res) => {
     try {
@@ -313,7 +313,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/users/groups/:ref/members", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/users/groups/:ref/members", (req, res) => {
     try {
@@ -326,7 +326,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/groups/:ref/members", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.delete("/api/users/groups/:ref/members/:user", (req, res) => {
     try {
@@ -337,7 +337,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/users/groups/:ref/members/:user", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.get("/api/users/grants", (req, res) => {
     try {
@@ -353,7 +353,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/users/grants", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/users/grants", (req, res) => {
     try {
@@ -380,7 +380,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/grants", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.delete("/api/users/grants/:id", (req, res) => {
     try {
@@ -391,7 +391,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/users/grants/:id", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.get("/api/users/:ref/access", (req, res) => {
     try {
@@ -430,7 +430,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/users/:ref/access", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.get("/api/users", (req, res) => {
     try {
@@ -443,7 +443,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/users", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/users", (req, res) => {
     try {
@@ -467,7 +467,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.get("/api/users/:ref/credentials", (req, res) => {
     try {
@@ -481,7 +481,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/users/:ref/credentials", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/users/:ref/credentials", (req, res) => {
     try {
@@ -506,7 +506,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/:ref/credentials", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.get("/api/users/:ref/bindings", (req, res) => {
     try {
@@ -514,7 +514,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/users/:ref/bindings", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/users/:ref/bindings", (req, res) => {
     try {
@@ -534,7 +534,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/:ref/bindings", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.get("/api/users/:ref", (req, res) => {
     try {
@@ -545,7 +545,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/users/:ref", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.patch("/api/users/:ref", (req, res) => {
     try {
@@ -567,5 +567,5 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/users/:ref", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 }

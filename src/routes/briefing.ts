@@ -441,7 +441,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       }
       sendJson(res, 200, { routes, omitted_count: omittedCount, unresolved_count: unresolvedCount });
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-destination-routes", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefing-destination-routes/:routeKey", (req, res) => {
     try {
@@ -450,7 +450,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       for (const entry of route.routes) artifactProjectForWrite(db, req, entry.logical_artifact_id);
       sendJson(res, 200, route);
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-destination-routes/:routeKey", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefing-destination-routes/plan", (req, res) => {
     try {
@@ -459,7 +459,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       routeProjectsForWrite(db, req, manifest);
       sendJson(res, 200, planBriefingDestinationRoutes(db, manifest));
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-destination-routes/plan", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefing-destination-routes", (req, res) => {
     try {
@@ -490,7 +490,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       }
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-destination-routes", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/report-placement", (req, res) => {
     try {
@@ -527,7 +527,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       }
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/report-placement", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefings/:briefingId/report-rounds", (req, res) => {
     try {
@@ -598,7 +598,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         briefing_id: briefingId, round_id: result.round_id });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefings/:briefingId/report-rounds", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups", (req, res) => {
     try {
@@ -629,7 +629,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       broadcast(BRIEFING_EVENTS.groupCreated, { group_id: group.id });
       sendJson(res, 201, { group });
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.put("/api/briefing-groups/:groupId/configuration", (req, res) => {
     try {
@@ -657,7 +657,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       if (result.changed) broadcast(BRIEFING_EVENTS.groupConfigurationUpdated, { group_id: result.group.id });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "put:/api/briefing-groups/:groupId/configuration", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/updates", (req, res) => {
     try {
@@ -673,7 +673,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/updates", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/promotions/apply", (req, res) => {
     try {
@@ -698,7 +698,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/promotions/apply", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/review-dispositions", (req, res) => {
     try {
@@ -730,7 +730,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/review-dispositions", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/review-candidates", (req, res) => {
     try {
@@ -749,7 +749,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       }, principal.actor.userId);
       sendJson(res, 200, { candidate });
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/review-candidates", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/destinations", (req, res) => {
     try {
@@ -764,7 +764,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       }, principal.actor, principal.viewer);
       sendJson(res, result.changed ? 201 : 200, result);
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/destinations", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.patch("/api/briefing-groups/:groupId", (req, res) => {
     try {
@@ -776,7 +776,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       if (result.changed) broadcast(BRIEFING_EVENTS.groupNameUpdated, { group_id: result.group.id });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/briefing-groups/:groupId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   const setGroupArchiveState = (archived: boolean) => (req: RequestLike, res: ResponseLike) => {
       try {
@@ -789,20 +789,20 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
         sendJson(res, 200, result);
       } catch (error) { handleError(res, error); }
     };
-  server.post("/api/briefing-groups/:groupId/archive", setGroupArchiveState(true), { fileRpc: "allow" });
-  server.post("/api/briefing-groups/:groupId/restore", setGroupArchiveState(false), { fileRpc: "allow" });
+  server.post("/api/briefing-groups/:groupId/archive", setGroupArchiveState(true), { operation: { id: "post:/api/briefing-groups/:groupId/archive", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  server.post("/api/briefing-groups/:groupId/restore", setGroupArchiveState(false), { operation: { id: "post:/api/briefing-groups/:groupId/restore", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.get("/api/briefing-groups", (req, res) => {
     try {
       sendJson(res, 200, { groups: listBriefingGroups(db, briefingLayoutViewer(db, req)) });
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-groups", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefing-groups/:groupId", (req, res) => {
     try {
       sendJson(res, 200, { group: readBriefingGroup(db, req.params.groupId, briefingLayoutViewer(db, req)) });
     } catch (error) { handleError(res, error); }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-groups/:groupId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefing-bundles", (req, res) => {
     try {
@@ -839,7 +839,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-bundles", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-bundles/:bundleId/briefings", (req, res) => {
     try {
@@ -867,7 +867,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-bundles/:bundleId/briefings", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.patch("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
@@ -923,7 +923,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/briefing-bundles/:bundleId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.delete("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
@@ -939,7 +939,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/briefing-bundles/:bundleId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.get("/api/briefing-bundles", (req, res) => {
     try {
@@ -947,7 +947,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-bundles", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
@@ -955,7 +955,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-bundles/:bundleId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefings", (req, res) => {
     try {
@@ -1037,7 +1037,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefings", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefings/runs", (req, res) => {
     try {
@@ -1102,7 +1102,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefings/runs", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.get("/api/briefings", (req, res) => {
     try {
@@ -1114,7 +1114,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefings", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefings/:briefingId", (req, res) => {
     try {
@@ -1157,7 +1157,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefings/:briefingId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.patch("/api/briefings/:briefingId", (req, res) => {
     try {
@@ -1188,7 +1188,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/briefings/:briefingId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   const setArchiveState = (archived: boolean) => (req: RequestLike, res: ResponseLike) => {
     try {
@@ -1204,8 +1204,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) { handleError(res, error); }
   };
 
-  server.post("/api/briefings/:briefingId/archive", setArchiveState(true), { fileRpc: "allow" });
-  server.post("/api/briefings/:briefingId/restore", setArchiveState(false), { fileRpc: "allow" });
+  server.post("/api/briefings/:briefingId/archive", setArchiveState(true), { operation: { id: "post:/api/briefings/:briefingId/archive", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  server.post("/api/briefings/:briefingId/restore", setArchiveState(false), { operation: { id: "post:/api/briefings/:briefingId/restore", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefings/:briefingId/rounds/:roundId/answers", (req, res) => {
     try {
@@ -1219,7 +1219,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/briefings/:briefingId/rounds/:roundId/answers", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "deny" });
 
   server.post("/api/briefings/:briefingId/rounds/:roundId/annotations", (req, res) => {
     try {
@@ -1233,7 +1233,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/briefings/:briefingId/rounds/:roundId/annotations", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "deny" });
 
   server.post("/api/briefings/:briefingId/rounds/:roundId/submit", (req, res) => {
     try {
@@ -1246,7 +1246,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "deny" });
+  }, { operation: { id: "post:/api/briefings/:briefingId/rounds/:roundId/submit", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "deny" });
 
   server.get("/api/briefings/:briefingId/rounds/:roundId/submissions/:submissionId/export", (req, res) => {
     try {
@@ -1256,5 +1256,5 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefings/:briefingId/rounds/:roundId/submissions/:submissionId/export", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 }
