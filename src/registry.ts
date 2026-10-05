@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "./sqlite.js";
 import { broadcast } from "./sse.js";
 import { AttributionReadResolver } from "./identity/read-projection.js";
 import { parseSessionIdentityMismatch } from "./identity/session-mismatch.js";
@@ -13,7 +13,7 @@ import type { Logger, NavMetadataStatus, Session, SessionStatus } from "./types.
 // Bug: 568eca7 — pinned-panes.tsv location for reaper backward compat
 const PINNED_PANES_TSV = path.join(os.homedir(), ".cache", "claude-reaper", "pinned-panes.tsv");
 
-type SqliteDatabase = ReturnType<typeof Database>;
+
 
 let psSupported: boolean | null = null;
 const CURRENT_PROCESS_PID_START = normalizePidStart(

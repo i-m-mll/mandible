@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, openDb, type Db } from "../src/db.js";
 import {
@@ -417,7 +417,7 @@ describe("backup/export coverage", () => {
     expect(sql).toContain("-- Table: artifact");
     expect(sql).toContain("-- Table: artifact_version");
 
-    const restored = new Database(path.join(tempDir, "restored.db"));
+    const restored = new SqliteDatabase(path.join(tempDir, "restored.db"));
     restored.pragma("foreign_keys = ON");
     restored.exec(sql);
 
@@ -565,7 +565,7 @@ describe("codex review fixes", () => {
     expect(series.latest_version_id).toBe(rows[rows.length - 1].id);
     expect(series.latest_version_id).toBe(r2.version.id);
 
-    const restored = new Database(path.join(tempDir, "cache-restored.db"));
+    const restored = new SqliteDatabase(path.join(tempDir, "cache-restored.db"));
     restored.pragma("foreign_keys = ON");
     restored.exec(buildMetadataBackupSql(db));
     const logicalId = series.id.replace(/^artifact-series:/, "artifact:");

@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { openDb, resetDb, setDb, type Db } from "../../src/db.js";
@@ -39,7 +39,7 @@ function createFixture(options: { includeLegacyDaemonLog?: boolean } = {}): { ro
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-projected-db-test-"));
   tempRoots.push(root);
   const source = path.join(root, "source.db");
-  const db = new Database(source);
+  const db = new SqliteDatabase(source);
   db.exec(`
     PRAGMA foreign_keys=ON;
     CREATE TABLE canonical_records (
@@ -307,7 +307,7 @@ describe("project-db-snapshot", () => {
     expect(manifest.tables.copied_rows).not.toHaveProperty("daemon_log");
     expect(manifest.tables.complete_table_count).toBe(5);
 
-    const projected = new Database(output, { readonly: true });
+    const projected = new SqliteDatabase(output, { readonly: true });
     expect(projected.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_log'",
     ).get()).toBeUndefined();
@@ -337,7 +337,7 @@ describe("project-db-snapshot", () => {
     expect(fs.existsSync(`${output}.manifest.json`)).toBe(true);
     expect(fs.statSync(source).size).toBe(sourceSizeBefore);
 
-    const projected = new Database(output, { readonly: true });
+    const projected = new SqliteDatabase(output, { readonly: true });
     expect(projected.prepare("SELECT id FROM canonical_records ORDER BY id").pluck().all())
       .toEqual(["canonical-1", "canonical-2"]);
     expect(projected.prepare("SELECT id FROM daemon_log ORDER BY id").pluck().all())
@@ -358,8 +358,8 @@ describe("project-db-snapshot", () => {
     expect(firstResult.status, firstResult.stderr).toBe(0);
     expect(secondResult.status, secondResult.stderr).toBe(0);
 
-    const firstDb = new Database(first, { readonly: true });
-    const secondDb = new Database(second, { readonly: true });
+    const firstDb = new SqliteDatabase(first, { readonly: true });
+    const secondDb = new SqliteDatabase(second, { readonly: true });
     for (const table of ["canonical_records", "daemon_log", "conversations", "conversation_blocks"]) {
       const sql = `SELECT * FROM ${table} ORDER BY 1`;
       expect(secondDb.prepare(sql).all()).toEqual(firstDb.prepare(sql).all());
@@ -373,13 +373,13 @@ describe("project-db-snapshot", () => {
     const output = path.join(root, "preview.db");
     expect(runSnapshot(source, output).status).toBe(0);
 
-    const sourceDb = new Database(source);
+    const sourceDb = new SqliteDatabase(source);
     sourceDb.prepare("INSERT INTO canonical_records VALUES (?, ?)").run("canonical-3", "three");
     sourceDb.close();
     const replacement = runSnapshot(source, output, ["--replace"]);
     expect(replacement.status, replacement.stderr).toBe(0);
 
-    const projected = new Database(output, { readonly: true });
+    const projected = new SqliteDatabase(output, { readonly: true });
     expect(projected.prepare("SELECT id FROM canonical_records ORDER BY id").pluck().all())
       .toEqual(["canonical-1", "canonical-2", "canonical-3"]);
     projected.close();
@@ -412,7 +412,7 @@ describe("project-db-snapshot", () => {
     expect(crypto.createHash("sha256").update(fs.readFileSync(fixture.source)).digest("hex"))
       .toBe(fixture.sourceHash);
 
-    const canonical = new Database(fixture.source, { readonly: true });
+    const canonical = new SqliteDatabase(fixture.source, { readonly: true });
     expect(canonical.prepare("SELECT title, block_count FROM conversations WHERE id = ?")
       .get(fixture.conversationId)).toEqual({
       title: "This session is being continued from a previous conversation that ran out of context. The summary be",
@@ -426,7 +426,7 @@ describe("project-db-snapshot", () => {
     `).all(fixture.conversationId);
     canonical.close();
 
-    const projected = new Database(output) as Db;
+    const projected = new SqliteDatabase(output) as Db;
     setDb(projected);
     process.env.MANDIBLE_CONVERSATION_CACHE_DB = path.join(fixture.root, "search-cache.db");
     expect(projected.prepare("SELECT title, source_hash, source_mtime, block_count FROM conversations WHERE id = ?")
@@ -495,7 +495,7 @@ describe("project-db-snapshot", () => {
     tempRoots.push(root);
     const source = path.join(root, "invalid.db");
     const output = path.join(root, "preview.db");
-    const db = new Database(source);
+    const db = new SqliteDatabase(source);
     db.exec("CREATE TABLE canonical_records (id TEXT PRIMARY KEY)");
     db.close();
 

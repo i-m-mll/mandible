@@ -9,7 +9,7 @@ import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 
 import { openDb } from "../../src/db.js";
 import { setSetting } from "../../src/client-auth/settings-kv.js";
@@ -1045,7 +1045,7 @@ describe("iab-preview launcher", () => {
     const sourceCache = path.join(root, "source-structure.db");
     const targetCache = path.join(root, "preview", "conversations", "structure.db");
 
-    const projected = new Database(projectedDb);
+    const projected = new SqliteDatabase(projectedDb);
     projected.exec(`
       CREATE TABLE conversations (id TEXT PRIMARY KEY);
       CREATE TABLE conversation_sources (
@@ -1057,7 +1057,7 @@ describe("iab-preview launcher", () => {
     `);
     projected.close();
 
-    const source = new Database(sourceCache);
+    const source = new SqliteDatabase(sourceCache);
     source.exec(`
       PRAGMA foreign_keys = ON;
       CREATE TABLE cache_conversations (
@@ -1090,17 +1090,17 @@ describe("iab-preview launcher", () => {
       conversations: 1,
       blocks: 1,
     });
-    const seeded = new Database(targetCache, { readonly: true });
+    const seeded = new SqliteDatabase(targetCache, { readonly: true });
     expect(seeded.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
       .toEqual([{ conversation_id: "kept", source_version_id: "version-current" }]);
     expect(seeded.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
       .toEqual([{ cache_conversation_id: 1, position: 0 }]);
     seeded.close();
 
-    const previewDb = new Database(projectedDb);
+    const previewDb = new SqliteDatabase(projectedDb);
     previewDb.prepare("UPDATE conversation_sources SET current_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
     previewDb.close();
-    const privateCache = new Database(targetCache);
+    const privateCache = new SqliteDatabase(targetCache);
     privateCache.prepare("UPDATE cache_conversations SET source_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
     privateCache.prepare("UPDATE cache_blocks SET position = 17 WHERE cache_conversation_id = 1").run();
     privateCache.close();
@@ -1113,7 +1113,7 @@ describe("iab-preview launcher", () => {
     });
     expect(refreshed.status, refreshed.stderr).toBe(0);
     expect(JSON.parse(refreshed.stdout)).toMatchObject({ status: "preserved", conversations: 1, blocks: 1 });
-    const retained = new Database(targetCache, { readonly: true });
+    const retained = new SqliteDatabase(targetCache, { readonly: true });
     expect(retained.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
       .toEqual([{ conversation_id: "kept", source_version_id: "version-preview" }]);
     expect(retained.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
@@ -1158,7 +1158,7 @@ describe("iab-preview launcher", () => {
     const second = await runLauncherExport("materializeProjectedAgentsReview", details);
     expect(second.status, second.stderr).toBe(0);
     expect(JSON.parse(second.stdout).round_id).toBe(JSON.parse(first.stdout).round_id);
-    const seeded = new Database(fixture.db, { readonly: true });
+    const seeded = new SqliteDatabase(fixture.db, { readonly: true });
     expect(seeded.prepare("SELECT profile, artifact_version_id FROM briefing_rounds").all()).toEqual([
       { profile: "mandible-briefing.v3", artifact_version_id: artifact.version.id },
     ]);
@@ -1168,7 +1168,7 @@ describe("iab-preview launcher", () => {
   it("materializes the exact retired copied-preview shape before startup preparation completes", async () => {
     const source = createSeedFixture();
     installRetiredV1Demo(source, { historicalCompatibleUsers: true });
-    const sourceDb = new Database(source.db);
+    const sourceDb = new SqliteDatabase(source.db);
     for (const ordinal of [2, 3]) {
       sourceDb.prepare(
         `INSERT INTO briefings
@@ -1222,7 +1222,7 @@ describe("iab-preview launcher", () => {
     });
     expect(projection.briefingDemo.rounds).toHaveLength(2);
 
-    const projected = new Database(targetDb, { readonly: true });
+    const projected = new SqliteDatabase(targetDb, { readonly: true });
     expect(projected.prepare(
       "SELECT ordinal, profile FROM briefing_rounds WHERE briefing_id = ? ORDER BY ordinal",
     ).all(projection.briefingDemo.briefing.id)).toEqual([
@@ -1253,7 +1253,7 @@ describe("iab-preview launcher", () => {
   it("fails closed during copied-preview preparation when retired custody is not verified", async () => {
     const source = createSeedFixture();
     const retired = installRetiredV1Demo(source);
-    const sourceDb = new Database(source.db);
+    const sourceDb = new SqliteDatabase(source.db);
     sourceDb.prepare("UPDATE briefing_legacy_custody SET disposition = 'sealed_ambiguous' WHERE briefing_id = ?")
       .run(retired.briefingId);
     sourceDb.pragma("wal_checkpoint(TRUNCATE)");
@@ -1272,7 +1272,7 @@ describe("iab-preview launcher", () => {
     expect(result.stderr).toContain("partial or conflicting: retired v1 custody integrity");
     expect(fileHash(source.db)).toBe(sourceHash);
     expect(fs.existsSync(path.join(targetRoot, "rich-briefing-demo-artifacts"))).toBe(false);
-    const rejectedCopy = new Database(targetDb, { readonly: true });
+    const rejectedCopy = new SqliteDatabase(targetDb, { readonly: true });
     expect(rejectedCopy.prepare("SELECT value FROM settings WHERE key = 'artifact_root'").get())
       .toEqual({ value: path.join(fs.realpathSync.native(source.previewRoot), "rich-briefing-demo-artifacts") });
     expect(rejectedCopy.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get()).toEqual({ n: 0 });
@@ -1300,7 +1300,7 @@ describe("iab-preview launcher", () => {
     expect(firstPayload.briefing.id).not.toBe(retired.briefingId);
     expect(firstPayload.rounds).toHaveLength(2);
 
-    const upgraded = new Database(fixture.db, { readonly: true });
+    const upgraded = new SqliteDatabase(fixture.db, { readonly: true });
     expect(upgraded.prepare("SELECT title, round_count FROM briefings WHERE briefing_key = ?")
       .get(RICH_BRIEFING_DEMO.briefingKey)).toEqual({ title: RICH_BRIEFING_DEMO.title, round_count: 2 });
     expect(upgraded.prepare("SELECT title, round_count FROM briefings WHERE id = 'unrelated-briefing'").get())
@@ -1328,7 +1328,7 @@ describe("iab-preview launcher", () => {
   it("keeps an unverified zero-round demo shell fail-closed and byte-identical", () => {
     const fixture = createSeedFixture();
     const retired = installRetiredV1Demo(fixture);
-    const db = new Database(fixture.db);
+    const db = new SqliteDatabase(fixture.db);
     db.prepare("UPDATE briefing_legacy_custody SET disposition = 'sealed_ambiguous' WHERE briefing_id = ?")
       .run(retired.briefingId);
     db.close();
@@ -1370,7 +1370,7 @@ describe("iab-preview launcher", () => {
     });
     expect(firstPayload.rounds).toHaveLength(2);
     const dbAfterFirst = fileHash(fixture.db);
-    const countsAfterFirst = new Database(fixture.db, { readonly: true });
+    const countsAfterFirst = new SqliteDatabase(fixture.db, { readonly: true });
     const firstCounts = {
       briefings: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM briefings").get(),
       rounds: countsAfterFirst.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get(),
@@ -1388,7 +1388,7 @@ describe("iab-preview launcher", () => {
     expect(secondPayload.briefing.id).toBe(firstPayload.briefing.id);
     expect(secondPayload.rounds).toEqual(firstPayload.rounds);
     expect(fileHash(fixture.db)).toBe(dbAfterFirst);
-    const dbAfterSecond = new Database(fixture.db, { readonly: true });
+    const dbAfterSecond = new SqliteDatabase(fixture.db, { readonly: true });
     expect({
       briefings: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM briefings").get(),
       rounds: dbAfterSecond.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get(),
@@ -1405,7 +1405,7 @@ describe("iab-preview launcher", () => {
     expect(fileHash(fixture.sourceDb)).toBe(sourceHash);
     expect(inventory(fixture.sourceRoot)).toEqual(sourceInventory);
 
-    const conflicting = new Database(fixture.db);
+    const conflicting = new SqliteDatabase(fixture.db);
     conflicting.prepare("UPDATE users SET status = 'retired' WHERE slug = 'briefing-demo-reviewer'").run();
     conflicting.close();
     const beforeConflictCheck = fileHash(fixture.db);

@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -923,7 +923,7 @@ describe("ledger backup contract", () => {
     expect(backup.indexOf("-- Table: user_settings"))
       .toBeGreaterThan(backup.indexOf("-- Table: users"));
 
-    const restored = new Database(":memory:");
+    const restored = new SqliteDatabase(":memory:");
     try {
       restored.exec(backup);
       const rows = restored.prepare(

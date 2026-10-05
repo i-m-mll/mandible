@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import {
   SessionRegistry,
   checkLiveness,
@@ -10,10 +10,10 @@ import {
 import { migrate } from "../src/db.js";
 import type { Session } from "../src/types.js";
 
-type SqliteDb = InstanceType<typeof Database>;
+type SqliteDb = InstanceType<typeof SqliteDatabase>;
 
 function createRegistry(): SessionRegistry {
-  const db = new Database(":memory:");
+  const db = new SqliteDatabase(":memory:");
   db.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
   return new SessionRegistry(db);
 }
@@ -53,7 +53,7 @@ async function waitForPidStart(pid: number): Promise<string | null> {
 
 describe("session registry", () => {
   it("creates the standalone session schema with the ownership foreign key", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     try {
       db.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
       ensureSessionSchema(db);
@@ -78,8 +78,8 @@ describe("session registry", () => {
   // column- and index-complete against the migrated schema or isolated tests
   // would silently get a stale sessions table.
   it("bootstraps a fresh sessions schema identical to the migrated one", () => {
-    const bootstrapped = new Database(":memory:");
-    const migrated = new Database(":memory:");
+    const bootstrapped = new SqliteDatabase(":memory:");
+    const migrated = new SqliteDatabase(":memory:");
     try {
       bootstrapped.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
       ensureSessionSchema(bootstrapped);
@@ -94,7 +94,7 @@ describe("session registry", () => {
   });
 
   it("never alters an existing sessions table from the registry bootstrap", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     try {
       db.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
       ensureSessionSchema(db);

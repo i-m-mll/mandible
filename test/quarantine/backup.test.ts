@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../../src/server.js";
 import { createUser } from "../../src/users/store.js";
@@ -111,7 +111,7 @@ describe("backup routes", () => {
         VALUES ('submission-backup','round-backup','${human.id}','instance-backup','response-backup',0);
     `);
 
-    const restored = new Database(":memory:");
+    const restored = new SqliteDatabase(":memory:");
     try {
       restored.exec(buildMetadataBackupSql(db));
       expect(restored.prepare("SELECT briefing_id, round_id, artifact_version_id, quiet FROM briefing_runs").get())

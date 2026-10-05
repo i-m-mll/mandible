@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { openDb } from "../src/db.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { addCredential, setupOperator } from "../src/users/store.js";
@@ -58,7 +58,7 @@ describe("preview database sanitization", () => {
 
     sanitizePreviewDatabase(databasePath);
 
-    const sanitized = new Database(databasePath);
+    const sanitized = new SqliteDatabase(databasePath);
     expect(sanitized.prepare("SELECT id FROM user_credentials WHERE id = ?").get(credential.id)).toEqual({ id: credential.id });
     expect(sanitized.prepare("SELECT owner_credential_id FROM work_units WHERE id = 'work-unit-preview-history'").get())
       .toEqual({ owner_credential_id: credential.id });

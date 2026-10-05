@@ -1,6 +1,6 @@
 import fs from "node:fs";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -45,7 +45,7 @@ describe("dotfiles cba4353 activation-health contract", () => {
   let operatorId: string;
 
   beforeEach(() => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     executorId = createUser(db, {
       slug: "agent-schedule",
