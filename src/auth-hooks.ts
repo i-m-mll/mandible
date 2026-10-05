@@ -266,7 +266,7 @@ export class AuthHookManager {
   }
 
   private hasRuntimeHandoff(run: AuthHookRun): boolean {
-    return run.hook_id === "builtin-mandible-rebuild" && (fs.existsSync(this.handoffPath(run)) || run.exit_code === 75 && /MANDIBLE_RUNTIME_HANDOFF_PENDING:[0-9a-f]{64}/.test(run.output));
+    return run.hook_id === "builtin-mandible-rebuild" && (fs.existsSync(this.handoffPath(run)) || run.exit_code === 75 && /MANDIBLE_RUNTIME_HANDOFF_PENDING:[0-9a-f]{64}/.test(run.output) || run.state === "complete" && /MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:[0-9a-f]{64}/.test(run.output));
   }
 
   runtimeHandoffOwnsRequest(requestId: string): boolean {
@@ -276,10 +276,10 @@ export class AuthHookManager {
   /** External handoff observations never consume an attempt or start another hook. */
   async reconcileRuntimeHandoffs(adopt: (binding: RuntimePublicationBinding, proof: ReturnType<typeof verifyRuntimeHandoffPublication>) => void): Promise<string[]> {
     if (!this.hasDurableTables()) return [];
-    const rows = this.db.prepare("SELECT DISTINCT auth_request_id FROM auth_hook_executions WHERE state != 'complete'").all() as Array<{ auth_request_id: string }>;
+    const rows = this.db.prepare("SELECT DISTINCT auth_request_id FROM auth_hook_executions WHERE hook_id = 'builtin-mandible-rebuild'").all() as Array<{ auth_request_id: string }>;
     const accepted: string[] = [];
     for (const row of rows) for (const run of this.listRuns(row.auth_request_id)) {
-      if (run.state === "complete" || !this.hasRuntimeHandoff(run)) continue;
+      if (!this.hasRuntimeHandoff(run)) continue;
       try {
         const moduleUrl = new URL("../scripts/runtime-handoff.mjs", import.meta.url).href;
         const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(moduleUrl);
@@ -291,6 +291,12 @@ export class AuthHookManager {
         if (journal.phase === "failed") throw new Error("Independent runtime handoff failed; inspect its retained journal and logs before repair");
         if (journal.phase !== "complete") continue;
         await runtime.verifyRuntimeHandoffReceipt(journal, { probe: true });
+        // A crash after the DB transaction and before helper acknowledgment
+        // must retry only acknowledgment, preserving the accepted hook row.
+        if (run.state === "complete") {
+          await runtime.acknowledgeRuntimeHandoff(journal.binding);
+          continue;
+        }
         const proof = verifyRuntimeHandoffPublication(this.db, binding);
         this.db.transaction(() => {
           const current = this.getRun(run.auth_request_id, run.hook_id);

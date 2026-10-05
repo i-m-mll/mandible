@@ -764,10 +764,10 @@ export class AuthQueue {
    * daemon was killed (e.g. by the post-merge hook) before the executor could
    * record the result.
    *
-   * Merge recovery is based on repository state, never console text. A head
-   * already contained in the base is finalized successfully. A cleanly
-   * identifiable interrupted merge is aborted and requeued for approval. Any
-   * state whose provenance cannot be proven fails closed without mutating Git.
+   * Merge recovery requires the exact retained candidate, authorized signed
+   * commit, and durable publication receipt. Applied publication is recovered
+   * without replaying the merge. Unproven legacy state requires operator
+   * inspection and never mutates the protected repository.
    */
   private recoverStuckRequests(): void {
     const now = this.now();

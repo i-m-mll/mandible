@@ -56,7 +56,7 @@ describe("protected delivery evidence", () => {
     const hooks = new AuthHookManager(db, { handoffClient: {
       readRuntimeHandoff: async () => journal,
       verifyRuntimeHandoffReceipt: async () => { if (!receiptValid) throw new Error("candidate readiness differs"); },
-      acknowledgeRuntimeHandoff: async () => { acknowledgements += 1; },
+      acknowledgeRuntimeHandoff: async () => { acknowledgements += 1; if (acknowledgements === 1) throw new Error("acknowledgment interrupted"); if (journal) journal.phase = "acknowledged"; },
     } });
     db.prepare("UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?").run("*", `printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${"a".repeat(64)}\\n'; exit 75`, "builtin-mandible-rebuild");
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
@@ -91,8 +91,12 @@ describe("protected delivery evidence", () => {
     expect(getAttributionEvidence(db, queue.getRequest(request.id)!.execution_evidence_id!)?.details.publication_verified).toBe(true);
     expect(acknowledgements).toBe(1);
     expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "closed" });
+    // The DB acceptance survived; startup retries only helper acknowledgment.
     await queue.resumeHookConvergence();
-    expect(acknowledgements).toBe(1);
+    expect(acknowledgements).toBe(2);
+    expect(hooks.getRun(request.id, run.hook_id)?.attempt_history).toEqual(attemptHistory);
+    await queue.resumeHookConvergence();
+    expect(acknowledgements).toBe(2);
     expect(git(repo, ["rev-parse", "main"])).toBe(publication.mergeSha);
   });
 
