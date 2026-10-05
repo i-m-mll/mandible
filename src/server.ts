@@ -865,7 +865,6 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
       ...(options.startupEpoch ? { startup_epoch: options.startupEpoch } : {}),
       startup_commit: startupCommit,
       instance,
-      operations: router.operationCatalog(version),
       ...(options.fileRpcDir ? { file_rpc_dir: options.fileRpcDir } : {}),
       ...(options.localSocketPath ? { local_socket_path: options.localSocketPath } : {}),
       ready,
