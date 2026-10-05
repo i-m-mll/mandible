@@ -155,7 +155,9 @@ If something looks wrong, the user can:
 
 The user clicks Approve. This triggers `POST /api/auth/request/:id/approve`.
 
-The request transitions from `pending` to `executing`.
+Mandible signs a fresh challenge with the configured operator key and verifies it against active registered operator credentials. The challenge includes the exact request and staged-action snapshot, a nonce, and a 60-second expiry. The request stays `pending` until verification succeeds. Cancel signing, a missing key, an expired challenge, or changed reviewed bytes leave it unexecuted. The dashboard offers **Cancel signing** while proof is pending.
+
+After verification, the request transitions to `executing`. Ordinary local browsing requires no proof or login.
 
 ## 6. Execution
 
@@ -167,7 +169,11 @@ The daemon strips agent signing overrides from the environment before running th
 
 ### YubiKey Authentication
 
-At this point, the user's YubiKey needs to be connected and responsive. The merge command triggers a signing operation that requires a physical touch of the YubiKey. This is the authentication moment — the user has reviewed the changes in the dashboard and now physically confirms the merge.
+A hardware-backed operator key requires its physical signing interaction. Approval evidence records a verified credential signature; a click is never recorded as hardware presence.
+
+Every protected merge creates and verifies a signed commit from the exact reviewed tree and parents before changing the protected ref, index, files, or merge state. Publication advances the ref with an expected-old-value check, then synchronizes the checkout without overwriting untracked collisions. Native preparation hooks are refused before signing when isolated candidate preparation cannot preserve their semantics. Native post-commit and post-merge hooks join the durable convergence plan with their executable digest and original arguments. Changed hook bytes or a later protected checkout fail visibly instead of replaying an old native hook on new files. Direct protected-checkout signing and interrupted `git merge --continue` are unsupported.
+
+A successful result requires the exact publication receipt, authorized operator signature, reviewed candidate tree and parents, and reviewed canonical message. A zero exit code alone cannot close issues, promote Briefings, or run hooks. Applied publication state remains available for recovery; receipt recovery and post-publication effects never repeat the merge.
 
 ### Output Streaming
 
@@ -256,7 +262,7 @@ If the merge has conflicts, the command exits with a non-zero code. The request 
 
 ### YubiKey Not Present
 
-If the YubiKey isn't connected when the merge runs, git will hang waiting for the signing key. The 10-minute timeout catches this — the request fails with a timeout error. Connect the YubiKey and retry.
+Operator challenge signing has a 60-second limit and can be cancelled. Missing or unavailable credentials leave the request pending. Signed candidate failure leaves the protected checkout unchanged. A request with retained prepared publication state requires receipt recovery or operator inspection; retry cannot erase that state and repeat publication.
 
 ### Daemon Crash During Execution
 

@@ -27,7 +27,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
+import { verifyRuntimeHandoffPublication, type RuntimePublicationBinding } from "./runtime-handoff-proof.js";
 
+import { extractSuccessfulMergeCommitSha } from "./auth-signature-verification.js";
 import { getDb } from "./db.js";
 import type { Db } from "./db.js";
 import type {
@@ -184,6 +188,7 @@ export function buildAuthHookEnv(
   // which convergence work the original merge required.
   env.MANDIBLE_AUTH_MERGE_BASE_SHA = request.merge_preflight_base_sha ?? "";
   env.MANDIBLE_AUTH_MERGE_HEAD_SHA = request.merge_head_sha ?? "";
+  env.MANDIBLE_AUTH_MERGE_COMMIT_SHA = extractSuccessfulMergeCommitSha(request.output) ?? "";
   env.MANDIBLE_HOOK_ID = context.hook_id;
   env.MANDIBLE_HOOK_LABEL = context.hook_label;
   env.MANDIBLE_HOOK_ATTEMPT = String(context.attempt);
@@ -239,6 +244,54 @@ export class AuthHookManager {
     this.db = db ?? getDb();
   }
 
+  private handoffPath(run: AuthHookRun): string {
+    if (!/^[a-zA-Z0-9-]+$/.test(run.auth_request_id) || !/^[a-zA-Z0-9-]+$/.test(run.id)) throw new Error("Invalid runtime handoff identity");
+    return path.join(process.env.HOME ?? os.homedir(), "config", "local-sessions", "handoff", `${run.auth_request_id}-${run.id}`, "journal.json");
+  }
+
+  private hasRuntimeHandoff(run: AuthHookRun): boolean {
+    return run.hook_id === "builtin-mandible-rebuild" && (fs.existsSync(this.handoffPath(run)) || run.exit_code === 75 && /MANDIBLE_RUNTIME_HANDOFF_PENDING:[0-9a-f]{64}/.test(run.output));
+  }
+
+  /** External handoff observations never consume an attempt or start another hook. */
+  async reconcileRuntimeHandoffs(adopt: (binding: RuntimePublicationBinding, proof: ReturnType<typeof verifyRuntimeHandoffPublication>) => void): Promise<string[]> {
+    if (!this.hasDurableTables()) return [];
+    const rows = this.db.prepare("SELECT DISTINCT auth_request_id FROM auth_hook_executions WHERE state != 'complete'").all() as Array<{ auth_request_id: string }>;
+    const accepted: string[] = [];
+    for (const row of rows) for (const run of this.listRuns(row.auth_request_id)) {
+      if (run.state === "complete" || !this.hasRuntimeHandoff(run)) continue;
+      try {
+        const moduleUrl = new URL("../scripts/runtime-handoff.mjs", import.meta.url).href;
+        const runtime = await import(moduleUrl);
+        const journal = await runtime.readRuntimeHandoff(process.env.HOME ?? os.homedir(), run.auth_request_id, run.id);
+        if (!journal) throw new Error("The retained runtime handoff journal is unavailable");
+        const binding = journal.binding as RuntimePublicationBinding;
+        if (journal.schema !== "mandible-runtime-handoff@1" || binding.requestId !== run.auth_request_id || binding.executionId !== run.id || binding.hookId !== run.hook_id || binding.commandDigest !== run.command_digest) throw new Error("Runtime handoff journal differs from the retained hook");
+        verifyRuntimeHandoffPublication(this.db, binding);
+        if (journal.phase !== "complete") continue;
+        await runtime.verifyRuntimeHandoffReceipt(journal, { probe: true });
+        const proof = verifyRuntimeHandoffPublication(this.db, binding);
+        this.db.transaction(() => {
+          const current = this.getRun(run.auth_request_id, run.hook_id);
+          if (!current || current.id !== run.id || current.command_digest !== run.command_digest || current.state === "complete") return;
+          adopt(binding, proof);
+          const now = Date.now();
+          this.db.prepare("UPDATE auth_hook_executions SET state = 'complete', exit_code = 0, output = ?, finished_at = ?, updated_at = ? WHERE id = ?").run(
+            truncateOutput(`${current.output}\nMANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${journal.bindingDigest}\n${JSON.stringify(journal.receipt)}`), now, now, current.id,
+          );
+        })();
+        accepted.push(run.auth_request_id);
+        await runtime.acknowledgeRuntimeHandoff(journal.binding);
+      } catch (error) {
+        const now = Date.now();
+        this.db.prepare("UPDATE auth_hook_executions SET state = 'failed', output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state != 'complete'").run(
+          truncateOutput(`${run.output}\nRuntime handoff recovery refused: ${error instanceof Error ? error.message : String(error)}`), now, now, run.id,
+        );
+      }
+    }
+    return [...new Set(accepted)];
+  }
+
   /**
    * Find all enabled hooks matching a given repo name and auth type.
    * Matching rules:
@@ -281,9 +334,9 @@ export class AuthHookManager {
    * adopts the in-progress record and its attempt count rather than resetting
    * the attempt budget.
    */
-  planRuns(request: AuthRequest): AuthHookRun[] {
+  planRuns(request: AuthRequest, additionalHooks: AuthHook[] = []): AuthHookRun[] {
     if (!this.hasDurableTables()) return [];
-    const hooks = this.findMatchingHooks(request.repo, request.type);
+    const hooks = [...additionalHooks, ...this.findMatchingHooks(request.repo, request.type)];
     const now = Date.now();
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO auth_hook_executions (
@@ -390,7 +443,7 @@ export class AuthHookManager {
     if (!this.hasDurableTables()) return [];
     const now = Date.now();
     for (const run of this.listRuns(authRequestId)) {
-      if (run.state !== "running") continue;
+      if (run.state !== "running" || this.hasRuntimeHandoff(run)) continue;
       const history = [...run.attempt_history];
       const last = history[history.length - 1];
       if (!last || last.attempt !== run.attempts) {
@@ -429,7 +482,7 @@ export class AuthHookManager {
     if (!this.hasDurableTables()) return 0;
     const now = Date.now();
     const runs = this.listRuns(authRequestId).filter(
-      (run) => run.state === "failed" && (!hookId || run.hook_id === hookId),
+      (run) => run.state === "failed" && !this.hasRuntimeHandoff(run) && (!hookId || run.hook_id === hookId),
     );
     for (const run of runs) {
       this.db
@@ -454,6 +507,7 @@ export class AuthHookManager {
   async executeHooks(
     request: AuthRequest,
     onOutput?: (hookLabel: string, text: string) => void,
+    options: { reusePlan?: boolean } = {},
   ): Promise<AuthHookExecutionResult[]> {
     if (!this.hasDurableTables()) {
       // Legacy/partial DBs (old fixtures) keep the pre-27241e6 behaviour rather
@@ -470,7 +524,7 @@ export class AuthHookManager {
       return results;
     }
 
-    this.planRuns(request);
+    if (!options.reusePlan) this.planRuns(request);
     this.reclaimInterruptedRuns(request.id);
     return this.runPending(request, onOutput);
   }
@@ -492,7 +546,7 @@ export class AuthHookManager {
       // `running` is deliberately not runnable: it is the marker that some
       // process already spawned this hook, and honouring it is what keeps a
       // concurrent sweep from starting a second copy.
-      if (!run || run.state !== "pending") continue;
+      if (!run || run.state !== "pending" || this.hasRuntimeHandoff(run)) continue;
       if (run.attempts >= run.max_attempts) {
         this.markRunFailedExhausted(run);
         continue;
@@ -553,7 +607,8 @@ export class AuthHookManager {
       },
     ];
     const exhausted = attempt >= run.max_attempts;
-    const nextState: AuthHookRunState = ok ? "complete" : exhausted ? "failed" : "pending";
+    const handoffPending = run.hook_id === "builtin-mandible-rebuild" && result.exit_code === 75 && /MANDIBLE_RUNTIME_HANDOFF_PENDING:[0-9a-f]{64}/.test(result.output);
+    const nextState: AuthHookRunState = ok ? "complete" : handoffPending ? "pending" : exhausted ? "failed" : "pending";
     this.db
       .prepare(
         `UPDATE auth_hook_executions
@@ -566,7 +621,7 @@ export class AuthHookManager {
         result.exit_code,
         truncateOutput(result.output),
         JSON.stringify(history),
-        ok || exhausted ? finishedAt : null,
+        ok || exhausted && !handoffPending ? finishedAt : null,
         finishedAt,
         run.id,
       );

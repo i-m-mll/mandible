@@ -1,7 +1,8 @@
+import { operatorGitEnv, signOperatorChallenge } from "./auth-operator-proof.js";
 import { AUTH_REQUEST_TYPES } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
-import { accessSync, constants as fsConstants, existsSync, realpathSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import SqliteDatabase from "./sqlite.js";
@@ -9,10 +10,11 @@ import SqliteDatabase from "./sqlite.js";
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
 import {
   authorizedMergeSignerLines,
+  authorizedOperatorSignerLines,
   extractSuccessfulMergeCommitSha,
+  extractAtomicMergeState,
   isValidCommitSha,
   verifyAuthorizedMergeCommitSignature,
-  verifySuccessfulMergeCommitSignature,
   type MergeSignatureVerification,
 } from "./auth-signature-verification.js";
 import {
@@ -48,7 +50,10 @@ import {
   validateCanonicalChangeMessage,
   type CanonicalChangeMessageFields,
 } from "./auth-change-message.js";
+import type { AuthHook } from "./types.js";
 import { AuthHookManager } from "./auth-hooks.js";
+import type { RuntimePublicationBinding } from "./runtime-handoff-proof.js";
+import { verifyRuntimeHandoffPublication } from "./runtime-handoff-proof.js";
 import {
   describeRecomputeRefusal,
   type RecomputeRefusal,
@@ -209,18 +214,7 @@ type FinalizerStepState = {
   at: number;
   output?: FinalizerStepOutput;
 };
-// Issue fbf2a58 round 2 — a reserved (non-step) marker stored alongside the
-// per-step finalizer state. It records that a merge was terminalized from
-// repository evidence ALONE (an attributed merge that landed out-of-band with no
-// daemon approval record). Such a row deliberately keeps merge_finalized_at NULL
-// so finalizer sweeps keep revisiting it and can converge to full finalization
-// once approval attribution appears; this marker keeps the partial merged/
-// resolved broadcast idempotent across those repeated sweeps. It is not a
-// FinalizerStepName, so the step loop and terminal-payload builder ignore it.
-type EvidenceOnlyPartialMarker = { at: number };
-type FinalizerState = Partial<Record<FinalizerStepName, FinalizerStepState>> & {
-  evidence_only_partial?: EvidenceOnlyPartialMarker;
-};
+type FinalizerState = Partial<Record<FinalizerStepName, FinalizerStepState>>;
 
 /**
  * Issue 75f52ac — bounded, single-concurrency FIFO queue that runs the heavy
@@ -312,7 +306,6 @@ type MergeTreeResult =
   | { status: "error"; files: string[]; message: string };
 
 type StaleMergeRecovery =
-  | { outcome: "completed" }
   | { outcome: "atomic_applied"; mergeSha: string }
   | { outcome: "atomic_needs_recovery"; detail: string }
   | { outcome: "requeued"; detail: string }
@@ -645,26 +638,57 @@ export class AuthQueue {
     // Bug: 681739e — fast-recover executions orphaned by a self-merge restart
     // before the generic (threshold-based) stuck-request recovery runs.
     if (this.backgroundMaintenance) {
-      this.recoverSelfMergeShutdown();
-      this.recoverStuckRequests();
       // Issue fbf2a58 — reconcile merge requests whose merge already landed but
       // whose finalization write was lost (e.g. a terminal-executed auth-merge
       // whose post-merge dist rebuild restarted the daemon before the finalize
       // committed). Runs after the stuck-request recovery so it only inspects
       // rows the other recovery paths left pending/approved.
-      this.reconcileAlreadyMergedRequests();
       // Issue 27241e6 — resume hook convergence that a daemon failure between
       // the merge and hook completion left unfinished. Every `running` row
       // belongs to the dead process, so reclaim them first; then sweep.
       // Fire-and-forget: a hook that cannot run must never block startup.
-      try {
-        this.hookManager.reclaimAllInterruptedRuns();
-      } catch {
-        /* hook tables are optional in partial/legacy databases */
-      }
-      void this.resumeHookConvergence().catch(() => undefined);
-      this.startExpiryTimer();
+      void this.startRecovery().catch(error => authLog("warn", "auth_startup_recovery_failed", { subsystem: "auth", error: errorMessage(error) }));
     }
+  }
+
+  private async startRecovery(): Promise<void> {
+    await this.reconcileRuntimeHandoffs();
+    if (this.disposed || !this.isDbOpen()) return;
+    this.recoverSelfMergeShutdown();
+    this.recoverStuckRequests();
+    this.hookManager.reclaimAllInterruptedRuns();
+    await this.resumeHookConvergence();
+    this.startExpiryTimer();
+  }
+
+  private async reconcileRuntimeHandoffs(): Promise<void> {
+    if (typeof this.hookManager.reconcileRuntimeHandoffs !== "function") return;
+    const ids = await this.hookManager.reconcileRuntimeHandoffs((binding, proof) => this.adoptRuntimePublication(binding, proof));
+    for (const id of ids) {
+      const request = this.getRequestById(id);
+      if (request && !this.successfulMergeEvidenceFailure(request)) {
+        this.finalizeSuccessfulMerge(request);
+        this.settleConvergence(request);
+      }
+    }
+  }
+
+  /** Only an exact verified first-upgrade receipt may restore legacy cleared candidate fields. */
+  private adoptRuntimePublication(binding: RuntimePublicationBinding, proof: ReturnType<typeof verifyRuntimeHandoffPublication>): void {
+    const request = this.requireRequest(binding.requestId);
+    verifyRuntimeHandoffPublication(this.db, binding);
+    const priorSnapshot = authRequestSnapshot(this.db, request.id);
+    const prepared = extractAtomicMergeState(request.output).prepared;
+    const output = prepared ? request.output : `${request.output}\nMANDIBLE_MERGE_PREPARED ${JSON.stringify({ merge_sha: proof.mergeCommit, base_sha: proof.mergeBase, head_sha: proof.mergeHead, tree_sha: proof.frozenCandidate.tree })}\nMANDIBLE_MERGE_APPLIED ${JSON.stringify({ merge_sha: proof.mergeCommit, base_sha: proof.mergeBase })}`;
+    this.db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = 0, merge_preflight_base_sha = ?, merge_head_sha = ?, merge_candidate_tree_sha = ?, merge_atomic_enabled = 1, output = ?, resolved_at = COALESCE(resolved_at, ?), updated_at = ? WHERE id = ?").run(
+      proof.mergeBase, proof.mergeHead, proof.frozenCandidate.tree, output, this.now(), this.now(), request.id,
+    );
+    const evidenced = this.attachSuccessfulSignatureEvidence(this.requireRequest(request.id));
+    appendAuthLifecycleEvent(this.db, {
+      requestId: request.id, eventType: request.status === "completed" ? "revised" : "completed", priorStatus: request.status, nextStatus: "completed", priorSnapshot,
+      actor: { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: evidenced.execution_evidence_id, authority_path: "system" },
+      reason: "Adopted exact signed publication and externally verified first-upgrade runtime receipt; no merge replay.", occurredAt: this.now(),
+    });
   }
 
   /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
@@ -701,8 +725,7 @@ export class AuthQueue {
           this.sweepSuccessfulMergeFinalizers();
           // Issue fbf2a58 — periodic backstop for merges whose finalization was
           // lost while the queue was idle (mirrors the startup reconciliation).
-          this.reconcileAlreadyMergedRequests();
-          // Issue 27241e6 — same backstop for unfinished hook convergence.
+              // Issue 27241e6 — same backstop for unfinished hook convergence.
           void this.resumeHookConvergence().catch(() => undefined);
         }
       } catch (error) {
@@ -718,6 +741,8 @@ export class AuthQueue {
 
   dispose(): void {
     this.disposed = true;
+    for (const controller of this.operatorProofInFlight.values()) controller.abort();
+    this.operatorProofs.clear();
     this.stopExpiryTimer();
   }
 
@@ -813,292 +838,6 @@ export class AuthQueue {
    * mirroring the branch_reap_proof logic in cli/auth-merge.sh. Requests whose
    * merge cannot be proven from Git are left untouched: reconciliation never
    * guesses.
-   */
-  private reconcileAlreadyMergedRequests(): void {
-    let rows: Record<string, unknown>[];
-    try {
-      rows = this.db
-        .prepare(
-          "SELECT * FROM auth_requests WHERE type = 'merge' AND status IN ('pending', 'approved') " +
-            "AND exit_code IS NULL AND merge_finalized_at IS NULL"
-        )
-        .all() as Record<string, unknown>[];
-    } catch {
-      // Fresh/partial DBs mid-migration: nothing to reconcile.
-      return;
-    }
-    if (rows.length === 0) {
-      return;
-    }
-
-    const now = this.now();
-    const complete = this.db.prepare(
-      "UPDATE auth_requests SET status = 'completed', exit_code = 0, resolved_at = ?, " +
-        "updated_at = ?, error = NULL, merge_head_sha = COALESCE(merge_head_sha, ?) " +
-        "WHERE id = ? AND status IN ('pending', 'approved') AND exit_code IS NULL"
-    );
-
-    for (const row of rows) {
-      const request = mapRow(row);
-      if (!isAuthMergeCommand(request)) {
-        continue;
-      }
-      const proof = this.reapProofForRequest(request);
-      if (!proof) {
-        continue;
-      }
-      const updated = complete.run(now, now, proof.headSha, request.id);
-      if (updated.changes !== 1) {
-        continue;
-      }
-      appendAuthLifecycleEvent(this.db, {
-        requestId: request.id,
-        eventType: "completed",
-        priorStatus: request.status,
-        nextStatus: "completed",
-        actor: systemAction(),
-        reason: "Reconciled from Git proof that the reviewed merge already landed.",
-        occurredAt: now,
-      });
-      const recovered = this.getRequest(request.id);
-      if (recovered) {
-        this.finalizeReconciledMerge(recovered);
-      }
-      authLog("warn", "auth_request_reconciled_already_merged", {
-        subsystem: "auth",
-        auth_request_id: request.id,
-        reason:
-          proof.proof === "merged"
-            ? "head_is_ancestor_of_target"
-            : "head_tree_equivalent_to_target",
-        head_sha: proof.headSha,
-      });
-    }
-  }
-
-  /**
-   * Issue fbf2a58 — finalize a merge request that startup reconciliation proved
-   * already landed. The row is already status='completed'/exit_code=0 (so it has
-   * dropped out of the pending set and no longer poisons preflight); this drives
-   * the broadcasts, ledger completion, and Stage 3 finalizers.
-   *
-   * Attribution note: the normal finalizer demands an approving user for
-   * post-v109 attributed merges. That holds when the merge was approved through
-   * the daemon and only its final status write was lost. But the reported
-   * incident merged out-of-band in a terminal with no daemon approval record, so
-   * the attributed evidence path cannot run — Git proves the merge landed, but
-   * the daemon never observed who authorized it. In that case terminalize the
-   * row from repository evidence alone (completed + merged/resolved broadcasts)
-   * without fabricating an approver.
-   *
-   * This is the shared convergence dispatcher: it is invoked both by startup
-   * reconciliation and by the periodic finalizer sweep, so a row that was
-   * partially terminalized without an approver is re-examined on every sweep and
-   * completes the skipped stages (attributed ledger completion, work-unit
-   * resolution, thread archiving) as soon as approval attribution appears.
-   */
-  private finalizeReconciledMerge(request: AuthRequest): void {
-    const attributedMerge = isAuthMergeCommand(request) && Boolean(request.requested_by_user_id);
-    const hasApprovalEvidence =
-      request.execution_evidence_id != null || request.approved_by_user_id != null;
-    if (!attributedMerge || hasApprovalEvidence) {
-      // Legacy (system-attributed) merge, or an attributed merge that was
-      // approved through the daemon before its finalization write was lost:
-      // the standard finalizer records evidence and runs every stage. When this
-      // path runs for a row that was previously evidence-only terminalized (its
-      // approval attribution has since appeared), full finalization now completes
-      // and sets merge_finalized_at — the convergence step.
-      this.finalizeSuccessfulMerge(request);
-      return;
-    }
-
-    // Attributed merge with no daemon approval record: authorized out-of-band.
-    //
-    // Issue fbf2a58 round 2 — PARTIAL ("evidence-only") terminalization. The row
-    // is already status='completed'/exit_code=0 (set by the reconcile UPDATE), so
-    // it is terminal for the queue and UI and no longer poisons preflight. We
-    // deliberately DO NOT write merge_finalized_at here: that column is the
-    // finalizer sweep's exclusion key, and setting it would permanently strand
-    // the stages we cannot yet run without an approver identity (attributed
-    // ledger completion incl. issue closures, work-unit resolution, thread
-    // archival). Instead we leave merge_finalized_at NULL so every later sweep
-    // revisits this row, and record a distinct evidence_only_partial marker so
-    // the partial merged/resolved broadcast stays idempotent across sweeps. When
-    // approval attribution later appears (approved_by_user_id / execution_
-    // evidence_id populated), a sweep re-enters this method, takes the full
-    // finalizer branch above, runs the skipped stages, and finally writes
-    // merge_finalized_at — full convergence.
-    if (this.hasEvidenceOnlyPartialMarker(request)) {
-      // Already partially terminalized; nothing new until attribution appears.
-      return;
-    }
-    const now = this.now();
-    this.markEvidenceOnlyPartialFinalization(request, now);
-    const finalized = this.getRequest(request.id);
-    if (finalized) {
-      this.broadcast({ event: "auth:merged", data: this.buildMergedPayload(finalized) });
-      this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(finalized) });
-    }
-    authLog("warn", "auth_request_reconciled_without_approval_attribution", {
-      subsystem: "auth",
-      auth_request_id: request.id,
-      reason: "merge_landed_out_of_band_no_daemon_approval",
-    });
-  }
-
-  /**
-   * Issue fbf2a58 round 2 — whether a row has been evidence-only (partially)
-   * terminalized: a completed merge that lacks approval attribution and so has
-   * not yet run full finalization. Detected from the durable marker in
-   * merge_finalizer_state rather than merge_finalized_at, which stays NULL so the
-   * sweep keeps revisiting for convergence.
-   */
-  private hasEvidenceOnlyPartialMarker(request: AuthRequest): boolean {
-    return this.readFinalizerState(request.id).evidence_only_partial != null;
-  }
-
-  /**
-   * Issue fbf2a58 round 2 — record the evidence-only partial-finalization marker.
-   * Persists merge_head_sha (the head branch may be torn down before convergence)
-   * but deliberately NOT merge_finalized_at, so finalizer sweeps keep visiting the
-   * row until approval attribution allows full finalization.
-   */
-  private markEvidenceOnlyPartialFinalization(request: AuthRequest, at: number): void {
-    if (request.merge_head_sha != null) {
-      this.db
-        .prepare(
-          "UPDATE auth_requests SET merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?"
-        )
-        .run(request.merge_head_sha, at, request.id);
-    }
-    const state = this.readFinalizerState(request.id);
-    state.evidence_only_partial = { at };
-    this.writeFinalizerState(request.id, state);
-  }
-
-  /**
-   * Issue fbf2a58 — prove that a merge request's head is already contained in
-   * its target branch, mirroring branch_reap_proof in cli/auth-merge.sh.
-   *
-   * Ancestry (`git merge-base --is-ancestor`) is the primary proof; a synthetic
-   * merge that reproduces the target's exact tree (`git merge-tree --write-tree`
-   * tree-equivalence) is the merge-aware fallback for squash/rebase landings.
-   * The head commit comes from the live branch ref, falling back to a recorded
-   * merge_head_sha when the branch was already torn down. Returns null when
-   * nothing is checkable so the caller leaves the request alone.
-   */
-  private reapProofForRequest(
-    request: AuthRequest,
-  ): { proof: "merged" | "tree-equivalent"; headSha: string } | null {
-    const cwd = request.target_repo_root ?? request.cwd;
-    if (!cwd || !request.base_branch) {
-      return null;
-    }
-    try {
-      const git = (args: string[]): string =>
-        execFileSync("git", args, {
-          cwd,
-          encoding: "utf8",
-          timeout: 5000,
-          maxBuffer: 10 * 1024 * 1024,
-          env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-        }).trim();
-      const verify = (rev: string): string | null => {
-        try {
-          const sha = git(["rev-parse", "--verify", `${rev}^{commit}`]);
-          return sha || null;
-        } catch {
-          return null;
-        }
-      };
-
-      // Issue fbf2a58 round 2 — a recorded merge_head_sha is AUTHORITATIVE. It
-      // pins the exact commit whose merge this request represents, so the proof
-      // must be taken against it, never against a live head-branch ref that may
-      // have been recreated or force-moved after the merge landed. If a live ref
-      // exists and disagrees with the pinned sha, the branch is no longer the one
-      // that was merged (e.g. a fresh branch recreated at the target tip, for
-      // which "T is an ancestor of T" would falsely prove completion): refuse to
-      // reconcile, log the mismatch, and leave the request pending. The live ref
-      // is used only when no merge_head_sha was ever recorded.
-      let headSha: string | null = null;
-      if (request.merge_head_sha) {
-        const recorded = verify(request.merge_head_sha);
-        if (!recorded) {
-          // The pinned commit is not present in this repo — nothing safely
-          // checkable. Never guess.
-          return null;
-        }
-        if (request.head_branch) {
-          const liveHead = verify(`refs/heads/${request.head_branch}`);
-          if (liveHead && liveHead !== recorded) {
-            authLog("warn", "auth_reconcile_head_sha_mismatch", {
-              subsystem: "auth",
-              auth_request_id: request.id,
-              head_branch: request.head_branch,
-              recorded_merge_head_sha: recorded,
-              live_head_sha: liveHead,
-              reason: "head_ref_disagrees_with_recorded_merge_head_sha",
-            });
-            return null;
-          }
-        }
-        headSha = recorded;
-      } else if (request.head_branch) {
-        headSha = verify(`refs/heads/${request.head_branch}`);
-      }
-      if (!headSha) {
-        // Nothing checkable — never guess.
-        return null;
-      }
-
-      const targetOid = verify(`refs/heads/${request.base_branch}`);
-      if (!targetOid) {
-        return null;
-      }
-
-      // Ancestry proof.
-      try {
-        git(["merge-base", "--is-ancestor", headSha, targetOid]);
-        return { proof: "merged", headSha };
-      } catch {
-        // Not an ancestor — fall through to tree-equivalence.
-      }
-
-      // Tree-equivalence proof: a synthetic merge that yields the target's exact
-      // tree contributes no bytes (covers squash/rebase-style landings).
-      let targetTree: string | null;
-      try {
-        targetTree = git(["rev-parse", "--verify", `${targetOid}^{tree}`]) || null;
-      } catch {
-        targetTree = null;
-      }
-      if (!targetTree) {
-        return null;
-      }
-      const merged = this.mergeTree(cwd, targetOid, headSha);
-      if (merged.status === "clean" && merged.tree === targetTree) {
-        return { proof: "tree-equivalent", headSha };
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Bug: 681739e — recover executions orphaned by a self-merge restart.
-   *
-   * A Mandible self-merge exits the daemon (~2 s after completing) so launchd
-   * respawns the rebuilt code. Any request that was in-flight or queued at that
-   * moment is killed without recording a result and would otherwise sit
-   * 'executing'/'approved' until the 5-minute stuck-request threshold fires.
-   *
-   * The self-merge records a durable shutdown timestamp before exiting. On the
-   * next startup we recover every request approved before that instant that
-   * never recorded a result, using the shutdown time as the cutoff so recovery
-   * is immediate rather than threshold-gated. The marker is consumed (one-shot)
-   * so a later clean startup does not re-trigger recovery.
    */
   private recoverSelfMergeShutdown(): void {
     const shutdownAt = this.consumeSelfMergeShutdown();
@@ -1294,10 +1033,7 @@ export class AuthQueue {
           continue;
         }
         const recovery = this.inspectStaleMerge(request);
-        if (recovery.outcome === "completed") {
-          completeRecovered(request, 0, null);
-          recoveredSuccessIds.push(request.id);
-        } else if (recovery.outcome === "atomic_applied") {
+        if (recovery.outcome === "atomic_applied") {
           this.scheduleAtomicRecovery(request);
         } else if (recovery.outcome === "atomic_needs_recovery") {
           this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
@@ -1354,61 +1090,7 @@ export class AuthQueue {
       if (request.merge_atomic_enabled) {
         return this.inspectAtomicAppliedMerge(request, cwd, git, expectedHead);
       }
-      try {
-        git(["merge-base", "--is-ancestor", expectedHead, `refs/heads/${request.base_branch}`]);
-        return { outcome: "completed" };
-      } catch {
-        // A non-zero ancestor check is the expected interrupted/unmerged case.
-      }
-
-      const gitDir = git(["rev-parse", "--path-format=absolute", "--git-dir"]);
-      const mergeHeadPath = join(gitDir, "MERGE_HEAD");
-      const trackedStatus = git(["status", "--porcelain", "--untracked-files=no"]);
-      if (!existsSync(mergeHeadPath)) {
-        if (!trackedStatus) {
-          return { outcome: "requeued", detail: "executor stopped before changing the repository" };
-        }
-        return { outcome: "failed", detail: "tracked changes exist without MERGE_HEAD; provenance is ambiguous" };
-      }
-
-      const currentBranch = git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
-      if (currentBranch !== request.base_branch) {
-        return { outcome: "failed", detail: `MERGE_HEAD is on ${currentBranch}, not requested base ${request.base_branch}` };
-      }
-      const mergeHeads = git(["rev-parse", "--verify", "MERGE_HEAD"]).split(/\s+/).filter(Boolean);
-      if (mergeHeads.length !== 1 || mergeHeads[0] !== expectedHead) {
-        return { outcome: "failed", detail: "MERGE_HEAD does not match the requested head commit" };
-      }
-      if (!trackedStatus) {
-        return { outcome: "failed", detail: "MERGE_HEAD exists without staged merge changes" };
-      }
-      if (git(["diff", "--name-only", "--diff-filter=U"])) {
-        return { outcome: "failed", detail: "merge has unresolved conflicts" };
-      }
-      const hasUnstagedChanges = trackedStatus.split(/\r?\n/).some((line) => line.length >= 2 && line[1] !== " ");
-      if (hasUnstagedChanges) {
-        return { outcome: "failed", detail: "merge checkout also contains unstaged tracked changes" };
-      }
-      const head = git(["rev-parse", "HEAD"]);
-      const originalHead = git(["rev-parse", "ORIG_HEAD"]);
-      if (head !== originalHead) {
-        return { outcome: "failed", detail: "HEAD no longer matches the merge's recorded ORIG_HEAD" };
-      }
-      const expectedMerge = this.mergeTree(cwd, head, expectedHead);
-      if (expectedMerge.status !== "clean") {
-        return { outcome: "failed", detail: `could not derive the expected merge tree: ${expectedMerge.message}` };
-      }
-      const indexTree = git(["write-tree"]);
-      if (indexTree !== expectedMerge.tree) {
-        return { outcome: "failed", detail: "staged index does not match the expected merge tree" };
-      }
-
-      git(["merge", "--abort"]);
-      const remainingStatus = git(["status", "--porcelain", "--untracked-files=no"]);
-      if (existsSync(mergeHeadPath) || remainingStatus) {
-        return { outcome: "failed", detail: "git merge --abort did not restore a clean tracked checkout" };
-      }
-      return { outcome: "requeued", detail: "interrupted merge was aborted safely" };
+      return { outcome: "failed", detail: "Legacy merge execution has no isolated candidate publication proof; operator recovery is required." };
     } catch (error) {
       return {
         outcome: "failed",
@@ -1429,6 +1111,7 @@ export class AuthQueue {
       return { outcome: "failed", detail: "atomic merge recovery metadata is incomplete" };
     }
     const atomicState = extractAtomicMergeState(request.output);
+    if (atomicState.invalid) return { outcome: "atomic_needs_recovery", detail: "Malformed or conflicting durable publication checkpoints require operator inspection." };
     const prepared = atomicState.prepared;
     if (!prepared) {
       if (atomicState.applied) {
@@ -1445,10 +1128,13 @@ export class AuthQueue {
     }
     const targetSha = git(["rev-parse", "--verify", `refs/heads/${request.base_branch}^{commit}`]);
     if (targetSha === baseSha) {
+      if (atomicState.applied) return { outcome: "atomic_needs_recovery", detail: "Recorded publication no longer matches the protected ref; operator inspection is required." };
       return { outcome: "requeued", detail: "prepared atomic commit was not applied" };
     }
-    if (targetSha !== prepared.merge_sha) {
-      return { outcome: "failed", detail: "target ref does not match the durable prepared merge commit" };
+    const advanced = targetSha !== prepared.merge_sha;
+    if (advanced) {
+      try { git(["merge-base", "--is-ancestor", prepared.merge_sha, targetSha]); }
+      catch { return { outcome: "failed", detail: "protected branch does not contain the durable prepared merge commit" }; }
     }
     const parents = git(["show", "-s", "--format=%P", prepared.merge_sha]).split(/\s+/).filter(Boolean);
     const targetTree = git(["rev-parse", "--verify", `${prepared.merge_sha}^{tree}`]);
@@ -1477,7 +1163,14 @@ export class AuthQueue {
     }
     const indexTree = git(["write-tree"]);
     const trackedStatus = git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"]);
+    if (advanced) {
+      const currentTree = git(["rev-parse", "--verify", `${targetSha}^{tree}`]);
+      if (indexTree !== currentTree || trackedStatus) return { outcome: "atomic_needs_recovery", detail: "Later protected publication has not synchronized; earlier recovery will not change its checkout." };
+      return { outcome: "atomic_applied", mergeSha: prepared.merge_sha };
+    }
     if (indexTree === candidateTree && !trackedStatus) {
+      try { git(["update-ref", "ORIG_HEAD", baseSha]); }
+      catch { return { outcome: "atomic_needs_recovery", detail: "Native post-hook original-head input could not be restored." }; }
       return { outcome: "atomic_applied", mergeSha: prepared.merge_sha };
     }
     const baseTree = git(["rev-parse", "--verify", `${baseSha}^{tree}`]);
@@ -1498,6 +1191,8 @@ export class AuthQueue {
     if (syncedIndex !== candidateTree || syncedStatus) {
       return { outcome: "atomic_needs_recovery", detail: "protected worktree synchronization did not converge" };
     }
+    try { git(["update-ref", "ORIG_HEAD", baseSha]); }
+    catch { return { outcome: "atomic_needs_recovery", detail: "Native post-hook original-head input could not be restored." }; }
     return { outcome: "atomic_applied", mergeSha: prepared.merge_sha };
   }
 
@@ -3133,6 +2828,9 @@ export class AuthQueue {
       );
     }
 
+    if (extractAtomicMergeState(request.output).prepared) {
+      throw new AuthQueueError("invalid_status", "Prepared publication state is retained for recovery; this request cannot repeat execution.");
+    }
     const now = this.now();
     this.db.transaction(() => {
       this.writeResolvedRequest(
@@ -3173,6 +2871,9 @@ export class AuthQueue {
       );
     }
 
+    if (extractAtomicMergeState(request.output).prepared) {
+      throw new AuthQueueError("invalid_status", "Prepared publication state is retained for recovery; this request cannot repeat execution.");
+    }
     const now = this.now();
     this.db.transaction(() => {
       this.writeResolvedRequest(
@@ -3189,7 +2890,6 @@ export class AuthQueue {
         nextStatus: "pending", actor: systemAction(), reason: "Explicit requeue.", occurredAt: now,
       });
     })();
-    this.dropMergeCandidate(request);
 
     const requeued = this.requireRequest(request.id);
     this.broadcast({
@@ -3292,6 +2992,90 @@ export class AuthQueue {
     return true;
   }
 
+  private approvalDigest(request: AuthRequest): string {
+    const hooks = this.hookManager.listRuns?.(request.id)?.map(({ hook_id, command_digest, command, required, position }) => ({ hook_id, command_digest, command, required, position })) ?? [];
+    return createHash("sha256").update(JSON.stringify({ request: authRequestSnapshot(this.db, request.id), hooks })).digest("hex");
+  }
+
+  private planApprovalHooks(request: AuthRequest): void {
+    const nativeHooks: AuthHook[] = [];
+    if (isAuthMergeCommand(request)) {
+      if (!request.cwd) throw new AuthQueueError("merge_check_failed", "Protected hook context is unavailable.");
+      const quote = (value: string) => "'" + value.replace(/'/g, "'\"'\"'") + "'";
+      for (const [name, args] of [["post-commit", ""], ["post-merge", " 0"]] as const) {
+        const hookPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", `hooks/${name}`], {
+          cwd: request.cwd, encoding: "utf8", timeout: 5_000, env: operatorGitEnv(),
+        }).trim();
+        try { accessSync(hookPath, fsConstants.X_OK); }
+        catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ENOENT" || code === "EACCES") continue;
+          throw error;
+        }
+        const digest = createHash("sha256").update(readFileSync(hookPath)).digest("hex");
+        const command = `current=$(/usr/bin/git rev-parse HEAD) || exit 1; [ "$current" = "$MANDIBLE_AUTH_MERGE_COMMIT_SHA" ] || { echo 'Native ${name} recovery requires its published checkout; later protected bytes will not be changed.' >&2; exit 1; }; actual=$(/usr/bin/shasum -a 256 ${quote(hookPath)}) || exit 1; [ "\${actual%% *}" = ${quote(digest)} ] || { echo 'Reviewed native ${name} hook changed; operator inspection is required.' >&2; exit 1; }; exec ${quote(hookPath)}${args}`;
+        nativeHooks.push({ id: `native-git-${name}`, repo_pattern: request.repo ?? "", auth_type: "merge", command,
+          label: `Git ${name}`, enabled: true, builtin: true, required: true, position: name === "post-commit" ? -2 : -1,
+          created_at: this.now(), updated_at: this.now() });
+      }
+    }
+    this.hookManager.planRuns?.(request, nativeHooks);
+  }
+
+  private readonly operatorProofs = new Map<string, { digest: string; evidenceId: string; credentialId: string; userId: string; expiresAt: number }>();
+  private readonly operatorProofInFlight = new Map<string, AbortController>();
+
+  cancelOperatorProof(id: string, userId: string): void {
+    this.resolveApproverUserId(userId);
+    const request = this.requireRequest(id);
+    this.operatorProofInFlight.get(request.id)?.abort();
+  }
+
+  async approveWithOperatorProof(id: string, userId: string): Promise<AuthRequest> {
+    this.requireExternalEffects("Operator approval proof");
+    let request = this.requireRequest(id);
+    if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
+    if (this.operatorProofInFlight.has(request.id)) throw new AuthQueueError("invalid_status", "Operator signing is already in progress.");
+    this.enforceDependencyReadiness(request);
+    this.enforceCanonicalMergeCommand(request);
+    const contextUpdate = this.resolveExecutionContextBeforeApproval(request);
+    if (contextUpdate) request = this.recordApprovalContextUpdate(request, contextUpdate, this.now());
+    request = this.ensureOriginalMergeRangeForApproval(request);
+    if (isAuthMergeCommand(request) && !this.mergeCandidateExact(request)) {
+      const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
+      request = this.recomputeStaleCandidateForApproval(request, refusalSink) ?? request;
+      if (!this.mergeCandidateExact(request)) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(refusalSink.refusal));
+    }
+    if (isAuthMergeCommand(request) && (request.execution_mode === "remote" || this.hasNativeMergeHooks(request.cwd))) {
+      throw new AuthQueueError("merge_check_failed", "Protected candidate publication requires a local checkout without unsupported native hooks. No protected state changed.");
+    }
+    this.planApprovalHooks(request);
+    const operatorId = this.resolveApproverUserId(userId);
+    const digest = this.approvalDigest(request);
+    const issuedAt = this.now();
+    const expiresAt = issuedAt + 60_000;
+    const challenge = JSON.stringify({ namespace: "mandible-auth", request_id: request.id, digest, nonce: randomUUID(), issued_at: issuedAt, expires_at: expiresAt });
+    const controller = new AbortController();
+    this.operatorProofInFlight.set(request.id, controller);
+    try {
+      const proof = await signOperatorChallenge(request.cwd, challenge, authorizedOperatorSignerLines(this.db, operatorId), controller.signal);
+      if (!proof.ok) throw new AuthQueueError("invalid_command", `Operator proof ${proof.reason}: ${proof.detail}`);
+      if (this.now() >= expiresAt || this.approvalDigest(request) !== digest ||
+        !authorizedOperatorSignerLines(this.db, operatorId).some((line) => line.startsWith(`${proof.credentialId} `))) {
+        throw new AuthQueueError("invalid_status", "Operator proof expired or the reviewed request changed; approve the current request again.");
+      }
+      const evidence = addAttributionEvidence(this.db, {
+        evidence_method: "credential_signature", credential_id: proof.credentialId,
+        details: { auth_request_id: request.id, signer_user_id: operatorId, authorizer_user_id: operatorId, verified: true, challenge, signature: proof.signature, action_digest: digest },
+      }, this.now());
+      this.operatorProofs.set(request.id, { digest, evidenceId: evidence.id, credentialId: proof.credentialId, userId: operatorId, expiresAt });
+      return this.approve(request.id, undefined, operatorId);
+    } finally {
+      this.operatorProofInFlight.delete(request.id);
+      this.operatorProofs.delete(request.id);
+    }
+  }
+
   approve(id: string, approval?: AuthApprovalContext, approvedByUserId?: string): AuthRequest {
     this.requireExternalEffects("Auth approval and execution");
     this.expireStale();
@@ -3302,6 +3086,12 @@ export class AuthQueue {
         `Request is ${request.status}, cannot approve.`,
         request.status
       );
+    }
+    const operatorProof = this.operatorProofs.get(request.id);
+    this.operatorProofs.delete(request.id);
+    if (!approval && (!operatorProof || operatorProof.userId !== approvedByUserId || this.now() >= operatorProof.expiresAt ||
+      operatorProof.digest !== this.approvalDigest(request))) {
+      throw new AuthQueueError("invalid_status", "Fresh action-bound operator signing proof is required before approval.");
     }
     this.enforceDependencyReadiness(request);
 
@@ -3342,7 +3132,7 @@ export class AuthQueue {
         throw new AuthQueueError("invalid_command", "Delegated approval lease is not currently valid.");
       }
     }
-    const exactCredentialId = approvalLease?.credential_id ?? null;
+    const exactCredentialId = approvalLease?.credential_id ?? operatorProof?.credentialId ?? null;
     const signerLines = authorizedMergeSignerLines(this.db, approverUserId, exactCredentialId);
     if (effectiveApproval && isAuthMergeCommand(request) && signerLines.length === 0) {
       throw new AuthQueueError(
@@ -3361,7 +3151,7 @@ export class AuthQueue {
       // Issue 2205073 — the refusal sink carries the specific guard that
       // declined out to the approver instead of leaving it in daemon_log.
       const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
-      const recomputed = this.recomputeStaleCandidateForApproval(request, refusalSink);
+      const recomputed = operatorProof ? null : this.recomputeStaleCandidateForApproval(request, refusalSink);
       if (recomputed) {
         request = recomputed;
         candidateExact = this.mergeCandidateExact(request);
@@ -3387,6 +3177,10 @@ export class AuthQueue {
       !this.hasNativeMergeHooks(request.cwd) &&
       signerLines.length > 0
     );
+    if (isAuthMergeCommand(request) && !atomicEnabled) {
+      throw new AuthQueueError("merge_check_failed", "Protected merges require a local exact candidate, an authorized signer, and no unsupported native merge hooks. No protected state changed.");
+    }
+    if (effectiveApproval) this.planApprovalHooks(request);
     this.db.transaction(() => {
       this.writeResolvedRequest(
         request,
@@ -3400,10 +3194,12 @@ export class AuthQueue {
           atomicEnabled ? 1 : 0,
         ]
       );
+      if (operatorProof) this.db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?").run(operatorProof.evidenceId, request.id);
       const approvalActor: AuthLifecycleActor = {
         user_id: approverUserId,
-        evidence_method: effectiveApproval ? "delegated_credential" : "hardware_presence",
-        credential_id: exactCredentialId,
+        evidence_method: effectiveApproval ? "delegated_credential" : "credential_signature",
+        evidence_id: operatorProof?.evidenceId,
+        credential_id: exactCredentialId ?? operatorProof?.credentialId,
       };
       appendAuthLifecycleEvent(this.db, {
         requestId: request.id, eventType: "approved", priorStatus: "pending",
@@ -3497,6 +3293,8 @@ export class AuthQueue {
           request.execution_mode !== "remote" && isAuthMergeCommand(request) && candidateExact &&
           !this.hasNativeMergeHooks(request.cwd) && signerLines.length > 0
         );
+        if (!atomicEnabled) throw new AuthQueueError("merge_check_failed", "Clearance execution requires an exact local signed candidate without unsupported native hooks.");
+        this.planApprovalHooks(request);
         const update = this.db.prepare(
           `UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?,
            approval_source = 'clearance', approval_lease_id = ?, approved_by_user_id = ?,
@@ -3807,17 +3605,17 @@ export class AuthQueue {
 
   private hasNativeMergeHooks(cwd: string | null): boolean {
     if (!cwd) return true;
-    for (const name of ["pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-merge"]) {
+    for (const name of ["pre-merge-commit", "prepare-commit-msg", "commit-msg"]) {
+      let hookPath: string;
       try {
-        const hookPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", `hooks/${name}`], {
-          cwd,
-          encoding: "utf8",
-          env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+        hookPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", `hooks/${name}`], {
+          cwd, encoding: "utf8", timeout: 5_000, env: operatorGitEnv(),
         }).trim();
-        accessSync(hookPath, fsConstants.X_OK);
-        return true;
-      } catch {
-        // Missing or non-executable hook: continue checking the remaining names.
+      } catch { return true; }
+      try { accessSync(hookPath, fsConstants.X_OK); return true; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "EACCES") return true;
       }
     }
     return false;
@@ -3932,7 +3730,7 @@ export class AuthQueue {
           },
         );
       }
-      if (options.clearRequestFields !== false) {
+      if (options.clearRequestFields !== false && !extractAtomicMergeState(request.output).prepared) {
         this.db.prepare(
           `UPDATE auth_requests SET merge_candidate_tree_sha = NULL,
             merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0, updated_at = ? WHERE id = ?`,
@@ -4598,21 +4396,7 @@ export class AuthQueue {
     if (request.approval_source !== "manual") {
       throw new Error(`Unsupported attributed auth approval source '${request.approval_source}'.`);
     }
-    const verifiedAt = request.resolved_at ?? this.now();
-    const evidence = addAttributionEvidence(this.db, {
-      evidence_method: "hardware_presence",
-      details: {
-        auth_request_id: request.id,
-        authorizer_user_id: request.approved_by_user_id,
-        executor_user_id: systemAction().user_id,
-        approval_source: "manual",
-        verification_basis: "successful_interactive_merge_execution",
-      },
-    }, verifiedAt);
-    this.db.prepare(
-      "UPDATE auth_requests SET execution_evidence_id = ?, updated_at = ? WHERE id = ? AND execution_evidence_id IS NULL",
-    ).run(evidence.id, verifiedAt, request.id);
-    return this.requireRequest(request.id);
+    throw new Error("Manual execution requires retained action-bound operator proof.");
   }
 
   private finalizationAttribution(request: AuthRequest): AttributionContext {
@@ -4663,7 +4447,7 @@ export class AuthQueue {
     const now = this.now();
     const rejectionActor = actor ?? {
       user_id: this.resolveApproverUserId(),
-      evidence_method: "hardware_presence",
+      evidence_method: "local_default",
     };
     this.db.transaction(() => {
       this.writeResolvedRequest(
@@ -4743,6 +4527,33 @@ export class AuthQueue {
     return this.requireRequest(request.id);
   }
 
+  private successfulMergeEvidenceFailure(request: AuthRequest): string | null {
+    if (request.type !== "merge") return null;
+    const mergeSha = extractSuccessfulMergeCommitSha(request.output);
+    if (!mergeSha) return "Missing or malformed merge publication receipt.";
+    const retainedEvidence = request.execution_evidence_id ? getAttributionEvidence(this.db, request.execution_evidence_id) : null;
+    if (retainedEvidence?.evidence_method === "credential_signature" && retainedEvidence.details.publication_verified === true && retainedEvidence.details.verified === true && retainedEvidence.details.commit_sha === mergeSha && retainedEvidence.details.signer_user_id === request.approved_by_user_id) return null;
+    if (!request.approved_by_user_id || !request.merge_preflight_base_sha || !request.merge_head_sha || !request.merge_candidate_tree_sha) return "Merge publication has no exact reviewed candidate or approving user.";
+    const state = extractAtomicMergeState(request.output);
+    if (state.invalid || !state.prepared || state.prepared.merge_sha !== mergeSha || state.prepared.base_sha !== request.merge_preflight_base_sha ||
+      state.prepared.head_sha !== request.merge_head_sha || state.prepared.tree_sha !== request.merge_candidate_tree_sha) return "Merge publication receipt does not match the prepared reviewed candidate.";
+    const cwd = request.target_repo_root ?? request.cwd;
+    if (!cwd) return "Merge publication repository is unavailable.";
+    const lease = request.approval_lease_id ? getDelegatedSigningLease(this.db, request.approval_lease_id) : null;
+    const signature = verifyAuthorizedMergeCommitSignature(this.db, cwd, mergeSha, request.approved_by_user_id, lease?.credential_id);
+    if (!signature.verified) return `Merge publication signature is not authorized: ${signature.reason}.`;
+    try {
+      const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 5_000, env: authGitEnv() }).trim();
+      const parents = git(["show", "-s", "--format=%P", mergeSha]).split(/\s+/);
+      if (parents.length !== 2 || parents[0] !== state.prepared.base_sha || parents[1] !== state.prepared.head_sha || git(["rev-parse", `${mergeSha}^{tree}`]) !== state.prepared.tree_sha) return "Published commit differs from the exact reviewed candidate.";
+      if (request.commit_message_digest && canonicalizeChangeMessage(git(["show", "-s", "--format=%B", mergeSha])) !== request.commit_message) return "Published commit message differs from the reviewed canonical message.";
+      git(["merge-base", "--is-ancestor", mergeSha, `refs/heads/${request.base_branch}`]);
+    } catch {
+      return "Exact signed candidate publication could not be verified on the protected branch.";
+    }
+    return null;
+  }
+
   setResult(id: string, exitCode: number, output: string, error?: string): AuthRequest {
     this.requireExternalEffects("Executor result delivery");
     this.expireStale();
@@ -4754,7 +4565,7 @@ export class AuthQueue {
     // command (not just attributed rows): a result posted onto a resolved
     // merge row would overwrite the recorded output that provenance and
     // signature evidence are derived from.
-    if (isAuthMergeCommand(request) && request.status !== "executing") {
+    if (request.status !== "executing") {
       throw new AuthQueueError(
         "invalid_status",
         `Auth merge result cannot be recorded while request is ${request.status}.`,
@@ -4773,6 +4584,26 @@ export class AuthQueue {
         request.status,
       );
     }
+    if (request.type === "merge" && request.output) output = `${request.output}\n${output}`;
+    if (request.type === "merge" && exitCode !== 0 && extractAtomicMergeState(output).prepared) {
+      const detail = error ?? `Execution exited ${exitCode} after preparing publication; recover the exact publication receipt before finalization.`;
+      this.db.prepare("UPDATE auth_requests SET output = ?, error = ?, updated_at = ? WHERE id = ?").run(output, detail, this.now(), request.id);
+      const retained = this.requireRequest(request.id);
+      this.broadcast({ event: "auth:updated", data: { request: retained } });
+      return retained;
+    }
+    if (exitCode === 0) {
+      const failure = this.successfulMergeEvidenceFailure({ ...request, output });
+      if (failure) {
+        if (extractAtomicMergeState(output).prepared || extractAtomicMergeState(request.output).prepared) {
+          this.db.prepare("UPDATE auth_requests SET output = ?, error = ?, updated_at = ? WHERE id = ?").run(output, failure, this.now(), request.id);
+          const retained = this.requireRequest(request.id);
+          this.broadcast({ event: "auth:updated", data: { request: retained } });
+          return retained;
+        }
+        exitCode = 1; error = failure;
+      }
+    }
     const now = this.now();
     // Record completion atomically with execution-signature evidence, then run
     // the staged lifecycle (Issue 75f52ac): merged → Stage 2 → resolved → Stage 3.
@@ -4783,7 +4614,7 @@ export class AuthQueue {
         [now, now, exitCode, output, error ?? null]
       );
       const stored = this.requireRequest(request.id);
-      const evidenced = exitCode === 0 ? this.ensureSuccessfulExecutionEvidence(stored) : stored;
+      const evidenced = exitCode === 0 ? this.attachSuccessfulSignatureEvidence(this.ensureSuccessfulExecutionEvidence(stored)) : stored;
       appendAuthLifecycleEvent(this.db, {
         requestId: request.id,
         eventType: "completed",
@@ -4805,7 +4636,7 @@ export class AuthQueue {
         data: this.buildResolvedPayload(completed)
       });
     }
-    this.dropMergeCandidate(completed);
+    if (exitCode === 0) this.dropMergeCandidate(completed);
     return this.requireRequest(request.id);
   }
 
@@ -4966,7 +4797,8 @@ export class AuthQueue {
           executionResult = result;
 
           const durableAtomic = extractAtomicMergeState(this.requireRequest(request.id).output);
-          if (result.exit_code !== 0 && request.merge_atomic_enabled && durableAtomic.prepared) {
+          if (request.merge_atomic_enabled && durableAtomic.prepared &&
+            (result.exit_code !== 0 || this.successfulMergeEvidenceFailure(this.requireRequest(request.id)) !== null)) {
             const inspection = this.inspectStaleMerge(this.requireRequest(request.id));
             if (inspection.outcome === "atomic_applied") {
               try {
@@ -4989,7 +4821,7 @@ export class AuthQueue {
           // Bug: 4afab83 — run post-auth hooks after successful execution,
           // BEFORE reporting completion. Hook failures don't change the
           // auth result (the merge already succeeded).
-          if (result.exit_code === 0) await this.runPostSuccessHooks(request);
+          if (result.exit_code === 0 && this.successfulMergeEvidenceFailure(this.requireRequest(request.id)) === null) await this.runPostSuccessHooks(request);
 
           // Store result and broadcast auth:resolved BEFORE scheduling
           // any self-rebuild exit, so the channel server receives the
@@ -5001,7 +4833,8 @@ export class AuthQueue {
           // Bug: 03d6cb0 — delay increased to 2s (from 0.5s) and moved
           // after storeExecutionResult so the auth:resolved SSE broadcast
           // has time to reach the channel server before the daemon exits.
-          if (result.exit_code === 0) this.schedulePostSuccessRestart(request);
+          const completed = this.requireRequest(request.id);
+          if (completed.status === "completed" && completed.exit_code === 0 && this.successfulMergeEvidenceFailure(completed) === null) this.schedulePostSuccessRestart(completed);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Execution failed.";
           if (executionResult?.exit_code === 0) {
@@ -5058,7 +4891,6 @@ export class AuthQueue {
         return;
       }
       if (inspection.outcome === "requeued") {
-        this.dropMergeCandidate(refreshed);
         const now = this.now();
         this.db.transaction(() => {
           this.db.prepare(
@@ -5090,9 +4922,6 @@ export class AuthQueue {
             return `Atomic merge applied and needs recovery: ${inspection.detail}`;
           case "failed":
             return `Atomic merge recovery could not prove the merge landed correctly: ${inspection.detail}`;
-          case "completed":
-            // Already finalized by another pass; nothing to recover or report.
-            return "";
           default:
             return assertNever(inspection, `atomic recovery for ${request.id}`);
         }
@@ -5144,11 +4973,11 @@ export class AuthQueue {
       started_at: at,
       finished_at: at,
     }, null);
-    this.schedulePostSuccessRestart(refreshed);
+    this.schedulePostSuccessRestart(this.requireRequest(refreshed.id));
   }
 
   private async runRecoveredAtomicCleanup(request: AuthRequest, mergeSha: string): Promise<string> {
-    if (!request.head_branch || !request.base_branch) return atomicMergeResultLine(request, mergeSha);
+    if (!request.head_branch || !request.base_branch) throw new Error("Atomic recovery requires exact branch metadata.");
     const script = join(process.env.MANDIBLE_CLI_DIR ?? join(process.cwd(), "cli"), "auth-merge.sh");
     if (!existsSync(script)) {
       throw new Error(`auth merge cleanup helper is unavailable at ${script}`);
@@ -5161,7 +4990,7 @@ export class AuthQueue {
       "bash",
       [
         "-c",
-        'source "$1"; cleanup_merged_worktrees "$2" "$3" "$4" "$5"; record_auth_merge_result "$6"',
+        'source "$1"; record_auth_merge_result "$6" "$7"; cleanup_merged_worktrees "$2" "$3" "$4" "$5"',
         "mandible-atomic-recovery",
         script,
         request.head_branch,
@@ -5169,6 +4998,7 @@ export class AuthQueue {
         request.base_branch,
         issueIds,
         request.merge_preflight_base_sha ?? "",
+        mergeSha,
       ],
       {
         cwd: request.cwd ?? request.target_repo_root ?? undefined,
@@ -5182,13 +5012,14 @@ export class AuthQueue {
     );
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     const markerLine = output.split(/\r?\n/).find((line) => line.includes("MANDIBLE_MERGE_RESULT "));
-    return markerLine
-      ? markerLine.slice(markerLine.indexOf("MANDIBLE_MERGE_RESULT "))
-      : atomicMergeResultLine(request, mergeSha);
+    if (!markerLine || extractSuccessfulMergeCommitSha(output) !== mergeSha) throw new Error("Recovery helper returned no valid exact publication receipt.");
+    return markerLine.slice(markerLine.indexOf("MANDIBLE_MERGE_RESULT "));
   }
 
   private async runPostSuccessHooks(request: AuthRequest): Promise<void> {
     const mergedRequest = { ...request, ...this.getRequest(request.id) } as AuthRequest;
+    const evidenceFailure = this.successfulMergeEvidenceFailure(mergedRequest);
+    if (evidenceFailure) throw new AuthQueueError("invalid_status", evidenceFailure);
     if (mergedRequest.repo === "mandible") {
       // Issue ff784d8 — the full blocked/splash window begins before
       // post-merge hooks, at the same boundary that closes admission.
@@ -5199,7 +5030,7 @@ export class AuthQueue {
     try {
       const hookResults = await this.hookManager.executeHooks(mergedRequest, (hookLabel, text) => {
         this.handleOutput({ request_id: request.id, stream: "stderr", text: `[hook: ${hookLabel}] ${text}`, timestamp: Date.now() });
-      });
+      }, { reusePlan: true });
       for (const result of hookResults) {
         const status = result.exit_code === 0 ? "ok" : `failed (exit ${result.exit_code})`;
         this.handleOutput({ request_id: request.id, stream: "stderr", text: `[hook: ${result.label}] ${status} (${result.duration_ms}ms)\n`, timestamp: Date.now() });
@@ -5320,7 +5151,7 @@ export class AuthQueue {
    */
   private releaseWithheldClosures(request: AuthRequest): void {
     const current = this.getRequest(request.id);
-    if (!current || current.status !== "completed" || current.exit_code !== 0) return;
+    if (!current || current.status !== "completed" || current.exit_code !== 0 || this.successfulMergeEvidenceFailure(current)) return;
     try {
       this.executeDeferredLedgerActions(current);
       applyWithheldAuthRequestClosures(this.db, {
@@ -5355,6 +5186,7 @@ export class AuthQueue {
     if (this.convergenceSweepInFlight) return;
     this.convergenceSweepInFlight = true;
     try {
+      await this.reconcileRuntimeHandoffs();
       await this.runConvergenceSweep(limit);
     } finally {
       this.convergenceSweepInFlight = false;
@@ -5373,7 +5205,7 @@ export class AuthQueue {
     for (const id of ids) {
       if (this.disposed || !this.isDbOpen()) return;
       const request = this.getRequestById(id);
-      if (!request || request.status !== "completed" || request.exit_code !== 0) continue;
+      if (!request || request.status !== "completed" || request.exit_code !== 0 || this.successfulMergeEvidenceFailure(request)) continue;
       try {
         const results = await this.hookManager.runPending(request, (hookLabel, text) => {
           this.handleOutput({
@@ -5417,6 +5249,8 @@ export class AuthQueue {
         "Convergence retry applies only to a successfully executed request.",
       );
     }
+    const evidenceFailure = this.successfulMergeEvidenceFailure(request);
+    if (evidenceFailure) throw new AuthQueueError("invalid_status", evidenceFailure);
     this.hookManager.grantRetry(request.id, hookId);
     await this.hookManager.runPending(request, (hookLabel, text) => {
       this.handleOutput({
@@ -5442,6 +5276,7 @@ export class AuthQueue {
   }
 
   private schedulePostSuccessRestart(request: AuthRequest): void {
+    if (request.status !== "completed" || request.exit_code !== 0 || this.successfulMergeEvidenceFailure(request)) return;
     const merged = { ...request, ...this.getRequest(request.id) } as AuthRequest;
     if (merged.repo !== "mandible") return;
     this._rebuilding = true;
@@ -5507,9 +5342,20 @@ export class AuthQueue {
     // process exited), use exit_code=1 rather than null. exit_code=null is
     // treated by isFailedLike as "no exit code yet" which makes completed+null
     // look like a successful completion, hiding the failure from the user.
-    const exitCode = result != null ? (result.exit_code ?? 1) : 1;
+    let exitCode = result != null ? (result.exit_code ?? 1) : 1;
     const prior = this.requireRequest(id);
 
+    if (exitCode === 0) {
+      const failure = this.successfulMergeEvidenceFailure(prior);
+      if (failure) {
+        if (extractAtomicMergeState(prior.output).prepared) {
+          this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?").run(failure, this.now(), prior.id);
+          this.broadcast({ event: "auth:updated", data: { request: this.requireRequest(prior.id) } });
+          return;
+        }
+        exitCode = 1; error = failure;
+      }
+    }
     // Bug: 929c6d0 — when the executor ran but exited non-zero, populate the
     // error column with the tail of the captured output so the agent receiving
     // the auth:resolved event can diagnose without a follow-up API call.
@@ -5529,7 +5375,7 @@ export class AuthQueue {
         )
         .run(now, now, exitCode, errorText, id);
       const stored = this.requireRequest(id);
-      const evidenced = exitCode === 0 ? this.ensureSuccessfulExecutionEvidence(stored) : stored;
+      const evidenced = exitCode === 0 ? this.attachSuccessfulSignatureEvidence(this.ensureSuccessfulExecutionEvidence(stored)) : stored;
       appendAuthLifecycleEvent(this.db, {
         requestId: id,
         eventType: "completed",
@@ -5552,7 +5398,7 @@ export class AuthQueue {
         data: this.buildResolvedPayload(completed)
       });
     }
-    this.dropMergeCandidate(completed);
+    if (exitCode === 0) this.dropMergeCandidate(completed);
   }
 
   /**
@@ -5577,6 +5423,8 @@ export class AuthQueue {
     if (completed.type === "merge" && completed.merge_finalized_at != null) {
       return;
     }
+
+    if (this.successfulMergeEvidenceFailure(completed)) return;
 
     // Stage 1 — broadcast auth:merged immediately (merge type only).
     if (completed.type === "merge") {
@@ -5669,6 +5517,8 @@ export class AuthQueue {
     if (request.merge_finalized_at != null) {
       return;
     }
+
+    if (this.successfulMergeEvidenceFailure(request)) return;
 
     const mergeHeadSha = request.merge_head_sha ?? this.resolveMergeHeadShaForRequest(request);
     const finalized: AuthRequest = { ...request, merge_head_sha: mergeHeadSha };
@@ -5845,7 +5695,7 @@ export class AuthQueue {
     const authorizationEvidence = request.execution_evidence_id
       ? getAttributionEvidence(this.db, request.execution_evidence_id)
       : null;
-    if (authorizationEvidence?.evidence_method === "credential_signature") return request;
+    if (authorizationEvidence?.evidence_method === "credential_signature" && authorizationEvidence.details.commit_sha) return request;
 
     const commitSha = extractSuccessfulMergeCommitSha(request.output);
     const cwd = request.target_repo_root ?? request.cwd;
@@ -5859,12 +5709,10 @@ export class AuthQueue {
     }
     let verification: MergeSignatureVerification;
     try {
-      verification = verifySuccessfulMergeCommitSignature(
-        this.db,
-        cwd,
-        commitSha,
-        targetHeadSha,
-      );
+      const lease = request.approval_lease_id ? getDelegatedSigningLease(this.db, request.approval_lease_id) : null;
+      verification = cwd && commitSha && request.approved_by_user_id
+        ? verifyAuthorizedMergeCommitSignature(this.db, cwd, commitSha, request.approved_by_user_id, lease?.credential_id)
+        : { verified: false, commit_sha: commitSha, fingerprint: null, credential_id: null, user_id: null, reason: "missing_publication_identity" };
     } catch {
       verification = {
         verified: false,
@@ -5874,6 +5722,9 @@ export class AuthQueue {
         user_id: null,
         reason: "verification_error",
       };
+    }
+    if (!verification.verified || verification.user_id !== request.approved_by_user_id || this.successfulMergeEvidenceFailure(request)) {
+      throw new AuthQueueError("invalid_status", "Exact operator-authorized publication evidence became unavailable during completion; retain the request for recovery.");
     }
     const verifiedAt = request.resolved_at ?? this.now();
     return this.db.transaction(() => {
@@ -5896,6 +5747,7 @@ export class AuthQueue {
           executor_user_id: systemAction().user_id,
           approval_source: request.approval_source,
           verified: verification.verified,
+          publication_verified: verification.verified && this.successfulMergeEvidenceFailure(request) === null,
           commit_sha: verification.commit_sha,
           target_head_sha: targetHeadSha,
           fingerprint: verification.fingerprint,
@@ -5924,14 +5776,7 @@ export class AuthQueue {
       )
       .all() as Record<string, unknown>[];
     for (const row of rows) {
-      // Issue fbf2a58 round 2 — dispatch through finalizeReconciledMerge (not
-      // finalizeSuccessfulMerge directly) so evidence-only partially-terminalized
-      // rows are handled by the convergence dispatcher: a normal completed merge
-      // routes straight to full finalization exactly as before, but a merge that
-      // landed out-of-band without approval attribution is re-checked and only
-      // converges to full finalization (merge_finalized_at set) once attribution
-      // appears, instead of being permanently excluded from the sweep.
-      this.finalizeReconciledMerge(mapRow(row));
+      this.finalizeSuccessfulMerge(mapRow(row));
     }
   }
 
@@ -6304,6 +6149,7 @@ export class AuthQueue {
   }
 
   private applyLedgerCompletionForRequest(request: AuthRequest): void {
+    if (this.successfulMergeEvidenceFailure(request)) return;
     try {
       // Issue 3df7357 — the request-scoped fact must not depend on deferred
       // issue actions or on how many issues the request happens to link.
@@ -6347,6 +6193,7 @@ export class AuthQueue {
   }
 
   private executeDeferredLedgerActions(request: AuthRequest): void {
+    if (this.successfulMergeEvidenceFailure(request)) return;
     const persistedActions = this.tableExists("auth_request_actions")
       ? listAuthRequestActions(this.db, request.id)
       : [];
@@ -7584,52 +7431,7 @@ function errorMessage(error: unknown): string | null {
   return error instanceof Error ? error.message : null;
 }
 
-type AtomicMarker = {
-  merge_sha: string;
-  base_sha?: string;
-  head_sha?: string;
-  tree_sha?: string;
-};
 
-function extractAtomicMergeState(output: string): {
-  prepared: Required<AtomicMarker> | null;
-  applied: AtomicMarker | null;
-} {
-  let prepared: Required<AtomicMarker> | null = null;
-  let applied: AtomicMarker | null = null;
-  for (const line of output.split(/\r?\n/)) {
-    for (const [prefix, kind] of [
-      ["MANDIBLE_MERGE_PREPARED ", "prepared"],
-      ["MANDIBLE_MERGE_APPLIED ", "applied"],
-    ] as const) {
-      const index = line.indexOf(prefix);
-      if (index < 0) continue;
-      try {
-        const value = JSON.parse(line.slice(index + prefix.length)) as AtomicMarker;
-        if (!GIT_OID_RE.test(value.merge_sha ?? "")) continue;
-        if (kind === "prepared") {
-          if (
-            GIT_OID_RE.test(value.base_sha ?? "") && GIT_OID_RE.test(value.head_sha ?? "") &&
-            GIT_OID_RE.test(value.tree_sha ?? "")
-          ) prepared = value as Required<AtomicMarker>;
-        } else if (!value.base_sha || GIT_OID_RE.test(value.base_sha)) {
-          applied = value;
-        }
-      } catch {
-        // Malformed markers never become recovery authority.
-      }
-    }
-  }
-  return { prepared, applied };
-}
-
-function atomicMergeResultLine(request: AuthRequest, mergeSha: string): string {
-  return `MANDIBLE_MERGE_RESULT ${JSON.stringify({
-    merge_sha: mergeSha,
-    repo_id: request.repo ?? null,
-    declared_issues: request.issue_closures ?? [],
-  })}`;
-}
 
 function conflictFilesFromMergeTreeOutput(
   output: string,
