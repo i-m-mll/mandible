@@ -18,21 +18,23 @@ import { ExportError, getProjectCheckout, normalizeRepoRelativePath, resolveChec
 
 export type SpacePublication = {
   id: string; space_id: string; source_revision: string; snapshot_ref: string; content: string;
-  repo_id: string; path: string; expected_destination_sha256: string | null; issue_id: string; message: string;
+  repo_id: string; path: string; expected_destination_sha256: string | null; expected_destination_mode: '100644' | '100755' | null; issue_id: string; message: string;
   branch: string | null; worktree: string | null; commit_sha: string | null; version_ref: string | null;
   auth_request_id: string | null; state: 'prepared' | 'committed' | 'submitted'; created_at: number;
 };
 const hash = (bytes: string | Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex');
-function destinationHash(root: string, relative: string): string | null {
+function destinationState(root: string, relative: string): { sha256:string | null; mode:'100644' | '100755' | null } {
   const absolute = path.join(root, relative);
   let parent = path.dirname(absolute);
   while (!fs.existsSync(parent)) parent = path.dirname(parent);
   const actual = fs.realpathSync(parent), canonical = fs.realpathSync(root);
   if (actual !== canonical && !actual.startsWith(`${canonical}${path.sep}`)) throw new ExportError('invalid_path', 'Destination escapes the checkout through a symbolic link');
-  if (!fs.existsSync(absolute)) return null;
-  if (fs.lstatSync(absolute).isSymbolicLink()) throw new ExportError('invalid_path', 'Destination must not be a symbolic link');
-  return hash(fs.readFileSync(absolute));
+  if (!fs.existsSync(absolute)) return {sha256:null,mode:null};
+  const stat=fs.lstatSync(absolute);
+  if (!stat.isFile()) throw new ExportError('invalid_path', 'Destination must be a regular file');
+  return {sha256:hash(fs.readFileSync(absolute)),mode:(stat.mode & 0o111) ? '100755':'100644'};
 }
+const destinationHash = (root:string,relative:string) => destinationState(root,relative).sha256;
 export function listPublications(db: Db, spaceId: string): SpacePublication[] {
   return db.prepare('SELECT * FROM space_publications WHERE space_id=? ORDER BY created_at DESC,id').all(spaceId) as SpacePublication[];
 }
@@ -49,7 +51,7 @@ function preparePublicationValue(db: Db, input: { spaceId: string; repoId?: stri
   if (!issue.ok) throw new ExportError('invalid_issue','Publication requires an issue in the destination project');
   const relative = normalizeRepoRelativePath(input.path);
   if (relative === '.' || relative.startsWith('.git/') || relative === '.git') throw new ExportError('invalid_path','Invalid document destination');
-  const expected = destinationHash(checkout.root,relative);
+  const expected = destinationState(checkout.root,relative);
   const content = serializeSpaceDocument(db,space.id);
   const snapshot = recordArtifactVersion(db, {
     content, source_kind: 'managed', custody_mode: 'managed', repo_id: checkout.project_id,
@@ -58,8 +60,8 @@ function preparePublicationValue(db: Db, input: { spaceId: string; repoId?: stri
   });
   const id = crypto.randomUUID();
   db.prepare(`INSERT INTO space_publications (id,space_id,source_revision,snapshot_ref,content,repo_id,path,
-    expected_destination_sha256,issue_id,message,state,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,'prepared',?)`)
-    .run(id,space.id,hash(content),snapshot.artifact_version.id,content,checkout.id,relative,expected,issue.issue_id,
+    expected_destination_sha256,expected_destination_mode,issue_id,message,state,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'prepared',?)`)
+    .run(id,space.id,hash(content),snapshot.artifact_version.id,content,checkout.id,relative,expected.sha256,expected.mode,issue.issue_id,
       input.message?.trim() || `Publish ${space.title}`,Date.now());
   return getPublication(db,space.id,id);
 }
@@ -138,7 +140,8 @@ async function executePublicationValue(db: Db, spaceId: string, id: string, runn
     const checkout = getProjectCheckout(db,publication.repo_id);
     if (!checkout) throw new ExportError('checkout_not_found','Destination checkout unavailable');
     const checkDestination = () => {
-      if (destinationHash(checkout.root,publication.path) !== publication.expected_destination_sha256)
+      const destination=destinationState(checkout.root,publication.path);
+      if (destination.sha256 !== publication.expected_destination_sha256 || destination.mode !== publication.expected_destination_mode)
         throw new ExportError('stale_destination','Destination changed since preparation. Prepare a new publication; the frozen snapshot and draft are retained.');
     };
     checkDestination();
@@ -167,7 +170,8 @@ async function executePublicationValue(db: Db, spaceId: string, id: string, runn
     if (!committed.ok || committed.value.custody.hash !== publication.source_revision)
       throw new ExportError('stale_destination','Signed publication differs from its frozen source; inspect the retained commit before submitting');
     checkDestination();
-    if (destinationHash(publication.worktree!,publication.path) !== publication.source_revision)
+    const proposal = destinationState(publication.worktree!,publication.path);
+    if (proposal.sha256 !== publication.source_revision || proposal.mode !== (publication.expected_destination_mode ?? '100644'))
       throw new ExportError('stale_destination','Publication checkout changed after committing; the signed snapshot is retained.');
     const auth = await runner.submit(publication.worktree!,publication,db);
     const bound = getPublication(db,spaceId,id);

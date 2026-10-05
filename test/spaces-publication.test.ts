@@ -61,6 +61,9 @@ it('freezes saved revision, retains failed proposal, refuses changed destination
   expect(fs.readFileSync(path.join(repo,'doc.md'),'utf8')).toBe('destination');
   expect(fs.readFileSync(path.join(worktree,'doc.md'),'utf8')).toBe(publication.content);
   expect(getPublication(db,space,publication.id).snapshot_ref).toBe(publication.snapshot_ref);
+  fs.chmodSync(path.join(repo,'doc.md'),0o755);
+  await expect(executePublication(db,space,publication.id,runner)).rejects.toThrow('Destination changed');
+  fs.chmodSync(path.join(repo,'doc.md'),0o644);
   fs.writeFileSync(path.join(repo,'doc.md'),'external edit');
   await expect(executePublication(db,space,publication.id,runner)).rejects.toThrow('Destination changed');
   expect(commits).toBe(1);expect(listSpaceBlocks(db,space)[0].markdown).toBe('edited later');
@@ -161,7 +164,9 @@ it('rechecks the destination after a committed submission failure without changi
   fs.unlinkSync(path.join(repo,'doc.md'));fs.writeFileSync(path.join(proposal,'doc.md'),'changed proposal');
   await expect(executePublication(db,space,prepared.id,runner)).rejects.toThrow('Publication checkout changed');
   expect(getPublication(db,space,prepared.id)).toEqual(committed);expect(submissions).toBe(1);
-  fs.writeFileSync(path.join(proposal,'doc.md'),prepared.content);runner.submit=()=> 'unbound-auth';
+  fs.writeFileSync(path.join(proposal,'doc.md'),prepared.content);fs.chmodSync(path.join(proposal,'doc.md'),0o755);
+  await expect(executePublication(db,space,prepared.id,runner)).rejects.toThrow('Publication checkout changed');
+  fs.chmodSync(path.join(proposal,'doc.md'),0o644);runner.submit=()=> 'unbound-auth';
   await expect(executePublication(db,space,prepared.id,runner)).rejects.toThrow('did not atomically bind');
   expect(getPublication(db,space,prepared.id)).toEqual(committed);
   expect(git(repo,'show',`${committed.commit_sha}:doc.md`)+'\n').toBe(prepared.content);
