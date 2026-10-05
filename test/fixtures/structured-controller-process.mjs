@@ -4,9 +4,11 @@ const provider = process.argv[2];
 const providerArgs = process.argv.slice(3);
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 let activeTurnId = null;
+let outputBatch = null;
 
 function send(value) {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
+  if (outputBatch) outputBatch.push(JSON.stringify(value));
+  else process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
 let approvalThread = null;
@@ -26,6 +28,7 @@ lines.on("line", (line) => {
   else if (request.method === "thread/start") respond({ thread: { id: "codex-new-thread", status: { type: "idle" } } });
   else if (request.method === "thread/read") respond({ thread: { id: request.params.threadId, status: { type: process.env.FAKE_CODEX_THREAD_STATUS ?? "idle" } } });
   else if (request.method === "turn/start") {
+    outputBatch = [];
     activeTurnId = `native-${request.params.clientUserMessageId}`;
     const turn = { id: activeTurnId, status: "inProgress" };
     respond({ turn });
@@ -71,6 +74,8 @@ lines.on("line", (line) => {
       send({ method: "turn/completed", params: { threadId: request.params.threadId, turn: { id: activeTurnId, status: "completed" } } });
       activeTurnId = null;
     }
+    const batch = outputBatch; outputBatch = null;
+    process.stdout.write(`${batch.join("\n")}\n`);
   } else if (request.method === "turn/steer") {
     if (request.params.expectedTurnId !== activeTurnId) {
       send({ id: request.id, error: { code: -1, message: "wrong active turn" } });

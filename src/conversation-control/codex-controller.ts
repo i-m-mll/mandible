@@ -46,6 +46,7 @@ type CodexController = {
   providerSequence: number;
   liveText: Map<string, string>;
   activeDelivery: ConversationOutboxItem | null;
+  startingNotifications: { method: string; params?: unknown; id?: string | number }[] | null;
   userMessageIds: Map<string, string>;
   permissions: Map<string, { request: ManagedPermissionRequest; protocolId: string | number; method: string }>;
 };
@@ -145,6 +146,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         providerSequence: 0,
         liveText: new Map(),
         activeDelivery: null,
+        startingNotifications: null,
         userMessageIds: new Map(),
         permissions: new Map(),
       };
@@ -174,6 +176,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     } catch (error) {
       return { ok: false, error: adapterFailure(this.id, "attachment-custody-failed", error) };
     }
+    if (controller.startingNotifications !== null) return { ok: false, error: adapterFailure(this.id, "delivery-in-flight", "Codex is binding another requested turn") };
     controller.activeDelivery = item;
     try {
       let providerTurnId: string;
@@ -214,7 +217,9 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
               excludeTmpdirEnvVar: false, excludeSlashTmp: false },
           } : {}),
         };
+        controller.startingNotifications = [];
         const result = await controller.client.request("turn/start", params);
+        if (controller.startingNotifications === null) throw new Error("Codex turn-start notifications became unprovable");
         const turn = responseTurn(result);
         const nativeTurnId = stringField(turn, "id");
         if (!nativeTurnId) throw new Error("Codex App Server returned no turn identity");
@@ -226,6 +231,9 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
         this.lifecycle.emit(this.event(controller, { kind: "turn-started", turn_id: item.turn_id, at: Date.now() }));
         const status = stringField(turn, "status");
         if (status && status !== "inProgress") this.finishTurn(controller, turn);
+        const notifications = controller.startingNotifications;
+        controller.startingNotifications = null;
+        for (const notification of notifications) this.acceptNotification(controller, notification);
       }
       const receipt: ProviderDeliveryReceipt = {
         provider_receipt_id: `codex:turn:${providerTurnId}`,
@@ -239,6 +247,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       controller.delivered.set(item.id, receipt);
       return { ok: true, value: receipt };
     } catch (thrown) {
+      controller.startingNotifications = null;
       if (controller.activeDelivery?.id === item.id) controller.activeDelivery = null;
       return { ok: false, error: { kind: "delivery-uncertain", delivery_id: item.id } };
     }
@@ -390,6 +399,17 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
   }
 
   private acceptNotification(controller: CodexController, record: { method: string; params?: unknown; id?: string | number }): void {
+    // A response and its notifications can share one stdio read. Bind the
+    // exact returned turn before applying any notification from that read.
+    if (controller.startingNotifications !== null) {
+      if (controller.startingNotifications.length >= 1_024) {
+        controller.startingNotifications = null;
+        this.markAmbiguous(controller);
+        return;
+      }
+      controller.startingNotifications.push(record);
+      return;
+    }
     const params = object(record.params);
     if (record.method === "thread/tokenUsage/updated") {
       if (stringField(params, "threadId") !== controller.providerSessionId) return;
