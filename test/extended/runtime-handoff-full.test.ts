@@ -61,8 +61,11 @@ it('hands the actual old daemon over to the candidate through isolated productio
   const oldRevision = process.env.MANDIBLE_TEST_OLD_REVISION || oldMarker.commit;
   const sourceCa = localCaPaths(sourceHome); expect(assertLocalCaIdentity(sourceCa).state).toBe('trusted'); probeCurrentMacOsTrust(sourceCa);
   const runtime = command('/bin/sh', ['scripts/bun-runtime.sh'], { cwd: process.cwd(), env: process.env }).trim();
-  const repo = createAuthCheckRepo();
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-actual-upgrade-'));
+  // Node resolves imported module URLs through macOS /var symlinks. Use the
+  // same real paths in its argv and launch definition so the deployed main
+  // entry guard actually starts the daemon.
+  const repo = fs.realpathSync(createAuthCheckRepo());
+  const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-actual-upgrade-')));
   const userHome = path.join(scratch, 'user'); const home = path.join(scratch, 'installation');
   fs.mkdirSync(userHome); fs.mkdirSync(home);
   const ports = { public: await freePort(), backend: await freePort(), admin: await freePort() };
