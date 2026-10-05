@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import fs from "node:fs";
 import os from "node:os";
@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 
 // Issue 24f0316 — the ledger database lives under the durable root.
 const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs");
@@ -45,7 +45,7 @@ export function projectDatabaseSnapshot(options) {
   let db = null;
   const startedAt = Date.now();
   try {
-    db = new Database(partialPath);
+    db = new SqliteDatabase(partialPath);
     db.pragma("journal_mode = OFF");
     db.pragma("synchronous = OFF");
     db.pragma("temp_store = MEMORY");
@@ -97,7 +97,7 @@ export function projectDatabaseSnapshot(options) {
     // A projected database does not own that cache, so never publish it with
     // the snapshot or leave it behind when a candidate succeeds.
     removeDatabaseArtifacts(partialStructureCachePath);
-    db = new Database(partialPath);
+    db = new SqliteDatabase(partialPath);
     db.pragma("foreign_keys = ON");
 
     const quickCheck = db.pragma("quick_check", { simple: true });
@@ -580,7 +580,7 @@ function requireValue(argv, index, flag) {
 }
 
 function printUsage() {
-  console.log(`Usage: node scripts/project-db-snapshot.mjs --output PATH [options]
+  console.log(`Usage: bun scripts/project-db-snapshot.mjs --output PATH [options]
 
 Create a deterministic compact Mandible database projection.
 

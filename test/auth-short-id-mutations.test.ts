@@ -9,7 +9,7 @@
 // These tests assert on the DATABASE, never on the response body. A route that
 // claims success is the thing under test, so its own claim cannot be the
 // evidence for it.
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 function setup(): { router: Router; queue: AuthQueue; db: Db; events: SseEvent[] } {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
   setupOperator(db, { slug: "auth-delete-test", display_name: "Auth Delete Test" });

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type Database from "better-sqlite3";
+import type SqliteDatabase from "./sqlite.js";
 
 import { isAuthMergeCommand, resolveAuthMergeExecutionContext } from "./auth-context.js";
 import type { Db } from "./db.js";
@@ -84,7 +84,7 @@ export class AuthClearanceManager {
   private readonly now: () => number;
 
   constructor(
-    db: InstanceType<typeof Database>,
+    db: InstanceType<typeof SqliteDatabase>,
     private readonly signer: DelegatedSigningResource,
     private readonly runtimeEpoch: string,
     options: { now?: () => number } = {},

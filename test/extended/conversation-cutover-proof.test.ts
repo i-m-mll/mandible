@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   auditCutover,
@@ -32,7 +32,7 @@ function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-cutover-proof-"));
   roots.push(root);
   const source = path.join(root, "source.sqlite");
-  const db = new Database(source);
+  const db = new SqliteDatabase(source);
   db.exec(`
     PRAGMA foreign_keys=ON;
     CREATE TABLE conversations (
@@ -156,7 +156,7 @@ describe("conversation cutover compact rebuild", () => {
     expect(report.pass).toBe(true);
     expect(report.excluded_tables).toEqual(["conversation_search_cache"]);
     expect(fs.readFileSync(source)).toEqual(before);
-    const rebuilt = new Database(destination, { readonly: true });
+    const rebuilt = new SqliteDatabase(destination, { readonly: true });
     expect(rebuilt.prepare("SELECT content FROM conversation_blocks WHERE id = 'block-legacy'").pluck().get()).toBe("kept");
     expect(rebuilt.prepare("SELECT name FROM sqlite_master WHERE name = 'conversation_search_cache'").get()).toBeUndefined();
     expect(rebuilt.pragma("integrity_check", { simple: true })).toBe("ok");
@@ -193,7 +193,7 @@ describe("conversation cutover compact rebuild", () => {
 
   it("preserves pre-existing foreign-key violations without creating new ones", () => {
     const { root, source } = fixture();
-    const sourceDb = new Database(source);
+    const sourceDb = new SqliteDatabase(source);
     sourceDb.pragma("foreign_keys = OFF");
     sourceDb.prepare("INSERT INTO workflow_workers VALUES (?, ?, ?)")
       .run("orphan-worker", "old-workflow", "missing-conversation");
@@ -211,14 +211,14 @@ describe("conversation cutover compact rebuild", () => {
         fkid: 0,
       }],
     });
-    const rebuilt = new Database(destination, { readonly: true });
+    const rebuilt = new SqliteDatabase(destination, { readonly: true });
     expect(rebuilt.pragma("foreign_key_check")).toHaveLength(1);
     rebuilt.close();
   });
 
   it("proves exact projected digests for deliberately reclaimed conversation tables", () => {
     const { root, source } = fixture();
-    const sourceDb = new Database(source);
+    const sourceDb = new SqliteDatabase(source);
     sourceDb.exec(`
       CREATE TABLE conversation_normalization_checkpoints (
         id TEXT PRIMARY KEY,
@@ -254,7 +254,7 @@ describe("conversation cutover compact rebuild", () => {
     expect(report.copied_rows.conversation_normalization_checkpoints).toBe(1);
     expect(report.destination.size_bytes).toBeLessThan(512 * 1024);
 
-    const rebuilt = new Database(destination, { readonly: true });
+    const rebuilt = new SqliteDatabase(destination, { readonly: true });
     expect(rebuilt.prepare("SELECT * FROM conversation_structural_blocks").get()).toEqual({
       id: "structural-one",
       normalization_checkpoint_id: "checkpoint-one",
@@ -272,7 +272,7 @@ describe("legacy storage reclaim", () => {
     roots.push(root);
     const source = path.join(root, "source.db");
     const destination = path.join(root, "structure.db");
-    const db = new Database(source);
+    const db = new SqliteDatabase(source);
     db.exec(`
       CREATE TABLE conversations (
         id TEXT PRIMARY KEY, source TEXT NOT NULL, source_hash TEXT NOT NULL,
@@ -302,7 +302,7 @@ describe("legacy storage reclaim", () => {
 
     const report = buildSparseConversationStructureCache({ source, destination });
     expect(report).toMatchObject({ pass: true, conversations: 1, blocks: 2, tool_links: 1 });
-    const cache = new Database(destination, { readonly: true });
+    const cache = new SqliteDatabase(destination, { readonly: true });
     expect(cache.prepare(`
       SELECT position, type_code, role_code, parent_position,
              record_offset, record_length, record_ordinal, sub_block_ordinal
@@ -320,7 +320,7 @@ describe("legacy storage reclaim", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-reclaim-legacy-"));
     roots.push(root);
     const source = path.join(root, "mandible.db");
-    const db = new Database(source);
+    const db = new SqliteDatabase(source);
     migrate(db);
     db.prepare(`
       INSERT INTO conversations (
@@ -348,7 +348,7 @@ describe("legacy storage reclaim", () => {
     const source = path.join(root, "mandible.db");
     const logDbPath = path.join(root, "operational-logs.db");
     const destination = path.join(root, "reclaimed.db");
-    const db = new Database(source);
+    const db = new SqliteDatabase(source);
     migrate(db);
     db.prepare(`
       INSERT INTO daemon_log (id, ts, level, event, subsystem, fields_json)
@@ -356,7 +356,7 @@ describe("legacy storage reclaim", () => {
     `).run();
     db.close();
 
-    const logDb = new Database(logDbPath);
+    const logDb = new SqliteDatabase(logDbPath);
     logDb.exec(`
       CREATE TABLE operational_log_copy_state (
         source_path TEXT PRIMARY KEY, last_ts INTEGER, last_id TEXT,
@@ -379,13 +379,13 @@ describe("legacy storage reclaim", () => {
       structure_cache: { pass: true },
       rebuild: { reclaimed_dense_conversation_index: true },
     });
-    const rebuilt = new Database(destination, { readonly: true });
+    const rebuilt = new SqliteDatabase(destination, { readonly: true });
     expect(rebuilt.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_log'").get())
       .toBeUndefined();
     expect(rebuilt.prepare("SELECT COUNT(*) AS count FROM conversation_normalization_checkpoints").get())
       .toEqual({ count: 0 });
     rebuilt.close();
-    const original = new Database(source, { readonly: true });
+    const original = new SqliteDatabase(source, { readonly: true });
     expect(original.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 1 });
     original.close();
   });
@@ -507,7 +507,7 @@ describe("conversation cutover audit", () => {
   it("rejects evidence bound before the source database changes", () => {
     const { source } = fixture();
     const evidence = passingEvidence(source);
-    const db = new Database(source);
+    const db = new SqliteDatabase(source);
     db.prepare("UPDATE conversation_blocks SET content = ? WHERE id = ?").run("changed", "block-live");
     db.close();
 

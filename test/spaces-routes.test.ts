@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, setDb, type Db } from "../src/db.js";
@@ -79,7 +79,7 @@ function allowsFileRpcRoute(method: string, url: string): boolean {
 }
 
 beforeEach(() => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
   router = new Router();

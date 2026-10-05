@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -205,7 +205,7 @@ describe("disposable conversation search cache", () => {
       expect(JSON.stringify(result)).not.toContain(token);
       expect(result.matches[0].snippet).toContain("[mandible-credential:unverified#1]");
       expect(await cache.search({ conversationIds: ["c1"], needle: token, limit: 1 })).toMatchObject({ matches: [] });
-      const sql = new Database(cachePath, { readonly: true });
+      const sql = new SqliteDatabase(cachePath, { readonly: true });
       expect(sql.prepare("SELECT body FROM hot_bodies").all()).not.toContainEqual(expect.objectContaining({ body: expect.stringContaining(token) }));
       sql.close();
       expect(fs.readFileSync(cachePath).includes(Buffer.from(token))).toBe(false);

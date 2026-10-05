@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // Previews stay in the disposable cache root: they are regenerable copies.
 const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
-const Database = require("better-sqlite3");
+import SqliteDatabase from "../src/sqlite.ts";
 
 const DEFAULT_PORT_START = 29421;
 const DEFAULT_PORT_END = 29499;
@@ -956,7 +956,7 @@ function printResult(result, json) {
 
   if (result.schema === "mandible-rich-briefing-demo@2") {
     console.log(`Mandible rich Briefing demo ${result.status}`);
-    console.log(`Database: ${result.db}`);
+    console.log(`SqliteDatabase: ${result.db}`);
     console.log(`Source database: ${result.sourceDb}`);
     console.log(`Artifact custody: ${result.artifactRoot}`);
     console.log(`Briefing: ${result.briefing.id}`);
@@ -1480,7 +1480,7 @@ export async function seedProjectedConversationStructureCache({ sourceCache, tar
       fs.rmSync(candidate, { force: true });
     }
 
-    const source = new Database(sourceCache, { readonly: true, fileMustExist: true });
+    const source = new SqliteDatabase(sourceCache, { readonly: true, fileMustExist: true });
     try {
       await source.backup(targetCache);
     } finally {
@@ -1488,7 +1488,7 @@ export async function seedProjectedConversationStructureCache({ sourceCache, tar
     }
   }
 
-  const target = new Database(targetCache);
+  const target = new SqliteDatabase(targetCache);
   try {
     target.pragma("foreign_keys = ON");
     target.prepare("ATTACH DATABASE ? AS projected").run(projectedDb);
@@ -1846,7 +1846,7 @@ function readInstallationId() {
 function registerPreviewInstance(env) {
   const databasePath = path.join(localSessionAuthorityDir(), "sessions.db");
   if (!fs.existsSync(databasePath)) throw new Error("Local session authority is not initialized.");
-  const db = new Database(databasePath);
+  const db = new SqliteDatabase(databasePath);
   try {
     const existing = db.prepare("SELECT * FROM instance_registrations WHERE instance_id = ?")
       .get(env.MANDIBLE_INSTANCE_ID);
@@ -1882,7 +1882,7 @@ function registerPreviewInstance(env) {
 }
 
 function restorePreviewRegistration(env, existing) {
-  const db = new Database(path.join(localSessionAuthorityDir(), "sessions.db"));
+  const db = new SqliteDatabase(path.join(localSessionAuthorityDir(), "sessions.db"));
   try {
     db.transaction(() => {
       if (!existing) {
@@ -1924,7 +1924,7 @@ export function reloadLocalFrontDoor() {
 }
 
 export function sanitizePreviewDatabase(databasePath) {
-  const db = new Database(databasePath);
+  const db = new SqliteDatabase(databasePath);
   try {
     const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
     db.transaction(() => {

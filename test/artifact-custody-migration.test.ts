@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import Database from 'better-sqlite3';
+import SqliteDatabase from "../src/sqlite.ts";
 import { expect, it } from 'vitest';
 import { CURRENT_SCHEMA_VERSION, MIGRATIONS, migrate } from '../src/db-migrations.js';
 import { readArtifactBytesFull } from '../src/artifact-content.js';
@@ -12,7 +12,7 @@ it('recovers populated v184 custody before installing v185 and preserves exact v
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'mandible-custody-migration-'));
   const oldRoot=process.env.MANDIBLE_ARTIFACT_DIR;
   process.env.MANDIBLE_ARTIFACT_DIR=path.join(root,'cas');
-  const db=new Database(path.join(root,'ledger.db'));
+  const db=new SqliteDatabase(path.join(root,'ledger.db'));
   try {
     db.exec(fs.readFileSync('test/fixtures/schema-v158.sql','utf8'));
     db.function('mandible_sha256',{deterministic:true},(value:unknown)=>createHash('sha256').update(String(value)).digest('hex'));

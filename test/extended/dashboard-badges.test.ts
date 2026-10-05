@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, setDb } from "../../src/db.js";
@@ -6,7 +6,7 @@ import { readDashboardBadgeCounts, registerDashboardRoutes } from "../../src/rou
 import { Router } from "../../src/server.js";
 
 describe("dashboard badge aggregate", () => {
-  const db = new Database(":memory:");
+  const db = new SqliteDatabase(":memory:");
   migrate(db);
 
   // Issue c4f456c: the singleton binding is dropped after every test, so it is

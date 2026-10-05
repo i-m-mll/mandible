@@ -2,7 +2,7 @@
 // unambiguous prefix resolves to the full request, an ambiguous prefix is a
 // 409, and an unknown id stays an honest 404. Deep links emit the 8-char
 // short form, so this route is their resolution point.
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../../src/auth-queue.js";
@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function setup(): { router: Router; queue: AuthQueue; db: Db } {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
   const operator = setupOperator(db, { slug: "auth-short-id-test", display_name: "Auth Short Id Test" });

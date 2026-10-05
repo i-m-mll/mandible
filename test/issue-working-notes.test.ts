@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -118,7 +118,7 @@ describe("working-notes migration", () => {
       "utf8",
     );
     const dbPath = path.join(tempDir, "legacy.db");
-    const legacy = new Database(dbPath);
+    const legacy = new SqliteDatabase(dbPath);
     legacy.exec(fixture);
     const projectId = "project-working-notes";
     legacy.prepare(`INSERT INTO ledger_projects
