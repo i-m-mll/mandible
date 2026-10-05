@@ -100,7 +100,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `conversations-blocks-route.test.ts` | Retain | conversation blocks route pagination / indexed conversation position window. Behavioral, persisted-record, or format boundary retained. |
 | `conversations-cli.test.ts` | Retain | conversations CLI file RPC / conversations CLI canonical HTTP reads. Process/transport boundary retained. |
 | `conversations-forks.test.ts` | Retain | conversation browse and fork routes. Behavioral, persisted-record, or format boundary retained. |
-| `cowork-cli-cache.test.ts` | Retain | Cowork CLI cache materializer. Process/transport boundary retained. |
+| `cowork-cli-cache.test.ts` | Retain | Executes the deployed Bash entry point; checks runtime pin, lock and selector byte custody, stable manifest retries, and content-change invalidation. A neutral generated-file fixture replaces the retired policy-cache table. |
 | `daemon-log.test.ts` | Retain | daemon logger / daemon log batching. Process/transport boundary retained. |
 | `daemon-memory.test.ts` | Retain | daemon memory diagnostics. Behavioral, persisted-record, or format boundary retained. |
 | `daemon-readiness-ui.test.ts` | Retain | daemonNeedsSplash / daemon startup epoch. Behavioral, persisted-record, or format boundary retained. |
@@ -322,3 +322,10 @@ CLI round trips, stale revisions, invalid inputs, snapshot selection and registe
 route-policy coverage remain. Instruction targets retain preservation, hooks,
 symlinks and protected-target behavior. Project, Space, reminder, user credentials,
 ledger client and auth list keep their behavioral cases under the typed catalog.
+
+The CLI worker's final checkpoint retains actual deployed cache entry-point and
+artifact-link evidence. `cli-instance-preflight` now verifies five HTTP rejection
+paths perform no mutation, replacing helper-only restatements; its 31 cases remain
+executable. Reported focused results are 13 cache/artifact-link cases and 22 default
+artifact cases passing. Signed CLI checkpoints are `bfc627be`, `5741d506`, and
+`7ef66fb6`, after operations `93c96ab6`; the parent integrates that separate lane.
