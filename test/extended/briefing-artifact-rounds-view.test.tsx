@@ -1,3 +1,6 @@
+import { BRIEFING_EVENT_VALUES } from '../../src/contracts';
+import { queryClient } from '../../ui/src/query/client';
+import { browserResourceKeys, refreshBrowserResources } from '../../ui/src/query/browserResources';
 import { createHash } from 'node:crypto';
 import fs, { readFileSync } from 'node:fs';
 import os from 'node:os';
@@ -18,6 +21,7 @@ import { recordArtifactVersion } from '../../src/provider-artifacts';
 import { AppShellProvider } from '../../ui/src/app-shell';
 import { __resetBrowserSessionForTests, ensureClientAccess } from '../../ui/src/client-auth-token';
 import {
+  invalidateBriefingApiCacheForEvent,
   getBriefingBundles,
   getBriefings,
   invalidateApiGetCache,
@@ -216,6 +220,7 @@ function operatorSessionResponse(): Response {
 
 let noticeHost: HTMLElement;
 beforeEach(async () => {
+  queryClient.clear();
   installStorage();
   invalidateApiGetCache();
   __resetBrowserSessionForTests();
@@ -224,7 +229,7 @@ beforeEach(async () => {
   noticeHost.id = 'app-operational-notices';
   document.body.append(noticeHost);
 });
-afterEach(() => { cleanup(); noticeHost.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); queryClient.clear(); noticeHost.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('artifact-backed Briefing rounds', () => {
   it.each([
@@ -381,6 +386,8 @@ describe('artifact-backed Briefing rounds', () => {
       <BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_ONE} instance={PRODUCTION_ALLOW_INSTANCE} />
     </AppShellProvider>);
     await screen.findByText('First');
+    fireEvent.click(screen.getByRole('button', { name: 'Keep' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Keep' }).getAttribute('aria-pressed')).toBe('true'));
     const shelf = screen.getByText('Annotation sets (2)').closest('details') as HTMLDetailsElement;
     expect(shelf.open).toBe(false);
     const css = readFileSync('ui/src/styles/briefing.css', 'utf8');
@@ -406,6 +413,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(screen.queryByRole('button', { name: 'Return to draft' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Keep' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByRole('button', { name: 'Keep' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('renders a zero annotation-set count as inactive footer text without disclosure semantics', async () => {
@@ -732,6 +740,32 @@ describe('artifact-backed Briefing rounds', () => {
     ]));
   });
 
+  it('refreshes mounted Briefing groups for every declared external event and retains last-good content on malformed reads', async () => {
+    let name = 'Initial external group';
+    let malformed = false;
+    vi.stubGlobal('fetch', vi.fn(async (input) => {
+      const url = String(input);
+      const body = url === '/api/client-auth/whoami' ? { authenticated: true, user: { id: 'human', kind: 'human' } }
+        : url === '/api/briefings' ? { briefings: [] }
+        : url === '/api/briefing-bundles' ? { bundles: [] }
+        : url === '/api/briefing-groups' ? malformed ? { groups: null } : { groups: [{ id: 'group-external', key: 'external', name, current: null, updates: [] }] }
+        : { incidents: [], counts: {} };
+      return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+    }));
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    await screen.findAllByText(name);
+    for (const [index, type] of BRIEFING_EVENT_VALUES.entries()) {
+      name = `Externally updated group ${index}`;
+      expect(invalidateBriefingApiCacheForEvent(type)).toBe(true);
+      await screen.findAllByText(name);
+    }
+    malformed = true;
+    invalidateBriefingApiCacheForEvent('briefing:group-name-updated');
+    await screen.findByRole('alert');
+    expect(screen.getAllByText(name).length).toBeGreaterThan(0);
+    expect(screen.queryByText('No Briefings in this view.')).toBeNull();
+  });
+
   it('reports an independent read failure in the main area instead of a false empty Briefing list', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) === '/api/client-auth/whoami') {
@@ -845,7 +879,7 @@ describe('artifact-backed Briefing rounds', () => {
     await waitFor(() => expect(screen.queryByText('Latest', { selector: '.detail-pane-header__state' })).toBeNull());
     expect(await screen.findByText('First')).toBeTruthy();
     expect(screen.queryByText('Later')).toBeNull();
-    window.dispatchEvent(new CustomEvent('briefing:sse', { detail: { type: 'briefing:round-published' } }));
+    void refreshBrowserResources(queryClient, [browserResourceKeys.briefings]);
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect((screen.getByRole('combobox', { name: 'Round occurrence' }) as HTMLSelectElement).value).toBe(ROUND_ONE);
     expect(screen.getByText('First')).toBeTruthy();
@@ -883,7 +917,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(calls).toContainEqual({ url: `/api/briefings/briefing-1?round=${ROUND_TWO.slice(0, 8)}`, method: 'GET' });
   });
 
-  it('revokes stale round authority immediately on reconnect and clears it when the copied database has no round', async () => {
+  it('revokes mutation authority on reconnect and retains last-good content when the round read fails', async () => {
     let detailReads = 0;
     const posts: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -904,11 +938,11 @@ describe('artifact-backed Briefing rounds', () => {
     const dismiss = await screen.findByRole('button', { name: 'Dismiss' }) as HTMLButtonElement;
     await waitFor(() => expect(dismiss.disabled).toBe(false));
 
-    window.dispatchEvent(new CustomEvent('briefing:sse', { detail: { type: 'reconnected' } }));
+    void refreshBrowserResources(queryClient, [browserResourceKeys.briefings]);
     await waitFor(() => expect(dismiss.disabled).toBe(true));
     fireEvent.click(dismiss);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('briefing round not found'));
-    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
+    expect((screen.getByRole('button', { name: 'Dismiss' }) as HTMLButtonElement).disabled).toBe(true);
     expect(posts).toEqual([]);
   });
 

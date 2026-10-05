@@ -1,3 +1,6 @@
+import { useQuery } from '@tanstack/preact-query';
+import { queryClient } from '../../query/client';
+import { browserResourceKeys } from '../../query/browserResources';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
@@ -26,7 +29,7 @@ import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
-import { readPersistedDetail, writePersistedDetail } from '../../detail-cache';
+
 import { artifactDetailHref, displayResourceRef } from '../../resource-refs';
 import { shortRouteId } from '../../routing';
 import {
@@ -38,10 +41,6 @@ import {
   type BriefingDraftScope,
 } from './briefing-round-view-state';
 import { BriefingDocumentPanel } from './BriefingDocumentPanel';
-import {
-  briefingProjectionCacheKey,
-  BRIEFING_PROJECTION_CACHE_NAMESPACE,
-} from './briefing-projection-cache';
 
 export type BriefingDocumentRendererProps = {
   briefingId: string;
@@ -56,7 +55,6 @@ export type BriefingDocumentRendererProps = {
   keepSubmittedAnnotations?: boolean;
 };
 
-type LoadState = { round: BriefingProjection | null; loading: boolean; error: string | null };
 type SubmissionSort = { field: 'date' | 'actor' | 'annotations'; direction: 'asc' | 'desc' };
 
 function storageOrNull(): Storage | null {
@@ -141,16 +139,6 @@ export function BriefingDocumentRenderer({
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const registerInitialRouteLoadRef = useRef(registerInitialRouteLoad);
   registerInitialRouteLoadRef.current = registerInitialRouteLoad;
-  const [load, setLoad] = useState<LoadState>(() => ({
-    round: readPersistedDetail<BriefingProjection>(
-      BRIEFING_PROJECTION_CACHE_NAMESPACE,
-      briefingProjectionCacheKey(briefingId, roundId, null, displayContext),
-    ),
-    loading: true,
-    error: null,
-  }));
-  const [userId, setUserId] = useState<string | null>(null);
-  const [userKind, setUserKind] = useState<string | null>(null);
   const [draft, setDraft] = useState<BriefingDraft>({});
   const [draftScope, setDraftScope] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
@@ -158,7 +146,6 @@ export function BriefingDocumentRenderer({
   const [busy, setBusy] = useState(false);
   const [contentGate, setContentGate] = useState<string | null>(null);
   const [documentFailure, setDocumentFailure] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -184,117 +171,88 @@ export function BriefingDocumentRenderer({
     menuRef: actionsMenuRef,
     onDismiss: () => setActionsOpen(false),
   });
-  const loadSequence = useRef(0);
   const mutationSequence = useRef(0);
   const selectionKey = (overlayId: string | null) => `${briefingId}:${roundId ?? 'latest'}:${overlayId ?? 'respond-now'}`;
   const currentSelection = useRef(selectionKey(selectedOverlayId));
   currentSelection.current = selectionKey(selectedOverlayId);
 
-  const reconcile = useCallback(async (overlayId: string | null = selectedOverlayId) => {
-    const sequence = ++loadSequence.current;
-    const expectedSelection = selectionKey(overlayId);
-    const cacheKey = briefingProjectionCacheKey(briefingId, roundId, overlayId, displayContext);
-    const cached = readPersistedDetail<BriefingProjection>(BRIEFING_PROJECTION_CACHE_NAMESPACE, cacheKey);
-    setLoad((current) => ({ ...current, round: cached ?? current.round, loading: true, error: null }));
-    try {
-      const [identity, round] = await Promise.all([
-        getClientAuthWhoami(),
-        getBriefing(briefingId, roundId, overlayId, undefined, displayContext),
-      ]);
-      if (sequence !== loadSequence.current || currentSelection.current !== expectedSelection) return null;
-      if (round.briefing_id !== briefingId || (roundId && !round.selected_round_id.startsWith(roundId))) throw new Error('The Briefing service returned a mismatched immutable round.');
-      writePersistedDetail(BRIEFING_PROJECTION_CACHE_NAMESPACE, cacheKey, round);
-      const nextUserId = identity.authenticated ? identity.user?.id ?? null : null;
-      setUserId(nextUserId);
-      setUserKind(identity.user?.kind ?? null);
-      setLoad({ round, loading: false, error: null });
-      onBriefingChange?.(round);
-      const storageScope = draftStorageScope(briefingId, round);
-      const nextDraftScope = storageScope
-        ? `${nextUserId ?? 'memory'}:${storageScope.briefingId}:${storageScope.roundId}:${storageScope.artifactVersionId}:${storageScope.profile}`
-        : null;
-      setDraft((current) => {
-        if (round.selected_submission_overlay) return effectiveDraft(round.items);
-        if (draftScope === nextDraftScope) return current;
-        const stored = storageScope ? loadBriefingDraft(storageOrNull(), nextUserId, storageScope, round.items) : {};
-        return Object.keys(stored).length > 0 ? stored : effectiveDraft(round.items);
-      });
-      setDraftScope(nextDraftScope);
+  const projectionKey = browserResourceKeys.briefingProjection(briefingId, roundId, selectedOverlayId, displayContext);
+  const projectionQuery = useQuery({
+    queryKey: projectionKey,
+    queryFn: async ({ signal }) => {
+      const round = await getBriefing(briefingId, roundId, selectedOverlayId, signal, displayContext);
+      if (round.briefing_id !== briefingId || (roundId && !round.selected_round_id.startsWith(roundId))) {
+        throw new Error('The Briefing service returned a mismatched immutable round.');
+      }
       return round;
-    } catch (error) {
-      if (sequence !== loadSequence.current || currentSelection.current !== expectedSelection) return null;
-      const message = error instanceof Error ? error.message : String(error);
-      setUserId(null);
-      setUserKind(null);
-      setLoad({ round: null, loading: false, error: message });
-      onBriefingChange?.(null);
+    },
+    enabled: active,
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[2] === briefingId && previousQuery.queryKey[3] === roundId ? previous : undefined,
+    refetchOnWindowFocus: true,
+  }, queryClient);
+  const identityQuery = useQuery({
+    queryKey: ['local', 'identity'],
+    queryFn: () => getClientAuthWhoami(),
+    enabled: active,
+    refetchOnWindowFocus: true,
+  }, queryClient);
+  const userId = identityQuery.data?.authenticated ? identityQuery.data.user?.id ?? null : null;
+  const userKind = identityQuery.data?.user?.kind ?? null;
+  const load = {
+    round: projectionQuery.data ?? null,
+    loading: projectionQuery.isFetching || identityQuery.isPending,
+    error: projectionQuery.error?.message ?? identityQuery.error?.message ?? null,
+  };
+  const reconcile = useCallback(async (overlayId: string | null = selectedOverlayId) => {
+    const key = browserResourceKeys.briefingProjection(briefingId, roundId, overlayId, displayContext);
+    await queryClient.cancelQueries({ queryKey: key, exact: true });
+    try {
+      return await queryClient.fetchQuery({
+        queryKey: key,
+        queryFn: ({ signal }) => getBriefing(briefingId, roundId, overlayId, signal, displayContext),
+        staleTime: 0,
+      });
+    } catch {
       return null;
     }
-  }, [briefingId, displayContext?.groupId, displayContext?.proposalBundleId, draftScope,
-    onBriefingChange, roundId, selectedOverlayId]);
+  }, [briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId]);
 
   useEffect(() => {
-    loadSequence.current += 1;
-    mutationSequence.current += 1;
-    setLoad({
-      round: readPersistedDetail<BriefingProjection>(
-        BRIEFING_PROJECTION_CACHE_NAMESPACE,
-        briefingProjectionCacheKey(briefingId, roundId, null, displayContext),
-      ),
-      loading: true,
-      error: null,
+    if (active) registerInitialRouteLoadRef.current(projectionQuery.refetch());
+  }, [active, briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId]);
+
+  useEffect(() => {
+    const round = projectionQuery.data;
+    if (!round || !identityQuery.data) return;
+    onBriefingChange?.(round);
+    const storageScope = draftStorageScope(briefingId, round);
+    const nextDraftScope = storageScope
+      ? `${userId ?? 'memory'}:${storageScope.briefingId}:${storageScope.roundId}:${storageScope.artifactVersionId}:${storageScope.profile}`
+      : null;
+    setDraft((current) => {
+      if (round.selected_submission_overlay) return effectiveDraft(round.items);
+      if (draftScope === nextDraftScope) return current;
+      const stored = storageScope ? loadBriefingDraft(storageOrNull(), userId, storageScope, round.items) : {};
+      return Object.keys(stored).length > 0 ? stored : effectiveDraft(round.items);
     });
-    setUserId(null);
-    setUserKind(null);
+    setDraftScope(round.selected_submission_overlay ? null : nextDraftScope);
+  }, [projectionQuery.data, identityQuery.data, userId, briefingId, draftScope]);
+
+  useEffect(() => {
+    mutationSequence.current += 1;
     setBusy(false);
     setContentGate(null);
     setDocumentFailure(null);
-    setDraftScope(null);
     setValidationErrors({});
     setStatus(null);
     setExportBusy(false);
     setExportError(null);
-    setSelectedOverlayId(null);
     setHideSubmittedAnnotations(false);
     setResultId(null);
     setResultCopied(false);
     setClearConfirmOpen(false);
     setClearBusy(false);
-    currentSelection.current = selectionKey(null);
-    onBriefingChange?.(null);
-    const initialRead = reconcile(null);
-    registerInitialRouteLoadRef.current(initialRead);
-    void initialRead;
-  }, [briefingId, displayContext?.groupId, displayContext?.proposalBundleId, roundId]);
-
-  useEffect(() => {
-    if (!active) return undefined;
-    let timer: number | null = null;
-    const onBriefing = (event: Event) => {
-      const detail = (event as CustomEvent<{ type?: string; data?: { briefing_id?: string } }>).detail;
-      const type = detail?.type;
-      if (type !== 'reconnected' && !type?.startsWith('briefing:')) return;
-      if (detail?.data?.briefing_id && detail.data.briefing_id !== briefingId) return;
-      if (type === 'reconnected' || type === 'briefing:round-published') {
-        setLoad((current) => ({ ...current, loading: true, error: null }));
-      }
-      if (timer !== null) return;
-      timer = window.setTimeout(() => {
-        timer = null;
-        setReload((value) => value + 1);
-      }, 100);
-    };
-    window.addEventListener('briefing:sse', onBriefing);
-    return () => {
-      window.removeEventListener('briefing:sse', onBriefing);
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [active, briefingId]);
-
-  useEffect(() => {
-    if (reload === 0 || !active) return;
-    void reconcile(selectedOverlayId);
-  }, [active, reload]);
+  }, [briefingId, roundId]);
 
   useEffect(() => {
     if (!load.round || load.round.selected_submission_overlay) return;
@@ -488,7 +446,6 @@ export function BriefingDocumentRenderer({
     setHideSubmittedAnnotations(false);
     setResultId(null);
     currentSelection.current = selectionKey(overlayId);
-    void reconcile(overlayId);
   };
 
   const resetDraft = (projection: BriefingProjection) => {
@@ -565,10 +522,7 @@ export function BriefingDocumentRenderer({
     setRenameError(null);
     try {
       const updated = await updateBriefingTitle(briefingId, nextTitle);
-      setLoad((current) => ({
-        ...current,
-        round: current.round ? { ...current.round, title: updated.title } : current.round,
-      }));
+      queryClient.setQueryData<BriefingProjection>(projectionKey, (current) => current ? { ...current, title: updated.title } : current);
       onTitleChange?.(updated.title);
       setRenameOpen(false);
       setStatus(updated.changed ? 'Briefing renamed.' : 'Briefing title unchanged.');
