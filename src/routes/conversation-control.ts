@@ -140,21 +140,6 @@ export function registerConversationControlRoutes(
     sendJson(res, result.ok ? 202 : statusFor(result.error), result);
   }), { operation: { id: "post:/api/conversations/:id/control/submit", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
-  server.get("/api/conversations/:id/control/options", operatorOnlyManagedSessionRoute((req, res) => {
-    const result = control.getRuntimeSettings(req.params.id);
-    sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { fileRpc: "deny" });
-
-  server.patch("/api/conversations/:id/control/options", operatorOnlyManagedSessionRoute((req, res) => {
-    const body = bodyRecord(req);
-    const revision = Number(body.expected_revision);
-    if (!Number.isSafeInteger(revision) || revision < 0) return sendJson(res, 400, { error: "invalid_revision" });
-    try {
-      const result = control.saveRuntimeSettings(req.params.id, revision, parseConversationRuntimeOptions(body.runtime_options));
-      sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-    } catch (error) { sendJson(res, 400, { error: "invalid_runtime_options", message: String(error) }); }
-  }), { fileRpc: "deny" });
-
   server.get("/api/conversations/:id/control/permissions", operatorOnlyManagedSessionRoute((req, res) => {
     const result = control.permissions(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);

@@ -17,6 +17,17 @@ describe('attachment draft ownership and recovery', () => {
     });
   });
 
+  it('adopts the historical Console draft once without clearing its source or replacing a current Chat draft', async () => {
+    const store = await import('../ui/src/chat/attachmentDrafts');
+    entries.set('mandible:console:composer-draft:v1:session', 'Saved Console text');
+    expect(store.adoptLegacyConsoleDraft('session','chat').ok).toBe(true);
+    expect(store.getConversationDraft('chat').text).toBe('Saved Console text');
+    expect(entries.get('mandible:console:composer-draft:v1:session')).toBe('Saved Console text');
+    store.setDraftText('chat','Current text');
+    expect(store.adoptLegacyConsoleDraft('session','chat').ok).toBe(true);
+    expect(store.getConversationDraft('chat').text).toBe('Current text');
+  });
+
   it('pastes into the captured writable chat and restores cleared annotations without changing the draft', async () => {
     const store = await import('../ui/src/chat/attachmentDrafts');
     expect(store.setDraftText('chat-a', 'Existing text').ok).toBe(true);

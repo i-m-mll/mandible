@@ -80,4 +80,3 @@ describe("Composer", () => {
     expect(onQueuedPromptRemove).toHaveBeenCalledWith("queued-1");
   });
 });
-

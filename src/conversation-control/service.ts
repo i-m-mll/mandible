@@ -1,5 +1,7 @@
 import { providerRuntimeSettingsError } from "./runtime-options.js";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import type { Db } from "../db.js";
 import { ConversationSourceReader } from "../conversations/source-reader.js";
 import {
@@ -103,6 +105,8 @@ export class ConversationControlService {
     const unsubscribeRuntime = adapter.subscribeRuntimeEvents?.((event) => {
       const owned = this.ownedAdapter(event.conversation_id, event.generation);
       if (!owned.ok || owned.value !== adapter) return;
+      const snapshot = this.getSnapshot(event.conversation_id);
+      if (!snapshot.ok || snapshot.value.provider_session_id !== event.provider_session_id) return;
       this.db.prepare(`INSERT INTO conversation_provider_usage (conversation_id, generation, provider_session_id, provider_record_id, snapshot_json, observed_at)
         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(conversation_id, generation) DO UPDATE SET provider_record_id = excluded.provider_record_id,
         snapshot_json = excluded.snapshot_json, observed_at = excluded.observed_at WHERE excluded.observed_at >= conversation_provider_usage.observed_at`)
@@ -234,20 +238,24 @@ export class ConversationControlService {
     const acquired = await trapAdapterCall(adapter.id, () => adapter.acquire({ kind: "resume-provider-session", conversation_id: input.conversation_id,
       ...claimed.value, cwd: input.cwd, signal: input.signal, runtime_options: this.retainedRuntimeOptions(input.conversation_id) }));
     if (!acquired.ok) {
-      this.store.publishLifecycle(input.conversation_id, claimed.value.generation, { kind: "controller-failed", at: Date.now(), error: acquired.error });
-      this.store.release(input.conversation_id, claimed.value.generation);
+      const failed = this.store.publishLifecycle(input.conversation_id, claimed.value.generation, { kind: "controller-failed", at: Date.now(), error: acquired.error });
+      if (!failed.ok) return failed;
+      const released = this.store.release(input.conversation_id, claimed.value.generation);
+      if (!released.ok) return released;
       this.notify(input.conversation_id);
       return acquired;
     }
     if (input.signal?.aborted || acquired.value.provider_session_id !== claimed.value.provider_session_id || acquired.value.controller_instance_id !== claimed.value.controller_instance_id) {
-      await trapAdapterCall(adapter.id, () => adapter.stop({ conversation_id: input.conversation_id, ...claimed.value }));
-      this.store.release(input.conversation_id, claimed.value.generation);
+      const stopped = await trapAdapterCall(adapter.id, () => adapter.stop({ conversation_id: input.conversation_id, ...claimed.value }));
+      if (!stopped.ok) return stopped;
+      const released = this.store.release(input.conversation_id, claimed.value.generation);
+      if (!released.ok) return released;
       return { ok: false, error: { kind: "adapter-contract-violation", adapter_id: adapter.id, message: "Resume did not establish the requested native identity" } };
     }
     const published = this.store.publishAcquired(input.conversation_id, claimed.value.generation, acquired.value.controller_instance_id, acquired.value.provider_session_id);
     if (!published.ok) {
-      await trapAdapterCall(adapter.id, () => adapter.stop({ conversation_id: input.conversation_id, ...claimed.value }));
-      return published;
+      const stopped = await trapAdapterCall(adapter.id, () => adapter.stop({ conversation_id: input.conversation_id, ...claimed.value }));
+      return stopped.ok ? published : stopped;
     }
     this.notify(input.conversation_id);
     return this.getSnapshot(input.conversation_id);
@@ -344,6 +352,10 @@ export class ConversationControlService {
     const adapter = this.adapters.forProvider(boundary.value.source);
     if (!adapter) {
       return { ok: false, error: { kind: "adapter-unavailable", adapter_id: null, provider: boundary.value.source } };
+    }
+    if (!boundary.value.session_id) {
+      const location = this.db.prepare("SELECT cwd FROM conversations WHERE id = ?").get(request.conversation_id) as { cwd: string | null };
+      if (!location.cwd || !isAbsolute(location.cwd) || !existsSync(location.cwd)) return { ok: false, error: { kind: "invalid-request", field: "cwd", message: "Restore this conversation's exact checkout before sending" } };
     }
     const effectiveOptions = request.operation === "queue" || request.operation === "steer" ? {} : { ...this.retainedRuntimeOptions(request.conversation_id), ...request.runtime_options };
     const invalidOptions = providerRuntimeSettingsError(adapter.provider, effectiveOptions);

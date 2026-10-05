@@ -63,6 +63,15 @@ export function setDraftText(conversationId: string, text: string): AttachmentDr
   const old = current();
   return update({ ...old, drafts: { ...old.drafts, [conversationId]: { ...getConversationDraft(conversationId), text } } }, undefined);
 }
+export function adoptLegacyConsoleDraft(sessionId: string, conversationId: string): AttachmentDraftResult<void> {
+  const old = current();
+  if (old.pending[conversationId] || old.drafts[conversationId]?.text) return { ok: true, value: undefined };
+  try {
+    const text = localStorage.getItem(`mandible:console:composer-draft:v1:${sessionId}`);
+    return text ? setDraftText(conversationId, text) : { ok: true, value: undefined };
+  } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+}
+
 export function addDraftAttachments(conversationId: string, attachments: ChatAttachment[]): AttachmentDraftResult<void> {
   if (!attachments.length) return { ok: true, value: undefined };
   const old = current();
