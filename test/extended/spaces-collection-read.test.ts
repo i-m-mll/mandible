@@ -5,7 +5,7 @@
 // items/occurrences/edges) per the umbrella plan §5.1 / §589 — the bare space
 // alone is not enough to render. The `space` field is preserved for backward
 // compatibility; this test pins the superset shape the renderer reads.
-import Database from 'better-sqlite3';
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { migrate, setDb, type Db } from '../../src/db.js';
@@ -28,7 +28,7 @@ async function call(method: string, url: string, body?: unknown) {
 }
 
 beforeEach(() => {
-  db = new Database(':memory:');
+  db = new SqliteDatabase(':memory:');
   migrate(db);
   setDb(db);
   router = new Router();

@@ -1,11 +1,11 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { fileURLToPath } from "node:url";
 import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
@@ -27,7 +27,7 @@ function fail(message) {
 
 function readInstances() {
   if (!fs.existsSync(authorityDb)) fail(`Local session authority is not initialized: ${authorityDb}`);
-  const db = new Database(authorityDb, { readonly: true, fileMustExist: true });
+  const db = new SqliteDatabase(authorityDb, { readonly: true, fileMustExist: true });
   try {
     return db.prepare("SELECT * FROM instance_registrations ORDER BY role, instance_id").all();
   } finally {
@@ -130,7 +130,7 @@ function configure() {
 function requireTrustedCa({ verifyNative = true } = {}) {
   let ca;
   try { ca = assertLocalCaIdentity(caPaths); } catch (error) { fail(error.message); }
-  if (ca.state !== "trusted") fail("Secure local connections are not set up. Choose the desktop Connections setup action or run node scripts/local-ca-trust.mjs setup before starting the front door.");
+  if (ca.state !== "trusted") fail("Secure local connections are not set up. Choose the desktop Connections setup action or run bun scripts/local-ca-trust.mjs setup before starting the front door.");
   if (verifyNative) {
     try { probeCurrentMacOsTrust(caPaths); } catch (error) { fail(error.message); }
   }

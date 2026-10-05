@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, setDb, type Db } from "../../src/db.js";
 import { addProject } from "../../src/ledger/project-registry.js";
@@ -17,7 +17,7 @@ const fakeScanner = {
 } as never;
 
 beforeEach(() => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   const operator = setupOperator(db, { display_name: "Issue route precedence operator" });
   setDb(db);

@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, setDb, type Db } from "../../src/db.js";
@@ -17,7 +17,7 @@ describe("managed reminder Inbox projection", () => {
   let occurrenceId: string;
 
   beforeEach(() => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
     const userId = createUser(db, {

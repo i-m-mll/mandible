@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -337,7 +337,7 @@ describe("spaces core schema — inline UNIQUE survives backup/restore (issue b3
 
     // Round-trip into a fresh database using ONLY the backup SQL (table DDL + data).
     const restorePath = path.join(tempDir, "restored.db");
-    const restored = new Database(restorePath);
+    const restored = new SqliteDatabase(restorePath);
     restored.pragma("foreign_keys = ON");
     restored.exec(sql);
 

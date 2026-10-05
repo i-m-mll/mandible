@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import fs from "node:fs";
 import os from "node:os";
@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 
 const require = createRequire(import.meta.url);
 const {
@@ -230,7 +230,7 @@ function bindingMatches(actual, expected) {
 
 export function inspectSourceBinding(source) {
   const sourcePath = path.resolve(source);
-  const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  const db = new SqliteDatabase(sourcePath, { readonly: true, fileMustExist: true });
   try {
     return sourceDatabaseBinding(db, sourcePath);
   } finally {
@@ -335,7 +335,7 @@ export function buildCompactDestination(options) {
   let db;
   let committed = false;
   try {
-    db = new Database(partialPath);
+    db = new SqliteDatabase(partialPath);
     db.pragma("journal_mode = DELETE");
     db.pragma("synchronous = FULL");
     db.pragma("foreign_keys = OFF");
@@ -536,7 +536,7 @@ export function buildSparseConversationStructureCache(options) {
   fsyncFile(markerPath);
   let db;
   try {
-    db = new Database(partialPath);
+    db = new SqliteDatabase(partialPath);
     db.pragma("journal_mode = DELETE");
     db.pragma("synchronous = FULL");
     db.pragma("foreign_keys = ON");
@@ -648,7 +648,7 @@ export function buildSparseConversationStructureCache(options) {
     const cacheIds = new Map(db.prepare(
       "SELECT conversation_id, cache_id FROM cache_conversations",
     ).all().map((row) => [row.conversation_id, row.cache_id]));
-    const sourceReader = new Database(sourcePath, { readonly: true, fileMustExist: true });
+    const sourceReader = new SqliteDatabase(sourcePath, { readonly: true, fileMustExist: true });
     const insertToolLinks = db.transaction(() => {
       for (const row of sourceReader.prepare(`
         SELECT block.conversation_id, block.provider_key, block.position
@@ -728,7 +728,7 @@ function defaultOperationalLogPath(sourcePath) {
 export function inspectLegacyReclaimReadiness(options) {
   const sourcePath = path.resolve(options.source);
   const logDbPath = path.resolve(options.logDb ?? defaultOperationalLogPath(sourcePath));
-  const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  const db = new SqliteDatabase(sourcePath, { readonly: true, fileMustExist: true });
   try {
     const blockColumns = visibleColumns(db, "main", "conversation_blocks").map((column) => column.name);
     if (!blockColumns.includes("payload_state")) {
@@ -778,7 +778,7 @@ export function inspectLegacyReclaimReadiness(options) {
 
     let logState = null;
     if (fs.existsSync(logDbPath)) {
-      const logDb = new Database(logDbPath, { readonly: true, fileMustExist: true });
+      const logDb = new SqliteDatabase(logDbPath, { readonly: true, fileMustExist: true });
       try {
         logState = logDb.prepare(`
           SELECT * FROM operational_log_copy_state
@@ -1014,7 +1014,7 @@ function assessRollbackGate(packet, evidenceBound) {
 export function auditCutover(options) {
   const sourcePath = path.resolve(options.source);
   const packet = options.evidence ?? {};
-  const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  const db = new SqliteDatabase(sourcePath, { readonly: true, fileMustExist: true });
   try {
     const binding = sourceDatabaseBinding(db, sourcePath);
     const evidenceBound = bindingMatches(packet.binding, binding);
@@ -1224,7 +1224,7 @@ export function runRestoreDrill(options) {
   const metadataPath = path.join(destinationRoot, "metadata.sqlite");
   const restoredCustody = path.join(destinationRoot, "custody");
   try {
-    const db = new Database(metadataPath);
+    const db = new SqliteDatabase(metadataPath);
     try {
       db.exec(fs.readFileSync(metadataSql, "utf8"));
       const integrity = db.pragma("integrity_check", { simple: true });
@@ -1296,7 +1296,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  console.log(`Usage: node scripts/conversation-cutover-proof.mjs <command> [options]
+  console.log(`Usage: bun scripts/conversation-cutover-proof.mjs <command> [options]
 
 Commands:
   binding --source DB [--json]

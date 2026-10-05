@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -115,7 +115,7 @@ describe("canonicalRepoKeyForPath", () => {
 
 describe("canonicalRepoKeysForRef", () => {
   it("resolves a repo ref through work_repos id, name, and root", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const repo = initRepo();
     const realRoot = fs.realpathSync(repo);
@@ -133,7 +133,7 @@ describe("canonicalRepoKeysForRef", () => {
   });
 
   it("resolves a repo ref through ledger project_key and display_name", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     const repo = initRepo();
     const { project } = resolveProjectForCheckout(db, {
@@ -153,7 +153,7 @@ describe("canonicalRepoKeysForRef", () => {
   });
 
   it("returns an empty set when registry tables are missing", () => {
-    const db = new Database(":memory:"); // no migrate → no work_repos / ledger tables
+    const db = new SqliteDatabase(":memory:"); // no migrate → no work_repos / ledger tables
     expect(canonicalRepoKeysForRef(db, "dotfiles").size).toBe(0);
     db.close();
   });

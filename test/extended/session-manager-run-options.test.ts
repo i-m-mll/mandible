@@ -1,9 +1,9 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, setDb } from "../../src/db.js";
 import { SessionManager } from "../../src/session-manager.js";
 
-let db: InstanceType<typeof Database> | null = null;
+let db: InstanceType<typeof SqliteDatabase> | null = null;
 let manager: SessionManager | null = null;
 
 afterEach(() => {
@@ -13,7 +13,7 @@ afterEach(() => {
 
 describe("SessionManager run options", () => {
   it("persists acknowledged values, mirrors model, and preserves legacy args and tool policy", async () => {
-    db = new Database(":memory:"); migrate(db); setDb(db);
+    db = new SqliteDatabase(":memory:"); migrate(db); setDb(db);
     manager = new SessionManager(db, () => undefined);
     const session = manager.create({
       label: "SDK", command: "claude", backend_type: "sdk",
@@ -32,7 +32,7 @@ describe("SessionManager run options", () => {
   });
 
   it("rehydrates old/default rows without inventing provider current values", () => {
-    db = new Database(":memory:"); migrate(db); setDb(db);
+    db = new SqliteDatabase(":memory:"); migrate(db); setDb(db);
     manager = new SessionManager(db, () => undefined);
     const session = manager.create({ label: "Legacy", command: "claude", backend_type: "sdk", args: ["--model", "legacy"] });
     manager.close(); manager = new SessionManager(db, () => undefined); manager.init({ readOnly: true });
