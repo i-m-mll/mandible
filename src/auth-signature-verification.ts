@@ -10,6 +10,7 @@ interface SigningCredentialRow {
   user_id: string;
   fingerprint: string;
   public_material: string;
+  type: string;
 }
 
 export interface MergeSignatureVerification {
@@ -75,7 +76,8 @@ function activeSigningCredentials(db: Db): SigningCredentialRow[] {
        credential.id AS credential_id,
        credential.user_id,
        credential.fingerprint,
-       credential.public_material
+       credential.public_material,
+       credential.type
      FROM user_credentials AS credential
      JOIN users AS owner ON owner.id = credential.user_id
      WHERE credential.status = 'active'
@@ -104,6 +106,12 @@ export function authorizedMergeSignerLines(
       const line = allowedSignerLine(credential);
       return line ? [line] : [];
     });
+}
+
+export function authorizedOperatorSignerLines(db: Db, userId: string): string[] {
+  return activeSigningCredentials(db)
+    .filter((credential) => credential.user_id === userId && credential.type === "ssh_key")
+    .flatMap((credential) => { const line = allowedSignerLine(credential); return line ? [line] : []; });
 }
 
 function unverified(

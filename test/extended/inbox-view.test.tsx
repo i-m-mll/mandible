@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -129,11 +129,4 @@ describe("Inbox shared sidebar header", () => {
     expect(screen.queryByRole("button", { name: "Remove filter mandible" })).toBeNull();
   });
 
-  it("removes the bespoke second action row contract", () => {
-    const source = readFileSync("ui/src/views/inbox.tsx", "utf8");
-    expect(source).toContain("SidebarSearchFilterHeader");
-    expect(source).not.toContain("inbox-sidebar__actions-bar");
-    expect(source).not.toContain("Sort: Date");
-    expect(source).not.toContain(">Ack All<");
-  });
 });

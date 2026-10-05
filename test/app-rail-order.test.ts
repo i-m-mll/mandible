@@ -12,7 +12,7 @@ import {
   serializeAppRailOrderSetting,
   startupRailDestination,
   writeAppRailPreviewOrder,
-} from '../../ui/src/app-rail-order';
+} from '../ui/src/app-rail-order';
 
 describe('app rail order preference', () => {
   it('starts at the first visible saved destination while preserving explicit routes', () => {

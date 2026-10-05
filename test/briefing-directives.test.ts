@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { BRIEFING_PROFILE_V3, BriefingDirectiveError, parseBriefingDirectives } from "../../src/feedback/briefing-directives.js";
+import { BRIEFING_PROFILE_V3, BriefingDirectiveError, parseBriefingDirectives } from "../src/feedback/briefing-directives.js";
 
 describe("mandible-briefing.v2 directives", () => {
   it("keeps canonical typed references out of the directive grammar", () => {

@@ -1,3 +1,7 @@
+import { useQuery } from '@tanstack/preact-query';
+import { queryClient } from '../../query/client';
+import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from '../../query/browserResources';
+import { browserSessionFetch } from '../../client-auth-token';
 // Spaces document block editor (umbrella de56ffa, C14c / issue cef3eac).
 //
 // The EDITOR over the `space_blocks` tree. It is the writable counterpart to the
@@ -31,7 +35,7 @@ import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { EditorSelection } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 
-import type { SpaceBlock, SpaceExport, SpaceItem } from '../../api';
+import type { SpaceBlock, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
 import { canPerformOperation, getSpaceExports } from '../../api';
 import { acquireSharedSse } from '../../sse-shared';
@@ -55,11 +59,10 @@ import {
   listSpaceBlocks,
   updateSpaceBlock,
   type CreateBlockBody,
-} from './spaceBlocksClient';
+} from '../../api';
 import {
   blockEditorStorageKey,
   normalizeBlockEditorViewState,
-  reconcileBlockEditorViewState,
   EMPTY_BLOCK_EDITOR_VIEW_STATE,
 } from './blockEditorViewState';
 import { EMPTY_DOCUMENT_VIEW_STATE } from './documentViewState';
@@ -76,8 +79,6 @@ import {
   type MarkdownSourceSelection,
 } from './MarkdownSourceEditor';
 import './DocumentBlockEditor.css';
-
-const SPACE_EVENT_PREFIX = 'space:';
 
 const AUTOSAVE_DELAY_MS = 650;
 const MIN_INSPECTOR_HEIGHT = 160;
@@ -116,12 +117,6 @@ export type EmbedDeleteDecision = {
   cancel: () => void;
 };
 
-type LoadState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'ready'; spaceId: string; blocks: SpaceBlock[]; exports: SpaceExport[]; items: SpaceItem[] }
-  | { status: 'error'; message: string };
-
 type SaveState =
   | { status: 'idle' }
   | { status: 'saving'; blockId: string }
@@ -135,7 +130,8 @@ async function getSpaceItemsWithFetch(spaceId: string, fetchImpl: typeof fetch):
   const response = await fetchImpl(`/api/spaces/${encodeURIComponent(spaceId)}`);
   if (!response.ok) throw new Error(`Failed to load Space fact packet (${response.status})`);
   const payload = (await response.json()) as { items?: SpaceItem[] };
-  return payload.items ?? [];
+  if (!Array.isArray(payload.items)) throw new Error('The Spaces service returned an invalid item collection.');
+  return payload.items;
 }
 type SelectionMenuState = {
   blockId: string;
@@ -296,7 +292,6 @@ export function DocumentBlockEditor({
   onFork,
   onEmbedDeleteDecision,
 }: DocumentBlockEditorProps): JSX.Element {
-  const [load, setLoad] = useState<LoadState>({ status: 'idle' });
   const [viewState, setViewState] = usePersistedViewState(
     spaceId ? blockEditorStorageKey(projectId, spaceId) : '',
     normalizeBlockEditorViewState,
@@ -314,107 +309,75 @@ export function DocumentBlockEditor({
   const [inspectorHeight, setInspectorHeight] = useState<number | null>(null);
   const [pendingEmbedDelete, setPendingEmbedDelete] = useState<EmbedDeleteDecision | null>(null);
   const fetchRef = useRef(fetchImpl);
+  const pendingSaves = useRef<Map<string, Promise<void>>>(new Map());
   const saveTimers = useRef<Map<string, number>>(new Map());
   const editorViews = useRef<Map<string, EditorView>>(new Map());
-  const savedMarkdownAcks = useRef<Map<string, string>>(new Map());
   const caretRef = useRef<CaretTarget | null>(null);
   const autoCreatedEmptySpaces = useRef<Set<string>>(new Set());
   const pendingFocusBlockId = useRef<string | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const inspectorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const mountedRef = useRef(true);
+  const spaceGenerationRef = useRef({ spaceId, generation: 0 });
+  if (spaceGenerationRef.current.spaceId !== spaceId) spaceGenerationRef.current = { spaceId, generation: spaceGenerationRef.current.generation + 1 };
+  const spaceGeneration = spaceGenerationRef.current.generation;
   const currentSpaceIdRef = useRef<string | null | undefined>(spaceId);
   fetchRef.current = fetchImpl;
   currentSpaceIdRef.current = spaceId;
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       for (const timer of saveTimers.current.values()) window.clearTimeout(timer);
       saveTimers.current.clear();
     };
-  }, []);
+  }, [spaceId]);
 
-  const fetcher = useCallback(() => fetchRef.current ?? fetch, []);
-
-  const loadAll = useCallback(
-    async (isReconcile: boolean) => {
-      if (!spaceId) {
-        setLoad({ status: 'idle' });
-        return;
-      }
-      const requestedSpaceId = spaceId;
-      if (!isReconcile) setLoad({ status: 'loading' });
-      try {
-        const [loadedBlocks, exportsResult] = await Promise.all([
-          listSpaceBlocks(requestedSpaceId, fetcher()),
-          getSpaceExports(requestedSpaceId).catch(() => ({ exports: [] as SpaceExport[] })),
-        ]);
-        if (currentSpaceIdRef.current !== requestedSpaceId) return;
-        const blocks = loadedBlocks.map((block) => {
-          const acknowledgedMarkdown = savedMarkdownAcks.current.get(block.id);
-          if (acknowledgedMarkdown === undefined) return block;
-          if ((block.markdown ?? '') === acknowledgedMarkdown) {
-            savedMarkdownAcks.current.delete(block.id);
-            return block;
-          }
-          return { ...block, markdown: acknowledgedMarkdown };
-        });
-        setLoad((prior) => ({
-          status: 'ready',
-          spaceId: requestedSpaceId,
-          blocks,
-          exports: exportsResult.exports,
-          items: prior.status === 'ready' && prior.spaceId === requestedSpaceId ? prior.items : [],
-        }));
-        void getSpaceItemsWithFetch(requestedSpaceId, fetcher())
-          .then((items) => {
-            if (currentSpaceIdRef.current !== requestedSpaceId) return;
-            setLoad((prior) =>
-              prior.status === 'ready' && prior.spaceId === requestedSpaceId
-                ? { ...prior, items }
-                : prior,
-            );
-          })
-          .catch(() => undefined);
-        // Reconcile edit state against live block ids without resetting the
-        // user's in-progress drafts (Dataful-UX: refetch is reconciliation).
-        setViewState((prior) =>
-          reconcileBlockEditorViewState(prior, blocks.map((b) => b.id)),
-        );
-      } catch (err) {
-        if (currentSpaceIdRef.current !== requestedSpaceId) return;
-        setLoad({ status: 'error', message: err instanceof Error ? err.message : String(err) });
-      }
+  const fetcher = useCallback(() => (input: RequestInfo | URL, init?: RequestInit) =>
+    browserSessionFetch(input, init, fetchRef.current), []);
+  const documentKey = browserResourceKeys.spaceDocument(spaceId);
+  const documentQuery = useQuery({
+    queryKey: documentKey,
+    enabled: Boolean(spaceId),
+    queryFn: async ({ signal }) => {
+      const [blocks, exportsResult] = await Promise.all([
+        listSpaceBlocks(spaceId!, fetchRef.current, signal),
+        getSpaceExports(spaceId!, undefined, signal, fetchRef.current),
+      ]);
+      return { spaceId: spaceId!, blocks, exports: exportsResult.exports };
     },
-    [spaceId, fetcher],
-  );
+    refetchOnWindowFocus: true,
+  }, queryClient);
+  const itemsQuery = useQuery({
+    queryKey: browserResourceKeys.spaceItems(spaceId),
+    enabled: Boolean(spaceId),
+    queryFn: ({ signal }) => getSpaceItemsWithFetch(spaceId!, (input, init) => fetcher()(input, { ...init, signal })),
+    refetchOnWindowFocus: true,
+  }, queryClient);
+  const load = documentQuery.data
+    ? { status: 'ready' as const, ...documentQuery.data }
+    : { status: documentQuery.isPending ? 'loading' as const : 'error' as const };
+  const refreshDocument = useCallback(async () => {
+    await queryClient.cancelQueries({ queryKey: browserResourceKeys.spaceDocument(spaceId), exact: true });
+    void itemsQuery.refetch();
+    await documentQuery.refetch();
+  }, [spaceId, documentQuery.refetch, itemsQuery.refetch]);
 
-  useEffect(() => {
-    void loadAll(false);
-  }, [loadAll]);
-
-  // SSE reconciliation: any `space:*` event refetches as a reconciliation input.
-  // Edit drafts are preserved across the refetch.
   useEffect(() => {
     if (!spaceId) return;
     const client = acquireSharedSse();
     const unsubscribe = client.on('*', (payload) => {
-      if (typeof payload.type === 'string' && payload.type.startsWith(SPACE_EVENT_PREFIX)) {
-        void loadAll(true);
-      }
+      const keys = browserResourceKeysForEvent(payload.type, payload.data);
+      if (keys.some((key) => key[1] === spaceId)) void refreshBrowserResources(queryClient, keys);
     });
-    // Reconnect resync: refetch after a dropped stream so events missed during
-    // the gap are reconciled. Edit drafts are preserved across the refetch.
     const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) void loadAll(true);
+      if (reconnected) void refreshBrowserResources(queryClient, [browserResourceKeys.spaceDocument(spaceId), browserResourceKeys.spaceItems(spaceId)]);
     });
     client.connect();
-    return () => {
-      unsubscribe();
-      offState();
-      client.close();
-    };
-  }, [spaceId, loadAll]);
+    return () => { unsubscribe(); offState(); client.close(); };
+  }, [spaceId, refreshDocument]);
 
   const blocks = useMemo(() => {
     const live = load.status === 'ready' ? load.blocks : [];
@@ -424,13 +387,13 @@ export function DocumentBlockEditor({
     });
   }, [load, viewState.drafts]);
   const exports = load.status === 'ready' ? load.exports : [];
-  const spaceItems = load.status === 'ready' ? load.items : [];
+  const spaceItems = itemsQuery.data ?? [];
 
   const custody: CustodyEditorUx = useMemo(
     () => resolveCustodyEditorUx(deriveDocumentCustody(exports)),
     [exports],
   );
-  const editable = custody.editable && spaceId !== null && canPerformOperation(
+  const editable = load.status === 'ready' && !documentQuery.error && custody.editable && spaceId !== null && canPerformOperation(
     instance,
     'PATCH',
     `/api/spaces/${encodeURIComponent(spaceId)}/blocks/_`,
@@ -455,52 +418,64 @@ export function DocumentBlockEditor({
       setActionError(null);
       try {
         await op();
-        await loadAll(true);
+        await refreshDocument();
       } catch (err) {
         setActionError(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy(false);
       }
     },
-    [editable, spaceId, loadAll],
+    [editable, spaceId, refreshDocument],
   );
 
   const saveMarkdownNow = useCallback(
     async (blockId: string, markdown: string) => {
-      if (!editable || !spaceId) return;
+      if (!editable || !spaceId || !mountedRef.current || spaceGeneration !== spaceGenerationRef.current.generation) return;
       const prior = saveTimers.current.get(blockId);
       if (prior) {
         window.clearTimeout(prior);
         saveTimers.current.delete(blockId);
       }
+      const previousSave = pendingSaves.current.get(blockId);
+      let finishSave!: () => void;
+      const currentSave = new Promise<void>((resolve) => { finishSave = resolve; });
+      pendingSaves.current.set(blockId, currentSave);
+      if (previousSave) await previousSave;
+      if (!mountedRef.current || currentSpaceIdRef.current !== spaceId || spaceGeneration !== spaceGenerationRef.current.generation) { finishSave(); return; }
       setSaveState({ status: 'saving', blockId });
       try {
-        const savedBlock = await updateSpaceBlock(spaceId, blockId, { markdown }, fetcher());
-        savedMarkdownAcks.current.set(blockId, markdown);
+        const savedBlock = await updateSpaceBlock(spaceId, blockId, { markdown }, fetchRef.current);
+        if (!mountedRef.current || currentSpaceIdRef.current !== spaceId || spaceGeneration !== spaceGenerationRef.current.generation) return;
         setSaveState({ status: 'saved', blockId });
-        setLoad((prior) => {
-          if (prior.status !== 'ready' || prior.spaceId !== spaceId) return prior;
+        await queryClient.cancelQueries({ queryKey: browserResourceKeys.spaceDocument(spaceId), exact: true });
+        queryClient.setQueryData<typeof documentQuery.data>(browserResourceKeys.spaceDocument(spaceId), (prior) => {
+          if (!prior) return prior;
           return {
             ...prior,
             blocks: prior.blocks.map((block) => (block.id === blockId ? savedBlock : block)),
           };
         });
-        await loadAll(true);
+        await refreshDocument();
+        if (!mountedRef.current || currentSpaceIdRef.current !== spaceId || spaceGeneration !== spaceGenerationRef.current.generation) return;
         setViewState((state) => {
-          if (state.drafts[blockId] !== markdown) return state;
+          if (state.drafts[blockId] !== markdown || queryClient.getQueryData<typeof documentQuery.data>(browserResourceKeys.spaceDocument(spaceId))?.blocks.find((block) => block.id === blockId)?.markdown !== markdown) return state;
           const drafts = { ...state.drafts };
           delete drafts[blockId];
           return { ...state, drafts };
         });
       } catch (err) {
+        if (!mountedRef.current || spaceGeneration !== spaceGenerationRef.current.generation) return;
         setSaveState({
           status: 'error',
           blockId,
           message: err instanceof Error ? err.message : String(err),
         });
+      } finally {
+        finishSave();
+        if (pendingSaves.current.get(blockId) === currentSave) pendingSaves.current.delete(blockId);
       }
     },
-    [editable, spaceId, fetcher, loadAll],
+    [editable, spaceId, spaceGeneration, fetcher, refreshDocument],
   );
 
   const queueAutosave = useCallback(
@@ -556,7 +531,8 @@ export function DocumentBlockEditor({
         markdown: blockMarkdown,
       };
       await runMutation(async () => {
-        const created = await createSpaceBlock(spaceId, body, fetcher());
+        const created = await createSpaceBlock(spaceId, body, fetchRef.current);
+        if (!mountedRef.current || currentSpaceIdRef.current !== spaceId) return created;
         const caret = blockMarkdown.length;
         setActiveBlockId(created.id);
         beginEditing(created.id);
@@ -569,7 +545,7 @@ export function DocumentBlockEditor({
   );
 
   useEffect(() => {
-    if (!spaceId || !editable || load.status !== 'ready' || load.blocks.length > 0) return;
+    if (!spaceId || !editable || load.status !== 'ready' || load.blocks.length > 0 || Object.keys(viewState.drafts).length > 0) return;
     if (autoCreatedEmptySpaces.current.has(spaceId)) return;
     autoCreatedEmptySpaces.current.add(spaceId);
     void addProseBlock('paragraph');
@@ -978,14 +954,36 @@ export function DocumentBlockEditor({
                 : `Autosave failed: ${saveState.message}`}
           </div>
         )}
-        {load.status === 'error' && (
+        {documentQuery.error && (
           <DetailPaneNotice severity="error" density="compact" title="Could not load document" testId="spaces-block-editor-error">
-            {load.message}
+            {documentQuery.error.message}
           </DetailPaneNotice>
         )}
+        {itemsQuery.error && <DetailPaneNotice severity="error" density="compact" title="Space items could not be refreshed">{itemsQuery.error.message}</DetailPaneNotice>}
         {actionError && (
           <DetailPaneNotice severity="error" density="compact" testId="spaces-block-editor-action-error">{actionError}</DetailPaneNotice>
         )}
+        {load.status === 'ready' && Object.entries(viewState.drafts)
+          .filter(([id]) => !load.blocks.some((block) => block.id === id))
+          .map(([id, markdown]) => (
+            <section key={id} role="status" className="spaces-block-editor__draft-conflict">
+              <p>This block was removed; your draft is retained.</p>
+              <textarea aria-label="Retained block draft" value={markdown} onInput={(event) => setDraft(id, event.currentTarget.value)} />
+              <button type="button" disabled={!editable || busy} onClick={() => runMutation(async () => {
+                await createSpaceBlock(spaceId, { block_type: 'paragraph', markdown, sort_key: appendSortKey(blocks, null) }, fetchRef.current);
+                setViewState((prior) => {
+                  const drafts = { ...prior.drafts };
+                  if (drafts[id] === markdown) delete drafts[id];
+                  return { ...prior, drafts, editingId: prior.editingId === id ? null : prior.editingId };
+                });
+              })}>Restore as a new block</button>
+              <button type="button" onClick={() => setViewState((prior) => {
+                const drafts = { ...prior.drafts };
+                delete drafts[id];
+                return { ...prior, drafts, editingId: prior.editingId === id ? null : prior.editingId };
+              })}>Discard draft</button>
+            </section>
+          ))}
         <div className="spaces-block-editor__scroller" onMouseDown={handleDocumentMouseDown}>
           {load.status === 'loading' && (
             <div className="spaces-block-editor__status">
@@ -1107,7 +1105,7 @@ export function DocumentBlockEditor({
             isItemInView={() => false}
             afterAdd={embedSpaceItem}
             onAdded={() => {
-              void loadAll(true);
+              void refreshDocument();
             }}
             onClose={() => {
               const focusBlockId = pickerBlockId;

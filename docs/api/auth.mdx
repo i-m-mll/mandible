@@ -230,13 +230,17 @@ curl http://localhost:19420/api/auth/history?limit=10
 
 ### POST /api/auth/request/:id/approve
 
-Approve a pending auth request. Transitions status to `executing`.
+Approve a pending request after fresh configured-operator signing proof. The signed challenge binds the exact request/action snapshot, nonce, and 60-second validity. Failed, cancelled, expired, or drifted proof leaves the request pending. Success transitions to `executing`. Protected merges require local isolated candidate publication; unsupported native preparation hooks fail before effects; native post hooks use the frozen convergence plan.
 
 **Response:** `202 Accepted`
 
 ```json
 { "request_id": "...", "status": "executing" }
 ```
+
+### POST /api/auth/request/:id/cancel-proof
+
+Cancel the configured operator's in-flight signing challenge. Requires `approve_auth`; unavailable through file RPC. Returns `200` with `{ "cancelled": true }`. It does not reject or withdraw the pending request, and cannot undo an already verified approval.
 
 ### Scoped protected-merge clearances
 

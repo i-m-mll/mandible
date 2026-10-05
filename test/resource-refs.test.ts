@@ -16,7 +16,7 @@ import {
   seriesDetailHref,
   versionDetailHref,
   type ResolverResult,
-} from '../../ui/src/resource-refs';
+} from '../ui/src/resource-refs';
 
 const HASH64 = 'a'.repeat(64);
 const ISSUE_ID64 = 'ceb5963936d47c70315242651c792dd1840ad49d6c3ce79a942f7e0ef3257053';

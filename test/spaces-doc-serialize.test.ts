@@ -10,7 +10,7 @@ import {
   parseSpacesDocDirectiveRef,
   type DocBlock,
   type DocTree,
-} from '../../src/spaces/serialize';
+} from '../src/spaces/serialize';
 
 const HASH64 = 'a'.repeat(64);
 
