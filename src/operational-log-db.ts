@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "./sqlite.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "./db.js";
@@ -170,7 +170,7 @@ export function openOperationalLogStore(
   if (readonly && !fs.existsSync(dbPath)) return null;
   if (!readonly) fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-  const db = new Database(dbPath, readonly ? { readonly: true, fileMustExist: true } : undefined);
+  const db = new SqliteDatabase(dbPath, readonly ? { readonly: true, fileMustExist: true } : undefined);
   try {
     if (!readonly) {
       db.pragma("journal_mode = WAL");

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate } from "../src/db.js";
@@ -35,7 +35,7 @@ async function fixture(sessionId = "storage-session") {
   const parsed = await new CodexParser().parse(sourcePath);
   if (!parsed) throw new Error("fixture did not parse");
   const dbPath = path.join(root, "mandible.db");
-  const db = new Database(dbPath);
+  const db = new SqliteDatabase(dbPath);
   migrate(db);
   db.prepare(`
     INSERT INTO conversations (
@@ -76,7 +76,7 @@ describe("source-backed conversation storage preparation", () => {
     const result = await prepareSourceBackedConversationStorage({ dbPath, apply: true });
     expect(result).toMatchObject({ apply: true, processed: 1, promoted: 1, errors: [] });
 
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     const rows = db.prepare(`
       SELECT content, metadata_json, compressed, payload_state
         FROM conversation_blocks WHERE conversation_id = 'conversation-storage'
@@ -95,7 +95,7 @@ describe("source-backed conversation storage preparation", () => {
   it("resolves a stale Codex path by exact session id before falling back to managed custody", async () => {
     const sessionId = "019e8921-136f-78d0-8c8b-9eb21121ccb4";
     const { dbPath, sourcePath } = await fixture(sessionId);
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     const stalePath = path.join(root, ".codex", "sessions", "2026", "06", "06",
       "rollout-2026-06-06T01-55-27-019e9b80-2819-7ab3-ab74-c6eced23b8cc.jsonl");
     fs.mkdirSync(path.dirname(stalePath), { recursive: true });
@@ -107,7 +107,7 @@ describe("source-backed conversation storage preparation", () => {
 
     const result = await prepareSourceBackedConversationStorage({ dbPath, apply: true });
     expect(result).toMatchObject({ processed: 1, promoted: 1, errors: [] });
-    const repaired = new Database(dbPath);
+    const repaired = new SqliteDatabase(dbPath);
     expect(repaired.prepare("SELECT path FROM conversation_source_aliases WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = 'conversation-storage')").get())
       .toEqual({ path: sourcePath });
     repaired.close();
@@ -115,13 +115,13 @@ describe("source-backed conversation storage preparation", () => {
 
   it("replaces legacy parser projection drift with the current native parse", async () => {
     const { dbPath } = await fixture();
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     db.prepare("UPDATE conversation_blocks SET content = 'obsolete body', metadata_json = '{\"legacy_parser\":true}' WHERE conversation_id = 'conversation-storage'").run();
     db.close();
 
     const result = await prepareSourceBackedConversationStorage({ dbPath, apply: true });
     expect(result).toMatchObject({ processed: 1, promoted: 1, errors: [] });
-    const repaired = new Database(dbPath);
+    const repaired = new SqliteDatabase(dbPath);
     const read = await new ConversationSourceReader(repaired, { maskCredentials: false }).readAll("conversation-storage");
     expect(read).toMatchObject({ status: "source" });
     if (read.status === "source") expect(read.value[0].content).toBe("source-backed body");
@@ -130,7 +130,7 @@ describe("source-backed conversation storage preparation", () => {
 
   it("keeps the database payload when the provider file no longer matches its sealed identity", async () => {
     const { dbPath, sourcePath, parsed } = await fixture();
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     const legacyIds = parsed.blocks.map((block) => conversationBlockId({
       conversation_id: "conversation-storage",
       type: block.type,
@@ -173,7 +173,7 @@ describe("source-backed conversation storage preparation", () => {
 
   it("refuses to strip when the exact source projection differs from the database", async () => {
     const { dbPath, sourcePath, parsed } = await fixture();
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     const legacyIds = parsed.blocks.map((block) => conversationBlockId({
       conversation_id: "conversation-storage",
       type: block.type,
@@ -209,7 +209,7 @@ describe("source-backed conversation storage preparation", () => {
 
   it("keeps legacy block references while discarding an obsolete larger projection", async () => {
     const { dbPath } = await fixture();
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     db.prepare(`
       INSERT INTO conversation_blocks (
         id, conversation_id, type, role, content, compressed, position,
@@ -223,7 +223,7 @@ describe("source-backed conversation storage preparation", () => {
 
     const result = await prepareSourceBackedConversationStorage({ dbPath, apply: true });
     expect(result).toMatchObject({ processed: 1, promoted: 1, skipped: 0, errors: [] });
-    const retained = new Database(dbPath);
+    const retained = new SqliteDatabase(dbPath);
     expect(retained.prepare(`SELECT content, metadata_json, payload_state
       FROM conversation_blocks WHERE id = 'unmatched-legacy'`).get()).toEqual({
       content: "",
@@ -239,7 +239,7 @@ describe("source-backed conversation storage preparation", () => {
 
   it("refuses a payload mutation committed after asynchronous source verification starts", async () => {
     const { dbPath, sourcePath, parsed } = await fixture();
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     const legacyIds = parsed.blocks.map((block) => conversationBlockId({
       conversation_id: "conversation-storage",
       type: block.type,
@@ -260,7 +260,7 @@ describe("source-backed conversation storage preparation", () => {
     });
 
     const pending = store.verifyAndPromoteConversationPayload("conversation-storage");
-    const concurrent = new Database(dbPath);
+    const concurrent = new SqliteDatabase(dbPath);
     concurrent.prepare(`UPDATE conversation_blocks SET content = 'concurrent unique bytes'
       WHERE conversation_id = 'conversation-storage'`).run();
     concurrent.close();
@@ -292,7 +292,7 @@ describe("source-backed conversation storage preparation", () => {
     const parsed = await new GeminiParser().parse(sourcePath);
     if (!parsed) throw new Error("Gemini fixture did not parse");
     const dbPath = path.join(root, "gemini.db");
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     migrate(db);
     db.prepare(`
       INSERT INTO conversations (
@@ -344,7 +344,7 @@ describe("source-backed conversation storage preparation", () => {
 
     const result = await prepareSourceBackedConversationStorage({ dbPath, apply: true });
     expect(result).toMatchObject({ processed: 1, promoted: 1, errors: [] });
-    const repaired = new Database(dbPath);
+    const repaired = new SqliteDatabase(dbPath);
     expect(repaired.prepare(`
       SELECT COUNT(*) AS count
         FROM conversation_structural_blocks sb
@@ -374,7 +374,7 @@ describe("source-backed conversation storage preparation", () => {
     fs.rmSync(sourcePath);
     const result = await prepareSourceBackedConversationStorage({ dbPath, apply: true });
     expect(result).toMatchObject({ processed: 1, promoted: 1, errors: [] });
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     expect(db.prepare("SELECT availability, unavailable_reason FROM conversation_sources WHERE conversation_id = 'conversation-storage'").get())
       .toEqual({ availability: "missing", unavailable_reason: "exact provider source could not be resolved" });
     expect(db.prepare("SELECT content, metadata_json, payload_state FROM conversation_blocks WHERE conversation_id = 'conversation-storage'").get())
@@ -391,7 +391,7 @@ describe("source-backed conversation storage preparation", () => {
       dbPath, apply: true, managedCustodyRoot: custodyRoot,
     });
     expect(first).toMatchObject({ processed: 1, promoted: 1, errors: [] });
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     const alias = db.prepare(`
       SELECT root_kind, alias_kind, path FROM conversation_source_aliases
        WHERE root_kind = 'managed_custody'
@@ -425,7 +425,7 @@ describe("source-backed conversation storage preparation", () => {
     fs.rmSync(sourcePath);
     const custodyRoot = path.join(root, "managed-custody");
     await prepareSourceBackedConversationStorage({ dbPath, apply: true, managedCustodyRoot: custodyRoot });
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     const alias = db.prepare(`SELECT path FROM conversation_source_aliases WHERE root_kind = 'managed_custody'`).get() as { path: string };
     db.prepare(`UPDATE conversation_blocks SET content = ?, metadata_json = ?, payload_state = 'legacy'
       WHERE conversation_id = 'conversation-storage'`).run(
@@ -437,7 +437,7 @@ describe("source-backed conversation storage preparation", () => {
     const result = await prepareSourceBackedConversationStorage({ dbPath, apply: true, managedCustodyRoot: custodyRoot });
     expect(result).toMatchObject({ processed: 1, promoted: 0 });
     expect(result.errors[0].error).toMatch(/different bytes/);
-    const retained = new Database(dbPath);
+    const retained = new SqliteDatabase(dbPath);
     expect(retained.prepare(`SELECT content, payload_state FROM conversation_blocks
       WHERE conversation_id = 'conversation-storage'`).get()).toEqual({
       content: parsed.blocks[0].content,
@@ -451,7 +451,7 @@ describe("source-backed conversation storage preparation", () => {
     fs.rmSync(sourcePath);
     const custodyRoot = path.join(root, "managed-custody");
     await prepareSourceBackedConversationStorage({ dbPath, apply: true, managedCustodyRoot: custodyRoot });
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     const alias = db.prepare(`SELECT path FROM conversation_source_aliases
       WHERE root_kind = 'managed_custody'`).get() as { path: string };
     db.prepare(`UPDATE conversation_blocks SET content = ?, metadata_json = ?, payload_state = 'legacy'
@@ -466,7 +466,7 @@ describe("source-backed conversation storage preparation", () => {
     });
     expect(result).toMatchObject({ processed: 1, promoted: 0 });
     expect(result.errors[0].error).toMatch(/permissions are not owner-only 0600/);
-    const retained = new Database(dbPath);
+    const retained = new SqliteDatabase(dbPath);
     expect(retained.prepare(`SELECT content, payload_state FROM conversation_blocks
       WHERE conversation_id = 'conversation-storage'`).get()).toEqual({
       content: parsed.blocks[0].content,
@@ -477,7 +477,7 @@ describe("source-backed conversation storage preparation", () => {
 
   it.skip("preserves opaque legacy metadata in the managed normalized record", async () => {
     const { dbPath, sourcePath } = await fixture();
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     db.prepare(`UPDATE conversation_blocks SET metadata_json = 'opaque-not-json'
       WHERE conversation_id = 'conversation-storage'`).run();
     db.close();
@@ -487,7 +487,7 @@ describe("source-backed conversation storage preparation", () => {
       dbPath, apply: true, managedCustodyRoot: path.join(root, "managed-custody"),
     });
     expect(result).toMatchObject({ promoted: 1, errors: [] });
-    const readDb = new Database(dbPath);
+    const readDb = new SqliteDatabase(dbPath);
     const read = await new ConversationSourceReader(readDb, { maskCredentials: false }).readAll("conversation-storage");
     expect(read.status).toBe("source");
     if (read.status === "source") expect(read.value[0].metadata_json).toBe("opaque-not-json");
@@ -499,7 +499,7 @@ describe("source-backed conversation storage preparation", () => {
     const token = `mandible_pat_${"A".repeat(43)}`;
     const rawContent = `exact legacy ${token} content`;
     const rawMetadata = `{ "z" : 1, "token" : "${token}", "a" : [2, 1] }`;
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     db.prepare(`UPDATE conversation_blocks SET content = ?, metadata_json = ?, compressed = 0
       WHERE conversation_id = 'conversation-storage'`).run(rawContent, rawMetadata);
     db.close();
@@ -509,7 +509,7 @@ describe("source-backed conversation storage preparation", () => {
       dbPath, apply: true, managedCustodyRoot: path.join(root, "managed-custody"),
     });
     expect(result).toMatchObject({ promoted: 1, errors: [] });
-    const readDb = new Database(dbPath);
+    const readDb = new SqliteDatabase(dbPath);
     const alias = readDb.prepare(`SELECT path FROM conversation_source_aliases
       WHERE root_kind = 'managed_custody'`).get() as { path: string };
     expect(fs.statSync(alias.path).mode & 0o777).toBe(0o600);
@@ -549,7 +549,7 @@ describe("source-backed conversation storage preparation", () => {
     });
     expect(result).toMatchObject({ processed: 1, promoted: 0 });
     expect(result.errors).toHaveLength(1);
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     expect(db.prepare(`SELECT content, payload_state FROM conversation_blocks
       WHERE conversation_id = 'conversation-storage'`).get()).toEqual({
       content: parsed.blocks[0].content,

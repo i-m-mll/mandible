@@ -25,7 +25,7 @@
  * `core.hooksPath`, `init.templateDir` or signing defaults reached the fixture
  * and could change what these tests were actually exercising.
  */
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -294,7 +294,7 @@ export function createMigratedDb(): Db {
   }
   // Deserialise from a copy: the template buffer is reused for every case and
   // must not observe a test's writes.
-  return new Database(Buffer.from(migratedDbTemplate)) as unknown as Db;
+  return SqliteDatabase.fromSnapshot(Buffer.from(migratedDbTemplate)) as unknown as Db;
 }
 
 export function createLedgerProject(db: Db, root: string) {
@@ -322,7 +322,7 @@ export function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] 
 }
 
 export function registerWorkRepo(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   repoRoot: string,
   defaultBranch = "main",
 ): void {
@@ -335,7 +335,7 @@ export function registerWorkRepo(
 // --- users, credentials, evidence -----------------------------------------
 
 export function registerTestDelegatedLease(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   id: string,
   now = Date.now(),
 ): string {
@@ -357,7 +357,7 @@ export function registerTestDelegatedLease(
 }
 
 export function executionEvidenceChain(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   executionEvidenceId: string,
 ): {
   signature: { evidence_method: string; credential_id: string | null; details_json: string };
@@ -388,7 +388,7 @@ export function executionEvidenceChain(
  * what those commits contain. The measured cost is ~0.5s of a 101.5s file.
  */
 export function configureSigningCredential(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   repo: string,
   type: "ssh_key" | "delegated_ssh_key",
 ): { credentialId: string; keyPath: string; operatorId: string } {
@@ -417,7 +417,7 @@ export function configureSigningCredential(
 // merge_head_sha), which is exactly what base-transition provenance
 // verification demands. Requires configureSigningCredential on the repo first.
 export function insertSiblingMergeRequest(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   repo: string,
   requestId: string,
   sourceBranch: string,
@@ -464,7 +464,7 @@ export function mergeResultOutput(mergeSha: string): string {
 // Authorized base advance recorded directly as a finalized completed request
 // (no live finalizer involvement) — for approve-time recompute tests.
 export function advanceMainViaAuthorizedMerge(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   repo: string,
   sourceBranch: string,
   requestId: string,
@@ -499,7 +499,7 @@ export async function waitForStatus(queue: AuthQueue, id: string, status: string
 }
 
 export function insertMandibleSession(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   id: string,
   status: string,
 ): void {
@@ -509,7 +509,7 @@ export function insertMandibleSession(
 }
 
 export function insertConsoleSession(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   input: {
     id: string;
     providerSessionId: string;
@@ -537,7 +537,7 @@ export function insertConsoleSession(
 }
 
 export function insertWorkUnit(
-  db: InstanceType<typeof Database>,
+  db: InstanceType<typeof SqliteDatabase>,
   input: {
     id: string;
     issueShortId: string;

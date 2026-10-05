@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../sqlite.js";
 
 import { decompressContentAsync } from "../compression.js";
 import { maskUnverifiedCandidates } from "../credential-leak-scan.js";
@@ -359,7 +359,7 @@ async function mapConcurrent<T, R>(
 
 export class ConversationSearchCache {
   readonly cachePath: string;
-  private readonly cache: Database.Database;
+  private readonly cache: SqliteDatabase;
   private readonly maxConcurrentColdParses: number;
   private readonly maxBodyBytes: number;
   private readonly maxCacheBytes: number;
@@ -378,7 +378,7 @@ export class ConversationSearchCache {
       options.maxPhysicalBytes ?? DEFAULT_SEARCH_CACHE_LIMITS.maxPhysicalBytes,
     );
     if (this.cachePath !== ":memory:") fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
-    this.cache = new Database(this.cachePath);
+    this.cache = new SqliteDatabase(this.cachePath);
     this.cache.pragma("journal_mode = WAL");
     this.cache.pragma("synchronous = NORMAL");
     this.initialize();

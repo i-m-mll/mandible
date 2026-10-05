@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/sse.js", () => ({ broadcast: vi.fn() }));
@@ -87,7 +87,7 @@ beforeEach(() => {
   fs.mkdirSync(path.join(root, "preview", "artifacts"), { recursive: true });
   fs.writeFileSync(path.join(root, "source", "source.db"), "");
   fs.copyFileSync(path.join(root, "source", "source.db"), path.join(root, "preview", "preview.db"));
-  db = new Database(path.join(root, "preview", "preview.db"));
+  db = new SqliteDatabase(path.join(root, "preview", "preview.db"));
   migrate(db);
   setSetting(db, "artifact_root", path.join(root, "preview", "artifacts"));
   createUser(db, { slug: "agent-schedule", kind: "agent", display_name: "Publisher" });

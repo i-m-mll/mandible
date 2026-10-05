@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -39,8 +39,8 @@ import { createLedgerIssue, createLedgerProject } from "../helpers/ledger-fixtur
 let testRequesterUserId = "";
 let testRequesterCredentialId = "";
 
-function setupInMemoryDb(): InstanceType<typeof Database> {
-  const db = new Database(":memory:");
+function setupInMemoryDb(): InstanceType<typeof SqliteDatabase> {
+  const db = new SqliteDatabase(":memory:");
   db.pragma("journal_mode = WAL");
   migrate(db);
   testRequesterUserId = setupOperator(db, {
@@ -67,7 +67,7 @@ interface AuthRowSeed {
   title?: string;
 }
 
-function seedAuthRow(db: InstanceType<typeof Database>, seed: AuthRowSeed): void {
+function seedAuthRow(db: InstanceType<typeof SqliteDatabase>, seed: AuthRowSeed): void {
   db.prepare(
     `INSERT INTO auth_requests (
       id, session_id, type, command, title, cwd,
@@ -93,7 +93,7 @@ function seedAuthRow(db: InstanceType<typeof Database>, seed: AuthRowSeed): void
   });
 }
 
-function registerWorkRepo(db: InstanceType<typeof Database>, repoRoot: string): void {
+function registerWorkRepo(db: InstanceType<typeof SqliteDatabase>, repoRoot: string): void {
   setDb(db);
   const root = realpathSync(repoRoot);
   const project = createLedgerProject(db, root, {
@@ -181,7 +181,7 @@ function createLargeAuthMergeFixtureRepo(tempDir: string): string {
   return repoRoot;
 }
 
-function seedSession(db: InstanceType<typeof Database>, id: string, cwd: string): void {
+function seedSession(db: InstanceType<typeof SqliteDatabase>, id: string, cwd: string): void {
   db.prepare("INSERT INTO sessions (id, app, cwd, status) VALUES (?, ?, ?, ?)").run(
     id,
     "codex",
@@ -190,7 +190,7 @@ function seedSession(db: InstanceType<typeof Database>, id: string, cwd: string)
   );
 }
 
-function setGraceSetting(db: InstanceType<typeof Database>, key: string, days: number): void {
+function setGraceSetting(db: InstanceType<typeof SqliteDatabase>, key: string, days: number): void {
   db.prepare(
     "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run(key, String(days), Date.now());
@@ -199,7 +199,7 @@ function setGraceSetting(db: InstanceType<typeof Database>, key: string, days: n
 // --- Tier query tests ---------------------------------------------------
 
 describe("inbox tier query (auth_results)", () => {
-  let db: InstanceType<typeof Database>;
+  let db: InstanceType<typeof SqliteDatabase>;
 
   beforeEach(() => {
     db = setupInMemoryDb();
@@ -756,7 +756,7 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
 // --- Undelivered endpoint + startup catch-up tests ----------------------
 
 describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
-  let db: InstanceType<typeof Database>;
+  let db: InstanceType<typeof SqliteDatabase>;
   let registerInboxRoutes: typeof import("../../src/routes/inbox.js")["registerInboxRoutes"];
 
   beforeEach(async () => {
@@ -1826,7 +1826,7 @@ function callInbox(
     sessionManager?: unknown,
     authQueue?: unknown
   ) => void,
-  _db: InstanceType<typeof Database>,
+  _db: InstanceType<typeof SqliteDatabase>,
   query: Record<string, string>
 	): { auth_results: Array<{ id: string; tier: number; action_outcomes?: unknown[] }> } {
   let handler: ((req: unknown, res: unknown) => void) | undefined;

@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { attributionForRequest, authorizeOperatorSetup, isLocalHumanRequest, requireDurableIdentity, requireOperator,
   requireProtectedOperator } from "../src/client-auth/authz.js";
@@ -7,7 +7,7 @@ import type { RequestLike, ResolvedClientIdentity } from "../src/server.js";
 import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 
 let db: Db;
-beforeEach(() => { db = new Database(":memory:"); migrate(db); });
+beforeEach(() => { db = new SqliteDatabase(":memory:"); migrate(db); });
 afterEach(() => db.close());
 
 function socketRequest(user: { id: string; slug: string }, managed = false): RequestLike {

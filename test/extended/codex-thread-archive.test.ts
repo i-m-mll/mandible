@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -36,8 +36,8 @@ function requestWithoutClosures(): AuthRequest {
   } as AuthRequest;
 }
 
-function createWorkUnitsOnlyDb(): InstanceType<typeof Database> {
-  const db = new Database(":memory:");
+function createWorkUnitsOnlyDb(): InstanceType<typeof SqliteDatabase> {
+  const db = new SqliteDatabase(":memory:");
   db.exec(`
     CREATE TABLE work_units (
       id TEXT PRIMARY KEY,

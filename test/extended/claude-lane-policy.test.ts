@@ -1,6 +1,6 @@
 // Issue 8aadf70 — Claude Code ToS compliance: SDK is the default Claude lane and
 // the Mandible-owned Claude PTY lane is local-only and off by default.
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, setDb } from "../../src/db.js";
@@ -22,7 +22,7 @@ import type { ConsoleSession } from "../../src/types.js";
 type Db = ReturnType<typeof makeDb>;
 
 function makeDb() {
-  const db = new Database(":memory:");
+  const db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
   return db;

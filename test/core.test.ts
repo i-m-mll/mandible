@@ -4,7 +4,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { fileURLToPath } from "node:url";
 import { CURRENT_SCHEMA_VERSION, openDb, migrate } from "../src/db.js";
 import { startDaemon } from "../src/index.js";
@@ -107,8 +107,8 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
 
     await daemon.close();
 
-    const canonical = new Database(temp!.dbPath, { readonly: true });
-    const operational = new Database(
+    const canonical = new SqliteDatabase(temp!.dbPath, { readonly: true });
+    const operational = new SqliteDatabase(
       path.join(temp!.dir, "mandible.operational-logs.db"),
       { readonly: true },
     );

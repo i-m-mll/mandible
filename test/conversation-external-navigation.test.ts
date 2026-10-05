@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it, vi } from "vitest";
 import {
   codexTaskDeepLink,
@@ -7,8 +7,8 @@ import {
 } from "../src/conversation-external-navigation.js";
 import { SessionRegistry } from "../src/registry.js";
 
-function fixture(): { db: InstanceType<typeof Database>; registry: SessionRegistry } {
-  const db = new Database(":memory:");
+function fixture(): { db: InstanceType<typeof SqliteDatabase>; registry: SessionRegistry } {
+  const db = new SqliteDatabase(":memory:");
   db.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
   return { db, registry: new SessionRegistry(db) };
 }
