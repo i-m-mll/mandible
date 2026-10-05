@@ -36,7 +36,7 @@ export async function activateBootstrapWorkUnit(api: Api, issueRef: string, repo
     issue_id: issueRef, repo_id: repo, branch,
   }) as { id: string; state: string; ledger_issue_id: string | null };
   assert.equal(result.state, 'committed');
-  assert.ok(result.ledger_issue_id, 'Delivery work unit must resolve its canonical issue');
+  assert.ok(result.ledger_issue_id, `Delivery work unit must resolve its canonical issue: ${JSON.stringify(result)}`);
   assert.ok(result.id);
   return result.id;
 }
