@@ -1218,7 +1218,7 @@ describe("iab-preview launcher", () => {
     setSetting(db, "user.operator_id", operator.id);
     const artifact = recordArtifactVersion(db, { source_kind: "tracked_repo", path: reviewPath,
       role: "review-document", media_type: "text/plain" });
-    expect(artifact.version).toMatchObject({ source_kind: "tracked_repo", custody_mode: "link" });
+    expect(artifact.version).toMatchObject({ source_kind: "tracked_repo", custody_mode: "git" });
     expect(db.prepare("SELECT media_type FROM artifact_blob WHERE content_hash = ?").get(artifact.artifact.content_hash))
       .toEqual({ media_type: "text/plain" });
     db.close();

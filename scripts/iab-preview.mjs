@@ -427,9 +427,9 @@ export async function materializeProjectedAgentsReview(details) {
       import(`${pathToFileURL(path.join(custody.worktree, "dist", "users", "store.js")).href}${cacheBust}`),
     ]);
     db = openDb(custody.db);
-    const resolved = artifacts.resolveArtifactRefReadonlyFull(db, details.artifactVersionRef);
+    const resolved = artifacts.resolveArtifactIdentity(db, details.artifactVersionRef, "strict-read");
     const version = resolved.status === "resolved" && resolved.target_type === "artifact_version"
-      ? artifacts.getCanonicalArtifactVersion(db, resolved.target_id) : null;
+      ? resolved.artifact_version : null;
     if (!version || version.source_kind !== "tracked_repo" || version.custody_mode !== "git" || !version.commit_sha) {
       throw new Error("Refusing agents review seed: artifact version must be committed tracked-repo link custody.");
     }
