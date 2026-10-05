@@ -1,3 +1,4 @@
+import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -63,7 +64,7 @@ describe("auth queue", () => {
 
     // Review F5 — a corrupted or deleted retained candidate at an UNMOVED base
     // is tamper evidence: approval refuses with the original strict message.
-    it("refuses approval when the retained candidate is corrupted at a stable base", () => {
+    it("refuses approval when the retained candidate is corrupted at a stable base", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -76,14 +77,14 @@ describe("auth queue", () => {
         // Deleted candidate ref.
         const refCorrupt = submitPinnedRequest(queue, repo, "feature/ref-corrupt");
         git(repo, ["update-ref", "-d", `refs/mandible/auth-candidates/${refCorrupt.id}`]);
-        expect(() => queue.approve(refCorrupt.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, refCorrupt.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(refCorrupt.id)?.status).toBe("pending");
 
         // Re-pointed pin (recorded pin no longer the reviewed candidate).
         const pinCorrupt = submitPinnedRequest(queue, repo, "feature/pin-corrupt");
         db.prepare("UPDATE auth_requests SET merge_candidate_pin_sha = ? WHERE id = ?")
           .run(git(repo, ["rev-parse", "main"]), pinCorrupt.id);
-        expect(() => queue.approve(pinCorrupt.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, pinCorrupt.id)).rejects.toThrow(/lifecycle snapshot changed/);
         expect(queue.getRequest(pinCorrupt.id)?.status).toBe("pending");
 
         expect(calls).toHaveLength(0);
@@ -96,7 +97,7 @@ describe("auth queue", () => {
 
     // Review F6 — a base rewritten to a non-descendant is never treated as
     // sibling drift.
-    it("refuses recompute when the base was rewritten to a non-descendant", () => {
+    it("refuses recompute when the base was rewritten to a non-descendant", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -109,7 +110,7 @@ describe("auth queue", () => {
         git(repo, ["commit", "--amend", "-m", "rewritten history"]);
         expect(git(repo, ["rev-parse", "main"])).not.toBe(request.merge_preflight_base_sha);
 
-        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(request.id)?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
@@ -122,7 +123,7 @@ describe("auth queue", () => {
     // Review F6 — a descendant base advance that is not accounted for by a
     // recorded, signature-verified queue merge is refused: raw commits and
     // even signed merges without a completed queue record.
-    it("refuses recompute when the base advanced without a recorded authorized merge", () => {
+    it("refuses recompute when the base advanced without a recorded authorized merge", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -139,13 +140,13 @@ describe("auth queue", () => {
         writeFile(repo, "raw.txt", "raw\n");
         git(repo, ["add", "."]);
         git(repo, ["commit", "-m", "raw direct commit"]);
-        expect(() => queue.approve(first.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, first.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(first.id)?.status).toBe("pending");
 
         // Signed merge with no completed queue record backing it.
         const second = submitPinnedRequest(queue, repo, "feature/unaccounted-b");
         signedMergeIntoMain(repo, "feature/rogue");
-        expect(() => queue.approve(second.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, second.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(second.id)?.status).toBe("pending");
 
         expect(calls).toHaveLength(0);
@@ -160,7 +161,7 @@ describe("auth queue", () => {
     // and a hierarchical-shaped command is refused at approval (issue 060c9c8
     // removed hierarchical merge support) even across an authorized base
     // advance.
-    it("invalidates the pin on command mutation and refuses hierarchical-shaped approval", () => {
+    it("invalidates the pin on command mutation and refuses hierarchical-shaped approval", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -191,7 +192,7 @@ describe("auth queue", () => {
           "mandible auth merge --hierarchical feature/hier feature/evil --into main",
         );
         advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-hier-sibling");
-        expect(() => queue.approve(hier.id)).toThrow(/Hierarchical merge commands cannot be verified/);
+        await expect(approveFixtureRequest(queue, hier.id)).rejects.toThrow(/Hierarchical merge commands cannot be verified/);
         expect(queue.getRequest(hier.id)?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
@@ -204,7 +205,7 @@ describe("auth queue", () => {
     // Review F4 — when the fresh pin cannot be obtained during recompute, the
     // approval fails closed with the strict error and the previous pin state
     // is left fully intact (never proceeds unpinned with skip-preflight).
-    it("fails closed when a previously-pinned request cannot obtain a fresh pin", () => {
+    it("fails closed when a previously-pinned request cannot obtain a fresh pin", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -227,7 +228,7 @@ describe("auth queue", () => {
           throw new Error("injected pin cache failure");
         });
 
-        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
         const after = queue.getRequest(request.id);
         expect(after?.status).toBe("pending");
         // Prior strictly-blocking state fully intact.
@@ -245,7 +246,7 @@ describe("auth queue", () => {
 
     // Review F6 — remote requests never auto-recompute: a stale pin stays
     // strictly blocked even when the base advance is fully authorized.
-    it("keeps remote requests strictly blocked on base drift", () => {
+    it("keeps remote requests strictly blocked on base drift", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -260,7 +261,7 @@ describe("auth queue", () => {
         db.prepare("UPDATE auth_requests SET execution_mode = 'remote' WHERE id = ?").run(request.id);
         advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-remote-sibling");
 
-        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(queue.getRequest(request.id)?.status).toBe("pending");
         expect(calls).toHaveLength(0);
       } finally {
@@ -273,7 +274,7 @@ describe("auth queue", () => {
     // Review F6 — the preflight must run against exactly the base whose
     // transition provenance was verified; a base that moves again in between
     // falls back to the strict error.
-    it("refuses recompute when the base moves again between provenance verification and preflight", () => {
+    it("refuses recompute when the base moves again between provenance verification and preflight", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -298,7 +299,7 @@ describe("auth queue", () => {
           return realCheck(input);
         });
 
-        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
         const after = queue.getRequest(request.id);
         expect(after?.status).toBe("pending");
         expect(after?.merge_candidate_pin_sha).toBe(originalPin);
@@ -316,7 +317,7 @@ describe("auth queue", () => {
     // commit and the execution env still carries the reviewed head SHA, so the
     // shell layer merges (or refuses) against the reviewed object — never the
     // moved live ref.
-    it("pins the reviewed head even when the head ref moves during recompute", async () => {
+    it("refuses a head ref that moves during recompute without executing revised bytes", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -344,16 +345,16 @@ describe("auth queue", () => {
           return report;
         });
 
-        queue.approve(request.id);
-        await waitForStatus(queue, request.id, "completed");
-        expect(calls).toHaveLength(1);
-        const env = calls[0]!;
-        const liveHead = git(repo, ["rev-parse", "feature/head-race"]);
+        const baseBefore = git(repo, ['rev-parse', 'main']);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/Head branch feature\/head-race moved/);
+        expect(calls).toHaveLength(0);
+        const liveHead = git(repo, ['rev-parse', 'feature/head-race']);
         expect(liveHead).not.toBe(reviewedHead);
-        // The pin and the execution env are bound to the reviewed commit.
-        expect(env.MANDIBLE_AUTH_CANDIDATE_HEAD_SHA).toBe(reviewedHead);
-        expect(env.MANDIBLE_AUTH_EXPECTED_HEAD_SHA).toBe(reviewedHead);
-        expect(git(repo, ["rev-parse", `${env.MANDIBLE_AUTH_CANDIDATE_PIN_SHA}^2`])).toBe(reviewedHead);
+        expect(git(repo, ['rev-parse', 'main'])).toBe(baseBefore);
+        const pending = queue.getRequest(request.id)!;
+        expect(pending.status).toBe('pending');
+        expect(pending.merge_head_sha).toBe(reviewedHead);
+        expect(git(repo, ['rev-parse', `${pending.merge_candidate_pin_sha}^2`])).toBe(reviewedHead);
       } finally {
         vi.restoreAllMocks();
         queue.dispose();
@@ -365,7 +366,7 @@ describe("auth queue", () => {
     // Issue 08a5f04 (review F2 pass 2) — a mutated command is refused at
     // approval even though the mutation already cleared the pin (previously
     // the unpinned request would proceed without fresh review).
-    it("refuses approval of a mutated command even when the request is unpinned", () => {
+    it("refuses approval of a mutated command even when the request is unpinned", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -380,7 +381,7 @@ describe("auth queue", () => {
         });
         // The mutation cleared the pin — the request is unpinned, not exempt.
         expect(mutated.merge_candidate_pin_sha).toBeNull();
-        expect(() => queue.approve(request.id))
+        await expect(approveFixtureRequest(queue, request.id)).rejects
           .toThrow(/does not match the canonical form/);
         expect(queue.getRequest(request.id)?.status).toBe("pending");
         expect(calls).toHaveLength(0);
@@ -399,7 +400,7 @@ describe("auth queue", () => {
     // Issue 08a5f04 (review F2 pass 2) — shell-expansion evasion dies with
     // canonicalization: only the canonical byte form is executable, so
     // `$X`-style smuggling never reaches bash.
-    it("refuses a hierarchical-via-expansion command at approval", () => {
+    it("refuses a hierarchical-via-expansion command at approval", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -413,7 +414,7 @@ describe("auth queue", () => {
           command:
             "X=--hierarchical; mandible auth merge feature/expansion feature/evil --into main $X",
         });
-        expect(() => queue.approve(request.id))
+        await expect(approveFixtureRequest(queue, request.id)).rejects
           .toThrow(/does not match the canonical form/);
         expect(queue.getRequest(request.id)?.status).toBe("pending");
         expect(calls).toHaveLength(0);
@@ -426,7 +427,7 @@ describe("auth queue", () => {
 
     // Issue 08a5f04 (review F6) — the repin compare-and-swap fails closed when
     // the retained candidate ref disappeared between validation and swap.
-    it("fails closed when the candidate ref is deleted before the repin CAS", () => {
+    it("fails closed when the candidate ref is deleted before the repin CAS", async () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -454,7 +455,7 @@ describe("auth queue", () => {
         expect(after.merge_candidate_pin_sha).toBe(request.merge_candidate_pin_sha);
         expect(after.merge_preflight_base_sha).toBe(request.merge_preflight_base_sha);
         // And approval keeps failing strict rather than proceeding unpinned.
-        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(STRICT_MESSAGE);
         expect(calls).toHaveLength(0);
       } finally {
         queue.dispose();
@@ -505,7 +506,7 @@ describe("auth queue", () => {
         expect(after.merge_candidate_pin_sha).toBe(request.merge_candidate_pin_sha);
         expect(git(repo, ["rev-parse", `refs/mandible/auth-candidates/${request.id}`]))
           .toBe(request.merge_candidate_pin_sha);
-        queue.approve(request.id);
+        await approveFixtureRequest(queue, request.id);
         await waitForStatus(queue, request.id, "completed");
         expect(calls).toHaveLength(1);
       } finally {
@@ -520,7 +521,7 @@ describe("auth queue", () => {
     // this, every one of them produced the same generic sentence and the real
     // reason reached daemon_log only.
     describe("refusal reasons reach the approver", () => {
-      it("names the missing signing credential and its fingerprint", () => {
+      it("names the missing signing credential and its fingerprint", async () => {
         const repo = createAuthCheckRepo();
         const db = createMigratedDb();
         const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -547,7 +548,7 @@ describe("auth queue", () => {
 
           let message = "";
           try {
-            queue.approve(request.id);
+            await approveFixtureRequest(queue, request.id);
             throw new Error("expected approval to be refused");
           } catch (error) {
             message = error instanceof Error ? error.message : String(error);
@@ -570,7 +571,7 @@ describe("auth queue", () => {
       // Head drift never reaches the recompute guard: the earlier execution
       // context resolution already reports it specifically. Pinned here so the
       // one already-honest approval error on this path stays honest.
-      it("keeps head drift reported with both commits, before recompute runs", () => {
+      it("keeps head drift reported with both commits, before recompute runs", async () => {
         const repo = createAuthCheckRepo();
         const db = createMigratedDb();
         const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -593,7 +594,7 @@ describe("auth queue", () => {
 
           let message = "";
           try {
-            queue.approve(request.id);
+            await approveFixtureRequest(queue, request.id);
             throw new Error("expected approval to be refused");
           } catch (error) {
             message = error instanceof Error ? error.message : String(error);
@@ -609,7 +610,7 @@ describe("auth queue", () => {
         }
       });
 
-      it("names a corrupted retained candidate rather than blaming the inputs", () => {
+      it("names a corrupted retained candidate rather than blaming the inputs", async () => {
         const repo = createAuthCheckRepo();
         const db = createMigratedDb();
         const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -621,9 +622,9 @@ describe("auth queue", () => {
           const request = submitPinnedRequest(queue, repo, "feature/corrupt-reason");
           git(repo, ["update-ref", "-d", `refs/mandible/auth-candidates/${request.id}`]);
 
-          expect(() => queue.approve(request.id))
+          await expect(approveFixtureRequest(queue, request.id)).rejects
             .toThrow(/Refusal: retained_candidate_invalid/);
-          expect(() => queue.approve(request.id)).toThrow(/tamper evidence/);
+          await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(/tamper evidence/);
           expect(calls).toHaveLength(0);
         } finally {
           queue.dispose();
@@ -632,7 +633,7 @@ describe("auth queue", () => {
         }
       });
 
-      it("names a remote request as structurally non-recomputable", () => {
+      it("names a remote request as structurally non-recomputable", async () => {
         const repo = createAuthCheckRepo();
         const db = createMigratedDb();
         const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -650,7 +651,7 @@ describe("auth queue", () => {
 
           let message = "";
           try {
-            queue.approve(request.id);
+            await approveFixtureRequest(queue, request.id);
           } catch (error) {
             message = error instanceof Error ? error.message : String(error);
           }
@@ -664,7 +665,7 @@ describe("auth queue", () => {
         }
       });
 
-      it("names the pin failure when a fresh pin cannot be obtained", () => {
+      it("names the pin failure when a fresh pin cannot be obtained", async () => {
         const repo = createAuthCheckRepo();
         const db = createMigratedDb();
         const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -686,7 +687,7 @@ describe("auth queue", () => {
 
           let message = "";
           try {
-            queue.approve(request.id);
+            await approveFixtureRequest(queue, request.id);
           } catch (error) {
             message = error instanceof Error ? error.message : String(error);
           }
