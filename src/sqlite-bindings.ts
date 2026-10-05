@@ -72,7 +72,8 @@ export class SqliteBindings {
       for (const key of Object.getOwnPropertyNames(record)) {
         const exact = [...this.slots.values()].filter(slot => slot.aliases.has(key));
         const candidates = exact.length ? exact : [...this.slots.values()].filter(slot => [...slot.aliases].some(name => name.slice(1) === key));
-        if (candidates.length !== 1) throw new Error(`Unknown or ambiguous SQLite parameter: ${key}`);
+        if (candidates.length === 0) continue;
+        if (candidates.length !== 1) throw new Error(`Ambiguous SQLite parameter: ${key}`);
         const slot = candidates[0];
         if (assigned.has(slot.index)) throw new Error(`SQLite parameter supplied twice: ${key}`);
         assigned.set(slot.index, record[key]);
