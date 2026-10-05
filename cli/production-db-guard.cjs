@@ -64,8 +64,16 @@ function canonicalizePath(target) {
       : target.startsWith("~/") || target.startsWith("~\\")
         ? path.join(realSystemHomeDir(), target.slice(2))
         : target;
+  let probe = path.resolve(expanded);
+  const suffix = [];
+  while (!fs.existsSync(probe)) {
+    const parent = path.dirname(probe);
+    if (parent === probe) break;
+    suffix.unshift(path.basename(probe));
+    probe = parent;
+  }
   try {
-    return fs.realpathSync.native(expanded);
+    return path.join(fs.realpathSync.native(probe), ...suffix);
   } catch {
     return path.resolve(expanded);
   }
