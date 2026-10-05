@@ -80,6 +80,16 @@ it('hands the actual old daemon over to the candidate through isolated productio
   const ledger = path.join(home, 'mandible.db'); let db: SqliteDatabase | undefined; let queue: AuthQueue | undefined; let requestId = ''; let executionId = ''; let journal: any;
   const evidence = path.join(os.homedir(), '.cache', 'mandible/acceptance/upgrade-evidence'); fs.mkdirSync(evidence, { recursive: true });
   try {
+    // Reuse the installed build toolchain, while cloning dependency cache bytes
+    // into the disposable home. Neither operation changes user configuration.
+    for (const name of ['.cargo', '.rustup']) {
+      const source = fs.realpathSync(path.join(os.homedir(), name));
+      fs.symlinkSync(source, path.join(userHome, name), 'dir');
+    }
+    const bunCache = path.join(os.homedir(), '.bun/install/cache');
+    if (!fs.existsSync(bunCache)) throw new Error('Full fixture requires the qualified dependency cache from frozen installation.');
+    fs.mkdirSync(path.join(userHome, '.bun/install'), { recursive: true });
+    command('/bin/cp', ['-c', '-R', bunCache, path.join(userHome, '.bun/install/cache')]);
     archive(oldRoot, oldRevision, repo);
     command('/bin/cp', ['-c', '-R', path.join(oldRoot, 'node_modules'), path.join(repo, 'node_modules')]);
     configurePorts(repo, legacy, ports, env);
