@@ -76,7 +76,7 @@ import { attachmentContentUrl } from '../chat/attachmentApi';
 import { importAttachmentBatch } from '../chat/attachmentImport';
 import { AnnotationPreviewContent } from '../chat/AnnotationPreviewContent';
 import {
-  activateDraftAttachmentHighlights, clearAcceptedDraft, getAttachmentDraftSnapshot,
+  activateDraftAttachmentHighlights, adoptLegacyConsoleDraft, clearAcceptedDraft, getAttachmentDraftSnapshot,
   getDraftAttachmentHighlights,
   getPendingSubmitIntent, registerWritableChatTarget, removeDraftAttachment,
   savePendingSubmitIntent, setDraftText, subscribeAttachmentDrafts,
@@ -2921,9 +2921,14 @@ function LiveSessionDetail({
     enabled: historicalManaged && Boolean(providerSessionId),
   }, queryClient);
   const linkedConversations = sessionConversationQuery.data?.conversations ?? [];
+  const [draftMigrationError, setDraftMigrationError] = useState<string | null>(null);
   useEffect(() => {
-    if (historicalManaged && linkedConversations.length === 1) onNavigateConversation(linkedConversations[0].id);
-  }, [historicalManaged, linkedConversations.length, linkedConversations[0]?.id, onNavigateConversation]);
+    if (historicalManaged && linkedConversations.length === 1) {
+      const adopted = adoptLegacyConsoleDraft(session.id, linkedConversations[0].id);
+      if (!adopted.ok) { setDraftMigrationError(`The saved draft could not be moved to Chats: ${adopted.error}`); return; }
+      onNavigateConversation(linkedConversations[0].id);
+    }
+  }, [session.id, historicalManaged, linkedConversations.length, linkedConversations[0]?.id, onNavigateConversation]);
   const detailHeader = (
     <DetailPaneHeader
       variant="compact"
@@ -2949,10 +2954,10 @@ function LiveSessionDetail({
       notice={notice}
     >
       {historicalManaged ? <DetailPaneNotice severity="info" density="compact" title="Historical managed session">
-        {sessionConversationQuery.isLoading ? 'Finding the native conversation…' : sessionConversationQuery.isError
+        {draftMigrationError ?? (sessionConversationQuery.isLoading ? 'Finding the native conversation…' : sessionConversationQuery.isError
           ? 'The native conversation could not be loaded. The historical Console record is preserved.'
           : linkedConversations.length > 1 ? 'This session matches several conversations. Select the exact conversation in Chats.'
-          : linkedConversations.length === 0 ? 'The native conversation is not indexed yet. The historical Console record is preserved.' : 'Opening the native conversation…'}
+          : linkedConversations.length === 0 ? 'The native conversation is not indexed yet. The historical Console record is preserved.' : 'Opening the native conversation…')}
       </DetailPaneNotice> : <TerminalPane sessionId={session.id} sessionStatus={session.status} isVisible />}
 
     </ChatDetailFrame>

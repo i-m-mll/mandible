@@ -615,4 +615,3 @@ export function registerConsoleRoutes(
     res.status(200).json({ session: operatorSession.meta });
   }, { fileRpc: "deny" });
 }
-

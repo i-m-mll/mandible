@@ -79,4 +79,3 @@ export interface TerminalBackend extends EventEmitter {
   getBufferSnapshot(): Buffer;
   getStreamEvents(): ConsoleStreamEvent[];
 }
-
