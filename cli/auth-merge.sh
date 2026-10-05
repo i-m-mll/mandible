@@ -309,109 +309,6 @@ prompt_confirm() {
   read_tty
 }
 
-confirm_checkout_if_needed() {
-  local current=$1
-  local target=$2
-
-  if [[ "$current" != "$target" ]]; then
-    local response
-    response=$(prompt_confirm "Not on ${target}. Checkout ${target}? [y/N]")
-    response=$(printf "%s" "$response" | tr '[:upper:]' '[:lower:]')
-    case "$response" in
-      y|yes)
-        git checkout "$target"
-        return $?
-        ;;
-      *)
-        err "Merge cancelled."
-        return 1
-        ;;
-    esac
-  fi
-
-  return 0
-}
-
-has_conflicts() {
-  [[ -n "$(git diff --name-only --diff-filter=U)" ]]
-}
-
-# Bug: bb2d9ef — auto-resolve conflicts in generated dist files.
-# When git merge encounters conflicts, check if ALL conflicts are in
-# generated/dist paths. If so, take --theirs for each and stage them,
-# returning 0. If any non-dist conflicts remain, return 1.
-# Patterns (prefix match on path): */dist/*.js, */dist/*.js.map,
-# */dist/*.css, */dist/*.css.map
-is_dist_file() {
-  local f="$1"
-  case "$f" in
-    */dist/*.js|*/dist/*.js.map|*/dist/*.css|*/dist/*.css.map) return 0 ;;
-  esac
-  return 1
-}
-
-auto_resolve_dist_conflicts() {
-  local conflict_files
-  local IFS_BAK="$IFS"
-  IFS=$'\n'
-  conflict_files=( $(git diff --name-only --diff-filter=U) )
-  IFS="$IFS_BAK"
-
-  if [[ ${#conflict_files[@]} -eq 0 ]]; then
-    return 1  # no conflicts, something else went wrong
-  fi
-
-  # Check that every conflicted file is a dist file
-  local f
-  local non_dist=0
-  for f in "${conflict_files[@]}"; do
-    if [[ -n "$f" ]] && ! is_dist_file "$f"; then
-      non_dist=$((non_dist + 1))
-    fi
-  done
-
-  if [[ "$non_dist" -gt 0 ]]; then
-    err "${BOLD_YELLOW}Conflicts in non-generated files require manual resolution.${RESET}"
-    local g
-    for g in "${conflict_files[@]}"; do
-      if [[ -n "$g" ]] && ! is_dist_file "$g"; then
-        err "  ${RED}${g}${RESET}"
-      fi
-    done
-    return 1
-  fi
-
-  # All conflicts are in dist files — auto-resolve with --theirs
-  err "${DIM_WHITE}Auto-resolving dist file conflicts (taking --theirs):${RESET}"
-  for f in "${conflict_files[@]}"; do
-    if [[ -n "$f" ]]; then
-      git checkout --theirs -- "$f"
-      git add -- "$f"
-      err "  ${GREEN}resolved: ${f}${RESET}"
-    fi
-  done
-
-  return 0
-}
-
-# Safety: after any successful merge, verify the result actually
-# contains changes. A merge whose tree matches parent-1 is a no-op
-# that silently discards the feature branch.
-verify_merge_not_empty() {
-  local merge_tree parent_tree
-  merge_tree=$(git rev-parse HEAD^{tree})
-  parent_tree=$(git rev-parse HEAD^1^{tree})
-  if [[ "$merge_tree" == "$parent_tree" ]]; then
-    err ""
-    err "  ${RED}FATAL: Merge produced no changes — tree is identical to parent.${RESET}"
-    err "  ${DIM_WHITE}This means the feature branch changes were silently dropped.${RESET}"
-    err "  ${DIM_WHITE}Reverting the empty merge...${RESET}"
-    git reset --hard HEAD~1
-    err ""
-    die "Empty merge reverted. Investigate before retrying." 1
-  fi
-}
-
 preflight_signing_check() {
   auth_phase "checking signing configuration..."
   local effective
@@ -658,41 +555,7 @@ load_canonical_change_message() {
 # reviewed object (not the racy branch name) with the branch-style merge
 # message. Without a reviewed commit (direct CLI invocation), the legacy
 # merge-by-branch-name behavior is preserved.
-merge_source_signed() {
-  local source_branch=$1
-  local expected=${2:-}
-  # Issue 08a5f04 (re-review advisory) — the preflight cleanliness check ran
-  # earlier in the flow; re-check the tracked worktree immediately before the
-  # non-atomic signing merge so state that changed in between never merges.
-  if ! tracked_worktree_is_clean; then
-    err "${RED}Tracked worktree state changed before the signing merge; refusing to merge. No ref or worktree was changed.${RESET}"
-    return 1
-  fi
-  if [[ -z "$expected" ]]; then
-    # Issue 7d64d8f — an approved canonical change message replaces git's
-    # default merge message on the legacy merge-by-branch-name path too.
-    if (( AUTH_MERGE_HAS_CANONICAL_MESSAGE )); then
-      run_signing_git merge --no-ff --no-edit -S -m "$AUTH_MERGE_CANONICAL_MESSAGE" "$source_branch"
-    else
-      run_signing_git merge --no-ff --no-edit -S "$source_branch"
-    fi
-    return
-  fi
-  local live
-  live=$(current_branch_sha "$source_branch")
-  if [[ -z "$live" || "$live" != "$expected" ]]; then
-    err "${RED}Source ${source_branch} is at ${live:-unknown}, not the reviewed commit ${expected}; requeue and reapprove this request. No ref or worktree was changed.${RESET}"
-    return 1
-  fi
-  local message
-  if (( AUTH_MERGE_HAS_CANONICAL_MESSAGE )); then
-    message="$AUTH_MERGE_CANONICAL_MESSAGE"
-  elif ! message=$(printf "%s\t\tbranch '%s' of .\n" "$expected" "$source_branch" | git fmt-merge-msg); then
-    err "${RED}Could not derive the merge message for reviewed commit ${expected}; no ref or worktree was changed.${RESET}"
-    return 1
-  fi
-  run_signing_git merge --no-ff --no-edit -S -m "$message" "$expected"
-}
+
 
 run_merge_preflight() {
   local cwd="$1"
@@ -772,8 +635,6 @@ create_signed_merge_commit() {
   local second_parent=$3
   local source_branch=$4
   local message merge_sha
-  # Issue 7d64d8f — the atomic path commits the same approved bytes as the
-  # non-atomic path; commit-tree reads them verbatim from stdin.
   if (( AUTH_MERGE_HAS_CANONICAL_MESSAGE )); then
     # Feed the approved file directly: the commit body is these exact octets.
     if ! merge_sha=$(run_signing_git commit-tree "$tree_sha" -p "$first_parent" -p "$second_parent" -S -F - \
@@ -928,6 +789,10 @@ cas_update_and_sync_target() {
     "refs/heads/${target}" "$merge_sha" "$expected_sha"; then
     err "${RED}Target ${target} moved during ref update; compare-and-swap refused. No worktree was changed.${RESET}"
     return 1
+  fi
+  if ! git update-ref ORIG_HEAD "$expected_sha"; then
+    err "Protected publication succeeded, but its native-hook original-head input could not be recorded; recovery is required."
+    return 75
   fi
   applied_marker="MANDIBLE_MERGE_APPLIED $(jq -nc --arg merge_sha "$merge_sha" --arg base_sha "$expected_sha" '{merge_sha:$merge_sha,base_sha:$base_sha}')"
   persist_atomic_marker "$applied_marker" || {
@@ -1310,7 +1175,7 @@ issue_ids_to_json() {
 record_auth_merge_result() {
   local pre_merge_head="$1"
   local merge_sha
-  merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+  merge_sha=${2:-$(git rev-parse HEAD 2>/dev/null || echo "unknown")}
   local declared_ids
   declared_ids=$(collect_declared_issues)
   err "MANDIBLE_MERGE_RESULT $(jq -nc \
@@ -1384,146 +1249,15 @@ main() {
 
   preflight_git_locks
 
-  # Bug: bb2d9ef — detect MERGE_HEAD before running merge preflight.
-  # When Mandible restarts mid-merge (e.g. a dist rebuild triggers a
-  # process restart), the executor re-runs auth-merge from scratch.
-  # Normal preflight sees staged mid-merge files and fails with "dirty tree".
-  # Instead: detect the in-progress merge and resume it with --continue.
-  local merge_head_file
-  merge_head_file="$(git rev-parse --git-dir)/MERGE_HEAD"
-  if [[ -f "$merge_head_file" ]]; then
-    if [[ ${#sources[@]} -eq 0 ]]; then
-      die "Cannot resume merge: no source branch was provided." 2
-    fi
-    if [[ ${#sources[@]} -ne 1 ]]; then
-      die "Cannot resume merge: interrupted execution requires exactly one source branch." 2
-    fi
-
-    local resume_source=${sources[0]}
-    if ! branch_exists "$resume_source"; then
-      die "Cannot resume merge: requested source branch '$resume_source' does not exist." 1
-    fi
-    local requested_head
-    requested_head=$(git rev-parse --verify "refs/heads/${resume_source}^{commit}")
-    local locked_head
-    locked_head=$(git rev-parse --verify HEAD)
-
-    validate_resume_provenance() {
-      local current_branch
-      current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-      [[ "$current_branch" == "$target" ]] \
-        || die "Cannot resume merge: current branch '${current_branch:-detached HEAD}' does not match requested target '$target'." 1
-      [[ "$(git rev-parse --verify HEAD)" == "$locked_head" ]] \
-        || die "Cannot resume merge: target HEAD changed during validation." 1
-      [[ "$(git rev-parse --verify "refs/heads/${resume_source}^{commit}")" == "$requested_head" ]] \
-        || die "Cannot resume merge: requested source moved during validation." 1
-      # Issue 08a5f04 (review F3) — a daemon-resumed merge must still be the
-      # reviewed commit; a moved source cannot be laundered through --continue.
-      if [[ -n "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}" && "$requested_head" != "$MANDIBLE_AUTH_EXPECTED_HEAD_SHA" ]]; then
-        die "Cannot resume merge: source '${resume_source}' is at ${requested_head}, not the reviewed commit ${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}." 1
-      fi
-
-      local merge_heads
-      merge_heads=$(sed '/^$/d' "$merge_head_file" | sort)
-      if [[ -z "$merge_heads" || "$merge_heads" != "$requested_head" ]]; then
-        die "Cannot resume merge: MERGE_HEAD does not match the requested source commit." 1
-      fi
-      if has_conflicts; then
-        die "Cannot resume merge: unresolved conflicts remain." 1
-      fi
-      if ! git diff --quiet --; then
-        die "Cannot resume merge: unexpected unstaged tracked changes are present." 1
-      fi
-
-      local expected_tree_output
-      if ! expected_tree_output=$(git merge-tree --write-tree "$locked_head" "$requested_head"); then
-        die "Cannot resume merge: expected clean merge tree could not be derived." 1
-      fi
-      local expected_tree=${expected_tree_output%%$'\n'*}
-      expected_tree=${expected_tree%% *}
-      local index_tree
-      if ! index_tree=$(git write-tree); then
-        die "Cannot resume merge: staged index tree could not be read." 1
-      fi
-      if [[ -z "$expected_tree" || "$index_tree" != "$expected_tree" ]]; then
-        die "Cannot resume merge: staged index does not match the expected merge tree." 1
-      fi
-    }
-
-    validate_resume_provenance
-
-    # Issue 7d64d8f — the interrupted attempt already wrote MERGE_MSG from the
-    # canonical bytes, but a resume must not depend on that file surviving
-    # intact. Re-derive and rewrite it so `merge --continue` commits exactly
-    # the approved message; a failure to establish it aborts the resume.
-    if ! load_canonical_change_message; then
-      exit 1
-    fi
-    if (( AUTH_MERGE_HAS_CANONICAL_MESSAGE )); then
-      cp "$AUTH_MERGE_CANONICAL_MESSAGE_FILE" "$(git rev-parse --git-dir)/MERGE_MSG"
-    fi
-
-    err ""
-    err "${BOLD_YELLOW}Merge already in progress — resuming with git merge --continue${RESET}"
-    err ""
-
-    # Show what's staged
-    local staged_status
-    staged_status=$(git status --short)
-    if [[ -n "$staged_status" ]]; then
-      err "${DIM_WHITE}Staged files:${RESET}"
-      local line
-      local IFS_BAK_MH="$IFS"
-      IFS=$'\n'
-      for line in $staged_status; do
-        err "  ${DIM_WHITE}${line}${RESET}"
-      done
-      IFS="$IFS_BAK_MH"
-      err ""
-    fi
-
-    preflight_signing_check
-
-    local resume_response
-    resume_response=$(prompt_confirm "Resume merge with --continue? (requires YubiKey) [y/N]")
-    resume_response=$(printf "%s" "$resume_response" | tr '[:upper:]' '[:lower:]')
-    case "$resume_response" in
-      y|yes) ;;
-      *)
-        err "Merge resume cancelled. Preserve the Git state and ask the configured operator to arrange audited recovery; do not continue or abort with raw Git commands."
-        exit 1
-        ;;
-    esac
-
-    # The YubiKey prompt may take time; repeat every provenance check directly
-    # before the first mutating command to close that TOCTOU window.
-    validate_resume_provenance
-
-    # ORIG_HEAD is the pre-merge HEAD (set by git when the merge started)
-    local pre_merge_head
-    pre_merge_head=$locked_head
-
-    if GIT_EDITOR=true run_signing_git -c commit.gpgsign=true merge --continue; then
-      verify_merge_not_empty
-      record_auth_merge_result "$pre_merge_head"
-      cleanup_merged_worktrees "$resume_source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
-      # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
-      exit 0
-    else
-      err "${RED}git merge --continue failed.${RESET}"
-      if has_conflicts; then
-        err "Conflicts remain — preserve the Git state and ask the configured operator to arrange audited recovery; do not continue with raw Git commands."
-      fi
-      report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
-      exit 1
-    fi
-  fi
-
   if [[ ${#sources[@]} -ne 1 ]]; then
     usage >&2
     exit 2
   fi
   local source=${sources[0]}
+
+  [[ "${MANDIBLE_AUTH_ATOMIC:-}" == "1" ]] || die "Protected merges require a reviewed signed candidate; submit an auth request. No protected state changed." 1
+  [[ ! -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]] || die "Interrupted legacy merge state requires operator recovery; candidate publication cannot resume it." 1
+
 
   if ! branch_exists "$target"; then
     die "Target branch '$target' does not exist." 2
@@ -1587,11 +1321,6 @@ main() {
   response=$(printf "%s" "$response" | tr '[:upper:]' '[:lower:]')
   case "$response" in
     y|yes)
-      if [[ "${MANDIBLE_AUTH_ATOMIC:-}" != "1" ]]; then
-        if ! confirm_checkout_if_needed "$current_branch" "$target"; then
-          exit 1
-        fi
-      fi
       ;;
     *)
       err "Merge cancelled."
@@ -1599,9 +1328,6 @@ main() {
       ;;
   esac
 
-  # Atomic execution is deliberately a narrow daemon-selected fast path.
-  # Direct/legacy CLI invocations and repositories with enabled native
-  # merge/commit hooks retain the established git-merge executor.
   if [[ "${MANDIBLE_AUTH_ATOMIC:-}" == "1" ]]; then
     if [[ "$current_branch" != "$target" ]]; then
       die "Atomic auth merge must run in the worktree already tracking target branch '$target'; current branch is '${current_branch:-detached HEAD}'." 1
@@ -1640,39 +1366,7 @@ main() {
     exit 0
   fi
 
-  local pre_merge_head
-  pre_merge_head=$(git rev-parse HEAD)
-  auth_phase "creating signed merge commit..."
-  # Issue 08a5f04 (review F3) — verify the live source against the reviewed
-  # commit and merge the exact reviewed object on the non-atomic path.
-  if merge_source_signed "$source" "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}"; then
-    auth_phase "signed merge complete; running follow-up actions..."
-    verify_merge_not_empty
-    record_auth_merge_result "$pre_merge_head"
-    cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
-    exit 0
-  fi
-  if has_conflicts; then
-    err "Merge conflict detected."
-    if auto_resolve_dist_conflicts; then
-      err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
-      auth_phase "creating signed merge commit after generated-file conflict resolution..."
-      if GIT_EDITOR=true run_signing_git -c commit.gpgsign=true merge --continue; then
-        auth_phase "signed merge complete; running follow-up actions..."
-        verify_merge_not_empty
-        record_auth_merge_result "$pre_merge_head"
-        cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
-        exit 0
-      else
-        err "${RED}git merge --continue failed after auto-resolving dist conflicts.${RESET}"
-        report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
-      fi
-    fi
-  else
-    err "Merge failed."
-    report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
-  fi
-  exit 1
+
 }
 
 # Allow tests to source this script for unit-testing individual helpers
