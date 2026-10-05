@@ -13,14 +13,13 @@ import type {
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import { registerGraphRoutes } from "../src/routes/graph.js";
 import {
-  appendArtifactVersion,
   ensureArtifactSeries,
   getArtifactSeries,
   registerArtifactLink,
   resolveAndLinkArtifact,
-  resolveArtifactRef,
   snapshotArtifactBytes,
 } from "../src/provider-artifacts.js";
+import { appendArtifactVersion, resolveArtifactRef } from "./helpers/artifact-http-write-fixtures.js";
 import type { ArtifactRecord } from "../src/types.js";
 import {
   insertRawLedgerCheckout,

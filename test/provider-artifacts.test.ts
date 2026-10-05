@@ -27,15 +27,14 @@ import {
   listArtifactVersions,
   planLocalArtifactPath,
   projectArtifactPublicValue,
-  recordArtifactVersion,
   registerArtifactAlias,
   registerLocalArtifactPath,
   registerProvider,
   resolveAndLinkArtifact,
-  resolveArtifactRef,
   resolveArtifactVersionHistory,
   snapshotArtifactBytes,
 } from "../src/provider-artifacts.js";
+import { recordArtifactVersion, resolveArtifactRef } from "./helpers/artifact-http-write-fixtures.js";
 import { discoverRepoArtifacts, scanRepoArtifacts } from "../src/repo-artifact-scanner.js";
 import {
   insertRawLedgerCheckout,

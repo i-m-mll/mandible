@@ -2,8 +2,9 @@ import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
   projectArtifactPublicValue,
-  resolveArtifactRefReadonlyFull,
-  resolveArtifactSurfaceRefReadonlyFull,
+  resolveArtifactIdentity,
+  resolvedArtifactRecord,
+  projectArtifactResolution,
 } from "../provider-artifacts.js";
 import {
   addSpaceItem,
@@ -257,13 +258,13 @@ function resolveUnifiedRef(db: Db, rawRef: string): ResolverResult {
   // repo:// refs are repo-relative artifact/file refs — defer to the artifact
   // resolver, which understands repo-relative custody refs.
   if (ref.startsWith("repo://")) {
-    const resolution = resolveArtifactSurfaceRefReadonlyFull(db, ref);
+    const resolution = resolveArtifactIdentity(db, ref, "surface");
     return {
       ref,
       kind: "repo",
-      resolved: resolution.artifact !== null,
-      entity: resolution.artifact as Record<string, unknown> | null,
-      detail: { resolution },
+      resolved: resolvedArtifactRecord(resolution) !== null,
+      entity: resolvedArtifactRecord(resolution) as Record<string, unknown> | null,
+      detail: { resolution: projectArtifactResolution(db, resolution) },
     };
   }
 
@@ -355,13 +356,13 @@ function resolveArtifactResult(
 ): ResolverResult {
   const trimmed = refValue.trim();
   const resolution = /^artifact:sha256:[0-9a-f]{64}$/i.test(trimmed)
-    ? resolveArtifactRefReadonlyFull(db, trimmed)
-    : resolveArtifactSurfaceRefReadonlyFull(db, trimmed);
-  const publicResolution = projectArtifactPublicValue(db, resolution) as typeof resolution;
+    ? resolveArtifactIdentity(db, trimmed, "strict-read")
+    : resolveArtifactIdentity(db, trimmed, "surface");
+  const publicResolution = projectArtifactPublicValue(db, projectArtifactResolution(db, resolution)) as ReturnType<typeof projectArtifactResolution>;
   return {
     ref: displayRef ?? refValue,
     kind,
-    resolved: resolution.artifact !== null,
+    resolved: resolvedArtifactRecord(resolution) !== null,
     entity: publicResolution.artifact as Record<string, unknown> | null,
     detail: { resolution: publicResolution },
   };

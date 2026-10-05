@@ -7,7 +7,13 @@ import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { openDb, type Db } from '../src/db.js';
-import { appendArtifactVersion, planArtifactVersionBatch, commitArtifactVersionBatch, planArtifactVersion, commitArtifactVersion, recordArtifactVersion, associateProjectArtifact, getCanonicalArtifactVersion } from '../src/provider-artifacts.js';
+import { planArtifactVersionBatch, planArtifactVersion, associateProjectArtifact, getCanonicalArtifactVersion } from "../src/provider-artifacts.js";
+import {
+  appendArtifactVersion,
+  commitArtifactVersionBatch,
+  commitArtifactVersion,
+  recordArtifactVersion,
+} from "./helpers/artifact-http-write-fixtures.js";
 import { getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove, type ArtifactLifecycleResult } from '../src/artifact-source.js';
 import { readArtifactBytesFull, checkArtifactMaterialization } from '../src/artifact-content.js';
 import { resolveArtifactProject, artifactAccessProjectIds } from '../src/permissions/resources.js';

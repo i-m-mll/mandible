@@ -20,7 +20,7 @@ import {
 import { createBriefingBundle } from "../src/feedback/briefing-bundles.js";
 import { bindBriefingDestinationOwner, createBriefingGroup } from "../src/feedback/briefing-groups.js";
 import { publishBriefingFromArtifactVersion } from "../src/feedback/briefings.js";
-import { recordArtifactVersion } from "../src/provider-artifacts.js";
+import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { createUser } from "../src/users/store.js";
 
 let db: Db;

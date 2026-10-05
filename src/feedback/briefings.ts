@@ -3,7 +3,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { readArtifactBytesFull } from "../artifact-content.js";
 import type { FeedbackResponseType, FeedbackResponseValue } from "../contracts.js";
 import type { Db } from "../db.js";
-import { getCanonicalArtifactVersion, recordArtifactVersion, resolveArtifactRefReadonlyFull } from "../provider-artifacts.js";
+import {
+  getCanonicalArtifactVersion,
+  recordArtifactVersion,
+  resolveArtifactIdentity,
+} from "../provider-artifacts.js";
 import { getOperatorId } from "../users/store.js";
 import {
   BRIEFING_PROFILE,
@@ -311,7 +315,7 @@ export function publishBriefingRun(
         media_type: "text/markdown",
         metadata: { profile: BRIEFING_PROFILE, briefing_id: briefing.id },
       }, now);
-      artifactVersionId = artifact.version.id;
+      artifactVersionId = artifact.artifact_version.id;
       const logicalArtifactId = logicalArtifactForVersion(db, artifactVersionId);
       if (briefing.logical_artifact_id === null) {
         db.prepare("UPDATE briefings SET logical_artifact_id = ? WHERE id = ?")
@@ -442,7 +446,7 @@ export type ExistingArtifactBriefingResult =
     });
 
 function resolveExactArtifactVersion(db: Db, ref: string, field: string): string {
-  const resolved = resolveArtifactRefReadonlyFull(db, ref);
+  const resolved = resolveArtifactIdentity(db, ref, "strict-read");
   if (resolved.status !== "resolved" || resolved.target_type !== "artifact_version" || !resolved.target_id) {
     throw new BriefingStoreError(`${field} must resolve to one exact artifact version`, 404, "artifact_version_not_found");
   }
