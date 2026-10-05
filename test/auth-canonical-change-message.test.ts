@@ -1,3 +1,4 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -366,7 +367,7 @@ describe("auth request CLI change message composition", () => {
     const server = http.createServer((req, res) => {
       if (req.method === "GET" && req.url === "/api/instance") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ instance: { role: "main", operational_mutations: "allow" } }));
+        res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
         return;
       }
       if (req.method === "POST" && req.url === "/api/auth/check") {
@@ -585,7 +586,7 @@ describe("auth request CLI change message composition", () => {
         server.port,
       );
       expect(both.status).toBe(2);
-      expect(both.stderr).toContain("mutually exclusive");
+      expect(both.stderr).toContain("Arguments do not match");
 
       const legacy = await submitAndCapture(
         [
@@ -883,7 +884,8 @@ describe("auth merge canonical message consumption", () => {
     }
   });
 
-  it("commits the exact approved bytes on the git merge path", async () => {
+  it("refuses the retired direct git merge path without changing protected state", async () => {
+    const base = git(["rev-parse", "main"]);
     const head = git(["rev-parse", "feature/canonical"]);
     const server = await serveRequest({
       id: "canonical-merge",
@@ -902,15 +904,16 @@ describe("auth merge canonical message consumption", () => {
         null,
       );
 
-      expect(result.status).toBe(0);
-      const merged = git(["rev-parse", "main"]);
-      expect(git(["show", "-s", "--format=%B", merged])).toBe(MESSAGE.trimEnd());
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("require a reviewed signed candidate");
+      expect(git(["rev-parse", "main"])).toBe(base);
     } finally {
       await server.close();
     }
   });
 
   it("keeps git's default merge message when the request carries none", async () => {
+    const base = git(["rev-parse", "main"]);
     const head = git(["rev-parse", "feature/canonical"]);
     const server = await serveRequest({
       id: "no-message",
@@ -925,7 +928,7 @@ describe("auth merge canonical message consumption", () => {
           MANDIBLE_AUTH_REQUEST_ID: "no-message",
           MANDIBLE_AUTH_EXPECTED_HEAD_SHA: head,
         },
-        null,
+        { base, head: git(["rev-parse", "feature/canonical"]), cached: candidate(base, git(["rev-parse", "feature/canonical"]), "canonical-message-check") },
       );
 
       expect(result.status).toBe(0);
@@ -953,7 +956,7 @@ describe("auth merge canonical message consumption", () => {
           MANDIBLE_AUTH_REQUEST_ID: "tampered",
           MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: DIGEST,
         },
-        null,
+        { base, head: git(["rev-parse", "feature/canonical"]), cached: candidate(base, git(["rev-parse", "feature/canonical"]), "canonical-message-check") },
       );
 
       expect(result.status).toBe(1);
@@ -974,7 +977,7 @@ describe("auth merge canonical message consumption", () => {
         MANDIBLE_AUTH_REQUEST_ID: "unreachable",
         MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: DIGEST,
       },
-      null,
+      { base, head: git(["rev-parse", "feature/canonical"]), cached: candidate(base, git(["rev-parse", "feature/canonical"]), "canonical-message-check") },
     );
 
     expect(result.status).toBe(1);
@@ -1001,7 +1004,7 @@ describe("auth merge canonical message consumption", () => {
           MANDIBLE_AUTH_REQUEST_ID: "sloppy",
           MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: changeMessageDigest(sloppy),
         },
-        null,
+        { base, head: git(["rev-parse", "feature/canonical"]), cached: candidate(base, git(["rev-parse", "feature/canonical"]), "canonical-message-check") },
       );
 
       expect(result.status).toBe(1);
@@ -1027,7 +1030,7 @@ describe("auth merge canonical message consumption", () => {
           MANDIBLE_AUTH_REQUEST_ID: "dropped",
           MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: DIGEST,
         },
-        null,
+        { base, head: git(["rev-parse", "feature/canonical"]), cached: candidate(base, git(["rev-parse", "feature/canonical"]), "canonical-message-check") },
       );
 
       expect(result.status).toBe(1);

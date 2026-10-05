@@ -1,3 +1,4 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 // @vitest-environment node
 // Issue 1512471 — the diff an approver reads must be the change the merge will
 // apply, which is the three-dot range from the merge base. Both operator-facing
@@ -170,7 +171,7 @@ describe("auth review diff range", () => {
     const server = http.createServer((req, res) => {
       if (req.method === "GET" && req.url === "/api/instance") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ instance: { role: "main", operational_mutations: "allow" } }));
+        res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
         return;
       }
       if (req.method === "POST" && req.url === "/api/auth/check") {

@@ -9,7 +9,7 @@
  * unchanged; the shared helpers live in `test/helpers/auth-queue-fixtures.ts`.
  */
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { SseEvent } from "../src/types.js";
 import { seedHistoricalAuthExecution, seedHistoricalAuthCompletion, approveFixtureRequest, createMigratedDb, createQueue, git, waitForStatus } from "./helpers/auth-queue-fixtures.js";
@@ -151,8 +151,8 @@ describe("auth queue", () => {
     const events: SseEvent[] = [];
     const restarted = new AuthQueue({ db, now: () => now, broadcast: (event) => events.push(event) });
     try {
+      await vi.waitFor(() => expect(restarted.getRequest(request.id)?.status).toBe("completed"));
       const recovered = restarted.getRequest(request.id);
-      expect(recovered?.status).toBe("completed");
       expect(recovered?.exit_code).toBe(1);
       expect(recovered?.error).toContain("missing repository, base branch, or head branch metadata");
       expect(events.some((event) => event.event === "auth:resolved")).toBe(true);

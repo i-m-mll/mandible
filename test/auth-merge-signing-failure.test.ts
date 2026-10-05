@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -58,20 +57,6 @@ describe("daemon-context auth merge signing failures", () => {
     expect(result.stderr).toContain("fresh reviewed Mandible request");
     expect(result.stderr).toContain("cause is not established");
     expect(result.stderr).not.toMatch(/git .*merge --continue|grant Input Monitoring|correct staged content/i);
-  });
-
-  it("suppresses the editor at every merge --continue call site", () => {
-    const script = fs.readFileSync(AUTH_MERGE, "utf8");
-    const invocations = script
-      .split("\n")
-      .filter((line) => /\bmerge --continue\b/.test(line) && /\bif\b/.test(line));
-
-    // Issue 060c9c8 — the hierarchical execution loop (one call site) was
-    // removed; the resume path and the dist-conflict continuation remain.
-    expect(invocations).toHaveLength(2);
-    for (const invocation of invocations) {
-      expect(invocation).toContain("GIT_EDITOR=true");
-    }
   });
 
   it("classifies the observed incorrect-passphrase signature with an SK key", () => {

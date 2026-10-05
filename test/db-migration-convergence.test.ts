@@ -6,6 +6,7 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { CURRENT_SCHEMA_VERSION, MINIMUM_SUPPORTED_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
+import { artifactDescriptiveMetadataJson } from "../src/artifact-metadata.js";
 import { MIGRATIONS } from "../src/db-migrations.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { insertRawLedgerIssue, insertRawLedgerProject } from "./helpers/ledger-fixtures.js";
@@ -52,6 +53,7 @@ function createFloorDatabase(dbPath: string): void {
 }
 
 function migrateFixtureThrough(db: SqliteDatabase, targetVersion: number): void {
+  db.function("mandible_artifact_metadata", { deterministic: true }, artifactDescriptiveMetadataJson);
   for (const migration of MIGRATIONS.filter((candidate) => candidate.version > Number(schemaVersion(db)) && candidate.version <= targetVersion)) {
     db.transaction(() => {
       for (const statement of migration.statements) db.exec(statement);
@@ -63,7 +65,10 @@ function migrateFixtureThrough(db: SqliteDatabase, targetVersion: number): void 
 it("preserves v187 reminder events while admitting truthful local attribution", () => {
   const db = new SqliteDatabase(":memory:");
   try {
-    migrate(db);
+    db.exec(FLOOR_FIXTURE);
+    db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
+      crypto.createHash("sha256").update(String(value)).digest("hex"));
+    migrateFixtureThrough(db, 187);
     const project = addProject(db, { project_key: "reminder-upgrade", display_name: "Reminder upgrade" });
     const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
     db.transaction(() => {
@@ -80,21 +85,6 @@ it("preserves v187 reminder events while admitting truthful local attribution", 
         VALUES ('old-event', 'reminder', 'revision', ?, 'created', ?, 'api_token', 1)`)
         .run(project.id, operator.id);
     })();
-    db.exec(`CREATE TABLE managed_task_events_v187 (
-      id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
-      revision_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
-      event_type TEXT NOT NULL CHECK(event_type IN ('created','completed','cancelled')),
-      actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-      evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','ephemeral','system_internal')),
-      payload_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(payload_json) AND json_type(payload_json) = 'object'),
-      occurred_at INTEGER NOT NULL,
-      FOREIGN KEY(task_id, revision_id) REFERENCES managed_task_revisions(task_id, id) ON DELETE RESTRICT
-    );
-    INSERT INTO managed_task_events_v187 SELECT * FROM managed_task_events;
-    DROP TABLE managed_task_events;
-    ALTER TABLE managed_task_events_v187 RENAME TO managed_task_events;
-    CREATE INDEX idx_managed_task_events_task ON managed_task_events(task_id, occurred_at, id);
-    UPDATE meta SET value = '187' WHERE key = 'schema_version'`);
     migrate(db);
     expect(db.prepare("SELECT evidence_method FROM managed_task_events WHERE id = 'old-event'").get())
       .toEqual({ evidence_method: "api_token" });
@@ -143,7 +133,7 @@ describe("generic issue metadata upgrade", () => {
       expect(db.pragma("foreign_key_check")).toEqual([]);
       const snapshot = db.serialize();
       migrate(db);
-      expect(db.serialize()).toEqual(snapshot);
+      expect(db.serialize().equals(snapshot)).toBe(true);
     } finally {
       db.close();
     }
@@ -160,7 +150,7 @@ describe("generic issue metadata upgrade", () => {
       const snapshot = db.serialize();
       expect(() => migrate(db)).toThrow("v183_metadata_requires_explicit_review");
       expect(schemaVersion(db)).toBe("182");
-      expect(db.serialize()).toEqual(snapshot);
+      expect(db.serialize().equals(snapshot)).toBe(true);
     } finally {
       db.close();
     }
