@@ -1,3 +1,4 @@
+import { authPublicationSnapshot } from "./auth-publication.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type {
@@ -21,7 +22,7 @@ export function authRequestSnapshot(db: Db, requestId: string): string {
     | Record<string, unknown>
     | undefined;
   if (!row) throw new Error(`Auth request '${requestId}' is missing.`);
-  const request = Object.fromEntries(Object.entries(row).map(([key, value]) => [
+  const request = Object.fromEntries(Object.entries(row).filter(([key, value]) => key !== "space_publication_id" || value !== null).map(([key, value]) => [
     key,
     ["issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json"].includes(key)
       ? parseJsonColumn(value)
@@ -33,7 +34,8 @@ export function authRequestSnapshot(db: Db, requestId: string): string {
     const record = action as Record<string, unknown>;
     return { ...record, payload: parseJsonColumn(record.payload) };
   });
-  return JSON.stringify({ request, actions });
+  const publication = authPublicationSnapshot(db, requestId);
+  return JSON.stringify({ request, actions, ...(publication ? { publication } : {}) });
 }
 
 export function authSnapshotDigest(snapshot: string): string {

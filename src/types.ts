@@ -233,6 +233,7 @@ export { AUTH_REQUEST_ACTION_KINDS };
 export type { AuthRequestActionKind, AuthRequestActionState };
 
 export interface AuthRequest {
+  space_publication_id?: string | null;
   id: string;
   session_id: string | null;
   requested_by_user_id: string | null;
@@ -360,6 +361,7 @@ export type AuthRequestSummary = Omit<
 > & { action_count: number };
 
 export interface AuthRequestInput {
+  space_publication_id?: string | null;
   session_id?: string | null;
   type?: AuthRequestType;
   command: string;
