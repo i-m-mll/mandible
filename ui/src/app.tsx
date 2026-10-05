@@ -27,6 +27,7 @@ import {
   invalidateApiGetCache,
   invalidateDashboardApiCacheForEvent,
   normalizeInstanceInfo,
+  loadOperationCatalog,
   triggerWorkScan,
   rejectAuthRequest,
   retryAuthRequest,
@@ -1851,7 +1852,13 @@ function App(): JSX.Element {
       }
       if (cancelled) return;
       if (health?.instance) {
-        setInstanceInfo(normalizeInstanceInfo(health.instance));
+        const normalized = normalizeInstanceInfo(health.instance);
+        if (normalized) {
+          try { await loadOperationCatalog(normalized); }
+          catch (error) { console.error('Operation catalog unavailable', error); }
+          if (cancelled) return;
+        }
+        setInstanceInfo(normalized);
       }
       setDaemonWarm(daemonIsWarm(health));
       const previousEpoch = getLastSeenStartupEpoch();
