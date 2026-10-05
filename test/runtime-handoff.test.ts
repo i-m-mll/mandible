@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { execFileSync } from 'node:child_process';
 import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it } from 'vitest';
@@ -39,6 +40,7 @@ it('lets the acknowledging daemon answer its own controller health probe', async
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
   fs.writeFileSync(path.join(dir, 'controller.mjs'), `import http from 'node:http';
+import { execFileSync } from 'node:child_process';
 const request = http.get('http://127.0.0.1:${port}/health', response => { let body = ''; response.on('data', chunk => body += chunk); response.on('end', () => console.log(body)); });
 request.setTimeout(500, () => request.destroy(new Error('health probe timed out')));
 request.on('error', error => { console.error(error.message); process.exitCode = 1; });
@@ -81,4 +83,18 @@ it('refuses startup discovery outside bounded log coverage', () => {
   fs.appendFileSync(file, Buffer.alloc(16 * 1024 * 1024 + 1, 32));
   const stat = fs.statSync(file);
   expect(() => runtimeLogStartupOffset({ path: file, dev: stat.dev, ino: stat.ino, size: stat.size }, { startedAt: '2026-10-05T19:55:06Z' })).toThrow('coverage limit');
+});
+
+it('admits a drain only for the active armed helper and exact current process start', () => {
+  const { home, dir, binding, journal } = fixture();
+  const startedAt = execFileSync('/bin/ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8' }).trim();
+  const ownedBinding = { ...binding, oldProcess: { pid: process.pid, startedAt } };
+  const owned = { ...journal, binding: ownedBinding, bindingDigest: bindingDigest(ownedBinding), acknowledgedAt: Date.now(), bridgeInstalled: true };
+  const activeFile = path.join(home, 'config/local-sessions/handoff-active.json');
+  fs.writeFileSync(activeFile, JSON.stringify({ journal: path.join(dir, 'journal.json'), bindingDigest: owned.bindingDigest }));
+  expect(runtimeHandoffDrainIdentity(owned)).toBe(`${binding.executionId}:${process.pid}:${startedAt}`);
+  const foreignBinding = { ...ownedBinding, oldProcess: { ...ownedBinding.oldProcess, startedAt: 'foreign process start' } };
+  const foreign = { ...owned, binding: foreignBinding, bindingDigest: bindingDigest(foreignBinding) };
+  fs.writeFileSync(activeFile, JSON.stringify({ journal: path.join(dir, 'journal.json'), bindingDigest: foreign.bindingDigest }));
+  expect(runtimeHandoffDrainIdentity(foreign)).toBeNull();
 });

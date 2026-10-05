@@ -203,13 +203,31 @@ function runLaunchctl(args, timeout = 2500) {
   return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
+export function parseLoadedService(detail) {
+  const argumentsText = detail.match(/\n\s*arguments = \{\n([\s\S]*?)\n\s*\}/)?.[1];
+  const environmentText = detail.match(/\n\s*environment = \{\n([\s\S]*?)\n\s*\}/)?.[1];
+  const environment = Object.fromEntries((environmentText?.split('\n') ?? []).flatMap(line => {
+    const match = line.trim().match(/^([^ ]+) => (.*)$/);
+    return match && !['OSLogRateLimit', 'XPC_SERVICE_NAME'].includes(match[1]) ? [[match[1], match[2]]] : [];
+  }));
+  const field = name => detail.split('\n').map(line => line.trim()).find(line => line.startsWith(`${name} = `))?.slice(name.length + 3);
+  return { argv: argumentsText?.split('\n').map(line => line.trim()).filter(Boolean) ?? [], environment,
+    workingDirectory: field('working directory'), stdoutPath: field('stdout path'), stderrPath: field('stderr path') };
+}
+
+export function loadedServiceMatches(record, job) {
+  const normalized = environment => JSON.stringify(Object.entries(environment ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+  return JSON.stringify(record.ProgramArguments) === JSON.stringify(job.argv)
+    && normalized(record.EnvironmentVariables) === normalized(job.environment)
+    && record.WorkingDirectory === job.workingDirectory
+    && record.StandardOutPath === job.stdoutPath && record.StandardErrorPath === job.stderrPath;
+}
+
 function inspectJob(label) {
   const result = runLaunchctl(["print", `${DOMAIN}/${label}`]);
   const loaded = result.status === 0;
   const pid = loaded ? Number(result.stdout.match(/\bpid = (\d+)/)?.[1] ?? 0) || null : null;
-  const argumentsText = result.stdout.match(/\n\s*arguments = \{\n([\s\S]*?)\n\s*\}/)?.[1];
-  const argv = argumentsText?.split('\n').map(line => line.trim()).filter(Boolean) ?? [];
-  return { loaded, pid, argv, detail: result.stderr.trim() };
+  return { loaded, pid, ...parseLoadedService(result.stdout), detail: result.stderr.trim() };
 }
 
 function processStart(pid) {
@@ -223,10 +241,10 @@ function handoffService(label) {
   if (!installed) throw new Error(`Owned service ${label} is missing.`);
   const job = inspectJob(label);
   const argv = installed.record.ProgramArguments;
-  if (!Array.isArray(argv) || argv.length < 2 || (job.loaded && JSON.stringify(job.argv) !== JSON.stringify(argv))) {
-    throw new Error(`Loaded arguments differ from the owned service definition for ${label}.`);
+  if (!Array.isArray(argv) || argv.length < 2 || (job.loaded && !loadedServiceMatches(installed.record, job))) {
+    throw new Error(`Loaded arguments, environment, working directory or logs differ from the owned service definition for ${label}.`);
   }
-  return { file: installed.file, sha256: createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex'), argv, loaded: job.loaded };
+  return { file: installed.file, sha256: createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex'), argv, loaded: job.loaded, definition: installed.record };
 }
 
 export function captureRuntimeHandoff(root) {
@@ -306,7 +324,7 @@ export async function startHandoffDefinitions(binding) {
     const job = inspectJob(label);
     const gatewayDefinitionChanged = label === GATEWAY_LABEL && createHash('sha256').update(fs.readFileSync(installed.file)).digest('hex') !== binding.priorGateway.sha256;
     if (job.loaded && (gatewayDefinitionChanged || JSON.stringify(job.argv) !== JSON.stringify(installed.record.ProgramArguments))) {
-      if (JSON.stringify(job.argv) !== JSON.stringify(binding.priorGateway.argv) || label !== GATEWAY_LABEL) throw new Error(`Unrecognized loaded service ${label}; preserving it.`);
+      if (JSON.stringify(job.argv) !== JSON.stringify(binding.priorGateway.argv) || label !== GATEWAY_LABEL || binding.priorGateway.definition && !loadedServiceMatches(binding.priorGateway.definition, job)) throw new Error(`Unrecognized loaded service ${label}; preserving it.`);
       await unloadExactHandoffService(label, binding.priorGateway.argv);
     }
     ensureEnabledAndLoaded(label);

@@ -4,7 +4,7 @@ import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { classifyRuntimeStatus, healthDocumentError, healthEndpointUrl, launchModeFromAgent, probeJson, reconcileMainRegistration, renderLaunchAgent } from "../scripts/local-runtime.mjs";
+import { classifyRuntimeStatus, loadedServiceMatches, parseLoadedService, healthDocumentError, healthEndpointUrl, launchModeFromAgent, probeJson, reconcileMainRegistration, renderLaunchAgent } from "../scripts/local-runtime.mjs";
 import { resolveInstanceInfo } from "../src/instance-policy";
 
 const servers: Array<http.Server | https.Server> = [];
@@ -229,4 +229,38 @@ describe("production registration reconciliation", () => {
 
     expect(registrations).toEqual([]);
   });
+});
+
+it('refuses stale loaded environment, working directory and log paths even when service arguments match', () => {
+  const record = { ProgramArguments: ['/runtime/bun', '/owned/runner.mjs', 'run'],
+    EnvironmentVariables: { HOME: '/operator home', PATH: '/owned/bin:/usr/bin' },
+    WorkingDirectory: '/owned/run', StandardOutPath: '/owned/out.log', StandardErrorPath: '/owned/error.log' };
+  const loaded = parseLoadedService(`job = {
+    arguments = {
+      /runtime/bun
+      /owned/runner.mjs
+      run
+    }
+    working directory = /owned/run
+    stdout path = /owned/out.log
+    stderr path = /owned/error.log
+    inherited environment = {
+      PATH => /inherited/path
+    }
+    default environment = {
+      PATH => /default/path
+    }
+    environment = {
+      PATH => /owned/bin:/usr/bin
+      HOME => /operator home
+      XPC_SERVICE_NAME => owned-label
+      OSLogRateLimit => 64
+    }
+  }`);
+  expect(loadedServiceMatches(record, loaded)).toBe(true);
+  for (const drift of [{ environment: { ...loaded.environment, PATH: '/old/path' } },
+    { workingDirectory: '/other/run' }, { stderrPath: '/other/error.log' }, { stdoutPath: '/other/out.log' },
+    { argv: ['/other/runtime', '/owned/runner.mjs', 'run'] }]) {
+    expect(loadedServiceMatches(record, { ...loaded, ...drift })).toBe(false);
+  }
 });

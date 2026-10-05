@@ -17,9 +17,10 @@ import { AuthHookManager } from "../src/auth-hooks.js";
 import type { SseEvent } from "../src/types.js";
 import { commitOnBranch, createAuthCheckRepo, createMigratedDb, git, registerWorkRepo, waitForStatus } from "./helpers/auth-queue-fixtures.js";
 
-function successfulRebuildHooks(db: ReturnType<typeof createMigratedDb>, beforeRun?: () => void | Promise<void>): AuthHookManager {
+function admittedRebuildHooks(db: ReturnType<typeof createMigratedDb>, beforeRun?: () => void | Promise<void>): AuthHookManager {
   const hooks = new AuthHookManager(db);
-  db.prepare('UPDATE auth_hooks SET command = ?, repo_pattern = ? WHERE id = ?').run('true', '*', 'builtin-mandible-rebuild');
+  db.prepare('UPDATE auth_hooks SET command = ?, repo_pattern = ? WHERE id = ?').run(`printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${'a'.repeat(64)}\\n'; exit 75`, '*', 'builtin-mandible-rebuild');
+  vi.spyOn(hooks, 'admittedDrainIdentity').mockImplementation(async requestId => hooks.getRun(requestId, 'builtin-mandible-rebuild')?.exit_code === 75 ? 'private-current-admission' : null);
   const execute = hooks.executeHooks.bind(hooks);
   hooks.executeHooks = async (...args) => { await beforeRun?.(); return execute(...args); };
   return hooks;
@@ -53,7 +54,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         queue = new AuthQueue({
           db,
-          hookManager: successfulRebuildHooks(db),
+          hookManager: admittedRebuildHooks(db),
           broadcast: (event) => {
             events.push(event);
             if (event.event === "auth:resolved") {
@@ -94,13 +95,13 @@ describe("auth queue", () => {
       }
     });
 
-    it('keeps the healthy daemon running when the ordinary built-in rebuild fails', async () => {
+    it.each([0, 3])('keeps the healthy daemon running without exact admission after hook exit %i', async exitCode => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       let queue: AuthQueue | null = null;
       const restart = vi.fn();
-      const hooks = successfulRebuildHooks(db);
-      db.prepare('UPDATE auth_hooks SET command = ? WHERE id = ?').run('exit 3', 'builtin-mandible-rebuild');
+      const hooks = admittedRebuildHooks(db);
+      db.prepare('UPDATE auth_hooks SET command = ? WHERE id = ?').run(`exit ${exitCode}`, 'builtin-mandible-rebuild');
       try {
         commitOnBranch(repo, 'feature/build-failure', { 'failed.txt': 'reviewed change\n' });
         registerWorkRepo(db, repo);
@@ -112,7 +113,7 @@ describe("auth queue", () => {
         await approveFixtureRequest(queue, request.id);
         await waitForStatus(queue, request.id, 'completed');
         await vi.waitFor(() => expect(queue!.isRebuilding).toBe(false));
-        expect(hooks.getRun(request.id, 'builtin-mandible-rebuild')).toMatchObject({ state: 'pending', exit_code: 3 });
+        expect(hooks.getRun(request.id, 'builtin-mandible-rebuild')).toMatchObject({ state: exitCode === 0 ? 'complete' : 'pending', exit_code: exitCode });
         expect(restart).not.toHaveBeenCalled();
         expect(db.prepare('SELECT value FROM meta WHERE key = ?').get('auth_self_merge_shutdown_at')).toBeUndefined();
       } finally { queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
@@ -140,7 +141,7 @@ describe("auth queue", () => {
 
       // A hook manager that records, in the same event stream, the moment hooks
       // run — so we can assert mandible:rebuilding fired strictly before it.
-      const hookManager = successfulRebuildHooks(db, () => {
+      const hookManager = admittedRebuildHooks(db, () => {
         events.push({ event: "test:hooks-ran", data: {} });
       });
 
@@ -211,7 +212,7 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         queue = new AuthQueue({
           db,
-          hookManager: successfulRebuildHooks(db, () => { lifecycleEvents.push("hooks"); }),
+          hookManager: admittedRebuildHooks(db, () => { lifecycleEvents.push("hooks"); }),
           restartAvailability: {
             markRebuildStarted: (generationId) => {
               lifecycleEvents.push(`rebuild:${generationId}`);
@@ -285,7 +286,7 @@ describe("auth queue", () => {
       });
       // Hold the self-merge in its hook phase, keeping admission closed while we
       // approve a second request.
-      const hookManager = successfulRebuildHooks(db, async () => { await hookGate; });
+      const hookManager = admittedRebuildHooks(db, async () => { await hookGate; });
 
       try {
         commitOnBranch(repo, "feature/self-park", { "park.txt": "fix\n" });

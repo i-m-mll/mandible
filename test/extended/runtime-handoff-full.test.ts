@@ -242,42 +242,28 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     // Prove the service definition overrides an inherited old CLI selection.
     expect(installedPath.split(':')[0]).toBe(`${installedUpdate ? repo : candidateRoot}/bin`);
     await approveBootstrapDelivery(operatorApi, request.id);
-    if (!installedUpdate) {
-      await until(() => {
-        const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(request.id, 'builtin-mandible-rebuild') as any;
-        if (hook) executionId = hook.id;
-        journal = executionId ? readRuntimeHandoff(home, request.id, executionId) : null;
-        if (journal?.phase === 'failed') throw new Error(journal.error);
-        if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) throw new Error(`Handoff admission hook failed: ${hook.output}`);
-        const state = db!.prepare('SELECT status, exit_code, error, output FROM auth_requests WHERE id=?').get(request.id) as any;
-        if (state && (state.status === 'rejected' || (state.status === 'completed' && state.exit_code !== 0)) && !journal?.bridgeInstalled) throw new Error(`Request ended before handoff: ${JSON.stringify({ ...state, output: state.output?.slice(-16000) })}`);
-        return !!journal?.bridgeInstalled;
-      }, 60000, 'Candidate executor source-root handoff admission');
-      expect(journal.binding.source.root).toBe(candidateRoot); expect(journal.binding.root).toBe(repo);
-      expect(journal.binding.source.head).toBe(sourceManifest.revision); expect(fs.existsSync(poisonMarker)).toBe(false);
-      await until(() => {
-        journal = readRuntimeHandoff(home, request.id, executionId);
-        if (journal?.phase === 'failed') throw new Error(journal.error);
-        const attempt = db!.prepare('SELECT exit_code, output FROM auth_hook_executions WHERE id=?').get(executionId) as any;
-        if (!journal && attempt?.exit_code != null && ![0, 75].includes(attempt.exit_code)) throw new Error(`Old daemon hook refused handoff: ${attempt.output}`);
-        return journal?.phase === 'complete' || journal?.phase === 'acknowledged';
-      }, 15 * 60 * 1000, 'Actual old-to-candidate convergence');
-      await until(() => readRuntimeHandoff(home, request.id, executionId)?.phase === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
-    } else {
-      await until(async () => {
-        const hook = db!.prepare('SELECT id, state, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(request.id, 'builtin-mandible-rebuild') as any;
-        if (hook) executionId = hook.id;
-        if (hook?.state === 'failed') throw new Error(`Installed update failed: ${hook.output}`);
-        if (hook?.state !== 'complete') return false;
-        const generation = git(repo, ['rev-parse', 'main']);
-        try {
-          const health = await (await fetch(`http://127.0.0.1:${ports.backend}/api/health`)).json();
-          return health.ready === true && health.instance.backend_generation === generation;
-        } catch { return false; }
-      }, 15 * 60 * 1000, 'Installed protected-root update and ordinary runtime restart');
-      expect(readRuntimeHandoff(home, request.id, executionId)).toBeNull();
-      expect(command('/bin/launchctl', ['print', `${domain}/${backendLabel}`])).not.toBe(oldJob);
-    }
+    await until(() => {
+      const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(request.id, 'builtin-mandible-rebuild') as any;
+      if (hook) executionId = hook.id;
+      journal = executionId ? readRuntimeHandoff(home, request.id, executionId) : null;
+      if (journal?.phase === 'failed') throw new Error(journal.error);
+      if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) throw new Error(`Handoff admission hook failed: ${hook.output}`);
+      const state = db!.prepare('SELECT status, exit_code, error, output FROM auth_requests WHERE id=?').get(request.id) as any;
+      if (state && (state.status === 'rejected' || (state.status === 'completed' && state.exit_code !== 0)) && !journal?.bridgeInstalled) throw new Error(`Request ended before handoff: ${JSON.stringify({ ...state, output: state.output?.slice(-16000) })}`);
+      return !!journal?.bridgeInstalled;
+    }, 60000, 'Candidate executor source-root handoff admission');
+    expect(journal.binding.root).toBe(repo);
+    if (installedUpdate) expect(journal.binding.source).toBeUndefined();
+    else { expect(journal.binding.source.root).toBe(candidateRoot); expect(journal.binding.source.head).toBe(sourceManifest.revision); }
+    expect(fs.existsSync(poisonMarker)).toBe(false);
+    await until(() => {
+      journal = readRuntimeHandoff(home, request.id, executionId);
+      if (journal?.phase === 'failed') throw new Error(journal.error);
+      const attempt = db!.prepare('SELECT exit_code, output FROM auth_hook_executions WHERE id=?').get(executionId) as any;
+      if (!journal && attempt?.exit_code != null && ![0, 75].includes(attempt.exit_code)) throw new Error(`Old daemon hook refused handoff: ${attempt.output}`);
+      return journal?.phase === 'complete' || journal?.phase === 'acknowledged';
+    }, 15 * 60 * 1000, 'Actual old-to-candidate convergence');
+    await until(() => readRuntimeHandoff(home, request.id, executionId)?.phase === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
     expect(fs.existsSync(xattrMarker)).toBe(false);
     const row = db.prepare('SELECT state, exit_code FROM auth_hook_executions WHERE id=?').get(executionId) as any; expect(row.state).toBe('complete'); expect(row.exit_code).toBe(0);
     const finalRequest = await readBootstrapDelivery(operatorApi, request.id); assertBootstrapOperatorProof(finalRequest, signing.operatorId, signing.credentialId);
@@ -287,7 +273,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const nativeRuns = db.prepare('SELECT hook_id, position, state, exit_code FROM auth_hook_executions WHERE auth_request_id=? AND position < 0 ORDER BY position').all(request.id) as any[];
     expect(nativeRuns.map(row => [row.position, row.state, row.exit_code])).toEqual([[-2, 'complete', 0], [-1, 'complete', 0]]);
     const newJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(newJob).toContain(runtime); if (legacy !== runtime) expect(newJob).not.toContain(legacy); expect(newJob).toContain(`${repo}/bin`); expect(newJob).toContain(securityAdapter);
-    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', topology: installedUpdate ? 'installed protected-root update' : 'retained-source handoff', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), sourceManifest, nativeHooks, executorCredentialStore: { kind: 'native private Keychain', adapterSha256: digest(fs.readFileSync(securityAdapter)), defaultUnchanged: true, searchListUnchanged: true }, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: git(repo, ['rev-parse', 'main']) }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'ordinary candidate self-merge runtime drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
+    fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', topology: installedUpdate ? 'installed protected-root update' : 'retained-source handoff', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), sourceManifest, nativeHooks, executorCredentialStore: { kind: 'native private Keychain', adapterSha256: digest(fs.readFileSync(securityAdapter)), defaultUnchanged: true, searchListUnchanged: true }, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: git(repo, ['rev-parse', 'main']) }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'canonical managed self-update drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
   } catch (error) {
     const logs = [path.join(scratch, 'bootstrap.log'), path.join(scratch, '.cache/mandible/production-stderr.log'), path.join(scratch, '.cache/mandible/local-front-door-stderr.log'), ...(requestId ? [path.join(home, 'config/local-sessions/handoff', `${requestId}-${executionId}`, 'convergence.log')] : [])].filter(file => fs.existsSync(file)).map(file => ({ name: path.basename(file), sha256: digest(fs.readFileSync(file)), excerpt: fs.readFileSync(file, 'utf8').slice(-16000) }));
     const requestState = requestId && db ? db.prepare('SELECT id, status, exit_code, error, output, merge_head_sha FROM auth_requests WHERE id=?').get(requestId) as any : null;

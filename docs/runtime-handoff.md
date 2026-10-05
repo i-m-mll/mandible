@@ -1,8 +1,9 @@
 # Production runtime upgrade
 
-The required Mandible rebuild hook uses an independent launchd worker when the
-loaded backend executable differs from the selected pinned Bun executable.
-An ordinary same-runtime rebuild keeps the existing synchronous hook path.
+The required Mandible rebuild hook uses one independent launchd worker for
+every managed production self-update, including same-root updates with the
+same pinned runtime. Standalone builds outside managed auth keep their existing
+build guard.
 
 Admission validates the exact hook execution and retained signed publication
 proof before mutation. It stages the helper, storage facade, publication
@@ -127,9 +128,11 @@ fixture with `MANDIBLE_TEST_INSTALLED_UPDATE=1` and set
 `MANDIBLE_TEST_LEGACY_RUNTIME` to that installation's pinned Bun. This mode
 keeps the old protected-root executor serving until the ordinary reviewed
 request merges the candidate. It skips candidate bootstrap and the preliminary
-native build, then verifies the normal installer, runtime restart, exact new
-health generation, durable hook completion, and native `xattr` precedence under
-the real launchd executor. It does not expect a source-transition handoff journal.
+native build, then verifies the canonical independent handoff, exact new
+health generation, loaded service definition, durable acknowledgment, and native
+`xattr` precedence under the real launchd executor. Same-root admission has no
+separate source-checkout binding. Every managed self-update uses this sequence;
+standalone builds outside managed auth retain their existing build guard.
 The default mode retains coverage of the feature-checkout to canonical-root
 handoff. Evidence records the topology that actually ran.
 

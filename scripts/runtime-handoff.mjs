@@ -139,11 +139,6 @@ export async function armRuntimeHandoff(root) {
     mergeCommit: process.env.MANDIBLE_AUTH_MERGE_COMMIT_SHA || undefined,
     nativeApp: path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app'), desktopWasRunning: desktopRunning(path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app')),
     runtime: { path: runtime, version: run(runtime, ['--version']), sha256: fileHash(runtime) } };
-  if (binding.priorBackend.argv[0] === runtime && !binding.source) {
-    for (const name of ['sqlite.mjs', 'preparation.json']) fs.unlinkSync(path.join(dir, name));
-    fs.rmdirSync(dir);
-    return null;
-  }
   const journal = { schema: 'mandible-runtime-handoff@1', binding, bindingDigest: '', phase: 'preparing', attempts: 0,
     deadline: Date.now() + 30 * 60 * 1000, stages: {}, environment,
     database: process.env.MANDIBLE_DB || path.join(home, 'mandible.db'),
