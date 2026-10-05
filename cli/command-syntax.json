@@ -246,6 +246,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
+          {"kind": "optional","item": {"kind": "option","names": ["--space-publication"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}},
           {"kind": "argument","name": "branch","value": {"type": "string"}},
           {"kind": "option","names": ["--title"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
           {"kind": "repeat","min": 1,"item": {"kind": "option","names": ["--issue","--ref-issue","--references-issue"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}},
