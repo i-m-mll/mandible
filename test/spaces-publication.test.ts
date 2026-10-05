@@ -119,6 +119,8 @@ it('migration separates clean, managed-only, Git-only, divergent and unreachable
     snapshots.set(document.id,serializeSpaceDocument(db,document.id));
   }
   for(const trigger of ['space_publication_snapshot_immutable','space_document_history_immutable'])db.exec(`DROP TRIGGER ${trigger}`);
+  db.exec('DROP TRIGGER auth_publication_reference_immutable');
+  db.exec('ALTER TABLE auth_requests DROP COLUMN space_publication_id');
   db.exec('DROP TABLE space_publications');db.exec('DROP TABLE space_document_history');
   db.prepare("UPDATE meta SET value='189' WHERE key='schema_version'").run();
   migrate(db);

@@ -119,13 +119,13 @@ export const publicationRunner: PublicationRunner = {
 async function readPublicationAuth(worktree:string,publication:SpacePublication):Promise<string | null> {
   if (await run(worktree,'git',['rev-parse','HEAD']) !== publication.commit_sha)
     throw new ExportError('stale_destination','Publication branch changed after its signed commit; inspect the retained proposal before submission');
-  const listed = JSON.parse(await run(worktree,executable('mandible'),['auth','list','--repo',worktree,'--head',publication.branch!,'--json'])) as {requests:Array<{id:string;head_branch:string;merge_head_sha:string;status:string}>};
+  const listed = JSON.parse(await run(worktree,executable('mandible'),['auth','list','--repo',worktree,'--head',publication.branch!,'--json'])) as {requests:Array<{id:string;head_branch:string;merge_head_sha:string;status:string;space_publication_id?:string | null}>};
   if(!Array.isArray(listed.requests))throw new ExportError('git_failed','Invalid auth queue response');
   const requests=listed.requests.filter(request=>request.head_branch===publication.branch);
   if(requests.length>1)throw new ExportError('git_failed','Multiple requests belong to this publication branch; inspect the queue');
   const request=requests[0];
   if(!request)return null;
-  if(request.id !== publication.auth_request_id)throw new ExportError('stale_destination','Existing auth request is not atomically bound to this publication; inspect the retained proposal before submission');
+  if(request.id !== publication.auth_request_id || request.space_publication_id !== publication.id)throw new ExportError('stale_destination','Existing auth request is not atomically bound to this publication; inspect the retained proposal before submission');
   if(request.merge_head_sha!==publication.commit_sha)throw new ExportError('stale_destination','Existing auth request reviews different bytes');
   if(['rejected','withdrawn','expired','failed'].includes(request.status))throw new ExportError('git_failed',`Existing publication request is ${request.status}; inspect it and prepare a new publication if another attempt is needed`);
   return request.id;
