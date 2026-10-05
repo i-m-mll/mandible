@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate } from "../src/db.js";
 import { checkArtifactMaterialization, getArtifactContent, getArtifactContentAsync } from "../src/artifact-content.js";
@@ -43,7 +43,7 @@ import {
 } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
-let db: Database.Database;
+let db: SqliteDatabase;
 let savedEnv: Record<string, string | undefined>;
 
 
@@ -148,7 +148,7 @@ beforeEach(() => {
   process.env.HOME = path.join(tempDir, "home");
   delete process.env.MANDIBLE_ARTIFACT_DIR;
   delete process.env.MANDIBLE_HOME;
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
 });
 

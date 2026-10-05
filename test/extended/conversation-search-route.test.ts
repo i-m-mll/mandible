@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -30,7 +30,7 @@ function upsertCodexThreadMetadata(input: {
 }): void {
   const codexRoot = input.sourcePath.slice(0, input.sourcePath.indexOf(`${path.sep}sessions${path.sep}`));
   const sourceMtimeMs = Math.ceil(fs.statSync(input.sourcePath).mtimeMs);
-  const state = new Database(path.join(codexRoot, "state_5.sqlite"));
+  const state = new SqliteDatabase(path.join(codexRoot, "state_5.sqlite"));
   try {
     state.exec(`
       CREATE TABLE IF NOT EXISTS threads (

@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGED_REMINDER_SCHEMA } from "../../src/contracts.js";
 import { migrate, type Db } from "../../src/db.js";
@@ -14,7 +14,7 @@ let db: Db;
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
 });
 

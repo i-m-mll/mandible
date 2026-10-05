@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { migrate, openDb, setDb, type Db } from "../../src/db.js";
 import {
@@ -79,7 +79,7 @@ function updateThread(
   sessionId: string,
   values: { title?: string; rolloutPath?: string; updatedAtMs?: number } = {},
 ): void {
-  const state = new Database(stateDbPath());
+  const state = new SqliteDatabase(stateDbPath());
   try {
     state.prepare(`
       INSERT INTO threads (id, title, rollout_path, updated_at, updated_at_ms)
@@ -102,7 +102,7 @@ function updateThread(
 }
 
 function deleteThread(sessionId: string): void {
-  const state = new Database(stateDbPath());
+  const state = new SqliteDatabase(stateDbPath());
   try {
     state.prepare("DELETE FROM threads WHERE id = ?").run(sessionId);
   } finally {
@@ -131,7 +131,7 @@ beforeEach(() => {
   previousHome = process.env.HOME;
   process.env.HOME = path.join(tempDir, "home");
   fs.mkdirSync(path.join(tempDir, "home", ".codex"), { recursive: true });
-  const state = new Database(stateDbPath());
+  const state = new SqliteDatabase(stateDbPath());
   state.exec(`
     CREATE TABLE threads (
       id TEXT PRIMARY KEY,

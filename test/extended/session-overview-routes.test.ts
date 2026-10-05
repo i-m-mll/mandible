@@ -2,7 +2,7 @@
 // GET /api/sessions/resolve (codex alias resolution, explicit zero/one/many)
 // GET /api/sessions/:id/overview (aggregate payload with bounded descendants,
 // ledger issue links, work units, conversations, per-section provenance).
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, setDb, type Db } from "../../src/db.js";
@@ -17,7 +17,7 @@ let router: Router;
 const CODEX_UUID = "0198c0de-1111-2222-3333-444455556666";
 
 beforeEach(() => {
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setDb(db);
   registry = new SessionRegistry(db);

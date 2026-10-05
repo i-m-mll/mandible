@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
@@ -23,7 +23,7 @@ describe("session and work-unit ownership", () => {
   let db: Db;
 
   beforeEach(() => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
   });

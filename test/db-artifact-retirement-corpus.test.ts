@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MINIMUM_SUPPORTED_SCHEMA_VERSION } from "../src/db.js";
@@ -49,7 +49,7 @@ afterEach(() => {
 });
 
 function seedFloorCorpus(dbPath: string): void {
-  const db = new Database(dbPath);
+  const db = new SqliteDatabase(dbPath);
   try {
     db.exec(FLOOR_FIXTURE);
     db.pragma("foreign_keys = OFF");
@@ -229,7 +229,7 @@ describe.sequential("artifact retirement support floor", () => {
     // This corpus exercises the legacy-table retirement ports, including intentionally
     // unmaterializable descriptors. The subsequent v185 custody recovery owns their
     // verified recovery or dependency-guarded retirement in its separate corpus.
-    const db = new Database(dbPath);
+    const db = new SqliteDatabase(dbPath);
     db.function('mandible_sha256',{deterministic:true},(value:unknown)=>createHash('sha256').update(String(value)).digest('hex'));
     for (const migration of MIGRATIONS.filter(m=>m.version>MINIMUM_SUPPORTED_SCHEMA_VERSION && m.version<=184)) {
       db.transaction(()=>{for (const sql of migration.statements) db.exec(sql);})();

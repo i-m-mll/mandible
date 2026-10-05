@@ -7,7 +7,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
@@ -63,7 +63,7 @@ function requesterFixture() {
 
 describe("auth request immutable lifecycle", () => {
   it("migrates historical rows to honest baseline receipts", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     db.exec(fs.readFileSync(path.join(process.cwd(), "test/fixtures/schema-v158.sql"), "utf8"));
     db.prepare(`INSERT INTO auth_requests
       (id, command, title, status, created_at, updated_at, expires_at)

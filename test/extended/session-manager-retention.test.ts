@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { describe, expect, it } from "vitest";
 
 import { migrate, setDb } from "../../src/db.js";
@@ -10,7 +10,7 @@ import { SDKBackend } from "../../src/backends/sdk-backend.js";
 
 describe("SessionManager terminal backend retention", () => {
   it("loads copied sessions without reconciling or starting them in read-only mode", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
     const seed = new SessionManager(db, () => undefined);
@@ -42,7 +42,7 @@ describe("SessionManager terminal backend retention", () => {
   });
 
   it("evicts backend resources while preserving list and on-demand lookup behavior", () => {
-    const db = new Database(":memory:");
+    const db = new SqliteDatabase(":memory:");
     migrate(db);
     setDb(db);
     const manager = new SessionManager(db, () => undefined);

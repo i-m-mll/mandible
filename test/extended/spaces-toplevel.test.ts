@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -99,7 +99,7 @@ describe("spaces v86 nullable project_id schema (issue 812df41)", () => {
       expect(sql).toContain("-- Table: spaces");
 
       // Restore into a fresh DB using ONLY the backup SQL.
-      const restored = new Database(path.join(tempDir, "restored.db"));
+      const restored = new SqliteDatabase(path.join(tempDir, "restored.db"));
       restored.pragma("foreign_keys = ON");
       restored.exec(sql);
       const rows = restored

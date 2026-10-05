@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,7 +26,7 @@ describe("copied auth preview isolation", () => {
       "UPDATE auth_requests SET cwd = ?, merge_candidate_pin_sha = ?, expires_at = 1 WHERE id = ?",
     ).run(repo, candidateSha, sourceRequest.id);
 
-    const copiedDb = new Database(sourceDb.serialize()) as Db;
+    const copiedDb = SqliteDatabase.fromSnapshot(sourceDb.serialize()) as Db;
     setDb(copiedDb);
     const executor = vi.fn();
     const preview = new AuthQueue({

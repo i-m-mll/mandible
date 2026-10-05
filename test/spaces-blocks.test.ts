@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -291,7 +291,7 @@ describe("space_blocks metadata backup classification (issue d2a8e77)", () => {
 
     const sql = buildMetadataBackupSql(db);
     const restorePath = path.join(tempDir, "restored.db");
-    const restored = new Database(restorePath);
+    const restored = new SqliteDatabase(restorePath);
     restored.pragma("foreign_keys = ON");
     restored.exec(sql);
 
@@ -407,7 +407,7 @@ describe("blocks routes (issue d2a8e77)", () => {
   }
 
   beforeEach(() => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     db.pragma("foreign_keys = ON");
     setDb(db);
@@ -614,7 +614,7 @@ describe("block identity agrees with C12 serialization (issue d2a8e77)", () => {
   }
 
   beforeEach(() => {
-    db = new Database(":memory:");
+    db = new SqliteDatabase(":memory:");
     migrate(db);
     db.pragma("foreign_keys = ON");
     setDb(db);

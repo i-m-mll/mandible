@@ -4847,7 +4847,7 @@ export function appendArtifactVersion(
   // concurrent writer (separate process/connection) cannot read the same
   // MAX(version_no). The deterministic version id keeps re-records idempotent
   // (ON CONFLICT(id) DO NOTHING). We run with BEGIN IMMEDIATE so the write lock
-  // is taken before the MAX read; within one process better-sqlite3 is already
+  // is taken before the MAX read; within one process synchronous SQLite is already
   // serialized. If we are already inside a transaction, run inline (the
   // caller's transaction provides the boundary).
   const body = (): { version: CanonicalArtifactVersionRecord; created: boolean } => {
