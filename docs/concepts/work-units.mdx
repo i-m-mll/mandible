@@ -109,7 +109,7 @@ Mandible exposes policy-free commands for callers that manage branches,
 commits, or sessions:
 
 ```bash
-mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--kind solo|partition|integration] [--session S] [--graceful]
+mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--kind solo|partition|integration] [--expected-generation N] [--parent-role-checkpoint C] [--session S] [--graceful]
 mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--worker] [--graceful]
 mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
 mandible work-unit resolve --id WU --expected-generation N [--auth-request-id AR] [--graceful]
@@ -125,6 +125,14 @@ These commands take mechanism inputs and do not encode worktree layout, signing,
 attribution, provider/model profile, or local command naming. Callers that
 should continue when Mandible is unavailable can use `--graceful` or set
 `MANDIBLE_LEDGER_GRACEFUL=1`.
+
+An explicit `claim --kind` on an existing unit must match its current kind or
+perform an authorized correction. A correction requires `--expected-generation`
+from `find` and the exact durable custodian; it keeps the unit ID and custody
+unchanged and records an audit checkpoint. Promotion to `integration` also
+requires `--parent-role-checkpoint` naming the latest audited parent role on its
+umbrella, authenticated by that custodian. Integration downgrades and kind
+changes on auth-bound units are refused.
 
 `release` abandons exactly one unit, by ID or repository and branch. Read its
 `custody_generation` from `find` and pass that number as `--expected-generation`.

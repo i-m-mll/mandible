@@ -209,6 +209,10 @@ describe("ledger mechanism CLI client", () => {
       "main",
       "--kind",
       "solo",
+      "--expected-generation",
+      "1",
+      "--parent-role-checkpoint",
+      "parent-checkpoint",
       "--session",
       "session-1",
     ], port)).status).toBe(0);
@@ -284,6 +288,8 @@ describe("ledger mechanism CLI client", () => {
       branch: "feature/abc123",
       parent_branch: "main",
       kind: "solo",
+      expected_generation: 1,
+      parent_role_checkpoint_id: "parent-checkpoint",
       assigned_session_id: "session-1",
     });
     expect(requests.find((request) => request.url === "/api/work-units/wu-1")?.body).toEqual({

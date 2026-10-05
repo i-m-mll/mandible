@@ -7,6 +7,11 @@ import { migrate, setDb, type Db } from "../src/db.js";
 import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import { Router, type ClientAuthGate } from "../src/server.js";
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { addProject } from "../src/ledger/project-registry.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { systemAction } from "../src/identity/resolver.js";
+import { addGrant } from "../src/permissions/store.js";
+import { createLedgerIssue } from "./helpers/ledger-fixtures.js";
 import { addCredential, createUser } from "../src/users/store.js";
 
 let db: Db;
@@ -49,6 +54,58 @@ describe("work unit routes", () => {
     expect(db.prepare("SELECT owner_user_id, owner_credential_id, custody_generation, state FROM work_units WHERE id = ?")
       .get(id)).toEqual({ owner_user_id: agent.id, owner_credential_id: credential.id,
         custody_generation: 1, state: "committed" });
+  });
+
+  it("corrects an explicit existing kind with exact custody and current umbrella authority", async () => {
+    const agent = createUser(db, { slug: "kind-custodian", kind: "agent", display_name: "Custodian" });
+    const credential = addCredential(db, agent.id, { type: "api_token", fingerprint: "kind-own" });
+    const other = addCredential(db, agent.id, { type: "api_token", fingerprint: "kind-other" });
+    const project = addProject(db, { project_key: "kind-project", display_name: "Kind project" });
+    addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project", resource: project.id, permission: "write" });
+    const issue = createLedgerIssue(db, { project_id: project.id, kind: "umbrella" });
+    const store = new LedgerStore(db);
+    const guarded = new Router({ clientAuth: {
+      authenticate: token => token === 'own' || token === 'other' ? {
+        user_id: agent.id, slug: agent.slug, method: "api_token", source: "in_process",
+        credential_id: token === 'own' ? credential.id : other.id, effect_ceiling: PRODUCTION_EFFECTS,
+      } : null,
+      mode: () => 'strict', recordUnattributedWrite: () => undefined,
+    } });
+    registerWorkUnitRoutes(guarded, {} as never, {} as never);
+    const request = { issue_id: issue.id, repo_id: 'kind-project', branch: 'feature/integration' };
+    const claimed = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own', body: request });
+    expect(claimed.status).toBe(201);
+    const id = (claimed.body as { id: string }).id;
+    const before = db.prepare('SELECT * FROM work_units WHERE id = ?').get(id) as Record<string, unknown>;
+    const checkpoint = (ownerCredential: string, createdAt: number) => store.addIssueCheckpoint(issue.id, {
+      kind: 'parent-role', payload: { authenticated_user_id: agent.id, authenticated_credential_id: ownerCredential, assumed_at: createdAt },
+      attribution: systemAction(), created_at: createdAt,
+    }).id;
+    const previous = checkpoint(credential.id, 1);
+    const current = checkpoint(credential.id, 2);
+    const promote = { ...request, kind: 'integration', expected_generation: 1, parent_role_checkpoint_id: current };
+    for (const [token, body] of [
+      ['own', { ...request, kind: 'invalid' }],
+      ['own', { ...request, kind: 'integration' }],
+      ['own', { ...promote, expected_generation: 0 }],
+      ['other', promote],
+      ['own', { ...promote, parent_role_checkpoint_id: previous }],
+      ['own', { ...promote, branch: 'feature/missing' }],
+    ] as const) {
+      expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: token, body })).status).toBeGreaterThanOrEqual(400);
+      expect(db.prepare('SELECT * FROM work_units WHERE id = ?').get(id)).toEqual(before);
+    }
+    const promoted = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own', body: promote });
+    expect(promoted.status).toBe(200);
+    expect(promoted.body).toMatchObject({ id, kind: 'integration', custody_generation: 1, existing: true });
+    expect(db.prepare('SELECT * FROM work_units WHERE id = ?').get(id)).toEqual({ ...before!, kind: 'integration' });
+    const retry = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own', body: promote });
+    expect(retry.status).toBe(200);
+    expect(store.listIssueCheckpoints(issue.id, 'work-unit-kind')).toHaveLength(1);
+    expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own',
+      body: { ...promote, kind: 'solo' } })).status).toBe(409);
+    expect(db.prepare('SELECT kind FROM work_units WHERE id = ?').get(id)).toEqual({ kind: 'integration' });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM work_units').get()).toEqual({ count: 1 });
   });
 
   async function createBoundWorkUnit(

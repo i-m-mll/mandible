@@ -71,7 +71,7 @@ mandible_ledger_payload_base() {
 }
 
 mandible_work_unit_claim() {
-  local issue_id="" repo_id="" branch="" parent_branch="" kind="" assigned_session_id="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local issue_id="" repo_id="" branch="" parent_branch="" kind="" assigned_session_id="" expected_generation="" checkpoint="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
   while (( $# > 0 )); do
     case "$1" in
       --issue|--issue-id) issue_id="${2:-}"; shift 2 ;;
@@ -79,6 +79,8 @@ mandible_work_unit_claim() {
       --branch) branch="${2:-}"; shift 2 ;;
       --parent-branch) parent_branch="${2:-}"; shift 2 ;;
       --kind) kind="${2:-}"; shift 2 ;;
+      --expected-generation) expected_generation="${2:-}"; shift 2 ;;
+      --parent-role-checkpoint) checkpoint="${2:-}"; shift 2 ;;
       --session|--assigned-session-id) assigned_session_id="${2:-}"; shift 2 ;;
       --graceful) graceful=1; shift ;;
       *) mandible_ledger_die "Unknown work-unit claim option: $1" 2; return $? ;;
@@ -87,6 +89,7 @@ mandible_work_unit_claim() {
 
   [[ -n "$issue_id" ]] || mandible_ledger_die "Missing --issue" 2 || return $?
   [[ -n "$repo_id" ]] || mandible_ledger_die "Missing --repo" 2 || return $?
+  [[ -z "$expected_generation" || "$expected_generation" =~ ^[0-9]+$ ]] || mandible_ledger_die "Invalid --expected-generation" 2 || return $?
   mandible_ledger_require_tools || return $?
 
   local payload
@@ -96,6 +99,8 @@ mandible_work_unit_claim() {
     --arg branch "$branch" \
     --arg parent_branch "$parent_branch" \
     --arg kind "$kind" \
+    --arg expected_generation "$expected_generation" \
+    --arg checkpoint "$checkpoint" \
     --arg assigned_session_id "$assigned_session_id" \
     '{
       issue_id:$issue_id,
@@ -104,6 +109,8 @@ mandible_work_unit_claim() {
     + (if $branch != "" then {branch:$branch} else {} end)
     + (if $parent_branch != "" then {parent_branch:$parent_branch} else {} end)
     + (if $kind != "" then {kind:$kind} else {} end)
+    + (if $expected_generation != "" then {expected_generation:($expected_generation|tonumber)} else {} end)
+    + (if $checkpoint != "" then {parent_role_checkpoint_id:$checkpoint} else {} end)
     + (if $assigned_session_id != "" then {assigned_session_id:$assigned_session_id} else {} end)')
   mandible_ledger_request POST "/api/work-units/claim" "$payload" "$graceful"
 }
