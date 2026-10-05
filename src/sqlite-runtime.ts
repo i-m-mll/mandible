@@ -60,9 +60,11 @@ export function provisionSqliteLibrary(archive: string) {
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }
 
-let configured = false;
+const ownershipKey = Symbol.for("mandible.sqlite.library-owner");
+type LibraryOwner = { sha256: string; sourceId: string; filename: string };
+const processOwnership = globalThis as typeof globalThis & { [ownershipKey]?: LibraryOwner };
 export function configureSqliteRuntime() {
-  if (configured || process.platform !== "darwin") return;
+  if (process.platform !== "darwin") return;
   if (`${process.platform}-${process.arch}` !== SQLITE_RUNTIME_LOCK.platform) throw new Error("No qualified stock SQLite library for this macOS architecture");
   const files = sqliteRuntimePaths();
   const override = process.env.MANDIBLE_SQLITE_LIBRARY;
@@ -71,7 +73,15 @@ export function configureSqliteRuntime() {
     if (!fs.existsSync(files.library) || !fs.existsSync(files.archive)) provisionSqliteLibrary(process.env.MANDIBLE_SQLITE_LIBRARY_ARCHIVE);
   }
   const library = verifySqliteLibrary(override || files.library);
+  const owner = processOwnership[ownershipKey];
+  if (owner) {
+    if (owner.sha256 !== SQLITE_RUNTIME_LOCK.librarySha256 || owner.sourceId !== SQLITE_RUNTIME_LOCK.sourceId) {
+      throw new Error("Conflicting SQLite library identity in this process");
+    }
+    verifySqliteLibrary(owner.filename);
+    return;
+  }
   const { Database } = createRequire(import.meta.url)("bun:sqlite") as { Database: { setCustomSQLite(filename: string): boolean } };
   if (!Database.setCustomSQLite(library)) throw new Error("Pinned SQLite must be configured before the first database opens");
-  configured = true;
+  processOwnership[ownershipKey] = Object.freeze({ sha256: SQLITE_RUNTIME_LOCK.librarySha256, sourceId: SQLITE_RUNTIME_LOCK.sourceId, filename: library });
 }
