@@ -8,10 +8,7 @@ CLIENT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/ledger-client
 source "$CLIENT_HELPER"
 
 usage() {
-  cat <<'USAGE' | mandible_render_commands
-Usage:
-  {{command session.link-issue}}
-USAGE
+  mandible_command_help session
 }
 
 action="${1:-}"

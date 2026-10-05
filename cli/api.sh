@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/command-syntax.sh"
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/canonical-origin.sh"
 : "${MANDIBLE_PORT:=${MANDIBLE_DEFAULT_BACKEND_PORT}}"
 if [[ -z "${MANDIBLE_BASE:-}" || ( "${MANDIBLE_BASE%/}" == "${MANDIBLE_CANONICAL_ORIGIN%/}" && "${MANDIBLE_TRANSPORT:-}" != "http" ) ]]; then
@@ -992,14 +993,6 @@ api_curl_ambient_headers() {
   fi
 }
 
-api_route_mutation_category_file() {
-  if [[ -n "${MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE:-}" ]]; then
-    printf '%s' "$MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE"
-    return 0
-  fi
-  printf '%s/route-mutation-categories.json' "${MANDIBLE_CLI_CACHE_DIR:-${HOME}/.cache/mandible/cli}"
-}
-
 api_route_template_matches() {
   local route_template="$1"
   local pathname="$2"
@@ -1036,106 +1029,35 @@ api_route_template_matches() {
   done
 }
 
-api_generated_operational_mutation_category() {
-  local method="$1"
-  local pathname="$2"
-  local category_file route_method route_path route_category
-
-  category_file="$(api_route_mutation_category_file)"
-  [[ -f "$category_file" ]] || return 1
-
+api_operational_mutation_category() {
+  local method="$1" pathname="${2%%\?*}" metadata_file="$3"
+  local route_method route_path route_category
+  if ! jq -e '
+    .operations.schema == "mandible-operation-catalog@2"
+    and .operations.source == "Router.listRoutePolicies"
+    and (.operations.runtime.version | type == "string" and length > 0)
+    and .operations.runtime.instance_id == .instance.instance_id
+    and .operations.runtime.backend_generation == .instance.backend_generation
+    and (.operations.routes | type == "array" and all(.[];
+      (.operationId | type == "string" and length > 0)
+      and (.method | type == "string") and (.path | type == "string")
+      and has("operationalMutationCategory")
+      and (.operationalMutationCategory == null or (.operationalMutationCategory | type == "string"))
+      and (.fileRpc | IN("allow", "deny", "conditional"))
+      and (.requestSchema | IN("handler", "zod"))))
+  ' "$metadata_file" >/dev/null 2>&1; then
+    printf 'Mandible operation metadata is missing or incompatible; rebuild/restart the selected daemon.\n' >&2
+    return 2
+  fi
   while IFS=$'\t' read -r route_method route_path route_category; do
-    [[ -n "$route_method" && -n "$route_path" && -n "$route_category" ]] || continue
     [[ "$route_method" == "$method" ]] || continue
     if api_route_template_matches "$route_path" "$pathname"; then
-      printf '%s' "$route_category"
+      [[ "$route_category" == "null" ]] || printf '%s' "$route_category"
       return 0
     fi
-  done < <(
-    jq -r '.routes[]? | select(.method and .path and .category) | [.method, .path, .category] | @tsv' \
-      "$category_file" 2>/dev/null
-  )
-
-  return 1
-}
-
-api_operational_mutation_category() {
-  local method="$1"
-  local request_path="$2"
-  local pathname="${request_path%%\?*}"
-  local generated_category
-
-  # Normalize and filter in one fork-free case. This runs once per mutating CLI
-  # call and ~500 times in the preflight table-sync probe, so the `tr` pipeline
-  # it replaces was the dominant cost of both.
-  case "$method" in
-    [Pp][Oo][Ss][Tt]) method="POST" ;;
-    [Pp][Uu][Tt]) method="PUT" ;;
-    [Pp][Aa][Tt][Cc][Hh]) method="PATCH" ;;
-    [Dd][Ee][Ll][Ee][Tt][Ee]) method="DELETE" ;;
-    *) return 1 ;;
-  esac
-
-  # Issue c81e101 — mirror OPERATIONAL_MUTATION_EXEMPT_ROUTES in
-  # src/instance-policy.ts.
-  # The exceptions cannot be read off the generated route table: routes with no
-  # mutation category are simply absent from it, which is indistinguishable from
-  # an unknown route, so an exempt route would otherwise fall through to the
-  # prefix table below on both the generated and fallback paths. Keep this list
-  # and the TypeScript set in sync; test/cli-instance-preflight.test.ts fails on
-  # drift.
-  case "${method} ${pathname}" in
-    "POST /api/auth/check"|\
-    "POST /api/briefing-destination-routes/plan"|\
-    "POST /api/timeline/project"|\
-    "PUT /api/host-preferences/app-theme"|\
-    "PUT /api/host-preferences/chat-shown-projects"|\
-    "PUT /api/host-preferences/sidebar-order"|\
-    "PUT /api/user-settings/app_rail_order"|\
-    "PUT /api/user-settings/ui_font_face"|\
-    "PUT /api/user-settings/ui_font_size"|\
-    "PUT /api/user-settings/detail_font_face"|\
-    "PUT /api/user-settings/detail_font_size") return 1 ;;
-  esac
-
-  if generated_category="$(api_generated_operational_mutation_category "$method" "$pathname")"; then
-    printf '%s' "$generated_category"
-    return 0
-  fi
-
-  case "$pathname" in
-    /api/admin|/api/admin/*) printf 'system'; return 0 ;;
-    /api/agent-dispatch|/api/agent-dispatch/*) printf 'agent_dispatch'; return 0 ;;
-    /api/artifacts|/api/artifacts/*) printf 'artifacts'; return 0 ;;
-    /api/auth|/api/auth/*) printf 'auth'; return 0 ;;
-    /api/backup|/api/backup/*) printf 'backup'; return 0 ;;
-    /api/briefing-bundles|/api/briefing-bundles/*) printf 'briefing'; return 0 ;;
-    /api/briefing-destination-routes|/api/briefing-destination-routes/*) printf 'briefing'; return 0 ;;
-    /api/briefing-groups|/api/briefing-groups/*) printf 'briefing'; return 0 ;;
-    /api/briefings|/api/briefings/*) printf 'briefing'; return 0 ;;
-    /api/console|/api/console/*) printf 'console'; return 0 ;;
-    /api/conversation-spawns|/api/conversation-spawns/*) printf 'conversations'; return 0 ;;
-    /api/conversations|/api/conversations/*) printf 'conversations'; return 0 ;;
-    /api/conversation-custody|/api/conversation-custody/*) printf 'conversations'; return 0 ;;
-    /api/inbox|/api/inbox/*) printf 'inbox'; return 0 ;;
-    /api/ledger|/api/ledger/*) printf 'ledger'; return 0 ;;
-    /api/issues|/api/issues/*) printf 'issues'; return 0 ;;
-    /api/knowledge-backrefs|/api/knowledge-backrefs/*) printf 'artifacts'; return 0 ;;
-    /api/projects|/api/projects/*) printf 'projects'; return 0 ;;
-    /api/provider-manifests|/api/provider-manifests/*) printf 'providers'; return 0 ;;
-    /api/providers|/api/providers/*) printf 'providers'; return 0 ;;
-    /api/settings|/api/settings/*) printf 'settings'; return 0 ;;
-    /api/sessions|/api/sessions/*) printf 'sessions'; return 0 ;;
-    /api/spaces|/api/spaces/*) printf 'spaces'; return 0 ;;
-    /api/system|/api/system/*) printf 'system'; return 0 ;;
-    /api/tasks|/api/tasks/*) printf 'tasks'; return 0 ;;
-    /api/timeline|/api/timeline/*) printf 'timeline'; return 0 ;;
-    /api/webhooks|/api/webhooks/*) printf 'webhooks'; return 0 ;;
-    /api/work-units|/api/work-units/*) printf 'work_units'; return 0 ;;
-    /api/work|/api/work/*) printf 'work'; return 0 ;;
-    /api|/api/*) printf 'api'; return 0 ;;
-    *) return 1 ;;
-  esac
+  done < <(jq -r '.operations.routes[] | [.method, .path, (.operationalMutationCategory // "null")] | @tsv' "$metadata_file")
+  printf 'Unknown Mandible operation: %s %s; refresh the CLI and daemon together.\n' "$method" "$pathname" >&2
+  return 3
 }
 
 api_non_main_operational_mutation_override_enabled() {
@@ -1351,8 +1273,12 @@ api_preflight_operational_mutation() {
   local output_file="${3:-}"
   local category tmp_response fetch_status role policy db_path source_db_path message
 
-  category=$(api_operational_mutation_category "$method" "$request_path") || return 0
+  case "$method" in
+    POST|PUT|PATCH|DELETE) ;;
+    *) return 0 ;;
+  esac
   api_is_file_rpc && return 0
+  category="operation"
   if api_restart_availability_preflight "$category" "$output_file"; then
     return 75
   fi
@@ -1378,6 +1304,26 @@ api_preflight_operational_mutation() {
     api_write_instance_metadata_unknown "$category" "$output_file"
     return 22
   fi
+
+  if category=$(api_operational_mutation_category "$method" "$request_path" "$tmp_response"); then
+    :
+  else
+    local catalog_status=$? catalog_error catalog_message
+    if [[ "$catalog_status" == 3 ]]; then
+      catalog_error="cli_operation_unknown"
+      catalog_message="Refusing unregistered operation: $method $request_path. Refresh the CLI and selected daemon together."
+    else
+      catalog_error="cli_operation_metadata_incompatible"
+      catalog_message="Refusing mutation because the selected daemon operation catalog is absent, malformed, or does not match its runtime identity. Rebuild and restart that daemon."
+    fi
+    printf '%s\n' "$catalog_message" >&2
+    if [[ -n "$output_file" ]]; then
+      jq -n --arg error "$catalog_error" --arg message "$catalog_message" '{error:$error,message:$message,request_sent:false}' > "$output_file"
+    fi
+    rm -f "$tmp_response"
+    return 22
+  fi
+  [[ -n "$category" ]] || { rm -f "$tmp_response"; return 0; }
 
   role=$(jq -r '.instance.role' "$tmp_response")
   policy=$(jq -r 'if (.instance | has("allowed_effects")) then

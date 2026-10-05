@@ -13,38 +13,11 @@ request_id=""
 json=0
 
 usage() {
-  cat <<'EOF' | mandible_render_commands
-Usage: {{command auth.replay-archives}}
-
-Replay Codex thread archive attempts for a completed successful merge auth
-request. This does not rerun the protected merge or deferred issue actions.
-
-Options:
-  --json      Print the raw replay result JSON.
-  -h, --help  Show this help.
-EOF
+  mandible_command_help auth replay archives
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --json) json=1; shift ;;
-    -h|--help) usage; exit 0 ;;
-    -*)
-      printf '%s\n' "Unknown option: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-    *)
-      if [[ -z "$request_id" ]]; then
-        request_id="$1"
-      else
-        printf '%s\n' "Unexpected argument: $1" >&2
-        exit 2
-      fi
-      shift
-      ;;
-  esac
-done
+binding=$(mandible_bind_main_arguments "auth.replay-archives" '{"json":{"option":"json","constant":"1"}}' "$request_id" "$@") || exit $?
+eval "$binding"
 
 if [[ -z "$request_id" ]]; then
   usage >&2

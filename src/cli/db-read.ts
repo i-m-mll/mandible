@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseCommand, commandHelp, numberOption, flagOption } from "./grammar.js";
 import {
   DEFAULT_ROW_LIMIT,
   ledgerInfo,
@@ -9,23 +10,7 @@ import {
   type ReadOnlyLedger,
 } from "../db-read.js";
 
-function usage(): void {
-  process.stderr.write(`Usage:
-  mandible db query <sql> [--limit N] [--json]
-  mandible db tables [--json]
-  mandible db schema [table] [--json]
-  mandible db info [--json]
-
-Reads the live ledger database, including its write-ahead log, over a
-connection SQLite itself holds read-only. Set MANDIBLE_DB to read a different
-database file; a SQLite URI is refused, so a stale 'immutable=1' snapshot is
-not something these commands can be pointed at.
-
-query accepts one row-returning statement. Output is tab-separated by default
-and lossless column arrays under --json. --limit caps rows at ${DEFAULT_ROW_LIMIT}
-by default; --limit 0 reads them all. Truncation is always announced.
-`);
-}
+function usage(): void { process.stderr.write(commandHelp(["db"])); }
 
 interface Args {
   positional: string[];
@@ -33,26 +18,9 @@ interface Args {
   limit: number;
 }
 
-function parseArgs(argv: string[]): Args {
-  const args: Args = { positional: [], json: false, limit: DEFAULT_ROW_LIMIT };
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === "--json") {
-      args.json = true;
-      continue;
-    }
-    if (arg === "--limit") {
-      const raw = argv[++i];
-      const parsed = Number(raw);
-      if (!Number.isInteger(parsed) || parsed < 0) {
-        throw new Error(`--limit expects a non-negative integer, got: ${raw}`);
-      }
-      args.limit = parsed;
-      continue;
-    }
-    args.positional.push(arg);
-  }
-  return args;
+function parseArgs(argv: string[], command: string): Args {
+  const parsed = parseCommand(["db", command], argv);
+  return { positional: parsed.positionals, json: flagOption(parsed, "json"), limit: numberOption(parsed, "limit") ?? DEFAULT_ROW_LIMIT };
 }
 
 function printJson(value: unknown): void {
@@ -72,7 +40,7 @@ function main(): void {
     return;
   }
 
-  const args = parseArgs(rest);
+  const args = parseArgs(rest, command);
   let ledger: ReadOnlyLedger | null = null;
   try {
     ledger = openReadOnlyLedger();

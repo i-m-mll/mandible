@@ -14,48 +14,11 @@ LIMIT=20
 TITLE_ONLY=0
 
 usage() {
-  cat <<'EOF'
-Usage: mandible search "<query>" [options]
-
-Search conversation history across all providers (Claude, Codex, Gemini).
-
-Options:
-  --provider claude|gemini|codex|all   Filter by provider (default: all)
-  --role user|assistant                Filter by message role
-  --since Nd                           Only conversations from last N days
-  --limit N                            Max results (default: 20)
-  --title                              Search conversation titles only
-  -h, --help                           Show this help
-
-Examples:
-  mandible search "worktree merge"
-  mandible search "auth request" --provider claude --since 7d
-  mandible search "training loss" --role assistant --limit 5
-  mandible search "bigbuild" --title
-EOF
+  mandible_command_help search
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --provider) PROVIDER="${2:?--provider requires a value}"; shift 2 ;;
-    --role) ROLE="${2:?--role requires a value}"; shift 2 ;;
-    --since) SINCE="${2:?--since requires a value}"; shift 2 ;;
-    --limit) LIMIT="${2:?--limit requires a value}"; shift 2 ;;
-    --title) TITLE_ONLY=1; shift ;;
-    -h|--help) usage; exit 0 ;;
-    -*) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
-    *)
-      if [[ -z "$QUERY" ]]; then
-        QUERY="$1"
-      else
-        echo "Unexpected argument: $1" >&2
-        usage >&2
-        exit 1
-      fi
-      shift
-      ;;
-  esac
-done
+binding=$(mandible_bind_main_arguments "search" '{"PROVIDER":{"option":"provider"},"ROLE":{"option":"role"},"SINCE":{"option":"since"},"LIMIT":{"option":"limit"},"TITLE_ONLY":{"option":"title","constant":"1"},"QUERY":{"position":0}}' "$@") || exit $?
+eval "$binding"
 
 if [[ -z "$QUERY" ]]; then
   echo "Error: search query is required." >&2

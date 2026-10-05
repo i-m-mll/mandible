@@ -6,15 +6,7 @@ set -euo pipefail
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 
 usage() {
-  cat <<'EOF' | mandible_render_commands
-Usage: {{command changes}}
-                        [--schema mandible-ledger-change-feed@1] [--json]
-
-Omit --cursor to establish a controlled resync point at the current high-water
-mark. Persist next_cursor and pass it to the next invocation. JSON is the
-authoritative output; the default view is a compact event summary followed by
-the next cursor.
-EOF
+  mandible_command_help changes
 }
 
 project=""
@@ -22,23 +14,8 @@ cursor=""
 limit=""
 schema=""
 json=0
-while (( $# > 0 )); do
-  case "$1" in
-    --project) project="${2:-}"; shift 2 ;;
-    --cursor) cursor="${2:-}"; shift 2 ;;
-    --limit) limit="${2:-}"; shift 2 ;;
-    --schema) schema="${2:-}"; shift 2 ;;
-    --json) json=1; shift ;;
-    -h|--help|help) usage; exit 0 ;;
-    *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
-  esac
-done
-
-[[ -n "$project" ]] || { usage >&2; exit 2; }
-if [[ -n "$limit" && ! "$limit" =~ '^[0-9]+$' ]]; then
-  printf '%s\n' '--limit must be an integer from 1 through 200' >&2
-  exit 2
-fi
+binding=$(mandible_bind_main_arguments changes '{"project":{"option":"project"},"cursor":{"option":"cursor"},"limit":{"option":"limit"},"schema":{"option":"schema"},"json":{"option":"json","flag":true}}' "$@") || exit $?
+eval "$binding"
 
 request="/api/ledger/changes?project=$(urlencode "$project")"
 [[ -z "$cursor" ]] || request="${request}&cursor=$(urlencode "$cursor")"

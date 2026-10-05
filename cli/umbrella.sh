@@ -20,12 +20,7 @@ require_tools() {
 }
 
 usage() {
-  cat <<'USAGE' | mandible_render_commands
-Usage:
-  {{command umbrella.status}}
-  {{command umbrella.adopt}}
-  {{command umbrella.manifest.refresh}}
-USAGE
+  mandible_command_help umbrella
 }
 
 print_status_response() {
@@ -50,27 +45,9 @@ cmd_status() {
   local issue_ref=""
   local deep=0
   local json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --deep) deep=1; shift ;;
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then
-          issue_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
-
-  if [[ -z "$issue_ref" ]]; then
-    die "Usage: $(mandible_command_syntax umbrella.status)" 2
-  fi
+  local binding
+  binding=$(mandible_bind_arguments umbrella.status '{"issue_ref":{"position":0},"deep":{"option":"deep","flag":true},"json":{"option":"json","flag":true}}' "$@") || return $?
+  eval "$binding"
 
   require_tools
   local path="/api/ledger/issues/$(urlencode "$issue_ref")/umbrella-status"
@@ -87,26 +64,9 @@ cmd_adopt() {
   local issue_ref=""
   local json=0
   local children=()
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then
-          issue_ref="$1"
-        else
-          children+=("$1")
-        fi
-        shift
-        ;;
-    esac
-  done
-
-  if [[ -z "$issue_ref" || ${#children[@]} -eq 0 ]]; then
-    die "Usage: $(mandible_command_syntax umbrella.adopt)" 2
-  fi
+  local binding
+  binding=$(mandible_bind_arguments umbrella.adopt '{"issue_ref":{"position":0},"children":{"rest":1},"json":{"option":"json","flag":true}}' "$@") || return $?
+  eval "$binding"
 
   require_tools
   local payload response
@@ -125,26 +85,9 @@ cmd_manifest() {
 
   local issue_ref=""
   local json=0
-  while (( $# > 0 )); do
-    case "$1" in
-      --json) json=1; shift ;;
-      -*)
-        die "Unknown option: $1" 2
-        ;;
-      *)
-        if [[ -z "$issue_ref" ]]; then
-          issue_ref="$1"
-        else
-          die "Unexpected argument: $1" 2
-        fi
-        shift
-        ;;
-    esac
-  done
-
-  if [[ -z "$issue_ref" ]]; then
-    die "Usage: $(mandible_command_syntax umbrella.manifest.refresh)" 2
-  fi
+  local binding
+  binding=$(mandible_bind_arguments umbrella.manifest.refresh '{"issue_ref":{"position":0},"json":{"option":"json","flag":true}}' "$@") || return $?
+  eval "$binding"
 
   require_tools
   local response

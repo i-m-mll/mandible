@@ -8,15 +8,7 @@ CLIENT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/ledger-client
 source "$CLIENT_HELPER"
 
 usage() {
-  cat <<'USAGE' | mandible_render_commands
-Usage:
-  {{command work-unit.claim}}
-  {{command work-unit.activate}}
-  {{command work-unit.find}}
-  {{command work-unit.resolve}}
-  {{command work-unit.release}}
-  {{command work-unit.custody-assume}}
-USAGE
+  mandible_command_help work-unit
 }
 
 action="${1:-}"
@@ -28,6 +20,7 @@ case "$action" in
   find) mandible_work_unit_find "$@" ;;
   resolve) mandible_work_unit_resolve "$@" ;;
   release) mandible_work_unit_release "$@" ;;
+  release-issue) mandible_work_unit_release_issue "$@" ;;
   custody-assume) mandible_work_unit_custody_assume "$@" ;;
   ""|-h|--help|help) usage ;;
   *) mandible_ledger_err "Unknown work-unit action: $action"; usage >&2; exit 2 ;;
