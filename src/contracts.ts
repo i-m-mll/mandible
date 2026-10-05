@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { SPACE_EVENTS, SPACE_EVENT_VALUES } from "./spaces/events.js";
 // Shared API/UI contracts. Keep this module dependency-light so daemon and
 // browser UI code can import its types without dragging in runtime services.
