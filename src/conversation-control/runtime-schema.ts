@@ -14,4 +14,8 @@ export const CONVERSATION_RUNTIME_SCHEMA_SQL = [
     observed_at INTEGER NOT NULL,
     PRIMARY KEY(conversation_id, generation)
   )`,
+  `CREATE TABLE conversation_delivery_settings (
+    delivery_id TEXT PRIMARY KEY REFERENCES conversation_control_outbox(id) ON DELETE RESTRICT,
+    options_json TEXT NOT NULL CHECK(json_valid(options_json) AND json_type(options_json) = 'object')
+  )`,
 ] as const;
