@@ -137,7 +137,7 @@ it.skipIf(process.platform !== 'darwin' || missingInputs)('bootstraps the candid
     const poisonMarker = path.join(scratch, 'old-cli-used');
     fs.writeFileSync(poisonedShim, `#!/bin/sh\necho old-cli > ${quote(poisonMarker)}\necho poisoned-old-cli >&2\nexit 97\n`, { mode: 0o700 });
     const inheritedPath = `${path.dirname(poisonedShim)}:${process.env.PATH}`;
-    const installedPath = `${candidateRoot}/bin:${path.dirname(runtime)}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
+    const installedPath = `${candidateRoot}/bin:${path.dirname(runtime)}:${userHome}/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
     expect(command('/bin/sh', ['-c', 'command -v mandible'], { env: { ...env, PATH: inheritedPath } }).trim()).toBe(poisonedShim);
     expect(command('/bin/sh', ['-c', 'command -v mandible'], { env: { ...env, PATH: installedPath } }).trim()).toBe(`${candidateRoot}/bin/mandible`);
     const bootstrapEnv = { ...env, PATH: installedPath, MANDIBLE_DESKTOP_INSTALL_PATH: nativeApp, MANDIBLE_DESKTOP_RELAUNCH: '0' };
