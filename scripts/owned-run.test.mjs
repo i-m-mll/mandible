@@ -65,3 +65,35 @@ test('revision drift, consumer uncertainty, changed bytes and symlink replacemen
     await withOwnedRunLock(f.root, async () => assert.rejects(withOwnedRunLock(f.root, async () => {}), /locked/));
   } finally { f.dispose(); }
 });
+
+test('a real disposable create/use/finalize/cleanup run releases files and keeps its receipt', async () => {
+  const f = fixture(true);
+  try {
+    fs.symlinkSync('ledger.db', path.join(f.root, 'current.db'));
+    const metadata = JSON.parse(fs.readFileSync(f.metadata));
+    metadata.ownership.outputs.push({ path: 'current.db', kind: 'generated', disposition: 'pending' });
+    saveOwnedMetadata(f.metadata, metadata);
+    await withOwnedRunLock(f.root, async () => {
+      const finalized = finalizeOwnedRun(f.metadata, { expectedRevision: 1, outcome: 'assessed', summary: 'Fixture interaction and verdict completed' });
+      const result = cleanupOwnedRun(f.metadata, { apply: true });
+      assert.equal(result.action, 'delete-owned');
+      assert.ok(result.reclaimedBytes > 0);
+      assert.equal(fs.existsSync(f.root), false);
+      assert.equal(JSON.parse(fs.readFileSync(finalized.ownership.receipt)).outcome, 'assessed');
+    });
+  } finally { f.dispose(); }
+});
+
+test('partial deletion retries only remaining bytes and root replacement is blocked', () => {
+  const f = fixture(true);
+  try {
+    finalizeOwnedRun(f.metadata, { expectedRevision: 1, outcome: 'failed', summary: 'Disposed failed fixture' }, idle);
+    fs.unlinkSync(path.join(f.root, 'stdout.log'));
+    const moved = `${f.root}-replaced`; fs.renameSync(f.root, moved); fs.mkdirSync(f.root);
+    fs.copyFileSync(path.join(moved, 'metadata.json'), f.metadata);
+    assert.match(cleanupOwnedRun(f.metadata, { ...idle, apply: true }).reason, /ownership/);
+    fs.rmSync(f.root, { recursive: true }); fs.renameSync(moved, f.root);
+    assert.equal(cleanupOwnedRun(f.metadata, { ...idle, apply: true }).action, 'delete-owned');
+    assert.equal(fs.existsSync(f.root), false);
+  } finally { f.dispose(); }
+});
