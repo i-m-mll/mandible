@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
@@ -45,7 +45,7 @@ beforeEach(() => {
   previewDb = null;
   restoreArtifactDir = false;
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-artifact-write-"));
-  db = new Database(":memory:"); migrate(db); setDb(db);
+  db = new SqliteDatabase(":memory:"); migrate(db); setDb(db);
   setSetting(db, "artifact_root", path.join(root, "cas"));
   operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
   agent = createUser(db, { slug: "writer", kind: "agent", display_name: "Writer" });
@@ -103,7 +103,7 @@ describe("artifact write authorization", () => {
       sourceDbPath,
     });
     expect(() => validatePreviewWritableRoots(previewInstance)).not.toThrow();
-    previewDb = new Database(previewDbPath);
+    previewDb = new SqliteDatabase(previewDbPath);
     setSetting(previewDb, "artifact_root", previewCas);
     originalArtifactDir = process.env.MANDIBLE_ARTIFACT_DIR;
     restoreArtifactDir = true;

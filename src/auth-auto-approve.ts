@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import type Database from "better-sqlite3";
+import type SqliteDatabase from "./sqlite.js";
 
 import { getDb } from "./db.js";
 import { ensureMandibleConfigEntry } from "./platform-paths.js";
@@ -72,7 +72,7 @@ export interface SetupDelegatedSigningOptions {
 }
 
 export interface AuthAutoApproveOptions {
-  db?: InstanceType<typeof Database>;
+  db?: InstanceType<typeof SqliteDatabase>;
   now?: () => number;
   broadcast?: (event: SseEvent) => void;
   configDir?: string;
@@ -93,7 +93,7 @@ interface ActiveLease {
 }
 
 export class AuthAutoApproveManager implements AuthAutoApprover {
-  private readonly db: InstanceType<typeof Database>;
+  private readonly db: InstanceType<typeof SqliteDatabase>;
   private readonly now: () => number;
   private readonly broadcast: (event: SseEvent) => void;
   private readonly configDir: string;

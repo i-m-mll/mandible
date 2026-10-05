@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, type Db } from "../src/db.js";
@@ -145,7 +145,7 @@ function insertOperatorSubmission(bundleId: string, suffix = "one"): string {
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-briefings-"));
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
   setSetting(db, "artifact_root", root);
   publisherId = createUser(db, { slug: "publisher", kind: "agent", display_name: "Publisher" }).id;
@@ -1241,7 +1241,7 @@ Review note prompt.
 
   it("serializes competing default creators across independent database connections", async () => {
     const dbPath = path.join(root, "concurrent.db");
-    const firstConnection = new Database(dbPath);
+    const firstConnection = new SqliteDatabase(dbPath);
     migrate(firstConnection);
     setSetting(firstConnection, "artifact_root", root);
     const responder = createUser(firstConnection, {
@@ -1251,7 +1251,7 @@ Review note prompt.
       source_kind: "managed", content: "# Concurrent\n", series_key: "concurrent-lineage",
       logical_name: "concurrent.md", role: "review-document", media_type: "text/markdown",
     }).version;
-    const secondConnection = new Database(dbPath);
+    const secondConnection = new SqliteDatabase(dbPath);
     secondConnection.pragma("foreign_keys = ON");
     secondConnection.pragma("busy_timeout = 5000");
     const create = (connection: Db, key: string) => publishBriefingFromArtifactVersion(connection, {

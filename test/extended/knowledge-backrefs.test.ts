@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate } from "../../src/db.js";
 import {
@@ -10,7 +10,7 @@ import {
 } from "../../src/knowledge-backrefs.js";
 import { ingestArtifact } from "../../src/provider-artifacts.js";
 
-let db: Database.Database;
+let db: SqliteDatabase;
 let tempDir = "";
 let savedHome: string | undefined;
 
@@ -18,7 +18,7 @@ beforeEach(() => {
   savedHome = process.env.HOME;
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-backrefs-test-"));
   process.env.HOME = path.join(tempDir, "home");
-  db = new Database(":memory:");
+  db = new SqliteDatabase(":memory:");
   migrate(db);
 });
 

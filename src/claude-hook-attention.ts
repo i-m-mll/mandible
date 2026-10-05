@@ -1,5 +1,5 @@
 import { DOMAIN_EVENTS } from "./contracts.js";
-import type { Database as BetterSqliteDatabase } from "better-sqlite3";
+import type SqliteDatabase from "./sqlite.js";
 import { getDb } from "./db.js";
 import { broadcast } from "./sse.js";
 import type { ConsoleAttentionState } from "./types.js";
@@ -117,7 +117,7 @@ function resolveHookSession(input: HookAttentionInput): ResolvedHookSession | nu
     return null;
   }
   try {
-    const db = getDb() as BetterSqliteDatabase;
+    const db = getDb() as SqliteDatabase;
     return (
       findConsoleSession(db, sessionRef, transcriptPath) ??
       findRegistrySession(db, sessionRef, transcriptPath)
@@ -128,7 +128,7 @@ function resolveHookSession(input: HookAttentionInput): ResolvedHookSession | nu
 }
 
 function findConsoleSession(
-  db: BetterSqliteDatabase,
+  db: SqliteDatabase,
   sessionRef: string | null,
   transcriptPath: string | null,
 ): ResolvedHookSession | null {
@@ -165,7 +165,7 @@ function findConsoleSession(
 }
 
 function findRegistrySession(
-  db: BetterSqliteDatabase,
+  db: SqliteDatabase,
   sessionRef: string | null,
   transcriptPath: string | null,
 ): ResolvedHookSession | null {

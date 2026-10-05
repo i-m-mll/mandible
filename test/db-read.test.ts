@@ -9,7 +9,7 @@
  *  - it is read-only in fact, leaving the caller's live ledger byte-identical.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
+import SqliteDatabase from "../src/sqlite.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -38,10 +38,10 @@ function track<T extends { close(): void }>(handle: T): T {
  * closing the last connection checkpoints the WAL away, which would erase the
  * very condition under test.
  */
-function walFixture(): { dbPath: string; writer: Database.Database } {
+function walFixture(): { dbPath: string; writer: SqliteDatabase } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-db-read-"));
   const dbPath = path.join(dir, "fixture.db");
-  const writer = track(new Database(dbPath));
+  const writer = track(new SqliteDatabase(dbPath));
   writer.pragma("journal_mode = WAL");
   writer.exec("create table note(id integer primary key, body text)");
   writer.prepare("insert into note(body) values (?)").run("checkpointed");

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type Database from "better-sqlite3";
+import type SqliteDatabase from "./sqlite.js";
 
 import {
   AuthAutoApproveManager,
@@ -14,7 +14,7 @@ import {
 } from "./auth-auto-approve.js";
 import { getDb } from "./db.js";
 
-type Db = InstanceType<typeof Database>;
+type Db = InstanceType<typeof SqliteDatabase>;
 
 export interface SignerProcessIdentity {
   pid: number;
