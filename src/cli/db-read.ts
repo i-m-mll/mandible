@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { parseCommand, commandHelp, numberOption, flagOption } from "./grammar.js";
 import {
   DEFAULT_ROW_LIMIT,
