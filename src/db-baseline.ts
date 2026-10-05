@@ -9,6 +9,7 @@ import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEM
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
 import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
+import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotfiles-instruction-hook.js";
 
 /**
  * The Mandible schema. This file is the single representation of the head shape
@@ -20,7 +21,7 @@ import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
  * `test/db-schema-baseline.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 191;
+export const BASELINE_SCHEMA_VERSION = 192;
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -848,8 +849,8 @@ const BUILTIN_AUTH_HOOKS: readonly BaselineAuthHook[] = [
     "id": "builtin-dotfiles-agent-instructions",
     "repo_pattern": ".dotfiles",
     "auth_type": "merge",
-    "command": "if [[ -x bin/agent-instruction-symlink-doctor ]]; then bash bin/agent-instruction-symlink-doctor; elif [[ -x bin/compile-agent-instructions ]]; then bash bin/compile-agent-instructions; else echo \"dotfiles agent instruction hook missing repair script\" >&2; exit 1; fi",
-    "label": "Compile agent instructions and repair home symlinks",
+    "command": DOTFILES_INSTRUCTION_COMMAND,
+    "label": DOTFILES_INSTRUCTION_LABEL,
     "enabled": 1,
     "builtin": 1,
     "position": 0
@@ -858,8 +859,8 @@ const BUILTIN_AUTH_HOOKS: readonly BaselineAuthHook[] = [
     "id": "builtin-dotfiles-agent-instructions-nodot",
     "repo_pattern": "dotfiles",
     "auth_type": "merge",
-    "command": "if [[ -x bin/agent-instruction-symlink-doctor ]]; then bash bin/agent-instruction-symlink-doctor; elif [[ -x bin/compile-agent-instructions ]]; then bash bin/compile-agent-instructions; else echo \"dotfiles agent instruction hook missing repair script\" >&2; exit 1; fi",
-    "label": "Compile agent instructions and repair home symlinks",
+    "command": DOTFILES_INSTRUCTION_COMMAND,
+    "label": DOTFILES_INSTRUCTION_LABEL,
     "enabled": 1,
     "builtin": 1,
     "position": 0

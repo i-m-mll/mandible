@@ -38,7 +38,6 @@ describe("AuthHookManager", () => {
     expect(dotfiles).toBeDefined();
     expect(dotfiles!.repo_pattern).toBe(".dotfiles");
     expect(dotfiles!.auth_type).toBe("merge");
-    expect(dotfiles!.command).toContain("bin/agent-instruction-symlink-doctor");
     expect(dotfiles!.command).toContain("bin/compile-agent-instructions");
     expect(dotfiles!.builtin).toBe(true);
     expect(dotfiles!.enabled).toBe(true);

@@ -29,6 +29,7 @@ import {
   BRIEFING_GROUP_SCHEMA_SQL,
 } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
+import { DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL } from "./dotfiles-instruction-hook.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -1761,6 +1762,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 189, name: "managed_conversation_runtime", statements: [...CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, ...CONVERSATION_RUNTIME_SCHEMA_SQL] },
   { version: 190, name: "managed_document_publications", statements: SPACE_PUBLICATION_SCHEMA_SQL },
   { version: 191, name: "frozen_publication_auth_binding", statements: SPACE_PUBLICATION_AUTH_SCHEMA_SQL },
+  { version: 192, name: "compile_dotfiles_instructions_without_home_repair", statements: DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL },
 ];
 
 /**
