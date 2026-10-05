@@ -482,7 +482,8 @@ export function advanceMainViaAuthorizedMerge(
 
 export function createNoopHookManager(): AuthHookManager {
   return {
-    executeHooks: async () => []
+    executeHooks: async () => [],
+    reclaimAllInterruptedRuns: () => 0,
   } as unknown as AuthHookManager;
 }
 
@@ -603,3 +604,23 @@ export async function publishFixtureExecution(queue: AuthQueue, options: Paramet
   return { exit_code: 0, signal: null, stdout: '', stderr: output, output, started_at: Date.now(), finished_at: Date.now() };
 }
 
+
+/** Pause the actual executor after genuine proof so completion boundaries can be driven explicitly. */
+export async function approvePausedFixtureRequest(queue: AuthQueue, id: string): Promise<void> {
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  (queue as unknown as { executor: NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']> }).executor = async () => {
+    started(); return new Promise<never>(() => {});
+  };
+  await approveFixtureRequest(queue, id);
+  await ready;
+}
+
+/** Record a real signed publication at an explicitly paused completion boundary. */
+export async function completeFixturePublication(queue: AuthQueue, id: string): Promise<void> {
+  const request = queue.getRequest(id)!;
+  const output = request.type === 'merge'
+    ? (await import('./auth-delivery-fixtures.js')).publishTestCandidate(request.cwd!, request).output
+    : 'ok';
+  queue.setResult(id, 0, output);
+}
