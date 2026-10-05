@@ -55,7 +55,7 @@ import {
 import type { AuthHook } from "./types.js";
 import { AuthHookManager } from "./auth-hooks.js";
 import type { RuntimePublicationBinding } from "./runtime-handoff-proof.js";
-import { verifyRuntimeHandoffPublication } from "./runtime-handoff-proof.js";
+import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "./runtime-handoff-proof.js";
 import {
   describeRecomputeRefusal,
   type RecomputeRefusal,
@@ -670,7 +670,7 @@ export class AuthQueue {
       const request = this.getRequestById(id);
       if (request && !this.successfulMergeEvidenceFailure(request)) {
         this.finalizeSuccessfulMerge(request);
-        this.settleConvergence(request);
+        await this.afterConvergenceHook(request);
       }
     }
   }
@@ -679,6 +679,10 @@ export class AuthQueue {
   private adoptRuntimePublication(binding: RuntimePublicationBinding, proof: ReturnType<typeof verifyRuntimeHandoffPublication>): void {
     const request = this.requireRequest(binding.requestId);
     verifyRuntimeHandoffPublication(this.db, binding);
+    if (request.status === 'completed' && request.exit_code === 0) {
+      if (request.merge_preflight_base_sha !== proof.mergeBase || request.merge_head_sha !== proof.mergeHead || request.merge_candidate_tree_sha !== proof.frozenCandidate.tree || this.successfulMergeEvidenceFailure(request)) throw new Error('Completed publication does not exactly match retained runtime proof.');
+      return;
+    }
     const priorSnapshot = authRequestSnapshot(this.db, request.id);
     const prepared = extractAtomicMergeState(request.output).prepared;
     const output = prepared ? request.output : `${request.output}\nMANDIBLE_MERGE_PREPARED ${JSON.stringify({ merge_sha: proof.mergeCommit, base_sha: proof.mergeBase, head_sha: proof.mergeHead, tree_sha: proof.frozenCandidate.tree })}\nMANDIBLE_MERGE_APPLIED ${JSON.stringify({ merge_sha: proof.mergeCommit, base_sha: proof.mergeBase })}`;
@@ -2183,6 +2187,11 @@ export class AuthQueue {
       };
     }
 
+    if (repo === 'mandible' && process.env.MANDIBLE_PRODUCTION_ROOT) {
+      const context = resolveAuthMergeExecutionContext(this.db, input);
+      const readiness = validateRuntimeSource(this.db, process.env.MANDIBLE_PRODUCTION_ROOT, context.targetRepoRoot);
+      if (!readiness.ok) return { status: 'error', repo, base_branch: baseBranch, head_branch: headBranch, checked_requests: 0, conflicts: [], reason: readiness.reason };
+    }
     const worktreeReady = this.checkMergeWorktreeReady(cwd);
     if (worktreeReady.status === "error") {
       return {
@@ -2381,8 +2390,15 @@ export class AuthQueue {
     };
   }
 
+  getRequestExact(id: string): AuthRequest | null { return this.getRequestById(id); }
+
   getRequest(id: string): AuthRequest | null {
     this.expireStale();
+    return this.getRequestReference(id);
+  }
+
+  /** Ambiguity-safe public reference lookup without lifecycle mutations. */
+  getRequestReference(id: string): AuthRequest | null {
     // Bug: caa157e — support UUID prefix matching
     const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
     if (!resolved.ok) {
@@ -4867,7 +4883,7 @@ export class AuthQueue {
           // after storeExecutionResult so the auth:resolved SSE broadcast
           // has time to reach the channel server before the daemon exits.
           const completed = this.requireRequest(request.id);
-          if (completed.status === "completed" && completed.exit_code === 0 && this.successfulMergeEvidenceFailure(completed) === null) this.schedulePostSuccessRestart(completed);
+          await this.afterConvergenceHook(completed, true);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Execution failed.";
           if (executionResult?.exit_code === 0) {
@@ -5006,7 +5022,7 @@ export class AuthQueue {
       started_at: at,
       finished_at: at,
     }, null);
-    this.schedulePostSuccessRestart(this.requireRequest(refreshed.id));
+    await this.afterConvergenceHook(this.requireRequest(refreshed.id), true);
   }
 
   private async runRecoveredAtomicCleanup(request: AuthRequest, mergeSha: string): Promise<string> {
@@ -5073,7 +5089,7 @@ export class AuthQueue {
     }
     // Issue 27241e6 — settle convergence from the durable rows, not from the
     // in-memory results: a crash-resumed run has rows but no results here.
-    this.settleConvergence(mergedRequest);
+
   }
 
   // --- Issue 27241e6: durable post-merge convergence ---------------------------
@@ -5183,7 +5199,7 @@ export class AuthQueue {
    * `staged`, so a repeat call is a no-op.
    */
   private releaseWithheldClosures(request: AuthRequest): void {
-    const current = this.getRequest(request.id);
+    const current = this.getRequestById(request.id);
     if (!current || current.status !== "completed" || current.exit_code !== 0 || this.successfulMergeEvidenceFailure(current)) return;
     try {
       this.executeDeferredLedgerActions(current);
@@ -5239,6 +5255,8 @@ export class AuthQueue {
       if (this.disposed || !this.isDbOpen()) return;
       const request = this.getRequestById(id);
       if (!request || request.status !== "completed" || request.exit_code !== 0 || this.successfulMergeEvidenceFailure(request)) continue;
+      let ordinaryRebuild = false;
+      if (request.repo === 'mandible') { this._rebuilding = true; this.restartAvailability?.markRebuildStarted(request.id); }
       try {
         const results = await this.hookManager.runPending(request, (hookLabel, text) => {
           this.handleOutput({
@@ -5248,6 +5266,7 @@ export class AuthQueue {
             timestamp: Date.now(),
           });
         });
+        ordinaryRebuild = results.some(result => result.hook_id === 'builtin-mandible-rebuild' && result.exit_code === 0);
         for (const result of results) {
           const status = result.exit_code === 0 ? "ok" : `failed (exit ${result.exit_code})`;
           this.handleOutput({
@@ -5264,7 +5283,7 @@ export class AuthQueue {
           error: errorMessage(error) ?? String(error),
         });
       }
-      this.settleConvergence(this.getRequestById(request.id) ?? request);
+      await this.afterConvergenceHook(this.getRequestById(request.id) ?? request, ordinaryRebuild);
     }
   }
 
@@ -5272,9 +5291,9 @@ export class AuthQueue {
    * Operator-initiated convergence retry: grant one more attempt to the failed
    * hooks of a merged request and run them. Never re-runs the merge.
    */
-  async retryHookConvergence(requestId: string, hookId?: string): Promise<AuthConvergence> {
+  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor }): Promise<AuthConvergence> {
     this.requireExternalEffects("Hook convergence retry");
-    const request = this.getRequest(requestId);
+    const request = this.getRequestReference(requestId);
     if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
     if (request.status !== "completed" || request.exit_code !== 0) {
       throw new AuthQueueError(
@@ -5284,8 +5303,27 @@ export class AuthQueue {
     }
     const evidenceFailure = this.successfulMergeEvidenceFailure(request);
     if (evidenceFailure) throw new AuthQueueError("invalid_status", evidenceFailure);
+    if (recovery) {
+      const custody = this.requestCustodyForActor(request, recovery.actor);
+      const generation = custody?.custody_generation;
+      const snapshot = JSON.stringify(authRequestSnapshot(this.db, request.id));
+      const guard = () => {
+        const current = this.requireRequest(request.id);
+        const owner = this.requestCustodyForActor(current, recovery.actor);
+        if (JSON.stringify(authRequestSnapshot(this.db, request.id)) !== snapshot || owner?.custody_generation !== generation) throw new AuthQueueError('invalid_status', 'Request or custody changed during recovery observation.');
+      };
+      await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
+      // Recovery settles this request only. Existing merge finalizers retain
+      // their normal daemon lifecycle; a one-shot must not enqueue global work.
+      await this.finalizerQueue.drain();
+      return this.afterConvergenceHook(this.requireRequest(request.id));
+    }
+    if (request.repo === 'mandible') {
+      this._rebuilding = true;
+      this.restartAvailability?.markRebuildStarted(request.id);
+    }
     this.hookManager.grantRetry(request.id, hookId);
-    await this.hookManager.runPending(request, (hookLabel, text) => {
+    const results = await this.hookManager.runPending(request, (hookLabel, text) => {
       this.handleOutput({
         request_id: request.id,
         stream: "stderr",
@@ -5293,7 +5331,7 @@ export class AuthQueue {
         timestamp: Date.now(),
       });
     });
-    return this.settleConvergence(this.getRequestById(request.id) ?? request);
+    return this.afterConvergenceHook(this.getRequestById(request.id) ?? request, results.some(result => result.hook_id === "builtin-mandible-rebuild" && result.exit_code === 0));
   }
 
   /** Exact-id lookup with no prefix resolution and no expiry side effect. */
@@ -5308,17 +5346,25 @@ export class AuthQueue {
     }
   }
 
-  private schedulePostSuccessRestart(request: AuthRequest): void {
-    if (request.status !== "completed" || request.exit_code !== 0 || this.successfulMergeEvidenceFailure(request)) return;
-    const merged = { ...request, ...this.getRequest(request.id) } as AuthRequest;
-    if (merged.repo !== "mandible") return;
+  private activeConvergenceDrain: string | null = null;
+  private readonly scheduledConvergenceDrains = new Set<string>();
+
+  private async afterConvergenceHook(request: AuthRequest, ordinaryRebuild = false): Promise<AuthConvergence> {
+    const convergence = this.settleConvergence(request);
+    if (request.status !== 'completed' || request.exit_code !== 0 || this.successfulMergeEvidenceFailure(request) || request.repo !== 'mandible') return convergence;
+    const admitted = await this.hookManager.admittedDrainIdentity?.(request.id);
+    const ordinary = !this.hookManager.runtimeHandoffOwnsRequest?.(request.id) && ordinaryRebuild && convergence.state === 'complete';
+    const key = admitted || (ordinary ? `${request.id}:${process.pid}:ordinary` : null);
+    if (!key) { if (!this.activeConvergenceDrain) this._rebuilding = false; return convergence; }
+    if (this.scheduledConvergenceDrains.has(key)) return convergence;
+    if (this.activeConvergenceDrain && this.activeConvergenceDrain !== key) return convergence;
+    this.scheduledConvergenceDrains.add(key);
+    this.activeConvergenceDrain = key;
     this._rebuilding = true;
     this.recordSelfMergeShutdown(this.now());
-    authLog("info", "auth_self_merge_restart_scheduled", {
-      subsystem: "auth", auth_request_id: request.id, delay_ms: 2000,
-      drain_cap_ms: AuthQueue.SELF_MERGE_DRAIN_CAP_MS,
-    });
-    void this.drainAndRestart(request.id);
+    authLog('info', 'auth_self_merge_restart_scheduled', { subsystem: 'auth', auth_request_id: request.id, drain_identity: key, delay_ms: 2000, drain_cap_ms: AuthQueue.SELF_MERGE_DRAIN_CAP_MS });
+    void this.drainAndRestart(request.id, admitted || undefined).catch(error => { if (this.activeConvergenceDrain === key) { this.activeConvergenceDrain = null; this._rebuilding = false; } authLog('error', 'auth_convergence_drain_failed', { subsystem: 'auth', auth_request_id: request.id, error: errorMessage(error) }); });
+    return convergence;
   }
 
   /**
@@ -5328,7 +5374,7 @@ export class AuthQueue {
    * durable shutdown marker plus startup recovery remains the backstop when the
    * drain times out.
    */
-  private async drainAndRestart(selfRequestId: string): Promise<void> {
+  private async drainAndRestart(selfRequestId: string, admitted?: string): Promise<void> {
     const foreign = [...this.inFlight.entries()]
       .filter(([id]) => id !== selfRequestId)
       .map(([, promise]) => promise);
@@ -5350,6 +5396,12 @@ export class AuthQueue {
     await new Promise<void>((resolve) => setTimeout(resolve, 2000));
     // Issue ff784d8 — the exact restart tail starts immediately before exit,
     // after drain and flush. Do not reinterpret the earlier DB recovery marker.
+    if (admitted && await this.hookManager.admittedDrainIdentity(selfRequestId) !== admitted) {
+      this.activeConvergenceDrain = null;
+      this._rebuilding = false;
+      authLog("warn", "auth_handoff_drain_ownership_changed", { subsystem: "auth", auth_request_id: selfRequestId });
+      return;
+    }
     this.restartAvailability?.markShutdownStarted(selfRequestId);
     this.restartFn();
   }
@@ -6237,6 +6289,10 @@ export class AuthQueue {
 
   private executeDeferredLedgerActions(request: AuthRequest): void {
     if (this.successfulMergeEvidenceFailure(request)) return;
+    this.db.transaction(() => this.applyDeferredLedgerActions(request)).immediate();
+  }
+
+  private applyDeferredLedgerActions(request: AuthRequest): void {
     const persistedActions = this.tableExists("auth_request_actions")
       ? listAuthRequestActions(this.db, request.id)
       : [];
@@ -7412,7 +7468,7 @@ export class AuthQueue {
         `Ambiguous prefix '${id}' — matches ${resolved.count} requests. Use a longer prefix.`
       );
     }
-    const request = this.getRequest(resolved.ok ? resolved.id : id);
+    const request = this.getRequestById(resolved.ok ? resolved.id : id);
     if (!request) {
       throw new AuthQueueError("not_found", "Request not found.");
     }

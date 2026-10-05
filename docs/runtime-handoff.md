@@ -122,4 +122,41 @@ desktop gate still runs on the exact unmodified integration candidate; this
 transition fixture does not claim identical source bytes after its necessary
 port transforms.
 
+For the next update from an installed canonical-root Bun daemon, use the same
+fixture with `MANDIBLE_TEST_INSTALLED_UPDATE=1` and set
+`MANDIBLE_TEST_LEGACY_RUNTIME` to that installation's pinned Bun. This mode
+keeps the old protected-root executor serving until the ordinary reviewed
+request merges the candidate. It skips candidate bootstrap and the preliminary
+native build, then verifies the normal installer, runtime restart, exact new
+health generation, durable hook completion, and native `xattr` precedence under
+the real launchd executor. It does not expect a source-transition handoff journal.
+The default mode retains coverage of the feature-checkout to canonical-root
+handoff. Evidence records the topology that actually ran.
+
+Verification-only recovery uses the same retained hook row, publication proof,
+failed handoff journal, receipt verifier, and convergence settlement. It never
+runs a build, installer, merge, or restart. The failed journal remains failed
+through a 31-second observation of the exact current daemon, installation,
+loaded launchd definitions, and actual stderr writer. Hook acceptance commits
+before the journal becomes complete; interrupted acknowledgment can be replayed.
+Concurrent observers cannot replace a receipt after its hook acceptance commits.
+The original failure and hook attempt history remain available.
+
+The protected retry route accepts `mode: "verify-current"` and requires an
+active durable credential with project write access and exact delivery custody
+(or configured operator recovery). Public routes accept ambiguity-safe short
+request references. When the deployed daemon predates this capability, the
+candidate-owned `scripts/verify-current-convergence.ts` is a finite one-shot:
+pass the full exact request ID and optionally `--operator-recovery`, with the
+durable credential on stdin. It opens the existing database without migrations,
+background sweeps, global request expiry, or merge-finalizer enqueue. Tokens
+must not appear in command arguments, environment, output, or retained evidence.
+
+Log discovery and complete current-process coverage each have a 16 MiB bound.
+Missing startup identity, changed process, rotated or truncated logs, or excess
+coverage fails visibly. Recovery preserves logs and does not restart a healthy
+daemon to satisfy that bound. A fresh launch requires separate authorization.
+Packaging uses the pinned runtime and canonical CLI, then native macOS tools,
+then Cargo and inherited tools; a Homebrew `xattr` cannot replace `/usr/bin/xattr`.
+
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>

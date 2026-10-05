@@ -6,7 +6,7 @@ import http from 'node:http';
 import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it } from 'vitest';
-import { bindingDigest, handoffDirectory, readRuntimeHandoff, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, readRuntimeHandoff, runtimeLogStartupOffset, runtimeHandoffDrainIdentity, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -53,4 +53,32 @@ request.on('error', error => { console.error(error.message); process.exitCode = 
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
+});
+
+it('requires the current process startup boundary and refuses rotated or truncated log coverage', () => {
+  const { home } = fixture();
+  const file = path.join(home, 'daemon.log');
+  const stale = JSON.stringify({ message: 'server_started', time: '2020-01-01T00:00:00Z' }) + '\n';
+  const startup = JSON.stringify({ message: 'server_started', time: '2026-10-05T19:55:06Z' }) + '\n';
+  fs.writeFileSync(file, stale + startup + JSON.stringify({ message: 'healthy' }) + '\n');
+  const stat = fs.statSync(file);
+  const provenance = { path: file, dev: stat.dev, ino: stat.ino, size: stat.size };
+  expect(runtimeLogStartupOffset(provenance, { startedAt: '2026-10-05T19:55:06Z' })).toBe(Buffer.byteLength(stale));
+  expect(() => runtimeLogStartupOffset(provenance, { startedAt: '2026-10-06T00:00:00Z' })).toThrow('current process');
+  fs.truncateSync(file, 0);
+  expect(() => runtimeLogStartupOffset(provenance, { startedAt: '2026-10-05T19:55:06Z' })).toThrow('truncated');
+});
+
+it('never requests a drain from failed, completed or unacknowledged journals', () => {
+  const { journal } = fixture();
+  for (const phase of ['failed', 'complete', 'acknowledged', 'armed']) expect(runtimeHandoffDrainIdentity({ ...journal, phase })).toBeNull();
+});
+
+it('refuses startup discovery outside bounded log coverage', () => {
+  const { home } = fixture();
+  const file = path.join(home, 'large.log');
+  fs.writeFileSync(file, JSON.stringify({ message: 'server_started', time: '2026-10-05T19:55:06Z' }) + '\n');
+  fs.appendFileSync(file, Buffer.alloc(16 * 1024 * 1024 + 1, 32));
+  const stat = fs.statSync(file);
+  expect(() => runtimeLogStartupOffset({ path: file, dev: stat.dev, ino: stat.ino, size: stat.size }, { startedAt: '2026-10-05T19:55:06Z' })).toThrow('coverage limit');
 });

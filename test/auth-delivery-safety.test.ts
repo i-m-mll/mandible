@@ -1,9 +1,12 @@
 import fs from "node:fs";
+import SqliteDatabase from "../src/sqlite.js";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthHookManager, type RuntimeHandoffJournal } from "../src/auth-hooks.js";
-import { verifyRuntimeHandoffPublication } from "../src/runtime-handoff-proof.js";
+import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "../src/runtime-handoff-proof.js";
+import { mintApiToken } from "../src/client-auth/tokens.js";
+import { addOrUpdateCheckout } from "../src/ledger/project-registry.js";
 import { getAttributionEvidence } from "../src/users/store.js";
 import {
   commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue,
@@ -141,7 +144,7 @@ describe("protected delivery evidence", () => {
     expect(proof).toMatchObject({ mergeCommit: publication.mergeSha, mergeBase: request.merge_preflight_base_sha, mergeHead: request.merge_head_sha, frozenCandidate: { tree: request.merge_candidate_tree_sha } });
     expect(() => verifyRuntimeHandoffPublication(db, { ...binding, commandDigest: "f".repeat(64) })).toThrow("binding differs");
     // An executor checkout never gains destination authority from matching runtime bytes.
-    expect(() => verifyRuntimeHandoffPublication(db, { ...binding, source: { root: repo, commonGitDir: git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), head: request.merge_head_sha!, buildRevision: request.merge_head_sha!, compiledDigest: "f".repeat(64), dependencies: { root: repo, digest: "f".repeat(64) }, files: {}, runtime: { path: process.execPath, sha256: "f".repeat(64) } } })).toThrow("source and destination canonical projects differ");
+    expect(() => verifyRuntimeHandoffPublication(db, { ...binding, source: { root: repo, commonGitDir: git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), head: request.merge_head_sha!, buildRevision: request.merge_head_sha!, compiledDigest: "f".repeat(64), dependencies: { root: repo, digest: "f".repeat(64) }, files: {}, runtime: { path: process.execPath, sha256: "f".repeat(64) } } })).toThrow("unregistered");
     git(repo, ["update-ref", "refs/heads/main", request.merge_preflight_base_sha!, publication.mergeSha]);
     expect(() => verifyRuntimeHandoffPublication(db, { ...binding, ...proof })).toThrow("checkout differs");
   });
@@ -259,5 +262,181 @@ describe("protected delivery evidence", () => {
     queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
     expect(queue.getRequest(request.id)?.status).toBe("pending");
     expect(hookCalls).toBe(0);
+  });
+});
+
+describe('runtime convergence recovery', () => {
+  it('refuses absent or conflicting source registration before accepting repository identity', () => {
+    const destination = createLedgerProject(db, fs.realpathSync(repo)).project;
+    const source = createAuthCheckRepo();
+    expect(validateRuntimeSource(db, repo, repo)).toMatchObject({ ok: true, projectId: destination.id });
+    expect(validateRuntimeSource(db, source, repo)).toMatchObject({ ok: false, reason: expect.stringContaining('mandible project add-checkout') });
+    const conflicting = createLedgerProject(db, fs.realpathSync(source)).project;
+    expect(validateRuntimeSource(db, source, repo)).toMatchObject({ ok: false, reason: expect.stringContaining('different canonical projects') });
+    addOrUpdateCheckout(db, destination.id, { root: fs.realpathSync(source) });
+    expect(validateRuntimeSource(db, source, repo)).toMatchObject({ ok: false, reason: expect.stringContaining('different Git repositories') });
+    expect(conflicting.id).not.toBe(destination.id);
+  });
+
+  it('refuses unregistered runtime source during preparation before approval or execution', () => {
+    const source = createAuthCheckRepo();
+    try {
+      createLedgerProject(db, fs.realpathSync(repo));
+      vi.stubEnv('MANDIBLE_PRODUCTION_ROOT', source);
+      const input = { repo: 'mandible', cwd: repo, base_branch: 'main', head_branch: 'feature/delivery' };
+      expect(queue.checkMergeIndependence(input)).toMatchObject({ status: 'error', reason: expect.stringContaining('mandible project add-checkout') });
+      expect(executorCalls).toBe(0);
+      expect(hookCalls).toBe(0);
+      vi.stubEnv('MANDIBLE_PRODUCTION_ROOT', repo);
+      expect(queue.checkMergeIndependence(input)).toMatchObject({ status: 'clean' });
+    } finally { fs.rmSync(source, { recursive: true, force: true }); }
+  });
+
+  async function recoveryFixture(interruptAck = false, fileBacked = false) {
+    queue.dispose();
+    if (fileBacked) {
+      const filename = path.join(repo, '.git/recovery.db');
+      fs.writeFileSync(filename, db.serialize()); db.close();
+      db = new SqliteDatabase(filename, { timeout: 1 });
+      db.pragma('journal_mode = WAL');
+    }
+    vi.stubEnv('MANDIBLE_HOME', path.join(repo, '.git/private-installation'));
+    let journal: RuntimeHandoffJournal | null = null;
+    const ack = vi.fn(async () => {
+      if (interruptAck) { interruptAck = false; throw new Error('ack interrupted'); }
+      journal!.phase = 'acknowledged';
+    });
+    const observation = vi.fn(async (current: RuntimeHandoffJournal, actor: unknown) => {
+      expect(current.phase).toBe('failed');
+      return { ...current, recovery: { digest: 'b'.repeat(64), failureDigest: 'original-failure', receipt: { healthy: true }, actor, observedAt: Date.now() } };
+    });
+    const recheck = vi.fn(() => {});
+    const persist = vi.fn((current: RuntimeHandoffJournal) => { Object.assign(journal!, current); });
+    const hooks = new AuthHookManager(db, { handoffClient: {
+      readRuntimeHandoff: () => journal,
+      verifyRuntimeHandoffReceipt: async () => {},
+      acknowledgeRuntimeHandoff: ack,
+      observeFailedRuntimeHandoff: observation,
+      persistRuntimeRecoveryObservation: persist,
+      recheckRuntimeObservation: recheck,
+      completeRuntimeHandoffRecovery: async current => {
+        expect(hooks.getRun(current.binding.requestId, current.binding.hookId)?.state).toBe('complete');
+        expect(current.phase).toBe('failed');
+        journal!.phase = 'complete'; return journal!;
+      },
+    } });
+    const restart = vi.fn();
+    queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, restartFn: restart, executor: async () => new Promise(() => {}) });
+    vi.spyOn(queue as any, 'runBackgroundFinalizers').mockImplementation(async (id: string) => { db.prepare('UPDATE auth_requests SET merge_finalized_at = ? WHERE id = ?').run(Date.now(), id); });
+    db.prepare('UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?').run('*', `printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${'a'.repeat(64)}\\n'; exit 75`, 'builtin-mandible-rebuild');
+    const issue = createLedgerIssue(db, createLedgerProject(db, repo).project.id, 'recover-close');
+    const request = submitMerge([issue.id]);
+    await queue.approveWithOperatorProof(request.id, operatorId);
+    const publication = publishTestCandidate(repo, queue.getRequest(request.id)!);
+    queue.setResult(request.id, 0, publication.output);
+    await (queue as any).finalizerQueue.drain();
+    await hooks.runPending(queue.getRequest(request.id)!);
+    const run = hooks.getRun(request.id, 'builtin-mandible-rebuild')!;
+    db.prepare("UPDATE auth_hook_executions SET state = 'failed' WHERE id = ?").run(run.id);
+    const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
+    journal = { schema: 'mandible-runtime-handoff@1', binding: { ...binding, ...verifyRuntimeHandoffPublication(db, binding) }, bindingDigest: 'a'.repeat(64), phase: 'failed' };
+    const credential = mintApiToken(db, 'private-pepper', operatorId).credential;
+    const actor = { user_id: operatorId, credential_id: credential.id, evidence_method: 'api_token' as const, authority_path: 'operator_recovery' as const };
+    return { hooks, request, run, issue, actor, observation, recheck, ack, restart, journal, persist };
+  }
+
+  it('accepts the hook before exposing completion, preserves terminal history and replays interrupted acknowledgment once', async () => {
+    const f = await recoveryFixture(true);
+    const before = queue.getRequest(f.request.id)!;
+    const history = queue.listLifecycleEvents(f.request.id);
+    await expect(queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor })).rejects.toThrow('ack interrupted');
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject({ state: 'complete', attempts: f.run.attempts, attempt_history: f.run.attempt_history });
+    expect(f.journal.phase).toBe('complete');
+    const adopt = vi.fn(() => { throw new Error('terminal publication must not be adopted'); });
+    await f.hooks.reconcileRuntimeHandoffs(adopt);
+    expect(adopt).not.toHaveBeenCalled();
+    await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    expect(f.observation).toHaveBeenCalledTimes(1);
+    expect(f.restart).not.toHaveBeenCalled();
+    expect(queue.listLifecycleEvents(f.request.id)).toEqual(history);
+    expect(queue.getRequest(f.request.id)).toMatchObject({ output: before.output, status: before.status, approved_at: before.approved_at, resolved_at: before.resolved_at });
+    expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'closed' });
+    expect(git(repo, ['rev-parse', 'main'])).toBe(f.journal.binding.mergeCommit);
+  });
+
+  it('holds the SQLite writer lock before persisting external recovery evidence', async () => {
+    const f = await recoveryFixture(false, true);
+    const competing = new SqliteDatabase(path.join(repo, '.git/recovery.db'), { timeout: 1 });
+    const foreignEffect = vi.fn();
+    f.persist.mockImplementationOnce(current => {
+      expect(() => competing.transaction(foreignEffect).immediate()).toThrow(/locked|busy/i);
+      expect(foreignEffect).not.toHaveBeenCalled();
+      Object.assign(f.journal, current);
+    });
+    try {
+      await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+      expect(f.persist).toHaveBeenCalledOnce();
+    } finally { competing.close(); }
+  });
+
+  it('does not replace an accepted receipt when concurrent observations finish out of order', async () => {
+    const f = await recoveryFixture();
+    let finishLate!: (journal: RuntimeHandoffJournal) => void;
+    f.observation.mockImplementationOnce(async current => new Promise(resolve => { finishLate = resolve; }));
+    const late = queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    await vi.waitFor(() => expect(f.observation).toHaveBeenCalledTimes(1));
+    await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    const accepted = f.journal.recovery!.digest;
+    finishLate({ ...f.journal, phase: 'failed', recovery: { ...f.journal.recovery!, digest: 'c'.repeat(64) } });
+    await expect(late).rejects.toThrow('hook changed');
+    expect(f.journal.recovery!.digest).toBe(accepted);
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.output).toContain(`MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:${accepted}`);
+    await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+  });
+
+  it('keeps unrelated expired requests unchanged throughout verification-only recovery', async () => {
+    const f = await recoveryFixture();
+    const unrelated = queue.submit({ type: 'config-change', title: 'Unrelated pending request', command: 'true', cwd: repo });
+    db.prepare('UPDATE auth_requests SET expires_at = 0 WHERE id = ?').run(unrelated.id);
+    const before = db.prepare('SELECT * FROM auth_requests WHERE id = ?').get(unrelated.id);
+    await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    expect(db.prepare('SELECT * FROM auth_requests WHERE id = ?').get(unrelated.id)).toEqual(before);
+  });
+
+  it('drains once while foreign work runs and keeps admission closed through a second no-drain settlement', async () => {
+    const f = await recoveryFixture();
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(queue as any, 'successfulMergeEvidenceFailure').mockReturnValue(null);
+      const identity = vi.spyOn(f.hooks, 'admittedDrainIdentity').mockResolvedValue('exact-execution:current-process');
+      let finishForeign!: () => void;
+      (queue as any).inFlight.set('foreign', new Promise<void>(resolve => { finishForeign = resolve; }));
+      const request = { ...queue.getRequestExact(f.request.id)!, repo: 'mandible' };
+      await (queue as any).afterConvergenceHook(request);
+      await (queue as any).afterConvergenceHook(request);
+      identity.mockResolvedValue(null);
+      await (queue as any).afterConvergenceHook(request);
+      expect(queue.isRebuilding).toBe(true);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(f.restart).not.toHaveBeenCalled();
+      identity.mockResolvedValue('exact-execution:current-process');
+      finishForeign();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(f.restart).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('refuses changed credentials at acceptance and preserves failed ownership', async () => {
+    const f = await recoveryFixture();
+    f.observation.mockImplementationOnce(async current => {
+      current.recovery = { digest: 'observed', failureDigest: 'original', receipt: {}, actor: f.actor, observedAt: Date.now() };
+      db.prepare("UPDATE user_credentials SET status = 'revoked' WHERE id = ?").run(f.actor.credential_id);
+      return current;
+    });
+    await expect(queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor })).rejects.toThrow('inactive');
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.state).toBe('failed');
+    expect(f.journal.phase).toBe('failed');
+    expect(f.ack).not.toHaveBeenCalled();
   });
 });

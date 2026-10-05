@@ -14,6 +14,7 @@ import { DEFAULT_BACKEND_PORT, PRODUCTION_ORIGIN } from "./canonical-origin.mjs"
 import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
 import { installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "./build-revision.mjs";
+import { runtimeEnvironment } from "./runtime-environment.mjs";
 
 const DEFAULT_HOME = path.join(os.homedir(), ".mandible");
 const configuredHome = process.env.MANDIBLE_HOME?.trim() || DEFAULT_HOME;
@@ -255,7 +256,7 @@ export function captureRuntimeHandoff(root) {
   if (!job.loaded || !job.pid || !startedAt) throw new Error('Handoff requires the exact running production LaunchAgent.');
   return { installationId: main.installation_id, home: HOME, root: destination, ...(source ? { source } : {}), domain: DOMAIN,
     backendLabel: BACKEND_LABEL, gatewayLabel: GATEWAY_LABEL, publicOrigin: main.public_origin,
-    daemonLog: readRunnerMetadata(production).logFile,
+    daemonLog: locateLaunchAgent(BACKEND_LABEL).record.StandardErrorPath,
     oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, runnerSha256: createHash('sha256').update(fs.readFileSync(backend.argv[1])).digest('hex'), launchMode: installedLaunchMode() }, priorGateway: gateway };
 }
 
@@ -322,7 +323,17 @@ export async function verifyHandoffDefinitions(binding) {
   if (!backend.loaded || !gateway.loaded || backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services are not loaded with the pinned runtime.');
   const status = await inspectRuntime({ launchMode: binding.priorBackend.launchMode });
   if (!status.status.dashboard_ready || status.main.backend_generation !== binding.mergeCommit) throw new Error('Candidate production front door is not ready at the exact merge generation.');
-  return { backend, gateway, health: status.backend.document, frontDoorHealth: status.gateway.document };
+  const job = inspectJob(BACKEND_LABEL);
+  const startedAt = processStart(job.pid);
+  const installed = locateLaunchAgent(BACKEND_LABEL);
+  const logPath = installed?.record.StandardErrorPath;
+  if (!job.pid || !startedAt || !path.isAbsolute(logPath || '')) throw new Error('Current daemon process or launchd log provenance is unavailable.');
+  const writer = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(job.pid), '-d', '2', '-Fn'], { encoding: 'utf8', timeout: 2500 });
+  if (writer.error || writer.status !== 0 || !writer.stdout.split('\n').includes(`n${logPath}`)) throw new Error('Current daemon stderr writer differs from the loaded service log.');
+  const log = fs.statSync(logPath);
+  return { backend, gateway, health: status.backend.document, frontDoorHealth: status.gateway.document,
+    process: { pid: job.pid, startedAt, startupEpoch: status.backend.document.startup_epoch },
+    daemonLog: { path: logPath, dev: log.dev, ino: log.ino, size: log.size } };
 }
 
 function portOpen(url) {
@@ -568,7 +579,7 @@ function installedLaunchMode() {
 
 function prepareServicePlists(production, main, launchMode) {
   const runtime = runtimeBinary();
-  const pathValue = process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin";
+  const pathValue = runtimeEnvironment({ runtime, root: production.root }).PATH;
   const backendEnvironment = {
     ...existingBackendEnvironment(),
     // Preserve the CLI's documented credential-tool test seam for isolated
@@ -582,6 +593,7 @@ function prepareServicePlists(production, main, launchMode) {
     MANDIBLE_CONTEXT_VERIFICATION_KEY: path.join(RUNTIME_DIR, "context-verification-key.pem"),
     MANDIBLE_LAUNCH_MODE: launchMode,
     MANDIBLE_PORT: String(Number(main.backendUrl.port) || DEFAULT_BACKEND_PORT),
+    MANDIBLE_STDERR_LOG_PATH: path.join(LOG_DIR, "production-stderr.log"),
     MANDIBLE_BASE: PRODUCTION_ORIGIN,
     PATH: pathValue,
     GIT_OPTIONAL_LOCKS: "0",
