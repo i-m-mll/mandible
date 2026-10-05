@@ -795,6 +795,7 @@ function App(): JSX.Element {
   // Current shared-SSE connection state, updated from onState, so the fallback
   // poll can gate on connection health rather than last-event receipt.
   const sseStateRef = useRef<SseConnectionState>('idle');
+  const [sseWireError, setSseWireError] = useState<string | null>(null);
   // Set when a graph-affecting event arrives while the graph tab is hidden or
   // inactive; the graph-activation effect flushes it on activation/visibility.
   const graphDirtyRef = useRef(false);
@@ -1748,8 +1749,9 @@ function App(): JSX.Element {
     // dropped stream (e.g. a daemon self-merge restart) may have missed events.
     // On a real reconnect, bust the API cache and refetch the visible route plus
     // badges so the dashboard converges on current state.
-    const offState = client.onState((state, { reconnected }) => {
+    const offState = client.onState((state, { reconnected, error }) => {
       sseStateRef.current = state;
+      setSseWireError(error ?? null);
       if (!reconnected) return;
       invalidateApiGetCache();
       lastDashboardSseAtRef.current = Date.now();
@@ -2906,6 +2908,12 @@ function App(): JSX.Element {
           data-app-operational-notice-fallback
           ref={setFallbackNoticeHost}
         />
+        {sseWireError ? (
+          <DetailPaneNotice severity="error" source="live-update-wire" title="Live updates need attention"
+            actions={<button type="button" onClick={() => window.location.reload()}>Reload</button>}>
+            {sseWireError}
+          </DetailPaneNotice>
+        ) : null}
         {clientAccess.phase === 'initializing' || clientAccess.phase === 'recovering' ? (
           <DetailPaneNotice severity="info" source="local-access">
             {accessEverReady ? 'Reconnecting to Mandible…' : 'Connecting to Mandible…'}
