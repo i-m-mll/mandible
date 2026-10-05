@@ -1,18 +1,8 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
-import { AuthQueue } from "../src/auth-queue.js";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { configureDaemonLogger, flushDaemonLogger } from "../src/daemon-log.js";
-import { migrate } from "../src/db.js";
-import { registerAuthRoutes } from "../src/routes/auth.js";
-import { createServer, Router } from "../src/server.js";
-import { SseManager } from "../src/sse.js";
-import { setupOperator } from "../src/users/store.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
 
@@ -105,48 +95,6 @@ function runAtomic(
   });
 }
 
-function runAtomicAsync(
-  base: string,
-  head: string,
-  cached: { tree: string; pin: string; ref: string },
-  extraEnv: Record<string, string>,
-): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  const snippet = [
-    "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
-    `source ${JSON.stringify(AUTH_MERGE)}`,
-    "prompt_confirm() { printf 'y'; }",
-    "run_merge_preflight() { :; }",
-    "cleanup_merged_worktrees() { :; }",
-    "collect_declared_issues() { :; }",
-    "main feature/atomic --into main",
-  ].join("\n");
-  return new Promise((resolve, reject) => {
-    const child = spawn("bash", ["-c", snippet], {
-      cwd: repo,
-      env: {
-        ...process.env,
-        GIT_OPTIONAL_LOCKS: "0",
-        MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE),
-        MANDIBLE_AUTH_ATOMIC: "1",
-        MANDIBLE_AUTH_REQUEST_ID: "atomic-test",
-        MANDIBLE_AUTH_CANDIDATE_TREE_SHA: cached.tree,
-        MANDIBLE_AUTH_CANDIDATE_PIN_SHA: cached.pin,
-        MANDIBLE_AUTH_CANDIDATE_BASE_SHA: base,
-        MANDIBLE_AUTH_CANDIDATE_HEAD_SHA: head,
-        MANDIBLE_AUTH_CANDIDATE_REF: cached.ref,
-        MANDIBLE_AUTH_ALLOWED_SIGNERS: allowedSigner(),
-        ...extraEnv,
-      },
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.on("error", reject);
-    child.on("close", (status) => resolve({ status, stdout, stderr }));
-  });
-}
-
 beforeEach(() => {
   repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-atomic-"));
   key = path.join(repo, "signing-key");
@@ -191,6 +139,25 @@ describe("atomic auth merge", () => {
       result.stderr.indexOf("MANDIBLE_MERGE_APPLIED"),
     );
     expect(result.stderr).toContain("MANDIBLE_MERGE_RESULT");
+  });
+
+  it("preserves protected ref, index, files, and merge state when signing fails or is cancelled", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+    const index = git(["write-tree"]);
+    const contents = fs.readFileSync(path.join(repo, "base.txt"), "utf8");
+    const signer = path.join(repo, "cancelled-signer");
+    fs.writeFileSync(signer, "#!/bin/sh\necho 'signing cancelled' >&2\nexit 130\n", { mode: 0o755 });
+    git(["config", "gpg.ssh.program", signer]);
+    const result = runAtomic(base, head, cached);
+    expect(result.status).not.toBe(0);
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(git(["write-tree"])).toBe(index);
+    expect(fs.readFileSync(path.join(repo, "base.txt"), "utf8")).toBe(contents);
+    expect(fs.existsSync(path.join(repo, "feature.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
+    expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
   });
 
   it("does not move the target when the durable checkpoint endpoint is unreachable", () => {
@@ -352,22 +319,19 @@ describe("atomic auth merge", () => {
     }
   });
 
-  it("keeps direct and legacy invocations on the existing git-merge executor", () => {
+  it("refuses direct execution before signing or protected state changes", () => {
     const base = git(["rev-parse", "main"]);
     const head = git(["rev-parse", "feature/atomic"]);
-    const cached = candidate(base, head);
-
-    const result = runAtomic(base, head, cached, { MANDIBLE_AUTH_ATOMIC: "" });
-
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("creating signed merge commit...");
-    expect(result.stderr).not.toContain("with git commit-tree");
+    const index = git(["write-tree"]);
+    const result = runAtomic(base, head, candidate(base, head), { MANDIBLE_AUTH_ATOMIC: "" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("reviewed signed candidate");
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(git(["write-tree"])).toBe(index);
+    expect(fs.existsSync(path.join(repo, "feature.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
   });
 
-  // Issue 08a5f04 (review F3) — the daemon passes the reviewed head SHA as
-  // MANDIBLE_AUTH_EXPECTED_HEAD_SHA on every daemon-started merge; the
-  // non-atomic path verifies the live source against it and merges the exact
-  // reviewed object.
   function runNonAtomic(
     extraEnv: Record<string, string> = {},
     mainArgs = "feature/atomic --into main",
@@ -393,35 +357,6 @@ describe("atomic auth merge", () => {
       },
     });
   }
-
-  it("non-atomic path merges the exact reviewed object when the source matches", () => {
-    const base = git(["rev-parse", "main"]);
-    const head = git(["rev-parse", "feature/atomic"]);
-
-    const result = runNonAtomic({ MANDIBLE_AUTH_EXPECTED_HEAD_SHA: head });
-
-    expect(result.status).toBe(0);
-    const merged = git(["rev-parse", "main"]);
-    expect(git(["show", "-s", "--format=%P", merged])).toBe(`${base} ${head}`);
-    expect(git(["show", "-s", "--format=%s", merged])).toBe("Merge branch 'feature/atomic'");
-    expect(result.stderr).toContain("MANDIBLE_MERGE_RESULT");
-  });
-
-  it("non-atomic path refuses a source that moved from the reviewed commit", () => {
-    const base = git(["rev-parse", "main"]);
-    const reviewedHead = git(["rev-parse", "feature/atomic"]);
-    git(["checkout", "feature/atomic"]);
-    write("moved.txt", "moved\n");
-    commit("moved head");
-    git(["checkout", "main"]);
-
-    const result = runNonAtomic({ MANDIBLE_AUTH_EXPECTED_HEAD_SHA: reviewedHead });
-
-    expect(result.status).not.toBe(0);
-    expect(git(["rev-parse", "main"])).toBe(base);
-    expect(result.stderr).toContain("not the reviewed commit");
-    expect(result.stderr).not.toContain("MANDIBLE_MERGE_RESULT");
-  });
 
   // Issue 060c9c8 — hierarchical merge support was removed from the executor:
   // the historical `--hierarchical` invocation is now an unknown option and
@@ -450,7 +385,7 @@ describe("atomic auth merge", () => {
     expect(result.stderr).not.toContain("MANDIBLE_MERGE_RESULT");
   });
 
-  it("resume path refuses when MERGE_HEAD is not the reviewed commit", () => {
+  it("preserves legacy interrupted state instead of resuming protected signing", () => {
     const base = git(["rev-parse", "main"]);
     git(["merge", "--no-ff", "--no-commit", "feature/atomic"]);
 
@@ -458,7 +393,7 @@ describe("atomic auth merge", () => {
     const result = runNonAtomic({ MANDIBLE_AUTH_EXPECTED_HEAD_SHA: base });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("not the reviewed commit");
+    expect(result.stderr).toContain("reviewed signed candidate");
     expect(git(["rev-parse", "main"])).toBe(base);
   });
 

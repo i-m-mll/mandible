@@ -569,14 +569,21 @@ export function registerAuthRoutes(
     });
   }, { fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/approve", globalCapabilityRoute("approve_auth", (req, res) => {
+  app.post("/api/auth/request/:id/approve", globalCapabilityRoute("approve_auth", async (req, res) => {
     try {
       const identity = req.client_identity!;
-      const request = authQueue.approve(req.params.id, undefined, identity.user_id);
+      const request = await authQueue.approveWithOperatorProof(req.params.id, identity.user_id);
       res.status(202).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
+  }, { authenticated: true }), { fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/cancel-proof", globalCapabilityRoute("approve_auth", (req, res) => {
+    try {
+      authQueue.cancelOperatorProof(req.params.id, req.client_identity!.user_id);
+      res.status(200).json({ cancelled: true });
+    } catch (error) { handleQueueError(error, res); }
   }, { authenticated: true }), { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/reject", globalCapabilityRoute("approve_auth", (req, res) => {
