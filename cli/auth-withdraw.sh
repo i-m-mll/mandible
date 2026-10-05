@@ -9,7 +9,7 @@ reason=""
 expected_revision=""
 expected_custody_generation=""
 json=0
-binding=$(mandible_bind_main_arguments "auth.withdraw" '{"reason":{"option":"reason"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"json":{"option":"json","constant":"1"}}' "$request_id" "$@") || exit $?
+binding=$(mandible_bind_main_arguments "auth.withdraw" '{"request_id":{"position":0},"reason":{"option":"reason"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"json":{"option":"json","constant":"1"}}' "$@") || exit $?
 eval "$binding"
 [[ -n "$request_id" && -n "${reason//[[:space:]]/}" && "$expected_revision" =~ ^[0-9]+$ && "$expected_custody_generation" =~ ^[0-9]+$ ]] || {
   printf '%s\n' 'Usage: mandible auth withdraw <request> --reason <text> --expected-revision <n> --expected-custody-generation <n> [--json]' >&2

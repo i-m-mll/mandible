@@ -41,6 +41,11 @@ describe("one CLI grammar", () => {
       .toBe("publication='frozen-row'");
     expect(() => syntax.parse(["auth", "request", "feature/x", "--title", "t", "--issue", "one", "--space-publication"]))
       .toThrow();
+    expect(syntax.parse(["auth", "request", "feature/x", "--title", "t", "--closes-issue", "one"]).options["closes-issue"])
+      .toBe("one");
+    expect(syntax.bindEntry("auth.withdraw", { request: { position: 0 } },
+      ["abc/def", "--reason", "abandoned", "--expected-revision", "4", "--expected-custody-generation", "2"]))
+      .toBe("request='abc/def'");
     expect(syntax.bindEntry("wrap", { argv: { rest: 0 } }, ["--", "command", "--help"]))
       .toBe("argv=('command' '--help')");
     expect(syntax.parse(["artifact", "bundle", "create", "--name", "smoke", "report.md", "--dry-run", "--json"]))
