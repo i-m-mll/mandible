@@ -894,7 +894,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
   }
 
   const create = db.transaction(() => {
-    for (const statement of [...HEAD_SCHEMA_STATEMENTS, ...SPACE_PUBLICATION_SCHEMA_SQL, ...SPACE_PUBLICATION_AUTH_SCHEMA_SQL]) {
+    for (const statement of [...HEAD_SCHEMA_STATEMENTS, ...SPACE_PUBLICATION_SCHEMA_SQL]) {
       const executable = statement.startsWith("CREATE TABLE auth_requests")
         ? statement.replace(
             ", supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT, superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT",
@@ -940,6 +940,8 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
       )
       BEGIN SELECT RAISE(ABORT, 'captured auth headline counts are immutable'); END`);
     db.exec("ALTER TABLE work_units ADD COLUMN owner_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT");
+    // Match forward migration order: publication binding follows all prior auth columns.
+    for (const statement of SPACE_PUBLICATION_AUTH_SCHEMA_SQL) db.exec(statement);
     db.exec("ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)");
     db.exec("ALTER TABLE auth_request_actions ADD COLUMN replacement_action_id TEXT REFERENCES auth_request_actions(id) ON DELETE RESTRICT");
     const clearanceFreezeTrigger = AUTH_CLEARANCE_SCHEMA_SQL.find((sql) => sql.includes("auth_requests_clearance_review_frozen"));
