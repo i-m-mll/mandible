@@ -104,6 +104,8 @@ it('hands the actual old daemon over to the candidate through isolated productio
     db = new SqliteDatabase(ledger);
     setupOperator(db, { slug: 'isolated-upgrade-operator', display_name: 'Isolated Upgrade Operator' });
     const signing = configureSigningCredential(db, repo, 'ssh_key'); fs.appendFileSync(path.join(repo, '.git/info/exclude'), '\n.mandible-test-signing-key*\n');
+    const fixtureHooks = path.join(repo, '.git/fixture-hooks'); fs.mkdirSync(fixtureHooks);
+    git(repo, ['config', 'core.hooksPath', fixtureHooks]);
     registerWorkRepo(db, repo); createLedgerProject(db, repo);
     const nativeApp = path.join(scratch, 'Mandible.app');
     const hookCommand = `MANDIBLE_HOME=${quote(home)} MANDIBLE_RUNTIME=${quote(runtime)} MANDIBLE_RUNTIME_ARCHIVE=${quote(archivePath)} MANDIBLE_DESKTOP_INSTALL_PATH=${quote(nativeApp)} ${Object.entries(libraryInputs).map(([key, value]) => `${key}=${quote(value)}`).join(' ')} bash cli/post-merge-build-dist.sh`;
@@ -117,7 +119,7 @@ it('hands the actual old daemon over to the candidate through isolated productio
     requestId = request.id; executionId = hook.id;
     // This is a signed fixture publication, never a production approval. The
     // actual old daemon discovers it through its deployed finalizer sweep.
-    db.prepare("UPDATE auth_requests SET status='completed', exit_code=0, output=?, merge_finalized_at=NULL WHERE id=?").run(publication.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT ')), request.id);
+    db.prepare("UPDATE auth_requests SET status='completed', exit_code=0, output=?, merge_finalized_at=NULL WHERE id=?").run(`${publication.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT '))}\n`, request.id);
     await until(() => { journal = readRuntimeHandoff(home, request.id, hook.id); if (journal?.phase === 'failed') throw new Error(journal.error); return journal?.phase === 'complete' || journal?.phase === 'acknowledged'; }, 15 * 60 * 1000, 'Actual old-to-candidate convergence');
     await until(() => readRuntimeHandoff(home, request.id, hook.id)?.phase === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
     const row = db.prepare('SELECT state, exit_code FROM auth_hook_executions WHERE id=?').get(hook.id) as any; expect(row.state).toBe('complete'); expect(row.exit_code).toBe(0);
