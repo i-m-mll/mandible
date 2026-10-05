@@ -13,7 +13,6 @@ import {
 } from '../../../ui/src/app-shell';
 import { ChatActivity, ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRightSidebar';
 import { MessageInfoPanel } from '../../../ui/src/components/console/MessageInfoPanel';
-import { SessionControls } from '../../../ui/src/components/console/SessionControls';
 import { VerticalArrowIcon } from '../../../ui/src/components/icons/VerticalArrowIcon';
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
 import { useIntrinsicOverflowGroup } from '../../../ui/src/hooks/useIntrinsicOverflowGroup';
@@ -175,7 +174,7 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
       onOpenChange: setOpen, onWidthChange: (width) => updateStored({ width }), activeTab: tab,
       onActiveTabChange: setTab,
       tabs: [
-        { id: 'settings', label: 'Session Settings', tooltip: 'Session Settings', icon: <TestIcon kind="settings" />, content: <><SessionControls sessionId="native" runOptions={{ revision: 1, options: [] }} /><ScrollFill /></> },
+        { id: 'settings', label: 'Session Settings', tooltip: 'Session Settings', icon: <TestIcon kind="settings" />, content: <><p>Terminal settings</p><ScrollFill /></> },
         { id: 'info', label: 'Message Info', tooltip: 'Message Info', icon: <TestIcon kind="info" />, content: <><MessageInfoPanel selectedMessageId={null} streamEvents={[]} /><ScrollFill /></> },
       ],
     };

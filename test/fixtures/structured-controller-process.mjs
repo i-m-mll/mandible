@@ -9,50 +9,15 @@ function send(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
-function claudeSessionId() {
-  const flag = providerArgs.findIndex((arg) => arg === "--resume" || arg === "--session-id");
-  return flag >= 0 ? providerArgs[flag + 1] : "claude-session";
-}
-
+let approvalThread = null;
 lines.on("line", (line) => {
   const request = JSON.parse(line);
-  if (provider === "claude") {
-    send({ ...request, session_id: claudeSessionId() });
-    const text = request.message?.content?.[0]?.text;
-    if (text === "delta") {
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "message_start", message: { id: "claude-message-1" } } });
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_delta", delta: { type: "text_delta", text: "hel" } } });
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_delta", delta: { type: "text_delta", text: "lo" } } });
-    }
-    if (text === "siblings") {
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "message_start", message: { id: "claude-siblings" } } });
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } });
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "working" } } });
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } } });
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "answer" } } });
-      send({ type: "assistant", session_id: claudeSessionId(), uuid: "claude-record", message: {
-        id: "claude-siblings",
-        role: "assistant",
-        content: [{ type: "thinking", thinking: "working" }, { type: "text", text: "answer" }],
-      } });
-    }
-    if (text === "missing-id") {
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "message_start", message: {} } });
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "must be dropped" } } });
-      send({ type: "assistant", session_id: claudeSessionId(), uuid: "record-only", message: {
-        role: "assistant", content: [{ type: "text", text: "must also be dropped" }],
-      } });
-    }
-    if (text === "crash") {
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "message_start", message: { id: "claude-before-crash" } } });
-      send({ type: "stream_event", session_id: claudeSessionId(), event: { type: "content_block_delta", delta: { type: "text_delta", text: "visible before crash" } } });
-      setTimeout(() => process.exit(2), 5);
-      return;
-    }
-    if (text !== "hold") send({ type: "result", subtype: "success", is_error: false, session_id: claudeSessionId() });
+  if (request.id === "approval-1" && request.result) {
+    send({ method:"serverRequest/resolved", params:{ threadId:approvalThread, requestId:request.id } });
+    send({ method:"turn/completed", params:{ threadId:approvalThread, turn:{ id:activeTurnId, status:"completed" } } });
+    activeTurnId=null;
     return;
   }
-
   if (request.method === "initialized") return;
   const respond = (result) => send({ id: request.id, result });
   if (request.method === "initialize") respond({ userAgent: "fake", codexHome: "/tmp", platformFamily: "unix", platformOs: "macos" });
@@ -97,7 +62,12 @@ lines.on("line", (line) => {
         id: "command-rich", type: "commandExecution", command: "true", status: "completed", aggregatedOutput: "ok",
       } } });
     }
-    if (request.params.input[0]?.text !== "hold") {
+    if (request.params.input[0]?.text === "permission") {
+      approvalThread=request.params.threadId;
+      send({ method:"thread/tokenUsage/updated", params:{ threadId:approvalThread,turnId:activeTurnId,tokenUsage:{total:{inputTokens:12,outputTokens:3,totalTokens:15}} } });
+      send({ id:"approval-1", method:"item/commandExecution/requestApproval", params:{ threadId:approvalThread,turnId:activeTurnId,command:"true",reason:"bounded approval fixture" } });
+    }
+    if (!["hold","permission"].includes(request.params.input[0]?.text)) {
       send({ method: "turn/completed", params: { threadId: request.params.threadId, turn: { id: activeTurnId, status: "completed" } } });
       activeTurnId = null;
     }
@@ -113,6 +83,7 @@ lines.on("line", (line) => {
     }
   } else if (request.method === "turn/interrupt") {
     respond({});
+    send({method:"turn/completed",params:{threadId:request.params.threadId,turn:{id:activeTurnId,status:"interrupted"}}});
     activeTurnId = null;
   }
 });

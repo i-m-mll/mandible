@@ -78,7 +78,7 @@ function executable(name: string): string {
 export interface PublicationRunner {
   createWorktree(root: string, branch: string, issue: string): string | Promise<string>;
   commit(worktree: string, publication: SpacePublication): string | Promise<string>;
-  submit(worktree: string, publication: SpacePublication): string | Promise<string>;
+  submit(worktree: string, publication: SpacePublication, db: Db): string | Promise<string>;
 }
 export const publicationRunner: PublicationRunner = {
   async createWorktree(root,branch,issue) {
@@ -99,17 +99,17 @@ export const publicationRunner: PublicationRunner = {
       `${publication.message}\n\nPublish the reviewed immutable Spaces revision ${publication.source_revision}.`, '--',publication.path]);
     return run(worktree,'git',['rev-parse','HEAD']);
   },
-  async submit(worktree,publication) {
+  async submit(worktree,publication,db) {
     await run(worktree,executable('mandible'),['work-unit','activate','--issue',publication.issue_id,
       '--repo',worktree,'--branch',publication.branch!]);
     const existing = await readPublicationAuth(worktree,publication);
     if (existing) return existing;
     await run(worktree,executable('mandible'),['auth','request' ,publication.branch!,
-      '--title',publication.message,'--issue',publication.issue_id,'--message',
+      '--title',publication.message,'--issue',publication.issue_id,'--space-publication',publication.id,'--message',
       `${publication.message}\n\nWhy:\nPublish the selected Spaces document revision while retaining an editable managed copy.`,
       '--verification',`Frozen source ${publication.source_revision}; destination checked before writing; signed issue-linked commit ${publication.commit_sha}.`,
       '--spec',`Publish ${publication.path} from frozen revision ${publication.source_revision}. Managed editing remains independent.\nconvergence: live-on-merge\noperator-gate: none`, '--dirty-policy','block','--no-watch']);
-    const submitted = await readPublicationAuth(worktree,publication);
+    const submitted = await readPublicationAuth(worktree,getPublication(db,publication.space_id,publication.id));
     if (!submitted) throw new ExportError('git_failed','Submission outcome is uncertain. Inspect this publication branch in the auth queue before retrying; the signed proposal is retained.');
     return submitted;
   },
@@ -123,6 +123,7 @@ async function readPublicationAuth(worktree:string,publication:SpacePublication)
   if(requests.length>1)throw new ExportError('git_failed','Multiple requests belong to this publication branch; inspect the queue');
   const request=requests[0];
   if(!request)return null;
+  if(request.id !== publication.auth_request_id)throw new ExportError('stale_destination','Existing auth request is not atomically bound to this publication; inspect the retained proposal before submission');
   if(request.merge_head_sha!==publication.commit_sha)throw new ExportError('stale_destination','Existing auth request reviews different bytes');
   if(['rejected','withdrawn','expired','failed'].includes(request.status))throw new ExportError('git_failed',`Existing publication request is ${request.status}; inspect it and prepare a new publication if another attempt is needed`);
   return request.id;
@@ -136,9 +137,12 @@ async function executePublicationValue(db: Db, spaceId: string, id: string, runn
     if (publication.state === 'submitted') return publication;
     const checkout = getProjectCheckout(db,publication.repo_id);
     if (!checkout) throw new ExportError('checkout_not_found','Destination checkout unavailable');
-    if (publication.state === 'prepared') {
+    const checkDestination = () => {
       if (destinationHash(checkout.root,publication.path) !== publication.expected_destination_sha256)
         throw new ExportError('stale_destination','Destination changed since preparation. Prepare a new publication; the frozen snapshot and draft are retained.');
+    };
+    checkDestination();
+    if (publication.state === 'prepared') {
       const branch = publication.branch ?? `feature/spaces-${id}`;
       const worktree = publication.worktree ?? await runner.createWorktree(checkout.root,branch,publication.issue_id);
       db.prepare('UPDATE space_publications SET branch=?,worktree=? WHERE id=?').run(branch,worktree,id);
@@ -159,9 +163,17 @@ async function executePublicationValue(db: Db, spaceId: string, id: string, runn
       db.prepare('UPDATE space_publications SET version_ref=? WHERE id=?').run(produced.artifact_version.id,id);
       publication = getPublication(db,spaceId,id);
     }
-    const auth = await runner.submit(publication.worktree!,publication);
-    db.prepare("UPDATE space_publications SET auth_request_id=?,state='submitted' WHERE id=?").run(auth,id);
-    return getPublication(db,spaceId,id);
+    const committed = artifactMaterializationTarget(resolveArtifactIdentity(db,publication.version_ref!,'strict-read'));
+    if (!committed.ok || committed.value.custody.hash !== publication.source_revision)
+      throw new ExportError('stale_destination','Signed publication differs from its frozen source; inspect the retained commit before submitting');
+    checkDestination();
+    if (destinationHash(publication.worktree!,publication.path) !== publication.source_revision)
+      throw new ExportError('stale_destination','Publication checkout changed after committing; the signed snapshot is retained.');
+    const auth = await runner.submit(publication.worktree!,publication,db);
+    const bound = getPublication(db,spaceId,id);
+    if(bound.state !== 'submitted' || bound.auth_request_id !== auth)
+      throw new ExportError('git_failed','Auth submission did not atomically bind this publication; the signed proposal is retained for inspection');
+    return bound;
   } finally { executing.delete(id); }
 }
 

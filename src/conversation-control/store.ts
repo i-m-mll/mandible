@@ -24,6 +24,7 @@ type ConversationBoundary = {
   session_id: string | null;
   parent_conversation_id: string | null;
   has_message_anchor: number;
+  local_draft: number;
 };
 
 type ControlRow = {
@@ -56,7 +57,7 @@ type PreparedSubmission = Omit<AcceptedConversationSubmission, "provider_receipt
   acquisition_required: boolean;
   already_delivered: boolean;
   adapter_id: string;
-  provider_session_id: string;
+  provider_session_id: string | null;
   controller_instance_id: string;
 };
 
@@ -118,7 +119,7 @@ function ownership(row: ControlRow, detail: StoredDetail): ControllerOwnership {
         generation: row.generation,
         controller_instance_id: row.controller_instance_id!,
         adapter_id: row.adapter_id!,
-        provider_session_id: row.provider_session_id!,
+        provider_session_id: row.provider_session_id,
         last_authoritative_signal: row.last_authoritative_signal!,
       };
     case "external":
@@ -147,7 +148,8 @@ export class ConversationControlStore {
 
   getBoundary(conversationId: string): Result<ConversationBoundary, ConversationControlError> {
     const row = this.db.prepare(`
-      SELECT c.id, c.source, c.session_id, c.parent_conversation_id,
+      SELECT c.id, c.source, NULLIF(c.session_id, '') AS session_id, c.parent_conversation_id,
+        EXISTS(SELECT 1 FROM conversation_spawn_requests s WHERE s.id = c.id AND s.schema_version = 'mandible-conversation-spawn-request@3' AND s.state = 'ready' AND s.provider_session_id IS NULL) AS local_draft,
         EXISTS(
           SELECT 1 FROM conversation_structural_blocks b
           WHERE b.conversation_id = c.id AND b.status = 'current'
@@ -199,6 +201,31 @@ export class ConversationControlStore {
     return { ok: true, value: this.toSnapshot(row, boundary.value, capabilities, adapterId) };
   }
 
+  claimResume(conversationId: string, expectedRevision: number, expectedGeneration: number, capabilities: ControllerAdapterCapabilities, adapterId: string): Result<{ generation: number; controller_instance_id: string; provider_session_id: string }, ConversationControlError> {
+    return this.db.transaction(() => {
+      const boundary = this.getBoundary(conversationId);
+      if (!boundary.ok) return boundary;
+      const ensured = this.ensure(conversationId);
+      if (!ensured.ok) return ensured;
+      const row = ensured.value;
+      if (row.revision !== expectedRevision) return { ok: false as const, error: { kind: "capability-drift" as const, expected_revision: expectedRevision, actual_revision: row.revision } };
+      if (row.generation !== expectedGeneration) return { ok: false as const, error: { kind: "stale-generation" as const, expected_generation: expectedGeneration, actual_generation: row.generation } };
+      const snapshot = this.toSnapshot(row, boundary.value, capabilities, adapterId);
+      if (row.owner_kind !== "none" || !capabilities.resume_provider_session || boundary.value.parent_conversation_id || !boundary.value.session_id) {
+        return { ok: false as const, error: { kind: "unsupported-operation" as const, operation: "resume-provider-session" as const, capability: snapshot.capability } };
+      }
+      const generation = row.generation + 1;
+      const controllerInstanceId = randomUUID();
+      const now = this.now();
+      this.db.prepare(`UPDATE conversation_control_state SET generation = ?, revision = revision + 1,
+        owner_kind = 'mandible', controller_state = 'starting', controller_instance_id = ?, adapter_id = ?,
+        owner_detail_json = '{}', last_authoritative_signal = ?, state_detail_json = '{}', updated_at = ?
+        WHERE conversation_id = ?`).run(generation, controllerInstanceId, adapterId, now, now, conversationId);
+      this.journal(conversationId, row.revision + 1, generation, "controller-acquired", { adapter_id: adapterId, controller_instance_id: controllerInstanceId }, now);
+      return { ok: true as const, value: { generation, controller_instance_id: controllerInstanceId, provider_session_id: boundary.value.session_id } };
+    }).immediate();
+  }
+
   prepareSubmission(request: ConversationSubmitRequest, capabilities: ControllerAdapterCapabilities, adapterId: string): Result<PreparedSubmission, ConversationControlError> {
     const transaction = this.db.transaction((): Result<PreparedSubmission, ConversationControlError> => {
       const runtimeOptionsJson = JSON.stringify(request.runtime_options ?? {});
@@ -236,7 +263,7 @@ export class ConversationControlStore {
             acquisition_required: false,
             already_delivered: existing.state === "delivered",
             adapter_id: current.adapter_id ?? adapterId,
-            provider_session_id: current.provider_session_id ?? boundary.session_id ?? "",
+            provider_session_id: current.provider_session_id ?? boundary.session_id,
             controller_instance_id: current.controller_instance_id ?? "",
           },
         };
@@ -276,10 +303,10 @@ export class ConversationControlStore {
         revision += 1;
         this.db.prepare(`UPDATE conversation_control_state SET
           revision = ?, generation = ?, owner_kind = 'mandible', controller_state = 'starting',
-          controller_instance_id = ?, adapter_id = ?, owner_detail_json = '{}',
+          controller_instance_id = ?, adapter_id = ?, owner_detail_json = ?,
           last_authoritative_signal = ?, state_detail_json = '{}', updated_at = ?
           WHERE conversation_id = ? AND revision = ?
-        `).run(revision, generation, controllerInstanceId, adapterId, now, now, request.conversation_id, row.revision);
+        `).run(revision, generation, controllerInstanceId, adapterId, boundary.session_id ? "{}" : JSON.stringify({ native_identity_pending: true }), now, now, request.conversation_id, row.revision);
         this.journal(request.conversation_id, revision, generation, "controller-acquired", { adapter_id: adapterId, controller_instance_id: controllerInstanceId }, now);
       }
       revision += 1;
@@ -317,7 +344,7 @@ export class ConversationControlStore {
           acquisition_required: acquisitionRequired,
           already_delivered: false,
           adapter_id: adapterId,
-          provider_session_id: boundary.session_id!,
+          provider_session_id: boundary.session_id,
           controller_instance_id: controllerInstanceId,
         },
       };
@@ -325,14 +352,14 @@ export class ConversationControlStore {
     return transaction.immediate();
   }
 
-  publishAcquired(conversationId: string, generation: number, controllerInstanceId: string, providerSessionId: string): Result<void, ConversationControlError> {
+  publishAcquired(conversationId: string, generation: number, controllerInstanceId: string, providerSessionId: string | null): Result<void, ConversationControlError> {
     return this.mutateOwned(conversationId, generation, "controller-ready", (row, revision, now) => {
       const invalid = this.controllerTransitionError(row.controller_state, "ready");
       if (invalid) return invalid;
       this.db.prepare(`UPDATE conversation_control_state SET revision = ?, controller_state = 'ready',
-        controller_instance_id = ?, provider_session_id = ?, last_authoritative_signal = ?, updated_at = ?
+        controller_instance_id = ?, provider_session_id = ?, owner_detail_json = ?, last_authoritative_signal = ?, updated_at = ?
         WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'
-      `).run(revision, controllerInstanceId, providerSessionId, now, now, conversationId, generation);
+      `).run(revision, controllerInstanceId, providerSessionId, providerSessionId ? "{}" : JSON.stringify({ native_identity_pending: true }), now, now, conversationId, generation);
       return null;
     });
   }
@@ -342,7 +369,7 @@ export class ConversationControlStore {
     generation: number,
     adapterId: string,
     controllerInstanceId: string,
-    providerSessionId: string,
+    providerSessionId: string | null,
   ): Result<void, ConversationControlError> {
     const transaction = this.db.transaction((): Result<void, ConversationControlError> => {
       const ensured = this.ensure(conversationId);
@@ -367,7 +394,7 @@ export class ConversationControlStore {
       const now = this.now();
       this.db.prepare(`UPDATE conversation_control_state SET
         revision = ?, generation = ?, owner_kind = 'mandible', controller_state = 'ready',
-        controller_instance_id = ?, adapter_id = ?, provider_session_id = ?, owner_detail_json = '{}',
+        controller_instance_id = ?, adapter_id = ?, provider_session_id = ?, owner_detail_json = ?,
         last_authoritative_signal = ?, turn_state = 'none', turn_id = NULL, delivery_id = NULL,
         state_detail_json = '{}', updated_at = ? WHERE conversation_id = ?
       `).run(
@@ -376,6 +403,7 @@ export class ConversationControlStore {
         controllerInstanceId,
         adapterId,
         providerSessionId,
+        providerSessionId === null ? JSON.stringify({ native_identity_pending: true }) : "{}",
         now,
         now,
         conversationId,
@@ -462,11 +490,18 @@ export class ConversationControlStore {
   }
 
   bindProviderSession(conversationId: string, generation: number, providerSessionId: string): Result<void, ConversationControlError> {
-    return this.mutateOwned(conversationId, generation, "provider-session-bound", (_row, revision, now) => {
-      this.db.prepare(`UPDATE conversation_control_state SET revision = ?, provider_session_id = ?,
-        last_authoritative_signal = ?, updated_at = ?
-        WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'
-      `).run(revision, providerSessionId, now, now, conversationId, generation);
+    const existing = this.row(conversationId);
+    if (existing?.provider_session_id === providerSessionId && existing.generation === generation && existing.owner_kind === "mandible") return { ok: true, value: undefined };
+    return this.mutateOwned(conversationId, generation, "provider-session-bound", (row, revision, now) => {
+      if (!providerSessionId.trim() || row.provider_session_id && row.provider_session_id !== providerSessionId) {
+        return { kind: "adapter-contract-violation", adapter_id: row.adapter_id!, message: "The controller native identity is already bound" };
+      }
+      this.db.prepare(`UPDATE conversation_control_state SET revision = ?, provider_session_id = ?, owner_detail_json = '{}',
+        last_authoritative_signal = ?, updated_at = ? WHERE conversation_id = ? AND generation = ? AND owner_kind = 'mandible'`)
+        .run(revision, providerSessionId, now, now, conversationId, generation);
+      this.db.prepare("UPDATE conversations SET session_id = ? WHERE id = ? AND (session_id IS NULL OR session_id = '')").run(providerSessionId, conversationId);
+      this.db.prepare("UPDATE conversation_spawn_requests SET provider_session_id = ?, updated_at = ? WHERE id = ? AND attempt_count = ? AND state = 'ready' AND provider_session_id IS NULL")
+        .run(providerSessionId, now, conversationId, generation);
       return null;
     }, { provider_session_id: providerSessionId });
   }
@@ -483,6 +518,17 @@ export class ConversationControlStore {
       `).run(revision, now, conversationId, generation);
       return null;
     });
+  }
+
+  recoverUnsentDraft(conversationId: string, generation: number): Result<boolean, ConversationControlError> {
+    const row = this.row(conversationId);
+    const boundary = this.getBoundary(conversationId);
+    if (!boundary.ok) return boundary;
+    if (!row || row.owner_kind !== "mandible" || row.generation !== generation || row.provider_session_id || !boundary.value.local_draft || row.turn_state !== "none") return { ok: true, value: false };
+    const attempted = this.db.prepare("SELECT 1 FROM conversation_control_outbox WHERE conversation_id = ? LIMIT 1").get(conversationId);
+    if (attempted) return { ok: true, value: false };
+    const released = this.release(conversationId, generation);
+    return released.ok ? { ok: true, value: true } : released;
   }
 
   recoverFailedAcquisition(conversationId: string, generation: number): Result<boolean, ConversationControlError> {
@@ -682,15 +728,17 @@ export class ConversationControlStore {
     const revision = row.revision;
     let capability: ConversationContinuationCapability;
     if (boundary.parent_conversation_id) capability = unavailable(revision, "subagent");
-    else if (!boundary.session_id) capability = unavailable(revision, "no-provider-session");
+    else if (!boundary.session_id && owner.kind !== "mandible" && !(boundary.local_draft && owner.kind === "none")) capability = unavailable(revision, "no-provider-session");
     else if (owner.kind === "external") capability = { kind: "blocked-external", revision, evidence_kind: owner.evidence.kind };
     else if (owner.kind === "unknown") capability = { kind: "blocked-ownership-unknown", revision, reason: owner.reason };
     else if (!capabilities || !adapterId) capability = unavailable(revision, "unsupported-provider");
-    else if (owner.kind === "none") {
+    else if (owner.kind === "none" && boundary.local_draft && !boundary.session_id) {
+      capability = capabilities.send ? { kind: "live-send", revision, generation: owner.generation } : unavailable(revision, "unsupported-provider");
+    } else if (owner.kind === "none") {
       capability = capabilities.resume_message_anchor && boundary.has_message_anchor === 1
-        ? { kind: "message-anchor-resume", revision, generation: owner.generation, adapter_id: adapterId, provider_session_id: boundary.session_id }
+        ? { kind: "message-anchor-resume", revision, generation: owner.generation, adapter_id: adapterId, provider_session_id: boundary.session_id! }
         : capabilities.resume_provider_session
-          ? { kind: "provider-session-resume", revision, generation: owner.generation, adapter_id: adapterId, provider_session_id: boundary.session_id }
+          ? { kind: "provider-session-resume", revision, generation: owner.generation, adapter_id: adapterId, provider_session_id: boundary.session_id! }
           : unavailable(revision, "unsupported-provider");
     } else if (["starting", "stopping", "failed", "unknown"].includes(controller.kind)) {
       capability = unavailable(revision, "controller-transition");

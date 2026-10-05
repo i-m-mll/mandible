@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
 import type { ProviderStartupProvenance } from "./provider-startup.js";
 
 const require = createRequire(import.meta.url);
@@ -9,7 +8,7 @@ const require = createRequire(import.meta.url);
 type PackageIdentity = { root: string; version: string };
 
 function packageIdentity(name: string): PackageIdentity {
-  const entrypoint = fs.realpathSync(fileURLToPath(import.meta.resolve(name)));
+  const entrypoint = fs.realpathSync(require.resolve(name));
   let root = path.dirname(entrypoint);
   while (root !== path.dirname(root)) {
     const packagePath = path.join(root, "package.json");
@@ -47,22 +46,6 @@ export function claudeSdkProvenance(): ProviderStartupProvenance {
       version: identity.version,
       entrypoint,
       launcher: entrypoint,
-    },
-  };
-}
-
-export function codexAcpProvenance(): ProviderStartupProvenance {
-  const manifestPath = require.resolve("@agentclientprotocol/codex-acp/package.json");
-  const identity = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { name: string; version: string; bin: Record<string, string> };
-  return {
-    backend_type: "acp",
-    provider: "codex",
-    implementation: {
-      kind: "package",
-      name: identity.name,
-      version: identity.version,
-      entrypoint: fs.realpathSync(path.resolve(path.dirname(manifestPath), identity.bin["codex-acp"])),
-      launcher: process.execPath,
     },
   };
 }

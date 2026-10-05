@@ -8,8 +8,8 @@ and the explicit provisioned launcher/macOS paths define execution.
 
 | Original file | Verdict | Protected boundary or deletion reason |
 | --- | --- | --- |
-| `acp-backend.test.ts` | Retain | AcpBackend. Behavioral, persisted-record, or format boundary retained. |
-| `acp-protocol.test.ts` | Retain | ACP protocol mapper. Behavioral, persisted-record, or format boundary retained. |
+| `acp-backend.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
+| `acp-protocol.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `agent-dispatch-ui.test.tsx` | Retain | issue header launch-agent affordance / dispatch dialog contract. Mounted interaction/projection evidence retained. |
 | `agent-page-binding.test.ts` | Retain | agent page binding / agentSessionFromHash / adoption. Behavioral, persisted-record, or format boundary retained. |
 | `anchored-menu-behavior.test.tsx` | Retain | useAnchoredMenu behavior. Mounted interaction/projection evidence retained. |
@@ -42,7 +42,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `auth-output-coalescer.test.ts` | Retain | auth output coalescer. Behavioral, persisted-record, or format boundary retained. |
 | `auth-request-short-id.test.ts` | Retain | GET /api/auth/request/:id short-form ids / PUT /api/auth/request/:id short-form ids. Behavioral, persisted-record, or format boundary retained. |
 | `auth-view-readiness.test.tsx` | Retain | AuthQueueView daemon readiness gate / AuthQueueView persisted action expansion. Mounted interaction/projection evidence retained. |
-| `backend-usage-retention.test.ts` | Retain | backend usage retention. Behavioral, persisted-record, or format boundary retained. |
+| `backend-usage-retention.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `briefing-api-v2.test.ts` | Retain | Briefing v2 UI projection. Behavioral, persisted-record, or format boundary retained. |
 | `briefing-artifact-rounds-view.test.tsx` | Retain | artifact-backed Briefing rounds. Mounted interaction/projection evidence retained. |
 | `briefing-cli.test.ts` | Retain | briefing CLI. Process/transport boundary retained. |
@@ -52,7 +52,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `briefing-round-view-state.test.ts` | Retain | Briefing v2 round draft state. Behavioral, persisted-record, or format boundary retained. |
 | `briefing-routes.test.ts` | Retain | plural Briefing routes. Behavioral, persisted-record, or format boundary retained. |
 | `briefing-sidebar-item-row.test.tsx` | Trim / retain | Briefing sidebar row actions. Mounted interaction/projection evidence retained. |
-| `channel-event-bridge.test.ts` | Retain | ChannelEventBridge. Behavioral, persisted-record, or format boundary retained. |
+| `channel-event-bridge.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `channel-registry.test.ts` | Retain | ChannelRegistry. Behavioral, persisted-record, or format boundary retained. |
 | `channel-server.test.ts` | Retain | channel-server base URL / channel-server local socket. Process/transport boundary retained. |
 | `chat-context-usage.test.ts` | Retain | chat context usage. Mounted interaction/projection evidence retained. |
@@ -77,7 +77,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `console-composer.test.tsx` | Retain | Composer / SessionControls. Mounted interaction/projection evidence retained. |
 | `console-prompt-route.test.ts` | Retain | console prompt route. Process/transport boundary retained. |
 | `console-session-create-api.test.ts` | Retain | console session creation payload / canonical Chat project registry payload. Process/transport boundary retained. |
-| `console-session-options.test.tsx` | Retain | capability-driven console session options. Mounted interaction/projection evidence retained. |
+| `console-session-options.test.tsx` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `contextual-action.test.tsx` | Trim / retain | shared contextual action. Mounted interaction/projection evidence retained. |
 | `conversation-append-ui.test.ts` | Retain | conversation append SSE merge / sidebar conversation summary merge. Behavioral, persisted-record, or format boundary retained. |
 | `conversation-block-filters.test.ts` | Default | Sole named boundary readmission; see ../README.md. |
@@ -165,28 +165,28 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `operational-incidents.test.ts` | Retain | operational incident ledger and reconciliation. Behavioral, persisted-record, or format boundary retained. |
 | `operational-log-db.test.ts` | Retain | operational log database lifecycle / operational log production guards. Behavioral, persisted-record, or format boundary retained. |
 | `operator-bootstrap-route.test.ts` | Retain | operator bootstrap ledger boundary. Behavioral, persisted-record, or format boundary retained. |
-| `permission-dialog.test.tsx` | Retain | PermissionDialog keyboard shortcuts. Mounted interaction/projection evidence retained. |
+| `permission-dialog.test.tsx` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `platform-paths.test.ts` | Retain | platform paths. Behavioral, persisted-record, or format boundary retained. |
 | `post-merge-build-dist.test.ts` | Retain | post-merge build hook. Process/transport boundary retained. |
 | `process-group-supervisor.test.ts` | Retain | process-group-supervisor. Process/transport boundary retained. |
 | `project-cli.test.ts` | Retain | project CLI surface / project CLI read round-trips. Process/transport boundary retained. |
 | `project-db-snapshot.test.ts` | Retain | project-db-snapshot. Process/transport boundary retained. |
-| `pty-backend-lifecycle.test.ts` | Retain | PTYBackend lifecycle. Process/transport boundary retained. |
+| `pty-backend-lifecycle.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `reminder-cli.test.ts` | Retain | mandible reminder CLI parser and routing / mandible reminder CLI file-RPC parity. Process/transport boundary retained. |
 | `repo-file-register-dialog.test.tsx` | Retired | Live synchronization and authority switching were replaced by immutable publication snapshots; preservation, stale destination, signing failure, import, and explicit review evidence is in spaces-publication.test.ts and spaces-publication-ui.test.tsx. |
 | `repo-identity.test.ts` | Retain | canonicalRepoKeyForPath / canonicalRepoKeysForRef. Process/transport boundary retained. |
 | `resource-refs.test.ts` | Default | Sole named boundary readmission; see ../README.md. |
 | `restart-availability.test.ts` | Retain | restart availability receipt. Behavioral, persisted-record, or format boundary retained. |
-| `rich-chat-pane.test.tsx` | Retain | RichChatPane context usage. Mounted interaction/projection evidence retained. |
+| `rich-chat-pane.test.tsx` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `row-coerce.test.ts` | Retain | row coercion helpers. Behavioral, persisted-record, or format boundary retained. |
-| `screen-model.test.ts` | Retain | PTY screen detection / PtyScreenObserver. Behavioral, persisted-record, or format boundary retained. |
-| `sdk-backend-lifecycle.test.ts` | Retain | SDKBackend lifecycle. Behavioral, persisted-record, or format boundary retained. |
+| `screen-model.test.ts` | Retire with managed PTY scraping; native permission tests replace it | PTY screen detection / PtyScreenObserver. Behavioral, persisted-record, or format boundary retained. |
+| `sdk-backend-lifecycle.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `server-router.test.ts` | Retain | Router error handling / Router route policies. Behavioral, persisted-record, or format boundary retained. |
 | `session-discovery.test.ts` | Retain | SessionDiscovery. Process/transport boundary retained. |
 | `session-identity-mismatch.test.ts` | Retain | session identity mismatch detection. Behavioral, persisted-record, or format boundary retained. |
 | `session-manager-codex-archive.test.ts` | Retain | SessionManager Codex archive integration. Process/transport boundary retained. |
 | `session-manager-retention.test.ts` | Retain | SessionManager terminal backend retention. Behavioral, persisted-record, or format boundary retained. |
-| `session-manager-run-options.test.ts` | Retain | SessionManager run options. Behavioral, persisted-record, or format boundary retained. |
+| `session-manager-run-options.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `session-overview-binding.test.tsx` | Retain | SessionOverviewView provider-scoped binding / SessionOverviewView truncated resolution (review C4). Mounted interaction/projection evidence retained. |
 | `session-overview-routes.test.ts` | Retain | GET /api/sessions/resolve / GET /api/sessions/resolve with short prefixes. Behavioral, persisted-record, or format boundary retained. |
 | `session-run-options.test.ts` | Retain | session run options. Behavioral, persisted-record, or format boundary retained. |
@@ -232,7 +232,7 @@ and the explicit provisioned launcher/macOS paths define execution.
 | `spaces-sidebar.test.tsx` | Trim / retain | SpacesSidebar render + grouping / SpacesSidebar live filter. Mounted interaction/projection evidence retained. |
 | `spaces-toplevel.test.ts` | Retain | spaces v86 nullable project_id schema (issue 812df41) / spaces grouped + top-level listing (issue 812df41). Behavioral, persisted-record, or format boundary retained. |
 | `spaces-view-shell-switcher.test.tsx` | Retain | SpacesViewShell home polish. Mounted interaction/projection evidence retained. |
-| `spawn-backend.test.ts` | Retain | SpawnBackend / SpawnBackend for different commands. Process/transport boundary retained. |
+| `spawn-backend.test.ts` | Retire after controller migration | Removed execution path. Replacement evidence: Claude SDK/Codex controller, managed settings, real terminal, and historical session preservation tests. |
 | `sse-apply-payloads.test.ts` | Retain | SSE payload application (patch, gap, debounce, heartbeat, reconnect). Behavioral, persisted-record, or format boundary retained. |
 | `sse-cross-tab.test.ts` | Retain | cross-tab SSE coordinator. Behavioral, persisted-record, or format boundary retained. |
 | `sse-shared-client.test.ts` | Retain | shared SSE client. Behavioral, persisted-record, or format boundary retained. |
@@ -294,3 +294,7 @@ proof cases. Their integrated results and actual fixtures determine the final
 verdict; failures will not be classified away to hide product regressions.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>
+
+## Managed controller consolidation (ccbb795)
+
+The retired SDK/ACP/spawn/managed-PTY tests above exercise execution paths removed after both retained providers passed one bounded live conversation. Their contract evidence now lives in `test/claude-sdk-controller.test.ts`, `test/conversation-controller-adapters.test.ts`, `test/conversation-control.test.ts`, `managed-conversation-controls.test.tsx`, `issue-resume-assignment.test.ts`, `terminal-runtime.test.ts`, and the historical-session and retention tests. Generic historical run-option composition and Composer behavior remain. Console route tests now prove real-terminal authority and refuse managed mutations; webhook tests retain authorization checks and prove undeliverable terminal-targeted messages remain queued. No test moved out of the default runner to suppress a failure.

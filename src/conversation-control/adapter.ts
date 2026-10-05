@@ -3,8 +3,10 @@ import type {
   ConversationLifecycleEvent,
   ConversationOutboxItem,
   ConversationRuntimeOptions,
+  ManagedPermissionRequest,
   ProviderAdapterCapabilities,
   ProviderAdapterEvent,
+  ProviderRuntimeEvent,
   ProviderDeliveryReceipt,
   Result,
 } from "./types.js";
@@ -13,16 +15,16 @@ export type ControllerAdapterCapabilities = ProviderAdapterCapabilities;
 
 export type ControllerLease = {
   controller_instance_id: string;
-  provider_session_id: string;
+  provider_session_id: string | null;
 };
 
 export type ControllerAcquisitionRequest =
   | { kind: "start"; conversation_id: string; generation: number; controller_instance_id: string; cwd: string; signal?: AbortSignal; runtime_options?: ConversationRuntimeOptions }
-  | { kind: "resume-provider-session"; conversation_id: string; generation: number; controller_instance_id: string; provider_session_id: string; runtime_options?: ConversationRuntimeOptions }
-  | { kind: "resume-message-anchor"; conversation_id: string; generation: number; controller_instance_id: string; provider_session_id: string; message_anchor: string; runtime_options?: ConversationRuntimeOptions };
+  | { kind: "resume-provider-session"; conversation_id: string; generation: number; controller_instance_id: string; provider_session_id: string; cwd?: string; signal?: AbortSignal; runtime_options?: ConversationRuntimeOptions }
+  | { kind: "resume-message-anchor"; conversation_id: string; generation: number; controller_instance_id: string; provider_session_id: string; message_anchor: string; cwd?: string; signal?: AbortSignal; runtime_options?: ConversationRuntimeOptions };
 
 export type AdapterProbe =
-  | { kind: "owned"; controller_instance_id: string; provider_session_id: string; state: "ready" | "running" | "waiting" | "stopping" }
+  | { kind: "owned"; controller_instance_id: string; provider_session_id: string | null; state: "ready" | "running" | "waiting" | "stopping" }
   | { kind: "released" }
   | { kind: "external"; evidence: "registered-channel" | "registered-process" | "provider-controller"; reference: string }
   | { kind: "unknown"; reason: "probe-ambiguous" | "provider-identity-changed" };
@@ -36,19 +38,23 @@ export interface ConversationControllerAdapter {
   deliver(item: ConversationOutboxItem): Promise<Result<ProviderDeliveryReceipt, ConversationControlError>>;
   probe(input: {
     conversation_id: string;
-    provider_session_id: string;
+    provider_session_id: string | null;
     controller_instance_id: string;
     generation: number;
   }): Promise<Result<AdapterProbe, ConversationControlError>>;
   probeDelivery(input: ConversationOutboxItem): Promise<Result<"delivered" | "not-delivered" | "unknown", ConversationControlError>>;
   stop(input: {
     conversation_id: string;
-    provider_session_id: string;
+    provider_session_id: string | null;
     controller_instance_id: string;
     generation: number;
   }): Promise<Result<void, ConversationControlError>>;
+  interrupt?(input: { conversation_id: string; generation: number }): Promise<Result<void, ConversationControlError>>;
+  permissions?(conversationId: string): ManagedPermissionRequest[];
+  decidePermission?(input: { conversation_id: string; generation: number; request_id: string; decision: "allow" | "deny" | "allow_always" }): Promise<Result<void, ConversationControlError>>;
   subscribe(listener: (event: ConversationLifecycleEvent & { conversation_id: string; generation: number }) => Result<void, ConversationControlError>): () => void;
   subscribeProviderEvents(listener: (event: ProviderAdapterEvent) => void): () => void;
+  subscribeRuntimeEvents?(listener: (event: ProviderRuntimeEvent) => void): () => void;
   close(): Promise<void>;
 }
 

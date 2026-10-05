@@ -835,3 +835,50 @@ describe("authoritative conversation control", () => {
     });
   });
 });
+
+it("resumes without a message and persists settings independently of delivery retries", async () => {
+  const service = new ConversationControlService(db);
+  const adapter = new FakeAdapter();
+  service.registerAdapter(adapter);
+  expect(service.saveRuntimeSettings('conversation-1', 0, { model: 'retained-model', effort: 'high', permission_mode: 'read-only' }).ok).toBe(true);
+  expect(service.saveRuntimeSettings('conversation-1', 0, { model: 'stale' })).toMatchObject({ ok: false, error: { kind: 'capability-drift', actual_revision: 1 } });
+  const before = service.getSnapshot('conversation-1');
+  if (!before.ok) throw new Error('missing snapshot');
+  const resumed = await service.resume({ conversation_id: 'conversation-1', expected_revision: before.value.revision, expected_generation: 0, cwd: '/exact/checkout' });
+  expect(resumed.ok).toBe(true);
+  expect(adapter.deliveries).toBe(0);
+  expect(adapter.lastAcquisition).toMatchObject({ kind: 'resume-provider-session', provider_session_id: 'provider-1', cwd: '/exact/checkout', runtime_options: { model: 'retained-model' } });
+  if (!resumed.ok) throw new Error('resume failed');
+  const submission = { ...request(resumed.value.revision, 'settings-delivery', 1), operation: 'send' as const, message: 'one bounded prompt' };
+  expect((await service.submit(submission)).ok).toBe(true);
+  expect(service.saveRuntimeSettings('conversation-1', 1, { model: 'next-model' }).ok).toBe(true);
+  expect((await service.submit(submission)).ok).toBe(true);
+  expect(adapter.deliveries).toBe(1);
+  const frozen = db.prepare('SELECT options_json FROM conversation_delivery_settings').get() as { options_json: string };
+  expect(JSON.parse(frozen.options_json).model).toBe('retained-model');
+  const reopened = new ConversationControlService(db);
+  expect(reopened.getRuntimeSettings('conversation-1')).toMatchObject({ ok: true, value: { revision: 2, runtime_options: { model: 'next-model' } } });
+  await service.close();
+});
+
+it("keeps initialized Claude identity pending, binds once, and only recovers an unsent local draft", () => {
+  db.prepare("UPDATE conversations SET source = 'claude_code', session_id = '' WHERE id = 'conversation-1'").run();
+  const store = new ConversationControlStore(db);
+  const claude = { ...capabilities, steer:false };
+  expect(store.adoptNewController('conversation-1',1,'claude-agent-sdk-v1','controller',null).ok).toBe(true);
+  expect(store.snapshot('conversation-1',claude,'claude-agent-sdk-v1')).toMatchObject({ok:true,value:{provider_session_id:null,controller:{kind:'ready'},capability:{kind:'live-send'}}});
+  // Persist the local creation receipt without claiming a native session.
+  db.prepare(`INSERT INTO conversation_spawn_requests (id,schema_version,idempotency_key,request_digest,request_json,provider,topology_kind,state,attempt_count,native_session_id,created_at,updated_at)
+    VALUES ('conversation-1','mandible-conversation-spawn-request@3','draft',?,'{}','claude_code','top-level','ready',1,'controller',1,1)`).run('0'.repeat(64));
+  expect(store.recoverUnsentDraft('conversation-1',1)).toEqual({ok:true,value:true});
+  const draft = store.snapshot('conversation-1',claude,'claude-agent-sdk-v1');
+  expect(draft).toMatchObject({ok:true,value:{ownership:{kind:'none',generation:1},capability:{kind:'live-send'}}});
+  expect(store.adoptNewController('conversation-1',2,'claude-agent-sdk-v1','replacement',null).ok).toBe(true);
+  expect(store.bindProviderSession('conversation-1',2,'native').ok).toBe(true);
+  const before = store.snapshot('conversation-1',claude,'claude-agent-sdk-v1');
+  expect(store.bindProviderSession('conversation-1',2,'native').ok).toBe(true);
+  expect(store.snapshot('conversation-1',claude,'claude-agent-sdk-v1')).toEqual(before);
+  expect(store.bindProviderSession('conversation-1',2,'different').ok).toBe(false);
+  expect(store.recoverUnsentDraft('conversation-1',2)).toEqual({ok:true,value:false});
+  expect(db.prepare("SELECT session_id FROM conversations WHERE id = 'conversation-1'").get()).toEqual({session_id:'native'});
+});

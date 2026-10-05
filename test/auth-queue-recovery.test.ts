@@ -1,3 +1,4 @@
+import { approveFixtureRequest, seedHistoricalAuthExecution } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -35,7 +36,9 @@ describe("auth queue", () => {
       const signing = configureSigningCredential(db, repo, "ssh_key");
       git(repo, ["config", "commit.gpgsign", "true"]);
 
-      queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
+      let executionStarted: () => void;
+      const started = new Promise<void>(resolve => { executionStarted = resolve; });
+      queue = new AuthQueue({ db, now: () => 0, hookManager: createNoopHookManager(), backgroundMaintenance: false, executor: async () => { executionStarted(); return new Promise<never>(() => {}); } });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge feature/atomic-recovery --into main",
@@ -46,12 +49,8 @@ describe("auth queue", () => {
         merge_head_sha: git(repo, ["rev-parse", "feature/atomic-recovery"]),
         cwd: repo,
       });
-      db.prepare(
-        `UPDATE auth_requests
-            SET status = 'executing', approved_at = 1, approved_by_user_id = ?,
-                approval_source = 'manual', merge_atomic_enabled = 1
-          WHERE id = ?`,
-      ).run(signing.operatorId, request.id);
+      await approveFixtureRequest(queue, request.id);
+      await started;
       const pinned = request;
       const mergeSha = git(repo, [
         "commit-tree",
@@ -90,7 +89,7 @@ describe("auth queue", () => {
       if (blockSync) writeFile(repo, "atomic.txt", "local collision\n");
       const order: string[] = [];
       const follower = _phase === "after CAS"
-        ? queue.submit({
+        ? queue.submit({ type: "commit",
             command: "echo same-repo follower",
             title: "Same-repo follower",
             cwd: repo,
@@ -103,6 +102,7 @@ describe("auth queue", () => {
         db,
         hookManager: follower
           ? ({
+              reclaimAllInterruptedRuns: () => 0,
               executeHooks: async () => {
                 order.push("recovery-hook-start");
                 await new Promise((resolve) => setTimeout(resolve, 50));
@@ -136,7 +136,7 @@ describe("auth queue", () => {
         return;
       }
       if (follower) {
-        queue.approve(follower.id);
+        await approveFixtureRequest(queue, follower.id);
         await waitForStatus(queue, follower.id, "completed", 5000);
         expect(order.indexOf("recovery-hook-end")).toBeLessThan(order.indexOf("follower-executor"));
       }
@@ -161,311 +161,66 @@ describe("auth queue", () => {
     }
   }, 15_000);
 
-  it("aborts an unambiguous interrupted merge and requeues it with a clean checkout", () => {
-    let now = 0;
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    try {
-      commitOnBranch(repo, "feature/interrupted", { "interrupted.txt": "land me\n" });
-      const headSha = git(repo, ["rev-parse", "feature/interrupted"]);
-      const queue = new AuthQueue({ db, now: () => now });
-      const request = queue.submit({
-        type: "merge",
-        command: "mandible auth merge feature/interrupted --into main",
-        title: "Interrupted merge",
-        repo: "repo",
-        base_branch: "main",
-        head_branch: "feature/interrupted",
-        merge_head_sha: headSha,
-        cwd: repo,
-        target_repo_root: repo,
-        execution_mode: "remote",
-      });
-      queue.approve(request.id);
-      git(repo, ["merge", "--no-ff", "--no-commit", "feature/interrupted"]);
-      expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(true);
-      queue.dispose();
-
-      now = 6 * 60 * 1000;
-      const restarted = new AuthQueue({ db, now: () => now });
+  it.each(["clean", "untracked", "staged", "divergent"] as const)(
+    "refuses legacy interrupted publication and preserves a %s checkout", async (kind) => {
+      const repo = createAuthCheckRepo();
+      const otherRepo = kind === "divergent" ? createAuthCheckRepo() : null;
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
       try {
-        const recovered = restarted.getRequest(request.id);
-        expect(recovered?.status).toBe("pending");
-        expect(recovered?.exit_code).toBeNull();
-        expect(recovered?.approved_at).toBeNull();
-        expect(recovered?.approved_by_user_id).toBeNull();
-        expect(recovered?.execution_evidence_id).toBeNull();
-        expect(() => restarted.setResult(request.id, 0, "late remote result"))
-          .toThrow(/cannot be recorded while request is pending/);
-        expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
-        expect(git(repo, ["status", "--porcelain", "--untracked-files=no"])).toBe("");
-      } finally {
-        restarted.dispose();
-      }
-    } finally {
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it("fails closed without mutating an interrupted merge whose checkout has unrelated changes", () => {
-    let now = 0;
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    try {
-      commitOnBranch(repo, "feature/ambiguous", { "ambiguous.txt": "land me\n" });
-      const headSha = git(repo, ["rev-parse", "feature/ambiguous"]);
-      const queue = new AuthQueue({ db, now: () => now });
-      const request = queue.submit({
-        type: "merge",
-        command: "mandible auth merge feature/ambiguous --into main",
-        title: "Ambiguous merge",
-        repo: "repo",
-        base_branch: "main",
-        head_branch: "feature/ambiguous",
-        merge_head_sha: headSha,
-        cwd: repo,
-        target_repo_root: repo,
-        execution_mode: "remote",
-      });
-      queue.approve(request.id);
-      git(repo, ["merge", "--no-ff", "--no-commit", "feature/ambiguous"]);
-      writeFile(repo, "shared.txt", "unrelated local edit\n");
-      queue.dispose();
-
-      now = 6 * 60 * 1000;
-      const restarted = new AuthQueue({ db, now: () => now });
-      try {
-        const recovered = restarted.getRequest(request.id);
-        expect(recovered?.status).toBe("completed");
-        expect(recovered?.exit_code).toBe(1);
-        expect(recovered?.error).toContain("unstaged tracked changes");
+        commitOnBranch(repo, "feature/interrupted", { "interrupted.txt": "land me\n" });
+        queue = new AuthQueue({ db, now: () => 0, backgroundMaintenance: false });
+        const request = queue.submit({ type: "merge", command: "mandible auth merge feature/interrupted --into main",
+          title: "Legacy interrupted merge", repo: path.basename(repo), base_branch: "main", head_branch: "feature/interrupted",
+          merge_head_sha: git(repo, ["rev-parse", "feature/interrupted"]), cwd: repo,
+          target_repo_root: otherRepo ?? repo, execution_mode: "remote" });
+        seedHistoricalAuthExecution(queue, request.id);
+        git(repo, ["merge", "--no-ff", "--no-commit", "feature/interrupted"]);
+        if (kind === "untracked" || kind === "staged") {
+          writeFile(repo, "unrelated.txt", "preserve me\n");
+          if (kind === "staged") git(repo, ["add", "unrelated.txt"]);
+        }
+        const before = git(repo, ["status", "--porcelain"]);
+        const tree = git(repo, ["write-tree"]);
+        const base = git(repo, ["rev-parse", "main"]);
+        const otherState = otherRepo ? git(otherRepo, ["status", "--porcelain"]) : null;
+        queue.dispose();
+        queue = new AuthQueue({ db, now: () => 6 * 60 * 1000 });
+        const recovered = await waitForStatus(queue, request.id, "completed");
+        expect(recovered.exit_code).toBe(1);
+        expect(recovered.execution_evidence_id).toBeNull();
+        expect(recovered.merge_finalized_at).toBeNull();
+        expect(git(repo, ["status", "--porcelain"])).toBe(before);
+        expect(git(repo, ["write-tree"])).toBe(tree);
+        expect(git(repo, ["rev-parse", "main"])).toBe(base);
         expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(true);
-        expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("unrelated local edit\n");
+        if (otherRepo) expect(git(otherRepo, ["status", "--porcelain"])).toBe(otherState);
       } finally {
-        restarted.dispose();
+        queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true });
+        if (otherRepo) fs.rmSync(otherRepo, { recursive: true, force: true });
       }
-    } finally {
-      try {
-        git(repo, ["merge", "--abort"]);
-      } catch {
-        // The assertion above diagnoses any unexpected recovery mutation.
-      }
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it("fails closed without aborting an interrupted merge with unrelated staged changes", () => {
-    let now = 0;
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    try {
-      commitOnBranch(repo, "feature/staged-ambiguous", { "expected.txt": "land me\n" });
-      const headSha = git(repo, ["rev-parse", "feature/staged-ambiguous"]);
-      const queue = new AuthQueue({ db, now: () => now });
-      const request = queue.submit({
-        type: "merge",
-        command: "mandible auth merge feature/staged-ambiguous --into main",
-        title: "Staged ambiguous merge",
-        repo: "repo",
-        base_branch: "main",
-        head_branch: "feature/staged-ambiguous",
-        merge_head_sha: headSha,
-        cwd: repo,
-        target_repo_root: repo,
-        execution_mode: "remote",
-      });
-      queue.approve(request.id);
-      git(repo, ["merge", "--no-ff", "--no-commit", "feature/staged-ambiguous"]);
-      writeFile(repo, "shared.txt", "unrelated staged edit\n");
-      git(repo, ["add", "shared.txt"]);
-      queue.dispose();
-
-      now = 6 * 60 * 1000;
-      const restarted = new AuthQueue({ db, now: () => now });
-      try {
-        const recovered = restarted.getRequest(request.id);
-        expect(recovered?.status).toBe("completed");
-        expect(recovered?.exit_code).toBe(1);
-        expect(recovered?.error).toContain("staged index does not match the expected merge tree");
-        expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(true);
-        expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("unrelated staged edit\n");
-      } finally {
-        restarted.dispose();
-      }
-    } finally {
-      try {
-        git(repo, ["merge", "--abort"]);
-      } catch {
-        // The assertion above diagnoses any unexpected recovery mutation.
-      }
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it("fails closed without mutating either checkout when cwd and target_repo_root diverge", () => {
-    let now = 0;
-    const cwdRepo = createAuthCheckRepo();
-    const targetRepo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    try {
-      commitOnBranch(cwdRepo, "feature/divergent", { "divergent.txt": "land me\n" });
-      const headSha = git(cwdRepo, ["rev-parse", "feature/divergent"]);
-      const queue = new AuthQueue({ db, now: () => now });
-      const request = queue.submit({
-        type: "merge",
-        command: "mandible auth merge feature/divergent --into main",
-        title: "Divergent checkout merge",
-        repo: "repo",
-        base_branch: "main",
-        head_branch: "feature/divergent",
-        merge_head_sha: headSha,
-        cwd: cwdRepo,
-        target_repo_root: targetRepo,
-        execution_mode: "remote",
-      });
-      queue.approve(request.id);
-      git(cwdRepo, ["merge", "--no-ff", "--no-commit", "feature/divergent"]);
-      const targetHead = git(targetRepo, ["rev-parse", "HEAD"]);
-      queue.dispose();
-
-      now = 6 * 60 * 1000;
-      const restarted = new AuthQueue({ db, now: () => now });
-      try {
-        const recovered = restarted.getRequest(request.id);
-        expect(recovered?.status).toBe("completed");
-        expect(recovered?.exit_code).toBe(1);
-        expect(recovered?.error).toContain("do not identify the same Git checkout");
-        expect(fs.existsSync(path.join(cwdRepo, ".git", "MERGE_HEAD"))).toBe(true);
-        expect(git(targetRepo, ["rev-parse", "HEAD"])).toBe(targetHead);
-        expect(git(targetRepo, ["status", "--porcelain", "--untracked-files=no"])).toBe("");
-      } finally {
-        restarted.dispose();
-      }
-    } finally {
-      try {
-        git(cwdRepo, ["merge", "--abort"]);
-      } catch {
-        // The assertion above diagnoses any unexpected recovery mutation.
-      }
-      db.close();
-      fs.rmSync(cwdRepo, { recursive: true, force: true });
-      fs.rmSync(targetRepo, { recursive: true, force: true });
-    }
-  });
+    });
 
   it("does not recover a legitimate long-running in-flight executor", async () => {
     let now = 0;
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
+    let queue: AuthQueue | null = null;
     try {
       commitOnBranch(repo, "feature/long-running", { "long-running.txt": "land me\n" });
       registerWorkRepo(db, repo);
-      let markStarted: (() => void) | undefined;
-      const started = new Promise<void>((resolve) => { markStarted = resolve; });
-      const executor = async () => {
-        markStarted?.();
-        return await new Promise<never>(() => undefined);
-      };
-      const queue = new AuthQueue({ db, now: () => now, executor });
-      const request = queue.submit({
-        type: "merge",
-        command: "mandible auth merge feature/long-running --into main",
-        title: "Long-running merge",
-        repo: path.basename(repo),
-        base_branch: "main",
-        head_branch: "feature/long-running",
-        cwd: repo,
-      });
-      queue.approve(request.id);
-      await started;
-      git(repo, ["merge", "--no-ff", "--no-commit", "feature/long-running"]);
-
-      now = 11 * 60 * 1000;
-      queue.expireStale();
-
-      const stillExecuting = queue.getRequest(request.id);
-      expect(stillExecuting?.status).toBe("executing");
-      expect(stillExecuting?.exit_code).toBeNull();
-      expect(stillExecuting?.error).toBeNull();
-      expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(true);
-      queue.dispose();
-    } finally {
-      try {
-        git(repo, ["merge", "--abort"]);
-      } catch {
-        // Test cleanup only.
-      }
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it("recovers successful executing requests and reapplies merge finalizers on restart", async () => {
-    let now = 0;
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    try {
-      commitOnBranch(repo, "feature/recovered", { "recovered.txt": "recovered\n" });
-      const headSha = git(repo, ["rev-parse", "feature/recovered"]);
-      const queue = new AuthQueue({ db, now: () => now });
-      const request = queue.submit({
-        type: "merge",
-        command: "mandible auth merge feature/recovered --into main",
-        title: "Recovered merge",
-        repo: "mandible",
-        base_branch: "main",
-        head_branch: "feature/recovered",
-        merge_head_sha: headSha,
-        cwd: repo,
-        target_repo_root: repo,
-        execution_mode: "remote"
-      });
-      db.prepare(
-        `INSERT INTO work_units (
-          id, issue_id, repo_id, branch, kind, state, created_at, auth_request_id
-        ) VALUES (
-          'wu-recovered', 'issue-1', 'mandible', 'feature/recovered', 'solo', 'committed', ?, ?
-        )`
-      ).run(now, request.id);
-      queue.approve(request.id);
-      git(repo, ["merge", "--no-ff", "feature/recovered", "-m", "merge recovered"]);
-      queue.dispose();
-
-      now = 6 * 60 * 1000;
-      const events: SseEvent[] = [];
-      const restarted = new AuthQueue({
-        db,
-        now: () => now,
-        broadcast: (event) => events.push(event),
-      });
-      try {
-        // Issue 75f52ac — recovery enqueues Stage 3 finalizers (merge_finalized_at
-        // is the terminal marker); drain before asserting finalized state.
-        await restarted.drainFinalizers();
-        const recovered = restarted.getRequest(request.id);
-        const workUnit = db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-recovered'")
-          .get() as { state: string; resolved_at: number | null };
-        expect(recovered?.status).toBe("completed");
-        expect(recovered?.exit_code).toBe(0);
-        expect(recovered?.merge_finalized_at).toBe(now);
-        const resolvedEvent = events.find((event) => event.event === "auth:resolved");
-        expect(resolvedEvent?.data).toMatchObject({
-          execution_evidence_id: recovered?.execution_evidence_id,
-          signature_verification: {
-            evidence_id: recovered?.execution_evidence_id,
-          },
-        });
-        expect(workUnit.state).toBe("resolved");
-        expect(workUnit.resolved_at).toBe(now);
-      } finally {
-        restarted.dispose();
-      }
-    } finally {
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
+      let markStarted: () => void;
+      const started = new Promise<void>(resolve => { markStarted = resolve; });
+      queue = new AuthQueue({ db, now: () => now, executor: async () => {
+        markStarted(); return new Promise<never>(() => {});
+      } });
+      const request = queue.submit({ type: "merge", command: "mandible auth merge feature/long-running --into main",
+        title: "Long-running merge", repo: path.basename(repo), base_branch: "main", head_branch: "feature/long-running",
+        merge_head_sha: git(repo, ["rev-parse", "feature/long-running"]), cwd: repo });
+      await approveFixtureRequest(queue, request.id); await started;
+      now = 11 * 60 * 1000; queue.expireStale();
+      expect(queue.getRequest(request.id)).toMatchObject({ status: "executing", exit_code: null, error: null });
+      expect(git(repo, ["status", "--porcelain"])).toBe("");
+    } finally { queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
   });
 });

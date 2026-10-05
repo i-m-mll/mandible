@@ -36,8 +36,6 @@ import type {
 import {
   forkConversation,
   getConsoleSessionUsage,
-  getConsoleSessionOptions,
-  getConsoleRunOptions,
   getConversationWindow,
   getConversationStructure,
   exportConversationBlocks,
@@ -59,10 +57,8 @@ import {
   retryProviderChat,
   submitConversationControl,
   updateConsoleSession,
-  updateConsoleSessionOptions,
   updateConversation,
   updateConversationArchive,
-  type SessionRunOptionsSnapshot,
   type ConversationRuntimeOptions,
   type ConversationControlApiError,
   type ConversationControlSnapshot,
@@ -89,7 +85,7 @@ import {
 import { browserSessionFetch } from '../client-auth-token';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
-import { SessionControls } from '../components/console/SessionControls';
+import { ManagedConversationControls } from '../chat/ManagedConversationControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
   ChatOverlay,
@@ -647,7 +643,6 @@ function parseMetadata(json: string): Record<string, unknown> {
   }
 }
 
-type ViewMode = 'terminal' | 'rich' | 'events';
 type ChatSelection =
   | { type: 'conversation'; id: string }
   | { type: 'session'; id: string }
@@ -1333,9 +1328,6 @@ export function ConversationDetail({
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   const [workflowNonce, setWorkflowNonce] = useState(0);
   const [composerControlsOpen, setComposerControlsOpen] = useState(false);
-  const [composerModel, setComposerModel] = useState('');
-  const [composerEffort, setComposerEffort] = useState('');
-  const [composerPermission, setComposerPermission] = useState('');
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
   const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
@@ -1383,7 +1375,6 @@ export function ConversationDetail({
   const attachmentPickerRef = useRef<HTMLInputElement>(null);
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
-  const [runOptionsError, setRunOptionsError] = useState<string | null>(null);
   const [controlFailure, setControlFailure] = useState<ChatFailureNoticeModel | null>(null);
   const [submitIntent, setSubmitIntent] = useState<DraftSubmitIntent | null>(() => getPendingSubmitIntent(conversationId));
   const submittingIntentRef = useRef<string | null>(null);
@@ -2084,28 +2075,6 @@ export function ConversationDetail({
   }, [conversationId, selectionGeneration]);
 
   const openUsage = useCallback(() => setUsageModalOpen(true), []);
-  const [sessionRunOptions, setSessionRunOptions] = useState<SessionRunOptionsSnapshot | null>(null);
-  useEffect(() => {
-    let active = true;
-    setSessionRunOptions(null);
-    setRunOptionsError(null);
-    const runOptions = linkedConsoleSession
-      ? getConsoleSessionOptions(linkedConsoleSession.id).then((result) => result.runOptions)
-      : conversation?.source === 'codex'
-        ? getConsoleRunOptions('acp', 'codex')
-        : conversation?.source === 'claude_code'
-          ? getConsoleRunOptions('sdk', 'claude')
-          : Promise.resolve(null);
-    void runOptions.then((result) => {
-      if (active) setSessionRunOptions(result);
-    }).catch((cause) => {
-      if (!active) return;
-      setSessionRunOptions(null);
-      setRunOptionsError(cause instanceof Error ? cause.message : String(cause));
-    });
-    return () => { active = false; };
-  }, [conversation?.source, linkedConsoleSession?.id]);
-
   const latestDagUuid = useMemo(() => {
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
       const dagUuid = blocks[index].dag_uuid;
@@ -2197,45 +2166,8 @@ export function ConversationDetail({
     return () => { active = false; };
   }, [attachmentPreview]);
 
-  const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
-  const modelRunOption = sessionRunOptions?.options.find((option) => option.id === 'model');
-  const thinkingRunOption = sessionRunOptions?.options.find((option) => option.category === 'thought_level');
-  const permissionRunOption = sessionRunOptions?.options.find((option) => option.category === 'mode');
-  const modelOptions = (modelRunOption?.allowedValues ?? [])
-    .map((choice) => choice.value)
-    .filter((value): value is string => typeof value === 'string');
-  const canShowSessionControls = linkedConsoleSession
-    && control?.ownership.kind === 'mandible'
-    && (linkedConsoleSession.backend_type === 'sdk'
-      || linkedConsoleSession.backend_type === 'pty'
-      || linkedConsoleSession.backend_type === 'acp');
-  const canSaveComposerModel = Boolean(linkedConsoleSession)
-    && control?.ownership.kind === 'mandible'
-    && (linkedConsoleSession?.backend_type === 'sdk'
-      || linkedConsoleSession?.backend_type === 'pty'
-      || linkedConsoleSession?.backend_type === 'spawn'
-      || linkedConsoleSession?.backend_type === 'acp');
-  const hasRunOptions = Boolean(
-    currentModel
-    || (thinkingRunOption && thinkingRunOption.enforcement.status !== 'unsupported')
-    || (permissionRunOption && permissionRunOption.enforcement.status !== 'unsupported')
-    || canShowSessionControls,
-  );
-
-  const runOptionsGeometry = useIntrinsicOverflowGroup(
-    hasRunOptions,
-    `${Boolean(permissionRunOption)}\u0000${composerPermission}\u0000${Boolean(currentModel)}\u0000${composerModel}\u0000${Boolean(thinkingRunOption)}\u0000${composerEffort}\u0000${Boolean(canShowSessionControls)}\u0000${sessionRunOptions?.revision ?? ''}`,
-  );
-
-  useEffect(() => {
-    setComposerModel(currentModel === 'default' ? '' : currentModel);
-  }, [conversationId, currentModel]);
-
-  useEffect(() => {
-    setComposerEffort(String(thinkingRunOption?.currentValue ?? ''));
-    setComposerPermission(String(permissionRunOption?.currentValue ?? ''));
-  }, [conversationId, thinkingRunOption?.id, thinkingRunOption?.currentValue,
-    permissionRunOption?.id, permissionRunOption?.currentValue]);
+  const hasRunOptions = Boolean(control && ['claude_code', 'codex'].includes(control.provider));
+  const runOptionsGeometry = useIntrinsicOverflowGroup(hasRunOptions, `${control?.revision ?? ''}`);
 
   const projectPendingIntent = useCallback((intent: { id: string; message: string }) => {
     const provider = conversation?.source ?? creationReceipt?.request.provider;
@@ -2350,11 +2282,7 @@ export function ConversationDetail({
     }
     const runtimeOptions: ConversationRuntimeOptions = submitIntent?.state === 'uncertain'
       ? submitIntent.runtimeOptions
-      : {
-        ...(composerModel ? { model: composerModel } : {}),
-        ...(composerEffort ? { effort: composerEffort } : {}),
-        ...(composerPermission ? { permission_mode: composerPermission as ConversationRuntimeOptions['permission_mode'] } : {}),
-      };
+      : {};
     const messageAnchor = submitIntent?.state === 'uncertain'
       ? submitIntent.messageAnchor
       : control?.capability.kind === 'message-anchor-resume' && latestDagUuid
@@ -2380,7 +2308,7 @@ export function ConversationDetail({
     setControlFailure(null);
     projectPendingIntent(intent);
     setSubmitIntent(intent);
-  }, [composerEffort, composerModel, composerPermission, continueDisabledReason, continueDraft, draftAttachments, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent, conversationId]);
+  }, [continueDisabledReason, continueDraft, draftAttachments, control?.capability.kind, creationReceipt?.state, latestDagUuid, projectPendingIntent, submitIntent, conversationId]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter') return;
@@ -2388,36 +2316,6 @@ export function ConversationDetail({
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
   }, []);
-
-  const handleComposerModelChange = useCallback(async (value: string) => {
-    setComposerModel(value);
-    if (!linkedConsoleSession || !canSaveComposerModel) return;
-    setContinueError(null);
-    try {
-      if (linkedConsoleSession.backend_type === 'sdk') {
-        await updateConsoleSessionOptions(linkedConsoleSession.id, { model: value || undefined });
-      } else {
-        await updateConsoleSession(linkedConsoleSession.id, { model: value || undefined });
-      }
-    } catch (err) {
-      setContinueError(err instanceof Error ? err.message : String(err));
-    }
-  }, [canSaveComposerModel, linkedConsoleSession]);
-
-  const handleComposerRunOptionChange = useCallback(async (id: string, value: string) => {
-    if (id === thinkingRunOption?.id) setComposerEffort(value);
-    if (id === permissionRunOption?.id) setComposerPermission(value);
-    if (!linkedConsoleSession || !canSaveComposerModel) return;
-    setContinueError(null);
-    try {
-      const result = await updateConsoleSessionOptions(linkedConsoleSession.id, {
-        runOptions: { [id]: value || null },
-      }) as { runOptions?: SessionRunOptionsSnapshot };
-      if (result.runOptions) setSessionRunOptions(result.runOptions);
-    } catch (err) {
-      setContinueError(err instanceof Error ? err.message : String(err));
-    }
-  }, [canSaveComposerModel, linkedConsoleSession, permissionRunOption?.id, thinkingRunOption?.id]);
 
   const handleOpenExternally = useCallback(async () => {
     if (!conversation?.external_navigation) return;
@@ -2615,45 +2513,7 @@ export function ConversationDetail({
     />
   );
 
-  const renderRunOptionFields = () => (
-    <>
-      {permissionRunOption && permissionRunOption.enforcement.status !== 'unsupported' ? (
-        <label className="session-controls__field">
-          <span className="session-controls__label">{permissionRunOption.label}</span>
-          <select className="session-controls__select" value={composerPermission} disabled={continueBusy || permissionRunOption.availability !== 'available'} aria-label={permissionRunOption.label} onChange={(event) => { void handleComposerRunOptionChange(permissionRunOption.id, event.currentTarget.value); }}>
-            {permissionRunOption.nullable && <option value="">Use app default</option>}
-            {(permissionRunOption.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
-          </select>
-        </label>
-      ) : null}
-      {currentModel ? (
-        <label className="session-controls__field">
-          <span className="session-controls__label">{modelRunOption?.label ?? 'Model'}</span>
-          <select className="session-controls__select" value={composerModel} disabled={continueBusy || (modelRunOption !== undefined && modelOptions.length === 0)} aria-label={modelRunOption?.label ?? 'Model'} title={modelRunOption?.label ?? 'Model'} onChange={(event) => { void handleComposerModelChange(event.currentTarget.value); }}>
-            <option value={currentModel === 'default' ? '' : currentModel}>{currentModel === 'default' ? 'Use app default' : currentModel}</option>
-            {modelOptions.filter((model) => model !== currentModel).map((model) => <option key={model} value={model}>{model}</option>)}
-          </select>
-        </label>
-      ) : null}
-      {thinkingRunOption && thinkingRunOption.enforcement.status !== 'unsupported' ? (
-        <label className="session-controls__field">
-          <span className="session-controls__label">{thinkingRunOption.label}</span>
-          <select className="session-controls__select" value={composerEffort} disabled={continueBusy || thinkingRunOption.availability !== 'available'} aria-label={thinkingRunOption.label} onChange={(event) => { void handleComposerRunOptionChange(thinkingRunOption.id, event.currentTarget.value); }}>
-            {thinkingRunOption.nullable && <option value="">Use app default</option>}
-            {(thinkingRunOption.allowedValues ?? []).map((choice) => <option key={String(choice.value)} value={String(choice.value)}>{choice.label}</option>)}
-          </select>
-        </label>
-      ) : null}
-      {canShowSessionControls && linkedConsoleSession ? (
-        <SessionControls
-          sessionId={linkedConsoleSession.id}
-          runOptions={sessionRunOptions}
-          allowedTools={linkedConsoleSession.allowed_tools}
-          hiddenOptionIds={[modelRunOption?.id, thinkingRunOption?.id, permissionRunOption?.id].filter((id): id is string => Boolean(id))}
-        />
-      ) : null}
-    </>
-  );
+  const renderRunOptionFields = () => <ManagedConversationControls key={conversationId} control={control} />;
 
   const composerOverlay = isReadOnlyChild ? (
         <div className="conv-compose conv-compose--readonly" data-detail-pane-overlay-visual>
@@ -2799,14 +2659,14 @@ export function ConversationDetail({
     />
   ) : undefined;
 
-  const actionErrorNotice = toast?.type === 'error' || continueError || runOptionsError ? (
+  const actionErrorNotice = toast?.type === 'error' || continueError ? (
     <DetailPaneNotice
       severity="error"
       density="compact"
-      title={runOptionsError && toast?.type !== 'error' && !continueError ? 'Chat run options unavailable' : 'Chat action failed'}
-      actions={<button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss error" title="Dismiss error" onClick={() => { setToast(null); setContinueError(null); setRunOptionsError(null); }}>×</button>}
+      title={'Chat action failed'}
+      actions={<button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss error" title="Dismiss error" onClick={() => { setToast(null); setContinueError(null); }}>×</button>}
     >
-      {toast?.type === 'error' ? toast.message : continueError ?? (runOptionsError ? `Run options could not be loaded: ${runOptionsError}` : null)}
+      {toast?.type === 'error' ? toast.message : continueError}
     </DetailPaneNotice>
   ) : null;
 
@@ -3053,72 +2913,17 @@ function LiveSessionDetail({
   onNavigateConversation: (conversationId: string) => void;
 }): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
-  const [viewMode, setViewMode] = useState<ViewMode>('rich');
-  const [control, setControl] = useState<ConversationControlSnapshot | null>(null);
-  const [createdTaskError, setCreatedTaskError] = useState<string | null>(null);
-  const navigateToCreatedTask = useCallback(async (providerSessionId: string) => {
-    try {
-      const target = await resolveProviderSessionConversation(providerSessionId);
-      if (target) {
-        setCreatedTaskError(null);
-        onNavigateConversation(target.id);
-      } else {
-        setCreatedTaskError('Created task conversation is not available yet.');
-      }
-    } catch (error) {
-      setCreatedTaskError(error instanceof Error ? error.message : String(error));
-    }
-  }, [onNavigateConversation]);
   const providerSessionId = session.provider_session_id ?? '';
+  const historicalManaged = session.backend_type !== 'pty' || Boolean(session.channel_enabled);
   const sessionConversationQuery = useQuery({
     queryKey: conversationKeys.bySession(providerSessionId),
-    queryFn: ({ signal }) => getConversations({ session_id: providerSessionId, limit: 1, signal }),
-    enabled: Boolean(providerSessionId),
+    queryFn: ({ signal }) => getConversations({ session_id: providerSessionId, limit: 2, signal }),
+    enabled: historicalManaged && Boolean(providerSessionId),
   }, queryClient);
-  const linkedConversationId = sessionConversationQuery.data?.conversations[0]?.id ?? '';
-  const latestTarget = useMemo(() => normalizeWindowTarget({ target: 'latest', limit: 1 }), []);
-  const latestWindowQuery = useQuery({
-    queryKey: conversationKeys.window(linkedConversationId, latestTarget),
-    queryFn: ({ signal }) => getConversationWindow(linkedConversationId, windowRequest(latestTarget, signal)),
-    enabled: Boolean(linkedConversationId),
-  }, queryClient);
-  const messageAnchor = useMemo(() => {
-    const blocks = latestWindowQuery.data?.blocks ?? [];
-    for (let index = blocks.length - 1; index >= 0; index -= 1) {
-      if (blocks[index].dag_uuid) return blocks[index].dag_uuid ?? null;
-    }
-    return null;
-  }, [latestWindowQuery.data]);
-
+  const linkedConversations = sessionConversationQuery.data?.conversations ?? [];
   useEffect(() => {
-    if (!linkedConversationId) {
-      setControl(null);
-      return undefined;
-    }
-    let active = true;
-    void getConversationControl(linkedConversationId)
-      .then((snapshot) => {
-        if (!active) return;
-        setControl(snapshot);
-      })
-      .catch(() => {
-        if (!active) return;
-        setControl(null);
-      });
-    return () => { active = false; };
-  }, [linkedConversationId]);
-
-  useEffect(() => {
-    if (!control) return undefined;
-    const client = acquireSharedSse();
-    const offControlUpdated = client.on('conversation:control-updated', (payload) => {
-      const snapshot = payload as unknown as ConversationControlSnapshot;
-      if (snapshot.conversation_id === control.conversation_id) setControl(snapshot);
-    });
-    client.connect();
-    return () => { offControlUpdated(); client.close(); };
-  }, [control?.conversation_id]);
-
+    if (historicalManaged && linkedConversations.length === 1) onNavigateConversation(linkedConversations[0].id);
+  }, [historicalManaged, linkedConversations.length, linkedConversations[0]?.id, onNavigateConversation]);
   const detailHeader = (
     <DetailPaneHeader
       variant="compact"
@@ -3141,39 +2946,15 @@ function LiveSessionDetail({
       className="chat-live-detail"
       bodyClassName="chat-live-detail__pane"
       header={detailHeader}
-      notice={notice || createdTaskError ? <>
-        {notice}
-        {createdTaskError ? (
-          <DetailPaneNotice severity="error" density="compact" title="Could not open created task">
-            {createdTaskError}
-          </DetailPaneNotice>
-        ) : null}
-      </> : null}
+      notice={notice}
     >
-      <TerminalPane
-        sessionId={session.id}
-        agentType={session.agent_type}
-        backendType={session.backend_type}
-        allowedTools={session.allowed_tools}
-        command={session.command ?? session.agent_type}
-        sessionArgs={session.args ?? []}
-        isOperator={session.is_operator}
-        interactionMode={session.interaction_mode}
-        sessionStatus={session.status}
-        transportLane={session.transport_lane}
-        transportBadge={session.transport_badge}
-        attention={session.attention}
-        providerSessionId={session.provider_session_id}
-        conversationControl={control}
-        conversationMessageAnchor={messageAnchor}
-        onConversationControlChange={setControl}
-        onCreatedTaskNavigate={navigateToCreatedTask}
-        isVisible
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
-        channelEnabled={!!session.channel_enabled}
-        workspaceMode
-      />
+      {historicalManaged ? <DetailPaneNotice severity="info" density="compact" title="Historical managed session">
+        {sessionConversationQuery.isLoading ? 'Finding the native conversation…' : sessionConversationQuery.isError
+          ? 'The native conversation could not be loaded. The historical Console record is preserved.'
+          : linkedConversations.length > 1 ? 'This session matches several conversations. Select the exact conversation in Chats.'
+          : linkedConversations.length === 0 ? 'The native conversation is not indexed yet. The historical Console record is preserved.' : 'Opening the native conversation…'}
+      </DetailPaneNotice> : <TerminalPane sessionId={session.id} sessionStatus={session.status} isVisible />}
+
     </ChatDetailFrame>
   );
 }

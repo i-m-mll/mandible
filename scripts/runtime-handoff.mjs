@@ -1,0 +1,292 @@
+#!/usr/bin/env bun
+// A finite convergence worker, owned by one already-applied auth publication.
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { assessLogs } from './runtime-log-assessment.mjs';
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const fileHash = file => hash(fs.readFileSync(file));
+export const bindingDigest = binding => hash(JSON.stringify(binding));
+function atomic(file, value) {
+  const temporary = `${file}.${process.pid}.tmp`;
+  const fd = fs.openSync(temporary, 'wx', 0o600);
+  try { fs.writeFileSync(fd, `${JSON.stringify(value)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(temporary, file);
+  const directory = fs.openSync(path.dirname(file), 'r');
+  try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+}
+function run(binary, args, { cwd, env = process.env, timeout = 5000, log } = {}) {
+  const fd = log ? fs.openSync(log, 'a', 0o600) : null;
+  try {
+    const result = spawnSync(binary, args, { cwd, env: { ...env, GIT_OPTIONAL_LOCKS: '0' }, encoding: 'utf8', timeout, maxBuffer: 2 * 1024 * 1024,
+      ...(fd !== null ? { stdio: ['ignore', fd, fd] } : {}) });
+    if (result.error || result.status !== 0) throw new Error(`${binary} ${args[0]} failed: ${result.error?.message || result.stderr || result.status}`);
+    return result.stdout?.trim();
+  } finally { if (fd !== null) fs.closeSync(fd); }
+}
+const launchctl = args => run('/bin/launchctl', args);
+const startedAt = pid => {
+  const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 1500 });
+  return result.status === 0 ? result.stdout.trim() || null : null;
+};
+function desktopRunning(app) {
+  const pids = spawnSync('/usr/bin/pgrep', ['-x', 'mandible-app'], { encoding: 'utf8', timeout: 1500 }).stdout?.trim().split('\n').filter(Boolean) ?? [];
+  return pids.some(pid => {
+    const command = spawnSync('/bin/ps', ['-ww', '-p', pid, '-o', 'command='], { encoding: 'utf8', timeout: 1500 }).stdout?.trim();
+    return command === `${app}/Contents/MacOS/mandible-app` || command?.startsWith(`${app}/Contents/MacOS/mandible-app `);
+  });
+}
+const homeDirectory = home => path.join(home, 'config', 'local-sessions');
+export function handoffDirectory(home, requestId, executionId) {
+  for (const id of [requestId, executionId]) if (!/^[a-zA-Z0-9_-]{8,128}$/.test(id)) throw new Error('Invalid runtime handoff owner.');
+  return path.join(homeDirectory(home), 'handoff', `${requestId}-${executionId}`);
+}
+function journalFile(binding) { return path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json'); }
+function validateJournal(journal) {
+  if (journal?.schema !== 'mandible-runtime-handoff@1' || bindingDigest(journal.binding) !== journal.bindingDigest) throw new Error('Runtime handoff binding is malformed or changed.');
+  if (fileHash(journal.binding.runtime.path) !== journal.binding.runtime.sha256) throw new Error('Pinned handoff runtime bytes changed.');
+  return journal;
+}
+export function readRuntimeHandoff(home, requestId, executionId) {
+  const file = path.join(handoffDirectory(home, requestId, executionId), 'journal.json');
+  return fs.existsSync(file) ? validateJournal(JSON.parse(fs.readFileSync(file, 'utf8'))) : null;
+}
+function save(journal, changes) {
+  Object.assign(journal, changes, { updatedAt: Date.now() });
+  atomic(journalFile(journal.binding), journal);
+}
+function controller(journal, command, { capture = true } = {}) {
+  const binding = journal.binding;
+  const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(binding) };
+  const installedController = journal.phase === 'acknowledged' || !!journal.cleanupStartedAt;
+  const script = installedController ? path.join(binding.root, 'scripts/local-runtime.mjs') : path.join(path.dirname(journalFile(binding)), 'controller.mjs');
+  if (installedController) delete env.MANDIBLE_RUNTIME_HANDOFF_STORAGE;
+  return run(binding.runtime.path, [script, command, '--root', binding.root], {
+    cwd: binding.root, env,
+    ...(capture ? {} : { log: path.join(path.dirname(journalFile(binding)), 'convergence.log') }), timeout: 30000 });
+}
+async function publication(journal) {
+  const module = await import(pathToFileURL(path.join(path.dirname(journalFile(journal.binding)), 'proof.mjs')).href);
+  const db = new DatabaseSync(journal.database, { readOnly: true, allowExtension: false });
+  try { return module.verifyRuntimeHandoffPublication(db, journal.binding); } finally { db.close(); }
+}
+export function legacyHandoffBridge(file, target, deadline) {
+  return `// Temporary dependency-free runtime handoff bridge.\nimport fs from 'node:fs';\nimport {spawnSync} from 'node:child_process';\nimport path from 'node:path';\nconst file=${JSON.stringify(file)};\nconst target=${JSON.stringify(target)};\nconst marker=path.join(path.dirname(file),'bridge-process.json');\nconst startedAt=spawnSync('/bin/ps',['-p',String(process.pid),'-o','lstart='],{encoding:'utf8',timeout:1500}).stdout.trim();\nconst temporary=marker+'.'+process.pid+'.tmp';\nfs.writeFileSync(temporary,JSON.stringify({pid:process.pid,startedAt}),{mode:0o600});fs.renameSync(temporary,marker);\nfunction wake(){spawnSync('/bin/launchctl',['kickstart',target],{timeout:1500,stdio:'ignore'});}\nwake();\nconst timer=setInterval(()=>{try{const j=JSON.parse(fs.readFileSync(file,'utf8'));if(j.phase==='acknowledged'){clearInterval(timer);process.exit(0);}if(Date.now()>${deadline}){clearInterval(timer);console.error('Runtime handoff deadline exceeded; preserve convergence evidence.');process.exit(1);}}catch(e){console.error(e.message);}},2000);\n`;
+}
+function plist(journal, helper) {
+  const esc = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const binding = journal.binding;
+  const dir = path.dirname(journalFile(binding));
+  return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${esc(journal.helperLabel)}</string><key>ProgramArguments</key><array>${[binding.runtime.path, helper, 'worker', journalFile(binding)].map(v => `<string>${esc(v)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>10</integer><key>WorkingDirectory</key><string>${esc(dir)}</string><key>StandardOutPath</key><string>${esc(path.join(dir, 'helper.log'))}</string><key>StandardErrorPath</key><string>${esc(path.join(dir, 'helper.log'))}</string></dict></plist>`;
+}
+export async function armRuntimeHandoff(root) {
+  if (process.platform !== 'darwin') throw new Error('Production runtime handoff requires macOS launchd.');
+  const home = path.resolve(process.env.MANDIBLE_HOME || path.join(os.homedir(), '.mandible'));
+  const requestId = process.env.MANDIBLE_AUTH_REQUEST_ID;
+  const executionId = process.env.MANDIBLE_HOOK_EXECUTION_ID;
+  const existing = readRuntimeHandoff(home, requestId, executionId);
+  if (existing) {
+    if (existing.binding.commandDigest !== process.env.MANDIBLE_HOOK_COMMAND_DIGEST || existing.binding.root !== root) throw new Error('Repeated hook differs from the armed handoff.');
+    if (existing.phase === 'armed' && !existing.bridgeInstalled) return finishAdmission(existing);
+    return existing;
+  }
+  const activeFile = path.join(homeDirectory(home), 'handoff-active.json');
+  if (fs.existsSync(activeFile)) throw new Error('Another handoff owns this installation; preserving it.');
+  const runtime = run('/bin/sh', [path.join(root, 'scripts/bun-runtime.sh')]);
+  const dir = handoffDirectory(home, requestId, executionId);
+  fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
+  const preparation = { requestId, executionId, root, runtime, runtimeHash: fileHash(runtime) };
+  if (fs.existsSync(dir)) {
+    const prior = JSON.parse(fs.readFileSync(path.join(dir, 'preparation.json'), 'utf8'));
+    if (JSON.stringify(prior) !== JSON.stringify(preparation)) throw new Error('Existing preparation belongs to different handoff bytes.');
+    for (const name of fs.readdirSync(dir)) if (!['preparation.json', 'sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs'].includes(name) || fs.lstatSync(path.join(dir, name)).isSymbolicLink()) throw new Error('Unknown handoff preparation material; preserving it.');
+  } else {
+    fs.mkdirSync(dir, { mode: 0o700 });
+    atomic(path.join(dir, 'preparation.json'), preparation);
+  }
+  const storage = path.join(dir, 'sqlite.mjs');
+  run(runtime, ['build', path.join(root, 'src/sqlite.ts'), '--target', 'bun', '--outfile', storage], { cwd: root });
+  const environment = { ...process.env, MANDIBLE_RUNTIME: runtime, MANDIBLE_RUNTIME_HANDOFF_STORAGE: storage, PATH: `${path.dirname(runtime)}:${process.env.PATH}`, GIT_OPTIONAL_LOCKS: '0' };
+  for (const key of Object.keys(environment)) if (/TOKEN|SECRET|KEYCHAIN|API_KEY/.test(key)) delete environment[key];
+  const binding = { ...JSON.parse(run(runtime, [path.join(root, 'scripts/local-runtime.mjs'), 'handoff-snapshot', '--root', root], { env: environment })),
+    requestId, executionId, hookId: process.env.MANDIBLE_HOOK_ID, commandDigest: process.env.MANDIBLE_HOOK_COMMAND_DIGEST,
+    mergeBase: process.env.MANDIBLE_AUTH_MERGE_BASE_SHA || undefined, mergeHead: process.env.MANDIBLE_AUTH_MERGE_HEAD_SHA || undefined,
+    mergeCommit: process.env.MANDIBLE_AUTH_MERGE_COMMIT_SHA || undefined,
+    nativeApp: '/Applications/Mandible.app', desktopWasRunning: desktopRunning('/Applications/Mandible.app'),
+    runtime: { path: runtime, version: run(runtime, ['--version']), sha256: fileHash(runtime) } };
+  if (binding.priorBackend.argv[0] === runtime) {
+    for (const name of ['sqlite.mjs', 'preparation.json']) fs.unlinkSync(path.join(dir, name));
+    fs.rmdirSync(dir);
+    return null;
+  }
+  const journal = { schema: 'mandible-runtime-handoff@1', binding, bindingDigest: '', phase: 'preparing', attempts: 0,
+    deadline: Date.now() + 30 * 60 * 1000, stages: {}, environment,
+    database: process.env.MANDIBLE_DB || path.join(home, 'mandible.db'),
+    helperLabel: `bio.mll.mandible.runtime-handoff.${hash(`${home}:${requestId}:${executionId}`).slice(0, 16)}` };
+  for (const [source, name] of [['src/runtime-handoff-proof.ts', 'proof.mjs'], ['scripts/runtime-handoff.mjs', 'helper.mjs']]) {
+    run(runtime, ['build', path.join(root, source), '--target', 'bun', '--outfile', path.join(dir, name)], { cwd: root });
+  }
+  // Preserve CLI module boundaries: bundling several guarded CLI entrypoints
+  // would make their import.meta.url guards all refer to the same entry file.
+  for (const [source, name] of [['local-runtime.mjs', 'controller.mjs'], ...['canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs'].map(name => [name, name])]) fs.copyFileSync(path.join(root, 'scripts', source), path.join(dir, name));
+  // Initial publication validation is read-only and precedes every mutation.
+  Object.assign(binding, await publication(journal));
+  binding.stagedFiles = Object.fromEntries(['sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs'].map(name => [name, fileHash(path.join(dir, name))]));
+  journal.bindingDigest = bindingDigest(binding);
+  const helper = path.join(dir, 'helper.mjs');
+  const service = path.join(homeDirectory(home), 'launch-agents', `${journal.helperLabel}.plist`);
+  fs.mkdirSync(path.dirname(service), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(service, plist(journal, helper), { mode: 0o600 });
+  journal.helperPlist = service;
+  save(journal, { phase: 'armed' });
+  const activeFd = fs.openSync(activeFile, 'wx', 0o600);
+  try { fs.writeFileSync(activeFd, JSON.stringify({ journal: journalFile(binding), bindingDigest: journal.bindingDigest })); fs.fsyncSync(activeFd); } finally { fs.closeSync(activeFd); }
+  return finishAdmission(journal);
+}
+async function finishAdmission(journal) {
+  const binding = journal.binding;
+  const { home, requestId, executionId } = binding;
+  const dir = path.dirname(journalFile(binding));
+  const active = path.join(homeDirectory(home), 'handoff-active.json');
+  if (!fs.existsSync(active)) atomic(active, { journal: journalFile(binding), bindingDigest: journal.bindingDigest });
+  if (JSON.parse(fs.readFileSync(active, 'utf8')).bindingDigest !== journal.bindingDigest) throw new Error('Another handoff owns this installation.');
+  for (const [name, expected] of Object.entries(binding.stagedFiles)) if (fileHash(path.join(dir, name)) !== expected) throw new Error(`Staged handoff bytes changed: ${name}`);
+  const target = `${binding.domain}/${journal.helperLabel}`;
+  const loaded = spawnSync('/bin/launchctl', ['print', target], { encoding: 'utf8', timeout: 2500 });
+  if (loaded.status === 0) {
+    if (!loaded.stdout.includes(path.join(dir, 'helper.mjs'))) throw new Error('The helper job has different loaded arguments; preserving it.');
+    launchctl(['kickstart', target]);
+  } else launchctl(['bootstrap', binding.domain, journal.helperPlist]);
+  const end = Date.now() + 5000;
+  while (Date.now() < end && !readRuntimeHandoff(home, requestId, executionId)?.acknowledgedAt) await sleep(100);
+  if (!readRuntimeHandoff(home, requestId, executionId)?.acknowledgedAt) throw new Error('Independent handoff helper did not acknowledge its journal.');
+  const runner = binding.priorBackend.argv[1];
+  if (path.resolve(runner) !== path.join(homeDirectory(home), 'production-runner.mjs')) throw new Error('Legacy runner does not belong to this installation.');
+  const bridgeBytes = legacyHandoffBridge(journalFile(binding), `${binding.domain}/${journal.helperLabel}`, journal.deadline);
+  const runnerHash = fileHash(runner);
+  if (runnerHash !== binding.priorBackend.runnerSha256 && runnerHash !== hash(bridgeBytes)) throw new Error('Legacy runner changed after admission; preserving it.');
+  if (!fs.existsSync(path.join(dir, 'original-runner.mjs'))) {
+    if (runnerHash !== binding.priorBackend.runnerSha256) throw new Error('Original runner custody is missing; preserving the bridge.');
+    fs.copyFileSync(runner, path.join(dir, 'original-runner.mjs'));
+  }
+  if (fileHash(path.join(dir, 'original-runner.mjs')) !== binding.priorBackend.runnerSha256) throw new Error('Preserved original runner changed; refusing replacement.');
+  const originalJournal = readRuntimeHandoff(home, requestId, executionId);
+  save(originalJournal, { originalRunnerHash: binding.priorBackend.runnerSha256 });
+  const bridge = `${runner}.${process.pid}.tmp`;
+  fs.writeFileSync(bridge, bridgeBytes, { mode: 0o700 });
+  fs.renameSync(bridge, runner);
+  const current = readRuntimeHandoff(home, requestId, executionId);
+  save(current, { bridgeInstalled: true });
+  return current;
+}
+
+export async function verifyRuntimeHandoffReceipt(journal, { probe = true } = {}) {
+  validateJournal(journal);
+  if (!['complete', 'acknowledged'].includes(journal.phase) || journal.receipt?.bindingDigest !== journal.bindingDigest) throw new Error('Runtime handoff has no exact successful receipt.');
+  const b = journal.binding;
+  if (run('git', ['rev-parse', 'HEAD'], { cwd: b.root }) !== b.mergeCommit) throw new Error('Production checkout moved beyond the handoff candidate.');
+  for (const [file, expected] of Object.entries(journal.receipt.files)) if (fileHash(file) !== expected) throw new Error(`Converged file changed: ${file}`);
+  const evidence = probe ? JSON.parse(controller(journal, 'handoff-verify')) : journal.receipt.evidence;
+  return { bindingDigest: journal.bindingDigest, evidence };
+}
+
+export async function acknowledgeRuntimeHandoff(binding) {
+  const journal = readRuntimeHandoff(binding.home, binding.requestId, binding.executionId);
+  if (!journal || journal.bindingDigest !== bindingDigest(binding)) throw new Error('Runtime handoff acknowledgment binding differs.');
+  await verifyRuntimeHandoffReceipt(journal, { probe: true });
+  if (journal.phase === 'acknowledged') return;
+  save(journal, { cleanupStartedAt: Date.now() });
+  // The helper is an exact independently owned job; never bootout a domain.
+  const target = `${binding.domain}/${journal.helperLabel}`;
+  const loaded = spawnSync('/bin/launchctl', ['print', target], { encoding: 'utf8', timeout: 2500 });
+  if (loaded.status === 0) {
+    if (!loaded.stdout.includes(path.join(path.dirname(journalFile(binding)), 'helper.mjs'))) throw new Error('Helper service definition changed; preserving it.');
+    launchctl(['bootout', target]);
+  }
+  if (fs.existsSync(journal.helperPlist)) fs.unlinkSync(journal.helperPlist);
+  // Compact accepted evidence remains; regenerated scripts and logs expire now.
+  for (const name of [...Object.keys(binding.stagedFiles), 'helper.log', 'convergence.log', 'original-runner.mjs', 'preparation.json', 'bridge-process.json']) {
+    const file = path.join(path.dirname(journalFile(binding)), name);
+    if (fs.existsSync(file)) {
+      if (!fs.lstatSync(file).isFile()) throw new Error(`Handoff generated material changed type; preserving ${name}.`);
+      const expected = binding.stagedFiles[name] ?? (name === 'original-runner.mjs' ? journal.originalRunnerHash : name === 'convergence.log' ? journal.receipt.logDigest : null);
+      if (expected && fileHash(file) !== expected) throw new Error(`Handoff generated material changed; preserving ${name}.`);
+      fs.unlinkSync(file);
+    }
+  }
+  const active = path.join(homeDirectory(binding.home), 'handoff-active.json');
+  if (fs.existsSync(active)) {
+    if (JSON.parse(fs.readFileSync(active, 'utf8')).bindingDigest !== journal.bindingDigest) throw new Error('Active handoff changed during acknowledgment.');
+    fs.unlinkSync(active);
+  }
+  save(journal, { phase: 'acknowledged', acceptedAt: Date.now() });
+}
+
+async function worker(file) {
+  let journal = validateJournal(JSON.parse(fs.readFileSync(file, 'utf8')));
+  if (['complete', 'acknowledged', 'failed'].includes(journal.phase)) return;
+  if (journal.attempts >= 6 || Date.now() > journal.deadline) { save(journal, { phase: 'failed', error: 'Finite handoff recovery budget exhausted.' }); return; }
+  save(journal, { attempts: journal.attempts + 1, acknowledgedAt: Date.now() });
+  const b = journal.binding;
+  try {
+    while (startedAt(b.oldProcess.pid) === b.oldProcess.startedAt || !journal.bridgeInstalled) {
+      if (Date.now() > journal.deadline) throw new Error('Old daemon did not finish its bounded drain.');
+      await sleep(200);
+      journal = readRuntimeHandoff(b.home, b.requestId, b.executionId);
+    }
+    await publication(journal);
+    save(journal, { phase: 'unloading' });
+    controller(journal, 'handoff-remove');
+    const log = path.join(path.dirname(file), 'convergence.log');
+    const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: file };
+    for (const [stage, binary, args, timeout] of [
+      ['dependencies', b.runtime.path, ['install', '--frozen-lockfile'], 180000],
+      ['build', b.runtime.path, ['run', 'build'], 180000],
+      ['desktop', '/bin/bash', ['cli/install-desktop-app.sh'], 600000],
+      ['instructions', '/bin/bash', ['cli/instructions.sh', 'install'], 60000],
+    ]) {
+      if (journal.stages[stage]) continue;
+      await publication(journal);
+      save(journal, { phase: stage });
+      run(binary, args, { cwd: b.root, env, timeout, log });
+      save(journal, { stages: { ...journal.stages, [stage]: { completedAt: Date.now(), logDigest: fileHash(log) } } });
+    }
+    save(journal, { phase: 'starting' });
+    const logOffset = fs.existsSync(b.daemonLog) ? fs.statSync(b.daemonLog).size : 0;
+    const deadline = Math.min(journal.deadline, Date.now() + 60000);
+    let evidence;
+    // Start once; readiness polling does not repeatedly restart the daemon.
+    try { controller(journal, 'handoff-start'); } catch (error) { journal.startObservation = error.message; }
+    while (Date.now() < deadline) {
+      try { evidence = JSON.parse(controller(journal, 'handoff-verify')); break; } catch { await sleep(200); }
+    }
+    if (!evidence) throw new Error(`Candidate runtime readiness failed: ${journal.startObservation || 'health deadline'}`);
+    if (b.desktopWasRunning && !journal.stages.desktopRelaunch) {
+      run('/bin/bash', ['cli/install-desktop-app.sh', '--relaunch', b.nativeApp, 'mandible-app', '0'], { cwd: b.root, env, timeout: 15000, log });
+      save(journal, { stages: { ...journal.stages, desktopRelaunch: { completedAt: Date.now() } } });
+      if (!desktopRunning(b.nativeApp)) throw new Error('Installed desktop did not remain running after relaunch.');
+    }
+    const observedUntil = Date.now() + 31000;
+    while (Date.now() < observedUntil) { await sleep(1000); evidence = JSON.parse(controller(journal, 'handoff-verify')); }
+    const daemonLog = fs.readFileSync(b.daemonLog).subarray(logOffset).toString('utf8');
+    const resources = path.join(b.nativeApp, 'Contents/Resources');
+    const marker = path.join(b.root, 'dist/build-revision.json');
+    if (JSON.stringify(JSON.parse(fs.readFileSync(marker))) !== JSON.stringify(JSON.parse(fs.readFileSync(path.join(resources, 'build-revision.json'))))) throw new Error('Installed desktop differs from the handoff build.');
+    const files = Object.fromEntries([marker, path.join(b.root, 'dist/index.js'), path.join(b.nativeApp, 'Contents/MacOS/mandible-app'), evidence.backend.file, evidence.gateway.file].map(f => [f, fileHash(f)]));
+    const failures = assessLogs(daemonLog);
+    if (failures.length) throw new Error(`Convergence logs failed assessment: ${failures.join('; ')}`);
+    save(journal, { phase: 'complete', receipt: { bindingDigest: journal.bindingDigest, evidence, files, completedAt: Date.now(), logDigest: fileHash(log), daemonLogDigest: hash(daemonLog), daemonLogBytes: Buffer.byteLength(daemonLog) } });
+  } catch (error) { save(journal, { phase: 'failed', error: error.message }); }
+}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [command, file] = process.argv.slice(2);
+  (command === 'worker' ? worker(file) : command === 'arm' ? armRuntimeHandoff(path.resolve(file || process.cwd())).then(j => {
+    if (j) { process.stderr.write(`MANDIBLE_RUNTIME_HANDOFF_PENDING:${j.bindingDigest}\n`); process.exitCode = 75; }
+  }) : Promise.reject(new Error('Usage: runtime-handoff.mjs arm <root>|worker <journal>'))).catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+}
