@@ -174,6 +174,7 @@ async function main() {
       const file = path.join(run, `${name}.log`); return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
     }).join('\n');
     result.checks.log_failures = assessLogs(logs);
+    if (result.status !== 'passed' && fs.existsSync(path.join(run, 'build.log'))) result.checks.build_failure_excerpt = fs.readFileSync(path.join(run, 'build.log'), 'utf8').split('\n').slice(-30).join('\n').slice(-8000);
     result.checks.log_digest = createHash('sha256').update(logs).digest('hex');
     result.checks.log_bytes = Buffer.byteLength(logs);
     if (result.checks.log_failures.length) result.status = 'failed';
