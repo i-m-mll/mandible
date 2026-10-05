@@ -1,3 +1,5 @@
+import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
+import { BRIEFING_EVENT_VALUES } from '../../src/contracts';
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
@@ -1480,15 +1482,9 @@ function App(): JSX.Element {
       }
       scheduleBadgeRefresh();
     };
-    // Briefing lifecycle events carry only a topic across this bridge. The
-    // active renderer refetches its normalized snapshot; directive bodies and
-    // answer values are never consumed from SSE payloads.
     const briefingHandler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
       invalidateDashboardApiCacheForEvent(payload.type);
-      window.dispatchEvent(new CustomEvent('briefing:sse', {
-        detail: { type: payload.type },
-      }));
       scheduleBadgeRefresh();
     };
     const managedReminderHandler = (payload: SSEPayload) => {
@@ -1698,14 +1694,7 @@ function App(): JSX.Element {
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
       client.on('user-setting:updated', userSettingHandler),
-      client.on('briefing:created', briefingHandler),
-      client.on('briefing:bundle-name-updated', briefingHandler),
-      client.on('briefing:bundle-members-replaced', briefingHandler),
-      client.on('briefing:round-published', briefingHandler),
-      client.on('briefing:answered', briefingHandler),
-      client.on('briefing:annotated', briefingHandler),
-      client.on('briefing:submitted', briefingHandler),
-      client.on('briefing:title-updated', briefingHandler),
+      ...BRIEFING_EVENT_VALUES.map((type) => client.on(type, briefingHandler)),
       client.on('managed-reminders.changed', managedReminderHandler),
       client.on('managed-reminders.occurred', managedReminderHandler),
       client.on('tasks.commands.changed', taskCommandHandler),
@@ -1767,9 +1756,7 @@ function App(): JSX.Element {
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
       void refreshRailOrder();
-      window.dispatchEvent(new CustomEvent('briefing:sse', {
-        detail: { type: 'reconnected' },
-      }));
+      void refreshBrowserResources(queryClient, [browserResourceKeys.briefings]);
       // A reconnect gap may have missed graph-affecting events; converge the
       // graph too (bump now if active/visible, else mark dirty).
       if (routeTabRef.current === 'graph' && document.visibilityState === 'visible') {
